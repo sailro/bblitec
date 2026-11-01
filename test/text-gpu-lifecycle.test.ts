@@ -20,19 +20,13 @@ import {
 } from "./native-fixture.js";
 import { doctoredContext } from "./doctored-store.js";
 import { webgpuFlagNamespaces } from "../src/webgpu-flags.js";
+import { pinnedDeclaration } from "./pinned-source.js";
 
 // Real pinned function bodies with only the device and pipeline resolution
 // replaced by recorders. No fixture reimplementation of resource state decisions.
 function pinnedFunctions(context: LoweringContext): string {
     const module = (path: string, names: string[]) =>
-        names
-            .map((name) =>
-                context
-                    .functionDeclaration(path, name)
-                    .declaration.getText()
-                    .replace(/^export\s+/, ""),
-            )
-            .join("\n");
+        names.map((name) => pinnedDeclaration(context, path, name)).join("\n");
     const renderable = "src/text/text-renderable.ts";
     return ts.transpileModule(
         [

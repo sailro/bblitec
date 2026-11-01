@@ -49,7 +49,7 @@ int main() try {
             return runtime.projected_elements.at(ui_get_element_by_id(engine, id).value).element;
         };
         const auto opacity = [&](const char* id, float expected) {
-            const float value = element(id)->GetComputedValues().opacity();
+            const float value = element(id)->GetComputedValues().group_opacity();
             if (std::abs(value - expected) > 0.02f)
                 std::fprintf(stderr, "%s opacity %g, expected %g at %g ms\n", id, value, expected,
                              fixture_time);
@@ -60,12 +60,41 @@ int main() try {
         check(reset && reset->value.GetType() == Rml::Variant::TRANSITIONLIST &&
                   reset->value.GetReference<Rml::TransitionList>().none,
               "a sheet shorthand resets its duration longhand to 'auto'");
+        const auto* transition_reset = element("base")->GetLocalProperty("transition-duration");
+        check(transition_reset &&
+                  transition_reset->value.GetType() == Rml::Variant::TRANSITIONLIST &&
+                  transition_reset->value.GetReference<Rml::TransitionList>().none,
+              "a transition shorthand resets its duration longhand to 'auto'");
+        const auto* transition = element("inline")->GetLocalProperty("transition-duration");
+        check(transition && transition->value.GetType() == Rml::Variant::TRANSITIONLIST &&
+                  transition->value.GetReference<Rml::TransitionList>().transitions.size() == 1 &&
+                  std::abs(transition->value.GetReference<Rml::TransitionList>()
+                               .transitions.front()
+                               .duration -
+                           0.2f) < 0.001f,
+              "an inline transition-duration list replaces the sheet's 0s");
         advance(1100);
         check(opacity("base", 0.25f), "the shorthand's own duration");
         check(opacity("slow", 0.125f), "a later rule's duration replaces the shorthand's");
         check(opacity("reset", 0.25f), "a shorthand after the longhand resets it");
         check(opacity("calm", 0.25f), "a reduced-motion rule waits for its preference");
         check(opacity("inline", 0.0625f), "an inline duration list replaces the sheet's");
+        for (const auto* id : {"tween", "tween-reset", "instant"})
+            ui_set_style_property(engine, ui_get_element_by_id(engine, id), "opacity", "1");
+        at(1100);
+        advance(1200);
+        check(opacity("tween", 0.125f), "a transition duration longhand controls elapsed progress");
+        check(opacity("tween-reset", 0.25f), "a later transition shorthand resets the duration");
+        check(opacity("instant", 1.f), "a zero transition duration applies immediately");
+        pal::supply_ui_rml_media_device(runtime, true, std::nullopt);
+        at(1200);
+        const auto* calm = element("calm")->GetProperty("animation-duration");
+        check(calm && calm->value.GetType() == Rml::Variant::TRANSITIONLIST &&
+                  calm->value.GetReference<Rml::TransitionList>().transitions.size() == 1 &&
+                  std::abs(
+                      calm->value.GetReference<Rml::TransitionList>().transitions.front().duration -
+                      2.4f) < 0.001f,
+              "the reduced-motion rule replaces the animation duration");
     }
     SDL_DestroyWindow(window);
     SDL_Quit();

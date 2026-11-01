@@ -11,6 +11,7 @@ import { TextGpuLowerer } from "../src/lowering/text-gpu-lowerer.js";
 import { TextLowerer } from "../src/lowering/text-lowerer.js";
 import { TextRendererLowerer } from "../src/lowering/text-renderer-lowerer.js";
 import { webgpuFlagNamespaces } from "../src/webgpu-flags.js";
+import { pinnedDeclaration } from "./pinned-source.js";
 import {
     optionalNativeFixtureTools,
     runNativeFixtureCompiler,
@@ -39,14 +40,7 @@ test("standalone text source and native agree on affine uploads, layer order, sh
         writeFileSync(resolve(directory, "bblite", `${name}.hpp`), text);
     }
     const module = (path: string, names: string[]) =>
-        names
-            .map((name) =>
-                c
-                    .functionDeclaration(path, name)
-                    .declaration.getText()
-                    .replace(/^export\s+/, ""),
-            )
-            .join("\n");
+        names.map((name) => pinnedDeclaration(c, path, name)).join("\n");
     const constants = (path: string, name: string) => {
         const f = c.sourceFile(path);
         return c.numericValue(c.variableInitializer(f, name), f);

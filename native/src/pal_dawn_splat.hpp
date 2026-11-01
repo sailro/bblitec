@@ -121,13 +121,8 @@ using DawnSplatPass = OwnedGpuRecord<DawnSplatPassResources, std::remove_pointer
 inline void write_dawn_splat_texture(WGPUQueue queue, WGPUTexture texture, const void* texels,
                                      std::size_t byte_size, std::uint32_t width,
                                      std::uint32_t height) {
-    WGPUTexelCopyTextureInfo destination = WGPU_TEXEL_COPY_TEXTURE_INFO_INIT;
-    destination.texture = texture;
-    WGPUTexelCopyBufferLayout layout{};
-    layout.bytesPerRow = width * 4u * 4u;
-    layout.rowsPerImage = height;
-    const WGPUExtent3D size{width, height, 1};
-    DawnGpuDevice{queue}.write_texture(&destination, texels, byte_size, &layout, &size);
+    write_dawn_texture_level(queue, texture, texels, byte_size,
+                             DawnTextureLevelWrite{0, 0, width * 4u * 4u, width, height});
 }
 
 /**
@@ -140,16 +135,8 @@ inline void write_dawn_splat_texture(WGPUQueue queue, WGPUTexture texture, const
 inline WGPUTexture upload_dawn_splat_texture(WGPUDevice device, WGPUQueue queue, const void* texels,
                                              std::size_t byte_size, WGPUTextureFormat format,
                                              std::uint32_t width, std::uint32_t height) {
-    WGPUTextureDescriptor descriptor = WGPU_TEXTURE_DESCRIPTOR_INIT;
-    descriptor.dimension = WGPUTextureDimension_2D;
-    descriptor.format = format;
-    descriptor.usage = WGPUTextureUsage_TextureBinding | WGPUTextureUsage_CopyDst;
-    descriptor.size = WGPUExtent3D{width, height, 1};
-    DawnTexture texture{wgpuDeviceCreateTexture(device, &descriptor)};
-    if (!texture)
-        dawn_error("wgpuDeviceCreateTexture splat data");
-    write_dawn_splat_texture(queue, texture, texels, byte_size, width, height);
-    return texture.release();
+    return upload_dawn_2d_texture(device, queue, DawnTextureShape{format, width, height}, texels,
+                                  byte_size, width * 4u * 4u, "splat data");
 }
 
 /** The pin's one splat module, deployed whole under both stage stems. */

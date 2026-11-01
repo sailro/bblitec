@@ -89,22 +89,22 @@ int main() try {
         // Exercise RmlUi's documented generate-before-release overlap directly.
         UiRangeDecorator decorator(runtime.control_scheme_properties);
         auto first = decorator.GenerateElementData(raw(), Rml::BoxArea::Content);
-        runtime.render_interface.begin_frame(640, 480);
+        runtime.render_interface.begin_frame(640, 480, {0, 0, 640, 480});
         decorator.RenderElement(raw(), first);
         id = texture().id;
         std::weak_ptr<const std::vector<std::uint8_t>> pixels = texture().rgba;
         auto second = decorator.GenerateElementData(raw(), Rml::BoxArea::Content);
         decorator.ReleaseElementData(first);
-        runtime.render_interface.begin_frame(640, 480);
+        runtime.render_interface.begin_frame(640, 480, {0, 0, 640, 480});
         decorator.RenderElement(raw(), second);
         assert(texture().id == id && !pixels.expired());
         auto third = decorator.GenerateElementData(raw(), Rml::BoxArea::Content);
         decorator.ReleaseElementData(second);
-        runtime.render_interface.begin_frame(640, 480);
+        runtime.render_interface.begin_frame(640, 480, {0, 0, 640, 480});
         decorator.RenderElement(raw(), third);
         assert(texture().id == id);
         decorator.ReleaseElementData(third);
-        runtime.render_interface.begin_frame(640, 480);
+        runtime.render_interface.begin_frame(640, 480, {0, 0, 640, 480});
         assert(pixels.expired());
         auto fresh = decorator.GenerateElementData(raw(), Rml::BoxArea::Content);
         decorator.RenderElement(raw(), fresh);

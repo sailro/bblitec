@@ -76,6 +76,8 @@ int main() {
         expect(sequence("", [&] { tap(62, 52); }), pressed + "ULEp//01ovmuK");
         // A canceled touchstart withholds the tap; pointer and touch events still run.
         expect(sequence("touchstart", [&] { tap(60, 60); }), "ODwSp0/0/0@60,60pd!ULEp//0");
+        // An explicit false overrides the body's scrolling-listener default.
+        expect(sequence("body", [&] { tap(60, 60); }), "ODwSp0/0/0@60,60pd!ULEp//0");
         // A canceled pointerdown withholds the compatibility mouse events, never the touch
         // events or the click.
         expect(sequence("pointerdown", [&] { tap(60, 60); }), pressed + "ULEp//0K");
@@ -89,6 +91,7 @@ int main() {
                             touch(SDL_EVENT_FINGER_DOWN, 1, 60, 60);
                             touch(SDL_EVENT_FINGER_DOWN, 2, 350, 60);
                             touch(SDL_EVENT_FINGER_MOTION, 1, 70, 55);
+                            touch(SDL_EVENT_FINGER_MOTION, 2, 351, 60);
                             touch(SDL_EVENT_FINGER_UP, 1, 70, 55);
                             touch(SDL_EVENT_FINGER_UP, 2, 350, 60);
                         }),

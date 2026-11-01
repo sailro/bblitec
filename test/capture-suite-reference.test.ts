@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { regexText } from "./regex.js";
 import {
     mkdirSync,
     mkdtempSync,
@@ -640,12 +641,7 @@ test("serves entry modules from their source-relative URL", async () => {
         const entryPath = `/${root
             .slice(resolve(".").length + 1)
             .replaceAll("\\", "/")}/nested/entry.js`;
-        assert.match(
-            html,
-            new RegExp(
-                `src="${entryPath.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}"`,
-            ),
-        );
+        assert.match(html, new RegExp(`src="${regexText(entryPath)}"`));
         const entryResponse = await fetch(`${base}${entryPath}`);
         assert.equal(entryResponse.status, 200);
         const helperResponse = await fetch(

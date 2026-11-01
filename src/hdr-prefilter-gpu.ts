@@ -26,6 +26,7 @@ import {
 } from "./browser-harness.js";
 import { cachedBake, moduleIdentity } from "./bake-cache.js";
 import { HOST_PRIMARY_CANVAS_ID } from "./host-primary-canvas.js";
+import { mipChainBytes, mipChainViews } from "./mip-chain.js";
 
 interface HdrPrefilterSource {
     width: number;
@@ -42,17 +43,6 @@ const texelBytes = 8;
 /** The cached payload's header words: face size, level count; every level's
  *  six faces follow, level-major, in face order. */
 const headerWords = 2;
-
-function faceBytes(faceSize: number, level: number): number {
-    return Math.max(1, faceSize >> level) ** 2 * texelBytes;
-}
-
-function cubeBytes(faceSize: number, levels: number): number {
-    let bytes = 0;
-    for (let level = 0; level < levels; level++)
-        bytes += faceBytes(faceSize, level) * 6;
-    return bytes;
-}
 
 function prefilterModule(faceSize: number, source: HdrPrefilterSource): string {
     return `import { createEngine } from ${JSON.stringify(pinnedBrowserEntryUrl)};
@@ -107,7 +97,7 @@ function cachePayload(faceSize: number, result: unknown): Uint8Array {
     return decodePageBase64(
         result.cube,
         [faceSize, result.levels],
-        cubeBytes(faceSize, result.levels),
+        mipChainBytes(faceSize, faceSize, result.levels, texelBytes, 6),
         `The pinned HDR prefilter's ${result.levels}-level ${faceSize} cube`,
     );
 }
@@ -120,23 +110,30 @@ function decodeCube(faceSize: number, payload: Uint8Array): Uint16Array[][] {
         size !== faceSize ||
         levelCount < 1 ||
         levelCount > 32 ||
-        payload.byteLength !== headerWords * 4 + cubeBytes(faceSize, levelCount)
+        payload.byteLength !==
+            headerWords * 4 +
+                mipChainBytes(faceSize, faceSize, levelCount, texelBytes, 6)
     )
         throw new Error(
             `A prefiltered HDR payload does not hold a ${faceSize} cube.`,
         );
-    const levels: Uint16Array[][] = [];
-    let offset = payload.byteOffset + headerWords * 4;
-    for (let level = 0; level < levelCount; level++) {
-        const faces: Uint16Array[] = [];
-        const bytes = faceBytes(faceSize, level);
-        for (let face = 0; face < 6; face++) {
-            faces.push(new Uint16Array(payload.buffer, offset, bytes / 2));
-            offset += bytes;
-        }
-        levels.push(faces);
-    }
-    return levels;
+    return mipChainViews(
+        payload.subarray(headerWords * 4),
+        faceSize,
+        faceSize,
+        levelCount,
+        texelBytes,
+        6,
+    ).map((faces) =>
+        faces.map(
+            (face) =>
+                new Uint16Array(
+                    face.buffer,
+                    face.byteOffset,
+                    face.byteLength / 2,
+                ),
+        ),
+    );
 }
 
 /**

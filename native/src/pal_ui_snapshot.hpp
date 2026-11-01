@@ -195,13 +195,15 @@ inline UiSnapshotSurface filter_ui_snapshot(const UiSnapshotSurface& source,
 }
 
 struct UiFrameCheckpoint {
-    std::size_t vertices, indices, textures, draws, backdrops, composites, operations;
+    std::size_t vertices, indices, textures, draws, backdrops, composites, operations,
+        bounded_layers;
     std::uint32_t layer_count;
     explicit UiFrameCheckpoint(const UiRenderFrame& frame)
         : vertices(frame.vertices.size()), indices(frame.indices.size()),
           textures(frame.textures.size()), draws(frame.draws.size()),
           backdrops(frame.backdrops.size()), composites(frame.composites.size()),
-          operations(frame.operations.size()), layer_count(frame.layer_count) {}
+          operations(frame.operations.size()), bounded_layers(frame.bounded_layers.size()),
+          layer_count(frame.layer_count) {}
     void restore(UiRenderFrame& frame) const {
         frame.layer_count = layer_count;
         frame.vertices.resize(vertices);
@@ -211,6 +213,7 @@ struct UiFrameCheckpoint {
         frame.backdrops.resize(backdrops);
         frame.composites.resize(composites);
         frame.operations.resize(operations);
+        frame.bounded_layers.resize(bounded_layers);
     }
 };
 

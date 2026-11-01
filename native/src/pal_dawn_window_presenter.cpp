@@ -94,7 +94,7 @@ public:
             return &binding->texture;
         };
         render_sprite_ui_dawn_frame(state_, encoder, target.texture, view, ui_, ui,
-                                    external_texture, ui_samples_);
+                                    external_texture, ui_samples_, attachment.clearValue);
         DawnSurfaceCapture snapshot;
         if (!capture.empty())
             snapshot =
@@ -171,12 +171,9 @@ private:
     SpriteUiDawnResources ui_;
     /**
      * The page UI's multisampled layer (`FrameOptions::page_ui_sample_count`); WebGPU guarantees
-     * 4x sampling of the RGBA8 layer.
+     * 4x sampling of its surface format.
      */
-    const std::optional<std::uint32_t> ui_samples_ = [] {
-        const std::uint32_t samples = read_frame_options().page_ui_sample_count();
-        return samples > 1 ? std::optional<std::uint32_t>{samples} : std::nullopt;
-    }();
+    const std::optional<std::uint32_t> ui_samples_ = read_frame_options().page_ui_sample_count();
     std::unordered_map<OffscreenImage*, std::unique_ptr<SamplingBinding>> bindings_;
     std::deque<InFlight> in_flight_;
 };

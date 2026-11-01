@@ -5,8 +5,10 @@ import test from "node:test";
 import { compileSource } from "../src/compiler.js";
 import { assetRootTransformSource } from "../src/lowering/asset-root-transform.js";
 import { LoweringContext } from "../src/lowering/context.js";
-import { LightLowerer } from "../src/lowering/light-lowerer.js";
-import { lowerLightHierarchy } from "../src/lowering/rect-area-light-lowerer.js";
+import {
+    LightLowerer,
+    lowerLightHierarchy,
+} from "../src/lowering/light-lowerer.js";
 import { pinnedMatrixHeader } from "../src/lowering/pinned-matrix.js";
 import { pinnedWorldTransformHeader } from "../src/lowering/pinned-world-transform.js";
 import { importPinnedModule } from "../src/pinned-shader-composer.js";

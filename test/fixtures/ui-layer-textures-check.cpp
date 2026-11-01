@@ -12,6 +12,35 @@ double performance_milliseconds() { return 0; }
 int main() {
     using namespace bbl;
     using namespace bbl::pal;
+    {
+        FrameOptions options;
+        assert(options.page_ui_sample_count() == 4);
+        options.single_sample = true;
+        assert(!options.page_ui_sample_count());
+        UiRenderFrame runs;
+        runs.draws.resize(4);
+        runs.draws[1].texture_id = 7;
+        runs.draws[2].texture_id = 8;
+        const std::unordered_map<std::uint64_t, int> textures{{8, 0}};
+        UiRunPolicy policy;
+        std::vector<UiRunComposition> compositions;
+        const auto run = [&](std::size_t, std::size_t, UiRunComposition composition) {
+            compositions.push_back(composition);
+        };
+        policy.segment(runs, 0, 4, true, true, true, true, textures, run);
+        assert((compositions == std::vector{UiRunComposition::direct, UiRunComposition::blend,
+                                            UiRunComposition::layered}));
+        assert((policy.counts == UiRunCounts{1, 1, 1}));
+        const std::optional<std::array<float, 4>> clear{{.1f, .2f, .3f, 1}};
+        const auto direct = ui_run_targets(UiRunComposition::direct, 1, 2, 3, clear);
+        assert(direct.draw == 3 && direct.resolve == 1 && direct.clear == clear);
+        const auto layered = ui_run_targets(UiRunComposition::layered, 1, 2, 3, clear);
+        assert(
+            (layered.draw == 3 && layered.resolve == 2 && layered.clear == std::array<float, 4>{}));
+        const auto blend = ui_run_targets(UiRunComposition::blend, 1, 2, 3, clear);
+        assert(blend.draw == 1 && blend.resolve == 0 && !blend.clear);
+        assert(!ui_group_alpha(std::array{color_ui_filter("brightness", 1)}));
+    }
     UiRenderRecorder recorder;
     const auto quad = [&](float x, float y, float width, float height,
                           Rml::ColourbPremultiplied color) {
@@ -23,7 +52,7 @@ int main() {
     const auto red = quad(4, 6, 24, 20, {128, 0, 0, 128});
     const auto blue = quad(4, 6, 24, 20, {0, 0, 255, 255});
     const auto hole = quad(10, 10, 8, 8, {255, 255, 255, 255});
-    recorder.begin_frame(64, 64);
+    recorder.begin_frame(64, 64, {0, 0, 64, 64});
     recorder.EnableScissorRegion(true);
     recorder.SetScissorRegion(Rml::Rectanglei::FromPositionSize({4, 6}, {24, 20}));
     recorder.PushLayer();
@@ -50,7 +79,7 @@ int main() {
     assert((pixel(first_texture, 8, 8) == std::array<std::uint8_t, 4>{128, 0, 0, 128}));
     // Pixels on a shared triangle edge receive exactly one source-over blend.
     assert((pixel(first_texture, 10, 10) == std::array<std::uint8_t, 4>{128, 0, 0, 128}));
-    recorder.begin_frame(64, 64);
+    recorder.begin_frame(64, 64, {0, 0, 64, 64});
     recorder.RenderGeometry(full, {}, saved);
     assert(recorder.frame.textures[0].id == first_texture.id &&
            recorder.frame.textures[0].rgba == first_texture.rgba);

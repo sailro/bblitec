@@ -14,6 +14,7 @@ import {
     arrayElementType,
     classInstanceDeclaration,
     unionMembers,
+    isAnyTyped,
 } from "./type-facts.js";
 import { isRebound } from "./binding-rebinds.js";
 import type { Value } from "./types.js";
@@ -257,14 +258,6 @@ export function requireDynamicBindingStorage(
     const declaration = initializedVariableDeclaration(checker, target);
     if (declaration)
         throw new DynamicBindingStorageRequired(declaration, storage);
-}
-
-/**
- * Whether a type is `any`: an auto-typed `var observer = null` (or
- * `let`) is wherever no assignment reaches, a closure's read included.
- */
-function isAnyTyped(type: ts.Type): boolean {
-    return (type.flags & ts.TypeFlags.Any) !== 0;
 }
 
 /** What retyping an auto-typed binding from its assignments reads. */

@@ -1,11 +1,15 @@
 #pragma once
 
+#include "pal_ui_length_math.hpp"
 #include <RmlUi/Core/Element.h>
 #include <RmlUi/Core/PropertyDefinition.h>
 #include <RmlUi/Core/StyleSheetSpecification.h>
 #include <RmlUi/Core/Transform.h>
+#include <algorithm>
+#include <bblite/js_data.hpp>
 #include <optional>
 #include <stdexcept>
+#include <string_view>
 #include <unordered_map>
 
 namespace bbl::pal {
@@ -33,13 +37,39 @@ inline Rml::String ui_background_default(const Rml::String& name) {
     return "";
 }
 
-/** Resolve explicit CSS inheritance through the original, cascaded custom property. */
+/** A longhand's CSS initial value; colour and clip have their own spelled out. */
+inline Rml::String ui_background_initial(const Rml::String& name) {
+    if (name == "bbl-background-color")
+        return "transparent";
+    if (name == "bbl-background-clip")
+        return "border-box";
+    return ui_background_default(name);
+}
+
+/** The CSS-wide keyword `value` is, lowercased (`src/ui-image-background.ts` `cssWideKeyword`). */
+inline std::optional<std::string_view> ui_css_wide_keyword(std::string_view value) {
+    const auto token = detail::trim_css_token(value);
+    for (const std::string_view keyword : {"inherit", "initial", "unset"})
+        if (std::ranges::equal(token, keyword, [](char left, char right) {
+                return js::ascii_lower(left) == right;
+            }))
+            return keyword;
+    return std::nullopt;
+}
+
+/**
+ * Resolve the CSS-wide keywords through the original, cascaded custom property: `inherit` takes
+ * the parent's value, `initial` and `unset` (no background longhand inherits) the initial one.
+ */
 inline Rml::String ui_background_value(Rml::Element& element, const Rml::String& name) {
     const auto key = "--" + name;
     const auto value = element.GetLocalProperty(key) ? element.GetProperty<Rml::String>(key)
                                                      : ui_background_default(name);
-    if (value != "inherit")
+    const auto keyword = ui_css_wide_keyword(value);
+    if (!keyword)
         return value;
+    if (*keyword != "inherit")
+        return ui_background_initial(name);
     if (auto* parent = element.GetParentNode()) {
         if (name == "bbl-background-color" || name == "bbl-background-clip") {
             const auto inherited = ui_background_value(*parent, name);
@@ -47,11 +77,7 @@ inline Rml::String ui_background_value(Rml::Element& element, const Rml::String&
         }
         return ui_background_value(*parent, name);
     }
-    if (name == "bbl-background-color")
-        return "transparent";
-    if (name == "bbl-background-clip")
-        return "border-box";
-    return ui_background_default(name);
+    return ui_background_initial(name);
 }
 
 /** One PAL-owned override restores the live stylesheet and source inline value on removal. */

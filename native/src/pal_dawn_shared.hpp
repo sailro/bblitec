@@ -125,6 +125,76 @@ template <std::size_t Count> std::array<WGPUVertexAttribute, Count> vertex_attri
 }
 
 /**
+ * One level's write into a 2D texture: the byte offset of its first texel
+ * in the source bytes, its row pitch and its extent.
+ */
+struct DawnTextureLevelWrite {
+    std::uint32_t level = 0;
+    std::size_t offset = 0;
+    std::uint32_t row_bytes = 0;
+    std::uint32_t width = 0;
+    std::uint32_t height = 0;
+};
+
+/** Queues one level of `bytes` into an existing 2D texture. */
+inline void write_dawn_texture_level(WGPUQueue queue, WGPUTexture texture, const void* bytes,
+                                     std::size_t byte_size, const DawnTextureLevelWrite& write) {
+    WGPUTexelCopyTextureInfo destination = WGPU_TEXEL_COPY_TEXTURE_INFO_INIT;
+    destination.texture = texture;
+    destination.mipLevel = write.level;
+    WGPUTexelCopyBufferLayout layout{};
+    layout.offset = write.offset;
+    layout.bytesPerRow = write.row_bytes;
+    layout.rowsPerImage = write.height;
+    const WGPUExtent3D size{write.width, write.height, 1};
+    DawnGpuDevice{queue}.write_texture(&destination, bytes, byte_size, &layout, &size);
+}
+
+/** What {@link upload_dawn_2d_texture} creates. */
+struct DawnTextureShape {
+    WGPUTextureFormat format = WGPUTextureFormat_Undefined;
+    std::uint32_t width = 0;
+    std::uint32_t height = 0;
+    std::uint32_t mip_levels = 1;
+    WGPUTextureUsage usage = WGPUTextureUsage_TextureBinding | WGPUTextureUsage_CopyDst;
+};
+
+/**
+ * A 2D texture of `shape`, written from CPU bytes one level write at a
+ * time: the upload every texture built from bytes takes (RGBA atlases,
+ * splat data, the BRDF LUT, the LTC tables, processed emission images).
+ * Held until every write is queued, so a throwing write releases it.
+ */
+inline WGPUTexture upload_dawn_2d_texture(WGPUDevice device, WGPUQueue queue,
+                                          const DawnTextureShape& shape, const void* bytes,
+                                          std::size_t byte_size,
+                                          std::span<const DawnTextureLevelWrite> writes,
+                                          const char* label) {
+    WGPUTextureDescriptor descriptor = WGPU_TEXTURE_DESCRIPTOR_INIT;
+    descriptor.dimension = WGPUTextureDimension_2D;
+    descriptor.format = shape.format;
+    descriptor.usage = shape.usage;
+    descriptor.mipLevelCount = shape.mip_levels;
+    descriptor.size = WGPUExtent3D{shape.width, shape.height, 1};
+    DawnTexture texture{wgpuDeviceCreateTexture(device, &descriptor)};
+    if (!texture)
+        dawn_error(std::string("wgpuDeviceCreateTexture ") + label);
+    for (const DawnTextureLevelWrite& write : writes)
+        write_dawn_texture_level(queue, texture, bytes, byte_size, write);
+    return texture.release();
+}
+
+/** {@link upload_dawn_2d_texture} of level zero alone, from `row_bytes` rows. */
+inline WGPUTexture upload_dawn_2d_texture(WGPUDevice device, WGPUQueue queue,
+                                          const DawnTextureShape& shape, const void* bytes,
+                                          std::size_t byte_size, std::uint32_t row_bytes,
+                                          const char* label) {
+    const DawnTextureLevelWrite level{0, 0, row_bytes, shape.width, shape.height};
+    return upload_dawn_2d_texture(device, queue, shape, bytes, byte_size,
+                                  std::span<const DawnTextureLevelWrite>(&level, 1), label);
+}
+
+/**
  * Upload RGBA8 texels as a sampled 2D texture.
  *
  * Shared because a sprite atlas and a custom shader's extra texture are the
@@ -139,26 +209,11 @@ inline WGPUTexture upload_dawn_rgba_texture(WGPUDevice device, WGPUQueue queue,
                                             const std::uint8_t* rgba, std::size_t bytes,
                                             std::uint32_t width, std::uint32_t height,
                                             std::uint32_t mip_levels = 1, bool srgb = false) {
-    WGPUTextureDescriptor descriptor = WGPU_TEXTURE_DESCRIPTOR_INIT;
-    descriptor.dimension = WGPUTextureDimension_2D;
-    descriptor.format = srgb ? WGPUTextureFormat_RGBA8UnormSrgb : WGPUTextureFormat_RGBA8Unorm;
-    descriptor.usage = mip_levels > 1
-                           ? (WGPUTextureUsage_TextureBinding | WGPUTextureUsage_CopyDst |
-                              WGPUTextureUsage_RenderAttachment)
-                           : (WGPUTextureUsage_TextureBinding | WGPUTextureUsage_CopyDst);
-    descriptor.mipLevelCount = mip_levels;
-    descriptor.size = WGPUExtent3D{width, height, 1};
-    DawnTexture texture{wgpuDeviceCreateTexture(device, &descriptor)};
-    if (!texture)
-        dawn_error("wgpuDeviceCreateTexture rgba texture");
-    WGPUTexelCopyTextureInfo destination = WGPU_TEXEL_COPY_TEXTURE_INFO_INIT;
-    destination.texture = texture;
-    WGPUTexelCopyBufferLayout layout{};
-    layout.bytesPerRow = width * 4u;
-    layout.rowsPerImage = height;
-    const WGPUExtent3D size{width, height, 1};
-    DawnGpuDevice{queue}.write_texture(&destination, rgba, bytes, &layout, &size);
-    return texture.release();
+    DawnTextureShape shape{srgb ? WGPUTextureFormat_RGBA8UnormSrgb : WGPUTextureFormat_RGBA8Unorm,
+                           width, height, mip_levels};
+    if (mip_levels > 1)
+        shape.usage |= WGPUTextureUsage_RenderAttachment;
+    return upload_dawn_2d_texture(device, queue, shape, rgba, bytes, width * 4u, "rgba texture");
 }
 
 /**

@@ -426,9 +426,9 @@ export function pagePayloadHeader(
 /**
  * The page-side texture read-back, as a source fragment:
  * `bblReadTextureLevels(device, texture, bytesPerTexel)` resolves to every mip
- * level of a 2D, 2D-array or cube texture, every layer, as `{ packed, levels }`:
+ * level of a 2D, 2D-array or cube texture, every layer, as `{ packed }`:
  * one tightly packed buffer (level-major, the copies' 256-byte row pitch
- * removed) and a view of it per level. All levels copy into one staging
+ * removed). All levels copy into one staging
  * buffer at 256-byte-aligned offsets, under one submit and one map. The
  * texture needs `COPY_SRC`.
  */
@@ -464,7 +464,7 @@ export const pageTextureLevelsScript =
     "        await readback.mapAsync(GPUMapMode.READ);\n" +
     "        const mapped = new Uint8Array(readback.getMappedRange());\n" +
     "        const packed = new Uint8Array(packedBytes);\n" +
-    "        const levels = copies.map((copy) => {\n" +
+    "        for (const copy of copies) {\n" +
     "            const rows = copy.height * layers;\n" +
     "            if (copy.rowPitch === copy.rowBytes) {\n" +
     "                packed.set(mapped.subarray(copy.staged, copy.staged + rows * copy.rowBytes), copy.packed);\n" +
@@ -474,9 +474,8 @@ export const pageTextureLevelsScript =
     "                    packed.set(mapped.subarray(from, from + copy.rowBytes), copy.packed + row * copy.rowBytes);\n" +
     "                }\n" +
     "            }\n" +
-    "            return packed.subarray(copy.packed, copy.packed + rows * copy.rowBytes);\n" +
-    "        });\n" +
-    "        return { packed, levels };\n" +
+    "        }\n" +
+    "        return { packed };\n" +
     "    } finally {\n" +
     "        readback.destroy();\n" +
     "    }\n" +

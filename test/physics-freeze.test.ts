@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { regexText } from "./regex.js";
 import test from "node:test";
 import { CompileError, compileSource } from "../src/compiler.js";
 
@@ -73,10 +74,7 @@ function refuses(body: string, message: string, search?: string): void {
         () => sceneWith(body, search),
         (error: unknown) => {
             assert.ok(error instanceof CompileError);
-            assert.match(
-                error.message,
-                new RegExp(message.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")),
-            );
+            assert.match(error.message, new RegExp(regexText(message)));
             return true;
         },
     );

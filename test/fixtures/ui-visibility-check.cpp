@@ -85,8 +85,8 @@ int main() try {
         update();
         fixture_time += 100;
         update();
-        check(fade->IsVisible() && fade->GetComputedValues().opacity() > 0.1f &&
-                  fade->GetComputedValues().opacity() < 0.9f,
+        check(fade->IsVisible() && fade->GetComputedValues().group_opacity() > 0.1f &&
+                  fade->GetComputedValues().group_opacity() < 0.9f,
               "delayed hiding preserves the fade");
         fixture_time += 100;
         update();

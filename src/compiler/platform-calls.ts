@@ -2184,6 +2184,7 @@ export class PlatformCalls {
                 { site: argumentAt(call, 1) },
                 call,
                 "attribute",
+                callee.expression,
             );
             if (browserFile) {
                 return {

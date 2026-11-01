@@ -1,3 +1,5 @@
+import { LAB_ROOT, LAB_PUBLIC_ROOT } from "./pinned-lab-public.js";
+
 /** A canvas dataset state a capture waits on (`SceneParityDefinition.referenceSettle`). */
 export interface ReferenceSettle {
     /** The `canvas.dataset` key, camelCase as the program writes it. */
@@ -196,12 +198,9 @@ interface SceneInput extends Omit<
     };
 }
 
-/** The pinned lab: its pages' site root, which serves its `public` directory first. */
-const LAB_ROOT = "corpus/babylon-lite/lab";
-
 /** A lab page and its site. */
 function labPage(path: string): HostPageProgram {
-    return { path, root: LAB_ROOT, publicDir: `${LAB_ROOT}/public` };
+    return { path, root: LAB_ROOT, publicDir: LAB_PUBLIC_ROOT };
 }
 
 /** A lab scene (`lite/<id>.html`), whose module script loads its source. */

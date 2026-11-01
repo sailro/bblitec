@@ -47,7 +47,7 @@ int main() try {
             const float value =
                 runtime.projected_elements.at(ui_get_element_by_id(engine, id).value)
                     .element->GetComputedValues()
-                    .opacity();
+                    .group_opacity();
             if (std::abs(value - expected) > 0.02f)
                 std::fprintf(stderr, "%s opacity %g, expected %g at %g ms\n", id, value, expected,
                              fixture_time);

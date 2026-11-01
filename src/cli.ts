@@ -4,7 +4,14 @@ import { compilerRepositoryRoot } from "./repository-root.js";
 // First, so the modules evaluated after it are compiled through the cache.
 import "./tooling/compile-cache.js";
 import { composePinnedBackgroundModules } from "./pinned-background-modules.js";
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+    existsSync,
+    mkdirSync,
+    readFileSync,
+    rmSync,
+    writeFileSync,
+} from "node:fs";
+import ts from "typescript";
 import { dirname, isAbsolute, resolve } from "node:path";
 import { prepareAssetDecoders, type AssetDecoders } from "./asset-decoders.js";
 import {
@@ -64,7 +71,10 @@ import { generateIblBrdfLutRgba16f } from "./ibl-brdf-lut.js";
 import {
     decodedAreaLightLtc,
     packagedAreaLightImage,
+    pinnedAreaLightImageShape,
+    pinnedAreaLightLtcShape,
 } from "./pinned-rect-area-lights.js";
+import { scenes as registryScenes } from "./scene-registry.js";
 import { areaLightLtcSources } from "./lowering/rect-area-light-lowerer.js";
 import {
     buildStampHeader,
@@ -81,12 +91,14 @@ import {
 } from "./executed-module-assets.js";
 import {
     findRepositoryRoot,
+    readUpstreamPin,
     repositoryRelativePath,
 } from "./upstream-source.js";
 import { GeneratedTree } from "./generated-tree.js";
 import { asFeatures, projectFeatures } from "./compiler/output-projection.js";
 import { downloadCached } from "./asset-download-cache.js";
 import { readAssetBytesSync } from "./compiler/asset-bytes-sync.js";
+import { specifierSourceName } from "./compiler/syntax.js";
 import {
     emitAssetSpecializations,
     gltfAssetDocuments,
@@ -641,6 +653,38 @@ async function materializeAsset(
                   decoders,
               ),
     );
+}
+
+/**
+ * The registry scenes whose source imports `name` from the pinned package,
+ * as an adaptation's validation names them ("scenes 316, 317 and 318"):
+ * the registry, not a restated list, decides which scenes measure it.
+ */
+function registryScenesImporting(name: string): string {
+    const root = compilerRepositoryRoot();
+    const specifier = readUpstreamPin(root).package;
+    const numbers = registryScenes.flatMap((scene) => {
+        const path = resolve(root, scene.source);
+        if (!path.endsWith(".ts") || !existsSync(path)) return [];
+        const text = readFileSync(path, "utf8");
+        if (!text.includes(name)) return [];
+        const file = ts.createSourceFile(path, text, ts.ScriptTarget.Latest);
+        const imported = file.statements.some(
+            (statement) =>
+                ts.isImportDeclaration(statement) &&
+                ts.isStringLiteral(statement.moduleSpecifier) &&
+                statement.moduleSpecifier.text === specifier &&
+                statement.importClause?.namedBindings !== undefined &&
+                ts.isNamedImports(statement.importClause.namedBindings) &&
+                statement.importClause.namedBindings.elements.some(
+                    (element) => specifierSourceName(element) === name,
+                ),
+        );
+        return imported ? [scene.id.replace(/^scene/, "")] : [];
+    });
+    if (numbers.length === 0) return "no registry scene";
+    if (numbers.length === 1) return `scene ${numbers[0]}`;
+    return `scenes ${numbers.slice(0, -1).join(", ")} and ${numbers.at(-1)}`;
 }
 
 /**
@@ -1225,13 +1269,15 @@ async function main(): Promise<void> {
     }
     if (result.manifest.features.includes("light:rect-area-lighting")) {
         // The tables materializeAsset packaged for enableRectAreaLights.
+        const ltc = pinnedAreaLightLtcShape();
         result.manifest.adaptations.push({
             id: "executed-area-light-ltc-decode",
             category: "asset-materialization",
             sourceSemantics:
                 "enableRectAreaLights fetches the Babylon LTC payload " +
                 "(area-light-ltc.ts LTC_URL) at run time, decodes it with " +
-                "decodeAreaLightLtc into two 64x64 rgba16float tables and " +
+                `decodeAreaLightLtc into two ${ltc.size}x${ltc.size} ` +
+                "rgba16float tables and " +
                 "uploads them once per device.",
             nativeSemantics:
                 "Generation downloads the same pinned payload, runs the pin's " +
@@ -1241,18 +1287,21 @@ async function main(): Promise<void> {
             risk: "low",
             validation: [
                 "the packaged bytes are decodeAreaLightLtc's output",
-                "scenes 316, 317 and 318 against their browser references",
+                `${registryScenesImporting("enableRectAreaLights")} against ` +
+                    "their browser references",
             ],
         });
     }
     if (result.manifest.features.includes("light:rect-area-emission")) {
         // processAreaLightTexture's images, packaged by materializeAsset.
+        const image = pinnedAreaLightImageShape();
         result.manifest.adaptations.push({
             id: "executed-area-light-texture",
             category: "asset-materialization",
             sourceSemantics:
                 "processAreaLightTexture scales the loaded source into a " +
-                "1024x1024 rgba8unorm texture, reads it back, blurs it " +
+                `${image.size}x${image.size} rgba8unorm texture, reads it ` +
+                "back, blurs it " +
                 "(blurAreaLightPixels), uploads it and generates its mips " +
                 "on the device at run time.",
             nativeSemantics:
@@ -1265,7 +1314,8 @@ async function main(): Promise<void> {
             risk: "low",
             validation: [
                 "the packaged levels are bakeAreaLightTexture's read-back of the pin's texture",
-                "scenes 319 and 320 against their browser references",
+                `${registryScenesImporting("processAreaLightTexture")} ` +
+                    "against their browser references",
             ],
         });
     }

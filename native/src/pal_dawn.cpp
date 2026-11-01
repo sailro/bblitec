@@ -87,18 +87,6 @@ void bind_thin_buffers(DawnMesh& row, const GpuHandle& args) {
 void bind_thin_buffers(DawnMesh&, const GpuHandle&) {}
 #endif
 
-void set_pass_viewport(WGPURenderPassEncoder pass, const std::optional<PixelViewport>& resolved) {
-    if (!resolved.has_value())
-        return;
-    const PixelViewport& rect = *resolved;
-    wgpuRenderPassEncoderSetViewport(pass, static_cast<float>(rect.x), static_cast<float>(rect.y),
-                                     static_cast<float>(rect.width),
-                                     static_cast<float>(rect.height), 0.0f, 1.0f);
-    wgpuRenderPassEncoderSetScissorRect(
-        pass, static_cast<std::uint32_t>(rect.x), static_cast<std::uint32_t>(rect.y),
-        static_cast<std::uint32_t>(rect.width), static_cast<std::uint32_t>(rect.height));
-}
-
 void set_task_camera_viewport(WGPURenderPassEncoder pass, const CameraRecord* camera,
                               std::uint32_t target_width, std::uint32_t target_height) {
     set_pass_viewport(pass,
@@ -761,14 +749,12 @@ class DawnSceneRun {
             const MaterialRecord* material = handle_find(engine.materials, draw.item.material);
             DawnDrawState& standard_state =
                 ensure_standard_draw_buffers(state, mesh, draw.item.material.value);
-#if BBLITE_RECT_AREA_EMISSION
             // A new emission snapshot of the draw's scene stales the held
             // group, which the encode then rebuilds over the new one.
-            if (track_area_light_scene(state, standard_state, scene) && standard_state.group) {
+            if (refresh_area_light_group(state, standard_state, scene) && standard_state.group) {
                 wgpuBindGroupRelease(standard_state.group);
                 standard_state.group = nullptr;
             }
-#endif
             // The bind group builds at encode: a depth-sampled emissive render
             // texture's view resolves only after the frame-graph textures exist.
             standard_state.group_key =
@@ -1144,7 +1130,7 @@ public:
         height = state.surface_height;
 #if BBLITE_HAS_UI && !BBLITE_WORKERS
         ui_runtime.reset(create_ui_rml_runtime(engine, state.window, width, height));
-        // WebGPU guarantees 4x sampling of the UI's RGBA8 layer.
+        // WebGPU guarantees 4x sampling of the UI layer's surface format.
         state.ui_samples = frame_options.page_ui_sample_count();
 #endif
 
@@ -1719,6 +1705,8 @@ public:
             // Scene callbacks may have changed layer membership or instance
             // data, so every sprite context synchronizes and uploads now.
             sync_dawn_scene_sprites(state, rows.engine);
+            const PageCanvas canvas =
+                page_canvas(rows.engine.ui_page_viewport, data.width, data.height);
             for (DawnSpritePass& sprite_pass : state.sprite_passes) {
                 // `spriteRendererUpdate` runs the renderer's own hooks
                 // before it reads its layers, so an overlay HUD's hook is
@@ -1728,7 +1716,7 @@ public:
                                              sprite_pass, state.sprite_render_textures,
                                              state.sprite_render_texture_views);
                 upload_dawn_sprite_pass(state.device, state.queue, rows.engine, sprite_pass,
-                                        data.width, data.height, delta_ms);
+                                        canvas.width(), canvas.height(), delta_ms);
             }
             // A build since the last frame (its renderable version) may have
             // published depth-hosted layers; the scene pass follows them.
@@ -2392,14 +2380,12 @@ public:
                     if (!standard_state.group) {
                         const MaterialRecord* standard_material =
                             handle_find(engine.materials, draw.item.material);
-#if BBLITE_RECT_AREA_EMISSION
-                        bind_area_light_draw(state, standard_state);
-#endif
                         standard_state.group = build_standard_draw_group(
                             state, mesh, standard_material, variant, standard_state.mesh_uniforms,
                             standard_state.material_uniforms, standard_state.uv_uniforms,
                             standard_state.uv_transform_uniforms, nullptr,
-                            standard_render_views(state, engine, standard_material));
+                            standard_render_views(state, engine, standard_material),
+                            area_light_emission_of(standard_state));
                     }
                     const InstanceStreams standard_streams =
                         instance_streams_for(handle_at(engine.meshes, draw.item.mesh), mesh);
@@ -4165,6 +4151,8 @@ public:
                 sprite_descriptor.colorAttachments = &sprite_attachment;
                 DawnRenderPass sprite_encoder{
                     wgpuCommandEncoderBeginRenderPass(encoder, &sprite_descriptor)};
+                set_page_canvas_viewport(sprite_encoder, engine, width, height,
+                                         !renderer.has_target);
                 record_dawn_sprite_pass(sprite_encoder, engine,
                                         handle_at(state.sprite_passes, handle));
                 wgpuRenderPassEncoderEnd(sprite_encoder);

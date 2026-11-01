@@ -13,8 +13,12 @@
 #include <SDL3/SDL.h>
 
 #include <algorithm>
+#include <array>
 #include <charconv>
+#include <cmath>
 #include <optional>
+#include <sstream>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -51,6 +55,83 @@ inline bool is_emulated_pointer_event(const SDL_Event& event) {
     return is_emulated_touch_mouse(event) ||
            (is_touch_event(event) && (event.tfinger.touchID == SDL_MOUSE_TOUCHID ||
                                       event.tfinger.touchID == SDL_PEN_TOUCHID));
+}
+
+/**
+ * Moves one platform event into the page viewport (`Engine::ui_page_viewport`), the coordinates
+ * every consumer reads input in -- a pointer or drop position from the viewport's origin, a touch
+ * position and motion as fractions of the viewport -- and tells whether the page receives it. A
+ * browser delivers no pointer press, touch or wheel in the letterbox a page without
+ * `viewport-fit=cover` leaves around its safe rectangle. A press the page received keeps its moves
+ * and its release wherever they land, as Chromium's pointer capture and implicit touch capture
+ * keep them; a press it never received keeps neither (`Engine::ui_page_capture`).
+ */
+inline bool page_platform_event(Engine& engine, SDL_Event& event) {
+    const PageViewport& page = engine.ui_page_viewport;
+    PageInputCapture& capture = engine.ui_page_capture;
+    const bool letterboxed = page.laid_out() && !page.whole_window();
+    const auto x = static_cast<float>(page.window_x), y = static_cast<float>(page.window_y);
+    const auto move = [&](float& px, float& py) {
+        if (letterboxed) {
+            px -= x;
+            py -= y;
+        }
+    };
+    // Whether a moved position lies in the page; a locked pointer has no position.
+    const auto inside = [&](float px, float py) {
+        return !letterboxed || engine.pointer_locked ||
+               (px >= 0 && py >= 0 && px < page.window_width && py < page.window_height);
+    };
+    switch (event.type) {
+    case SDL_EVENT_MOUSE_MOTION:
+        move(event.motion.x, event.motion.y);
+        return !capture.buttons.received.empty() || inside(event.motion.x, event.motion.y);
+    case SDL_EVENT_MOUSE_BUTTON_DOWN:
+        move(event.button.x, event.button.y);
+        return capture.buttons.press(event.button.button, inside(event.button.x, event.button.y));
+    case SDL_EVENT_MOUSE_BUTTON_UP:
+        move(event.button.x, event.button.y);
+        return capture.buttons.follow(event.button.button, inside(event.button.x, event.button.y),
+                                      true);
+    case SDL_EVENT_MOUSE_WHEEL:
+        move(event.wheel.mouse_x, event.wheel.mouse_y);
+        return inside(event.wheel.mouse_x, event.wheel.mouse_y);
+    case SDL_EVENT_DROP_BEGIN:
+    case SDL_EVENT_DROP_POSITION:
+    case SDL_EVENT_DROP_FILE:
+    case SDL_EVENT_DROP_TEXT:
+    case SDL_EVENT_DROP_COMPLETE:
+        move(event.drop.x, event.drop.y);
+        return true;
+    case SDL_EVENT_WINDOW_FOCUS_LOST:
+        // Focus loss cancels every press.
+        capture = {};
+        return true;
+    default:
+        break;
+    }
+    if (!is_touch_event(event))
+        return true;
+    int width = 0, height = 0;
+    const bool moved =
+        letterboxed &&
+        SDL_GetWindowSize(SDL_GetWindowFromID(event.tfinger.windowID), &width, &height) &&
+        width > 0 && height > 0;
+    if (moved) {
+        event.tfinger.x = (event.tfinger.x * static_cast<float>(width) - x) /
+                          static_cast<float>(page.window_width);
+        event.tfinger.y = (event.tfinger.y * static_cast<float>(height) - y) /
+                          static_cast<float>(page.window_height);
+        event.tfinger.dx *= static_cast<float>(width / page.window_width);
+        event.tfinger.dy *= static_cast<float>(height / page.window_height);
+    }
+    const std::pair<std::uint64_t, std::uint64_t> key{event.tfinger.touchID,
+                                                      event.tfinger.fingerID};
+    const bool in = !moved || (event.tfinger.x >= 0 && event.tfinger.y >= 0 &&
+                               event.tfinger.x < 1 && event.tfinger.y < 1);
+    if (event.type == SDL_EVENT_FINGER_DOWN)
+        return capture.touches.press(key, in);
+    return capture.touches.follow(key, in, event.type != SDL_EVENT_FINGER_MOTION);
 }
 
 /** True for live user input that must not leak into deterministic test runs. */
@@ -724,11 +805,101 @@ inline std::string_view keyboard_event_code(SDL_Scancode scancode) {
     }
 }
 
-/** Apply one SDL size/density snapshot to the browser canvas metrics. */
+/** A window's safe rectangle and its size, in window coordinates. */
+struct WindowSafeArea {
+    SDL_Rect safe{};
+    int width = 0, height = 0;
+};
+
+/**
+ * `BBLITE_SAFE_AREA_INSETS`, read once: top, right, bottom and left window-coordinate insets that
+ * give a desktop window unsafe edges, as a notched phone's, to diagnose a page laid out inside
+ * them.
+ */
+inline const std::optional<std::array<int, 4>>& diagnostic_safe_area_insets(Engine& engine) {
+    if (engine.ui_diagnostic_safe_area_read)
+        return engine.ui_diagnostic_safe_area;
+    engine.ui_diagnostic_safe_area = []() -> std::optional<std::array<int, 4>> {
+        const std::string text = environment_variable("BBLITE_SAFE_AREA_INSETS");
+        if (text.empty())
+            return std::nullopt;
+        const auto refuse = [] {
+            throw std::invalid_argument("BBLITE_SAFE_AREA_INSETS needs four comma-separated "
+                                        "nonnegative integers: top,right,bottom,left.");
+        };
+        std::array<int, 4> read{};
+        std::istringstream values(text);
+        std::string value;
+        for (int& inset : read) {
+            if (!std::getline(values, value, ',') || value.empty() ||
+                value.find_first_not_of("0123456789") != std::string::npos)
+                refuse();
+            inset = std::stoi(value);
+        }
+        if (text.back() == ',' || std::getline(values, value, ','))
+            refuse();
+        return read;
+    }();
+    engine.ui_diagnostic_safe_area_read = true;
+    return engine.ui_diagnostic_safe_area;
+}
+
+/** The window's safe area: SDL's, or the diagnostic insets' (`diagnostic_safe_area_insets`). */
+inline WindowSafeArea window_safe_area(SDL_Window* window, Engine& engine) {
+    WindowSafeArea area;
+    if (!SDL_GetWindowSize(window, &area.width, &area.height) ||
+        !SDL_GetWindowSafeArea(window, &area.safe))
+        throw std::runtime_error(std::string("SDL window safe area: ") + SDL_GetError());
+    if (const auto& insets = diagnostic_safe_area_insets(engine)) {
+        const auto [top, right, bottom, left] = *insets;
+        area.safe = {left, top, std::max(0, area.width - left - right),
+                     std::max(0, area.height - top - bottom)};
+    }
+    return area;
+}
+
+/**
+ * Apply one SDL size/density snapshot to the browser canvas metrics and lay the page viewport
+ * (`Engine::ui_page_viewport`) out in the `width` x `height` drawable of a window with `area`
+ * (none: the drawable spans a window without insets). A browser keeps a page without
+ * `viewport-fit=cover` inside the window's safe rectangle and lays a `cover` page out over the
+ * whole window; the client extent is the page's. True when the canvas extent changed.
+ */
 inline bool update_engine_canvas_metrics(Engine& engine, int width, int height,
-                                         double display_scale, double pixel_density) {
-    const double client_width = width / display_scale;
-    const double client_height = height / display_scale;
+                                         double display_scale, double pixel_density,
+                                         const std::optional<WindowSafeArea>& area = std::nullopt) {
+    const WindowSafeArea window = area && area->width > 0 && area->height > 0
+                                      ? *area
+                                      : WindowSafeArea{{0, 0, width, height}, width, height};
+    PageViewport page;
+    page.pixels = {0, 0, width, height};
+    page.drawable_width = width;
+    page.drawable_height = height;
+    const double scale_x = static_cast<double>(width) / window.width;
+    const double scale_y = static_cast<double>(height) / window.height;
+    const SDL_Rect& safe = window.safe;
+    if (!engine.ui_viewport_fit_cover) {
+        const auto edge = [](double value, int limit) {
+            return std::clamp(static_cast<int>(std::lround(value)), 0, limit);
+        };
+        const int left = edge(safe.x * scale_x, width), top = edge(safe.y * scale_y, height);
+        const int right = edge((safe.x + safe.w) * scale_x, width);
+        const int bottom = edge((safe.y + safe.h) * scale_y, height);
+        if (right > left && bottom > top)
+            page.pixels = {left, top, right - left, bottom - top};
+    }
+    page.window_x = page.pixels.x / scale_x;
+    page.window_y = page.pixels.y / scale_y;
+    page.window_width = page.pixels.width / scale_x;
+    page.window_height = page.pixels.height / scale_y;
+    // CSS px per window coordinate.
+    const double to_client = pixel_density / display_scale;
+    page.inset_top = safe.y * to_client;
+    page.inset_right = (window.width - safe.x - safe.w) * to_client;
+    page.inset_bottom = (window.height - safe.y - safe.h) * to_client;
+    page.inset_left = safe.x * to_client;
+    const double client_width = page.pixels.width / display_scale;
+    const double client_height = page.pixels.height / display_scale;
     const bool changed = engine.options.width != width || engine.options.height != height ||
                          engine.canvas_client_width != client_width ||
                          engine.canvas_client_height != client_height;
@@ -736,7 +907,8 @@ inline bool update_engine_canvas_metrics(Engine& engine, int width, int height,
     engine.options.height = height;
     engine.canvas_client_width = client_width;
     engine.canvas_client_height = client_height;
-    engine.canvas_window_to_client_scale = pixel_density / display_scale;
+    engine.canvas_window_to_client_scale = to_client;
+    engine.ui_page_viewport = page;
     return changed;
 }
 
@@ -773,8 +945,11 @@ inline bool sync_engine_canvas_size(SDL_Window* window, Engine& engine) {
     if (window && SDL_GetWindowSizeInPixels(window, &width, &height) && width > 0 && height > 0) {
         const float display_scale = window_render_density(window, engine.options);
         const float pixel_density = SDL_GetWindowPixelDensity(window);
+        // A retained page lays out in the window's safe area.
         const bool changed = update_engine_canvas_metrics(
-            engine, width, height, display_scale, pixel_density > 0.0f ? pixel_density : 1.0f);
+            engine, width, height, display_scale, pixel_density > 0.0f ? pixel_density : 1.0f,
+            engine.ui_lays_out_page ? std::optional(window_safe_area(window, engine))
+                                    : std::nullopt);
         if (changed && engine.dom_input)
             engine.dom_input->pending_resize = true;
         return changed;
@@ -1486,6 +1661,8 @@ inline void poll_platform_events(Engine& engine, bool& running, bool test_pass,
         if (test_pass && is_platform_input_event(event) && !is_replayed_ui_event(event)) {
             continue;
         }
+        if (!page_platform_event(engine, event))
+            continue;
         end_press_mouse_capture(event);
         const auto batch = prepare_dom_platform_input(engine, event);
         if (batch) {

@@ -175,17 +175,6 @@ inline WGPUCullMode dawn_cull_mode(upstream::RenderCullMode cull) {
     return cull == upstream::RenderCullMode::none ? WGPUCullMode_None : WGPUCullMode_Back;
 }
 
-/**
- * The pin's `executePassBody` and geometry `executeTask` opening
- * (`_applyCameraViewport`), mirrored from the SDL backend: a camera
- * carrying a viewport narrows the pass to it, and one without leaves the
- * pass at the whole target the way `if (!v) return` leaves it.
- *
- * Set AFTER the pass begins, exactly where upstream sets it, so the load
- * operation has already cleared or loaded the whole attachment.
- */
-void set_pass_viewport(WGPURenderPassEncoder pass, const std::optional<PixelViewport>& resolved);
-
 /** A scene's own pass: its camera's viewport composed into its surface pane. */
 inline void set_pass_camera_viewport(WGPURenderPassEncoder pass, const Scene& scene,
                                      const Engine& engine, const CameraRecord* camera,
@@ -243,8 +232,19 @@ static_assert(mesh_texture_slots == upstream::material_texture_mesh_slots,
  * built for, so a draw arriving with another answer rebuilds.
  */
 struct DawnState;
+struct DawnAreaLightEmission;
 
 #if BBLITE_RECT_AREA_EMISSION
+/**
+ * processAreaLightTexture's texture, one per processed image a snapshot
+ * packs (`AreaLightImage` identity), uploaded once per device from its
+ * packaged chain; a snapshot's array copies it level for level.
+ */
+struct DawnAreaLightImage {
+    std::shared_ptr<const AreaLightImage> source;
+    WGPUTexture texture = nullptr;
+};
+
 /**
  * area-light-emission.ts's scene allocation, one per emission snapshot a
  * scene holds (`AreaLightEmission` identity): the array (one layer per
@@ -293,7 +293,7 @@ struct DawnDrawResources {
         material_upload;
 #if BBLITE_RECT_AREA_EMISSION
     // The emission allocation of the draw's scene, which the held group
-    // binds (`track_area_light_scene`); id 0 for none.
+    // binds (`refresh_area_light_group`); id 0 for none.
     const DawnAreaLightEmission* area_light_emission = nullptr;
     std::uint64_t area_light_emission_id = 0;
 #endif
@@ -836,7 +836,7 @@ struct DawnState : DawnDevice {
      */
     std::uint32_t sample_count = 4;
     /** The page UI's layer sample count (`FrameOptions::page_ui_sample_count`). */
-    std::uint32_t ui_samples = 1;
+    std::optional<std::uint32_t> ui_samples;
 #if BBLITE_HAS_UI && !BBLITE_WORKERS
     SpriteUiDawnResources ui;
 #endif
@@ -1015,11 +1015,11 @@ struct DawnState : DawnDevice {
     std::array<WGPUTextureView, 2> area_light_ltc_views{};
 #endif
 #if BBLITE_RECT_AREA_EMISSION
-    // One allocation per held snapshot; one no scene holds is released.
+    // One texture per held processed image and one allocation per held
+    // snapshot; one no scene holds is released (`cached_source_upload`).
+    std::vector<std::unique_ptr<DawnAreaLightImage>> area_light_images;
     std::vector<std::unique_ptr<DawnAreaLightEmission>> area_light_emissions;
     std::uint64_t area_light_emission_ids = 0;
-    // The allocation the group being built binds (`bind_area_light_draw`).
-    const DawnAreaLightEmission* area_light_emission = nullptr;
 #endif
     WGPUSampler default_sampler = nullptr;
     WGPUSampler clamp_sampler = nullptr;
@@ -1924,6 +1924,8 @@ struct DawnState : DawnDevice {
 #if BBLITE_RECT_AREA_EMISSION
         for (const auto& gpu : area_light_emissions)
             release_area_light_emission(*gpu);
+        for (const auto& gpu : area_light_images)
+            wgpuTextureRelease(gpu->texture);
 #endif
         if (environment_cube_view) {
             wgpuTextureViewRelease(environment_cube_view);
@@ -2191,11 +2193,6 @@ void upload_environment(DawnState& state, const EnvironmentState& environment);
 DawnState::LocalCubemap* ensure_local_cubemap(DawnState& state, const MaterialRecord* material);
 #endif
 
-// The Dawn twin of SDL_GPU's `upload_2d_texture`: one sampled level.
-WGPUTexture upload_dawn_2d_texture(WGPUDevice device, WGPUQueue queue, const void* bytes,
-                                   std::size_t byte_size, std::uint32_t width, std::uint32_t height,
-                                   std::uint32_t row_bytes, WGPUTextureFormat format,
-                                   const char* label);
 /** The environment's BRDF LUT texture (rgba16float, its decoded fallback without a LUT). */
 WGPUTexture create_brdf_texture(WGPUDevice device, WGPUQueue queue,
                                 const EnvironmentState& environment);
@@ -2208,22 +2205,45 @@ void upload_area_light_ltc(DawnState& state, const AreaLightLtcTables& tables);
 /**
  * A scene's area-lighting resources, beside its lights block: the LTC tables
  * on the device's first area-lit draw, and the allocation of the scene's
- * emission snapshot, uploaded when the snapshot is new (an enable, a
- * rebuild, a second area scene) and released once no scene holds it.
+ * emission snapshot, built when the snapshot is new (an enable, a changed
+ * selection, a second area scene) and released once no scene holds it.
  */
 void prepare_area_lighting(DawnState& state, const Scene& scene, const Engine& engine);
 #endif
 #if BBLITE_RECT_AREA_EMISSION
-/**
- * Records on `draw` the emission allocation `scene` holds, returning whether
- * it differs from the one its held group binds (the group is then stale).
- */
-bool track_area_light_scene(const DawnState& state, DawnDrawResources& draw, const Scene& scene);
-/** Points the group about to build at `draw`'s emission allocation. */
-void bind_area_light_draw(DawnState& state, const DawnDrawResources& draw);
-/** The emission allocation a textured area variant binds, which its scene holds. */
-const DawnAreaLightEmission& area_light_emission_binding(const DawnState& state);
+/** The emission allocation a textured area variant binds, which its draw holds. */
+const DawnAreaLightEmission& area_light_emission_binding(const DawnAreaLightEmission* emission);
 #endif
+
+/**
+ * Points `draw` at the emission allocation its scene holds, true when that
+ * is not the one its held group binds, which then rebuilds over it. Always
+ * false in a program with no textured area lighting.
+ */
+inline bool refresh_area_light_group([[maybe_unused]] const DawnState& state,
+                                     [[maybe_unused]] DawnDrawResources& draw,
+                                     [[maybe_unused]] const Scene& scene) {
+#if BBLITE_RECT_AREA_EMISSION
+    const auto found = std::find_if(
+        state.area_light_emissions.begin(), state.area_light_emissions.end(),
+        [&scene](const auto& gpu) { return gpu->source == scene.state->area_light_emission; });
+    draw.area_light_emission = found == state.area_light_emissions.end() ? nullptr : found->get();
+    const std::uint64_t id = draw.area_light_emission ? draw.area_light_emission->id : 0;
+    return std::exchange(draw.area_light_emission_id, id) != id;
+#else
+    return false;
+#endif
+}
+
+/** The emission allocation `draw`'s held group binds; none without textured area lighting. */
+inline const DawnAreaLightEmission*
+area_light_emission_of([[maybe_unused]] const DawnDrawResources& draw) {
+#if BBLITE_RECT_AREA_EMISSION
+    return draw.area_light_emission;
+#else
+    return nullptr;
+#endif
+}
 
 inline std::uint32_t task_sample_count(const DawnState& state, std::uint32_t requested) {
     return requested == 4 ? state.sample_count : 1u;
@@ -2443,8 +2463,10 @@ struct PinnedResource {
  * holds for the whole scene, and every composed family wants the same answer
  * -- so the pairing is stated once here rather than per family.
  */
-[[maybe_unused]] PinnedResource state_resource_for(const DawnState& state,
-                                                   upstream::MaterialTextureSource source);
+[[maybe_unused]] PinnedResource
+state_resource_for(const DawnState& state, upstream::MaterialTextureSource source,
+                   // The draw's emission allocation (`area_light_emission_of`).
+                   const DawnAreaLightEmission* area_light_emission);
 #endif
 
 #if BBLITE_PBR_VARIANTS > 0
@@ -2456,6 +2478,7 @@ struct PinnedResource {
  * rather than drawing with whatever sat at that index.
  */
 PinnedResource pinned_resource_for(DawnState& state, const DawnMesh& mesh, std::string_view name,
+                                   const DawnAreaLightEmission* area_light_emission,
                                    [[maybe_unused]] const MaterialRecord* material = nullptr);
 
 #endif
@@ -2511,6 +2534,8 @@ WGPUBindGroup
 build_pinned_draw_group(DawnState& state, DawnMesh& mesh, std::size_t variant,
                         WGPUBuffer mesh_uniforms, WGPUBuffer material_uniforms,
                         WGPUBuffer geometry_params,
+                        // The draw's emission allocation (`area_light_emission_of`).
+                        const DawnAreaLightEmission* area_light_emission,
                         // The material this group is built for, whose ESM caster view names the
                         // generator its `shadowParams` block belongs to.
                         [[maybe_unused]] const MaterialRecord* material = nullptr);
@@ -2795,7 +2820,9 @@ build_standard_draw_group(DawnState& state, DawnMesh& mesh, const MaterialRecord
                           // which is a reflected binding name rather than a compile-time fact --
                           // the same shape `geometry_params` takes below.
                           [[maybe_unused]] WGPUBuffer uv_transform_uniforms,
-                          WGPUBuffer geometry_params, StandardRenderViews render_views);
+                          WGPUBuffer geometry_params, StandardRenderViews render_views,
+                          // The draw's emission allocation (`area_light_emission_of`).
+                          const DawnAreaLightEmission* area_light_emission);
 
 /** The per-draw uniform buffers for a mesh's Standard draws. */
 DawnDrawState& ensure_standard_draw_buffers(DawnState& state, DawnMesh& mesh,

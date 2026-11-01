@@ -147,7 +147,7 @@ include Bullet/Havok solver differences ([contract](fidelity.md#physics-contract
 | 150 | <img src="images/scenes/scene150.png" alt="Scene 150 rendering" width="160"> | pixel‑perfect | pixel‑perfect | Property Position Animation |
 | 151 | <img src="images/scenes/scene151.png" alt="Scene 151 rendering" width="160"> | pixel‑perfect | pixel‑perfect | Property Transform Animation |
 | 152 | <img src="images/scenes/scene152.png" alt="Scene 152 rendering" width="160"> | pixel‑perfect | pixel‑perfect | Managed Animation Groups |
-| 153 | <img src="images/scenes/scene153.png" alt="Scene 153 rendering" width="160"> | 0.000/0.028 | 0.000/0.028 | Autonomous Canvas Animation |
+| 153 | <img src="images/scenes/scene153.png" alt="Scene 153 rendering" width="160"> | 0.000/0.022 | 0.000/0.022 | Autonomous Canvas Animation |
 | 154 | <img src="images/scenes/scene154.png" alt="Scene 154 rendering" width="160"> | pixel‑perfect | pixel‑perfect | STEP Time Animation |
 | 155 | <img src="images/scenes/scene155.png" alt="Scene 155 rendering" width="160"> | pixel‑perfect | pixel‑perfect | Weighted Property Blending |
 | 156 | <img src="images/scenes/scene156.png" alt="Scene 156 rendering" width="160"> | pixel‑perfect | pixel‑perfect | Manual Cross-Fade Animation |
@@ -173,7 +173,7 @@ include Bullet/Havok solver differences ([contract](fidelity.md#physics-contract
 | 177 | <img src="images/scenes/scene177.png" alt="Scene 177 rendering" width="160"> | pixel‑perfect | pixel‑perfect | Iridescence Sphere |
 | 178 | <img src="images/scenes/scene178.png" alt="Scene 178 rendering" width="160"> | pixel‑perfect | pixel‑perfect | Iridescence Abalone |
 | 179 | <img src="images/scenes/scene179.png" alt="Scene 179 rendering" width="160"> | pixel‑perfect | pixel‑perfect | Clustered Sponza Lights |
-| 180 | <img src="images/scenes/scene180.png" alt="Scene 180 rendering" width="160"> | 0.020/0.455 | 0.020/0.455 | Standalone Text Renderer |
+| 180 | <img src="images/scenes/scene180.png" alt="Scene 180 rendering" width="160"> | 0.020/0.453 | 0.020/0.453 | Standalone Text Renderer |
 | 181 | <img src="images/scenes/scene181.png" alt="Scene 181 rendering" width="160"> | 0.002/0.028 | 0.002/0.028 | Live Text Editor |
 | 186 | <img src="images/scenes/scene186.png" alt="Scene 186 rendering" width="160"> | pixel‑perfect | pixel‑perfect | Local Cubemap Blending |
 | 187 | <img src="images/scenes/scene187.png" alt="Scene 187 rendering" width="160"> | pixel‑perfect | pixel‑perfect | Subpixel Morphological Anti-Aliasing |
@@ -274,7 +274,7 @@ Unchanged pinned applications.
 | Application | Preview | SDL_GPU | Dawn | Coverage |
 | --- | :---: | ---: | ---: | --- |
 | Ocean | <img src="images/scenes/ocean.png" alt="Ocean rendering" width="160"> | 0.172/0.168 | 0.169/0.165 | Spectral ocean; compute FFT and mipmaps; procedural sky; buoyancy; retained controls; canvas-only MAD: 0.005/0.005 on both backends. |
-| Offscreen (Worker) | <img src="images/scenes/offscreen.png" alt="Offscreen main and worker views" width="160"> | 0.306/0.421 | 0.306/0.421 | Dedicated Worker realms; transferred canvases; retained blocking control. UI and localized lens residuals; canvas-only: pixel-perfect on both backends. |
+| Offscreen (Worker) | <img src="images/scenes/offscreen.png" alt="Offscreen main and worker views" width="160"> | 0.306/0.420 | 0.306/0.420 | Dedicated Worker realms; transferred canvases; retained blocking control. UI and localized lens residuals; canvas-only: pixel-perfect on both backends. |
 | Tetris | <img src="images/scenes/tetris.png" alt="Tetris rendering" width="160"> | 0.107/0.114 | 0.107/0.114 | Thin-instance game; audio; retained UI. UI residual; canvas-only: pixel-perfect on both backends. |
 | Doom | <img src="images/scenes/doom.png" alt="Doom rendering" width="160"> | 0.000/0.000 | 0.000/0.000 | WAD game; sprites; audio; retained UI. |
 | LibreQuake | <img src="images/scenes/quake.png" alt="LibreQuake rendering" width="160"> | 0.024/0.023 | 0.024/0.023 | BSP/WAD2/MDL game; audio; Canvas2D HUD. |
@@ -285,9 +285,9 @@ Unchanged pinned applications.
 | Antigravity Racer | <img src="images/scenes/antigravity-racer.png" alt="Antigravity Racer rendering" width="160"> | $\color{#cf222e}{\textsf{1.015}} / \color{#cf222e}{\textsf{1.031}}$ | $\color{#cf222e}{\textsf{1.014}} / \color{#cf222e}{\textsf{1.031}}$ | Antigravity racing game; dynamic hierarchy instances; shader storage; CSM; HDR/IBL; gamepads; GPU picking; retained menu. UI residual; canvas-only MAD: 0.000/0.000 on both backends. |
 | Littlest Tokyo | <img src="images/scenes/littlest-tokyo.png" alt="Littlest Tokyo rendering" width="160"> | 0.015/0.012 | 0.015/0.012 | Animated glTF; PBR/IBL; retained chrome. |
 | Bath Day | <img src="images/scenes/bath-day.png" alt="Bath Day rendering" width="160"> | 0.003/0.004 | 0.003/0.004 | Skinned Draco/WebP glTF; transmission; retained chrome. |
-| Freeciv | <img src="images/scenes/freeciv.png" alt="Freeciv rendering" width="160"> | 0.079/0.077 | 0.079/0.077 | Strategy map; sprites; picking; retained cursor/tooltips. |
+| Freeciv | <img src="images/scenes/freeciv.png" alt="Freeciv rendering" width="160"> | 0.079/0.076 | 0.079/0.076 | Strategy map; sprites; picking; retained cursor/tooltips. |
 | The Playroom (`playroom`) | <img src="images/scenes/playroom.png" alt="Playroom gameplay with throw counter and score" width="160"> | $\color{#9a6700}{\textsf{0.957}} / \color{#9a6700}{\textsf{0.720}}$ | $\color{#9a6700}{\textsf{0.957}} / \color{#9a6700}{\textsf{0.720}}$ | Physics game; ragdoll; thin instances; skeleton shadows; audio; retained HUD. Not qualified: the Bullet ragdoll settles in another pose than Havok's by the reference frame, so the canvas differs; physics performance remains below target; canvas-only MAD: SDL_GPU 3.364/3.126, Dawn 3.363/3.126. |
-| Sandblox | <img src="images/scenes/sandblox.png" alt="Sandblox rendering" width="160"> | 0.058/0.061 | 0.058/0.061 | 3D building sandbox; dynamic coloured thin instances; material plugins; property animation; audio; JSON save/load; retained editing UI. UI residual; canvas-only MAD: 0.000/0.000 on both backends. |
+| Sandblox | <img src="images/scenes/sandblox.png" alt="Sandblox rendering" width="160"> | 0.058/0.060 | 0.058/0.060 | 3D building sandbox; dynamic coloured thin instances; material plugins; property animation; audio; JSON save/load; retained editing UI. UI residual; canvas-only MAD: 0.000/0.000 on both backends. |
 | Voxel Sandbox | <img src="images/scenes/minecraft.png" alt="Voxel Sandbox rendering" width="160"> | $\color{#9a6700}{\textsf{0.669}} / \color{#9a6700}{\textsf{0.669}}$ | $\color{#9a6700}{\textsf{0.669}} / \color{#9a6700}{\textsf{0.669}}$ | Procedural voxel world; generated texture atlas; custom shader materials; audio; save/load; retained HUD and crosshair. UI residual; canvas-only MAD: 0.000/0.000 on both backends. |
 | NPE on Sprite2D | <img src="images/scenes/npe-sprite2d.png" alt="NPE on Sprite2D rendering" width="160"> | pixel‑perfect | pixel‑perfect | Live pure-2D node particles; sprite atlas; pointer-following emitter. |
 | Screen-Space Effects | <img src="images/scenes/screen-space-effects.png" alt="Screen-Space Effects rendering" width="160"> | 0.071/0.087 | 0.071/0.087 | Contact shadows; one-bounce GI; temporal history; retained controls. UI residual; canvas-only: pixel-perfect on both backends. |

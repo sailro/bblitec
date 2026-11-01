@@ -1,6 +1,7 @@
 import ts from "typescript";
 import { dataTypesEqual, type DataType } from "../data-types.js";
 import type { Value } from "../types.js";
+import { valueDataType } from "../values/model.js";
 import { writable } from "../emission-transaction.js";
 import { isJsonValue } from "../json-bridge.js";
 import type { DataSinkHost, DataSinkOperations } from "./contracts.js";
@@ -44,14 +45,8 @@ function unionValue(
         (isJsonValue(value) && expression
             ? lowerer.dataTypeAt(expression)
             : undefined) ??
-        value.dataType ??
-        (value.kind === "number" ||
-        value.kind === "boolean" ||
-        value.kind === "string"
-            ? { kind: value.kind }
-            : ts.isExpression(node)
-              ? lowerer.dataTypeAt(node)
-              : undefined);
+        valueDataType(value) ??
+        (ts.isExpression(node) ? lowerer.dataTypeAt(node) : undefined);
     let memberIndex = type.members.findIndex(
         (member) =>
             source &&

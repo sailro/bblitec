@@ -335,11 +335,8 @@ int main() {
         on_dom_pointer(engine, DomEventTarget::canvas(), "pointercancel", 1,
                        [&](const PlatformMouseEvent&) { ++cancels; });
         for (const SDL_FingerID id : {1, 2}) {
-            SDL_Event event{};
-            event.type = SDL_EVENT_FINGER_DOWN;
-            event.tfinger.touchID = 3;
-            event.tfinger.fingerID = id;
-            event.tfinger.x = static_cast<float>(id) / 3;
+            SDL_Event event =
+                finger_event(SDL_EVENT_FINGER_DOWN, 3, id, static_cast<float>(id) / 3, 0);
             dispatch_dom_batch(engine, pal::prepare_dom_platform_input(engine, event));
         }
         assert(downs == 2 &&

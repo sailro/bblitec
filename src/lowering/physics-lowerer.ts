@@ -1120,25 +1120,11 @@ ${locals}            return pal::${palFunction}(${args.join(", ")});
      * argument, which is where the pin applies its default too.
      */
     private floatingOriginRadius(): number {
-        const declaration = this.pinnedDeclaration("enableHavokFloatingOrigin");
-        const parameter = declaration.parameters[1];
-        const initializer = parameter?.initializer;
-        if (
-            !parameter ||
-            !initializer ||
-            !ts.isNumericLiteral(initializer) ||
-            !ts.isIdentifier(parameter.name) ||
-            parameter.name.text !== "floatingOriginWorldRadius"
-        ) {
-            this.context.contractError(
-                parameter ?? declaration,
-                "Expected enableHavokFloatingOrigin's second parameter to be " +
-                    "floatingOriginWorldRadius with a numeric default. The " +
-                    "generated intrinsic emits that default at every call site " +
-                    "that omits the argument.",
-            );
-        }
-        return Number(initializer.text);
+        return this.context.numericParameterDefault(
+            this.pinnedDeclaration("enableHavokFloatingOrigin"),
+            1,
+            "floatingOriginWorldRadius",
+        );
     }
 
     /**

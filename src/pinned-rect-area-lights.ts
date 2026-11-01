@@ -22,6 +22,7 @@ import ts from "typescript";
 import { PNG } from "pngjs";
 import type { Texture2DOptions } from "@babylonjs/lite";
 import { downloadCached } from "./asset-download-cache.js";
+import { bakeReplayEnabled, cachedBake, moduleIdentity } from "./bake-cache.js";
 import {
     assetSourceName,
     basenameWithoutExtension,
@@ -32,7 +33,12 @@ import {
     pinnedErrorMessage,
 } from "./lowering/pinned-error.js";
 import { bakeAreaLightTexture } from "./pinned-area-light-texture.js";
-import { pinnedTextureSamplerPairs } from "./pinned-material-plugins.js";
+import {
+    isPinnedBindingDecl,
+    pinnedTextureSamplerPairs,
+    type PinnedBindingDecl,
+} from "./pinned-material-plugins.js";
+import { pinnedModuleFunction } from "./lowering/pinned-shader-builders.js";
 import { importPinnedModule } from "./pinned-shader-composer.js";
 
 const pbrFragmentModule = "material/pbr/fragments/rect-area-light-fragment.js";
@@ -213,19 +219,10 @@ export async function pinnedAreaStandardContext(
 
 /** The pin's LTC payload URL, read off `area-light-ltc.ts`'s own constant. */
 export function pinnedAreaLightLtcUrl(): string {
-    const context = sharedPinnedContext();
-    const initializer = context.unwrapExpression(
-        context.variableInitializer(
-            context.sourceFile("src/light/area-light-ltc.ts"),
-            "LTC_URL",
-        ),
+    return sharedPinnedContext().pinnedString(
+        "src/light/area-light-ltc.ts",
+        "LTC_URL",
     );
-    if (!ts.isStringLiteral(initializer))
-        return context.contractError(
-            initializer,
-            "Expected the pinned LTC_URL to be a string literal.",
-        );
-    return initializer.text;
 }
 
 /**
@@ -273,16 +270,20 @@ export function pinnedAreaLightEmissionBindings(): {
     const [texture, sampler, slots] = entries;
     if (
         entries.length !== 3 ||
-        texture?.kind !== "texture" ||
-        sampler?.kind !== "sampler" ||
-        slots?.kind !== "uniform-buffer"
+        texture?._type._kind !== "texture" ||
+        sampler?._type._kind !== "sampler" ||
+        slots?._type._kind !== "uniform-buffer"
     )
         return context.contractError(
             declaration,
             "Expected areaLightEmissionBindings to declare the emission " +
                 "array, its sampler and the slot block.",
         );
-    return { texture: texture.name, sampler: sampler.name, slots: slots.name };
+    return {
+        texture: texture._name,
+        sampler: sampler._name,
+        slots: slots._name,
+    };
 }
 
 /**
@@ -377,62 +378,45 @@ export function rectAreaSlotDeclarationsCpp(
     };
 }
 
-/** A pinned `BindingDecl[]` factory's `_name` and `_type._kind` pairs. */
+/**
+ * A pinned `BindingDecl[]` factory's declarations, executed on the pin the
+ * way the plugin bridge's composed fragment is read
+ * (`standardPluginFragmentBindings`); the declaration is for its refusals.
+ */
 function pinnedBindingDeclarations(
     module: string,
     name: string,
 ): {
     declaration: ts.FunctionDeclaration;
-    entries: readonly { name: string; kind: string }[];
+    entries: readonly PinnedBindingDecl[];
 } {
     const context = sharedPinnedContext();
     const { declaration } = context.functionDeclaration(module, name);
-    const entries = context
-        .findNodes(declaration, (node): node is ts.ObjectLiteralExpression =>
-            ts.isObjectLiteralExpression(node),
-        )
-        .filter((node) =>
-            node.properties.some(
-                (property) =>
-                    property.name !== undefined &&
-                    context.propertyName(property.name) === "_name",
-            ),
-        )
-        .map((entry) => {
-            const field = (name: string): ts.Expression =>
-                context.propertyInitializer(entry, name);
-            const type = field("_type");
-            if (!ts.isObjectLiteralExpression(type))
-                return context.contractError(
-                    entry,
-                    "Expected an area-light binding type literal.",
-                );
-            return {
-                name: context.stringValue(
-                    field("_name"),
-                    entry.getSourceFile(),
-                ),
-                kind: context.stringValue(
-                    context.propertyInitializer(type, "_kind"),
-                    entry.getSourceFile(),
-                ),
-            };
-        });
+    const entries: unknown = pinnedModuleFunction(module, name)();
+    if (!Array.isArray(entries) || !entries.every(isPinnedBindingDecl))
+        return context.contractError(
+            declaration,
+            `Expected ${name}() to return binding declarations.`,
+        );
     return { declaration, entries };
 }
+
+let decodedLtc: Promise<readonly [Uint8Array, Uint8Array]> | undefined;
 
 /**
  * The two decoded tables, as the bytes `queue.writeTexture` uploads: the
  * pin's `decodeAreaLightLtc` run over the payload `LTC_URL` serves (through
  * the pinned-URL download cache). The decode validates the 65,536-byte
  * length itself, so a changed payload fails generation by the pin's message.
+ * Decoded once per process for both tables, unless replay is off.
  */
-export async function decodedAreaLightLtc(): Promise<
+export function decodedAreaLightLtc(): Promise<
     readonly [Uint8Array, Uint8Array]
 > {
-    return decodeAreaLightLtcTables(
-        await downloadCached(pinnedAreaLightLtcUrl()),
-    );
+    const decode = async (): Promise<readonly [Uint8Array, Uint8Array]> =>
+        decodeAreaLightLtcTables(await downloadCached(pinnedAreaLightLtcUrl()));
+    if (!bakeReplayEnabled()) return decode();
+    return (decodedLtc ??= decode());
 }
 
 /** The pin's `decodeAreaLightLtc` over one payload, as upload bytes. */
@@ -623,57 +607,79 @@ export function pinnedAreaLightImageShape(): AreaLightImageShape {
 
 /**
  * The packaged chain's layout, which the native walker
- * (`for_each_area_light_image_level`) reads back: one PNG `size` texels wide,
- * each level at the left of its own band of rows, level zero first.
+ * (`for_each_area_light_image_level`) reads back: every level's texels back
+ * to back, level zero first, in one PNG `size` texels wide whose last row
+ * is padded. Each level starts at its texel offset with tight rows, which
+ * is how each backend uploads it.
  */
-function areaLightImageBandRows(shape: AreaLightImageShape): number[] {
-    return Array.from({ length: shape.levels }, (_, level) =>
-        Math.max(shape.size >> level, 1),
-    );
+function areaLightImageLevels(shape: AreaLightImageShape): {
+    offsets: number[];
+    rows: number;
+} {
+    const offsets: number[] = [];
+    let texels = 0;
+    for (let level = 0; level < shape.levels; ++level) {
+        offsets.push(texels);
+        texels += Math.max(shape.size >> level, 1) ** 2;
+    }
+    return { offsets, rows: Math.ceil(texels / shape.size) };
 }
 
 /**
  * `processAreaLightTexture(engine, await loadTexture2D(engine, source,
  * options))`, executed on the pin (`bakeAreaLightTexture`), packaged
- * losslessly: every level of the processed texture in its band of one PNG.
+ * losslessly: every level of the processed texture in one PNG. The package
+ * itself is the cached bake, keyed by the source, its options and the bake
+ * module, so a repeat compile neither re-runs nor re-encodes it.
  */
 export async function packagedAreaLightImage(
     request: AreaLightImageRequest,
     sourceBytes: Uint8Array,
 ): Promise<Uint8Array> {
     const shape = pinnedAreaLightImageShape();
-    const processed = await bakeAreaLightTexture(
-        sourceBytes,
-        request.loaderOptions,
-    );
-    if (
-        processed.width !== shape.size ||
-        processed.height !== shape.size ||
-        processed.levels.length !== shape.levels
-    )
-        throw new Error(
-            `processAreaLightTexture returned a ${processed.width}x` +
-                `${processed.height} chain of ${processed.levels.length} ` +
-                `levels; the pinned image is ${shape.size}x${shape.size} ` +
-                `with ${shape.levels}.`,
-        );
-    const bands = areaLightImageBandRows(shape);
-    const atlas = new PNG({
-        width: shape.size,
-        height: bands.reduce((total, rows) => total + rows, 0),
-        colorType: 6,
-    });
-    atlas.data.fill(0);
-    let row = 0;
-    processed.levels.forEach((level, index) => {
-        const extent = bands[index]!;
-        const rowBytes = extent * 4;
-        for (let y = 0; y < extent; ++y)
-            atlas.data.set(
-                level.subarray(y * rowBytes, (y + 1) * rowBytes),
-                (row + y) * shape.size * 4,
+    return cachedBake(
+        {
+            kind: "area-light-image-package",
+            version: "1",
+            module: moduleIdentity(import.meta.url),
+            browser: true,
+            parameters: {
+                loaderOptions: request.loaderOptions,
+                bake: moduleIdentity(
+                    new URL("./pinned-area-light-texture.js", import.meta.url)
+                        .href,
+                ),
+            },
+            inputs: [sourceBytes],
+        },
+        async () => {
+            const processed = await bakeAreaLightTexture(
+                sourceBytes,
+                request.loaderOptions,
             );
-        row += extent;
-    });
-    return PNG.sync.write(atlas, { colorType: 6 });
+            if (
+                processed.width !== shape.size ||
+                processed.height !== shape.size ||
+                processed.levels.length !== shape.levels
+            )
+                throw new Error(
+                    `processAreaLightTexture returned a ${processed.width}x` +
+                        `${processed.height} chain of ` +
+                        `${processed.levels.length} levels; the pinned ` +
+                        `image is ${shape.size}x${shape.size} with ` +
+                        `${shape.levels}.`,
+                );
+            const { offsets, rows } = areaLightImageLevels(shape);
+            const image = new PNG({
+                width: shape.size,
+                height: rows,
+                colorType: 6,
+            });
+            image.data.fill(0);
+            processed.levels.forEach((level, index) =>
+                image.data.set(level, offsets[index]! * 4),
+            );
+            return PNG.sync.write(image, { colorType: 6 });
+        },
+    );
 }

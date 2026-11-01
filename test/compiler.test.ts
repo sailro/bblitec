@@ -4,6 +4,7 @@ import {
     runGeneratedProgram,
 } from "./native-fixture.js";
 import assert from "node:assert/strict";
+import { regexText } from "./regex.js";
 import { pinnedPackageSpecifiers } from "../src/capture-suite-reference.js";
 import { babylonPackages, isBabylonModule } from "../src/compiler/symbols.js";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -883,10 +884,7 @@ test("rejects unknown or unsupported mesh factory options", () => {
                 `),
             (error: unknown) => {
                 assert.ok(error instanceof CompileError);
-                assert.match(
-                    error.message,
-                    new RegExp(message.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")),
-                );
+                assert.match(error.message, new RegExp(regexText(message)));
                 return true;
             },
         );

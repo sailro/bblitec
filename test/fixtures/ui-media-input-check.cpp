@@ -13,9 +13,7 @@ double performance_milliseconds() { return 0; }
 namespace {
 // A desktop until a step says otherwise.
 bbl::InputCapabilities device{bbl::PointerPrecision::Fine, true};
-bbl::InputCapabilities read_input() { return device; }
 bool reduced = false;
-bool read_motion() { return reduced; }
 } // namespace
 
 int main() try {
@@ -43,8 +41,9 @@ int main() try {
         const auto panel = ui_create_element(engine, "div");
         ui_set_attribute(engine, panel, "class", "panel");
         ui_append_to_root(engine, panel);
-        pal::UiRmlRuntime runtime(engine, window, 640, 480, read_motion, read_input);
+        pal::UiRmlRuntime runtime(engine, window, 640, 480);
         const auto size = [&] {
+            pal::supply_ui_rml_media_device(runtime, reduced, device);
             pal::update_ui_rml_runtime(runtime, 640, 480);
             return runtime.projected_elements.at(panel.value)
                 .element->GetBox()

@@ -24,7 +24,12 @@ import {
     bindingIsOnlyCalledDirectly,
     bindingRebinds,
 } from "./binding-rebinds.js";
-import { absenceOf, knownCondition, undefinedValue } from "./values/model.js";
+import {
+    absenceOf,
+    knownCondition,
+    undefinedValue,
+    valueDataType,
+} from "./values/model.js";
 import { ApplicationRealmRequired } from "./worker-modules.js";
 import { pinOperand } from "./evaluation-order.js";
 import { CompileError } from "./compile-error.js";
@@ -5921,19 +5926,15 @@ export class UserFunctionLowerer {
             );
         const types = lanes.map(
             (value, index) =>
-                value.dataType ??
-                (value.kind === "number" ||
-                value.kind === "boolean" ||
-                value.kind === "string"
-                    ? { kind: value.kind }
-                    : ts.isCallExpression(callNode) && callNode.arguments[index]
-                      ? context.dataTypes.fromStoredTsType(
-                            this.checker.getTypeAtLocation(
-                                callNode.arguments[index],
-                            ),
-                            callNode.arguments[index],
-                        )
-                      : undefined),
+                valueDataType(value) ??
+                (ts.isCallExpression(callNode) && callNode.arguments[index]
+                    ? context.dataTypes.fromStoredTsType(
+                          this.checker.getTypeAtLocation(
+                              callNode.arguments[index],
+                          ),
+                          callNode.arguments[index],
+                      )
+                    : undefined),
         );
         if (types.some((type) => !type))
             return context.fail(

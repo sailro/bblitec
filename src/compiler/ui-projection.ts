@@ -25,7 +25,7 @@ import {
 import { parseUiBorderImage, renderUiBorderImage } from "../ui-border-image.js";
 import {
     unrepresentedUiAnimation,
-    unrepresentedUiAnimationDuration,
+    unrepresentedUiDurations,
     unrepresentedUiEasing,
 } from "../ui-motion.js";
 import { uiGradientBackground } from "../ui-gradient-background.js";
@@ -44,10 +44,12 @@ import {
 } from "../ui-grid.js";
 import { supportedUiBoxShadow, supportedUiFilter } from "../ui-filters.js";
 import {
+    cssWideKeyword,
     supportedUiImageBackground,
     uiBackgroundImageSource,
     nativeUiImageProperty,
 } from "../ui-image-background.js";
+import { pinCpp } from "./evaluation-order.js";
 import {
     findUiCssSyntax,
     stripUiCssComments,
@@ -983,23 +985,23 @@ export class UiProjection {
     /**
      * Whether the element is one of `tags`: its own tag, or every member of
      * its declared (possibly union) HTML interface type when storage did not
-     * carry the tag.
+     * carry the tag. Undefined means every tag is unknown and a write needs
+     * a native tag check; false means the declaration cannot guarantee it.
      */
     private declaresUiTags(
         element: Value,
         expression: ts.Expression,
         tags: readonly string[],
-    ): boolean {
+    ): boolean | undefined {
         if (element.uiTag !== undefined) return tags.includes(element.uiTag);
         const type = this.context.checker.getNonNullableType(
             this.context.checker.getTypeAtLocation(expression),
         );
-        const members = unionMembers(type);
-        return members.every((member) =>
-            tags.includes(
-                elementInterfaceTag(member.getSymbol()?.name ?? "") ?? "",
-            ),
+        const declared = unionMembers(type).map((member) =>
+            elementInterfaceTag(member.getSymbol()?.name ?? ""),
         );
+        if (declared.every((tag) => tag === undefined)) return undefined;
+        return declared.every((tag) => tag !== undefined && tags.includes(tag));
     }
 
     /**
@@ -1940,6 +1942,7 @@ export class UiProjection {
             "animation",
             "animation-delay",
             "animation-duration",
+            "transition-duration",
             "background",
             "background-color",
             "background-clip",
@@ -2491,8 +2494,14 @@ export class UiProjection {
                         : undefined);
                 if (reason) this.uiStyleRefusal(site, property, reason);
             }
-            if (property === "animation-duration") {
-                const reason = unrepresentedUiAnimationDuration(literalValue);
+            if (
+                property === "animation-duration" ||
+                property === "transition-duration"
+            ) {
+                const reason = unrepresentedUiDurations(
+                    literalValue,
+                    property === "animation-duration",
+                );
                 if (reason) this.uiStyleRefusal(site, property, reason);
                 return;
             }
@@ -2634,11 +2643,11 @@ export class UiProjection {
                     );
                 }
             }
+            if (property === "background-clip" && cssWideKeyword(literalValue))
+                return;
             if (
                 property === "background-clip" &&
-                /^(?:inherit|border-box|padding-box|content-box)$/.test(
-                    literalValue,
-                )
+                /^(?:border-box|padding-box|content-box)$/.test(literalValue)
             ) {
                 if (
                     /gradient\(/i.test(value) ||
@@ -3048,33 +3057,50 @@ export class UiProjection {
         return css.startsWith("webkit-") ? `-${css}` : css;
     }
 
+    /** The `background` longhands besides the colour, at their initial values. */
+    private static readonly UI_BACKGROUND_RESETS: readonly (readonly [
+        string,
+        string,
+    ])[] = [
+        ["background-clip", "border-box"],
+        ["background-image", "none"],
+        ["background-size", "auto"],
+        ["background-position", "0% 0%"],
+        ["background-repeat", "repeat"],
+        ["background-origin", "padding-box"],
+        ["background-attachment", "scroll"],
+    ];
+
     private static readonly UI_SHORTHAND_RESETS: ReadonlyMap<
         string,
         readonly (readonly [string, string])[]
     > = new Map([
-        [
-            "background",
-            [
-                ["background-clip", "border-box"],
-                ["background-image", "none"],
-                ["background-size", "auto"],
-                ["background-position", "0% 0%"],
-                ["background-repeat", "repeat"],
-                ["background-origin", "padding-box"],
-                ["background-attachment", "scroll"],
-            ],
-        ],
+        ["background", UiProjection.UI_BACKGROUND_RESETS],
         ["border", [["border-image", "none"]]],
     ]);
 
-    /** The longhands a shorthand resets; a CSS-wide `keyword` is each one's value. */
-    private static uiShorthandResetStyle(
-        property: string,
-        keyword?: string,
-    ): string {
+    /** The longhands a shorthand resets, at their initial values. */
+    private static uiShorthandResetStyle(property: string): string {
         return (UiProjection.UI_SHORTHAND_RESETS.get(property) ?? [])
-            .map(([name, value]) => `${name}:${keyword ?? value};`)
+            .map(([name, value]) => `${name}:${value};`)
             .join("");
+    }
+
+    /**
+     * The `background` shorthand's longhands, colour last: a CSS-wide
+     * keyword is every one's value (the PAL resolves it), another value the
+     * colour's, the others taking their initial values.
+     */
+    private static uiBackgroundShorthand(
+        value: string,
+    ): (readonly [string, string])[] {
+        const keyword = cssWideKeyword(value);
+        return [
+            ...UiProjection.UI_BACKGROUND_RESETS.map(
+                ([name, initial]) => [name, keyword ?? initial] as const,
+            ),
+            ["background-color", keyword ?? value],
+        ];
     }
 
     private lowerUiTextShadow(value: string): string | undefined {
@@ -3146,8 +3172,10 @@ export class UiProjection {
         if (image === "none") return image;
         return renderUiBorderImage(
             image,
-            this.context.assetRegistry.registerAsset(image.source, "texture")
-                .output,
+            this.context.assetRegistry.registerAsset(
+                documentAssetSource(this.context, image.source),
+                "texture",
+            ).output,
         );
     }
 
@@ -3361,17 +3389,10 @@ export class UiProjection {
                 /\bbackground\s*:\s*center(?:\s+center)?\s*\/\s*(contain|cover)\s+no-repeat\s*;?/gi,
                 "background-color:transparent;background-image:none;background-position:center center;background-size:$1;background-repeat:no-repeat;background-origin:padding-box;background-attachment:scroll;background-clip:border-box;",
             )
-            .replace(
-                /\bbackground\s*:\s*(inherit|initial|unset)\s*(?=;|$)/gi,
-                (_match, keyword: string) =>
-                    UiProjection.uiShorthandResetStyle(
-                        "background",
-                        keyword.toLowerCase(),
-                    ) + `background-color:${keyword.toLowerCase()}`,
-            )
-            .replace(
-                /\bbackground\s*:/gi,
-                `${UiProjection.uiShorthandResetStyle("background")}background-color:`,
+            .replace(/\bbackground\s*:([^;]*)/gi, (_match, value: string) =>
+                UiProjection.uiBackgroundShorthand(value)
+                    .map(([name, longhand]) => `${name}:${longhand}`)
+                    .join(";"),
             )
             .replace(
                 /(?:-webkit-)?backdrop-filter\s*:\s*([^;]+)\s*;?/gi,
@@ -3517,7 +3538,7 @@ export class UiProjection {
             }
             const property = declaration.slice(0, colon).trim().toLowerCase();
             let literal = declaration.slice(colon + 1).trim();
-            let nativeProperty = nativeUiImageProperty(property);
+            let nativeProperty = nativeUiImageProperty(property, literal);
             if (property === "background-image") {
                 const source = uiBackgroundImageSource(literal);
                 if (source !== undefined)
@@ -3537,11 +3558,6 @@ export class UiProjection {
                 literal = "1";
             } else if (property === "transition") {
                 literal = literal.replace(/\btransform\b/g, "bbl-transform");
-            } else if (
-                property === "background-clip" &&
-                literal === "inherit"
-            ) {
-                nativeProperty = "--bbl-background-clip";
             } else if (property === "--bbl-outline") {
                 literal = literal.replace(
                     /^(.+)\s+solid\s+(\d+(?:\.\d+)?px)$/,
@@ -3858,9 +3874,10 @@ export class UiProjection {
                     site,
                 );
                 for (const selector of selectors) {
-                    const rule =
+                    const parsed =
                         UiProjection.parseUiSelector(selector, style) ??
                         refuseSelector(selector);
+                    const rule = { ...parsed, ...inherited };
                     if (
                         content &&
                         rule.pseudo !== "before" &&
@@ -3876,7 +3893,6 @@ export class UiProjection {
                     if (rule.range)
                         this.validateUiPartStyle(style, "range", site);
                     if (content) rule.content = content;
-                    Object.assign(rule, inherited);
                     if (site) rule.site = site;
                     if (ownerId !== undefined) rule.ownerId = ownerId;
                     if (
@@ -5596,6 +5612,7 @@ export class UiProjection {
         assigned: UiAssigned,
         site: ts.Node,
         syntax: "property" | "attribute",
+        receiver: ts.Expression,
     ): string | undefined {
         if (element.uiTag === "input") {
             if (
@@ -5652,7 +5669,8 @@ export class UiProjection {
                 );
             }
         }
-        if (element.uiTag !== "a") return undefined;
+        if (this.declaresUiTags(element, receiver, ["a", "area"]) !== true)
+            return undefined;
         if (name === "href") {
             const url = this.assignedValue(assigned);
             // A document URL is the link's `href` attribute; activating the
@@ -6008,6 +6026,7 @@ export class UiProjection {
             assigned,
             site,
             "property",
+            receiver,
         );
         if (browserFile) {
             this.context.emit({
@@ -6215,16 +6234,7 @@ export class UiProjection {
         const declared = UI_REFLECTED_ATTRIBUTES.get(property);
         const checkedTags =
             declared?.tags !== undefined &&
-            element.uiTag === undefined &&
-            unionMembers(
-                this.context.checker.getNonNullableType(
-                    this.context.checker.getTypeAtLocation(receiver),
-                ),
-            ).every(
-                (member) =>
-                    elementInterfaceTag(member.getSymbol()?.name ?? "") ===
-                    undefined,
-            )
+            this.declaresUiTags(element, receiver, declared.tags) === undefined
                 ? declared.tags
                 : undefined;
         const attribute = checkedTags
@@ -6232,6 +6242,11 @@ export class UiProjection {
             : this.reflectedUiAttribute(element, property, receiver, site)
                   ?.attribute;
         if (attribute) {
+            if (attribute === "href")
+                this.context.emit({
+                    kind: "expression",
+                    code: `${linkNavigationCpp(this.context, engine, site)};`,
+                });
             if (attribute === "class" || attribute === "id") {
                 this.recordUiStaticAttribute(
                     element,
@@ -6340,6 +6355,8 @@ export class UiProjection {
                 "transform-origin",
                 "transition",
                 "animation",
+                "animation-duration",
+                "transition-duration",
                 "grid-area",
                 "grid-template-areas",
                 "clip-path",
@@ -6379,6 +6396,15 @@ export class UiProjection {
                       `UI style.${property}`,
                       knownValue,
                   );
+        if (property === "background") {
+            this.emitUiBackgroundShorthand(
+                engine,
+                styleElement.cpp,
+                knownString,
+                styleValue,
+            );
+            return;
+        }
         this.context.emit({
             kind: "expression",
             code:
@@ -6394,6 +6420,44 @@ export class UiProjection {
                 code: `bbl::ui_set_style_property(${engine}, ${styleElement.cpp}, ${this.context.cppString(this.nativeUiStyleProperty(name))}, ${this.context.cppString(value)});`,
             });
         }
+    }
+
+    /**
+     * A `background` write: the colour, RmlUi's clip reset, and each PAL
+     * longhand at the value's CSS-wide keyword (the PAL resolves it; a clip
+     * one overrides RmlUi's) or else its initial value (no clip override),
+     * chosen at generation for a `known` value and else at run time.
+     */
+    private emitUiBackgroundShorthand(
+        engine: string,
+        element: string,
+        known: string | undefined,
+        value: string,
+    ): void {
+        const shorthand =
+            known === undefined
+                ? pinCpp(this.context, value, "background", "const auto&")
+                : value;
+        const keywordOr = (initial: string): string =>
+            known === undefined
+                ? `bbl::ui_background_longhand(${shorthand}, ${this.context.cppString(initial)})`
+                : this.context.cppString(cssWideKeyword(known) ?? initial);
+        const declarations: (readonly [string, string])[] = [
+            ["--bbl-background-color", shorthand],
+            ["background-clip", this.context.cppString("border-box")],
+            ...UiProjection.UI_BACKGROUND_RESETS.map(
+                ([name, initial]) =>
+                    [
+                        `--bbl-${name}`,
+                        keywordOr(name === "background-clip" ? "" : initial),
+                    ] as const,
+            ),
+        ];
+        for (const [name, cpp] of declarations)
+            this.context.emit({
+                kind: "expression",
+                code: `bbl::ui_set_style_property(${engine}, ${element}, ${this.context.cppString(name)}, ${cpp});`,
+            });
     }
 
     public removeUiStyleProperty(

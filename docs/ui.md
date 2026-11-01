@@ -94,6 +94,8 @@ before implementing: a source refusal does not mean RmlUi lacks the feature.
 - Window pointer lock applies relative mouse mode and cursor visibility on the display thread; Escape and focus
   loss release it and notify the owning engine.
 - UI handles input before cameras; a canceled pointer, mouse or wheel event suppresses camera propagation.
+- Pointer, touch and wheel input in the letterbox around a `viewport-fit=auto` page never reaches it; a press the page
+  received keeps its moves and release wherever they land.
 - `tabIndex` reflects `tabindex`: 0 joins Tab navigation in tree order, negative leaves it; positive values throw
   NotSupportedError. Canvas `tabIndex` reads 0 (keyboard focus targets the SDL surface); writing 0 is erased, other
   values refuse.
@@ -144,9 +146,9 @@ source-rect blits, general transforms/clipping and non-convex tessellation refus
 | Containers/media | inline-size containment, unnamed max-width queries; `and` of max-width, orientation, reduced-motion, hover and pointer media (hover/pointer: the device's primary pointer, read at run time; `prefers-reduced-motion` and `hover` also bare) | Named/height/style queries; `any-hover`/`any-pointer`, `or`/`not`/lists |
 | Text | Wrapping, italic, casing, ellipsis, vertical-align keywords, decoration lines | Oblique, decoration colors/styles, vertical-align lengths |
 | Borders/backgrounds | Solid borders, radii, gradients, one packaged image, raster border-image slices | Elliptical radius syntax, multiple image layers, sized repetition |
-| Shadows/filters | Box shadows, filters, drop-shadow chains, backdrop blur; `opacity` below 1 composites the element and its descendants as one layer | Non-pixel shadow lengths, other backdrop functions (may degrade) |
+| Shadows/filters | Box shadows, filters, drop-shadow chains, backdrop blur; `opacity` below 1 composites the element and its descendants as a group | Non-pixel shadow lengths, other backdrop functions (may degrade) |
 | Transforms/clipping | Uniform nonnegative scale; `clip-path` inset()/polygon() over px/%/calc() (aliased edges) | Nonuniform scale, nonempty clip rectangles, other basic shapes, `round`, reference boxes |
-| Motion | `transition`/`animation` shorthands (s/ms; easing keywords, `cubic-bezier()`, `steps()`; animation directions and fill modes), `transition-delay`/`animation-delay` lists (negative delays start part-way), positive `animation-duration` lists; inline style, cssText and removal writes transition like rule changes | `linear()` easing, `paused`, fractional or zero iteration counts, zero-duration animations, other transition/animation longhands |
+| Motion | `transition`/`animation` shorthands (s/ms; easing keywords, `cubic-bezier()`, `steps()`; animation directions and fill modes), `transition-delay`/`animation-delay` lists (negative delays start part-way), nonnegative `transition-duration` and positive `animation-duration` lists; inline style, cssText and removal writes transition like rule changes | `linear()` easing, `paused`, fractional or zero iteration counts, zero-duration animations, other transition/animation longhands |
 | Selectors | Tags/IDs/classes, attribute presence/equality, combinators, state pseudo-classes, An+B, `not/is/where/has`, `::before/::after` | Nested `:has`, wider attribute operators, counters |
 | Other | `!important`, custom properties (`--bbl-` reserved), space-separated `rgb()`/`rgba()`, scrollbars, overscroll, unmarked lists, `color-scheme`, opaque `accent-color` (a `var()` one checked at run time) | Runtime-generated stylesheet text, list markers, translucent accents |
 
@@ -162,11 +164,19 @@ the write; host-page sheets still need admission.
 
 ## Rendering
 
-- Scene drivers render each UI segment into a transparent layer at scene sample count; sprite and Window drivers blend
-  into single-sample targets. Canvas overlays precede DOM chrome.
+- Every driver draws the page UI multisampled in its target's format: the first run over an untouched destination
+  resolves into it, later runs into a transparent layer composited over it; engine canvases blend between runs. Canvas
+  overlays precede DOM chrome.
+- Without `viewport-fit=cover` the page lays out in the window's safe rectangle; the window paints the rest with the
+  canvas background (the root's, else the body's, over the scheme's Canvas colour). Chromium 156 under CDP safe-area
+  emulation keeps the whole window for every fit.
 - An engine canvas beneath the UI is an opaque rectangle; a rounded, transformed, translucent, filtered, masked,
   clip-path or overflow-clipped engine canvas refuses.
 - Backdrop blur snapshots preceding UI into FP16 scratch.
+- Disjoint opacity paint folds alpha into vertices after clipping; overlapping groups use paint-bounded targets.
+  Nested effects and backdrop reads retain their ordered composites.
+- The ring around a focused canvas is drawn natively and yields to an author outline: the unhosted engine canvas has
+  no element a UA style rule could match.
 
 ## Limits
 
@@ -176,8 +186,7 @@ the write; host-page sheets still need admission.
 - Retained UI is unavailable under standalone effect/frame-graph drivers.
 - Only backdrop-filter, filter, mask and opacity elements are backdrop roots (none for clip-path, mix-blend-mode).
 - Backdrop blur samples beyond the border box where Chromium mirrors.
-- A page without `viewport-fit=cover` lays out over the whole window; a browser keeps it inside the safe area.
 - The page UI renders at 4x MSAA whatever the engine's `msaaSamples`; Chromium antialiases analytically.
 - Only box-shadow writes are checked against the CSS grammar; other invalid values refuse or are stored as written.
 - A scene canvas hides page paint beneath it even when it clears translucent.
-- Text/sprite renderers present an authored engine canvas only while it fills the window.
+- Text/sprite renderers present an authored engine canvas only while it fills the page viewport.

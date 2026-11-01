@@ -1,5 +1,5 @@
 {
-  "$comment": "Every upstream patch this repository applies, each library's in application order. Script-built libraries keep their patches here as <library>/NNNN-slug.patch, NNNN being the patch's position among its library's script-built patches; vcpkg overlay ports keep theirs in the port directory, whose bytes key each vcpkg install. `variants` selects the builds that apply a patch: `all`, or one of the library's variant tokens (`vcpkg`: the overlay portfile; a port feature's name: the portfile with that feature; `trimmed`: tools/build-sdl-min.ps1; Dawn `android`, `metal` (macOS and iOS), `ios`, `tint` (tools/build-tint.ps1, whose checkout is its own); LabSound `core-only`). native/patch-identity.cmake is the one reader: portfiles and builders take their series from it, builders record `<prefix>_SOURCE`, `<prefix>_PATCHES` (name=sha256 in order) and `<prefix>_VARIANTS` in the artifact's record file, and configure and doctor refuse an artifact whose record differs. `npm run patches:check` verifies files, headers, numbering and portfile coverage. Each owned patch file opens with its rationale; `upstream.state` is this repository's submission: unsubmitted, open, merged, closed (each of the last three with its `link`) or vcpkg (the port's own patch, copied verbatim); `related` links an upstream issue or pull request someone else opened about the same change.",
+  "$comment": "Every upstream patch this repository applies, each library's in application order. Script-built libraries keep their patches here as <library>/NNNN-slug.patch, NNNN being a stable positive identifier increasing in manifest order (deleted patches leave gaps); vcpkg overlay ports keep theirs in the port directory, whose bytes key each vcpkg install. `variants` selects the builds that apply a patch: `all`, or one of the library's variant tokens (`vcpkg`: the overlay portfile; a port feature's name: the portfile with that feature; `trimmed`: tools/build-sdl-min.ps1; Dawn `android`, `metal` (macOS and iOS), `ios`, `tint` (tools/build-tint.ps1, whose checkout is its own); LabSound `core-only`). native/patch-identity.cmake is the one reader: portfiles and builders take their series from it, builders record `<prefix>_SOURCE`, `<prefix>_PATCHES` (name=sha256 in order) and `<prefix>_VARIANTS` in the artifact's record file, and configure and doctor refuse an artifact whose record differs. `npm run patches:check` verifies files, headers, numbering and portfile coverage. Each owned patch file opens with its rationale; `upstream.state` is this repository's submission: unsubmitted, open, merged, closed (each of the last three with its `link`) or vcpkg (the port's own patch, copied verbatim); `related` links an upstream issue or pull request someone else opened about the same change.",
   "libraries": {
     "rmlui": {
       "pin": { "file": "upstream/rmlui.json", "field": "commit" },
@@ -220,168 +220,161 @@
     },
     {
       "library": "rmlui",
-      "file": "native/patches/rmlui/0026-gradient-opacity.patch",
-      "purpose": "Round gradient opacity consistently with solid backgrounds",
-      "upstream": { "state": "unsubmitted" },
-      "variants": ["all"]
-    },
-    {
-      "library": "rmlui",
-      "file": "native/patches/rmlui/0027-range-home-end.patch",
+      "file": "native/patches/rmlui/0026-range-home-end.patch",
       "purpose": "Move a focused range input to its minimum on Home and its maximum on End",
       "upstream": { "state": "unsubmitted" },
       "variants": ["all"]
     },
     {
       "library": "rmlui",
-      "file": "native/patches/rmlui/0028-backdrop-root.patch",
+      "file": "native/patches/rmlui/0027-backdrop-root.patch",
       "purpose": "Backdrop-filter elements are backdrop roots: a layer of their own when a descendant reads a backdrop",
       "upstream": { "state": "unsubmitted" },
       "variants": ["all"]
     },
     {
       "library": "rmlui",
-      "file": "native/patches/rmlui/0029-box-shadow-texture.patch",
+      "file": "native/patches/rmlui/0028-box-shadow-texture.patch",
       "purpose": "Outer box shadows blur before the border-box clip; textures larger than the viewport stretch a band instead of clipping",
       "upstream": { "state": "unsubmitted" },
       "variants": ["all"]
     },
     {
       "library": "rmlui",
-      "file": "native/patches/rmlui/0030-strict-colour-functions.patch",
+      "file": "native/patches/rmlui/0029-strict-colour-functions.patch",
       "purpose": "Colour functions end at their closing parenthesis",
       "upstream": { "state": "unsubmitted" },
       "variants": ["all"]
     },
     {
       "library": "rmlui",
-      "file": "native/patches/rmlui/0031-grid-placement.patch",
+      "file": "native/patches/rmlui/0030-grid-placement.patch",
       "purpose": "Two-axis numeric grid placement, finite and intrinsic tracks, bounded auto-repeat and reversible stacking isolation",
       "upstream": { "state": "unsubmitted" },
       "variants": ["all"]
     },
     {
       "library": "rmlui",
-      "file": "native/patches/rmlui/0032-fractional-font-size.patch",
+      "file": "native/patches/rmlui/0031-fractional-font-size.patch",
       "purpose": "Fractional CSS font sizes, FreeType advances and kerning",
       "upstream": { "state": "unsubmitted" },
       "variants": ["all"]
     },
     {
       "library": "rmlui",
-      "file": "native/patches/rmlui/0033-bounded-font-face-cache.patch",
+      "file": "native/patches/rmlui/0032-bounded-font-face-cache.patch",
       "purpose": "Owning font handles and bounded caches with shared fallback bitmaps",
       "upstream": { "state": "unsubmitted" },
       "variants": ["all"]
     },
     {
       "library": "rmlui",
-      "file": "native/patches/rmlui/0034-fractional-text-width.patch",
+      "file": "native/patches/rmlui/0033-fractional-text-width.patch",
       "purpose": "Fractional advances through word wrapping, selection and geometry",
       "upstream": { "state": "unsubmitted" },
       "variants": ["all"]
     },
     {
       "library": "rmlui",
-      "file": "native/patches/rmlui/0035-grid-form-controls.patch",
+      "file": "native/patches/rmlui/0034-grid-form-controls.patch",
       "purpose": "Form controls stretch as non-replaced grid items",
       "upstream": { "state": "unsubmitted" },
       "variants": ["all"]
     },
     {
       "library": "rmlui",
-      "file": "native/patches/rmlui/0036-css-time-delays.patch",
+      "file": "native/patches/rmlui/0035-css-time-delays.patch",
       "purpose": "Millisecond times, transition-delay/animation-delay longhands and negative delays",
       "upstream": { "state": "unsubmitted" },
       "variants": ["all"]
     },
     {
       "library": "rmlui",
-      "file": "native/patches/rmlui/0037-css-easing-functions.patch",
+      "file": "native/patches/rmlui/0036-css-easing-functions.patch",
       "purpose": "Exact CSS easing functions and keywords in transition and animation lists",
       "upstream": { "state": "unsubmitted" },
       "variants": ["all"]
     },
     {
       "library": "rmlui",
-      "file": "native/patches/rmlui/0038-css-important.patch",
+      "file": "native/patches/rmlui/0037-css-important.patch",
       "purpose": "CSS !important in stylesheets and inline styles",
       "upstream": { "state": "unsubmitted" },
       "variants": ["all"]
     },
     {
       "library": "rmlui",
-      "file": "native/patches/rmlui/0039-animation-shorthand.patch",
+      "file": "native/patches/rmlui/0038-animation-shorthand.patch",
       "purpose": "CSS animation shorthand grammar, directions and fill modes",
       "upstream": { "state": "unsubmitted" },
       "variants": ["all"]
     },
     {
       "library": "rmlui",
-      "file": "native/patches/rmlui/0040-substitution-filter.patch",
+      "file": "native/patches/rmlui/0039-substitution-filter.patch",
       "purpose": "Client filter over values after var() substitution",
       "upstream": { "state": "unsubmitted" },
       "variants": ["all"]
     },
     {
       "library": "rmlui",
-      "file": "native/patches/rmlui/0041-grid-template-areas.patch",
+      "file": "native/patches/rmlui/0040-grid-template-areas.patch",
       "purpose": "Named grid areas, grid-area and area line names",
       "upstream": { "state": "unsubmitted" },
       "variants": ["all"]
     },
     {
       "library": "rmlui",
-      "file": "native/patches/rmlui/0042-aspect-ratio.patch",
+      "file": "native/patches/rmlui/0041-aspect-ratio.patch",
       "purpose": "Preferred aspect ratio of non-replaced boxes",
       "upstream": { "state": "unsubmitted" },
       "variants": ["all"]
     },
     {
       "library": "rmlui",
-      "file": "native/patches/rmlui/0043-clip-path.patch",
+      "file": "native/patches/rmlui/0042-clip-path.patch",
       "purpose": "clip-path inset() and polygon() clipping, hit testing and transitions",
       "upstream": { "state": "unsubmitted" },
       "variants": ["all"]
     },
     {
       "library": "rmlui",
-      "file": "native/patches/rmlui/0044-inline-transitions.patch",
+      "file": "native/patches/rmlui/0043-inline-transitions.patch",
       "purpose": "Transitions for author inline declarations",
       "upstream": { "state": "unsubmitted" },
       "variants": ["all"]
     },
     {
       "library": "rmlui",
-      "file": "native/patches/rmlui/0045-grid-relative-lengths.patch",
+      "file": "native/patches/rmlui/0044-grid-relative-lengths.patch",
       "purpose": "Grid track lengths resolve against the container font and viewport",
       "upstream": { "state": "unsubmitted" },
       "variants": ["all"]
     },
     {
       "library": "rmlui",
-      "file": "native/patches/rmlui/0046-animation-update-requests.patch",
+      "file": "native/patches/rmlui/0045-animation-update-requests.patch",
       "purpose": "Next-update requests for every running animation, hidden or not, and none for a completed forwards fill",
       "upstream": { "state": "unsubmitted" },
       "variants": ["all"]
     },
     {
       "library": "rmlui",
-      "file": "native/patches/rmlui/0047-animation-duration.patch",
-      "purpose": "The animation-duration longhand: a duration list replacing the animation list's durations item by item",
+      "file": "native/patches/rmlui/0046-duration-longhands.patch",
+      "purpose": "The transition-duration and animation-duration longhands: nonnegative duration lists replacing the shorthand list's durations item by item",
       "upstream": { "state": "unsubmitted" },
       "variants": ["all"]
     },
     {
       "library": "rmlui",
-      "file": "native/patches/rmlui/0048-collapsible-white-space.patch",
+      "file": "native/patches/rmlui/0047-collapsible-white-space.patch",
       "purpose": "White space collapses as CSS does: collapsible spaces ending a line are removed (pre-wrap ones hang), one space remains between inline boxes, and lines of it do not block margin collapsing",
       "upstream": { "state": "unsubmitted" },
       "variants": ["all"]
     },
     {
       "library": "rmlui",
-      "file": "native/patches/rmlui/0049-group-opacity.patch",
+      "file": "native/patches/rmlui/0048-group-opacity.patch",
       "purpose": "CSS group opacity: an element below opacity 1 paints itself and its descendants into a layer composited at that opacity",
       "upstream": { "state": "unsubmitted" },
       "variants": ["all"]

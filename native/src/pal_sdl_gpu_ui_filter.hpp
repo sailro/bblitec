@@ -1,5 +1,6 @@
 #pragma once
 #include "pal_gpu_frame.hpp"
+#include "pal_gpu_ui.hpp"
 #include "pal_ui_filter.hpp"
 #include "pal_sdl_gpu_shared.hpp"
 
@@ -37,6 +38,7 @@ struct UiFilterSdlResources {
     SDL_GPUGraphicsPipeline* pipeline = nullptr;
     std::vector<Layer> layers;
     std::vector<Workspace> workspaces;
+    UiTargetProfile profile{"sdl_gpu"};
 
     void begin_frame() {
         for (auto& layer : layers)
@@ -74,7 +76,13 @@ struct UiFilterSdlResources {
         if (layers.size() < id)
             layers.resize(id);
         auto& layer = layers[id - 1];
-        auto* result = layer.texture.ensure(device, frame.width, frame.height, format);
+        const auto rect = ui_layer_target(frame, id).rect;
+        const auto width = static_cast<std::uint32_t>(rect.width);
+        const auto height = static_cast<std::uint32_t>(rect.height);
+        if (!layer.texture.value || layer.texture.width != width || layer.texture.height != height)
+            profile.allocated("filter-layer", width, height, 1,
+                              SDL_GPUTextureFormatTexelBlockSize(format));
+        auto* result = layer.texture.ensure(device, width, height, format);
         if (!layer.used) {
             SDL_GPUColorTargetInfo attachment{};
             attachment.texture = result;
@@ -132,8 +140,13 @@ inline void render_ui_composite_sdl_gpu(SDL_GPUDevice* device, SDL_GPUCommandBuf
     auto* snapshot = textures.get(UiFilterSurface::Snapshot)
                          .ensure(device, composite.width, composite.height, format);
     SdlCopyPass copy{SDL_BeginGPUCopyPass(command)};
-    const SDL_GPUTextureLocation from{
-        source, 0, 0, static_cast<Uint32>(composite.left), static_cast<Uint32>(composite.top), 0};
+    const auto source_rect = ui_layer_target(frame, composite.source).rect;
+    const SDL_GPUTextureLocation from{source,
+                                      0,
+                                      0,
+                                      static_cast<Uint32>(composite.left - source_rect.x),
+                                      static_cast<Uint32>(composite.top - source_rect.y),
+                                      0};
     const SDL_GPUTextureLocation to{snapshot, 0, 0, 0, 0, 0};
     SDL_CopyGPUTextureToTexture(copy, &from, &to, composite.width, composite.height, 1, false);
     copy.end();
@@ -173,8 +186,23 @@ inline void render_ui_composite_sdl_gpu(SDL_GPUDevice* device, SDL_GPUCommandBuf
     SDL_BindGPUIndexBuffer(pass, &index_binding, SDL_GPU_INDEXELEMENTSIZE_32BIT);
     const SDL_GPUTextureSamplerBinding texture{textures.get(plan.result).value, sampler};
     SDL_BindGPUFragmentSamplers(pass, 0, &texture, 1);
-    const std::array<float, 16> projection{
-        2.0f / frame.width, 0, 0, 0, 0, -2.0f / frame.height, 0, 0, 0, 0, .0001f, 0, -1, 1, 0, 1};
+    const auto destination_rect = ui_layer_target(frame, composite.destination).rect;
+    const std::array<float, 16> projection{2.0f / destination_rect.width,
+                                           0,
+                                           0,
+                                           0,
+                                           0,
+                                           -2.0f / destination_rect.height,
+                                           0,
+                                           0,
+                                           0,
+                                           0,
+                                           .0001f,
+                                           0,
+                                           -1,
+                                           1,
+                                           0,
+                                           1};
     const std::array<float, 2> translation{0, 0};
     SdlGpuWriteDevice{}.write_vertex_uniform(command, 0, projection.data(), sizeof(projection));
     SdlGpuWriteDevice{}.write_vertex_uniform(command, 1, translation.data(), sizeof(translation));

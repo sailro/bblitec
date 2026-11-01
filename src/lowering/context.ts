@@ -917,12 +917,23 @@ export class LoweringContext {
      * target is the binding or property `name`, whatever the receiver.
      */
     public writersOf(name: string): readonly WriteSite[] {
-        let index = writerIndexes.get(this);
+        return this.pinnedAccesses().writes.get(name) ?? [];
+    }
+
+    /** One pinned walk owns the write and property-access indexes. */
+    private pinnedAccesses(): PinnedAccesses {
+        let index = accessIndexes.get(this);
         if (!index) {
-            const built = new Map<string, WriteSite[]>();
+            const writes = new Map<string, WriteSite[]>();
+            const members = new Map<string, ts.PropertyAccessExpression[]>();
             for (const modulePath of this.store.listSources()) {
                 if (!modulePath.startsWith("src/")) continue;
                 const visit = (node: ts.Node): void => {
+                    if (ts.isPropertyAccessExpression(node)) {
+                        const accesses = members.get(node.name.text) ?? [];
+                        accesses.push(node);
+                        members.set(node.name.text, accesses);
+                    }
                     for (const write of writeSites(node)) {
                         const target = write.target;
                         const written = ts.isIdentifier(target)
@@ -931,18 +942,18 @@ export class LoweringContext {
                               ? target.name.text
                               : undefined;
                         if (written === undefined) continue;
-                        const writes = built.get(written) ?? [];
-                        writes.push(write);
-                        built.set(written, writes);
+                        const sites = writes.get(written) ?? [];
+                        sites.push(write);
+                        writes.set(written, sites);
                     }
                     ts.forEachChild(node, visit);
                 };
                 visit(this.sourceFile(modulePath));
             }
-            index = built;
-            writerIndexes.set(this, index);
+            index = { writes, members };
+            accessIndexes.set(this, index);
         }
-        return index.get(name) ?? [];
+        return index;
     }
 
     /**
@@ -979,25 +990,7 @@ export class LoweringContext {
             ([module, symbol]) =>
                 this.functionDeclaration(module, symbol).declaration,
         );
-        let index = memberAccessIndexes.get(this);
-        if (!index) {
-            const built = new Map<string, ts.PropertyAccessExpression[]>();
-            for (const modulePath of this.store.listSources()) {
-                if (!modulePath.startsWith("src/")) continue;
-                const visit = (node: ts.Node): void => {
-                    if (ts.isPropertyAccessExpression(node)) {
-                        const accesses = built.get(node.name.text) ?? [];
-                        accesses.push(node);
-                        built.set(node.name.text, accesses);
-                    }
-                    ts.forEachChild(node, visit);
-                };
-                visit(this.sourceFile(modulePath));
-            }
-            index = built;
-            memberAccessIndexes.set(this, index);
-        }
-        const accesses = index.get(name) ?? [];
+        const accesses = this.pinnedAccesses().members.get(name) ?? [];
         const stray = accesses.find(
             (access) =>
                 !declarations.some((declaration) =>
@@ -1589,6 +1582,36 @@ export class LoweringContext {
         return this.numericValue(initializer, file);
     }
 
+    /**
+     * A pinned function's `name = <number>` parameter default, at `index`:
+     * the value every call that omits the argument takes, which the port
+     * emits at those call sites rather than restating it.
+     */
+    public numericParameterDefault(
+        declaration: ts.FunctionDeclaration,
+        index: number,
+        name: string,
+    ): number {
+        const parameter = declaration.parameters[index];
+        const initializer =
+            parameter?.initializer &&
+            this.unwrapExpression(parameter.initializer);
+        if (
+            !parameter ||
+            !ts.isIdentifier(parameter.name) ||
+            parameter.name.text !== name ||
+            !initializer ||
+            !ts.isNumericLiteral(initializer)
+        )
+            return this.contractError(
+                parameter ?? declaration,
+                `Expected ${declaration.name?.text ?? "the function"}'s ` +
+                    `parameter ${index + 1} to be \`${name} = <number>\`; ` +
+                    "the port emits that default where a call omits it.",
+            );
+        return Number(initializer.text);
+    }
+
     /** The string a pinned module-scope `const` states. */
     public pinnedString(modulePath: string, name: string): string {
         const { initializer, file } = this.requiredConstant(
@@ -1784,15 +1807,11 @@ export class LoweringContext {
 }
 
 let sharedPinned: LoweringContext | undefined;
-/** `LoweringContext.writersOf`'s index, one per context's sources. */
-const writerIndexes = new WeakMap<
-    LoweringContext,
-    ReadonlyMap<string, WriteSite[]>
->();
-const memberAccessIndexes = new WeakMap<
-    LoweringContext,
-    ReadonlyMap<string, ts.PropertyAccessExpression[]>
->();
+interface PinnedAccesses {
+    writes: ReadonlyMap<string, WriteSite[]>;
+    members: ReadonlyMap<string, ts.PropertyAccessExpression[]>;
+}
+const accessIndexes = new WeakMap<LoweringContext, PinnedAccesses>();
 
 /**
  * Whether `node` lies inside `owner`, by span rather than node identity:

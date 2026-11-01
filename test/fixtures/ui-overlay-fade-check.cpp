@@ -154,6 +154,64 @@ int main() try {
                 blue += is_blue;
             }
         check(red > 0 && blue > 0, "the group paints both backgrounds");
+        check(grouped->bounded_layers.size() == 1 &&
+                  grouped->bounded_layers.front().rect == PixelViewport{0, 0, 100, 100},
+              "overlapping group paint opens only a bounds-sized target");
+
+        // Two separated children need no group target, even during an opacity animation.
+        ui_set_style_property(engine, group, "left", "40px");
+        ui_set_style_property(engine, group, "top", "30px");
+        ui_set_style_property(engine, group, "background-color", "transparent");
+        ui_set_attribute(engine, child, "style",
+                         "position:absolute;left:0;top:0;width:20px;height:20px;background:red;");
+        const auto sibling = ui_create_element(engine, "div");
+        ui_set_attribute(
+            engine, sibling, "style",
+            "position:absolute;left:40px;top:0;width:20px;height:20px;background:blue;");
+        ui_append_child(engine, group, sibling);
+        ui_set_style_property(engine, group, "clip-path", "inset(2px)");
+        for (const auto opacity : {"0.25", "0.5", "0.75"}) {
+            ui_set_style_property(engine, group, "opacity", opacity);
+            const auto* separate = frames_until(fixture_time + 32);
+            check(separate && separate->operations.empty() && separate->bounded_layers.empty(),
+                  "non-overlapping clipped paint folds animated opacity into vertex alpha");
+            const auto alpha = static_cast<std::uint8_t>(std::lround(std::stof(opacity) * 255));
+            check(!separate->draws.empty(), "separated group paints its children");
+            for (const auto& draw : separate->draws) {
+                check(draw.layer == 0, "separated children draw into their destination");
+                for (std::uint32_t i = draw.first_index; i < draw.first_index + draw.index_count;
+                     ++i)
+                    check(separate->vertices[separate->indices[i]].alpha == alpha,
+                          "each vertex receives the group alpha once");
+            }
+        }
+        ui_set_style_property(engine, group, "clip-path", "none");
+        ui_set_style_property(engine, sibling, "left", "10px");
+        const auto* overlap = frames_until(fixture_time + 32);
+        check(overlap && overlap->bounded_layers.size() == 1 &&
+                  overlap->bounded_layers.front().rect == PixelViewport{40, 30, 30, 20},
+              "overlapping children retain their offset bounds, not the full page");
+        const auto& composite = overlap->composites.back();
+        check(composite.left == 40 && composite.top == 30 && composite.width == 30 &&
+                  composite.height == 20,
+              "a cropped layer composites back at its original page position");
+        for (const auto& draw : overlap->draws)
+            for (std::uint32_t i = draw.first_index; i < draw.first_index + draw.index_count; ++i) {
+                const auto& vertex = overlap->vertices[overlap->indices[i]];
+                check(vertex.x >= 0 && vertex.x <= 30 && vertex.y >= 0 && vertex.y <= 20,
+                      "bounded target geometry uses layer-local coordinates");
+            }
+    }
+    {
+        pal::UiRenderFrame frame;
+        frame.width = frame.height = 100;
+        pal::append_ui_quad(frame, 0, 0, 20, 20, 255);
+        pal::append_ui_quad(frame, 10, 0, 30, 20, 255);
+        frame.draws.push_back({0, 12, 0, 0, 0, 100, 100});
+        check(pal::ui_paint_overlaps(frame, 0), "overlap inside a single draw also needs a layer");
+        for (std::size_t i = 4; i < frame.vertices.size(); ++i)
+            frame.vertices[i].x += 10;
+        check(!pal::ui_paint_overlaps(frame, 0), "shared triangle and box edges are not overlap");
     }
     SDL_DestroyWindow(window);
     SDL_Quit();

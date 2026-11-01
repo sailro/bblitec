@@ -29,6 +29,7 @@ import {
 } from "../src/tooling/native-run.js";
 import {
     cppFunction,
+    cppRecord,
     cppSection,
     nativeFixtureVcpkgRoot,
     optionalNativeFixtureTools,
@@ -620,8 +621,10 @@ test("iOS source setup observes its actual canvas extent before rendering, while
         readFileSync("native/src/pal.cpp", "utf8"),
         "Engine create_engine(",
     );
+    const platform = readFileSync("native/src/pal_platform_events.hpp", "utf8");
+    const safeArea = cppRecord(platform, "struct WindowSafeArea {");
     const metrics = cppFunction(
-        readFileSync("native/src/pal_platform_events.hpp", "utf8"),
+        platform,
         "inline bool update_engine_canvas_metrics(",
     );
     const source = join(directory, "initial.cpp");
@@ -636,6 +639,8 @@ namespace bbl::pal {
 using SDL_WindowFlags = unsigned;
 inline constexpr unsigned SDL_INIT_VIDEO = 1, SDL_INIT_EVENTS = 2, SDL_WINDOW_RESIZABLE = 4, SDL_WINDOW_NOT_FOCUSABLE = 8;
 struct SDL_Window {};
+struct SDL_Rect { int x = 0, y = 0, w = 0, h = 0; };
+${safeArea};
 SDL_Window fixture_window;
 int scope = 1, windows = 0, failure = 0, stamps = 0;
 int* active_window_run = &scope;

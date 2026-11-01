@@ -47,6 +47,7 @@
 #include "pal_ui_backdrop.hpp"
 #include "pal_ui_filter.hpp"
 #include "pal_ui_snapshot.hpp"
+#include "pal_ui_opacity.hpp"
 #include "pal_ui_canvas.hpp"
 #include "pal_ui_defaults.hpp"
 #include "pal_ui_length_math.hpp"
@@ -859,7 +860,9 @@ UiClientRect ui_get_client_rect(Engine& engine, UiElementHandle element) {
         return engine.ui_measure_element(engine, element);
     UiElementRecord& record = ui_element(engine, element);
     record.client_rect_requested = true;
-    const double scale = engine.canvas_client_width / engine.options.width;
+    const double scale =
+        engine.canvas_client_width /
+        page_canvas(engine.ui_page_viewport, engine.options.width, engine.options.height).width();
     const auto& rect = record.client_rect;
     return {rect.left * scale,        rect.top * scale,          rect.width * scale,
             rect.height * scale,      rect.offset_width * scale, rect.offset_height * scale,
@@ -1806,6 +1809,10 @@ void ui_set_style_property(Engine& engine, UiElementHandle element, std::string 
     // A CSSOM write creates the element's `style` attribute.
     note_attribute_order(record, "style");
     mark_ui_changed(engine);
+}
+
+std::string ui_background_longhand(std::string_view shorthand, std::string_view initial) {
+    return std::string(pal::ui_css_wide_keyword(shorthand).value_or(initial));
 }
 
 std::string ui_get_style_property(Engine& engine, UiElementHandle element, std::string_view name) {
@@ -3148,10 +3155,8 @@ UiComputedStyle ui_serialized_computed_style(Rml::Element& element,
     const auto& computed = element.GetComputedValues();
     UiComputedStyle style;
     style.display = displays.at(static_cast<std::size_t>(computed.display()));
-    // RmlUi inherits opacity; CSS computes the element's own value, 1 unless declared.
-    const Rml::Property* opacity = element.GetLocalProperty(Rml::PropertyId::Opacity);
     char number[32];
-    std::snprintf(number, sizeof number, "%.6g", opacity ? opacity->Get<float>() : 1.0f);
+    std::snprintf(number, sizeof number, "%.6g", computed.group_opacity());
     style.opacity = number;
     style.visibility =
         computed.visibility() == Rml::Style::Visibility::Hidden ? "hidden" : "visible";
@@ -3452,9 +3457,9 @@ void replace_css_identifier(std::string& text, std::string_view identifier,
     }
 }
 
-/** The time longhands a transition or animation shorthand resets. */
+/** The time longhands a transition or animation shorthand resets (RmlUi patches 0035, 0046). */
 std::span<const std::string_view> ui_time_longhands(std::string_view shorthand) {
-    static constexpr std::string_view transition[] = {"transition-delay"};
+    static constexpr std::string_view transition[] = {"transition-delay", "transition-duration"};
     static constexpr std::string_view animation[] = {"animation-delay", "animation-duration"};
     if (ascii_iequals(shorthand, "transition"))
         return transition;
@@ -3666,18 +3671,19 @@ std::string rml_css_resolve_variable_colors(std::string value) {
          (position = value.find(marker, position)) != std::string::npos;) {
         const std::size_t open = position + marker.size();
         const std::size_t end = value.find(')', open);
-        const auto refuse = [&] {
-            throw std::runtime_error(
+        const auto refusal = [&] {
+            return std::runtime_error(
                 "Unsupported retained UI colour after variable substitution: " +
                 value.substr(position));
         };
         if (end == std::string::npos)
-            refuse();
+            throw refusal();
         const auto resolved = rml_rgba(std::string_view(value).substr(open, end - open));
         if (!resolved)
-            refuse();
-        value.replace(position, end + 1 - position, *resolved);
-        position += resolved->size();
+            throw refusal();
+        const std::string& colour = *resolved;
+        value.replace(position, end + 1 - position, colour);
+        position += colour.size();
     }
     return value;
 }
@@ -4489,9 +4495,20 @@ public:
         }
     }
 
-    void begin_frame(std::uint32_t width, std::uint32_t height) {
+    /**
+     * Starts a `width` x `height` frame whose page lays out in `page` (`page_canvas`): every
+     * position the page records moves by its origin, and the page paints nothing outside it.
+     */
+    void begin_frame(std::uint32_t width, std::uint32_t height, const PixelViewport& page) {
         frame.width = width;
         frame.height = height;
+        page_bounds =
+            Rml::Rectanglei::FromPositionSize({page.x, page.y}, {page.width, page.height});
+        page_origin =
+            page_bounds.Position() == Rml::Vector2i{}
+                ? std::nullopt
+                : std::optional(Rml::Matrix4f::Translate(static_cast<float>(page_bounds.Left()),
+                                                         static_cast<float>(page_bounds.Top()), 0));
         frame.vertices.clear();
         frame.indices.clear();
         frame.textures.clear();
@@ -4500,16 +4517,44 @@ public:
         layers.clear();
         frame.composites.clear();
         frame.operations.clear();
+        frame.bounded_layers.clear();
         frame.layer_count = 0;
         clip_mask.clear();
         clip_mask_enabled = false;
         frame.composite_first_index = 0;
         scissor_enabled = false;
         scissor = frame_bounds();
-        transform = Rml::Matrix4f::Identity();
+        transform = page_origin.value_or(Rml::Matrix4f::Identity());
         canvas_occluders.clear();
         occluder_rects.clear();
         occlusion_outside.clear();
+    }
+
+    /** Whether the page viewport leaves part of the frame, a browser's letterbox, unpainted. */
+    [[nodiscard]] bool letterboxed() const {
+        return page_bounds != Rml::Rectanglei::FromSize(
+                                  {static_cast<int>(frame.width), static_cast<int>(frame.height)});
+    }
+
+    /** Paints what the window shows outside the page viewport, the letterbox, in `color`. */
+    void paint_letterbox(Rml::ColourbPremultiplied color) {
+        const auto first_index = static_cast<std::uint32_t>(frame.indices.size());
+        const auto band = [&](int left, int top, int right, int bottom) {
+            if (right > left && bottom > top)
+                append_ui_quad(frame, static_cast<float>(left), static_cast<float>(top),
+                               static_cast<float>(right), static_cast<float>(bottom), color.red,
+                               color.green, color.blue, color.alpha);
+        };
+        const int width = static_cast<int>(frame.width), height = static_cast<int>(frame.height);
+        band(0, 0, width, page_bounds.Top());
+        band(0, page_bounds.Bottom(), width, height);
+        band(0, page_bounds.Top(), page_bounds.Left(), page_bounds.Bottom());
+        band(page_bounds.Right(), page_bounds.Top(), width, page_bounds.Bottom());
+        if (frame.indices.size() == first_index)
+            return;
+        frame.draws.push_back(UiRenderDraw{
+            first_index, static_cast<std::uint32_t>(frame.indices.size()) - first_index, 0, 0, 0,
+            frame.width, frame.height, false, 0});
     }
 
     /**
@@ -4597,8 +4642,7 @@ public:
         else if (operation == Rml::ClipMaskOperation::Intersect)
             clip_mask = intersect_ui_masks(clip_mask, triangles);
         else if (operation == Rml::ClipMaskOperation::SetInverse)
-            clip_mask = subtract_ui_masks(
-                ui_rect_mask(0, 0, float(frame.width), float(frame.height)), triangles);
+            clip_mask = subtract_ui_masks(ui_frame_mask(), triangles);
         else
             throw std::runtime_error("Unknown retained UI mask operation.");
     }
@@ -4628,7 +4672,7 @@ public:
     }
 
     Rml::LayerHandle PushLayer() override {
-        const auto id = static_cast<std::uint32_t>(layers.size() + 1);
+        const auto id = frame.layer_count + 1;
         layers.push_back({id, {}, UiFrameCheckpoint(frame)});
         frame.layer_count = std::max(frame.layer_count, id);
         frame.operations.push_back({UiRenderOperation::Kind::ResetLayer,
@@ -4666,16 +4710,81 @@ public:
             return;
         }
         const auto viewport = frame_bounds();
-        const auto output = active_scissor().Intersect(viewport);
+        auto output = active_scissor().Intersect(viewport);
         auto mask = ui_rect_mask(float(output.Left()), float(output.Top()), float(output.Right()),
                                  float(output.Bottom()));
         if (clip_mask_enabled)
             mask = intersect_ui_masks(mask, clip_mask);
-        // A layer's content keeps its filter spread; what the composite lays
-        // into the frame beneath an engine canvas is clipped out of it.
-        if (destination == 0 && occluded(float(output.Left()), float(output.Top()),
-                                         float(output.Right()), float(output.Bottom())))
+        // A layer keeps its filter spread; its composite clips what lies beneath a canvas.
+        const bool canvas_clipped =
+            destination == 0 && occluded(float(output.Left()), float(output.Top()),
+                                         float(output.Right()), float(output.Bottom()));
+        if (canvas_clipped)
             mask = intersect_ui_masks(mask, occlusion_outside);
+        // A pure alpha group with only geometry can avoid a layer unless its painted
+        // triangles overlap. Nested effects and backdrop reads keep their ordered layers.
+        if (!layers.empty() && source == layers.back().id &&
+            destination == (layers.size() > 1 ? layers[layers.size() - 2].id : 0)) {
+            const auto& start = layers.back().checkpoint;
+            const auto alpha = ui_group_alpha(filters);
+            const bool direct_draws = frame.operations.size() == start.operations + 1;
+            const bool reads_group = std::any_of(
+                frame.composites.begin() + static_cast<std::ptrdiff_t>(start.composites),
+                frame.composites.end(),
+                [&](const UiLayerComposite& composite) { return composite.source == source; });
+            if (alpha && !reads_group) {
+                if (direct_draws && (clip_mask_enabled || canvas_clipped))
+                    clip_ui_group(frame, start.draws, start.vertices, start.indices, mask);
+                UiReachedRect reached;
+                for (std::size_t i = start.draws; i < frame.draws.size(); ++i)
+                    if (frame.draws[i].layer == source)
+                        if (const auto clip =
+                                clamped_ui_scissor(frame.draws[i], frame.width, frame.height))
+                            reached.add(frame, frame.draws[i], *clip);
+                for (std::size_t i = start.composites; i < frame.composites.size(); ++i) {
+                    const auto& composite = frame.composites[i];
+                    if (composite.destination != source)
+                        continue;
+                    const UiRenderDraw draw{composite.first_index, composite.index_count, 0, 0, 0,
+                                            frame.width,           frame.height};
+                    if (const auto clip = clamped_ui_scissor(draw, frame.width, frame.height))
+                        reached.add(frame, draw, *clip);
+                }
+                const auto bounds = reached.rect();
+                if (direct_draws && !bounds) {
+                    frame.operations.resize(start.operations);
+                    frame.draws.resize(start.draws);
+                    return;
+                }
+                const bool contained = bounds && bounds->left >= output.Left() &&
+                                       bounds->top >= output.Top() &&
+                                       bounds->left + bounds->width <= output.Right() &&
+                                       bounds->top + bounds->height <= output.Bottom();
+                if (contained && direct_draws && !ui_paint_overlaps(frame, start.draws)) {
+                    for (std::size_t i = start.vertices; i < frame.vertices.size(); ++i) {
+                        auto& vertex = frame.vertices[i];
+                        for (auto* channel :
+                             {&vertex.red, &vertex.green, &vertex.blue, &vertex.alpha})
+                            *channel = static_cast<std::uint8_t>(std::lround(*channel * *alpha));
+                    }
+                    for (std::size_t i = start.draws; i < frame.draws.size(); ++i)
+                        frame.draws[i].layer = static_cast<std::uint32_t>(destination);
+                    frame.operations.resize(start.operations);
+                    return;
+                }
+                if (bounds) {
+                    output = output.Intersect(Rml::Rectanglei::FromPositionSize(
+                        {bounds->left, bounds->top}, {bounds->width, bounds->height}));
+                    mask = intersect_ui_masks(
+                        mask, ui_rect_mask(float(output.Left()), float(output.Top()),
+                                           float(output.Right()), float(output.Bottom())));
+                    if (output.Width() > 0 && output.Height() > 0)
+                        frame.bounded_layers.push_back(
+                            {static_cast<std::uint32_t>(source),
+                             {output.Left(), output.Top(), output.Width(), output.Height()}});
+                }
+            }
+        }
         const auto before_draw = static_cast<std::uint32_t>(frame.draws.size());
         if (layers.size() == 1 && layers.back().backdrop && source == layers.back().id &&
             destination == 0 && filters.empty()) {
@@ -5107,19 +5216,22 @@ public:
 
     void EnableScissorRegion(bool enable) override { scissor_enabled = enable; }
 
-    Rml::Rectanglei frame_bounds() const {
-        return Rml::Rectanglei::FromSize(
-            Rml::Vector2i{static_cast<int>(frame.width), static_cast<int>(frame.height)});
-    }
+    /** The page viewport in the frame: all the page paints. */
+    Rml::Rectanglei frame_bounds() const { return page_bounds; }
 
     // The region draws and composites are limited to: the scissor while RmlUi
-    // enables one, the whole frame otherwise.
+    // enables one, the whole page otherwise.
     Rml::Rectanglei active_scissor() const { return scissor_enabled ? scissor : frame_bounds(); }
 
-    void SetScissorRegion(Rml::Rectanglei region) override { scissor = region; }
+    void SetScissorRegion(Rml::Rectanglei region) override {
+        scissor = region.Translate(page_bounds.Position()).IntersectIfValid(page_bounds);
+    }
 
     void SetTransform(const Rml::Matrix4f* new_transform) override {
-        transform = new_transform ? *new_transform : Rml::Matrix4f::Identity();
+        if (!new_transform)
+            transform = page_origin.value_or(Rml::Matrix4f::Identity());
+        else
+            transform = page_origin ? *page_origin * *new_transform : *new_transform;
     }
 
     UiRenderFrame frame;
@@ -5217,6 +5329,9 @@ private:
 
     Rml::Rectanglei scissor{};
     Rml::Matrix4f transform = Rml::Matrix4f::Identity();
+    /** The page viewport in the frame, and the translation to its origin when it has one. */
+    Rml::Rectanglei page_bounds{};
+    std::optional<Rml::Matrix4f> page_origin;
     std::uint64_t next_texture_id = 1;
     bool scissor_enabled = false;
     bool nearest_sampling = false;
@@ -5249,11 +5364,14 @@ private:
                                                 occluder.rect.right, occluder.rect.bottom);
             covered.insert(covered.end(), rectangle.begin(), rectangle.end());
         }
-        occlusion_outside =
-            occluder_rects.empty()
-                ? std::vector<UiClipTriangle>{}
-                : subtract_ui_masks(ui_rect_mask(0, 0, float(frame.width), float(frame.height)),
-                                    covered);
+        occlusion_outside = occluder_rects.empty() ? std::vector<UiClipTriangle>{}
+                                                   : subtract_ui_masks(ui_frame_mask(), covered);
+    }
+
+    /** The page viewport as a clip mask. */
+    std::vector<UiClipTriangle> ui_frame_mask() const {
+        return ui_rect_mask(float(page_bounds.Left()), float(page_bounds.Top()),
+                            float(page_bounds.Right()), float(page_bounds.Bottom()));
     }
 
     /** Whether a rectangle overlaps an engine canvas that has not painted yet. */
@@ -5284,12 +5402,10 @@ UiRmlRuntime* substitution_runtime = nullptr;
 void substitute_css(const Rml::String& property, Rml::String& value);
 
 struct UiRmlRuntime {
-    UiRmlRuntime(Engine& engine, SDL_Window* window, std::uint32_t width, std::uint32_t height,
-                 bool (*read_motion_preference)() = system_reduced_motion,
-                 InputCapabilities (*read_input_capabilities)() = platform_input_capabilities)
+    UiRmlRuntime(Engine& engine, SDL_Window* window, std::uint32_t width, std::uint32_t height)
         : engine(engine), window(window), system_interface(window), viewport_width(width),
-          viewport_height(height), motion_preference_reader(read_motion_preference),
-          input_capabilities_reader(read_input_capabilities) {
+          viewport_height(height) {
+        engine.ui_lays_out_page = true;
         UiProjectionScope projection_scope(projecting);
         try {
             Rml::SetSystemInterface(&system_interface);
@@ -5531,6 +5647,7 @@ struct UiRmlRuntime {
     }
 
     ~UiRmlRuntime() {
+        engine.ui_lays_out_page = false;
         if (engine.dom_input) {
             engine.dom_input->hit_path = {};
             engine.dom_input->focus_path = {};
@@ -5593,19 +5710,31 @@ struct UiRmlRuntime {
     }
 
     /**
-     * The insets env() reads: the window's safe area in CSS px under `viewport-fit=cover`, none
-     * otherwise (the page's viewport is then the safe rectangle). Read once a value uses env().
+     * The insets env() reads: the page viewport's (`Engine::ui_page_viewport`) under
+     * `viewport-fit=cover`, none otherwise (the page's viewport is then the safe rectangle).
      */
     UiSafeAreaInsets read_safe_area() const {
         if (!engine.ui_viewport_fit_cover)
             return {};
-        SDL_Rect safe{};
-        int width = 0, height = 0;
-        if (!SDL_GetWindowSafeArea(window, &safe) || !SDL_GetWindowSize(window, &width, &height))
-            throw std::runtime_error(std::string("SDL window safe area: ") + SDL_GetError());
-        const double scale = engine.canvas_window_to_client_scale;
-        return {safe.y * scale, (width - safe.x - safe.w) * scale,
-                (height - safe.y - safe.h) * scale, safe.x * scale};
+        const PageViewport& page = engine.ui_page_viewport;
+        return {page.inset_top, page.inset_right, page.inset_bottom, page.inset_left};
+    }
+
+    /**
+     * What Chromium paints beyond the page's content, a letterbox included: the root's
+     * background, else the body's, which propagates to the canvas, over the base background
+     * (the Canvas system colour of the root's colour scheme).
+     */
+    Rml::ColourbPremultiplied canvas_background() const {
+        Rml::Colourb color = document->GetComputedValues().background_color();
+        if (color.alpha == 0 && document_body)
+            color = document_body->GetComputedValues().background_color();
+        const int base = ui_dark_color_scheme(*document, control_scheme_properties) ? 18 : 255;
+        const auto over = [&](int channel) {
+            return static_cast<Rml::byte>(
+                std::lround((channel * color.alpha + base * (255 - color.alpha)) / 255.0));
+        };
+        return {over(color.red), over(color.green), over(color.blue), 255};
     }
 
     /** Re-reads the safe area of a page that used env(); true when it changed. */
@@ -5694,7 +5823,7 @@ struct UiRmlRuntime {
             else
                 element.SetProperty(std::string(longhand), "auto");
         }
-        // Author writes: a property the element's transition list covers animates (RmlUi patch 0044).
+        // Author writes: a property the element's transition list covers animates (RmlUi patch 0043).
         if (value.empty()) {
             element.SetInlineProperty(name, {});
             if (name == "display")
@@ -5862,11 +5991,12 @@ struct UiRmlRuntime {
      */
     bool sync_media_themes() {
         bool changed = std::exchange(media_themes_changed, false);
-        UiMediaDevice next = supplied_media_device.value_or(media_device);
-        if (!supplied_media_device && observes_motion_preference())
-            next.reduced_motion = motion_preference_reader();
-        if (!supplied_media_device && observes_input_capabilities())
-            next.input = input_capabilities_reader();
+        UiMediaDevice next = media_device;
+        if (observes_motion_preference())
+            next.reduced_motion =
+                supplied_reduced_motion ? *supplied_reduced_motion : system_reduced_motion();
+        if (observes_input_capabilities())
+            next.input = supplied_input ? *supplied_input : platform_input_capabilities();
         changed = changed || next != media_device;
         media_device = next;
         if (!changed)
@@ -7366,8 +7496,8 @@ struct UiRmlRuntime {
                 record.content_box.height <= 0)
                 return;
             refuse_unpresented_canvas(*element, record.content_box);
-            const PixelViewport rect = presented_canvas_rect(record, engine.options.width,
-                                                             engine.options.height, width, height);
+            const PixelViewport rect =
+                presented_canvas_rect(record, engine.ui_page_viewport, width, height);
             occluders.push_back(
                 {canvas->value, UiClipRect{float(rect.x), float(rect.y), float(rect.x + rect.width),
                                            float(rect.y + rect.height)}});
@@ -7801,10 +7931,9 @@ struct UiRmlRuntime {
     std::uint32_t viewport_width = 0;
     double root_font_size = 0;
     std::uint32_t viewport_height = 0;
-    bool (*const motion_preference_reader)();
-    InputCapabilities (*const input_capabilities_reader)();
-    /** The device state a host read for this frame, which the readers then leave unread. */
-    std::optional<UiMediaDevice> supplied_media_device;
+    /** The device state a host read for this frame (`supply_ui_rml_media_device`). */
+    std::optional<bool> supplied_reduced_motion;
+    std::optional<InputCapabilities> supplied_input;
     bool observes_focus_within = false;
     bool observes_generated_content = false;
     bool has_generated_content = false;
@@ -8032,8 +8161,10 @@ void set_ui_rml_time(UiRmlRuntime& runtime, std::optional<double> milliseconds) 
     runtime.system_interface.time_ms = milliseconds;
 }
 
-void supply_ui_rml_media_device(UiRmlRuntime& runtime, const UiMediaDevice& device) {
-    runtime.supplied_media_device = device;
+void supply_ui_rml_media_device(UiRmlRuntime& runtime, std::optional<bool> reduced_motion,
+                                std::optional<InputCapabilities> input) {
+    runtime.supplied_reduced_motion = reduced_motion;
+    runtime.supplied_input = input;
 }
 
 std::optional<UiRmlNextUpdate> ui_rml_next_update(const UiRmlRuntime& runtime) {
@@ -8051,12 +8182,14 @@ void update_ui_rml_runtime(UiRmlRuntime& runtime, std::uint32_t width, std::uint
     runtime.sync_native_focus();
     runtime.dispatch_ended_transitions();
     UiProjectionScope projection_scope(runtime.projecting);
+    const PixelViewport page = page_canvas(runtime.engine.ui_page_viewport, width, height).rect;
+    const auto page_width = static_cast<std::uint32_t>(page.width);
+    const auto page_height = static_cast<std::uint32_t>(page.height);
     const bool dimensions_changed =
-        runtime.viewport_width != width || runtime.viewport_height != height;
-    runtime.viewport_width = width;
-    runtime.viewport_height = height;
-    runtime.context->SetDimensions(
-        Rml::Vector2i{static_cast<int>(width), static_cast<int>(height)});
+        runtime.viewport_width != page_width || runtime.viewport_height != page_height;
+    runtime.viewport_width = page_width;
+    runtime.viewport_height = page_height;
+    runtime.context->SetDimensions(Rml::Vector2i{page.width, page.height});
     const bool density_changed = runtime.update_density_ratio();
     const bool safe_area_changed = runtime.update_safe_area();
     const bool viewport_changed = dimensions_changed || density_changed || safe_area_changed;
@@ -8167,7 +8300,10 @@ const UiRenderFrame& record_ui_rml_frame(UiRmlRuntime& runtime, std::uint32_t wi
                                          std::uint32_t height) {
     auto& cpu = runtime.render_interface.cpu;
     const double started = cpu.now();
-    runtime.render_interface.begin_frame(width, height);
+    runtime.render_interface.begin_frame(
+        width, height, page_canvas(runtime.engine.ui_page_viewport, width, height).rect);
+    if (runtime.render_interface.letterboxed())
+        runtime.render_interface.paint_letterbox(runtime.canvas_background());
     runtime.render_interface.occlude_until_painted(runtime.engine_canvas_occluders(width, height));
     runtime.canvas_render_ms = 0;
     runtime.context->Render();
@@ -8202,8 +8338,14 @@ const UiRenderFrame& record_ui_rml_frame(UiRmlRuntime& runtime, std::uint32_t wi
     };
     if (runtime.engine.canvas_focused) {
         const auto& surface = runtime.engine.surface_canvas;
-        if (!surface || !author_outline(*surface))
-            append_canvas_focus_outline(runtime.render_interface.frame);
+        if (!surface || !author_outline(*surface)) {
+            const auto page = runtime.render_interface.frame_bounds();
+            append_canvas_focus_outline(runtime.render_interface.frame,
+                                        UiClientRect{static_cast<double>(page.Left()),
+                                                     static_cast<double>(page.Top()),
+                                                     static_cast<double>(page.Width()),
+                                                     static_cast<double>(page.Height())});
+        }
     } else if (runtime.engine.ui_focus_visible) {
         const auto focused = runtime.engine.ui_focused_element;
         if (focused.value < runtime.engine.ui_elements.size() &&
@@ -8212,13 +8354,16 @@ const UiRenderFrame& record_ui_rml_frame(UiRmlRuntime& runtime, std::uint32_t wi
             auto* element = runtime.projected_elements[focused.value].element;
             if (element) {
                 const auto offset = element->GetAbsoluteOffset(Rml::BoxArea::Content);
+                const auto origin = runtime.render_interface.frame_bounds().Position();
                 append_canvas_focus_outline(
                     runtime.render_interface.frame,
-                    UiClientRect{offset.x, offset.y, static_cast<double>(element->GetClientWidth()),
+                    UiClientRect{origin.x + offset.x, origin.y + offset.y,
+                                 static_cast<double>(element->GetClientWidth()),
                                  static_cast<double>(element->GetClientHeight())});
             }
         }
     }
+    localize_ui_layers(runtime.render_interface.frame);
     runtime.render_interface.append_composite_quad();
     if (cpu.enabled) {
         const auto& sample = cpu.sample;

@@ -109,11 +109,8 @@ import { lowerComputeDispatch } from "./lowering/compute-dispatch-lowerer.js";
 import { lowerUniformBuffer } from "./lowering/uniform-buffer-lowerer.js";
 import { lowerConfigurableCameraControls } from "./lowering/configurable-camera-controls.js";
 import { lowerClusteredLights } from "./lowering/clustered-light-runtime.js";
-import { LightLowerer } from "./lowering/light-lowerer.js";
-import {
-    lowerLightHierarchy,
-    RectAreaLightLowerer,
-} from "./lowering/rect-area-light-lowerer.js";
+import { LightLowerer, lowerLightHierarchy } from "./lowering/light-lowerer.js";
+import { RectAreaLightLowerer } from "./lowering/rect-area-light-lowerer.js";
 import { reachedRectAreaLightings } from "./pinned-rect-area-lights.js";
 import { lightParameterHeader } from "./lowering/light-parameters.js";
 import { SceneLowerer } from "./lowering/scene-lowerer.js";

@@ -54,10 +54,8 @@ protected:
         ElementFormControl::OnRender();
         const auto size = GetBox().GetSize(Rml::BoxArea::Content);
         const auto value = GetValue();
-        const float opacity = GetComputedValues().opacity();
         const float density = GetContext()->GetDensityIndependentPixelRatio();
-        if (!swatch || swatch_size != size || swatch_value != value || swatch_opacity != opacity ||
-            swatch_density != density) {
+        if (!swatch || swatch_size != size || swatch_value != value || swatch_density != density) {
             Rml::Mesh mesh;
             const auto color =
                 Rml::Colourb(static_cast<Rml::byte>(std::stoi(value.substr(1, 2), nullptr, 16)),
@@ -72,14 +70,13 @@ protected:
             const auto dimensions = size - padding * 2;
             const float inset = std::min({density, dimensions.x * .5f, dimensions.y * .5f});
             Rml::MeshUtilities::GenerateQuad(mesh, padding, dimensions,
-                                             Rml::Colourb{119, 119, 119}.ToPremultiplied(opacity));
+                                             Rml::Colourb{119, 119, 119}.ToPremultiplied());
             Rml::MeshUtilities::GenerateQuad(mesh, padding + Rml::Vector2f{inset, inset},
                                              dimensions - Rml::Vector2f{2 * inset, 2 * inset},
-                                             color.ToPremultiplied(opacity));
+                                             color.ToPremultiplied());
             swatch = GetContext()->GetRenderManager().MakeGeometry(std::move(mesh));
             swatch_size = size;
             swatch_value = value;
-            swatch_opacity = opacity;
             swatch_density = density;
         }
         swatch.Render(GetAbsoluteOffset(Rml::BoxArea::Content));
@@ -111,7 +108,6 @@ private:
     Rml::Geometry swatch;
     Rml::Vector2f swatch_size{};
     std::string swatch_value;
-    float swatch_opacity = 0;
     float swatch_density = 0;
 };
 

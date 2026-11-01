@@ -1,15 +1,19 @@
-animation-duration: a duration-list longhand, read as animation-delay is. 'auto' (the initial value) keeps the
-durations the animation list declares; a declared list replaces them item by item; a negative duration is invalid.
-The PAL follows each animation shorthand with the longhand's 'auto', as a CSS shorthand resets its longhands.
+transition-duration and animation-duration: duration-list longhands, read as transition-delay and animation-delay are.
+'auto' (the initial value) keeps the durations the shorthand's list declares; a declared list replaces them item by item;
+a duration is a time that is not negative (0s is valid). The PAL follows each transition or animation shorthand with
+its longhands' 'auto', as a CSS shorthand resets its longhands.
+CSS Transitions 1: https://www.w3.org/TR/css-transitions-1/#transition-duration-property
 CSS Animations 1: https://www.w3.org/TR/css-animations-1/#animation-duration
 
 diff --git a/Include/RmlUi/Core/ID.h b/Include/RmlUi/Core/ID.h
-index 520ab8b..58ef319 100644
+index 520ab8b..3204d3a 100644
 --- a/Include/RmlUi/Core/ID.h
 +++ b/Include/RmlUi/Core/ID.h
-@@ -133,6 +133,7 @@ enum class PropertyId : uint8_t {
+@@ -132,7 +132,9 @@ enum class PropertyId : uint8_t {
+ 	Transition,
  	Animation,
  	TransitionDelay,
++	TransitionDuration,
  	AnimationDelay,
 +	AnimationDuration,
  
@@ -71,17 +75,111 @@ index e9a56fe..9dd4f07 100644
  						{
  							const Property* property =
 diff --git a/Source/Core/ElementStyle.cpp b/Source/Core/ElementStyle.cpp
-index 60b44dd..ac9707a 100644
+index 60b44dd..29e337b 100644
 --- a/Source/Core/ElementStyle.cpp
 +++ b/Source/Core/ElementStyle.cpp
-@@ -1448,6 +1448,7 @@ void ElementStyle::ComputeValue(Style::ComputedValues& values, float dp_ratio, V
+@@ -424,10 +424,10 @@ void ElementStyle::TransitionPropertyChanges(const PropertySources& sources, Pro
+ 		return transition_added;
+ 	};
+ 
+-	const Vector<float> delays = TransitionDelays(new_sources);
++	const TransitionTimes times = DeclaredTransitionTimes(new_sources);
+ 	for (auto it = changed_properties.begin(); it != changed_properties.end();)
+ 	{
+-		const std::optional<Transition> transition = FindTransition(new_sources, *it, delays);
++		const std::optional<Transition> transition = FindTransition(new_sources, *it, times);
+ 		if (transition && add_transition(*transition))
+ 			it = changed_properties.Erase(it);
+ 		else
+@@ -435,7 +435,7 @@ void ElementStyle::TransitionPropertyChanges(const PropertySources& sources, Pro
+ 	}
+ }
+ 
+-std::optional<Transition> ElementStyle::FindTransition(const PropertySources& after, PropertyId id, const Vector<float>& delays)
++std::optional<Transition> ElementStyle::FindTransition(const PropertySources& after, PropertyId id, const TransitionTimes& times)
+ {
+ 	// The local property, readable before the computed values are ready.
+ 	const Property* transition_property = GetLocalProperty(PropertyId::Transition, after.inline_properties, after.definition);
+@@ -456,20 +456,24 @@ std::optional<Transition> ElementStyle::FindTransition(const PropertySources& af
+ 		transition = *found;
+ 	}
+ 	transition.id = id;
+-	if (!delays.empty())
+-		transition.delay = delays[size_t(transition.list_index) % delays.size()];
++	if (!times.delays.empty())
++		transition.delay = times.delays[size_t(transition.list_index) % times.delays.size()];
++	if (!times.durations.empty())
++		transition.duration = times.durations[size_t(transition.list_index) % times.durations.size()];
+ 	return transition;
+ }
+ 
+-Vector<float> ElementStyle::TransitionDelays(const PropertySources& after)
++ElementStyle::TransitionTimes ElementStyle::DeclaredTransitionTimes(const PropertySources& after)
+ {
+-	// A declared transition-delay list replaces the delays of the transition list, item by item.
+-	const Property* declared = GetLocalProperty(PropertyId::TransitionDelay, after.inline_properties, after.definition);
+-	Property delay_storage;
+-	std::optional<PropertyDictionary> delay_shorthands;
+-	SmallUnorderedSet<String> delay_dependencies;
+-	return PropertyParserAnimation::GetDelays(declared,
+-		ResolveVariablesWithShorthandExpansion(after, PropertyId::TransitionDelay, declared, delay_shorthands, delay_dependencies, delay_storage));
++	const auto declared = [&](PropertyId id, bool durations) {
++		const Property* property = GetLocalProperty(id, after.inline_properties, after.definition);
++		Property storage;
++		std::optional<PropertyDictionary> shorthands;
++		SmallUnorderedSet<String> dependencies;
++		const Property* resolved = ResolveVariablesWithShorthandExpansion(after, id, property, shorthands, dependencies, storage);
++		return durations ? PropertyParserAnimation::GetDurations(property, resolved) : PropertyParserAnimation::GetDelays(property, resolved);
++	};
++	return {declared(PropertyId::TransitionDelay, false), declared(PropertyId::TransitionDuration, true)};
+ }
+ 
+ void ElementStyle::ApplyInlineChange(const PropertyIdSet& changed, const Function<void()>& apply)
+@@ -486,11 +490,11 @@ void ElementStyle::ApplyInlineChange(const PropertyIdSet& changed, const Functio
+ 			before.emplace_back(id, *value);
+ 	apply();
+ 	const auto sources = GetPropertySources();
+-	const Vector<float> delays = TransitionDelays(sources);
++	const TransitionTimes times = DeclaredTransitionTimes(sources);
+ 	for (const auto& [id, start] : before)
+ 	{
+ 		const PropertyId property_id = id;
+-		const std::optional<Transition> transition = FindTransition(sources, property_id, delays);
++		const std::optional<Transition> transition = FindTransition(sources, property_id, times);
+ 		const Property* after = GetProperty(property_id);
+ 		if (!transition || !after)
+ 			continue;
+@@ -1447,7 +1451,9 @@ void ElementStyle::ComputeValue(Style::ComputedValues& values, float dp_ratio, V
+ 	case PropertyId::Transition:
  	case PropertyId::Animation:
  	case PropertyId::TransitionDelay:
++	case PropertyId::TransitionDuration:
  	case PropertyId::AnimationDelay:
 +	case PropertyId::AnimationDuration:
  	case PropertyId::AlignContent:
  	case PropertyId::AlignItems:
  	case PropertyId::AlignSelf:
+diff --git a/Source/Core/ElementStyle.h b/Source/Core/ElementStyle.h
+index 62909e4..443a647 100644
+--- a/Source/Core/ElementStyle.h
++++ b/Source/Core/ElementStyle.h
+@@ -217,9 +217,13 @@ private:
+ 		std::optional<DirtyPropertiesRef> dirty_properties);
+ 
+ 	static void TransitionPropertyChanges(const PropertySources& sources, PropertyIdSet& changed_properties, const ElementDefinition* new_definition);
+-	// The transition the after-change transition list gives `id`, its transition-delay applied.
+-	static std::optional<Transition> FindTransition(const PropertySources& after, PropertyId id, const Vector<float>& delays);
+-	static Vector<float> TransitionDelays(const PropertySources& after);
++	// The transition the after-change transition list gives `id`, its transition-delay and transition-duration applied.
++	/// The declared transition-delay and transition-duration lists, which replace the transition list's times item by item.
++	struct TransitionTimes {
++		Vector<float> delays, durations;
++	};
++	static std::optional<Transition> FindTransition(const PropertySources& after, PropertyId id, const TransitionTimes& times);
++	static TransitionTimes DeclaredTransitionTimes(const PropertySources& after);
+ 
+ 	// Element these properties belong to
+ 	Element* element;
 diff --git a/Source/Core/PropertyParserAnimation.cpp b/Source/Core/PropertyParserAnimation.cpp
 index 2260bd3..b3c13da 100644
 --- a/Source/Core/PropertyParserAnimation.cpp
@@ -176,16 +274,18 @@ index 2260bd3..b3c13da 100644
  
  bool PropertyParserAnimation::ParseAnimation(Property& property, const StringList& animation_values)
 diff --git a/Source/Core/PropertyParserAnimation.h b/Source/Core/PropertyParserAnimation.h
-index 930fe8c..00ccbb9 100644
+index 930fe8c..87077b4 100644
 --- a/Source/Core/PropertyParserAnimation.h
 +++ b/Source/Core/PropertyParserAnimation.h
-@@ -7,13 +7,13 @@ namespace Rml {
+@@ -6,14 +6,14 @@
+ namespace Rml {
  
  /**
- Parses the RCSS 'animation' and 'transition' property specifications, and the 'transition-delay' and
+-Parses the RCSS 'animation' and 'transition' property specifications, and the 'transition-delay' and
 -'animation-delay' lists. A delay list is stored as a TransitionList whose entries carry only their delay;
 -'auto' (the initial value) leaves the delays the shorthand declares.
-+'animation-delay' lists, and the 'animation-duration' list. A delay or duration list is stored as a TransitionList whose
++Parses the RCSS 'animation' and 'transition' property specifications and their time-list longhands: 'transition-delay',
++'transition-duration', 'animation-delay' and 'animation-duration'. A time list is stored as a TransitionList whose
 +entries carry only that time; 'auto' (the initial value) leaves the times the shorthand declares.
  */
  
@@ -214,7 +314,7 @@ index 930fe8c..00ccbb9 100644
  	static ControlledLifetimeResource<struct PropertyParserAnimationData> parser_data;
  };
 diff --git a/Source/Core/StyleSheetSpecification.cpp b/Source/Core/StyleSheetSpecification.cpp
-index e0d3562..d2b33a0 100644
+index e0d3562..8863011 100644
 --- a/Source/Core/StyleSheetSpecification.cpp
 +++ b/Source/Core/StyleSheetSpecification.cpp
 @@ -32,6 +32,7 @@ struct DefaultStyleSheetParsers : NonCopyMoveable {
@@ -233,9 +333,11 @@ index e0d3562..d2b33a0 100644
  	RegisterParser("color", &default_parsers->color);
  	RegisterParser("color_stop_list", &default_parsers->color_stop_list);
  	RegisterParser("decorator", &default_parsers->decorator);
-@@ -425,6 +427,7 @@ void StyleSheetSpecification::RegisterDefaultProperties()
+@@ -424,7 +426,9 @@ void StyleSheetSpecification::RegisterDefaultProperties()
+ 	RegisterProperty(PropertyId::Transition, "transition", "none", false, false).AddParser("transition");
  	RegisterProperty(PropertyId::Animation, "animation", "none", false, false).AddParser("animation");
  	RegisterProperty(PropertyId::TransitionDelay, "transition-delay", "auto", false, false).AddParser("delay");
++	RegisterProperty(PropertyId::TransitionDuration, "transition-duration", "auto", false, false).AddParser("duration");
  	RegisterProperty(PropertyId::AnimationDelay, "animation-delay", "auto", false, false).AddParser("delay");
 +	RegisterProperty(PropertyId::AnimationDuration, "animation-duration", "auto", false, false).AddParser("duration");
  

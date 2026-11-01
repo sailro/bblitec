@@ -66,16 +66,19 @@ test(
     "laid-out canvas panes retain physical bounds at any CSS density",
     { skip: !nativeTools },
     () => {
-        const source = sharedGpuSource();
+        const source = readFileSync("native/src/pal_gpu_surface.hpp", "utf8");
         runCpp(
             "canvas-pane-density",
             `
         #include <bblite/runtime.hpp>
         #include <cassert>
-        namespace bbl::pal { ${cppFunction(source, "PixelViewport laid_out_canvas_pane(")} }
+        namespace bbl::pal { ${cppFunction(source, "inline PixelViewport laid_out_canvas_pane(")} }
         int main() {
             bbl::Engine engine;
             engine.options.width = 1200; engine.options.height = 800;
+            engine.ui_page_viewport.pixels = {0, 0, 1200, 800};
+            engine.ui_page_viewport.drawable_width = 1200;
+            engine.ui_page_viewport.drawable_height = 800;
             engine.ui_elements.emplace_back();
             engine.ui_elements.back().client_rect = {580, 80, 440, 640};
             engine.ui_elements.back().content_box = {600, 100, 400, 600};

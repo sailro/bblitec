@@ -51,7 +51,7 @@ test("touch listeners lower every addEventListener form with Chromium's passive 
     // A boolean is capture. Left undefined, passive is Chromium's default for the
     // scrolling types, which the target decides natively: true on the Window,
     // Document, documentElement and body.
-    const topLevel = /bbl::dom_top_level_target\([^;]*\)\)/;
+    const topLevel = /bbl::dom_listener_passive_default\([^;]*\)\)/;
     assert.match(
         call(/on_dom_touch\(.*node\(.*"touchmove", .*, true, false/),
         topLevel,
@@ -59,12 +59,12 @@ test("touch listeners lower every addEventListener form with Chromium's passive 
     assert.match(call(/on_dom_touch\(.*document\(\), "touchstart"/), topLevel);
     assert.match(
         call(/on_dom_touch\(.*window\(\), "touchmove"/),
-        /, v_bblite_event_option_\d+, false, bbl::dom_top_level_target\(/,
+        /, v_bblite_event_option_\d+, false, bbl::dom_listener_passive_default\(/,
     );
     assert.match(call(/on_dom_pointer\(.*window\(\), "wheel"/), topLevel);
     assert.match(
         call(/on_dom_touch\(.*document\(\), "touchend"/),
-        /, false, false, false\)/,
+        /, false, false, bbl::dom_listener_passive_default\([^;]*"touchend"\)\)/,
     );
     assert.match(
         call(/off_dom_touch\(.*"touchend"/),
@@ -197,6 +197,21 @@ test("SDL finger events dispatch Chromium's pointer, touch and tap order nativel
             event.preventDefault();
             record(event.defaultPrevented ? "d!" : "d");
         });
+        function passiveHandler(event: TouchEvent): void {
+            const before = event.defaultPrevented;
+            event.preventDefault();
+            if (event.defaultPrevented !== before) throw new Error("top-level handler passive default");
+        }
+        document.documentElement.ontouchstart = passiveHandler;
+        document.body.ontouchstart = passiveHandler;
+        document.body.addEventListener("touchstart", passiveHandler, { passive: undefined });
+        document.body.addEventListener("touchstart", (event) => {
+            if (canceling("body")) event.preventDefault();
+        }, { passive: false });
+        other.ontouchmove = (event) => {
+            event.preventDefault();
+            if (!event.defaultPrevented) throw new Error("element handler is not passive");
+        };
         globalThis.close();
     `,
         { BBLITE_HAS_DOM_INPUT: 1 },

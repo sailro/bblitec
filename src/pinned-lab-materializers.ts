@@ -17,6 +17,7 @@ import ts from "typescript";
 import { compilerRepositoryRoot } from "./repository-root.js";
 import { runCaptured } from "./tooling/logged-process.js";
 import { readBabylonLiteCorpus } from "./upstream-corpus.js";
+import { LAB_PUBLIC_ROOT } from "./pinned-lab-public.js";
 
 const CORPUS_ROOT = "corpus/babylon-lite";
 
@@ -137,8 +138,5 @@ export function pinnedLabPublicFile(
     repositoryRoot: string,
     publicPath: string,
 ): string | undefined {
-    return servedFile(
-        resolve(repositoryRoot, CORPUS_ROOT, "lab/public"),
-        publicPath,
-    );
+    return servedFile(resolve(repositoryRoot, LAB_PUBLIC_ROOT), publicPath);
 }

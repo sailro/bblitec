@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { copyFileSync, mkdirSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import test from "node:test";
 import { compileSource } from "../src/compiler.js";
 import {
     hostPageCompileOptions,
     hostPageDocumentAsset,
+    hostPageServedFile,
     readHostPage,
 } from "../src/host-page.js";
 
@@ -33,6 +34,35 @@ test("a page's URLs resolve against the page; its entry module's directory is th
     );
     for (const url of ["https://example.com/a.png", "data:image/png;base64,"])
         assert.equal(hostPageDocumentAsset(host, url), url);
+});
+
+test("encoded page and module directories preserve literal URL punctuation", () => {
+    const root = resolve("artifacts/host-page-encoded");
+    const directory = join(root, "page #% space");
+    const module = join(directory, "module #%");
+    mkdirSync(module, { recursive: true });
+    writeFileSync(join(module, "entry #%.ts"), "globalThis.close();");
+    const path = join(directory, "page #%.html");
+    const src = "./module%20%23%25/entry%20%23%25.ts?ignored=1#fragment";
+    writeFileSync(
+        path,
+        `<!doctype html><html><head><title>URLs</title></head><body>
+        <script type="module" src="${src}"></script></body></html>`,
+    );
+    const page = readHostPage({ path, root });
+    assert.equal(page.entry, join(module, "entry #%.ts"));
+    assert.equal(
+        page.entryUrl,
+        "/page%20%23%25%20space/module%20%23%25/entry%20%23%25.ts",
+    );
+    assert.equal(hostPageServedFile(page, page.entryUrl), page.entry);
+    assert.equal(
+        hostPageDocumentAsset(
+            page,
+            "./module%20%23%25/asset%20%23%3F%25.png?query#hash",
+        ),
+        "/asset #?%.png",
+    );
 });
 
 test("a classic script writes an anchor's href through a lookup and reads the runtime query", () => {
@@ -95,5 +125,52 @@ test("a page's select holds only its options", () => {
     assert.throws(
         () => readHostPage({ path }),
         /<select> has text inside <select>; it holds only options\./,
+    );
+});
+
+test("border-image URLs resolve against the document rather than its module", () => {
+    const directory = resolve("artifacts/host-page-border-image");
+    mkdirSync(join(directory, "modules"), { recursive: true });
+    const entry = `const marker = document.createElement("div");
+        document.body.appendChild(marker);
+        globalThis.close();`;
+    writeFileSync(join(directory, "modules/entry.ts"), entry);
+    copyFileSync(
+        "corpus/babylon-lite/lab/public/playroom/ui/kick.png",
+        join(directory, "frame #.png"),
+    );
+    const path = join(directory, "page.html");
+    writeFileSync(
+        path,
+        `<!doctype html><html><head><title>Border</title>
+        <style>.frame { border-image: url('./frame%20%23.png') 2 / 2px; }</style>
+        </head><body><div class="frame"></div>
+        <script type="module" src="./modules/entry.ts"></script></body></html>`,
+    );
+    const result = compileSource(
+        entry,
+        hostPageCompileOptions(readHostPage({ path })),
+    );
+    assert.equal(result.manifest.assets[0]?.source, "../frame #.png");
+});
+
+test("anchor href checks share known, incompatible and unknown tag answers", () => {
+    const { cpp } = compileSource(`
+        interface Links { item: HTMLAnchorElement }
+        const link = document.createElement("a");
+        document.body.appendChild(link);
+        const links: Links = {item: link};
+        links.item.href = "./next.html";
+        globalThis.close();
+    `);
+    assert.match(cpp, /ui_set_attribute\([^;]*"href", "\.\/next\.html"\)/);
+    assert.throws(
+        () =>
+            compileSource(`
+        const wrong = document.createElement("div");
+        document.body.appendChild(wrong);
+        wrong.href = "./next.html";
+    `),
+        /UI href requires a <a> or <area> element/,
     );
 });

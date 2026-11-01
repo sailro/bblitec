@@ -124,6 +124,8 @@ extern "C" SDL_GPURenderPass* SDLCALL SDL_BeginGPURenderPass(SDL_GPUCommandBuffe
     return &sdl_pass;
 }
 extern "C" void SDLCALL SDL_EndGPURenderPass(SDL_GPURenderPass*) {}
+extern "C" void SDLCALL SDL_SetGPUViewport(SDL_GPURenderPass*, const SDL_GPUViewport*) {}
+extern "C" void SDLCALL SDL_SetGPUScissor(SDL_GPURenderPass*, const SDL_Rect*) {}
 extern "C" void SDLCALL SDL_BlitGPUTexture(SDL_GPUCommandBuffer*, const SDL_GPUBlitInfo* blit) {
     blits.push_back(*blit);
 }
@@ -214,6 +216,10 @@ wgpuCommandEncoderBeginRenderPass(WGPUCommandEncoder, const WGPURenderPassDescri
     return &dawn_pass;
 }
 extern "C" void wgpuRenderPassEncoderEnd(WGPURenderPassEncoder) {}
+extern "C" void wgpuRenderPassEncoderSetViewport(WGPURenderPassEncoder, float, float, float, float,
+                                                 float, float) {}
+extern "C" void wgpuRenderPassEncoderSetScissorRect(WGPURenderPassEncoder, uint32_t, uint32_t,
+                                                    uint32_t, uint32_t) {}
 extern "C" WGPUCommandBuffer wgpuCommandEncoderFinish(WGPUCommandEncoder,
                                                       const WGPUCommandBufferDescriptor*) {
     return &dawn_command;

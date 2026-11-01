@@ -61,6 +61,11 @@ int main() {
     assert(reduce.media() == "(prefers-reduced-motion: reduce)");
     assert(boolean.media() == "(prefers-reduced-motion)");
     assert(density.media() == "(resolution: 1.5dppx)");
+    for (const auto* query : {"(resolution:.5dppx)", "(resolution:1.dppx)", "(resolution:1e0dppx)",
+                              "(resolution:1.5e+1dppx)"}) {
+        const MediaQueryList decimal(query, read_ratio, read_motion);
+        assert(!decimal.media().empty());
+    }
     MediaQueryList touch(" (HOVER: NONE) and (pointer: COARSE) ", read_ratio, read_motion,
                          read_input);
     MediaQueryList mouse("(pointer: fine) and (hover: hover)", read_ratio, read_motion, read_input);
@@ -77,11 +82,27 @@ int main() {
     assert(!combined.matches());
     device_capabilities = {bbl::PointerPrecision::Fine, true};
     assert(combined.matches() == reduced);
-    for (const auto* query :
-         {"(width: 600px)", "(prefers-reduced-motion: sometimes)", "(resolution: 2dpi)",
-          "screen and (resolution: 2dppx)", "(hover: coarse)", "(pointer: hover)",
-          "(pointer: fine) or (hover: none)", "(pointer)", "(hover: hover) and (hover: none)",
-          "(resolution: 1dppx) and (hover)"}) {
+    for (const auto* query : {"(width: 600px)",
+                              "(prefers-reduced-motion: sometimes)",
+                              "(resolution: 2dpi)",
+                              "screen and (resolution: 2dppx)",
+                              "(hover: coarse)",
+                              "(pointer: hover)",
+                              "(pointer: fine) or (hover: none)",
+                              "(pointer)",
+                              "(hover: hover) and (hover: none)",
+                              "(resolution: 1dppx) and (hover)",
+                              "(hover)and (pointer: fine)",
+                              "(hover) and(pointer: fine)",
+                              "(hover) and",
+                              "(hover:)",
+                              "(hover)\xc2\xa0",
+                              "(resolution:1e309dppx)",
+                              "(resolution:1e-999dppx)",
+                              "(resolution:0x1dppx)",
+                              "(resolution:-1dppx)",
+                              "(resolution:+1dppx)",
+                              "(resolution:1 dppx)"}) {
         bool refused = false;
         try {
             const MediaQueryList unsupported(query, read_ratio, read_motion, read_input);

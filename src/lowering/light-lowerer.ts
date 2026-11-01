@@ -496,3 +496,127 @@ ${after}
         };
     }
 }
+
+/**
+ * `upstream/src/light_hierarchy.cpp`: the SceneNode half every light shares
+ * -- its parent, a mesh under it and its quaternion. A light is a tagged
+ * host upstream: a mesh under it composes the light's world as it is now
+ * (`mesh_world_matrix`'s light lane), and each write that moves the light's
+ * world pushes the invalidation down (`mark_light_children_dirty`), as a
+ * move of the node above it does through `parented_lights`.
+ */
+export function lowerLightHierarchy(context: LoweringContext): LoweredSource {
+    const modulePath = "src/light/light-base.ts";
+    context.assertExpressionShape(
+        context.callExpression(
+            context.functionDeclaration(modulePath, "createLightBase")
+                .declaration,
+            "initSceneNodeTransform",
+        ),
+        'initSceneNodeTransform({name: "", children: []}, position[0], position[1], position[2])',
+        "Light SceneNode transform initialization",
+    );
+    const bump = lightVersionBumpBody(context, "record.parameter_version");
+    const light = recordAt("engine.lights", "light");
+    return {
+        modulePath,
+        symbolName: "createLightBase",
+        header: "",
+        source: `// ${context.provenance(modulePath, "createLightBase")}
+// ${context.provenance("src/scene/world-matrix-state.ts", "createWorldMatrixState")}
+#include <bblite/runtime.hpp>
+#include <bblite/upstream/pinned_world_transform.hpp>
+#include <bblite/upstream/renderer_plan.hpp>
+#include <algorithm>
+#include <array>
+#include <functional>
+#include <variant>
+namespace bbl {
+
+namespace {
+// The invalidation registry of the node a light is parented to.
+std::vector<LightHandle>* light_parent_registry(Engine& engine, const SceneNodeHandle& node) {
+    if (const MeshHandle* mesh = std::get_if<MeshHandle>(&node)) {
+        return mesh->value == invalid_handle ? nullptr
+                                             : &${recordAt("engine.meshes", "*mesh")}.parented_lights;
+    }
+    if (const TransformNodeHandle* transform = std::get_if<TransformNodeHandle>(&node)) {
+        return transform->value == invalid_handle
+                   ? nullptr
+                   : &${recordAt("engine.transform_nodes", "*transform")}.parented_lights;
+    }
+    const AssetHandle asset = std::get<AssetHandle>(node);
+    return asset.value == invalid_handle ? nullptr
+                                         : &${recordAt("engine.assets", "asset")}.parented_lights;
+}
+
+// The node's world, read live the way light_world_matrix reads every parent.
+std::function<std::array<float, 16>()> light_parent_world(Engine& engine,
+                                                         const SceneNodeHandle& node) {
+    if (const MeshHandle* mesh = std::get_if<MeshHandle>(&node)) {
+        return [&engine, parent = *mesh] {
+            return upstream::mesh_world_matrix(engine, ${recordAt("engine.meshes", "parent")});
+        };
+    }
+    if (const TransformNodeHandle* transform = std::get_if<TransformNodeHandle>(&node)) {
+        return [&engine, parent = *transform] {
+            return upstream::transform_node_world(engine, parent);
+        };
+    }
+    return [&engine, parent = std::get<AssetHandle>(node)] {
+        return asset_root_world_matrix(engine, parent);
+    };
+}
+} // namespace
+
+// \`light.parent = node\`: a mesh, a transform node, an imported root, or
+// none (an invalid handle). The node registers the light, so the node's own
+// invalidation reaches the meshes under the light.
+void set_light_parent(Engine& engine, LightHandle light, SceneNodeHandle parent) {
+    auto& record = ${light};
+    if (std::vector<LightHandle>* previous = light_parent_registry(engine, record.parent_node)) {
+        std::erase_if(*previous,
+                      [light](LightHandle entry) { return entry.value == light.value; });
+    }
+    std::vector<LightHandle>* registry = light_parent_registry(engine, parent);
+    record.parent_node = parent;
+    record.parent_world_matrix = registry ? light_parent_world(engine, parent)
+                                          : std::function<std::array<float, 16>()>{};
+    if (registry) registry->push_back(light);
+    ${bump}
+    mark_light_children_dirty(engine, record);
+}
+
+// \`mesh.parent = light\`: the mesh's light lane. The pin's setter returns on
+// an unchanged parent before anything else.
+void set_mesh_light_parent(Engine& engine, MeshHandle mesh, LightHandle light) {
+    MeshRecord& record = ${recordAt("engine.meshes", "mesh")};
+    auto& parent = ${light};
+    if (record.light_parent.value == light.value) return;
+    unregister_from_parents(engine, record, mesh);
+    clear_mesh_world_matrix_provider(record);
+    record.parent = MeshHandle{};
+    record.transform_parent = TransformNodeHandle{};
+    record.parent_world.reset();
+    record.light_parent = light;
+    if (std::find(parent.parented_meshes.begin(), parent.parented_meshes.end(), mesh) ==
+        parent.parented_meshes.end()) {
+        parent.parented_meshes.push_back(mesh);
+    }
+    mark_mesh_dirty(engine, mesh);
+}
+
+// The ObservableQuat write every SceneNode takes; light_world_matrix
+// composes it with the rest of the TRS.
+void set_light_rotation_quaternion(Engine& engine, LightHandle light, Vec4 rotation) {
+    auto& record = ${light};
+    record.rotation_quaternion = rotation;
+    record.has_rotation_quaternion = true;
+    ${bump}
+    mark_light_children_dirty(engine, record);
+}
+
+} // namespace bbl
+`,
+    };
+}

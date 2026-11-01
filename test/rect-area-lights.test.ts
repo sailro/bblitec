@@ -10,7 +10,6 @@ import {
 } from "../src/lowering/pinned-error.js";
 import {
     areaLightLtcSources,
-    lowerLightHierarchy,
     rectAreaEmissionRefusalMessage,
     rectAreaLightDefaultIntensity,
     rectAreaNodeLightingRefusalMessage,
@@ -40,7 +39,10 @@ import {
     rectAreaLightingModes,
 } from "../src/pinned-rect-area-lights.js";
 import { lightParameterHeader } from "../src/lowering/light-parameters.js";
-import { LightLowerer } from "../src/lowering/light-lowerer.js";
+import {
+    LightLowerer,
+    lowerLightHierarchy,
+} from "../src/lowering/light-lowerer.js";
 import { pinnedMaxLights } from "../src/lowering/pinned-max-lights.js";
 import { demotableUniformBlocks } from "../src/shader-bindings.js";
 import { pinnedSceneArms } from "../src/pinned-scene-arms.js";
@@ -53,14 +55,12 @@ import {
 } from "../src/pinned-standard-variants.js";
 import { pinnedError } from "./pinned-errors.js";
 import { inlineCpp } from "./generated-cpp.js";
+import { regexText } from "./regex.js";
 import {
+    cppFunction,
     optionalNativeFixtureTools,
     runGeneratedProgram,
 } from "./native-fixture.js";
-
-/** `text` as a literal inside a RegExp source. */
-const regexText = (text: string): string =>
-    text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
 interface PinRectAreaLight {
     intensity: number;
@@ -527,6 +527,49 @@ test("the textured native half lowers the pin's image shape, snapshot and access
     assert.match(
         textured,
         /void refresh_rect_area_lighting\(Scene& scene\) \{[\s\S]*?prepare_area_light_emission\(scene\);/,
+    );
+});
+
+test("an unchanged emission selection keeps the scene's snapshot", (t) => {
+    // The pin's `same(state.allocation.snapshot, selected)`: a rebuild that
+    // selects the same images in the same slots keeps the allocation, so no
+    // backend re-uploads; a changed one replaces it, and no image clears it.
+    const tools = optionalNativeFixtureTools(false);
+    if (!tools) return t.skip("Native fixture compiler unavailable.");
+    const prepare = cppFunction(
+        new RectAreaLightLowerer(new LoweringContext(), true).lower().source,
+        "void prepare_area_light_emission(Scene& scene) {",
+    );
+    runGeneratedProgram(
+        tools,
+        "rect-area-emission-snapshot",
+        `
+#include <bblite/runtime.hpp>
+#include <cassert>
+#include <stdexcept>
+namespace bbl { ${prepare} }
+int main(){
+ bbl::Engine engine; bbl::Scene scene; scene.engine=&engine;
+ for(std::uint32_t index=0;index<2;++index){
+  engine.lights.emplace_back(); engine.lights[index].kind=bbl::LightKind::rect_area;
+  scene.lights.push_back(bbl::LightHandle{index});
+ }
+ auto image=std::make_shared<bbl::AreaLightImage>(); image->path="emitter.png";
+ engine.lights[1].emission_texture=image;
+ bbl::prepare_area_light_emission(scene);
+ const auto first=scene.state->area_light_emission;
+ assert(first&&first->layers.size()==1&&first->slots[0]==0u&&first->slots[1]==1u);
+ bbl::prepare_area_light_emission(scene);
+ assert(scene.state->area_light_emission==first);
+ engine.lights[0].emission_texture=image;
+ bbl::prepare_area_light_emission(scene);
+ assert(scene.state->area_light_emission!=first&&scene.state->area_light_emission->slots[0]==1u);
+ engine.lights[0].emission_texture=nullptr; engine.lights[1].emission_texture=nullptr;
+ bbl::prepare_area_light_emission(scene);
+ assert(!scene.state->area_light_emission);
+}
+`,
+        { timeoutMs: 10000, expectedOutput: "" },
     );
 });
 

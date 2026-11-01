@@ -50,7 +50,7 @@ int main() try {
             return runtime.projected_elements.at(handle(id).value).element;
         };
         const auto opacity = [&](const char* id, float expected) {
-            const float value = element(id)->GetComputedValues().opacity();
+            const float value = element(id)->GetComputedValues().group_opacity();
             if (std::abs(value - expected) > 0.02f)
                 std::fprintf(stderr, "%s opacity %g, expected %g at %g ms\n", id, value, expected,
                              fixture_time);

@@ -77,7 +77,6 @@ class UiRangeDecorator final : public Rml::Decorator {
         std::size_t references = 0;
         std::tuple<int, int, float, bool, bool> key{};
         Paint paint{};
-        float opacity = 0;
         Rml::CallbackTexture texture;
         Rml::Geometry geometry;
         bool initialized = false;
@@ -201,10 +200,9 @@ public:
         const auto index = static_cast<std::size_t>(track);
         const Paint paint{colors.palette->fill[index], colors.palette->border[index],
                           colors.accent_color(track), colors.accent_color(state(*bar))};
-        const float opacity = element->GetComputedValues().opacity();
         const auto key = std::tuple{width, height, thumb, themed_track, themed_thumb};
-        const bool geometry_changed = !data.initialized || width != std::get<0>(data.key) ||
-                                      height != std::get<1>(data.key) || opacity != data.opacity;
+        const bool geometry_changed =
+            !data.initialized || width != std::get<0>(data.key) || height != std::get<1>(data.key);
         auto& manager = element->GetContext()->GetRenderManager();
         if (!data.initialized || key != data.key || !(paint == data.paint)) {
             data.texture = manager.MakeCallbackTexture(
@@ -221,12 +219,11 @@ public:
             Rml::Mesh mesh;
             Rml::MeshUtilities::GenerateQuad(
                 mesh, {0, 0}, {static_cast<float>(width), static_cast<float>(height)},
-                Rml::Colourb{255, 255, 255}.ToPremultiplied(opacity), {0, 0}, {1, 1});
+                Rml::Colourb{255, 255, 255}.ToPremultiplied(), {0, 0}, {1, 1});
             data.geometry = manager.MakeGeometry(std::move(mesh));
         }
         data.key = key;
         data.paint = paint;
-        data.opacity = opacity;
         data.initialized = true;
         data.geometry.Render(origin, data.texture);
     }

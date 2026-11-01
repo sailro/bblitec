@@ -7,6 +7,7 @@ import { LoweringContext } from "../src/lowering/context.js";
 import { SplatLowerer } from "../src/lowering/splat-lowerer.js";
 import {
     cppFunction,
+    cppRecord,
     optionalNativeFixtureTools,
     runNativeFixtureCompiler,
 } from "./native-fixture.js";
@@ -27,12 +28,22 @@ test(
         writeFileSync(join(output, "splat_sort.cpp"), sort.source);
         const sdl = readFileSync("native/src/pal_sdl_gpu_splat.hpp", "utf8");
         const dawn = readFileSync("native/src/pal_dawn_splat.hpp", "utf8");
+        const dawnShared = readFileSync(
+            "native/src/pal_dawn_shared.hpp",
+            "utf8",
+        );
         writeFileSync(
             join(output, "pal_update.hpp"),
             [
                 readFileSync("test/fixtures/gpu-writer-recorder.hpp", "utf8"),
                 cppFunction(sdl, "inline void sync_splat_data("),
                 cppFunction(sdl, "inline void upload_splat_pass("),
+                // The level write every Dawn byte upload shares.
+                `${cppRecord(dawnShared, "struct DawnTextureLevelWrite {")};`,
+                cppFunction(
+                    dawnShared,
+                    "inline void write_dawn_texture_level(",
+                ),
                 cppFunction(dawn, "inline void write_dawn_splat_texture("),
                 cppFunction(dawn, "inline void sync_dawn_splat_data("),
                 cppFunction(dawn, "inline void upload_dawn_splat_pass("),

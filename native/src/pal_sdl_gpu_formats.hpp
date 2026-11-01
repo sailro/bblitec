@@ -153,48 +153,53 @@ inline std::uint32_t gpu_sample_count_value(SDL_GPUSampleCount samples) {
 }
 
 /**
- * The WebGPU names of the formats SDL_GPU creates sampled and storage
- * textures in by name (compute textures, text atlases).
+ * The WebGPU format names SDL_GPU creates textures in by name, each with the
+ * uses it serves: `sampled` for the sampled and storage textures created by
+ * name (compute textures, text atlases), `target` for render targets and
+ * their signatures (the WebGPU subset text draws into).
  */
+struct SdlNamedTextureFormat {
+    std::string_view name;
+    SDL_GPUTextureFormat format;
+    bool sampled;
+    bool target;
+};
+inline constexpr SdlNamedTextureFormat sdl_webgpu_formats[] = {
+    {"rgba8unorm", SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM, true, true},
+    {"rgba8unorm-srgb", SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM_SRGB, false, true},
+    {"rgba8snorm", SDL_GPU_TEXTUREFORMAT_R8G8B8A8_SNORM, true, false},
+    {"bgra8unorm", SDL_GPU_TEXTUREFORMAT_B8G8R8A8_UNORM, false, true},
+    {"bgra8unorm-srgb", SDL_GPU_TEXTUREFORMAT_B8G8R8A8_UNORM_SRGB, false, true},
+    {"r16float", SDL_GPU_TEXTUREFORMAT_R16_FLOAT, false, true},
+    {"rgba16float", SDL_GPU_TEXTUREFORMAT_R16G16B16A16_FLOAT, true, true},
+    {"r32float", SDL_GPU_TEXTUREFORMAT_R32_FLOAT, true, false},
+    {"rg32float", SDL_GPU_TEXTUREFORMAT_R32G32_FLOAT, true, false},
+    {"rg32uint", SDL_GPU_TEXTUREFORMAT_R32G32_UINT, true, false},
+    {"rgba32float", SDL_GPU_TEXTUREFORMAT_R32G32B32A32_FLOAT, true, false},
+    {"depth16unorm", SDL_GPU_TEXTUREFORMAT_D16_UNORM, false, true},
+    {"depth24plus", SDL_GPU_TEXTUREFORMAT_D24_UNORM, false, true},
+    {"depth24plus-stencil8", SDL_GPU_TEXTUREFORMAT_D24_UNORM_S8_UINT, false, true},
+    {"depth32float", SDL_GPU_TEXTUREFORMAT_D32_FLOAT, false, true},
+    {"depth32float-stencil8", SDL_GPU_TEXTUREFORMAT_D32_FLOAT_S8_UINT, false, true}};
+
 inline SDL_GPUTextureFormat sdl_named_texture_format(std::string_view value) {
-    static constexpr std::pair<std::string_view, SDL_GPUTextureFormat> formats[] = {
-        {"rgba8unorm", SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM},
-        {"rgba8snorm", SDL_GPU_TEXTUREFORMAT_R8G8B8A8_SNORM},
-        {"rgba16float", SDL_GPU_TEXTUREFORMAT_R16G16B16A16_FLOAT},
-        {"r32float", SDL_GPU_TEXTUREFORMAT_R32_FLOAT},
-        {"rg32float", SDL_GPU_TEXTUREFORMAT_R32G32_FLOAT},
-        {"rg32uint", SDL_GPU_TEXTUREFORMAT_R32G32_UINT},
-        {"rgba32float", SDL_GPU_TEXTUREFORMAT_R32G32B32A32_FLOAT}};
-    for (const auto& [name, format] : formats)
-        if (value == name)
-            return format;
+    for (const SdlNamedTextureFormat& entry : sdl_webgpu_formats)
+        if (entry.sampled && entry.name == value)
+            return entry.format;
     throw std::runtime_error("Unrepresented SDL texture format: " + std::string(value));
 }
-
-/** The WebGPU names of the formats SDL_GPU render targets use (WebGPU subset, text). */
-inline constexpr std::pair<std::string_view, SDL_GPUTextureFormat> sdl_webgpu_formats[] = {
-    {"rgba8unorm", SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM},
-    {"rgba8unorm-srgb", SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM_SRGB},
-    {"bgra8unorm", SDL_GPU_TEXTUREFORMAT_B8G8R8A8_UNORM},
-    {"bgra8unorm-srgb", SDL_GPU_TEXTUREFORMAT_B8G8R8A8_UNORM_SRGB},
-    {"r16float", SDL_GPU_TEXTUREFORMAT_R16_FLOAT},
-    {"rgba16float", SDL_GPU_TEXTUREFORMAT_R16G16B16A16_FLOAT},
-    {"depth16unorm", SDL_GPU_TEXTUREFORMAT_D16_UNORM},
-    {"depth24plus", SDL_GPU_TEXTUREFORMAT_D24_UNORM},
-    {"depth24plus-stencil8", SDL_GPU_TEXTUREFORMAT_D24_UNORM_S8_UINT},
-    {"depth32float", SDL_GPU_TEXTUREFORMAT_D32_FLOAT},
-    {"depth32float-stencil8", SDL_GPU_TEXTUREFORMAT_D32_FLOAT_S8_UINT}};
+/** A render target's format by its WebGPU name. */
 inline SDL_GPUTextureFormat sdl_webgpu_format(const std::string& name) {
-    for (const auto& [text, format] : sdl_webgpu_formats)
-        if (text == name)
-            return format;
+    for (const SdlNamedTextureFormat& entry : sdl_webgpu_formats)
+        if (entry.target && entry.name == name)
+            return entry.format;
     throw std::runtime_error("Texture format '" + name + "' has no SDL_GPU target format.");
 }
 /** A renderer attachment's WebGPU format name, for a target signature. */
 inline std::string sdl_webgpu_format_name(SDL_GPUTextureFormat format) {
-    for (const auto& [text, value] : sdl_webgpu_formats)
-        if (value == format)
-            return std::string(text);
+    for (const SdlNamedTextureFormat& entry : sdl_webgpu_formats)
+        if (entry.target && entry.format == format)
+            return std::string(entry.name);
     throw std::runtime_error("An SDL_GPU target format has no WebGPU name.");
 }
 } // namespace bbl::pal

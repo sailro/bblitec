@@ -41,6 +41,7 @@ import {
     knownCondition,
     staticKeyOf,
     undefinedValue,
+    valueDataType,
 } from "./values/model.js";
 import { countedLoopShape, stepsUpByOne } from "./counted-loops.js";
 import { STORAGE_METHODS, storageValue } from "./web-storage.js";
@@ -3325,13 +3326,7 @@ export class DataLowerer {
                       (checkedSelectedType?.kind === "string" ||
                           checkedSelectedType?.kind === "enum")
                     ? checkedSelectedType
-                    : selected.kind === "number"
-                      ? ({ kind: "number" } as const)
-                      : selected.kind === "boolean"
-                        ? ({ kind: "boolean" } as const)
-                        : selected.kind === "string"
-                          ? ({ kind: "string" } as const)
-                          : undefined);
+                    : valueDataType(selected));
         if (!selectedType) {
             // Resolved engine properties can be discovered while probing a
             // condition as a data path, but their resource/value shape is
@@ -4473,13 +4468,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             let body = "";
             const lines = this.context.captureEmittedLines(() => {
                 const result = read(this.leafValue(parameter, member));
-                const type =
-                    result.dataType ??
-                    (result.kind === "number" ||
-                    result.kind === "boolean" ||
-                    result.kind === "string"
-                        ? { kind: result.kind }
-                        : undefined);
+                const type = valueDataType(result);
                 if (
                     !type ||
                     result.optionalFoundCpp !== undefined ||
@@ -15444,13 +15433,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             return known === isAnd
                 ? this.context.compileValue(expression.right)
                 : left;
-        const type =
-            left.dataType ??
-            (isStringValue(left)
-                ? ({ kind: "string" } as const)
-                : left.kind === "boolean"
-                  ? ({ kind: "boolean" } as const)
-                  : undefined);
+        const type = valueDataType(left);
         if (!type || type.kind === "number") return undefined;
         return this.leafValue(
             this.compileLogicalSelection(
@@ -17273,14 +17256,10 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             );
         let targetType =
             entry?.dataType.value ??
-            target.dataType ??
-            (target.kind === "number" ||
-            target.kind === "string" ||
-            target.kind === "boolean"
-                ? { kind: target.kind }
-                : isHandleKind(target.kind)
-                  ? { kind: "handle", handle: target.kind }
-                  : undefined);
+            valueDataType(target) ??
+            (isHandleKind(target.kind)
+                ? { kind: "handle", handle: target.kind }
+                : undefined);
         if (!targetType)
             this.context.fail(
                 name,
@@ -19289,16 +19268,11 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 value.dataType ??
                 (value.domEventTargetCpp !== undefined
                     ? { kind: "event-target" }
-                    : value.kind === "number"
-                      ? { kind: "number" }
-                      : value.kind === "boolean"
-                        ? { kind: "boolean" }
-                        : value.kind === "string"
-                          ? { kind: "string" }
-                          : expected.inner.kind === "handle" &&
-                              value.kind === expected.inner.handle
-                            ? expected.inner
-                            : undefined);
+                    : (valueDataType(value) ??
+                      (expected.inner.kind === "handle" &&
+                      value.kind === expected.inner.handle
+                          ? expected.inner
+                          : undefined)));
             if (value.kind === "json-null") {
                 const temporary =
                     this.context.allocateTemporaryCppName("optional_compare");

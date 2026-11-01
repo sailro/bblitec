@@ -5,6 +5,8 @@ import {
     type UiSelectorStep,
 } from "./ui-selector.js";
 import type { UiGeneratedPart } from "./ui-generated-content.js";
+import { parseMediaQuery, type UiMediaConditions } from "./media-query.js";
+export type { UiMediaConditions } from "./media-query.js";
 
 /** The bounded selector forms projection lowers, by their `UiStyleSelectorKind` spelling. */
 const UI_STYLE_SELECTOR_KINDS = {
@@ -94,22 +96,6 @@ export function uiStyleRuleNeedsRuntimeMatch(
     );
 }
 
-/** The media features a retained sheet's `@media` query conjoins. */
-export interface UiMediaConditions {
-    maxWidth?: number;
-    reducedMotion?: boolean;
-    orientation?: "portrait" | "landscape";
-    /** The primary pointing device's features, which the device answers at run time. */
-    mediaHover?: boolean;
-    mediaPointer?: "none" | "coarse" | "fine";
-}
-
-/** The value a bare device feature evaluates as (`(hover)` is `(hover: hover)`). */
-const UI_BARE_MEDIA_FEATURES: ReadonlyMap<string, string> = new Map([
-    ["prefers-reduced-motion", "reduce"],
-    ["hover", "hover"],
-]);
-
 /**
  * An `@media` prelude's `and` conjunction of features, each named once;
  * undefined for any other query. The device features follow the grammar the
@@ -118,45 +104,10 @@ const UI_BARE_MEDIA_FEATURES: ReadonlyMap<string, string> = new Map([
 export function parseUiMediaQuery(
     prelude: string,
 ): UiMediaConditions | undefined {
-    let rest = /^@media\s*(\(.*\))$/is.exec(prelude.trim())?.[1];
-    const conditions: UiMediaConditions = {};
-    const named = new Set<string>();
-    while (rest !== undefined) {
-        const feature = /^\(\s*([a-z-]+)\s*(?::\s*([^()]*?)\s*)?\)/i.exec(rest);
-        if (!feature) return undefined;
-        const name = feature[1]!.toLowerCase();
-        const value =
-            feature[2]?.toLowerCase() ?? UI_BARE_MEDIA_FEATURES.get(name);
-        if (value === undefined) return undefined;
-        if (named.has(name)) return undefined;
-        named.add(name);
-        const width = Number(/^([0-9]+(?:\.[0-9]*)?)px$/.exec(value)?.[1]);
-        if (name === "max-width" && Number.isFinite(width))
-            conditions.maxWidth = width;
-        else if (
-            name === "orientation" &&
-            (value === "portrait" || value === "landscape")
-        )
-            conditions.orientation = value;
-        else if (
-            name === "prefers-reduced-motion" &&
-            (value === "reduce" || value === "no-preference")
-        )
-            conditions.reducedMotion = value === "reduce";
-        else if (name === "hover" && (value === "hover" || value === "none"))
-            conditions.mediaHover = value === "hover";
-        else if (
-            name === "pointer" &&
-            (value === "none" || value === "coarse" || value === "fine")
-        )
-            conditions.mediaPointer = value;
-        else return undefined;
-        rest = rest.slice(feature[0].length);
-        if (!rest.trim()) return conditions;
-        const and = /^\s+and\s+/i.exec(rest);
-        rest = and ? rest.slice(and[0].length) : undefined;
-    }
-    return undefined;
+    const query = /^[\t\n\f\r ]*@media[\t\n\f\r ]*(\(.*\))[\t\n\f\r ]*$/is.exec(
+        prelude,
+    )?.[1];
+    return query === undefined ? undefined : parseMediaQuery(query, "sheet");
 }
 
 /** What a retained rule applies under: its `@media` features and `@container` width. */

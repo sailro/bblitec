@@ -153,14 +153,17 @@ std::optional<PixelViewport> equal_surface_pane(const Engine& engine, const Scen
     }
     if (pane_count == 1 || pane_index == npos)
         return std::nullopt;
-    const std::uint64_t width = target_width;
-    const auto x0 = static_cast<std::int32_t>(width * pane_index / pane_count);
-    const auto x1 = static_cast<std::int32_t>(width * (pane_index + 1) / pane_count);
+    // The panes split the page viewport, the area a browser lays the canvases out in.
+    const PixelViewport page =
+        page_canvas(engine.ui_page_viewport, target_width, target_height).rect;
+    const std::uint64_t width = static_cast<std::uint64_t>(page.width);
+    const auto x0 = page.x + static_cast<std::int32_t>(width * pane_index / pane_count);
+    const auto x1 = page.x + static_cast<std::int32_t>(width * (pane_index + 1) / pane_count);
     return PixelViewport{
         x0,
-        0,
+        page.y,
         std::max<std::int32_t>(1, x1 - x0),
-        std::max<std::int32_t>(1, static_cast<std::int32_t>(target_height)),
+        std::max<std::int32_t>(1, page.height),
     };
 #else
     (void)engine;
@@ -180,7 +183,10 @@ std::optional<PixelViewport> scene_surface_pane(const Engine& engine, const Scen
         return laid_out_canvas_pane(engine, *scene.surface_canvas, width, height);
     }
 #endif
-    return equal_surface_pane(engine, scene, width, height);
+    if (const auto pane = equal_surface_pane(engine, scene, width, height))
+        return pane;
+    // A canvas without layout fills the page viewport.
+    return page_canvas(engine.ui_page_viewport, width, height).viewport();
 }
 
 std::optional<PixelViewport> surface_canvas_pane(const Engine& engine,

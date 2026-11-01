@@ -1005,6 +1005,28 @@ struct PixelViewport {
     std::int32_t y = 0;
     std::int32_t width = 0;
     std::int32_t height = 0;
+    bool operator==(const PixelViewport&) const = default;
+};
+
+/**
+ * The page's layout viewport within its window (`pal::update_engine_canvas_metrics` lays it out
+ * before callbacks): the safe rectangle under `viewport-fit=auto`, the whole window under
+ * `cover`. `pixels` places paint in the `drawable_width` x `drawable_height` drawable it was laid
+ * out for; the window coordinates place platform input, which SDL reports in them;
+ * `inset_*` are the window's unsafe edges in CSS px, which env() reports under `cover`. Empty
+ * until the platform first lays the page out.
+ */
+struct PageViewport {
+    PixelViewport pixels{};
+    std::int32_t drawable_width = 0, drawable_height = 0;
+    double window_x = 0, window_y = 0, window_width = 0, window_height = 0;
+    double inset_top = 0, inset_right = 0, inset_bottom = 0, inset_left = 0;
+    [[nodiscard]] bool laid_out() const { return pixels.width > 0 && pixels.height > 0; }
+    /** Whether the page spans its whole window, as it does wherever the window has no insets. */
+    [[nodiscard]] bool whole_window() const {
+        return pixels == PixelViewport{0, 0, drawable_width, drawable_height};
+    }
+    bool operator==(const PageViewport&) const = default;
 };
 
 /**
@@ -4142,25 +4164,97 @@ struct UiElementRecord {
 inline constexpr std::uint8_t ui_pointer_hover = 1, ui_pointer_active = 2;
 
 /**
- * The pixels of a `width` x `height` target that a canvas laid out in a
- * `layout_width` x `layout_height` viewport presents its GPU content in:
- * its content box, scaled and truncated to whole pixels. The UI frame
- * clips what it paints beneath the canvas to the same rectangle.
+ * The pixels of a `width` x `height` target that a canvas laid out in `page`
+ * presents its GPU content in: its content box from the viewport's origin,
+ * scaled from the drawable the page laid out in (the target itself before
+ * it did) and truncated to whole pixels. The UI frame clips what it paints
+ * beneath the canvas to the same rectangle.
  */
 [[nodiscard]] inline PixelViewport presented_canvas_rect(const UiElementRecord& canvas,
-                                                         double layout_width, double layout_height,
+                                                         const PageViewport& page,
                                                          std::uint32_t width,
                                                          std::uint32_t height) {
     const UiContentBox& box = canvas.content_box;
-    const double scale_x = static_cast<double>(width) / layout_width;
-    const double scale_y = static_cast<double>(height) / layout_height;
+    const double scale_x = page.laid_out() ? static_cast<double>(width) / page.drawable_width : 1.0;
+    const double scale_y =
+        page.laid_out() ? static_cast<double>(height) / page.drawable_height : 1.0;
     return PixelViewport{
-        static_cast<std::int32_t>(box.left * scale_x),
-        static_cast<std::int32_t>(box.top * scale_y),
+        static_cast<std::int32_t>((page.pixels.x + box.left) * scale_x),
+        static_cast<std::int32_t>((page.pixels.y + box.top) * scale_y),
         std::max<std::int32_t>(1, static_cast<std::int32_t>(box.width * scale_x)),
         std::max<std::int32_t>(1, static_cast<std::int32_t>(box.height * scale_y)),
     };
 }
+
+/** Where the page's canvas draws in a frame target, and the extent it lays out in. */
+struct PageCanvas {
+    /** The page viewport in the target; the whole target when the page fills it. */
+    PixelViewport rect{};
+    /** Whether the page leaves part of the target to the letterbox. */
+    bool letterboxed = false;
+    /** The viewport a pass drawing the frame narrows to: the page's, when letterboxed. */
+    [[nodiscard]] std::optional<PixelViewport> viewport() const {
+        return letterboxed ? std::optional(rect) : std::nullopt;
+    }
+    [[nodiscard]] std::uint32_t width() const { return static_cast<std::uint32_t>(rect.width); }
+    [[nodiscard]] std::uint32_t height() const { return static_cast<std::uint32_t>(rect.height); }
+};
+
+/**
+ * The page's canvas in a `target_width` x `target_height` frame target, scaled from the drawable
+ * the page laid out in as presented canvases are: whatever draws the page's canvas draws there.
+ */
+[[nodiscard]] inline PageCanvas page_canvas(const PageViewport& page, std::uint32_t target_width,
+                                            std::uint32_t target_height) {
+    if (!page.laid_out() || page.whole_window())
+        return {{0, 0, static_cast<std::int32_t>(target_width),
+                 static_cast<std::int32_t>(target_height)},
+                false};
+    const auto scale = [](std::int32_t value, std::uint32_t target, std::int32_t drawable) {
+        return static_cast<std::int32_t>(static_cast<std::int64_t>(value) * target / drawable);
+    };
+    const PixelViewport& pixels = page.pixels;
+    return {{scale(pixels.x, target_width, page.drawable_width),
+             scale(pixels.y, target_height, page.drawable_height),
+             std::max<std::int32_t>(1, scale(pixels.width, target_width, page.drawable_width)),
+             std::max<std::int32_t>(1, scale(pixels.height, target_height, page.drawable_height))},
+            true};
+}
+
+/**
+ * Presses by `Key` (a mouse button, a touch contact) the page received, which keep their moves
+ * and releases wherever they land (`pal::page_platform_event`), and the presses it never received,
+ * whose moves and releases it never receives either.
+ */
+template <typename Key> struct PressCapture {
+    std::vector<Key> received, dropped;
+
+    /** A press at a position `inside` the page or not: whether the page receives it. */
+    bool press(const Key& key, bool inside) {
+        lift(key);
+        (inside ? received : dropped).push_back(key);
+        return inside;
+    }
+    /** Whether the page receives a move or the release (`lifts`) of `key` at `inside`. */
+    bool follow(const Key& key, bool inside, bool lifts) {
+        const bool kept = std::find(received.begin(), received.end(), key) != received.end();
+        const bool lost = std::find(dropped.begin(), dropped.end(), key) != dropped.end();
+        if (lifts)
+            lift(key);
+        return kept || (!lost && inside);
+    }
+    void lift(const Key& key) {
+        std::erase(received, key);
+        std::erase(dropped, key);
+    }
+};
+
+/** The pointer and touch presses inside and outside the page viewport. */
+struct PageInputCapture {
+    PressCapture<std::uint8_t> buttons;
+    /** By SDL touch device and finger. */
+    PressCapture<std::pair<std::uint64_t, std::uint64_t>> touches;
+};
 
 /** Dispatches to the element's `type` listeners; the list outlives a listener that grows the
  * element arena or removes it. */
@@ -4564,6 +4658,15 @@ struct Engine {
     bool ui_focus_visible = true;
     /** The page's `viewport-fit=cover`: its layout spans the window's unsafe edges, which env() reports. */
     bool ui_viewport_fit_cover = false;
+    /** Whether a retained UI lays a page out (`pal::UiRmlRuntime`), in the window's safe area. */
+    bool ui_lays_out_page = false;
+    /** Where the page lays out in its window (`pal::update_engine_canvas_metrics` keeps it). */
+    PageViewport ui_page_viewport{};
+    /** Diagnostic window insets, read once for this runtime by the platform layer. */
+    std::optional<std::array<int, 4>> ui_diagnostic_safe_area;
+    bool ui_diagnostic_safe_area_read = false;
+    /** Pointer and touch presses inside and outside the page viewport. */
+    PageInputCapture ui_page_capture{};
     /** The control whose text select() last selected; the projection applies each revision. */
     UiElementHandle ui_text_selection{};
     std::uint64_t ui_text_selection_revision = 0;

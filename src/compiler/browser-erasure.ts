@@ -1997,26 +1997,6 @@ export class BrowserErasure {
             // that surface as the focusable canvas the entry page establishes.
             return { kind: "number", value: 0 };
         }
-        if (
-            ts.isPropertyAccessExpression(unwrapped) &&
-            unwrapped.name.text === "matches" &&
-            !this.context.options.workers &&
-            ts.isCallExpression(unwrapped.expression) &&
-            isLibraryStatic(
-                this.context.checker,
-                unwrapped.expression.expression,
-                "window",
-                "matchMedia",
-            ) &&
-            unwrapped.expression.arguments.length === 1 &&
-            this.browserValueOf(argumentAt(unwrapped.expression, 0))?.kind ===
-                "string"
-        ) {
-            // The native executable is an SDL desktop surface with mouse
-            // hover and a fine pointer. A coarse/no-hover media query is the
-            // source's touch-layout fork, so its native value is false.
-            return { kind: "boolean", value: false };
-        }
         if (ts.isPrefixUnaryExpression(unwrapped)) {
             const operand = this.browserValueOf(unwrapped.operand);
             if (

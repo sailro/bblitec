@@ -1,12 +1,44 @@
 import { splitUiCssList, uiCssValueTokens } from "./ui-css-syntax.js";
 
+/** A finite CSS `<number>` token's value, else undefined. */
+function cssNumber(token: string): number | undefined {
+    if (!/^[+-]?(?:\d+|\d*\.\d+)(?:e[+-]?\d+)?$/i.test(token)) return undefined;
+    const number = Number(token);
+    return Number.isFinite(number) ? number : undefined;
+}
+
+/** A CSS `<time>` token's seconds (`s` or `ms`), else undefined. */
+function cssTime(token: string): number | undefined {
+    const unit = /^(.*?)(m?s)$/i.exec(token);
+    const number = unit ? cssNumber(unit[1]!) : undefined;
+    return number === undefined
+        ? undefined
+        : number / (unit![2]!.toLowerCase() === "ms" ? 1000 : 1);
+}
+
+/**
+ * Why a duration token is not represented, or undefined. CSS durations are
+ * times that are not negative (RmlUi patch 0046 parses the same), and RmlUi
+ * runs a zero-length animation wrongly (an infinite one never ends).
+ */
+function unrepresentedUiDuration(
+    token: string,
+    animation: boolean,
+): string | undefined {
+    const seconds = cssTime(token);
+    if (seconds === undefined || seconds < 0)
+        return "a duration is a time that is not negative";
+    return animation && seconds === 0
+        ? "zero-duration animations are not represented"
+        : undefined;
+}
+
 /**
  * Why a static transition/animation value's easing functions are outside
  * what the RmlUi animation parser represents, or undefined. Arguments that
  * carry a runtime substitution are left to the native parser.
  */
 export function unrepresentedUiEasing(value: string): string | undefined {
-    const number = /^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:e[+-]?\d+)?$/i;
     for (const [, name, body] of value.matchAll(
         /([a-z][a-z0-9-]*)\(([^()]*)\)/gi,
     )) {
@@ -16,11 +48,10 @@ export function unrepresentedUiEasing(value: string): string | undefined {
             return "linear() easing functions are not represented";
         if (args.some((part) => part.includes("__bblite_ui_"))) continue;
         if (fn === "cubic-bezier") {
-            const points = args.map(Number);
+            const points = args.map(cssNumber);
             if (
-                args.length !== 4 ||
-                !args.every((part) => number.test(part)) ||
-                !points.every(Number.isFinite) ||
+                points.length !== 4 ||
+                !points.every((point) => point !== undefined) ||
                 points[0]! < 0 ||
                 points[0]! > 1 ||
                 points[2]! < 0 ||
@@ -51,22 +82,19 @@ export function unrepresentedUiEasing(value: string): string | undefined {
 }
 
 /**
- * Why a static `animation-duration` list is outside what the RmlUi duration
- * longhand represents, or undefined: `auto` or positive times. A runtime
- * substitution is left to the native parser.
+ * Why a static `transition-duration` or `animation-duration` list is outside
+ * what the RmlUi duration longhands represent, or undefined: `auto` or
+ * durations. A runtime substitution is left to the native parser.
  */
-export function unrepresentedUiAnimationDuration(
+export function unrepresentedUiDurations(
     value: string,
+    animation: boolean,
 ): string | undefined {
     if (/^auto$/i.test(value.trim())) return undefined;
     for (const item of splitUiCssList(value)) {
         if (/var\(|__bblite_ui_/i.test(item)) continue;
-        const time =
-            /^\s*\+?((?:\d+(?:\.\d*)?|\.\d+)(?:e[+-]?\d+)?)(m?s)\s*$/i.exec(
-                item,
-            );
-        if (!time || !(Number(time[1]) > 0))
-            return "only auto or positive animation durations are represented";
+        const reason = unrepresentedUiDuration(item.trim(), animation);
+        if (reason) return reason;
     }
     return undefined;
 }
@@ -99,21 +127,14 @@ export function unrepresentedUiAnimation(value: string): string | undefined {
         const tokens = uiCssValueTokens(item) ?? [];
         if (tokens.some((token) => /var\(|__bblite_ui_/i.test(token))) continue;
         const taken = new Set<string>();
-        const times: number[] = [];
+        const times: string[] = [];
         let name: string | undefined;
         for (const token of tokens) {
             const lower = token.toLowerCase();
-            const time =
-                /^([+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:e[+-]?\d+)?)(m?s)$/i.exec(
-                    lower,
-                );
+            const count = cssNumber(lower);
             if (lower.includes("(")) taken.add("easing");
-            else if (time)
-                times.push(Number(time[1]) / (time[2] === "ms" ? 1000 : 1));
-            else if (
-                /^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:e[+-]?\d+)?$/.test(lower)
-            ) {
-                const count = Number(lower);
+            else if (cssTime(lower) !== undefined) times.push(lower);
+            else if (count !== undefined) {
                 if (!Number.isInteger(count) || count < 1)
                     return "only whole iteration counts of at least 1 are represented";
                 taken.add("iterations");
@@ -127,8 +148,10 @@ export function unrepresentedUiAnimation(value: string): string | undefined {
                     return "paused animations are not represented";
             }
         }
-        if (name !== undefined && name !== "none" && !((times[0] ?? 0) > 0))
-            return "only animations with a positive duration are represented";
+        if (name !== undefined && name !== "none") {
+            const reason = unrepresentedUiDuration(times[0] ?? "0s", true);
+            if (reason) return reason;
+        }
     }
     return undefined;
 }

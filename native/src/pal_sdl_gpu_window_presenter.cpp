@@ -21,8 +21,9 @@ public:
         configure_sdl_canvas_window(device_.get(), window_);
         if (!SDL_ClaimWindowForGPUDevice(device_.get(), window_))
             gpu_error("SDL_ClaimWindowForGPUDevice Window");
-        if (const auto samples = read_frame_options().page_ui_sample_count(); samples > 1)
-            ui_samples_ = sprite_ui_sdl_gpu_layer_samples(device_.get(), samples);
+        ui_samples_ = sprite_ui_sdl_gpu_layer_samples(
+            device_.get(), SDL_GetGPUSwapchainTextureFormat(device_.get(), window_),
+            read_frame_options().page_ui_sample_count());
     }
     ~SdlWindowPresenter() override {
         SDL_WaitForGPUIdle(device_.get());
@@ -104,7 +105,7 @@ public:
         SpriteUiSdlCpuSample ui_sample;
         render_sprite_ui_sdl_gpu_frame(device_.get(), command, destination, format, ui_, ui,
                                        external_texture, cpu_profile_ ? &ui_sample : nullptr,
-                                       ui_samples_);
+                                       ui_samples_, target.clear_color);
         const double ui_recorded = cpu_profile_ ? monotonic_milliseconds() : 0;
         UiSdlReadableSurface::present(command, destination, swapchain, width, height);
         const double blit_recorded = cpu_profile_ ? monotonic_milliseconds() : 0;

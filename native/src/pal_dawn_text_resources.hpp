@@ -72,6 +72,8 @@ struct DawnTextGpuView final : GpuObject {
     std::shared_ptr<DawnTextTextureLease> texture;
     /** A swapchain or capture target the frame owns. */
     WGPUTextureView target = nullptr;
+    /** The page canvas's viewport in a frame target (`PageCanvas::viewport`). */
+    std::optional<PixelViewport> page;
     WGPUTextureView get() const { return lease ? lease->get() : target; }
 };
 /** `GPUTexture`. */
@@ -200,8 +202,9 @@ struct DawnTextCommandEncoder final : GpuCommandEncoder {
         if (descriptor.color_attachments.size() != 1 || descriptor.depth_stencil_attachment)
             throw std::runtime_error("Text render passes have one color attachment and no depth.");
         const auto& color = descriptor.color_attachments[0];
+        const auto view = dawn_text_object<DawnTextGpuView>(color.view);
         WGPURenderPassColorAttachment attachment = WGPU_RENDER_PASS_COLOR_ATTACHMENT_INIT;
-        attachment.view = dawn_text_object<DawnTextGpuView>(color.view)->get();
+        attachment.view = view->get();
         if (color.clear_value) {
             const auto& value = *color.clear_value;
             attachment.clearValue = {value.r, value.g, value.b, value.a};
@@ -222,6 +225,7 @@ struct DawnTextCommandEncoder final : GpuCommandEncoder {
         result->owner = owner;
         result->owned_pass = wgpuCommandEncoderBeginRenderPass(encoder, &pass_descriptor);
         result->pass = result->owned_pass.get();
+        set_pass_viewport(result->pass, view->page);
         return result;
     }
 };

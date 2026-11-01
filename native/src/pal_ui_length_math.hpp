@@ -69,10 +69,10 @@ inline std::size_t css_function_end(std::string_view value, std::size_t open) {
 }
 
 inline std::string_view trim_css_token(std::string_view value) {
-    const std::size_t first = value.find_first_not_of(" \t\r\n");
+    const std::size_t first = value.find_first_not_of(" \t\r\n\f");
     if (first == std::string_view::npos)
         return {};
-    const std::size_t last = value.find_last_not_of(" \t\r\n");
+    const std::size_t last = value.find_last_not_of(" \t\r\n\f");
     return value.substr(first, last - first + 1);
 }
 

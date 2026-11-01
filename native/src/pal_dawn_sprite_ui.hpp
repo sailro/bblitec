@@ -3,10 +3,10 @@
 // The Dawn realization of the backend-neutral RmlUi recorder, shared by every
 // consumer: the scene renderer, the standalone SpriteRenderer frame driver and
 // the Window presenter. The recorder's geometry is premultiplied. A
-// single-sample consumer blends each draw directly into its target; the scene
-// renderer names a layer sample count, and each segment then renders into a
-// transparent RGBA8 layer at that count, resolves, and composites once over
-// the target.
+// single-sample consumer blends each draw directly into its target; a
+// multisampled consumer names a layer sample count, and each run then renders
+// at that count in the surface format, resolving into the transparent layer
+// that composites once over the target (`for_each_ui_run`).
 
 #include <bblite/pal_ui.hpp>
 
@@ -31,7 +31,12 @@ namespace bbl::pal {
 
 using SpriteUiDawnTexture = UiDawnTexture;
 
-/** A layered consumer's transparent layer, recreated when the frame resizes. */
+/**
+ * A multisampled consumer's targets in the surface format, recreated when the frame resizes
+ * and each allocated once a run needs it: the multisampled one every multisampled run draws
+ * into, which a direct run resolves straight into the destination, and the transparent layer a
+ * layered run resolves into and composites from.
+ */
 struct SpriteUiDawnLayer {
     WGPUTexture texture = nullptr;
     WGPUTextureView view = nullptr;
@@ -40,6 +45,7 @@ struct SpriteUiDawnLayer {
     WGPUBindGroup group = nullptr;
     std::uint32_t width = 0;
     std::uint32_t height = 0;
+    bool used = false;
 
     void release() noexcept {
         if (group)
@@ -62,7 +68,7 @@ struct SpriteUiDawnResources {
     WGPUBindGroupLayout screen_layout = nullptr;
     WGPUBindGroupLayout texture_layout = nullptr;
     WGPUPipelineLayout texture_pipeline_layout = nullptr;
-    // The draws' pipelines, in the target's format or the layer's.
+    // The draws' pipelines in the surface format, at the layer's sample count.
     WGPURenderPipeline color_pipeline = nullptr;
     WGPURenderPipeline texture_pipeline = nullptr;
     // A layered consumer's single-sample texture pipeline in the target's
@@ -75,6 +81,8 @@ struct SpriteUiDawnResources {
     WGPUBuffer vertices = nullptr;
     WGPUBuffer indices = nullptr;
     SpriteUiDawnLayer layer;
+    std::vector<SpriteUiDawnLayer> group_layers;
+    UiTargetProfile profile{"dawn"};
     std::unordered_map<std::uint64_t, UiCachedTexture<SpriteUiDawnTexture>> textures;
     std::uint64_t vertex_capacity = 0;
     std::uint64_t index_capacity = 0;
@@ -215,13 +223,12 @@ inline void create_sprite_ui_dawn_resources(DawnDevice& state, SpriteUiDawnResou
         wgpuDeviceCreatePipelineLayout(state.device, &color_layout_descriptor)};
     if (!color_layout)
         dawn_error("UI color pipeline layout");
-    const WGPUTextureFormat draw_format =
-        layer_samples ? WGPUTextureFormat_RGBA8Unorm : state.surface_format;
     const std::uint32_t draw_samples = layer_samples.value_or(1u);
-    ui.color_pipeline = create_sprite_ui_dawn_pipeline(state.device, module, "fs_color",
-                                                       draw_format, draw_samples, color_layout);
-    ui.texture_pipeline = create_sprite_ui_dawn_pipeline(
-        state.device, module, "fs_texture", draw_format, draw_samples, ui.texture_pipeline_layout);
+    ui.color_pipeline = create_sprite_ui_dawn_pipeline(
+        state.device, module, "fs_color", state.surface_format, draw_samples, color_layout);
+    ui.texture_pipeline =
+        create_sprite_ui_dawn_pipeline(state.device, module, "fs_texture", state.surface_format,
+                                       draw_samples, ui.texture_pipeline_layout);
     if (layer_samples) {
         ui.composite_pipeline =
             create_sprite_ui_dawn_pipeline(state.device, module, "fs_texture", state.surface_format,
@@ -270,34 +277,46 @@ inline void ensure_sprite_ui_dawn_backdrop_pipeline(DawnDevice& state, SpriteUiD
     wgpuShaderModuleRelease(module);
 }
 
+/**
+ * Fits the layer to the frame and allocates what a run of `composition` draws through: a
+ * multisampled run the multisampled texture, a layered run also the transparent layer. Both are
+ * in the surface format, BGRA8 or RGBA8 (`select_dawn_surface_configuration`), which WebGPU
+ * renders at 4x.
+ */
 inline void ensure_sprite_ui_dawn_layer(DawnDevice& state, SpriteUiDawnResources& ui,
-                                        std::uint32_t samples, std::uint32_t width,
+                                        SpriteUiDawnLayer& layer, std::uint32_t samples,
+                                        UiRunComposition composition, std::uint32_t width,
                                         std::uint32_t height) {
-    SpriteUiDawnLayer& layer = ui.layer;
-    if (layer.texture && layer.width == width && layer.height == height)
-        return;
-    layer.release();
-    WGPUTextureDescriptor descriptor = WGPU_TEXTURE_DESCRIPTOR_INIT;
-    descriptor.dimension = WGPUTextureDimension_2D;
-    descriptor.format = WGPUTextureFormat_RGBA8Unorm;
-    descriptor.usage = WGPUTextureUsage_RenderAttachment | WGPUTextureUsage_TextureBinding;
-    descriptor.size = WGPUExtent3D{width, height, 1};
-    descriptor.sampleCount = 1;
-    layer.texture = wgpuDeviceCreateTexture(state.device, &descriptor);
-    if (!layer.texture)
-        dawn_error("wgpuDeviceCreateTexture UI layer");
-    layer.view = create_dawn_texture_view(layer.texture, nullptr);
-    if (samples > 1) {
-        descriptor.usage = WGPUTextureUsage_RenderAttachment;
-        descriptor.sampleCount = samples;
-        layer.multisample = wgpuDeviceCreateTexture(state.device, &descriptor);
-        if (!layer.multisample)
-            dawn_error("wgpuDeviceCreateTexture UI multisample layer");
+    if (layer.width != width || layer.height != height) {
+        layer.release();
+        layer.width = width;
+        layer.height = height;
+    }
+    layer.used = true;
+    const auto make_texture = [&](std::uint32_t texture_samples, WGPUTextureUsage usage,
+                                  const char* target) {
+        WGPUTextureDescriptor descriptor = WGPU_TEXTURE_DESCRIPTOR_INIT;
+        descriptor.dimension = WGPUTextureDimension_2D;
+        descriptor.format = state.surface_format;
+        descriptor.usage = usage;
+        descriptor.size = WGPUExtent3D{width, height, 1};
+        descriptor.sampleCount = texture_samples;
+        WGPUTexture texture = wgpuDeviceCreateTexture(state.device, &descriptor);
+        if (!texture)
+            dawn_error("wgpuDeviceCreateTexture UI layer");
+        ui.profile.allocated(target, width, height, texture_samples, 4);
+        return texture;
+    };
+    if (samples > 1 && !layer.multisample) {
+        layer.multisample = make_texture(samples, WGPUTextureUsage_RenderAttachment, "multisample");
         layer.multisample_view = create_dawn_texture_view(layer.multisample, nullptr);
     }
-    layer.group = create_sprite_ui_dawn_texture_group(state, ui, layer.view, ui.sampler);
-    layer.width = width;
-    layer.height = height;
+    if (composition == UiRunComposition::layered && !layer.texture) {
+        layer.texture = make_texture(
+            1, WGPUTextureUsage_RenderAttachment | WGPUTextureUsage_TextureBinding, "layer");
+        layer.view = create_dawn_texture_view(layer.texture, nullptr);
+        layer.group = create_sprite_ui_dawn_texture_group(state, ui, layer.view, ui.sampler);
+    }
 }
 
 inline void ensure_sprite_ui_dawn_buffer(WGPUDevice device, WGPUBuffer& buffer,
@@ -317,24 +336,33 @@ inline void ensure_sprite_ui_dawn_buffer(WGPUDevice device, WGPUBuffer& buffer,
  * Records one UI frame over `target`.
  *
  * `layer_samples` selects the composition: absent, each draw blends directly
- * into the target; present, each segment renders into the transparent layer
- * at that sample count and the resolved layer composites over the target. An
- * owner passes the same value every frame, because the pipelines keep it.
+ * into the target; present, each run renders at that sample count and
+ * composes as `for_each_ui_run` names. An owner passes the same value every
+ * frame, because the pipelines keep it. `destination_clear` names the colour
+ * a destination holds before the UI: its first run then resolves straight
+ * into it. Engine canvas draws (external textures) are the draws the textures
+ * cache does not own.
  */
 template <typename ExternalTexture = std::nullptr_t>
 inline void render_sprite_ui_dawn_frame(DawnDevice& state, WGPUCommandEncoder encoder,
                                         WGPUTexture target_texture, WGPUTextureView target,
                                         SpriteUiDawnResources& ui, const UiRenderFrame& frame,
                                         ExternalTexture external_texture = nullptr,
-                                        std::optional<std::uint32_t> layer_samples = std::nullopt) {
+                                        std::optional<std::uint32_t> layer_samples = std::nullopt,
+                                        std::optional<WGPUColor> destination_clear = std::nullopt) {
     prune_ui_texture_cache(ui.textures, [](SpriteUiDawnTexture& texture) { texture.release(); });
-    if ((frame.draws.empty() && frame.operations.empty()) || frame.width == 0 || frame.height == 0)
+    if ((frame.draws.empty() && frame.operations.empty()) || frame.width == 0 ||
+        frame.height == 0) {
+        ui.filters.begin_frame();
+        ui.filters.finish_frame(0);
+        for (auto& group : ui.group_layers)
+            group.release();
+        ui.group_layers.clear();
         return;
+    }
     create_sprite_ui_dawn_resources(state, ui, layer_samples);
     if (!frame.backdrops.empty())
         ensure_sprite_ui_dawn_backdrop_pipeline(state, ui);
-    if (layer_samples)
-        ensure_sprite_ui_dawn_layer(state, ui, *layer_samples, frame.width, frame.height);
 
     // The recorder appended the full-frame composite quad after the RmlUi
     // draws (`frame.composite_first_index` names it), so the aggregate
@@ -368,104 +396,130 @@ inline void render_sprite_ui_dawn_frame(DawnDevice& state, WGPUCommandEncoder en
     const WGPURenderPipeline target_pipeline = sprite_ui_dawn_target_pipeline(ui);
     const UiDawnTexture root_target{target_texture, target, nullptr, nullptr};
     ui.filters.begin_frame();
+    for (auto& group : ui.group_layers)
+        group.used = false;
+    if (ui.group_layers.size() < frame.layer_count)
+        ui.group_layers.resize(frame.layer_count);
+    UiRunPolicy policy;
     for_each_ui_segment(
         frame,
         [&](std::size_t draw_begin, std::size_t draw_end, std::uint32_t layer) {
             const auto draw_target =
                 ui.filters.target(state.device, encoder, root_target, state.surface_format,
                                   ui.texture_layout, ui.sampler, frame, layer);
-            WGPURenderPassColorAttachment attachment = WGPU_RENDER_PASS_COLOR_ATTACHMENT_INIT;
-            if (layer_samples) {
-                // The layer starts transparent for every segment; a
-                // multisampled layer resolves into the sampled one.
-                const SpriteUiDawnLayer& ui_layer = ui.layer;
-                attachment.view =
-                    ui_layer.multisample_view ? ui_layer.multisample_view : ui_layer.view;
-                attachment.resolveTarget = ui_layer.multisample_view ? ui_layer.view : nullptr;
-                attachment.loadOp = WGPULoadOp_Clear;
-                attachment.storeOp =
-                    ui_layer.multisample_view ? WGPUStoreOp_Discard : WGPUStoreOp_Store;
-                attachment.clearValue = WGPUColor{0, 0, 0, 0};
-            } else {
-                attachment.view = draw_target.view;
-                attachment.loadOp = WGPULoadOp_Load;
-                attachment.storeOp = WGPUStoreOp_Store;
-            }
-            WGPURenderPassDescriptor descriptor = WGPU_RENDER_PASS_DESCRIPTOR_INIT;
-            descriptor.colorAttachmentCount = 1;
-            descriptor.colorAttachments = &attachment;
-            DawnRenderPass pass{wgpuCommandEncoderBeginRenderPass(encoder, &descriptor)};
-            wgpuRenderPassEncoderSetBindGroup(pass, 0, ui.screen_group, 0, nullptr);
-            wgpuRenderPassEncoderSetVertexBuffer(pass, 0, ui.vertices, 0, WGPU_WHOLE_SIZE);
-            wgpuRenderPassEncoderSetIndexBuffer(pass, ui.indices, WGPUIndexFormat_Uint32, 0,
-                                                WGPU_WHOLE_SIZE);
-            UiReachedRect reached;
-            for (std::size_t draw_index = draw_begin; draw_index < draw_end; ++draw_index) {
-                const UiRenderDraw& draw = frame.draws[draw_index];
-                const std::optional<UiScissorRect> scissor =
-                    clamped_ui_scissor(draw, frame.width, frame.height);
-                if (!scissor)
-                    continue;
-                reached.add(frame, draw, *scissor);
-                wgpuRenderPassEncoderSetScissorRect(pass, static_cast<std::uint32_t>(scissor->left),
-                                                    static_cast<std::uint32_t>(scissor->top),
-                                                    static_cast<std::uint32_t>(scissor->width),
-                                                    static_cast<std::uint32_t>(scissor->height));
-                if (draw.texture_id) {
-                    const auto owned = ui.textures.find(draw.texture_id);
-                    const SpriteUiDawnTexture* texture =
-                        owned == ui.textures.end() ? nullptr : &owned->second.resource;
-                    if constexpr (!std::is_same_v<ExternalTexture, std::nullptr_t>) {
-                        if (!texture)
-                            texture = external_texture(draw.texture_id);
+            const auto layer_target = ui_layer_target(frame, layer);
+            const auto& rect = layer_target.rect;
+            const auto width = static_cast<std::uint32_t>(rect.width);
+            const auto height = static_cast<std::uint32_t>(rect.height);
+            const auto screen = ui.filters.screen_for(state.device, state.queue, ui.screen_layout,
+                                                      ui.screen_group, frame, layer);
+            auto& run_layer = width != frame.width || height != frame.height
+                                  ? ui.group_layers[layer - 1]
+                                  : ui.layer;
+            policy.segment(
+                frame, draw_begin, draw_end, layer_samples.has_value(), draw_target.view == target,
+                destination_clear.has_value(), !std::is_same_v<ExternalTexture, std::nullptr_t>,
+                ui.textures,
+                [&](std::size_t run, std::size_t run_end, UiRunComposition composition) {
+                    const bool layered = composition == UiRunComposition::layered;
+                    const WGPURenderPipeline texture_pipeline =
+                        composition == UiRunComposition::blend ? target_pipeline
+                                                               : ui.texture_pipeline;
+                    WGPURenderPassColorAttachment attachment =
+                        WGPU_RENDER_PASS_COLOR_ATTACHMENT_INIT;
+                    if (composition != UiRunComposition::blend)
+                        ensure_sprite_ui_dawn_layer(state, ui, run_layer, *layer_samples,
+                                                    composition, width, height);
+                    const auto targets =
+                        ui_run_targets(composition, draw_target.view, run_layer.view,
+                                       run_layer.multisample_view, destination_clear);
+                    attachment.view = targets.draw;
+                    attachment.resolveTarget = targets.resolve;
+                    attachment.loadOp = targets.clear ? WGPULoadOp_Clear : WGPULoadOp_Load;
+                    attachment.storeOp = targets.resolve ? WGPUStoreOp_Discard : WGPUStoreOp_Store;
+                    attachment.clearValue = targets.clear.value_or(WGPUColor{});
+                    WGPURenderPassDescriptor descriptor = WGPU_RENDER_PASS_DESCRIPTOR_INIT;
+                    descriptor.colorAttachmentCount = 1;
+                    descriptor.colorAttachments = &attachment;
+                    DawnRenderPass pass{wgpuCommandEncoderBeginRenderPass(encoder, &descriptor)};
+                    wgpuRenderPassEncoderSetBindGroup(pass, 0, screen, 0, nullptr);
+                    wgpuRenderPassEncoderSetVertexBuffer(pass, 0, ui.vertices, 0, WGPU_WHOLE_SIZE);
+                    wgpuRenderPassEncoderSetIndexBuffer(pass, ui.indices, WGPUIndexFormat_Uint32, 0,
+                                                        WGPU_WHOLE_SIZE);
+                    UiReachedRect reached;
+                    for (std::size_t draw_index = run; draw_index < run_end; ++draw_index) {
+                        const UiRenderDraw& draw = frame.draws[draw_index];
+                        const std::optional<UiScissorRect> scissor =
+                            clamped_ui_scissor(draw, width, height);
+                        if (!scissor)
+                            continue;
+                        if (layered)
+                            reached.add(frame, draw, *scissor);
+                        wgpuRenderPassEncoderSetScissorRect(
+                            pass, static_cast<std::uint32_t>(scissor->left),
+                            static_cast<std::uint32_t>(scissor->top),
+                            static_cast<std::uint32_t>(scissor->width),
+                            static_cast<std::uint32_t>(scissor->height));
+                        if (draw.texture_id) {
+                            const auto owned = ui.textures.find(draw.texture_id);
+                            const SpriteUiDawnTexture* texture =
+                                owned == ui.textures.end() ? nullptr : &owned->second.resource;
+                            if constexpr (!std::is_same_v<ExternalTexture, std::nullptr_t>) {
+                                if (!texture)
+                                    texture = external_texture(draw.texture_id);
+                            }
+                            if (!texture)
+                                continue;
+                            wgpuRenderPassEncoderSetPipeline(pass, texture_pipeline);
+                            wgpuRenderPassEncoderSetBindGroup(
+                                pass, 1,
+                                draw.nearest_sampling ? texture->nearest_group : texture->group, 0,
+                                nullptr);
+                        } else {
+                            wgpuRenderPassEncoderSetPipeline(pass, ui.color_pipeline);
+                        }
+                        count_gpu_draw(wgpuRenderPassEncoderDrawIndexed, pass, draw.index_count, 1,
+                                       draw.first_index, 0, 0);
                     }
-                    if (!texture)
-                        continue;
-                    wgpuRenderPassEncoderSetPipeline(pass, ui.texture_pipeline);
-                    wgpuRenderPassEncoderSetBindGroup(
-                        pass, 1, draw.nearest_sampling ? texture->nearest_group : texture->group, 0,
-                        nullptr);
-                } else {
-                    wgpuRenderPassEncoderSetPipeline(pass, ui.color_pipeline);
-                }
-                count_gpu_draw(wgpuRenderPassEncoderDrawIndexed, pass, draw.index_count, 1,
-                               draw.first_index, 0, 0);
-            }
-            wgpuRenderPassEncoderEnd(pass);
-            pass.reset();
-            const std::optional<UiScissorRect> composited = reached.rect();
-            if (!layer_samples || !composited)
-                return;
+                    wgpuRenderPassEncoderEnd(pass);
+                    pass.reset();
+                    const std::optional<UiScissorRect> composited = reached.rect();
+                    if (!layered || !composited)
+                        return;
 
-            WGPURenderPassColorAttachment composite_attachment =
-                WGPU_RENDER_PASS_COLOR_ATTACHMENT_INIT;
-            composite_attachment.view = draw_target.view;
-            composite_attachment.loadOp = WGPULoadOp_Load;
-            composite_attachment.storeOp = WGPUStoreOp_Store;
-            WGPURenderPassDescriptor composite_descriptor = WGPU_RENDER_PASS_DESCRIPTOR_INIT;
-            composite_descriptor.colorAttachmentCount = 1;
-            composite_descriptor.colorAttachments = &composite_attachment;
-            DawnRenderPass composite_pass{
-                wgpuCommandEncoderBeginRenderPass(encoder, &composite_descriptor)};
-            wgpuRenderPassEncoderSetPipeline(composite_pass, target_pipeline);
-            wgpuRenderPassEncoderSetBindGroup(composite_pass, 0, ui.screen_group, 0, nullptr);
-            wgpuRenderPassEncoderSetBindGroup(composite_pass, 1, ui.layer.group, 0, nullptr);
-            wgpuRenderPassEncoderSetVertexBuffer(composite_pass, 0, ui.vertices, 0,
-                                                 WGPU_WHOLE_SIZE);
-            wgpuRenderPassEncoderSetIndexBuffer(composite_pass, ui.indices, WGPUIndexFormat_Uint32,
-                                                0, WGPU_WHOLE_SIZE);
-            // The composite covers only what the segment's draws reached.
-            wgpuRenderPassEncoderSetScissorRect(composite_pass,
-                                                static_cast<std::uint32_t>(composited->left),
-                                                static_cast<std::uint32_t>(composited->top),
-                                                static_cast<std::uint32_t>(composited->width),
-                                                static_cast<std::uint32_t>(composited->height));
-            count_gpu_draw(wgpuRenderPassEncoderDrawIndexed, composite_pass, 6, 1,
-                           frame.composite_first_index, 0, 0);
-            wgpuRenderPassEncoderEnd(composite_pass);
-            composite_pass.reset();
+                    WGPURenderPassColorAttachment composite_attachment =
+                        WGPU_RENDER_PASS_COLOR_ATTACHMENT_INIT;
+                    composite_attachment.view = draw_target.view;
+                    composite_attachment.loadOp = WGPULoadOp_Load;
+                    composite_attachment.storeOp = WGPUStoreOp_Store;
+                    WGPURenderPassDescriptor composite_descriptor =
+                        WGPU_RENDER_PASS_DESCRIPTOR_INIT;
+                    composite_descriptor.colorAttachmentCount = 1;
+                    composite_descriptor.colorAttachments = &composite_attachment;
+                    DawnRenderPass composite_pass{
+                        wgpuCommandEncoderBeginRenderPass(encoder, &composite_descriptor)};
+                    wgpuRenderPassEncoderSetPipeline(composite_pass, target_pipeline);
+                    wgpuRenderPassEncoderSetBindGroup(composite_pass, 0, screen, 0, nullptr);
+                    wgpuRenderPassEncoderSetBindGroup(composite_pass, 1, run_layer.group, 0,
+                                                      nullptr);
+                    wgpuRenderPassEncoderSetVertexBuffer(composite_pass, 0, ui.vertices, 0,
+                                                         WGPU_WHOLE_SIZE);
+                    wgpuRenderPassEncoderSetIndexBuffer(composite_pass, ui.indices,
+                                                        WGPUIndexFormat_Uint32, 0, WGPU_WHOLE_SIZE);
+                    // The composite covers only what the run's draws reached.
+                    wgpuRenderPassEncoderSetScissorRect(
+                        composite_pass, static_cast<std::uint32_t>(composited->left),
+                        static_cast<std::uint32_t>(composited->top),
+                        static_cast<std::uint32_t>(composited->width),
+                        static_cast<std::uint32_t>(composited->height));
+                    count_gpu_draw(wgpuRenderPassEncoderDrawIndexed, composite_pass, 6, 1,
+                                   layer_target.composite_first_index, 0, 0);
+                    wgpuRenderPassEncoderEnd(composite_pass);
+                    composite_pass.reset();
+                });
         },
         [&](const UiRenderOperation& operation) {
+            policy.operation(frame, operation);
             if (operation.kind == UiRenderOperation::Kind::ResetLayer) {
                 ui.filters.reset_layer(operation.index);
             } else if (operation.kind == UiRenderOperation::Kind::Backdrop) {
@@ -476,11 +530,16 @@ inline void render_sprite_ui_dawn_frame(DawnDevice& state, WGPUCommandEncoder en
             } else {
                 render_ui_composite_dawn(state.device, state.queue, encoder, root_target,
                                          state.surface_format, ui.vertices, ui.indices, ui.sampler,
-                                         ui.screen_group, ui.texture_layout, target_pipeline,
-                                         ui.filters, frame, operation.index);
+                                         ui.screen_group, ui.screen_layout, ui.texture_layout,
+                                         target_pipeline, ui.filters, frame, operation.index);
             }
         });
     ui.filters.finish_frame(frame.composites.size());
+    ui.profile.composed(policy.counts);
+    for (auto& group : ui.group_layers)
+        if (!group.used)
+            group.release();
+    ui.group_layers.resize(frame.layer_count);
 }
 
 inline void release_sprite_ui_dawn_resources(SpriteUiDawnResources& ui) {
@@ -491,6 +550,8 @@ inline void release_sprite_ui_dawn_resources(SpriteUiDawnResources& ui) {
         source.resource.release();
     }
     ui.layer.release();
+    for (auto& group : ui.group_layers)
+        group.release();
     if (ui.indices)
         wgpuBufferRelease(ui.indices);
     if (ui.vertices)

@@ -143,19 +143,6 @@ inline namespace sdl_scene {
  */
 [[maybe_unused]] SDL_GPUPrimitiveType gpu_primitive_type(MeshTopology topology);
 
-/**
- * The pin's `executePassBody` and geometry `executeTask` opening
- * (`_applyCameraViewport`): a camera carrying a viewport narrows the pass
- * to it, and one without leaves the pass at the whole target the way
- * `if (!v) return` leaves it.
- *
- * Set AFTER the pass begins, exactly where upstream sets it, so the load
- * operation has already cleared or loaded the whole attachment -- a
- * split-screen base scene clears the target and draws its half, and the
- * overlay loads that and draws the other.
- */
-void set_pass_viewport(SDL_GPURenderPass* pass, const std::optional<PixelViewport>& resolved);
-
 /** A scene's own pass: its camera's viewport composed into its surface pane. */
 inline void set_pass_camera_viewport(SDL_GPURenderPass* pass, const Scene& scene,
                                      const Engine& engine, const CameraRecord* camera,
@@ -866,20 +853,29 @@ struct GpuState : SdlGpuDevice {
     std::array<SDL_GPUTexture*, 2> area_light_ltc{};
 #endif
 #if BBLITE_RECT_AREA_EMISSION
+    // processAreaLightTexture's texture, one per processed image a snapshot
+    // packs (`AreaLightImage` identity), uploaded once per device from its
+    // packaged chain; a snapshot's array copies it level for level.
+    struct AreaLightImageGpu {
+        std::shared_ptr<const AreaLightImage> source;
+        SDL_GPUTexture* texture = nullptr;
+    };
+    std::vector<std::unique_ptr<AreaLightImageGpu>> area_light_images;
     // area-light-emission.ts's scene allocation, one per emission snapshot a
     // scene holds (`AreaLightEmission` identity): the array (one layer per
     // processed image, every level copied), sampled through
     // `background_sampler` (linear, linear mip, clamp to edge), and the slot
     // words as the storage buffer a stage whose four uniform slots are spent
-    // reads them from. A snapshot no scene holds any more is released.
+    // reads them from. A snapshot or image no scene holds any more is
+    // released (`cached_source_upload`).
     struct AreaLightEmissionGpu {
         std::shared_ptr<const AreaLightEmission> source;
         SDL_GPUTexture* array = nullptr;
         SDL_GPUBuffer* slots = nullptr;
     };
     std::vector<std::unique_ptr<AreaLightEmissionGpu>> area_light_emissions;
-    // The allocation of the scene whose draws resolve now
-    // (`bind_area_light_scene`); null for a scene with no snapshot.
+    // The allocation of the scene whose pass draws now, set by its
+    // `prepare_area_lighting`; null for a scene with no snapshot.
     const AreaLightEmissionGpu* area_light_emission = nullptr;
 #endif
     SDL_GPUTexture* reflection_fallback = nullptr;
@@ -1026,7 +1022,7 @@ struct GpuState : SdlGpuDevice {
     SDL_GPUTextureFormat depth_format = SDL_GPU_TEXTUREFORMAT_D16_UNORM;
     SDL_GPUSampleCount sample_count = SDL_GPU_SAMPLECOUNT_1;
     /** The page UI's layer sample count (`sprite_ui_sdl_gpu_layer_samples`). */
-    SDL_GPUSampleCount ui_samples = SDL_GPU_SAMPLECOUNT_1;
+    std::optional<SDL_GPUSampleCount> ui_samples;
 #if BBLITE_HAS_BILLBOARDS
     /** One pass per system the scene draws, in its order (`sync_billboard_passes`). */
     std::vector<BillboardPass> billboard_passes;
@@ -1855,14 +1851,15 @@ std::array<SDL_GPUTexture*, 2> upload_area_light_ltc(SDL_GPUDevice* device,
 /**
  * A scene's area-lighting resources, beside its pass's lights block: the
  * LTC tables on the device's first area-lit draw, and the allocation of the
- * scene's emission snapshot, uploaded when the snapshot is new (an enable,
- * a rebuild, a second area scene) and released once no scene holds it.
+ * scene's emission snapshot, built when the snapshot is new (an enable, a
+ * changed selection, a second area scene) and released once no scene holds
+ * it. The pass's draws bind that allocation.
  */
 void prepare_area_lighting(GpuState& state, const Scene& scene, const Engine& engine);
 #endif
 #if BBLITE_RECT_AREA_EMISSION
-/** Points the draws that resolve next at `scene`'s emission allocation. */
-void bind_area_light_scene(GpuState& state, const Scene& scene);
+/** Releases every emission array and processed image this backend holds. */
+void release_area_light_emission(GpuState& state);
 /** The emission allocation a textured area variant binds, which its scene holds. */
 const GpuState::AreaLightEmissionGpu& area_light_emission_binding(const GpuState& state);
 #endif

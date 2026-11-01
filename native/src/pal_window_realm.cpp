@@ -1787,18 +1787,21 @@ static Iteration<int> window_application_iterations(WorkerEntry initialize, Engi
                                    [services](std::unique_ptr<ExternalEvent> event) {
                                        services->post_input(std::move(event));
                                    });
-                // One read of the device per frame, for the page and the realm.
-                next_layout.input = platform_input_capabilities();
-                supply_ui_rml_media_device(*ui, {system_reduced_motion(), next_layout.input});
-                update_ui_rml_runtime(*ui, width, height);
-                const auto next_update = ui_rml_next_update(*ui);
-                next_layout.width = width;
-                next_layout.height = height;
                 const auto density = SDL_GetWindowDisplayScale(window.get());
                 next_layout.pixel_ratio = density > 0 ? density : 1;
                 const auto pixel_density = SDL_GetWindowPixelDensity(window.get());
                 update_engine_canvas_metrics(display, width, height, next_layout.pixel_ratio,
-                                             pixel_density > 0 ? pixel_density : 1);
+                                             pixel_density > 0 ? pixel_density : 1,
+                                             window_safe_area(window.get(), display));
+                // One read of the pointing devices per frame, for the page and the realm; the
+                // page reads the motion preference itself, only while a sheet observes it.
+                next_layout.input = platform_input_capabilities();
+                supply_ui_rml_media_device(*ui, std::nullopt, next_layout.input);
+                update_ui_rml_runtime(*ui, width, height);
+                const auto next_update = ui_rml_next_update(*ui);
+                // The document lays out in the page viewport, which the realm reads as its window.
+                next_layout.width = display.ui_page_viewport.pixels.width;
+                next_layout.height = display.ui_page_viewport.pixels.height;
                 if (services->screen_requested.load()) {
                     const auto display_id = SDL_GetDisplayForWindow(window.get());
                     SDL_Rect bounds{}, available{};
@@ -1888,6 +1891,8 @@ static Iteration<int> window_application_iterations(WorkerEntry initialize, Engi
                         running = false;
                     if (frame_options.test_pass && is_platform_input_event(event) &&
                         !is_replayed_ui_event(event))
+                        continue;
+                    if (!page_platform_event(display, event))
                         continue;
                     if (end_page_fullscreen(*services, window.get(), page_fullscreen, event))
                         continue;

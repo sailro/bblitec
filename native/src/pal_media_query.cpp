@@ -4,18 +4,11 @@
 #include <set>
 #include <stdexcept>
 #include <bblite/js_data.hpp>
+#include "pal_ui_length_math.hpp"
 
 namespace bbl::pal {
 
 namespace {
-std::string_view trim_media(std::string_view text) {
-    while (!text.empty() && std::isspace(static_cast<unsigned char>(text.front())))
-        text.remove_prefix(1);
-    while (!text.empty() && std::isspace(static_cast<unsigned char>(text.back())))
-        text.remove_suffix(1);
-    return text;
-}
-
 /**
  * Names one device feature of `condition`, as a retained sheet's `@media`
  * admits it (`parseUiMediaQuery`): `prefers-reduced-motion` and `hover`
@@ -51,7 +44,7 @@ MediaQueryList::MediaQueryList(std::string query, double (*read_pixel_ratio)(),
     };
     // An `and` conjunction of features, each named once; resolution stands alone.
     const std::string lowered = js::string_lower(query);
-    std::string_view rest = trim_media(lowered);
+    std::string_view rest = detail::trim_css_token(lowered);
     std::set<std::string_view> named;
     while (true) {
         if (rest.empty() || rest.front() != '(')
@@ -61,24 +54,21 @@ MediaQueryList::MediaQueryList(std::string query, double (*read_pixel_ratio)(),
             refuse();
         const std::string_view feature = rest.substr(1, close - 1);
         const auto colon = feature.find(':');
-        const std::string_view name = trim_media(feature.substr(0, colon));
+        const std::string_view name = detail::trim_css_token(feature.substr(0, colon));
         const std::optional<std::string_view> value =
             colon == std::string_view::npos
                 ? std::nullopt
-                : std::optional<std::string_view>(trim_media(feature.substr(colon + 1)));
+                : std::optional<std::string_view>(
+                      detail::trim_css_token(feature.substr(colon + 1)));
         if (!named.insert(name).second)
             refuse();
         if (!media_.empty())
             media_ += " and ";
         if (name == "resolution" && value && value->ends_with("dppx")) {
-            const std::string number(value->substr(0, value->size() - 4));
+            const auto number = value->substr(0, value->size() - 4);
             std::size_t parsed = 0;
-            try {
-                resolution_ = std::stod(number, &parsed);
-            } catch (const std::logic_error&) {
-                refuse();
-            }
-            if (parsed != number.size() || number.empty() || !std::isdigit(number.front()))
+            resolution_ = detail::css_decimal(number, parsed);
+            if (!resolution_ || parsed != number.size())
                 refuse();
             media_ += "(resolution: " + js::number_to_string(*resolution_) + "dppx)";
         } else if (name_media_feature(condition_, name, value)) {
@@ -86,13 +76,14 @@ MediaQueryList::MediaQueryList(std::string query, double (*read_pixel_ratio)(),
         } else {
             refuse();
         }
-        rest = trim_media(rest.substr(close + 1));
+        const auto trailing = rest.substr(close + 1);
+        rest = detail::trim_css_token(trailing);
         if (rest.empty())
             break;
-        if (!rest.starts_with("and") || rest.size() == 3 ||
-            !std::isspace(static_cast<unsigned char>(rest[3])))
+        if (rest.data() == trailing.data() || !rest.starts_with("and") || rest.size() == 3 ||
+            std::string_view(" \t\n\f\r").find(rest[3]) == std::string_view::npos)
             refuse();
-        rest = trim_media(rest.substr(3));
+        rest = detail::trim_css_token(rest.substr(3));
     }
     if (resolution_ && named.size() > 1)
         refuse();

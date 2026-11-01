@@ -223,10 +223,28 @@ interface RegisteredPluginList {
     bindings: readonly MaterialPluginSamplerManifest[];
 }
 
-/** The pinned binding declaration shape `buildPluginFragment` emits. */
-interface PinnedBindingDecl {
+/**
+ * The pinned binding declaration shape `buildPluginFragment` and the
+ * light modules' binding factories (`areaLightBindings`) emit.
+ */
+export interface PinnedBindingDecl {
     _name: string;
     _type: { _kind: string };
+}
+
+/** Whether an executed pinned value is one {@link PinnedBindingDecl}. */
+export function isPinnedBindingDecl(
+    value: unknown,
+): value is PinnedBindingDecl {
+    if (typeof value !== "object" || value === null) return false;
+    const name: unknown = Reflect.get(value, "_name");
+    const type: unknown = Reflect.get(value, "_type");
+    return (
+        typeof name === "string" &&
+        typeof type === "object" &&
+        type !== null &&
+        typeof Reflect.get(type, "_kind") === "string"
+    );
 }
 
 /**
@@ -409,12 +427,7 @@ function standardPluginFragmentBindings(flags: {
     }
     return (index) =>
         pinnedTextureSamplerPairs(
-            (ext._frag(0, 0, { _pi: index })._bindings ?? []).map(
-                (declaration) => ({
-                    name: declaration._name,
-                    kind: declaration._type._kind,
-                }),
-            ),
+            ext._frag(0, 0, { _pi: index })._bindings ?? [],
             "Pinned buildPluginFragment",
         );
 }
@@ -426,23 +439,23 @@ function standardPluginFragmentBindings(flags: {
  * declarations are skipped; a texture without its sampler is refused.
  */
 export function pinnedTextureSamplerPairs(
-    declarations: readonly { name: string; kind: string }[],
+    declarations: readonly PinnedBindingDecl[],
     what: string,
 ): MaterialPluginSamplerManifest[] {
     const pairs: MaterialPluginSamplerManifest[] = [];
     for (let at = 0; at < declarations.length; at += 1) {
         const texture = declarations[at]!;
-        if (texture.kind !== "texture") continue;
+        if (texture._type._kind !== "texture") continue;
         const sampler = declarations[at + 1];
-        if (sampler?.kind !== "sampler") {
+        if (sampler?._type._kind !== "sampler") {
             throw new Error(
                 `${what} no longer declares a sampler after texture ` +
-                    `'${texture.name}', so its binding pair cannot be read ` +
+                    `'${texture._name}', so its binding pair cannot be read ` +
                     "from it.",
             );
         }
         at += 1;
-        pairs.push({ texture: texture.name, sampler: sampler.name });
+        pairs.push({ texture: texture._name, sampler: sampler._name });
     }
     return pairs;
 }

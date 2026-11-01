@@ -1,7 +1,7 @@
 import type { LoweringServices } from "../lowering-services.js";
 import ts from "typescript";
 import { argumentAt } from "../syntax.js";
-import type { Value } from "../types.js";
+import { lightKindFacts, type Value } from "../types.js";
 import type { IntrinsicCallContext } from "./context.js";
 import { recordAt } from "../record-access.js";
 import { doubleLiteral } from "../../cpp-literals.js";
@@ -63,7 +63,7 @@ export function compileLightIntrinsic(
             const intensity = call.arguments[1]
                 ? context.compileNumber(call.arguments[1], "double")
                 : "1.0f";
-            context.reachFeature("light:hemispheric", call);
+            context.reachFeature(lightKindFacts.hemispheric.feature, call);
             return {
                 kind: "light",
                 cpp:
@@ -82,7 +82,7 @@ export function compileLightIntrinsic(
             const intensity = call.arguments[1]
                 ? context.compileNumber(call.arguments[1], "double")
                 : "1.0f";
-            context.reachFeature("light:directional", call);
+            context.reachFeature(lightKindFacts.directional.feature, call);
             return {
                 kind: "light",
                 cpp:
@@ -101,7 +101,7 @@ export function compileLightIntrinsic(
             const intensity = call.arguments[1]
                 ? context.compileNumber(call.arguments[1], "double")
                 : "1.0f";
-            context.reachFeature("light:point", call);
+            context.reachFeature(lightKindFacts.point.feature, call);
             return {
                 kind: "light",
                 cpp:
@@ -131,7 +131,7 @@ export function compileLightIntrinsic(
             const intensity = call.arguments[4]
                 ? context.compileNumber(call.arguments[4], "double")
                 : "1.0f";
-            context.reachFeature("light:spot", call);
+            context.reachFeature(lightKindFacts.spot.feature, call);
             return {
                 kind: "light",
                 cpp:
@@ -158,7 +158,7 @@ export function compileLightIntrinsic(
                 : doubleLiteral(
                       rectAreaLightDefaultIntensity(sharedPinnedContext()),
                   );
-            context.reachFeature("light:rect-area", call);
+            context.reachFeature(lightKindFacts.rectArea.feature, call);
             return {
                 kind: "light",
                 cpp:

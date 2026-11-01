@@ -72,6 +72,8 @@ class SdlSpriteRun : public RendererRun<SdlSpriteRun> {
 #if BBLITE_HAS_UI && !BBLITE_WORKERS
     UiRmlRuntime* ui_runtime = nullptr;
     SpriteUiSdlResources ui_resources;
+    /** The page UI's layer sample count (`sprite_ui_sdl_gpu_layer_samples`). */
+    std::optional<SDL_GPUSampleCount> ui_samples;
     UiSdlReadableSurface readable_surface;
 #endif
     SDL_GPUTextureFormat swapchain_format{};
@@ -200,6 +202,8 @@ public:
         ui_runtime =
             create_ui_rml_runtime(engine, window, static_cast<std::uint32_t>(engine.options.width),
                                   static_cast<std::uint32_t>(engine.options.height));
+        ui_samples = sprite_ui_sdl_gpu_layer_samples(device, swapchain_format,
+                                                     frame_options.page_ui_sample_count());
 #endif
 
 #if BBLITE_HAS_SPRITE_RENDERER
@@ -234,8 +238,8 @@ public:
         // context's own update.
         update_ui_rml_runtime(*ui_runtime, static_cast<std::uint32_t>(surface_width),
                               static_cast<std::uint32_t>(surface_height));
-        require_window_filling_engine_canvas(engine, static_cast<std::uint32_t>(surface_width),
-                                             static_cast<std::uint32_t>(surface_height));
+        require_page_filling_engine_canvas(engine, static_cast<std::uint32_t>(surface_width),
+                                           static_cast<std::uint32_t>(surface_height));
 #endif
         begin_measurement();
         return FramePreparation::ready;
@@ -280,8 +284,10 @@ public:
         // Text contexts update right after layout and before the sprite
         // contexts, the one slot both hosts give them.
         text_renderer->device->owner->capture.begin_frame(static_cast<std::uint64_t>(frame));
-        update_sdl_gpu_text_renderers(engine, *text_renderer, static_cast<double>(surface_width),
-                                      static_cast<double>(surface_height));
+        const PageCanvas canvas =
+            page_canvas(engine.ui_page_viewport, static_cast<std::uint32_t>(surface_width),
+                        static_cast<std::uint32_t>(surface_height));
+        update_sdl_gpu_text_renderers(engine, *text_renderer, canvas.width(), canvas.height());
 #endif
 
 #if BBLITE_HAS_SPRITE_RENDERER
@@ -324,7 +330,8 @@ public:
         }
 #if BBLITE_HAS_TEXT_RENDERER
         record_sdl_gpu_text_renderers(engine, *text_renderer, command,
-                                      capture_run ? color : swapchain);
+                                      capture_run ? color : swapchain,
+                                      page_canvas(engine.ui_page_viewport, width, height));
 #endif
 #if BBLITE_HAS_SPRITE_RENDERER
         for (std::size_t first_index = 0; first_index < passes.size();) {
@@ -345,8 +352,11 @@ public:
                 first_renderer.clear ? SDL_GPU_LOADOP_CLEAR : SDL_GPU_LOADOP_LOAD;
             color_target.store_op = SDL_GPU_STOREOP_STORE;
             SdlRenderPass render_pass{SDL_BeginGPURenderPass(command, &color_target, 1, nullptr)};
+            const PageCanvas canvas = set_page_canvas_viewport(render_pass, engine, width, height,
+                                                               !first_renderer.has_target);
             for (std::size_t index = first_index; index < end_index; ++index) {
-                record_sprite_pass(command, render_pass, engine, passes[index], width, height);
+                record_sprite_pass(command, render_pass, engine, passes[index], canvas.width(),
+                                   canvas.height());
             }
             render_pass.end();
             first_index = end_index;
@@ -357,7 +367,7 @@ public:
         const bool ui_in_capture = capture_frame && capture_ui;
         if (ui_in_capture) {
             render_sprite_ui_sdl_gpu_frame(device, command, color, swapchain_format, ui_resources,
-                                           ui_frame);
+                                           ui_frame, nullptr, nullptr, ui_samples);
         }
 #endif
 
@@ -380,7 +390,7 @@ public:
 #if BBLITE_HAS_UI && !BBLITE_WORKERS
         if (!ui_in_capture) {
             render_sprite_ui_sdl_gpu_frame(device, command, swapchain, swapchain_format,
-                                           ui_resources, ui_frame);
+                                           ui_resources, ui_frame, nullptr, nullptr, ui_samples);
         }
         UiSdlReadableSurface::present(command, swapchain, present_swapchain, width, height);
 #endif

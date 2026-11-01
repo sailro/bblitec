@@ -674,9 +674,6 @@ void draw_pinned_variant(
 #if BBLITE_LOCAL_CUBEMAP
     const auto* local_cubemap = ensure_local_cubemap(state, material);
 #endif
-#if BBLITE_RECT_AREA_EMISSION
-    bind_area_light_scene(state, scene);
-#endif
     const upstream::RenderItem& item = draw.item;
     SDL_GPUGraphicsPipeline* variant_pipeline =
         pinned_variant_pipeline(state, pinned_variant, draw.pipeline, geometry_task, shadow_pass,
@@ -1598,9 +1595,6 @@ void draw_standard_variant(
 #endif
     ,
     std::optional<SDL_GPUSampleCount> task_samples, std::optional<ShaderTaskTarget> target) {
-#if BBLITE_RECT_AREA_EMISSION
-    bind_area_light_scene(state, scene);
-#endif
     const upstream::RenderItem& item = draw.item;
     SDL_GPUGraphicsPipeline* variant_pipeline =
         standard_variant_pipeline(state, variant, draw.pipeline, geometry_task, shadow_pass,

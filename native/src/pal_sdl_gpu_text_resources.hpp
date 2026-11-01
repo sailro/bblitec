@@ -97,6 +97,8 @@ struct SdlTextGpuView final : GpuObject {
     std::shared_ptr<SdlTextTextureLease> lease;
     /** A swapchain or capture target the frame owns. */
     SDL_GPUTexture* target = nullptr;
+    /** The page canvas's viewport in a frame target (`PageCanvas::viewport`). */
+    std::optional<PixelViewport> page;
     SDL_GPUTexture* get() const { return lease ? lease->get() : target; }
 };
 /** `GPUTexture`. */
@@ -271,8 +273,9 @@ struct SdlTextCommandEncoder final : GpuCommandEncoder {
         if (descriptor.color_attachments.size() != 1 || descriptor.depth_stencil_attachment)
             throw std::runtime_error("Text render passes have one color attachment and no depth.");
         const auto& color = descriptor.color_attachments[0];
+        const auto view = sdl_text_object<SdlTextGpuView>(color.view);
         SDL_GPUColorTargetInfo attachment{};
-        attachment.texture = sdl_text_object<SdlTextGpuView>(color.view)->get();
+        attachment.texture = view->get();
         if (color.clear_value) {
             const auto& value = *color.clear_value;
             attachment.clear_color =
@@ -297,6 +300,7 @@ struct SdlTextCommandEncoder final : GpuCommandEncoder {
         encoder->pass = encoder->owned_pass.get();
         if (!encoder->pass)
             gpu_error("SDL_BeginGPURenderPass text");
+        set_pass_viewport(encoder->pass, view->page);
         return encoder;
     }
 };

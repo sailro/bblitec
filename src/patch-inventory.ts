@@ -12,8 +12,8 @@ import {
  * `checkPatchInventory` is `npm run patches:check`: every listed file exists,
  * every patch file under native/patches and the overlay ports is listed, each
  * patch this repository owns opens with its rationale, a library's patches
- * apply in manifest order and its script patches are numbered by their
- * position there, each overlay portfile takes its series from
+ * apply in manifest order and its script patches have increasing positive
+ * identifiers (deleted patches leave gaps), each overlay portfile takes its series from
  * the manifest and every patch in its directory applies to it, and no builder
  * or portfile names a patch file itself. `artifactPatchState` asks the CMake
  * owner whether an installed artifact's record is current.
@@ -379,10 +379,9 @@ export function checkPatchInventory(root = moduleRepositoryRoot()): string[] {
         }
     }
 
-    // A script patch's position among its library's script-built patches
-    // (1-based): port patches keep their own names, so dropping one never
-    // renumbers the script files after it.
-    const positions = new Map<string, number>();
+    // Stable positive identifiers preserve application order without renaming
+    // the remaining series when an obsolete script patch is deleted.
+    const lastNumbers = new Map<string, number>();
     for (const patch of manifest.patches) {
         const library = manifest.libraries.get(patch.library);
         if (!library) {
@@ -406,16 +405,18 @@ export function checkPatchInventory(root = moduleRepositoryRoot()): string[] {
                 patch.file,
             );
         if (!inPort) {
-            const position = (positions.get(patch.library) ?? 0) + 1;
-            positions.set(patch.library, position);
             if (!scriptFile || scriptFile[1] !== library.name)
                 problems.push(
                     `${patch.file}: script patches live at native/patches/${library.name}/NNNN-slug.patch.`,
                 );
-            else if (Number(scriptFile[2]) !== position)
-                problems.push(
-                    `${patch.file}: its number is not its position ${position} among the ${library.name} script patches.`,
-                );
+            else {
+                const number = Number(scriptFile[2]);
+                if (number <= (lastNumbers.get(patch.library) ?? 0))
+                    problems.push(
+                        `${patch.file}: script patch identifiers must be positive and strictly increasing within ${library.name}.`,
+                    );
+                lastNumbers.set(patch.library, number);
+            }
         }
         if (inherited && !inPort)
             problems.push(

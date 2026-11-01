@@ -326,7 +326,7 @@ export function declaresListenerSignal(
  * `addEventListener` options as the DOM flattens them: `capture` alone for a
  * removal; `capture`, `once`, `passive` and `signal` for an addition.
  * `passiveDefault` is the C++ condition an addition that leaves `passive`
- * undefined takes (`listenerPassiveDefault`), false when absent.
+ * undefined takes, false when absent. The native target owns that default.
  */
 export function listenerOptions(
     context: ListenerOptionsContext,
@@ -471,30 +471,6 @@ export function signalListener(
             : listener,
         options: listenerOptions(context, options, false, passiveDefault),
     };
-}
-
-/** The types whose listeners Chromium makes passive on a top-level target. */
-const TOP_LEVEL_PASSIVE_TYPES: ReadonlySet<string> = new Set([
-    "touchstart",
-    "touchmove",
-    "wheel",
-    "mousewheel",
-]);
-
-/**
- * Chromium's `passive` default (`EventTarget::SetDefaultAddEventListenerOptions`)
- * for a `type` listener on `target`: on a top-level target
- * (`bbl::dom_top_level_target`) the scrolling types are passive unless the
- * options say otherwise. Undefined for other types.
- */
-function listenerPassiveDefault(
-    type: string,
-    engine: string,
-    target: string,
-): string | undefined {
-    return TOP_LEVEL_PASSIVE_TYPES.has(type)
-        ? `bbl::dom_top_level_target(${engine}, ${target})`
-        : undefined;
 }
 
 export function pinDetached(
@@ -744,7 +720,7 @@ export function emitDomEventListener(
         context,
         call.arguments[2],
         compiled.cpp,
-        listenerPassiveDefault(type, engine, target),
+        `bbl::dom_listener_passive_default(${prefix})`,
     );
     context.emit({
         kind: "expression",

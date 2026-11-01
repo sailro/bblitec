@@ -16,6 +16,7 @@ import { ApplicationRealmRequired } from "./worker-modules.js";
 import { nativeFunctionValue } from "./native-function-values.js";
 import { resolvedBuiltinConstructor } from "./builtin-constructors.js";
 import { receiverType } from "./dynamic-binding-storage.js";
+import { parseMediaQuery } from "../media-query.js";
 
 export interface CanvasContext
     extends
@@ -305,6 +306,15 @@ export function compileCanvasValue(
                     "matchMedia requires one media query string.",
                 );
             requireWindowHost(context, node);
+            const query = context.unwrap(argumentAt(node, 0));
+            if (
+                ts.isStringLiteralLike(query) &&
+                parseMediaQuery(query.text, "window") === undefined
+            )
+                return context.fail(
+                    query,
+                    "matchMedia query is outside the represented media grammar.",
+                );
             return {
                 kind: "worker-media-query",
                 dataType: { kind: "handle", handle: "worker-media-query" },

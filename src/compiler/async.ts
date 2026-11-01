@@ -5,7 +5,12 @@ import type {
     NativeReturnValueCompiler,
 } from "./lowering-services.js";
 import ts from "typescript";
-import { absenceOf, knownCondition, undefinedValue } from "./values/model.js";
+import {
+    absenceOf,
+    knownCondition,
+    undefinedValue,
+    valueDataType,
+} from "./values/model.js";
 import { schedulerOf } from "./schedulers.js";
 import {
     hasUndefinedCompletion,
@@ -1489,13 +1494,7 @@ export class AsyncLowerer {
             );
             if (!settled) return promise;
             const output = promise.promiseResult!;
-            const type =
-                output.dataType ??
-                (output.kind === "number" ||
-                output.kind === "boolean" ||
-                output.kind === "string"
-                    ? { kind: output.kind }
-                    : undefined);
+            const type = valueDataType(output);
             if (!type && output.kind !== "void")
                 return context.fail(
                     call,
@@ -2172,13 +2171,7 @@ export class AsyncLowerer {
             argument ?? node,
             context.checker.getTypeAtLocation(argument ?? node),
         );
-        const own =
-            value.dataType ??
-            (value.kind === "string" ||
-            value.kind === "number" ||
-            value.kind === "boolean"
-                ? { kind: value.kind }
-                : undefined);
+        const own = valueDataType(value);
         const settlement = (
             type: ts.Type | undefined,
         ): DataType | undefined => {

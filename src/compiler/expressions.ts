@@ -38,6 +38,7 @@ import {
     knownCondition,
     staticKeyOf,
     undefinedValue,
+    valueDataType,
 } from "./values/model.js";
 import { isEffectTaskMethodName } from "./effect-task-methods.js";
 import { projectAssetContainer } from "./data-sinks/resources.js";
@@ -232,6 +233,7 @@ import {
     valueKindOf,
     callSignatures,
     stringPlusOperands,
+    isAnyTyped,
 } from "./type-facts.js";
 import type { NullableResourceType, Value } from "./types.js";
 import type { UserFunctionContext } from "./user-functions.js";
@@ -1555,9 +1557,7 @@ export class ExpressionLowerer {
         if (
             ts.isBinaryExpression(unwrapped) &&
             unwrapped.operatorToken.kind === ts.SyntaxKind.PlusToken &&
-            (this.context.checker.getTypeAtLocation(unwrapped).flags &
-                ts.TypeFlags.Any) !==
-                0
+            isAnyTyped(this.context.checker.getTypeAtLocation(unwrapped))
         ) {
             // Library callback rest arguments can be inferred as any even when their
             // supplied native values are concrete strings. Preserve ordinary + semantics.
@@ -1599,9 +1599,7 @@ export class ExpressionLowerer {
             (unwrapped.operatorToken.kind ===
                 ts.SyntaxKind.AmpersandAmpersandToken ||
                 unwrapped.operatorToken.kind === ts.SyntaxKind.BarBarToken) &&
-            (this.context.checker.getTypeAtLocation(unwrapped).flags &
-                ts.TypeFlags.Any) !==
-                0
+            isAnyTyped(this.context.checker.getTypeAtLocation(unwrapped))
         ) {
             const untyped = this.context.probeEmission(() =>
                 this.context.dataLowerer.compileUntypedLogicalValue(unwrapped),
@@ -3013,27 +3011,17 @@ export class ExpressionLowerer {
                     continue;
                 }
                 const present = trueValue ?? falseValue!;
+                const stored = valueDataType(present);
                 // The record holds the array a compile-time member builds,
                 // so a readonly one owns its storage as a returned one does.
                 const memberType =
-                    present.dataType === undefined &&
-                    present.kind !== "number" &&
-                    present.kind !== "boolean" &&
-                    present.kind !== "string"
+                    stored === undefined
                         ? this.selectedDataType(node, [...path, name], true)
                         : undefined;
                 const inner =
-                    present.dataType ??
-                    (present.kind === "number"
-                        ? { kind: "number" as const }
-                        : present.kind === "boolean"
-                          ? { kind: "boolean" as const }
-                          : present.kind === "string"
-                            ? { kind: "string" as const }
-                            : memberType &&
-                              this.context.dataTypes.ownReturnedArray(
-                                  memberType,
-                              ));
+                    stored ??
+                    (memberType &&
+                        this.context.dataTypes.ownReturnedArray(memberType));
                 if (!inner) {
                     this.context.fail(
                         node,

@@ -23,6 +23,8 @@
 #define BBLITE_GPU_INSTANCE_COLORS 0
 #define BBLITE_SHADOW_RECEIVERS 0
 #define BBLITE_LOCAL_CUBEMAP 0
+#define BBLITE_RECT_AREA_LIGHTS 0
+#define BBLITE_RECT_AREA_EMISSION 0
 #include "pal_dawn_resources.hpp"
 #include "pal_owned_gpu_record.hpp"
 #include "pal_record_sync.hpp"

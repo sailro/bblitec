@@ -97,28 +97,6 @@ SDL_GPUPrimitiveType gpu_primitive_type(MeshTopology topology) {
     return SDL_GPU_PRIMITIVETYPE_TRIANGLELIST;
 }
 
-void set_pass_viewport(SDL_GPURenderPass* pass, const std::optional<PixelViewport>& resolved) {
-    if (!resolved.has_value())
-        return;
-    const PixelViewport& rect = *resolved;
-    SDL_GPUViewport viewport{
-        static_cast<float>(rect.x),
-        static_cast<float>(rect.y),
-        static_cast<float>(rect.width),
-        static_cast<float>(rect.height),
-        0.0f,
-        1.0f,
-    };
-    SDL_SetGPUViewport(pass, &viewport);
-    const SDL_Rect scissor{
-        static_cast<int>(rect.x),
-        static_cast<int>(rect.y),
-        static_cast<int>(rect.width),
-        static_cast<int>(rect.height),
-    };
-    SDL_SetGPUScissor(pass, &scissor);
-}
-
 void set_task_camera_viewport(SDL_GPURenderPass* pass, const CameraRecord* camera,
                               std::uint32_t target_width, std::uint32_t target_height) {
     set_pass_viewport(pass,
@@ -263,12 +241,7 @@ void release(GpuState& state) {
     }
 #endif
 #if BBLITE_RECT_AREA_EMISSION
-    for (const auto& gpu : state.area_light_emissions) {
-        SDL_ReleaseGPUTexture(state.device, gpu->array);
-        SDL_ReleaseGPUBuffer(state.device, gpu->slots);
-    }
-    state.area_light_emissions.clear();
-    state.area_light_emission = nullptr;
+    release_area_light_emission(state);
 #endif
     if (state.reflection_fallback) {
         SDL_ReleaseGPUTexture(state.device, state.reflection_fallback);
@@ -784,8 +757,8 @@ public:
         ui_runtime = create_ui_rml_runtime(engine, state.window,
                                            static_cast<std::uint32_t>(engine.options.width),
                                            static_cast<std::uint32_t>(engine.options.height));
-        state.ui_samples =
-            sprite_ui_sdl_gpu_layer_samples(state.device, frame_options.page_ui_sample_count());
+        state.ui_samples = sprite_ui_sdl_gpu_layer_samples(state.device, swapchain_format,
+                                                           frame_options.page_ui_sample_count());
 #endif
 #if BBLITE_RENDERER_TRANSMISSION
         transmission_enabled = scene.transmission_enabled;
@@ -4520,8 +4493,11 @@ public:
                         SDL_FColor{clear_value.r, clear_value.g, clear_value.b, clear_value.a};
                     SdlRenderPass sprite_pass{
                         SDL_BeginGPURenderPass(command, &sprite_target, 1, nullptr)};
+                    const PageCanvas canvas = set_page_canvas_viewport(
+                        sprite_pass, engine, width, height, !renderer.has_target);
                     record_sprite_pass(command, sprite_pass, engine,
-                                       handle_at(sprite_passes, handle), width, height);
+                                       handle_at(sprite_passes, handle), canvas.width(),
+                                       canvas.height());
                     sprite_pass.end();
                 }
             }

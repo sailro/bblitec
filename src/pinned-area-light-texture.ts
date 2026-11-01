@@ -33,6 +33,7 @@ import {
 } from "./browser-harness.js";
 import { cachedBake, moduleIdentity } from "./bake-cache.js";
 import { HOST_PRIMARY_CANVAS_ID } from "./host-primary-canvas.js";
+import { mipChainBytes, mipChainViews } from "./mip-chain.js";
 
 /** The processed emission image: the texture `processAreaLightTexture`
  *  returned, read back. */
@@ -152,17 +153,6 @@ async function withDriverPage<T>(
  *  follows, levels concatenated. */
 const headerWords = 3;
 
-function levelBytes(width: number, height: number, level: number): number {
-    return Math.max(1, width >> level) * Math.max(1, height >> level) * 4;
-}
-
-function chainBytes(width: number, height: number, levels: number): number {
-    let bytes = 0;
-    for (let level = 0; level < levels; level++)
-        bytes += levelBytes(width, height, level);
-    return bytes;
-}
-
 /** One page result as the cached payload, the chain decoded straight into
  *  it. */
 function cachePayload(result: unknown): Uint8Array {
@@ -193,7 +183,7 @@ function cachePayload(result: unknown): Uint8Array {
     return decodePageBase64(
         chain,
         [width, height, levels],
-        chainBytes(width, height, levels),
+        mipChainBytes(width, height, levels, 4),
         `The pinned area light texture's ${width}x${height} rgba8unorm ` +
             `chain of ${levels} levels`,
     );
@@ -207,18 +197,18 @@ function decodeProcessed(payload: Uint8Array): ProcessedAreaLightTexture {
         levelCount < 1 ||
         levelCount > 32 ||
         payload.byteLength !==
-            headerWords * 4 + chainBytes(width, height, levelCount)
+            headerWords * 4 + mipChainBytes(width, height, levelCount, 4)
     )
         throw new Error(
             "A processed area light texture payload does not hold its chain.",
         );
-    const levels: Uint8Array[] = [];
-    let offset = payload.byteOffset + headerWords * 4;
-    for (let level = 0; level < levelCount; level++) {
-        const bytes = levelBytes(width, height, level);
-        levels.push(new Uint8Array(payload.buffer, offset, bytes));
-        offset += bytes;
-    }
+    const levels = mipChainViews(
+        payload.subarray(headerWords * 4),
+        width,
+        height,
+        levelCount,
+        4,
+    ).map(([level]) => level!);
     return { width, height, levels };
 }
 

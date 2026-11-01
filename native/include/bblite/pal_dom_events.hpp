@@ -44,9 +44,10 @@ public:
     }
 
     /** The target's `on<type>` handler: a non-capture listener at its first position. */
-    void set_handler(DomEventTarget target, std::string type, Callback callback) {
+    void set_handler(DomEventTarget target, std::string type, Callback callback,
+                     bool passive = false) {
         listeners_[key(target, std::move(type), false)].set_handler(
-            callback ? wrap(std::move(callback), false) : Callback{});
+            callback ? wrap(std::move(callback), passive) : Callback{});
     }
 
     void remove(DomEventTarget target, std::string type, std::size_t identity,
@@ -339,6 +340,23 @@ inline DomInput& listen_dom_keyboard(Engine& engine, const std::string& type) {
     return listen_dom_type(engine, type);
 }
 
+/** Chromium's top-level event targets (`IsTopLevelNode`). */
+inline bool dom_top_level_target(const Engine& engine, DomEventTarget target) {
+    if (target.kind == DomEventTargetKind::Window || target.kind == DomEventTargetKind::Document)
+        return true;
+    const auto& roots = engine.ui_document_roots;
+    return target.kind == DomEventTargetKind::Element && roots.active() &&
+           (target.element == roots.html.value || target.element == roots.body.value);
+}
+
+/** Shared by addEventListener's omitted passive option and on<type> handlers. */
+inline bool dom_listener_passive_default(const Engine& engine, DomEventTarget target,
+                                         std::string_view type) {
+    return (type == "touchstart" || type == "touchmove" || type == "wheel" ||
+            type == "mousewheel") &&
+           dom_top_level_target(engine, target);
+}
+
 /**
  * A family whose listeners make their element a hit target (`listen_dom_pointer`): pointer
  * events, file drags (sourced while a type is listened) and touches, `Family` naming its
@@ -352,11 +370,13 @@ template <auto Family> struct DomHitTestedListeners {
         typename std::remove_reference_t<decltype(std::declval<DomInput&>().*Family)>::Callback;
 
     static bool on(Engine& engine, DomEventTarget target, std::string type, std::size_t identity,
-                   Callback callback, bool capture = false, bool once = false, bool passive = false,
-                   ListenerLeasePtr lease = {}) {
+                   Callback callback, bool capture = false, bool once = false,
+                   std::optional<bool> passive = std::nullopt, ListenerLeasePtr lease = {}) {
+        const bool resolved_passive =
+            passive.value_or(dom_listener_passive_default(engine, target, type));
         return (listen_dom_pointer(engine, target, type).*Family)
-            .add(target, std::move(type), identity, std::move(callback), capture, once, passive,
-                 std::move(lease));
+            .add(target, std::move(type), identity, std::move(callback), capture, once,
+                 resolved_passive, std::move(lease));
     }
     static void off(Engine& engine, DomEventTarget target, std::string type, std::size_t identity,
                     bool capture = false) {
@@ -369,7 +389,9 @@ template <auto Family> struct DomHitTestedListeners {
             listen_dom_pointer(engine, target, type);
         else if (!engine.dom_input)
             return;
-        ((*engine.dom_input).*Family).set_handler(target, std::move(type), std::move(callback));
+        const bool passive = dom_listener_passive_default(engine, target, type);
+        ((*engine.dom_input).*Family)
+            .set_handler(target, std::move(type), std::move(callback), passive);
     }
 };
 using DomPointerListeners = DomHitTestedListeners<&DomInput::pointer>;
@@ -447,17 +469,6 @@ inline void off_dom_transition(Engine& engine, DomEventTarget target, std::strin
                                std::size_t identity, bool capture = false) {
     if (engine.dom_input)
         engine.dom_input->transition.remove(target, std::move(type), identity, capture);
-}
-
-/** Chromium's top-level event targets (`IsTopLevelNode`), whose touchstart, touchmove, wheel
- * and mousewheel listeners default to passive: the Window, the Document, its documentElement and
- * its body. */
-inline bool dom_top_level_target(const Engine& engine, DomEventTarget target) {
-    if (target.kind == DomEventTargetKind::Window || target.kind == DomEventTargetKind::Document)
-        return true;
-    const auto& roots = engine.ui_document_roots;
-    return target.kind == DomEventTargetKind::Element && roots.active() &&
-           (target.element == roots.html.value || target.element == roots.body.value);
 }
 
 inline bool on_dom_storage(Engine& engine, DomEventTarget target, std::string type,
@@ -1270,7 +1281,7 @@ void append_dom_touch_event(DomEventBatch& batch, const DomInput& input, DomPoin
         for (const auto* contact : contacts)
             if (changed(*contact) && contact->path.front() == first.path.front())
                 payload.changed_touches.push_back(dom_touch_point(*contact));
-        payload.touches = index + 1 == targets.size() ? std::move(touches) : touches;
+        payload.touches = touches;
         batch.add(dom_event(std::move(payload), type, first.path, true,
                             action != DomPointerAction::Cancel));
     }

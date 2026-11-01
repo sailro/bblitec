@@ -17,12 +17,17 @@ inline void update_sdl_gpu_text_renderers(Engine& engine, SdlTextRenderer& text,
         renderers[index]->update();
 }
 
-/** Record every registered text renderer's pass into `target` through its `_record`. */
+/**
+ * Record every registered text renderer's pass into `target` through its `_record`, over the
+ * page's canvas (`page_canvas`).
+ */
 inline void record_sdl_gpu_text_renderers(Engine& engine, SdlTextRenderer& text,
-                                          SDL_GPUCommandBuffer* command, SDL_GPUTexture* target) {
+                                          SDL_GPUCommandBuffer* command, SDL_GPUTexture* target,
+                                          const PageCanvas& canvas) {
     const auto& surface = bbl::text_surface(engine);
     auto view = std::make_shared<SdlTextGpuView>();
     view->target = target;
+    view->page = canvas.viewport();
     surface->sc_rt.color_view = std::move(view);
     surface->current_encoder = text.command_encoder(command);
     const auto clear = js::finally([&] {

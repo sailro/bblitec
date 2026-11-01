@@ -204,76 +204,121 @@ std::array<SDL_GPUTexture*, 2> upload_area_light_ltc(SDL_GPUDevice* device,
 
 #if BBLITE_RECT_AREA_EMISSION
 namespace {
-// area-light-emission.ts prepareAreaLightEmission: an rgba8unorm 2D array of
-// the images' extent and level count, one layer per image, each level copied
-// whole. The images were processed at generation, so the copy is an upload
-// of each one's packaged levels, read here and dropped: one transfer per
-// layer holds its decoded chain, and each level uploads from its band.
-std::unique_ptr<GpuState::AreaLightEmissionGpu>
-upload_area_light_emission(SDL_GPUDevice* device,
-                           const std::shared_ptr<const AreaLightEmission>& emission) {
-    const AreaLightImage& first = *emission->layers.front();
-    SDL_GPUTextureCreateInfo texture_info{};
-    texture_info.type = SDL_GPU_TEXTURETYPE_2D_ARRAY;
-    texture_info.format = SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM;
-    texture_info.usage = SDL_GPU_TEXTUREUSAGE_SAMPLER;
-    texture_info.width = first.size;
-    texture_info.height = first.size;
-    texture_info.layer_count_or_depth = gpu_u32(emission->layers.size());
-    texture_info.num_levels = first.levels;
-    texture_info.sample_count = SDL_GPU_SAMPLECOUNT_1;
-    OwnedSdlTexture texture{SDL_CreateGPUTexture(device, &texture_info), {device}};
+SDL_GPUTexture* create_area_light_texture(SDL_GPUDevice* device, const AreaLightImage& image,
+                                          SDL_GPUTextureType type, std::uint32_t layers) {
+    SDL_GPUTextureCreateInfo info{};
+    info.type = type;
+    info.format = SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM;
+    info.usage = SDL_GPU_TEXTUREUSAGE_SAMPLER;
+    info.width = image.size;
+    info.height = image.size;
+    info.layer_count_or_depth = layers;
+    info.num_levels = image.levels;
+    info.sample_count = SDL_GPU_SAMPLECOUNT_1;
+    SDL_GPUTexture* texture = SDL_CreateGPUTexture(device, &info);
     if (!texture)
         gpu_error("SDL_CreateGPUTexture rect-area emission");
+    return texture;
+}
+
+// processAreaLightTexture's texture: rgba8unorm with the processed chain,
+// uploaded once per device from its packaged levels, each at its offset in
+// one transfer.
+std::unique_ptr<GpuState::AreaLightImageGpu>
+upload_area_light_image(SDL_GPUDevice* device, const std::shared_ptr<const AreaLightImage>& image) {
+    const DecodedImage packed = decode_image(read_binary_file(image->path));
+    OwnedSdlTexture texture{create_area_light_texture(device, *image, SDL_GPU_TEXTURETYPE_2D, 1),
+                            {device}};
+    SDL_GPUTransferBufferCreateInfo info{};
+    info.usage = SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD;
+    info.size = gpu_u32(packed.rgba.size());
+    OwnedSdlTransfer transfer{SDL_CreateGPUTransferBuffer(device, &info), {device}};
+    if (!transfer)
+        gpu_error("SDL_CreateGPUTransferBuffer rect-area emission");
+    void* mapped = SDL_MapGPUTransferBuffer(device, transfer.get(), false);
+    if (!mapped)
+        gpu_error("SDL_MapGPUTransferBuffer rect-area emission");
+    std::memcpy(mapped, packed.rgba.data(), packed.rgba.size());
+    SDL_UnmapGPUTransferBuffer(device, transfer.get());
     SdlGpuCommand command{SDL_AcquireGPUCommandBuffer(device)};
     if (!command)
         gpu_error("SDL_AcquireGPUCommandBuffer rect-area emission");
     SdlCopyPass copy{SDL_BeginGPUCopyPass(command)};
-    std::vector<OwnedSdlTransfer> transfers;
-    transfers.reserve(emission->layers.size());
-    for (std::size_t layer = 0; layer < emission->layers.size(); ++layer) {
-        const AreaLightImage& image = *emission->layers[layer];
-        const DecodedImage atlas = decode_image(read_binary_file(image.path));
-        SDL_GPUTransferBufferCreateInfo info{};
-        info.usage = SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD;
-        info.size = gpu_u32(atlas.rgba.size());
-        OwnedSdlTransfer transfer{SDL_CreateGPUTransferBuffer(device, &info), {device}};
-        if (!transfer)
-            gpu_error("SDL_CreateGPUTransferBuffer rect-area emission");
-        void* mapped = SDL_MapGPUTransferBuffer(device, transfer.get(), false);
-        if (!mapped)
-            gpu_error("SDL_MapGPUTransferBuffer rect-area emission");
-        std::memcpy(mapped, atlas.rgba.data(), atlas.rgba.size());
-        SDL_UnmapGPUTransferBuffer(device, transfer.get());
-        for_each_area_light_image_level(
-            image, atlas, [&](std::uint32_t level, std::uint32_t extent, std::size_t offset) {
-                const SDL_GPUTextureTransferInfo source{transfer.get(), gpu_u32(offset), image.size,
-                                                        extent};
-                const SDL_GPUTextureRegion region{
-                    texture.get(), level, gpu_u32(layer), 0, 0, 0, extent, extent, 1};
-                SDL_UploadToGPUTexture(copy, &source, &region, false);
-            });
-        transfers.push_back(std::move(transfer));
+    for_each_area_light_image_level(
+        *image, packed, [&](std::uint32_t level, std::uint32_t extent, std::size_t offset) {
+            const SDL_GPUTextureTransferInfo source{transfer.get(), gpu_u32(offset), extent,
+                                                    extent};
+            const SDL_GPUTextureRegion region{texture.get(), level, 0, 0, 0, 0, extent, extent, 1};
+            SDL_UploadToGPUTexture(copy, &source, &region, false);
+        });
+    copy.end();
+    if (!command.submit())
+        gpu_error("SDL_SubmitGPUCommandBuffer rect-area emission");
+    auto gpu = std::make_unique<GpuState::AreaLightImageGpu>();
+    gpu->source = image;
+    gpu->texture = texture.release();
+    return gpu;
+}
+
+// area-light-emission.ts prepareAreaLightEmission: an rgba8unorm 2D array of
+// the images' extent and level count, one layer per image, every level of
+// every image copied in on the device (`copyTextureToTexture`), so a changed
+// snapshot costs copies of the images already uploaded.
+std::unique_ptr<GpuState::AreaLightEmissionGpu>
+upload_area_light_emission(GpuState& state,
+                           const std::shared_ptr<const AreaLightEmission>& emission) {
+    std::vector<const GpuState::AreaLightImageGpu*> images;
+    images.reserve(emission->layers.size());
+    for (const std::shared_ptr<const AreaLightImage>& image : emission->layers)
+        images.push_back(&cached_source_upload(
+            state.area_light_images, image,
+            [&state](const auto& source) { return upload_area_light_image(state.device, source); },
+            [&state](const GpuState::AreaLightImageGpu& gpu) {
+                SDL_ReleaseGPUTexture(state.device, gpu.texture);
+            }));
+    const AreaLightImage& first = *emission->layers.front();
+    OwnedSdlTexture array{create_area_light_texture(state.device, first,
+                                                    SDL_GPU_TEXTURETYPE_2D_ARRAY,
+                                                    gpu_u32(emission->layers.size())),
+                          {state.device}};
+    SdlGpuCommand command{SDL_AcquireGPUCommandBuffer(state.device)};
+    if (!command)
+        gpu_error("SDL_AcquireGPUCommandBuffer rect-area emission");
+    SdlCopyPass copy{SDL_BeginGPUCopyPass(command)};
+    for (std::size_t layer = 0; layer < images.size(); ++layer) {
+        for (std::uint32_t level = 0; level < first.levels; ++level) {
+            const std::uint32_t extent = std::max(first.size >> level, 1u);
+            const SDL_GPUTextureLocation source{images[layer]->texture, level, 0, 0, 0, 0};
+            const SDL_GPUTextureLocation destination{array.get(), level, gpu_u32(layer), 0, 0, 0};
+            SDL_CopyGPUTextureToTexture(copy, &source, &destination, extent, extent, 1, false);
+        }
     }
     copy.end();
     if (!command.submit())
         gpu_error("SDL_SubmitGPUCommandBuffer rect-area emission");
     auto gpu = std::make_unique<GpuState::AreaLightEmissionGpu>();
     gpu->source = emission;
-    gpu->array = texture.release();
+    gpu->array = array.release();
     gpu->slots =
-        upload_buffer(device, SDL_GPU_BUFFERUSAGE_GRAPHICS_STORAGE_READ, emission->slots.data(),
-                      emission->slots.size() * sizeof(std::uint32_t));
+        upload_buffer(state.device, SDL_GPU_BUFFERUSAGE_GRAPHICS_STORAGE_READ,
+                      emission->slots.data(), emission->slots.size() * sizeof(std::uint32_t));
     return gpu;
+}
+
+void release_area_light_array(SDL_GPUDevice* device, const GpuState::AreaLightEmissionGpu& gpu) {
+    SDL_ReleaseGPUTexture(device, gpu.array);
+    SDL_ReleaseGPUBuffer(device, gpu.slots);
 }
 } // namespace
 
-void bind_area_light_scene(GpuState& state, const Scene& scene) {
+void release_area_light_emission(GpuState& state) {
+    for (const auto& gpu : state.area_light_emissions)
+        release_area_light_array(state.device, *gpu);
+    state.area_light_emissions.clear();
+    for (const auto& gpu : state.area_light_images)
+        SDL_ReleaseGPUTexture(state.device, gpu->texture);
+    state.area_light_images.clear();
     state.area_light_emission = nullptr;
-    for (const auto& gpu : state.area_light_emissions) {
-        if (gpu->source == scene.state->area_light_emission)
-            state.area_light_emission = gpu.get();
-    }
 }
 
 const GpuState::AreaLightEmissionGpu& area_light_emission_binding(const GpuState& state) {
@@ -286,25 +331,29 @@ const GpuState::AreaLightEmissionGpu& area_light_emission_binding(const GpuState
 
 #if BBLITE_RECT_AREA_LIGHTS
 void prepare_area_lighting(GpuState& state, const Scene& scene, const Engine& engine) {
+#if BBLITE_RECT_AREA_EMISSION
+    state.area_light_emission = nullptr;
+#endif
     if (!scene.state->rect_area_lighting)
         return;
     if (!state.area_light_ltc[0])
         state.area_light_ltc = upload_area_light_ltc(state.device, required_area_light_ltc(engine));
 #if BBLITE_RECT_AREA_EMISSION
-    // A snapshot only this backend still holds belongs to no scene.
-    std::erase_if(state.area_light_emissions, [&state](const auto& gpu) {
-        if (gpu->source.use_count() > 1)
-            return false;
-        SDL_ReleaseGPUTexture(state.device, gpu->array);
-        SDL_ReleaseGPUBuffer(state.device, gpu->slots);
-        return true;
-    });
-    const std::shared_ptr<const AreaLightEmission>& snapshot = scene.state->area_light_emission;
-    if (snapshot &&
-        std::none_of(state.area_light_emissions.begin(), state.area_light_emissions.end(),
-                     [&snapshot](const auto& gpu) { return gpu->source == snapshot; })) {
-        state.area_light_emissions.push_back(upload_area_light_emission(state.device, snapshot));
+    const auto release_array = [&state](const GpuState::AreaLightEmissionGpu& gpu) {
+        release_area_light_array(state.device, gpu);
+    };
+    if (const std::shared_ptr<const AreaLightEmission>& snapshot =
+            scene.state->area_light_emission) {
+        state.area_light_emission = &cached_source_upload(
+            state.area_light_emissions, snapshot,
+            [&state](const auto& source) { return upload_area_light_emission(state, source); },
+            release_array);
+    } else {
+        prune_unshared_sources(state.area_light_emissions, release_array);
     }
+    prune_unshared_sources(state.area_light_images, [&state](const auto& gpu) {
+        SDL_ReleaseGPUTexture(state.device, gpu.texture);
+    });
 #endif
 }
 #endif

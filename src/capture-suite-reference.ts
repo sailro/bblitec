@@ -221,8 +221,7 @@ type SuiteAnimationPoseProtocol = "applied-group-pose-v1";
 const entryReadyMarks =
     'document.documentElement.setAttribute("data-fixed-engine-starting", "true");' +
     'document.documentElement.setAttribute("data-capture-ready", "true");';
-const fixedEngineStartMarker =
-    'document.getElementById("renderCanvas")?.setAttribute("data-fixed-engine-starting", "true");\n    await startEngine(engine);';
+const fixedEngineStartMarker = `document.getElementById(${JSON.stringify(HOST_PRIMARY_CANVAS_ID)})?.setAttribute("data-fixed-engine-starting", "true");\n    await startEngine(engine);`;
 const documentEngineStartMarker =
     'document.documentElement.setAttribute("data-fixed-engine-starting", "true");\n    await startEngine(engine);';
 

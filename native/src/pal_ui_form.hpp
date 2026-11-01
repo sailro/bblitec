@@ -245,8 +245,7 @@ public:
     void RenderElement(Rml::Element* element, Rml::DecoratorDataHandle handle) const override {
         auto& data = *reinterpret_cast<Data*>(handle);
         const auto size = element->GetBox().GetSize(Rml::BoxArea::Content);
-        const auto color = element->GetComputedValues().color().ToPremultiplied(
-            element->GetComputedValues().opacity());
+        const auto color = element->GetComputedValues().color().ToPremultiplied();
         const float density = Rml::ElementUtilities::GetDensityIndependentPixelRatio(element);
         if (!solid) {
             // The texture snaps to the pixel grid around the box's center.

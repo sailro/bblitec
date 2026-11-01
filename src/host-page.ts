@@ -48,7 +48,10 @@ const pageOrigin = "http://page.invalid";
 /** The page's own URL beneath its site root. */
 function hostPageUrl(page: HostPageProgram): URL {
     return new URL(
-        relative(hostPageRoot(page), resolve(page.path)).split(sep).join("/"),
+        relative(hostPageRoot(page), resolve(page.path))
+            .split(sep)
+            .map(encodeURIComponent)
+            .join("/"),
         `${pageOrigin}/`,
     );
 }
@@ -114,7 +117,9 @@ export function hostPageDocumentAsset(
     const served = hostPageSiteFile(page, path);
     if (served) return served;
     const moduleDirectory = page.entryUrl
-        ? new URL(".", new URL(page.entryUrl, pageOrigin)).pathname
+        ? decodeURIComponent(
+              new URL(".", new URL(page.entryUrl, pageOrigin)).pathname,
+          )
         : undefined;
     return moduleDirectory && path.startsWith(moduleDirectory)
         ? `/${path.slice(moduleDirectory.length)}`

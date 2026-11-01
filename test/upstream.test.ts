@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { regexText } from "./regex.js";
 import test from "node:test";
 import { LoweringContext } from "../src/lowering/context.js";
 import { lowerThinInstanceApi } from "../src/lowering/thin-instance-lowerer.js";
@@ -86,7 +87,7 @@ import { pinnedError } from "./pinned-errors.js";
 function pinnedProvenance(): RegExp {
     const pin = readUpstreamPin();
     const literal = `Generated from ${pin.package}@${pin.version}`;
-    return new RegExp(literal.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
+    return new RegExp(regexText(literal));
 }
 
 function reachedPrograms(names: string[]): CompiledShaderProgram[] {
