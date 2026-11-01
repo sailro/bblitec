@@ -634,6 +634,15 @@ inline void click_file_input(Engine& engine, UiElementHandle handle) {
     if (listeners)
         listeners->dispatch(PlatformMouseEvent{});
 }
+
+/** File default actions run on the element's owner, including a Window-forwarded click. */
+inline void activate_file_element(Engine& engine, UiElementHandle handle) {
+    const auto& element = browser_file_ui_element(engine, handle);
+    if (element.tag == "a" && !element.download_name.empty())
+        click_download_anchor(engine, handle);
+    else if (element.tag == "input" && element.file_input)
+        click_file_input(engine, handle);
+}
 #endif
 
 /** `blob.text()`: UTF-8 decoding with replacement, without a leading BOM. */

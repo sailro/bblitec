@@ -2418,11 +2418,7 @@ bool dispatch_ui_click(Engine& engine, UiElementHandle element, bool trusted, bo
         return true;
     }
 #if BBLITE_HAS_BROWSER_FILE
-    if (tag == "a") {
-        js::click_download_anchor(engine, element);
-    } else if (tag == "input") {
-        js::click_file_input(engine, element);
-    }
+    js::activate_file_element(engine, element);
 #endif
     return true;
 }

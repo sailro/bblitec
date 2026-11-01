@@ -430,12 +430,9 @@ function discoverPackagedCandidates(
                             logicalSource:
                                 logicalBase +
                                 relative(directory, file).split(sep).join("/"),
-                            // Keep filesystem discoveries entry-relative: on Unix
-                            // a leading slash otherwise denotes a browser public URL.
-                            source: canonicalLocalAssetSource(
-                                file,
-                                context.options.fileName,
-                            ),
+                            // Keep the resolved file until registration canonicalizes
+                            // it; an entry-relative path is still a deployment URL.
+                            source: file,
                         }))
                         .filter(
                             ({ source }) =>

@@ -110,14 +110,11 @@ function materializePinnedLabFile(file: string): void {
     }
 }
 
-/**
- * The file `directory` serves at a decoded URL path (`/models/a.glb`): its
- * own, once any pinned script that writes it has run; undefined for none or
- * a path outside it.
- */
-export function servedFile(
+/** A bounded served file, or a directory when asset discovery requests one. */
+function servedPath(
     directory: string,
     path: string,
+    includeDirectories: boolean,
 ): string | undefined {
     const root = resolve(directory);
     const file = resolve(root, `./${path.replace(/^\/+/, "")}`);
@@ -130,7 +127,23 @@ export function servedFile(
     )
         return undefined;
     materializePinnedLabFile(file);
-    return existsSync(file) && statSync(file).isFile() ? file : undefined;
+    if (!existsSync(file)) return undefined;
+    const stat = statSync(file);
+    return stat.isFile() || (includeDirectories && stat.isDirectory())
+        ? file
+        : undefined;
+}
+
+/**
+ * The file `directory` serves at a decoded URL path (`/models/a.glb`): its
+ * own, once any pinned script that writes it has run; undefined for none or
+ * a path outside it.
+ */
+export function servedFile(
+    directory: string,
+    path: string,
+): string | undefined {
+    return servedPath(directory, path, false);
 }
 
 /** The pinned lab's own copy of a public file, beneath the corpus `lab/public`. */
@@ -139,4 +152,16 @@ export function pinnedLabPublicFile(
     publicPath: string,
 ): string | undefined {
     return servedFile(resolve(repositoryRoot, LAB_PUBLIC_ROOT), publicPath);
+}
+
+/** A pinned public file or a directory whose assets a closed lookup discovers. */
+export function pinnedLabPublicAsset(
+    repositoryRoot: string,
+    publicPath: string,
+): string | undefined {
+    return servedPath(
+        resolve(repositoryRoot, LAB_PUBLIC_ROOT),
+        publicPath,
+        true,
+    );
 }

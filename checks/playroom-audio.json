@@ -1,0 +1,20 @@
+{
+  "scene": "playroom",
+  "notes": "Starting play and kicking must decode the packaged sounds and produce non-silent audio, independently of image parity.",
+  "capture": false,
+  "timeoutMs": 120000,
+  "env": {
+    "BBLITE_RUNTIME_TRACE": "1",
+    "BBLITE_AUDIO_CAPTURE": "",
+    "BBLITE_LOCAL_STORAGE_ROOT": "artifacts/check/playroom-audio/storage"
+  },
+  "phases": [
+    { "id": "watching", "frame": 480, "tape": ["-*180", "UiClick@1150:610", "-*15", "UiClick@1152:576"] }
+  ],
+  "expect": [
+    { "kind": "log-match", "phase": "watching", "pattern": "dataset gamePhase=watching" },
+    { "kind": "log-match", "phase": "watching", "pattern": "audio source=\\d+ set-buffer=\\d+ peak=" },
+    { "kind": "log-match", "phase": "watching", "pattern": "audio source=\\d+ start=" },
+    { "kind": "plugin", "module": "checks/plugins/playroom-audio.mjs" }
+  ]
+}

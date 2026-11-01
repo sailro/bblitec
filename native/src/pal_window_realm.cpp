@@ -20,6 +20,9 @@
 #if BBLITE_HAS_AUDIO
 #include <bblite/pal_audio.hpp>
 #endif
+#if BBLITE_HAS_BROWSER_FILE
+#include <bblite/js_file.hpp>
+#endif
 #if BBLITE_HAS_PBR_RENDERER
 #include "pal_camera_controls.hpp"
 #endif
@@ -133,8 +136,13 @@ struct PageFullscreen;
 using WindowWork = std::function<std::string(SDL_Window*, PageFullscreen&, Engine&)>;
 /** One request on the Window thread, then its failure (empty on success) back to the realm. */
 struct WindowRequest final : CompletionEvent {
+    struct BlockingResult {
+        bool complete = false;
+        std::string error;
+    };
     WindowWork perform;
     std::string error;
+    std::shared_ptr<BlockingResult> blocking;
     WindowRequest(std::uint64_t id, WindowWork work)
         : CompletionEvent(id), perform(std::move(work)) {}
 };
@@ -433,6 +441,12 @@ struct PageFullscreen {
     }
 };
 
+/** The display released pointer lock; the owning realm observes the same transition. */
+void notify_window_pointer_lock_exit(WindowServices& services, Engine& display) {
+    display.pointer_lock_canvas.reset();
+    services.inbox->post(std::make_unique<WindowPointerLockExit>());
+}
+
 /** Performs the realm's Window requests in order and posts each one's completion. */
 void serve_window_requests(WindowServices& services, SDL_Window* window, PageFullscreen& fullscreen,
                            Engine& display) {
@@ -443,10 +457,51 @@ void serve_window_requests(WindowServices& services, SDL_Window* window, PageFul
     }
     for (auto& request : requests) {
         // The work and what it captured end on this thread, before the completion is posted.
-        request->error = std::exchange(request->perform, {})(window, fullscreen, display);
-        services.inbox->post(std::move(request));
+        if (request->blocking) {
+            std::string error;
+            const bool was_locked = display.pointer_locked;
+            try {
+                error = std::exchange(request->perform, {})(window, fullscreen, display);
+            } catch (const std::exception& failure) {
+                error = failure.what();
+            }
+            if (was_locked && !display.pointer_locked)
+                notify_window_pointer_lock_exit(services, display);
+            {
+                const std::lock_guard lock(services.mutex);
+                request->blocking->error = std::move(error);
+                request->blocking->complete = true;
+            }
+            services.wake.notify_all();
+        } else {
+            request->error = std::exchange(request->perform, {})(window, fullscreen, display);
+            services.inbox->post(std::move(request));
+        }
     }
 }
+
+/** A native file operation blocks its realm but is serviced even inside a display input wait. */
+#if BBLITE_HAS_BROWSER_FILE
+void dispatch_window_file_action(WindowServices& host, std::function<void(Engine&)> action) {
+    auto result = std::make_shared<WindowRequest::BlockingResult>();
+    auto request = std::make_unique<WindowRequest>(
+        0, [action = std::move(action)](SDL_Window*, PageFullscreen&, Engine& display) {
+            action(display);
+            return std::string();
+        });
+    request->blocking = result;
+    std::unique_lock lock(host.mutex);
+    if (host.stopping)
+        throw WorkerTerminated{};
+    host.window_requests.push_back(std::move(request));
+    host.wake.notify_all();
+    host.wake.wait(lock, [&] { return host.stopping || result->complete; });
+    if (!result->complete)
+        throw WorkerTerminated{};
+    if (!result->error.empty())
+        throw std::runtime_error(result->error);
+}
+#endif
 
 /**
  * The display ending page fullscreen itself, as browsers do: an Escape press (consumed) or the
@@ -500,6 +555,11 @@ struct WindowDocument {
                 throw std::logic_error("A Window selector state read requires its owning realm.");
             adopt_window_pointer_states();
         };
+#if BBLITE_HAS_BROWSER_FILE
+        engine.dispatch_file_action = [host = this->host](std::function<void(Engine&)> action) {
+            dispatch_window_file_action(*host, std::move(action));
+        };
+#endif
         static_cast<void>(ui_document_root(engine, UiDocumentPart::Html));
     }
     std::shared_ptr<WindowServices> host;
@@ -615,10 +675,14 @@ snapshot_document(const Engine& engine, std::optional<std::uint64_t> text_since 
         native.click_callbacks.clear();
         native.event_callbacks.clear();
 #if BBLITE_HAS_BROWSER_FILE
-        if (native.file_change_callbacks || native.file_input ||
-            native.download_url.slot != invalid_handle) {
-            throw std::runtime_error("Window realm file actions are not admitted.");
-        }
+        // File callbacks, selections and object URLs belong to the application, not its
+        // display snapshot. A visible control forwards activation to that same owner.
+        names.click = names.click || native.file_input || !native.download_name.empty();
+        native.file_change_callbacks.reset();
+        native.selected_file = {};
+        native.file_input = false;
+        native.download_url = {};
+        native.download_name.clear();
 #endif
         native.client_rect_requested = true;
         snapshot->listeners.push_back(std::move(names));
@@ -1688,6 +1752,10 @@ static Iteration<int> window_application_iterations(WorkerEntry initialize, Engi
                             const auto callbacks = record.click_callbacks;
                             for (const auto& callback : callbacks)
                                 EventLoop::current().dispatch_callback(callback);
+#if BBLITE_HAS_BROWSER_FILE
+                            EventLoop::current().dispatch_callback(
+                                [&] { js::activate_file_element(engine, event->element); });
+#endif
                         } else if (const auto found = record.event_callbacks.find(event->type);
                                    found != record.event_callbacks.end()) {
                             const auto listeners = found->second;
@@ -1855,12 +1923,14 @@ static Iteration<int> window_application_iterations(WorkerEntry initialize, Engi
                     std::unique_lock lock(services->mutex);
                     services->wake.wait(lock, [&] {
                         return services->input_handled == services->input_posted || finished ||
-                               services->completed < services->requested || services->message_box;
+                               services->completed < services->requested || services->message_box ||
+                               !services->window_requests.empty();
                     });
                     if (services->input_handled == services->input_posted || finished)
                         return;
                     const bool message_box = services->message_box != nullptr;
                     lock.unlock();
+                    serve_window_requests(*services, window.get(), page_fullscreen, display);
                     if (message_box)
                         serve_message_box(*services, window.get());
                     else if (!update_layout())
@@ -1901,8 +1971,7 @@ static Iteration<int> window_application_iterations(WorkerEntry initialize, Engi
                                                    event.type == SDL_EVENT_WINDOW_FOCUS_LOST)) {
                         display.pointer_lock_requested = false;
                         sync_pointer_lock(window.get(), display);
-                        display.pointer_lock_canvas.reset();
-                        services->inbox->post(std::make_unique<WindowPointerLockExit>());
+                        notify_window_pointer_lock_exit(*services, display);
                     }
                     end_press_mouse_capture(event);
                     // Mouse motion has no cancelable native default. Keep its

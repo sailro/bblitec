@@ -20,7 +20,7 @@ import { existsSync } from "node:fs";
 import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import { findRepositoryRoot, readUpstreamPin } from "../upstream-source.js";
 import { pinnedLabPublicUrl } from "../pinned-lab-public.js";
-import { pinnedLabPublicFile } from "../pinned-lab-materializers.js";
+import { pinnedLabPublicAsset } from "../pinned-lab-materializers.js";
 import {
     pixelsAssetSource,
     spriteAtlasAssetSource,
@@ -548,7 +548,7 @@ export function resolveBundledAsset(
         entryFileName &&
         deployment.publicUrl === pinnedLabPublicUrl()
     ) {
-        const local = pinnedLabPublicFile(
+        const local = pinnedLabPublicAsset(
             findRepositoryRoot(dirname(resolve(entryFileName))),
             source.split(/[?#]/, 1)[0]!,
         );

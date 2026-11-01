@@ -4638,6 +4638,8 @@ struct Engine {
     bool pointer_locked = false;
     /** Window engines send platform requests to their display thread. */
     std::function<void(bool)> request_platform_pointer_lock;
+    /** Window-owned file dialogs run on the display thread; only native payloads cross it. */
+    std::function<void(std::function<void(Engine&)>)> dispatch_file_action;
     /** The Window display's locked DOM canvas, separate from renderer records. */
     std::optional<UiElementHandle> pointer_lock_canvas;
     /** CSS cursor requested on the engine's browser canvas. */

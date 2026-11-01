@@ -113,6 +113,7 @@ before implementing: a source refusal does not mean RmlUi lacks the feature.
 - Limits: 256 MiB live selection cap; drops count up to 4096 files and snapshot the first (64 MiB); Blob 64 MiB.
 - FileReader supports `readAsText` only (BOM-detected, else UTF-8). File System Access pickers are absent.
 - iOS uses UIKit Files; other platforms SDL dialogs.
+- Window file dialogs run on the display thread; callbacks, selections and object URLs stay in the application realm.
 
 ## Markup and SVG
 
