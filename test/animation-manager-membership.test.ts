@@ -9,6 +9,7 @@ import {
     optionalNativeFixtureTools,
     runNativeFixtureCompiler,
 } from "./native-fixture.js";
+import { pinnedError } from "./pinned-errors.js";
 
 async function sourceResult(): Promise<unknown> {
     const pin = await import("@babylonjs/lite");
@@ -114,7 +115,7 @@ int main(){using namespace bbl;Engine engine;Json expected;std::ifstream("cases.
         if(manager->ordered_groups.size()!=1)return 3;
     }
     if(engine_flags!=std::vector<bool>{false,false,true})return 4;
-    try{add_animation_groups(explicit_engine,engine,{{0}});return 5;}catch(const std::runtime_error& error){if(std::string(error.what())!="#0")return 6;}
+    try{add_animation_groups(explicit_engine,engine,{{0}});return 5;}catch(const std::runtime_error& error){if(std::string(error.what())!="${pinnedError('AnimationGroup "${a0}" is already attached to another AnimationManager')}")return 6;}
 }
 `,
     );

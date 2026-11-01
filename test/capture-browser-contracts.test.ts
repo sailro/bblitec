@@ -100,29 +100,3 @@ test("instrumented draw counts retain bundles and only the current submitted fra
         { assert },
     );
 });
-
-test("canvas capture hides sibling chrome and clears focus decoration without changing canvas content", async () => {
-    await runInNewContext(
-        `
-        ${functionSource("src/browser-harness.ts", "hideNonCanvasChrome")}
-        class HTMLElement { style = {}; }
-        const canvas = new HTMLElement(), controls = new HTMLElement(), overlay = new HTMLElement();
-        canvas.style.outline = "2px solid blue";
-        canvas.style.width = "640px";
-        canvas.pixels = [1, 2, 3];
-        const document = {
-            getElementById(id) { assert.equal(id, "renderCanvas"); return canvas; },
-            body: { children: [controls, canvas, overlay] },
-        };
-        hideNonCanvasChrome({evaluate: async callback => callback()}).then(() => {
-            assert.equal(canvas.style.outline, "none");
-            assert.equal(canvas.style.visibility, undefined);
-            assert.equal(canvas.style.width, "640px");
-            assert.equal(canvas.pixels.join(","), "1,2,3");
-            assert.equal(controls.style.visibility, "hidden");
-            assert.equal(overlay.style.visibility, "hidden");
-        });
-    `,
-        { assert, exports: {} },
-    );
-});

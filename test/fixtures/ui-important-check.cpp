@@ -43,7 +43,7 @@ int main() try {
             return runtime.projected_elements.at(ui_get_element_by_id(engine, id).value).element;
         };
         const auto opacity = [&](const char* id, float expected) {
-            const float value = element(id)->GetComputedValues().opacity();
+            const float value = element(id)->GetComputedValues().group_opacity();
             if (std::abs(value - expected) > 0.01f)
                 std::fprintf(stderr, "%s opacity %g, expected %g\n", id, value, expected);
             return std::abs(value - expected) <= 0.01f;

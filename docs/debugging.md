@@ -44,7 +44,7 @@ Commands follow `npm run scene --`. `diagnose <id>` runs parity, `diff` and `dif
 - Compare native and WebGPU captures from the same device, canvas size, query and pose. Never use Windows goldens for
   Linux, macOS or Android. Keep device/build identity and both images.
 - Canvas-only lane: `BBLITE_CAPTURE_UI=0`; run parity with `--recapture-reference` on that host first; browser images
-  go to `artifacts/parity-canvas/`. Canvas-only capture excludes UI filters.
+  go to `artifacts/parity-canvas/`. Canvas-only capture keeps engine canvases only and excludes UI filters.
 - Android: `tools/android-smoke.mjs --canvas-only`; capture the browser on the target device and verify client size and
   DPR (Chrome's toolbar shrinks the viewport; use CDP device-metrics emulation). Emulator black screenshots need explicit
   GPU readback. Debug intents accept `nativeResolution=true` to bypass the pixel-ratio cap.
@@ -121,7 +121,7 @@ Artifact suffix `gpu` means SDL_GPU; CLI values are `sdl_gpu`/`dawn`.
 | `BBLITE_INPUT_REPLAY`, `BBLITE_RUNTIME_TRACE`, `BBLITE_RUNTIME_TRACE_INTERVAL` | Input tape; state trace |
 | `BBLITE_WINDOW_TRACE`, `BBLITE_CAPTURE_ENGINE_FRAMES=1` | Worker presentation trace; `BBLITE_SCREENSHOT_FRAME` counts engine frames |
 | `BBLITE_UI_STYLE_TRACE`, `BBLITE_PHYSICS_TRACE`, `BBLITE_TRACE_PHYSICS_RAYS` | UI boxes, body poses per step, ray queries |
-| `BBLITE_CPU_PROFILE`, `BBLITE_MEM_PROFILE` | CPU stages and memory every 30 frames |
+| `BBLITE_CPU_PROFILE`, `BBLITE_MEM_PROFILE` | CPU stages and memory every 30 frames; memory also each page UI target allocation and run mix |
 | `BBLITE_PHYSICS_PAIR_PROFILE=1` | With CPU profile: narrow-phase time per shape pair |
 | `BBLITE_SOURCE_PROFILE` | Timing scopes in named source functions (below) |
 | `BBLITE_PHYSICS_THREADS` | Bullet workers incl. controller (default ≤ 8; `1` = serial) |
@@ -129,6 +129,7 @@ Artifact suffix `gpu` means SDL_GPU; CLI values are `sdl_gpu`/`dawn`.
 | `BBLITE_TIMER_PROFILE=1` | `[cpu][timer-set]`, `[cpu][timer]`, `[cpu][timer-clear]` timestamps |
 | `BBLITE_AUDIO_CAPTURE`, `BBLITE_AUDIO_CAPTURE_SECONDS`, `BBLITE_AUDIO_LOG` | WAV capture; LabSound log level |
 | `BBLITE_LOCAL_STORAGE_ROOT` | Isolated storage |
+| `BBLITE_SAFE_AREA_INSETS` | `top,right,bottom,left` window insets the window reports as unsafe (a notched display) |
 | `BBLITE_FILE_DIALOG_SAVE_PATH`, `BBLITE_FILE_DIALOG_OPEN_PATH` | Noninteractive dialogs |
 | `BBLITE_MESSAGE_BOX_RESPONSE` | `accept` or `dismiss` answers `alert`/`confirm` without a message box |
 | `BBLITE_ASSET_DIR`, `BBLITE_GPU_SHADER_DIR`, `BBLITE_NATIVE_EXE` | Overrides; `BBLITE_NATIVE_EXE` reaches every measuring command |

@@ -3,7 +3,6 @@ import { execFileSync } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import test from "node:test";
-import ts from "typescript";
 import { LoweringContext } from "../src/lowering/context.js";
 import { lowerGltfAnimationEvaluator } from "../src/lowering/gltf/animation-evaluator.js";
 import {
@@ -15,6 +14,7 @@ import {
     optionalNativeFixtureTools,
     runNativeFixtureCompiler,
 } from "./native-fixture.js";
+import { pinnedModuleSource } from "./pinned-source.js";
 
 const modulePath = "src/animation/evaluate.ts";
 const contexts = (family: "gltf" | "property") =>
@@ -46,16 +46,7 @@ const contexts = (family: "gltf" | "property") =>
               ),
           ];
 function cases(context: LoweringContext, family: "gltf" | "property") {
-    const file = context.sourceFile(modulePath),
-        printer = ts.createPrinter();
-    const source = file.statements
-        .filter((statement) => !ts.isImportDeclaration(statement))
-        .map((statement) =>
-            printer
-                .printNode(ts.EmitHint.Unspecified, statement, file)
-                .replace(/^export /gm, ""),
-        )
-        .join("\n");
+    const source = pinnedModuleSource(context, modulePath);
     const types = context.sourceFile("src/animation/types.ts");
     const constants = ["INTERP_STEP", "INTERP_CUBICSPLINE"].map((name) =>
         context.numericValue(context.moduleScopeConstant(types, name)!, types),

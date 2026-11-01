@@ -48,7 +48,9 @@ export function lowerPhysicsConstraints(context: LoweringContext): {
         configureConstraintAxes(hknp, joint, type, options, limits);
         hknp.HP_Constraint_SetCollisionsEnabled(joint, !!options.collision);
         hknp.HP_Constraint_SetEnabled(joint, true);
-        return { _hkConstraint: joint, _isDisposed: false, bodyA, bodyB, type, options: { ...options, axisA, axisB, perpAxisA, perpAxisB }, limits };
+        const constraint = { _hkConstraint: joint, _isDisposed: false, bodyA, bodyB, type, options: { ...options, axisA, axisB, perpAxisA, perpAxisB }, limits };
+        (world._constraints ??= []).push(constraint);
+        return constraint;
     `,
         "constraint construction, anchor order, configuration and enabled ownership",
     );
@@ -394,9 +396,38 @@ void release_physics_constraint(PhysicsWorldHandle world, PhysicsConstraint cons
         module,
         "releasePhysicsConstraint",
     );
+    // The world's constraint discovery list, which construction appends to
+    // and release splices from, is read only by getPhysicsConstraints and
+    // disposePhysics, neither of which has a compiler route.
+    context.assertAccessedOnlyIn("_constraints", [
+        [module, "createPhysicsConstraint"],
+        [module, "releasePhysicsConstraint"],
+        [module, "disposePhysics"],
+        [module, "getPhysicsConstraints"],
+    ]);
+    const releaseStatements = release.declaration.body!.statements;
+    const discovery = releaseStatements.filter((statement) =>
+        context.hasNode(
+            statement,
+            (node) =>
+                ts.isPropertyAccessExpression(node) &&
+                node.name.text === "_constraints",
+        ),
+    );
+    context.assertStatementShapes(
+        release.declaration,
+        discovery,
+        `
+        const index = world._constraints?.indexOf(constraint) ?? -1;
+        if (index >= 0) {
+            world._constraints!.splice(index, 1);
+        }
+    `,
+        "constraint discovery-list removal",
+    );
     const releaseBody = lowerPinnedBody(
         release.file,
-        release.declaration.body!.statements,
+        releaseStatements.filter((statement) => !discovery.includes(statement)),
         {
             bindings: new Map([
                 [

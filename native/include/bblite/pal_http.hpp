@@ -153,8 +153,8 @@ inline js::Promise<HttpResponse> fetch_deployed(std::string url, HttpRequest req
             std::find_if(request.headers.begin(), request.headers.end(), [](const auto& header) {
                 return http_header_name(header.first) == "range";
             });
-        if (auto packaged =
-                packaged_fetch(url, range == request.headers.end() ? std::string() : range->second)) {
+        if (auto packaged = packaged_fetch(url, range == request.headers.end() ? std::string()
+                                                                               : range->second)) {
             if (signal && signal.aborted())
                 return js::Promise<HttpResponse>::rejected(*signal.reason());
             return *packaged;

@@ -26,6 +26,7 @@ import {
     optionalNativeFixtureTools,
     runNativeFixtureCompiler,
 } from "./native-fixture.js";
+import { pinnedError } from "./pinned-errors.js";
 
 const module = "src/loader-gltf/gltf-feature-camera.ts";
 const enabled = { cameras: true };
@@ -138,7 +139,7 @@ test("camera API reach and the actual feature predicate remain isolated between 
     );
     await assert.rejects(
         gltfMeshPlan(invalid.document, invalid.bin, undefined, enabled),
-        /#184/,
+        { message: pinnedError("glTF camera ${a0}: unsupported projection") },
     );
 });
 
@@ -194,10 +195,11 @@ test("source camera scale checks and changing-scale skip run before native packa
         [1, 2, 1],
     ]) {
         const { document, bin } = fixture({ nodes: [{ camera: 0, scale }] });
-        await assert.rejects(
-            gltfMeshPlan(document, bin, undefined, enabled),
-            /#185/,
-        );
+        await assert.rejects(gltfMeshPlan(document, bin, undefined, enabled), {
+            message: pinnedError(
+                "glTF camera nodes require non-zero uniform scale",
+            ),
+        });
     }
     const { document, bin } = fixture();
     const binary = new BinaryBuilder(

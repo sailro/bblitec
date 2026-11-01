@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import test from "node:test";
 import {
@@ -19,6 +19,17 @@ test("scene attachments preserve MSAA and sprite contexts retain target, load an
     }
     const output = resolve("artifacts/scene-stage-contracts");
     mkdirSync(output, { recursive: true });
+    const sdlShared = readFileSync("native/src/pal_sdl_gpu_shared.hpp", "utf8");
+    writeFileSync(
+        join(output, "sdl-page-viewport.hpp"),
+        [
+            cppFunction(sdlShared, "inline void set_pass_viewport("),
+            cppFunction(
+                sdlShared,
+                "inline PageCanvas set_page_canvas_viewport(SDL_GPURenderPass* pass",
+            ),
+        ].join("\n"),
+    );
     for (const [backend, name] of [
         ["Sdl", "sdl"],
         ["Dawn", "dawn"],

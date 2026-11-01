@@ -3,11 +3,11 @@ import { execFileSync } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import test from "node:test";
-import ts from "typescript";
 import { LoweringContext } from "../src/lowering/context.js";
 import { VatLowerer } from "../src/lowering/vat-lowerer.js";
 import { lowerGltfAnimationPlayback } from "../src/lowering/gltf/animation-playback.js";
 import { lowerGltfVatPlayback } from "../src/lowering/gltf/vat-playback.js";
+import { pinnedErrorCodeOf } from "../src/lowering/pinned-error.js";
 import {
     transpileCommonJs,
     createJavaScriptFunction,
@@ -17,6 +17,7 @@ import {
     optionalNativeFixtureTools,
     runNativeFixtureCompiler,
 } from "./native-fixture.js";
+import { pinnedDeclaration, pinnedModuleSource } from "./pinned-source.js";
 
 const vatModule = "src/vat/vat-baker.ts",
     controllerModule = "src/skeleton/skeleton-updater.ts";
@@ -69,8 +70,13 @@ const scenarios = [
     },
 ];
 function variants(): LoweringContext[] {
+    const pinned = new LoweringContext();
+    const unbound = pinnedErrorCodeOf(
+        pinned,
+        'VAT preparation: mesh "${a0}" has no skeleton binding for clip "${a1}".',
+    );
     return [
-        new LoweringContext(),
+        pinned,
         doctoredContext(
             vatModule,
             "ctrl.speedRatio = group.speedRatio",
@@ -78,24 +84,13 @@ function variants(): LoweringContext[] {
         ),
         doctoredContext(
             vatModule,
-            "ThrowLiteError(905, target.mesh.name, group.name)",
+            `ThrowLiteError(${unbound}, target.mesh.name, group.name)`,
             "ThrowLiteError(9999, target.mesh.name, group.name)",
         ),
     ];
 }
 function sourceResult(context: LoweringContext): unknown[] {
-    const printer = ts.createPrinter();
-    const source = (module: string) => {
-        const file = context.sourceFile(module);
-        return file.statements
-            .filter((statement) => !ts.isImportDeclaration(statement))
-            .map((statement) =>
-                printer
-                    .printNode(ts.EmitHint.Unspecified, statement, file)
-                    .replace(/^export /gm, ""),
-            )
-            .join("\n");
-    };
+    const source = (module: string) => pinnedModuleSource(context, module);
     const paths = [
         "PATH_TRANSLATION",
         "PATH_ROTATION",
@@ -148,12 +143,7 @@ function sourceResult(context: LoweringContext): unknown[] {
         "goToFrameCpu",
         "prepareVatMany",
     ]
-        .map((name) =>
-            context
-                .functionDeclaration(vatModule, name)
-                .declaration.getText()
-                .replace(/^export /, ""),
-        )
+        .map((name) => pinnedDeclaration(context, vatModule, name))
         .join("\n");
     const prepare = createJavaScriptFunction(
         "stopAnimation",

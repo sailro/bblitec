@@ -7,6 +7,7 @@
 #include "pal_gpu_surface.hpp"
 #include "pal_gpu_targets.hpp"
 #include "pal_gpu_pipeline.hpp"
+#include "pal_webgpu_usage.hpp"
 #include <bblite/features/csm_static_cache.hpp>
 #include <bblite/features/has_pbr_renderer.hpp>
 #include <bblite/features/has_post_process.hpp>
@@ -586,9 +587,8 @@ void present_stopped_temporal_frame(DawnState& state, WGPUCommandEncoder encoder
 void save_dawn_texture_file(DawnState& state, WGPUTexture texture, WGPUTextureFormat format,
                             std::uint32_t width, std::uint32_t height, const std::string& path,
                             const std::string& raw_path) {
-    const std::uint32_t bytes_per_pixel = format == WGPUTextureFormat_RGBA16Float ? 8u
-                                          : format == WGPUTextureFormat_R16Float  ? 2u
-                                                                                  : 4u;
+    const auto bytes_per_pixel =
+        static_cast<std::uint32_t>(webgpu_texel_layout(dawn_webgpu_format_name(format)).bytes);
     const std::uint32_t source_row_bytes = width * bytes_per_pixel;
     const std::uint32_t aligned_row_bytes = (source_row_bytes + 255u) & ~255u;
     WGPUBufferDescriptor readback_descriptor = WGPU_BUFFER_DESCRIPTOR_INIT;

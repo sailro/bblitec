@@ -34,23 +34,27 @@ int main() try {
         const auto sheet = ui_create_element(engine, "style");
         ui_append_to_root(engine, sheet);
         ui_add_class_style(engine, sheet, "cell", "height:20px;width:40px;background:blue;");
-        ui_add_style_rule(engine, sheet, UiStyleSelectorKind::CompoundClass, "cell", "special", {},
-                          false, -1, "width:90px;");
-        ui_add_style_rule(engine, sheet, UiStyleSelectorKind::Class, "cell", {}, {}, false, -1,
-                          "width:80px;background:red;", UiScrollbarPart::None, false, false,
-                          UiMotionPreference::Any, {}, UiGeneratedPart::None, {}, UiRangePart::None,
-                          320);
-        ui_add_style_rule(engine, sheet, UiStyleSelectorKind::Class, "cell", {}, {}, false, -1,
-                          "--bbl-intrinsic-min-width:10px;", UiScrollbarPart::None, false, false,
-                          UiMotionPreference::Any, {}, UiGeneratedPart::None, {}, UiRangePart::None,
-                          250);
-        ui_add_style_rule(engine, sheet, UiStyleSelectorKind::Sequence, ".marker", {}, {}, false,
-                          -1, "display:block;width:7px;height:9px;background:green;",
-                          UiScrollbarPart::None, false, false, UiMotionPreference::Any,
-                          {{UiSelectorRelation::Self, {{UiSelectorTestKind::Class, "marker", {}}}}},
-                          UiGeneratedPart::Before,
-                          UiGeneratedContent{true, {{UiContentPartKind::Text, "!"}}},
-                          UiRangePart::None, 320);
+        ui_add_style_rule(engine, sheet,
+                          {.selector = UiStyleSelectorKind::CompoundClass,
+                           .primary = "cell",
+                           .secondary = "special",
+                           .style = "width:90px;"});
+        ui_add_style_rule(
+            engine, sheet,
+            {.primary = "cell", .style = "width:80px;background:red;", .container_max_width = 320});
+        ui_add_style_rule(engine, sheet,
+                          {.primary = "cell",
+                           .style = "--bbl-intrinsic-min-width:10px;",
+                           .container_max_width = 250});
+        ui_add_style_rule(
+            engine, sheet,
+            {.selector = UiStyleSelectorKind::Sequence,
+             .primary = ".marker",
+             .style = "display:block;width:7px;height:9px;background:green;",
+             .sequence = {{UiSelectorRelation::Self, {{UiSelectorTestKind::Class, "marker", {}}}}},
+             .generated = UiGeneratedPart::Before,
+             .content = UiGeneratedContent{true, {{UiContentPartKind::Text, "!"}}},
+             .container_max_width = 320});
         const auto outer = make(
             "position:absolute;left:10px;top:10px;width:400px;padding:20px;container-type:inline-size;");
         ui_set_attribute(engine, outer, "class", "marker");

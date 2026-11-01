@@ -9,7 +9,9 @@ import {
 } from "./native-fixture.js";
 import test from "node:test";
 import { compileSource } from "../src/compiler.js";
-import { readNativeHostUi } from "../src/native-host-ui.js";
+import { hostPageCompileOptions, readHostPage } from "../src/host-page.js";
+import { hostUiOptions } from "./host-page-fixture.js";
+import { getScene } from "../src/scene-registry.js";
 
 test("retained button navigation helpers preserve focus, activeElement and click", () => {
     const nav = readFileSync(
@@ -64,38 +66,40 @@ test("host focus-visible outline retains its authored color and offset", () => {
         document.body.appendChild(button);
         button.focus();
     `,
-        {
-            nativeHostUi: {
-                sourcePath: "fixture.json",
-                elements: [],
-                styleRules: [
-                    {
-                        kind: "class",
-                        primary: "entry",
-                        focusVisible: true,
-                        style: "outline:2px solid #7fe0ff;outline-offset:2px;",
-                    },
-                ],
-            },
-        },
+        hostUiOptions({
+            styleSheets: [
+                {
+                    text: ".entry:focus-visible { outline: 2px solid #7fe0ff; outline-offset: 2px; }",
+                    line: 1,
+                },
+            ],
+            elements: [],
+        }),
     ).cpp;
     assert.match(
         cpp,
-        /ui_add_host_style_rule\([^\n]+--bbl-outline:2px solid #7fe0ff;--bbl-outline-offset:2px;", true, false, bbl::UiScrollbarPart::None, bbl::UiMotionPreference::Any\)/,
+        /ui_add_style_rule\([^\n]+\.primary = "entry", \.style = "--bbl-outline:2px solid #7fe0ff;--bbl-outline-offset:2px;", \.focus_visible = true}\)/,
     );
 });
 
 test("Antigravity hover rules are independent of keyboard focus", () => {
-    const host = readNativeHostUi("ui/antigravity-racer-host.json");
-    for (const primary of ["ag-btn", "ag-attract-btn"]) {
-        const hover = host.styleRules?.find(
-            (rule) => rule.primary === primary && rule.hover,
+    const { page } = getScene("antigravity-racer");
+    assert.ok(page);
+    const { cpp } = compileSource(
+        `import { createEngine } from "@babylonjs/lite";
+        await createEngine(document.getElementById("renderCanvas") as HTMLCanvasElement);`,
+        hostPageCompileOptions(readHostPage(page)),
+    );
+    // Hover is set and focus-visible is not: the two states stay apart.
+    for (const primary of ["ag-btn", "ag-attract-btn"])
+        assert.match(
+            cpp,
+            new RegExp(
+                `ui_add_style_rule\\([^\\n]*UiStyleSelectorKind::Class, \\.primary = "${primary}", \\.style = ` +
+                    String.raw`"[^"]*background-color:rgba\(255, 255, 255, 0\.12\);border-color:rgba\(150, 200, 255, 0\.45\);", ` +
+                    String.raw`\.hover = true}`,
+            ),
         );
-        assert.ok(hover);
-        assert.equal(hover.focusVisible, undefined);
-        assert.match(hover.style, /background:rgba\(255,255,255,0.12\)/);
-        assert.match(hover.style, /border-color:rgba\(150,200,255,0.45\)/);
-    }
 });
 
 test("button labels and emoji share their owning button's mouse activation target", () => {

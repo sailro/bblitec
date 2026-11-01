@@ -11,6 +11,7 @@
 #include <cstdint>
 #include <exception>
 #include <filesystem>
+#include <memory>
 #include <mutex>
 #include <optional>
 #include <stdexcept>
@@ -149,6 +150,17 @@ bool save_file(Engine& engine, const FileDialogOptions& options,
     if (bytes.size() > detail::maximum_selected_file_bytes) {
         throw std::runtime_error("Selected file exceeds the native write bound.");
     }
+    if (engine.dispatch_file_action) {
+        // The realm is blocked while the native operation runs. Validate here, never by
+        // transporting a source callback to the display thread.
+        if (validate)
+            validate();
+        const auto saved = std::make_shared<bool>(false);
+        engine.dispatch_file_action(
+            [options, payload = std::vector<std::uint8_t>(bytes.begin(), bytes.end()),
+             saved](Engine& display) { *saved = save_file(display, options, payload); });
+        return *saved;
+    }
     std::optional<std::string> path;
     const auto override_path = environment_variable("BBLITE_FILE_DIALOG_SAVE_PATH");
     if (!override_path.empty())
@@ -183,6 +195,13 @@ bool save_file(Engine& engine, const FileDialogOptions& options, std::string_vie
 std::optional<SelectedFileSnapshot> choose_open_file(Engine& engine,
                                                      const FileDialogOptions& options) {
     require_runtime_execution("file selection");
+    if (engine.dispatch_file_action) {
+        const auto selected = std::make_shared<std::optional<SelectedFileSnapshot>>();
+        engine.dispatch_file_action([options, selected](Engine& display) {
+            *selected = choose_open_file(display, options);
+        });
+        return std::move(*selected);
+    }
     const auto override_path = environment_variable("BBLITE_FILE_DIALOG_OPEN_PATH");
     if (!override_path.empty())
         return detail::selected_file_snapshot(detail::utf8_file_path(override_path));

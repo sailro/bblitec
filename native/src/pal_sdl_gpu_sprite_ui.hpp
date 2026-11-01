@@ -3,10 +3,10 @@
 // The SDL_GPU realization of the backend-neutral RmlUi recorder, shared by
 // every consumer: the scene renderer, the standalone SpriteRenderer frame
 // driver and the Window presenter. The recorder's geometry is premultiplied.
-// A single-sample consumer blends each draw directly into its target; the
-// scene renderer names a layer sample count, and each segment then renders
-// into a transparent RGBA8 layer at that count, resolves, and composites once
-// over the target.
+// A single-sample consumer blends each draw directly into its target; a
+// multisampled consumer names a layer sample count, and each run then renders
+// at that count in the target's format, resolving into the transparent layer
+// that composites once over the target (`for_each_ui_run`).
 
 #include <bblite/pal_ui.hpp>
 
@@ -35,12 +35,18 @@
 
 namespace bbl::pal {
 
-/** A layered consumer's transparent layer, recreated when the frame resizes. */
+/**
+ * A multisampled consumer's targets in the target's format, recreated when the frame resizes
+ * and each allocated once a run needs it: the multisampled one every multisampled run draws
+ * into, which a direct run resolves straight into the destination, and the transparent layer a
+ * layered run resolves into and composites from.
+ */
 struct SpriteUiSdlLayer {
     SDL_GPUTexture* texture = nullptr;
     SDL_GPUTexture* multisample = nullptr;
     std::uint32_t width = 0;
     std::uint32_t height = 0;
+    bool used = false;
 
     void release(SDL_GPUDevice* device) noexcept {
         if (multisample)
@@ -54,7 +60,7 @@ struct SpriteUiSdlLayer {
 struct SpriteUiSdlResources {
     UiBackdropSdlResources backdrop;
     UiFilterSdlResources filters;
-    // The draws' pipelines, in the target's format or the layer's.
+    // The draws' pipelines in the target's format, at the layer's sample count.
     SDL_GPUGraphicsPipeline* color_pipeline = nullptr;
     SDL_GPUGraphicsPipeline* texture_pipeline = nullptr;
     // A layered consumer's single-sample texture pipeline in the target's
@@ -65,6 +71,8 @@ struct SpriteUiSdlResources {
     SDL_GPUBuffer* vertices = nullptr;
     SDL_GPUBuffer* indices = nullptr;
     SpriteUiSdlLayer layer;
+    std::vector<SpriteUiSdlLayer> group_layers;
+    UiTargetProfile profile{"sdl_gpu"};
     std::unordered_map<std::uint64_t, UiCachedTexture<SDL_GPUTexture*>> textures;
     std::uint32_t vertex_capacity = 0;
     std::uint32_t index_capacity = 0;
@@ -210,6 +218,24 @@ create_sprite_ui_sdl_gpu_pipeline(SDL_GPUDevice* device, const OwnedSdlShader& v
     return pipeline;
 }
 
+/**
+ * The page UI's layer sample count on `device` for a target in `format`
+ * (`FrameOptions::page_ui_sample_count`): a count the device cannot render that format at
+ * refuses rather than drawing aliased edges.
+ */
+inline std::optional<SDL_GPUSampleCount>
+sprite_ui_sdl_gpu_layer_samples(SDL_GPUDevice* device, SDL_GPUTextureFormat format,
+                                std::optional<std::uint32_t> samples) {
+    if (!samples)
+        return std::nullopt;
+    const SDL_GPUSampleCount count = gpu_sample_count_from(*samples);
+    if (!SDL_GPUTextureSupportsSampleCount(device, format, count))
+        throw std::runtime_error("This SDL_GPU device cannot antialias the page UI: its target "
+                                 "format has no " +
+                                 std::to_string(*samples) + "x sampling.");
+    return count;
+}
+
 inline void create_sprite_ui_sdl_gpu_resources(SDL_GPUDevice* device, SDL_GPUTextureFormat format,
                                                SpriteUiSdlResources& ui,
                                                std::optional<SDL_GPUSampleCount> layer_samples) {
@@ -221,13 +247,11 @@ inline void create_sprite_ui_sdl_gpu_resources(SDL_GPUDevice* device, SDL_GPUTex
         create_sprite_ui_sdl_gpu_shader(device, SpriteUiSdlShader::color_fragment);
     const OwnedSdlShader texture =
         create_sprite_ui_sdl_gpu_shader(device, SpriteUiSdlShader::texture_fragment);
-    const SDL_GPUTextureFormat draw_format =
-        layer_samples ? SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM : format;
     const SDL_GPUSampleCount draw_samples = layer_samples.value_or(SDL_GPU_SAMPLECOUNT_1);
     ui.color_pipeline =
-        create_sprite_ui_sdl_gpu_pipeline(device, vertex, color.get(), draw_format, draw_samples);
+        create_sprite_ui_sdl_gpu_pipeline(device, vertex, color.get(), format, draw_samples);
     ui.texture_pipeline =
-        create_sprite_ui_sdl_gpu_pipeline(device, vertex, texture.get(), draw_format, draw_samples);
+        create_sprite_ui_sdl_gpu_pipeline(device, vertex, texture.get(), format, draw_samples);
     if (layer_samples) {
         ui.composite_pipeline = create_sprite_ui_sdl_gpu_pipeline(device, vertex, texture.get(),
                                                                   format, SDL_GPU_SAMPLECOUNT_1);
@@ -263,17 +287,24 @@ inline void ensure_sprite_ui_sdl_gpu_backdrop_pipeline(SDL_GPUDevice* device,
         SDL_GPU_SAMPLECOUNT_1, true);
 }
 
+/**
+ * Fits the layer to the frame and allocates what a run of `composition` draws through: a
+ * multisampled run the multisampled texture, a layered run also the transparent layer.
+ */
 inline void ensure_sprite_ui_sdl_gpu_layer(SDL_GPUDevice* device, SpriteUiSdlResources& ui,
-                                           SDL_GPUSampleCount samples, std::uint32_t width,
-                                           std::uint32_t height) {
-    SpriteUiSdlLayer& layer = ui.layer;
-    if (layer.texture && layer.width == width && layer.height == height)
-        return;
-    layer.release(device);
-    const auto make_texture = [&](SDL_GPUSampleCount texture_samples) {
+                                           SpriteUiSdlLayer& layer, SDL_GPUTextureFormat format,
+                                           SDL_GPUSampleCount samples, UiRunComposition composition,
+                                           std::uint32_t width, std::uint32_t height) {
+    if (layer.width != width || layer.height != height) {
+        layer.release(device);
+        layer.width = width;
+        layer.height = height;
+    }
+    layer.used = true;
+    const auto make_texture = [&](SDL_GPUSampleCount texture_samples, const char* target) {
         SDL_GPUTextureCreateInfo info{};
         info.type = SDL_GPU_TEXTURETYPE_2D;
-        info.format = SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM;
+        info.format = format;
         info.usage = SDL_GPU_TEXTUREUSAGE_COLOR_TARGET |
                      (texture_samples == SDL_GPU_SAMPLECOUNT_1 ? SDL_GPU_TEXTUREUSAGE_SAMPLER : 0);
         info.width = width;
@@ -284,12 +315,14 @@ inline void ensure_sprite_ui_sdl_gpu_layer(SDL_GPUDevice* device, SpriteUiSdlRes
         SDL_GPUTexture* result = SDL_CreateGPUTexture(device, &info);
         if (!result)
             gpu_error("SDL_CreateGPUTexture UI layer");
+        ui.profile.allocated(target, width, height, gpu_sample_count_value(texture_samples),
+                             SDL_GPUTextureFormatTexelBlockSize(format));
         return result;
     };
-    layer.texture = make_texture(SDL_GPU_SAMPLECOUNT_1);
-    layer.multisample = samples == SDL_GPU_SAMPLECOUNT_1 ? nullptr : make_texture(samples);
-    layer.width = width;
-    layer.height = height;
+    if (samples != SDL_GPU_SAMPLECOUNT_1 && !layer.multisample)
+        layer.multisample = make_texture(samples, "multisample");
+    if (composition == UiRunComposition::layered && !layer.texture)
+        layer.texture = make_texture(SDL_GPU_SAMPLECOUNT_1, "layer");
 }
 
 inline void ensure_sprite_ui_sdl_gpu_buffer(SDL_GPUDevice* device, SDL_GPUBuffer*& buffer,
@@ -333,16 +366,20 @@ inline OwnedSdlTransfer upload_sprite_ui_sdl_gpu_buffer(SDL_GPUDevice* device,
  * Records one UI frame over `target`.
  *
  * `layer_samples` selects the composition: absent, each draw blends directly
- * into the target; present, each segment renders into the transparent layer
- * at that sample count and the resolved layer composites over the target. An
- * owner passes the same value every frame, because the pipelines keep it.
+ * into the target; present, each run renders at that sample count and
+ * composes as `for_each_ui_run` names. An owner passes the same value and
+ * target format every frame, because the pipelines keep them.
+ * `destination_clear` names the colour a destination holds before the UI: its
+ * first run then resolves straight into it. Engine canvas draws (external
+ * textures) are the draws the textures cache does not own.
  */
 template <typename ExternalTexture = std::nullptr_t>
 inline void render_sprite_ui_sdl_gpu_frame(
     SDL_GPUDevice* device, SDL_GPUCommandBuffer* command, SDL_GPUTexture* target,
     SDL_GPUTextureFormat target_format, SpriteUiSdlResources& ui, const UiRenderFrame& frame,
     ExternalTexture external_texture = nullptr, SpriteUiSdlCpuSample* cpu_sample = nullptr,
-    std::optional<SDL_GPUSampleCount> layer_samples = std::nullopt) {
+    std::optional<SDL_GPUSampleCount> layer_samples = std::nullopt,
+    std::optional<SDL_FColor> destination_clear = std::nullopt) {
     const double started = cpu_sample ? monotonic_milliseconds() : 0;
     const auto released = prune_ui_texture_cache(
         ui.textures, [device](SDL_GPUTexture* texture) { SDL_ReleaseGPUTexture(device, texture); });
@@ -350,6 +387,11 @@ inline void render_sprite_ui_sdl_gpu_frame(
         cpu_sample->textures_released += released;
     if ((frame.draws.empty() && frame.operations.empty()) || frame.width == 0 ||
         frame.height == 0) {
+        ui.filters.begin_frame();
+        ui.filters.finish_frame(device, 0);
+        for (auto& group : ui.group_layers)
+            group.release(device);
+        ui.group_layers.clear();
         if (cpu_sample)
             cpu_sample->resources_ms = monotonic_milliseconds() - started;
         return;
@@ -361,8 +403,6 @@ inline void render_sprite_ui_sdl_gpu_frame(
     create_sprite_ui_sdl_gpu_resources(device, target_format, ui, layer_samples);
     if (!frame.backdrops.empty())
         ensure_sprite_ui_sdl_gpu_backdrop_pipeline(device, ui);
-    if (layer_samples)
-        ensure_sprite_ui_sdl_gpu_layer(device, ui, *layer_samples, frame.width, frame.height);
 
     // The recorder appended the full-frame composite quad after the RmlUi
     // draws (`frame.composite_first_index` names it), so the aggregate
@@ -429,10 +469,13 @@ inline void render_sprite_ui_sdl_gpu_frame(
     SDL_GPUGraphicsPipeline* const target_pipeline = sprite_ui_sdl_gpu_target_pipeline(ui);
     const SDL_GPUBufferBinding vertex_binding{ui.vertices, 0};
     const SDL_GPUBufferBinding index_binding{ui.indices, 0};
-    const std::array<float, 16> projection{
-        2.0f / frame.width, 0, 0, 0, 0, -2.0f / frame.height, 0, 0, 0, 0, 0.0001f, 0, -1, 1, 0, 1};
     const std::array<float, 2> translation{0, 0};
     ui.filters.begin_frame();
+    for (auto& group : ui.group_layers)
+        group.used = false;
+    if (ui.group_layers.size() < frame.layer_count)
+        ui.group_layers.resize(frame.layer_count);
+    UiRunPolicy policy;
     for_each_ui_segment(
         frame,
         [&](std::size_t draw_begin, std::size_t draw_end, std::uint32_t layer) {
@@ -440,93 +483,114 @@ inline void render_sprite_ui_sdl_gpu_frame(
                 ++cpu_sample->segments;
             auto* draw_target =
                 ui.filters.target(device, command, target, target_format, frame, layer);
-            SDL_GPUColorTargetInfo color_target{};
-            if (layer_samples) {
-                // The layer starts transparent for every segment; a
-                // multisampled layer resolves into the sampled one.
-                color_target.texture =
-                    ui.layer.multisample ? ui.layer.multisample : ui.layer.texture;
-                color_target.load_op = SDL_GPU_LOADOP_CLEAR;
-                color_target.clear_color = SDL_FColor{0, 0, 0, 0};
-                if (ui.layer.multisample) {
-                    color_target.store_op = SDL_GPU_STOREOP_RESOLVE;
-                    color_target.resolve_texture = ui.layer.texture;
-                } else {
-                    color_target.store_op = SDL_GPU_STOREOP_STORE;
-                }
-            } else {
-                color_target.texture = draw_target;
-                color_target.load_op = SDL_GPU_LOADOP_LOAD;
-                color_target.store_op = SDL_GPU_STOREOP_STORE;
-            }
-            SdlRenderPass pass{SDL_BeginGPURenderPass(command, &color_target, 1, nullptr)};
-            if (!pass)
-                gpu_error("SDL_BeginGPURenderPass UI");
-            SDL_BindGPUVertexBuffers(pass, 0, &vertex_binding, 1);
-            SDL_BindGPUIndexBuffer(pass, &index_binding, SDL_GPU_INDEXELEMENTSIZE_32BIT);
-            SdlGpuWriteDevice{}.write_vertex_uniform(command, 0, projection.data(),
-                                                     sizeof(projection));
-            SdlGpuWriteDevice{}.write_vertex_uniform(command, 1, translation.data(),
-                                                     sizeof(translation));
-            for (std::size_t draw_index = draw_begin; draw_index < draw_end; ++draw_index) {
-                const UiRenderDraw& draw = frame.draws[draw_index];
-                const std::optional<UiScissorRect> scissor =
-                    clamped_ui_scissor(draw, frame.width, frame.height);
-                if (!scissor)
-                    continue;
-                const SDL_Rect clip{scissor->left, scissor->top, scissor->width, scissor->height};
-                SDL_SetGPUScissor(pass, &clip);
-                if (draw.texture_id) {
-                    const auto owned = ui.textures.find(draw.texture_id);
-                    SDL_GPUTexture* texture =
-                        owned == ui.textures.end() ? nullptr : owned->second.resource;
-                    if constexpr (!std::is_same_v<ExternalTexture, std::nullptr_t>) {
-                        if (!texture)
-                            texture = external_texture(draw.texture_id);
+            const auto layer_target = ui_layer_target(frame, layer);
+            const auto& rect = layer_target.rect;
+            const auto width = static_cast<std::uint32_t>(rect.width);
+            const auto height = static_cast<std::uint32_t>(rect.height);
+            const std::array<float, 16> projection{
+                2.0f / width, 0, 0, 0, 0, -2.0f / height, 0, 0, 0, 0, .0001f, 0, -1, 1, 0, 1};
+            auto& run_layer = width != frame.width || height != frame.height
+                                  ? ui.group_layers[layer - 1]
+                                  : ui.layer;
+            policy.segment(
+                frame, draw_begin, draw_end, layer_samples.has_value(), draw_target == target,
+                destination_clear.has_value(), !std::is_same_v<ExternalTexture, std::nullptr_t>,
+                ui.textures,
+                [&](std::size_t run, std::size_t run_end, UiRunComposition composition) {
+                    const bool layered = composition == UiRunComposition::layered;
+                    SDL_GPUGraphicsPipeline* const texture_pipeline =
+                        composition == UiRunComposition::blend ? target_pipeline
+                                                               : ui.texture_pipeline;
+                    SDL_GPUColorTargetInfo color_target{};
+                    if (composition != UiRunComposition::blend)
+                        ensure_sprite_ui_sdl_gpu_layer(device, ui, run_layer, target_format,
+                                                       *layer_samples, composition, width, height);
+                    const auto targets = ui_run_targets(composition, draw_target, run_layer.texture,
+                                                        run_layer.multisample, destination_clear);
+                    color_target.texture = targets.draw;
+                    color_target.resolve_texture = targets.resolve;
+                    color_target.load_op =
+                        targets.clear ? SDL_GPU_LOADOP_CLEAR : SDL_GPU_LOADOP_LOAD;
+                    color_target.store_op =
+                        targets.resolve ? SDL_GPU_STOREOP_RESOLVE : SDL_GPU_STOREOP_STORE;
+                    color_target.clear_color = targets.clear.value_or(SDL_FColor{});
+                    SdlRenderPass pass{SDL_BeginGPURenderPass(command, &color_target, 1, nullptr)};
+                    if (!pass)
+                        gpu_error("SDL_BeginGPURenderPass UI");
+                    SDL_BindGPUVertexBuffers(pass, 0, &vertex_binding, 1);
+                    SDL_BindGPUIndexBuffer(pass, &index_binding, SDL_GPU_INDEXELEMENTSIZE_32BIT);
+                    SdlGpuWriteDevice{}.write_vertex_uniform(command, 0, projection.data(),
+                                                             sizeof(projection));
+                    SdlGpuWriteDevice{}.write_vertex_uniform(command, 1, translation.data(),
+                                                             sizeof(translation));
+                    UiReachedRect reached;
+                    for (std::size_t draw_index = run; draw_index < run_end; ++draw_index) {
+                        const UiRenderDraw& draw = frame.draws[draw_index];
+                        const std::optional<UiScissorRect> scissor =
+                            clamped_ui_scissor(draw, width, height);
+                        if (!scissor)
+                            continue;
+                        const SDL_Rect clip{scissor->left, scissor->top, scissor->width,
+                                            scissor->height};
+                        if (layered)
+                            reached.add(frame, draw, *scissor);
+                        SDL_SetGPUScissor(pass, &clip);
+                        if (draw.texture_id) {
+                            const auto owned = ui.textures.find(draw.texture_id);
+                            SDL_GPUTexture* texture =
+                                owned == ui.textures.end() ? nullptr : owned->second.resource;
+                            if constexpr (!std::is_same_v<ExternalTexture, std::nullptr_t>) {
+                                if (!texture)
+                                    texture = external_texture(draw.texture_id);
+                            }
+                            if (!texture)
+                                continue;
+                            SDL_BindGPUGraphicsPipeline(pass, texture_pipeline);
+                            const SDL_GPUTextureSamplerBinding texture_binding{
+                                texture, draw.nearest_sampling ? ui.nearest_sampler : ui.sampler};
+                            SDL_BindGPUFragmentSamplers(pass, 0, &texture_binding, 1);
+                        } else {
+                            SDL_BindGPUGraphicsPipeline(pass, ui.color_pipeline);
+                        }
+                        count_gpu_draw(SDL_DrawGPUIndexedPrimitives, pass, draw.index_count, 1,
+                                       draw.first_index, 0, 0);
+                        if (cpu_sample)
+                            ++cpu_sample->draws;
                     }
-                    if (!texture)
-                        continue;
-                    SDL_BindGPUGraphicsPipeline(pass, ui.texture_pipeline);
-                    const SDL_GPUTextureSamplerBinding texture_binding{
-                        texture, draw.nearest_sampling ? ui.nearest_sampler : ui.sampler};
-                    SDL_BindGPUFragmentSamplers(pass, 0, &texture_binding, 1);
-                } else {
-                    SDL_BindGPUGraphicsPipeline(pass, ui.color_pipeline);
-                }
-                count_gpu_draw(SDL_DrawGPUIndexedPrimitives, pass, draw.index_count, 1,
-                               draw.first_index, 0, 0);
-                if (cpu_sample)
-                    ++cpu_sample->draws;
-            }
-            pass.end();
-            if (!layer_samples)
-                return;
+                    pass.end();
+                    const std::optional<UiScissorRect> composited = reached.rect();
+                    if (!layered || !composited)
+                        return;
 
-            SDL_GPUColorTargetInfo composite_target{};
-            composite_target.texture = draw_target;
-            composite_target.load_op = SDL_GPU_LOADOP_LOAD;
-            composite_target.store_op = SDL_GPU_STOREOP_STORE;
-            SdlRenderPass composite_pass{
-                SDL_BeginGPURenderPass(command, &composite_target, 1, nullptr)};
-            if (!composite_pass)
-                gpu_error("SDL_BeginGPURenderPass UI composite");
-            SDL_BindGPUGraphicsPipeline(composite_pass, target_pipeline);
-            SDL_BindGPUVertexBuffers(composite_pass, 0, &vertex_binding, 1);
-            SDL_BindGPUIndexBuffer(composite_pass, &index_binding, SDL_GPU_INDEXELEMENTSIZE_32BIT);
-            const SDL_Rect full_clip{0, 0, static_cast<int>(frame.width),
-                                     static_cast<int>(frame.height)};
-            SDL_SetGPUScissor(composite_pass, &full_clip);
-            const SDL_GPUTextureSamplerBinding layer_binding{ui.layer.texture, ui.sampler};
-            SDL_BindGPUFragmentSamplers(composite_pass, 0, &layer_binding, 1);
-            SdlGpuWriteDevice{}.write_vertex_uniform(command, 0, projection.data(),
-                                                     sizeof(projection));
-            SdlGpuWriteDevice{}.write_vertex_uniform(command, 1, translation.data(),
-                                                     sizeof(translation));
-            count_gpu_draw(SDL_DrawGPUIndexedPrimitives, composite_pass, 6, 1,
-                           frame.composite_first_index, 0, 0);
-            composite_pass.end();
+                    SDL_GPUColorTargetInfo composite_target{};
+                    composite_target.texture = draw_target;
+                    composite_target.load_op = SDL_GPU_LOADOP_LOAD;
+                    composite_target.store_op = SDL_GPU_STOREOP_STORE;
+                    SdlRenderPass composite_pass{
+                        SDL_BeginGPURenderPass(command, &composite_target, 1, nullptr)};
+                    if (!composite_pass)
+                        gpu_error("SDL_BeginGPURenderPass UI composite");
+                    SDL_BindGPUGraphicsPipeline(composite_pass, target_pipeline);
+                    SDL_BindGPUVertexBuffers(composite_pass, 0, &vertex_binding, 1);
+                    SDL_BindGPUIndexBuffer(composite_pass, &index_binding,
+                                           SDL_GPU_INDEXELEMENTSIZE_32BIT);
+                    // The composite covers only what the run's draws reached.
+                    const SDL_Rect composite_clip{composited->left, composited->top,
+                                                  composited->width, composited->height};
+                    SDL_SetGPUScissor(composite_pass, &composite_clip);
+                    const SDL_GPUTextureSamplerBinding layer_binding{run_layer.texture, ui.sampler};
+                    SDL_BindGPUFragmentSamplers(composite_pass, 0, &layer_binding, 1);
+                    SdlGpuWriteDevice{}.write_vertex_uniform(command, 0, projection.data(),
+                                                             sizeof(projection));
+                    SdlGpuWriteDevice{}.write_vertex_uniform(command, 1, translation.data(),
+                                                             sizeof(translation));
+                    count_gpu_draw(SDL_DrawGPUIndexedPrimitives, composite_pass, 6, 1,
+                                   layer_target.composite_first_index, 0, 0);
+                    composite_pass.end();
+                });
         },
         [&](const UiRenderOperation& operation) {
+            policy.operation(frame, operation);
             if (operation.kind == UiRenderOperation::Kind::ResetLayer) {
                 ui.filters.reset_layer(operation.index);
             } else if (operation.kind == UiRenderOperation::Kind::Backdrop) {
@@ -540,6 +604,11 @@ inline void render_sprite_ui_sdl_gpu_frame(
             }
         });
     ui.filters.finish_frame(device, frame.composites.size());
+    ui.profile.composed(policy.counts);
+    for (auto& group : ui.group_layers)
+        if (!group.used)
+            group.release(device);
+    ui.group_layers.resize(frame.layer_count);
     if (cpu_sample) {
         cpu_sample->resources_ms = resources_finished - started;
         cpu_sample->geometry_upload_ms = geometry_uploaded - resources_finished;
@@ -557,6 +626,8 @@ inline void release_sprite_ui_sdl_gpu_resources(SDL_GPUDevice* device, SpriteUiS
         SDL_ReleaseGPUTexture(device, texture.resource);
     }
     ui.layer.release(device);
+    for (auto& group : ui.group_layers)
+        group.release(device);
     if (ui.vertices)
         SDL_ReleaseGPUBuffer(device, ui.vertices);
     if (ui.indices)

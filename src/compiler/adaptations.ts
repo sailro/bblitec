@@ -158,7 +158,7 @@ export function compileAdaptations(
             sourceSemantics:
                 "Each canvas has its own swapchain, scene targets, projection and pointer controls on a shared device.",
             nativeSemantics:
-                "Window surfaces retain independent backing sizes and publish canvas views through the page compositor. Standalone scene targets follow retained canvas rectangles or share the window in equal panes when layout is absent. The host page or a reviewed companion supplies canvas layout and labels; native targets follow each canvas size.",
+                "Window surfaces retain independent backing sizes and publish canvas views through the page compositor. Standalone scene targets follow retained canvas rectangles or share the window in equal panes when layout is absent. A surface scene clears and presents its own pane through its render tasks, after the primary scene's pass. The host page supplies canvas layout and labels; native targets follow each canvas size.",
             validation: [
                 "surface admission tests",
                 "scene227 and scene228 full-page/canvas gates and independent camera/resize replay",

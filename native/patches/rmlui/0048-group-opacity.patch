@@ -1,0 +1,193 @@
+CSS opacity applies to an element and its contents as a group: the element establishes a stacking context,
+paints itself and its descendants into a layer at full alpha, and composites that layer at its opacity. RmlUi
+inherited opacity into each element's vertex alpha, so a descendant declaring its own (a progress bar inside a
+fading overlay) replaced its ancestors' and overlapping translucent boxes showed through each other. Opacity is
+no longer inherited; a fully transparent group paints nothing.
+CSS Color 4: https://www.w3.org/TR/css-color-4/#transparency
+
+diff --git a/Include/RmlUi/Core/ComputedValues.h b/Include/RmlUi/Core/ComputedValues.h
+index 66ab724..756db1b 100644
+--- a/Include/RmlUi/Core/ComputedValues.h
++++ b/Include/RmlUi/Core/ComputedValues.h
+@@ -182,6 +182,8 @@ namespace Style {
+ 		BorderRadius border_top_left_radius, border_top_right_radius, border_bottom_right_radius, border_bottom_left_radius;
+ 		Colourb image_color = Colourb(255, 255, 255);
+ 		float scrollbar_margin = 0.f;
++		// The element's own opacity, which composites it and its contents as one layer.
++		float group_opacity = 1.f;
+ 	};
+ 
+ 	class ComputedValues : NonCopyMoveable {
+@@ -243,6 +245,7 @@ namespace Style {
+ 		WhiteSpace     white_space()      const { return inherited.white_space; }
+ 		WordBreak      word_break()       const { return inherited.word_break; }
+ 		Colourb        color()            const { return inherited.color; }
++		// The alpha geometry is generated at: 1, since 'group_opacity' composites the painted layer.
+ 		float          opacity()          const { return inherited.opacity; }
+ 		LineHeight     line_height()      const { return LineHeight(inherited.line_height, inherited.line_height_inherit_type, inherited.line_height_inherit); }
+ 		const String&  language()         const { return inherited.language; }
+@@ -294,6 +297,7 @@ namespace Style {
+ 		OverscrollBehavior overscroll_behavior_x()     const { return rare.overscroll_behavior_x; }
+ 		OverscrollBehavior overscroll_behavior_y()     const { return rare.overscroll_behavior_y; }
+ 		float             scrollbar_margin()           const { return rare.scrollbar_margin; }
++		float             group_opacity()              const { return rare.group_opacity; }
+ 		bool              has_mask_image()             const { return rare.has_mask_image; }
+ 		bool              has_filter()                 const { return rare.has_filter; }
+ 		bool              has_backdrop_filter()        const { return rare.has_backdrop_filter; }
+@@ -383,6 +387,7 @@ namespace Style {
+ 		void overscroll_behavior_x     (OverscrollBehavior value){ rare.overscroll_behavior_x      = value; }
+ 		void overscroll_behavior_y     (OverscrollBehavior value){ rare.overscroll_behavior_y      = value; }
+ 		void scrollbar_margin          (float value)             { rare.scrollbar_margin           = value; }
++		void group_opacity             (float value)             { rare.group_opacity              = value; }
+ 		void has_mask_image            (bool value)              { rare.has_mask_image             = value; }
+ 		void has_filter                (bool value)              { rare.has_filter                 = value; }
+ 		void has_backdrop_filter       (bool value)              { rare.has_backdrop_filter        = value; }
+diff --git a/Source/Core/Element.cpp b/Source/Core/Element.cpp
+index 9dd4f07..80131ad 100644
+--- a/Source/Core/Element.cpp
++++ b/Source/Core/Element.cpp
+@@ -189,6 +189,10 @@ void Element::Render()
+ 
+ 	UpdateAbsoluteOffsetAndRenderBoxData();
+ 
++	// A fully transparent group paints nothing.
++	if (GetComputedValues().group_opacity() <= 0.f)
++		return;
++
+ 	// A clip-path enclosing no area hides the element and its stacking context, which it always establishes.
+ 	bool clipped_away = false;
+ 	ElementEffects::GetClipPath(this, clipped_away);
+@@ -1937,7 +1941,7 @@ void Element::OnPropertyChange(const PropertyIdSet& changed_properties)
+ 
+ 	// Update the z-index and stacking context.
+ 	if (changed_properties.Contains(PropertyId::ZIndex) || changed_properties.Contains(PropertyId::Isolation) || filter_or_mask_changed || perspective_changed || transform_changed ||
+-		changed_properties.Contains(PropertyId::ClipPath))
++		changed_properties.Contains(PropertyId::ClipPath) || changed_properties.Contains(PropertyId::Opacity))
+ 	{
+ 		const Style::ZIndex z_index_property = meta->computed_values.z_index();
+ 		const Property* clip_path = GetLocalProperty(PropertyId::ClipPath) ? GetProperty(PropertyId::ClipPath) : nullptr;
+@@ -1947,7 +1951,7 @@ void Element::OnPropertyChange(const PropertyIdSet& changed_properties)
+ 		const bool enable_local_stacking_context = (z_index_property.type != Style::ZIndex::Auto || local_stacking_context_forced ||
+ 			meta->computed_values.has_filter() || meta->computed_values.has_backdrop_filter() || meta->computed_values.has_mask_image() ||
+ 			meta->computed_values.has_local_transform() || meta->computed_values.has_local_perspective() || meta->computed_values.isolation() == Style::Isolation::Isolate ||
+-			has_clip_path);
++			has_clip_path || meta->computed_values.group_opacity() < 1.f);
+ 
+ 		if (z_index != new_z_index || local_stacking_context != enable_local_stacking_context)
+ 		{
+diff --git a/Source/Core/ElementEffects.cpp b/Source/Core/ElementEffects.cpp
+index 6cf0503..9170669 100644
+--- a/Source/Core/ElementEffects.cpp
++++ b/Source/Core/ElementEffects.cpp
+@@ -247,7 +247,10 @@ void ElementEffects::RenderEffects(RenderStage render_stage)
+ 		}
+ 	}
+ 
+-	if (filters.empty() && backdrop_filters.empty() && mask_images.empty())
++	// CSS opacity applies to the element and its contents as a group: they paint into one layer, composited at it.
++	const float group_opacity = element->GetComputedValues().group_opacity();
++	const bool opacity_layer = group_opacity < 1.f;
++	if (filters.empty() && backdrop_filters.empty() && mask_images.empty() && !opacity_layer)
+ 		return;
+ 
+ 	RenderManager* render_manager = element->GetRenderManager();
+@@ -293,7 +296,7 @@ void ElementEffects::RenderEffects(RenderStage render_stage)
+ 	{
+ 		const LayerHandle backdrop_source_layer = render_manager->GetTopLayer();
+ 
+-		if (!filters.empty() || !mask_images.empty())
++		if (!filters.empty() || !mask_images.empty() || opacity_layer)
+ 		{
+ 			render_manager->PushLayer();
+ 			layer_open = true;
+@@ -326,7 +329,7 @@ void ElementEffects::RenderEffects(RenderStage render_stage)
+ 			render_manager->SetScissorRegion(initial_scissor_region);
+ 
+ 			// A backdrop root: a descendant's backdrop-filter reads only what this subtree painted before it.
+-			backdrop_root_layer = filters.empty() && mask_images.empty() && HasBackdropFilterDescendant(element);
++			backdrop_root_layer = filters.empty() && mask_images.empty() && !opacity_layer && HasBackdropFilterDescendant(element);
+ 			if (backdrop_root_layer)
+ 			{
+ 				render_manager->PushLayer();
+@@ -338,6 +341,11 @@ void ElementEffects::RenderEffects(RenderStage render_stage)
+ 	{
+ 		// The composite takes this element's clipping, its own clip-path included.
+ 		layer_open = false;
++		if (opacity_layer && group_opacity_value != group_opacity)
++		{
++			group_opacity_filter = render_manager->CompileFilter("opacity", Dictionary{{"value", Variant(group_opacity)}});
++			group_opacity_value = group_opacity;
++		}
+ 		if (!filters.empty() || !mask_images.empty())
+ 		{
+ 			ApplyClippingRegion(PropertyId::Filter);
+@@ -363,17 +371,23 @@ void ElementEffects::RenderEffects(RenderStage render_stage)
+ 				mask_image_filter.AddHandleTo(filter_handles);
+ 				render_manager->PopLayer();
+ 			}
++			if (opacity_layer)
++				group_opacity_filter.AddHandleTo(filter_handles);
+ 
+ 			render_manager->CompositeLayers(render_manager->GetTopLayer(), render_manager->GetNextLayer(), BlendMode::Blend, filter_handles);
+ 			render_manager->PopLayer();
+ 			render_manager->SetScissorRegion(initial_scissor_region);
+ 		}
+-		else if (backdrop_root_layer)
++		else if (opacity_layer || backdrop_root_layer)
+ 		{
+-			// Composite the backdrop root's layer over its filtered backdrop, within its ancestors' clipping.
++			// Composite the group's layer (a backdrop root's over its filtered backdrop) within its ancestors' clipping,
++			// which its overflowing descendants paint to as well.
+ 			backdrop_root_layer = false;
+ 			ElementUtilities::SetClippingRegion(element);
+-			render_manager->CompositeLayers(render_manager->GetTopLayer(), render_manager->GetNextLayer(), BlendMode::Blend, {});
++			FilterHandleList filter_handles;
++			if (opacity_layer)
++				group_opacity_filter.AddHandleTo(filter_handles);
++			render_manager->CompositeLayers(render_manager->GetTopLayer(), render_manager->GetNextLayer(), BlendMode::Blend, filter_handles);
+ 			render_manager->PopLayer();
+ 			render_manager->SetScissorRegion(initial_scissor_region);
+ 		}
+diff --git a/Source/Core/ElementEffects.h b/Source/Core/ElementEffects.h
+index 45a7814..5571835 100644
+--- a/Source/Core/ElementEffects.h
++++ b/Source/Core/ElementEffects.h
+@@ -82,8 +82,11 @@ private:
+ 	bool effects_data_dirty = false;
+ 	// Set while this backdrop root paints its descendants into a layer of its own.
+ 	bool backdrop_root_layer = false;
+-	// Set between pushing a filter, mask or backdrop-root layer and compositing it.
++	// Set between pushing a filter, mask, opacity or backdrop-root layer and compositing it.
+ 	bool layer_open = false;
++	// The opacity filter compositing this element's group, compiled for its value.
++	CompiledFilter group_opacity_filter;
++	float group_opacity_value = 1.f;
+ 	UniquePtr<ClipPath> clip_path;
+ };
+ 
+diff --git a/Source/Core/ElementStyle.cpp b/Source/Core/ElementStyle.cpp
+index ac9707a..a457136 100644
+--- a/Source/Core/ElementStyle.cpp
++++ b/Source/Core/ElementStyle.cpp
+@@ -1311,7 +1311,7 @@ void ElementStyle::ComputeValue(Style::ComputedValues& values, float dp_ratio, V
+ 	case PropertyId::ObjectFit:
+ 		break; // Retrieved by ElementImage when painting.
+ 	case PropertyId::Opacity:
+-		values.opacity(p->Get<float>());
++		values.group_opacity(p->Get<float>());
+ 		break;
+ 
+ 	case PropertyId::FontFamily:
+diff --git a/Source/Core/StyleSheetSpecification.cpp b/Source/Core/StyleSheetSpecification.cpp
+index d2b33a0..66a8f14 100644
+--- a/Source/Core/StyleSheetSpecification.cpp
++++ b/Source/Core/StyleSheetSpecification.cpp
+@@ -371,7 +371,7 @@ void StyleSheetSpecification::RegisterDefaultProperties()
+ 
+ 	RegisterProperty(PropertyId::ImageColor, "image-color", "white", false, false).AddParser("color");
+ 	RegisterProperty(PropertyId::ObjectFit, "object-fit", "fill", false, false).AddParser("keyword", "fill, contain, cover, none, scale-down");
+-	RegisterProperty(PropertyId::Opacity, "opacity", "1", true, false).AddParser("number");
++	RegisterProperty(PropertyId::Opacity, "opacity", "1", false, false).AddParser("number");
+ 
+ 	RegisterProperty(PropertyId::FontFamily, "font-family", "", true, true).AddParser("string");
+ 	RegisterProperty(PropertyId::FontStyle, "font-style", "normal", true, true).AddParser("keyword", "normal, italic");

@@ -72,6 +72,8 @@ class DawnSpriteRun : public RendererRun<DawnSpriteRun> {
 #if BBLITE_HAS_UI && !BBLITE_WORKERS
     UiRmlRuntime* ui_runtime = nullptr;
     SpriteUiDawnResources ui_resources;
+    /** The page UI's layer sample count; WebGPU guarantees 4x sampling of the surface format. */
+    std::optional<std::uint32_t> ui_samples;
 #endif
     DawnTexture surface;
     DawnTextureView surface_view;
@@ -193,6 +195,7 @@ public:
         ui_runtime = create_ui_rml_runtime(engine, state.window,
                                            static_cast<std::uint32_t>(engine.options.width),
                                            static_cast<std::uint32_t>(engine.options.height));
+        ui_samples = frame_options.page_ui_sample_count();
 #endif
 
 #if BBLITE_HAS_SPRITE_RENDERER
@@ -233,7 +236,7 @@ public:
         // Browser layout observes DOM changes made by this turn's RAF
         // callbacks before painting the frame.
         update_ui_rml_runtime(*ui_runtime, width, height);
-        require_window_filling_engine_canvas(engine, width, height);
+        require_page_filling_engine_canvas(engine, width, height);
 #endif
         begin_measurement();
 #if BBLITE_HAS_TEXT_RENDERER
@@ -242,8 +245,8 @@ public:
         // target they record into arrive once the frame's texture does.
         text_renderer->device->owner->capture.begin_frame(static_cast<std::uint64_t>(frame));
         text_renderer->device->color_format = state.surface_format;
-        update_dawn_text_renderers(engine, *text_renderer, static_cast<double>(width),
-                                   static_cast<double>(height));
+        const PageCanvas canvas = page_canvas(engine.ui_page_viewport, width, height);
+        update_dawn_text_renderers(engine, *text_renderer, canvas.width(), canvas.height());
 #endif
 
 #if BBLITE_HAS_SPRITE_RENDERER
@@ -265,6 +268,7 @@ public:
         // Every context updates before any records, which is the
         // pinned loop's order.
 #if BBLITE_HAS_SPRITE_RENDERER
+        const PageCanvas canvas = page_canvas(engine.ui_page_viewport, width, height);
         for (DawnSpritePass& pass : passes) {
             // `spriteRendererUpdate` runs the renderer's own hooks
             // first, so one that moves a sprite or a layer is seen by
@@ -276,15 +280,16 @@ public:
             // by position, so it is rebuilt before anything reads it.
             sync_dawn_sprite_pass_layers(state.device, state.queue, mips, engine, pass,
                                          render_textures, render_texture_views);
-            upload_dawn_sprite_pass(state.device, state.queue, engine, pass, width, height,
-                                    delta_ms);
+            upload_dawn_sprite_pass(state.device, state.queue, engine, pass, canvas.width(),
+                                    canvas.height(), delta_ms);
         }
 #endif
     }
     void encode() {
         encoder = wgpuDeviceCreateCommandEncoder(state.device, nullptr);
 #if BBLITE_HAS_TEXT_RENDERER
-        record_dawn_text_renderers(engine, *text_renderer, encoder, surface_view);
+        record_dawn_text_renderers(engine, *text_renderer, encoder, surface_view,
+                                   page_canvas(engine.ui_page_viewport, width, height));
 #endif
         if (canvas_only) {
             WGPURenderPassColorAttachment target = WGPU_RENDER_PASS_COLOR_ATTACHMENT_INIT;
@@ -320,6 +325,8 @@ public:
             pass_descriptor.colorAttachments = &color_attachment;
             DawnRenderPass render_pass{
                 wgpuCommandEncoderBeginRenderPass(encoder, &pass_descriptor)};
+            set_page_canvas_viewport(render_pass, engine, width, height,
+                                     !first_renderer.has_target);
             for (std::size_t index = first_index; index < end_index; ++index) {
                 record_dawn_sprite_pass(render_pass, engine, passes[index]);
             }
@@ -347,7 +354,7 @@ public:
         }
 #if BBLITE_HAS_UI && !BBLITE_WORKERS
         render_sprite_ui_dawn_frame(state, encoder, surface_texture.texture, surface_view,
-                                    ui_resources, ui_frame);
+                                    ui_resources, ui_frame, nullptr, ui_samples);
 #endif
         if (capture_frame && capture_ui) {
             capture = begin_dawn_surface_capture(state.device, encoder, surface_texture.texture,

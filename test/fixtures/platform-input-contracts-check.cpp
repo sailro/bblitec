@@ -6,6 +6,7 @@ void apply_canvas_cursor(Engine&);
 }
 #include "pal_platform_events.hpp"
 #include "pal_frame_conductor.hpp"
+#include "finger-events.hpp"
 #include <cassert>
 
 // Observe OS pointer-lock requests without taking the user's pointer.
@@ -286,13 +287,7 @@ template <typename Driver> void exercise(int index) {
     // Canvas script hooks run before a retained UI default consumes the packet.
     consume_ui = true;
     for (const Uint32 type : {SDL_EVENT_FINGER_DOWN, SDL_EVENT_FINGER_UP}) {
-        SDL_Event touch{};
-        touch.type = type;
-        touch.tfinger.windowID = SDL_GetWindowID(window);
-        touch.tfinger.touchID = 3;
-        touch.tfinger.fingerID = 9;
-        touch.tfinger.x = .25f;
-        touch.tfinger.y = .5f;
+        auto touch = finger_event(type, 3, 9, .25f, .5f, SDL_GetWindowID(window));
         assert(SDL_PushEvent(&touch));
     }
     assert(driver.prepare() == FramePreparation::ready);

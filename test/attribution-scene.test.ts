@@ -10,14 +10,14 @@ import {
 import { parseParityArguments } from "../src/parity-scene.js";
 import { resolveScene } from "../src/scene-registry.js";
 
-test("attribution preserves source, pose, host UI and gates with independent outputs", () => {
+test("attribution preserves source, pose, host page and gates with independent outputs", () => {
     const scene = resolveScene("scene6");
     const before = structuredClone(scene);
     const twin = attributionScene(scene);
     assert.deepEqual(scene, before);
     assert.equal(twin.source, scene.source);
     assert.equal(twin.title, scene.title);
-    assert.equal(twin.nativeHostUi, scene.nativeHostUi);
+    assert.deepEqual(twin.page, scene.page);
     assert.notEqual(twin.id, scene.id);
     assert.notEqual(twin.output, scene.output);
     assert.notEqual(twin.buildDirectory, scene.buildDirectory);

@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { regexText } from "./regex.js";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
@@ -141,7 +142,7 @@ export function cppFunction(source: string, signature: string): string {
                 ? /\w$/.test(parts[index - 1]!) && /^\w/.test(parts[index + 1]!)
                     ? "\\s+"
                     : "\\s*"
-                : part.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"),
+                : regexText(part),
         )
         .join("");
     for (const match of source.matchAll(new RegExp(pattern, "g"))) {

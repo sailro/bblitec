@@ -57,7 +57,7 @@ int main() try {
             return std::abs(value - expected) <= 0.5f;
         };
         const auto opacity = [&](const char* id, float expected) {
-            const float value = element(id)->GetComputedValues().opacity();
+            const float value = element(id)->GetComputedValues().group_opacity();
             if (std::abs(value - expected) > 0.01f)
                 std::fprintf(stderr, "%s opacity %g, expected %g at %g ms\n", id, value, expected,
                              fixture_time);

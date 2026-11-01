@@ -1,5 +1,6 @@
 #pragma once
 
+#include "pal_sdl_gpu_formats.hpp"
 #include "pal_sdl_gpu_resources.hpp"
 #include <bblite/pal_compute_texture.hpp>
 #include <stdexcept>
@@ -20,20 +21,6 @@ struct SdlComputeTexture final : ComputeTextureAllocation {
             SDL_ReleaseGPUSampler(device, std::exchange(sampler, nullptr));
     }
 };
-
-inline SDL_GPUTextureFormat sdl_compute_texture_format(std::string_view value) {
-    static constexpr std::pair<std::string_view, SDL_GPUTextureFormat> formats[] = {
-        {"rgba8unorm", SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM},
-        {"rgba8snorm", SDL_GPU_TEXTUREFORMAT_R8G8B8A8_SNORM},
-        {"rgba16float", SDL_GPU_TEXTUREFORMAT_R16G16B16A16_FLOAT},
-        {"r32float", SDL_GPU_TEXTUREFORMAT_R32_FLOAT},
-        {"rg32float", SDL_GPU_TEXTUREFORMAT_R32G32_FLOAT},
-        {"rgba32float", SDL_GPU_TEXTUREFORMAT_R32G32B32A32_FLOAT}};
-    for (const auto& [name, format] : formats)
-        if (value == name)
-            return format;
-    throw std::runtime_error("Unrepresented SDL compute texture format: " + std::string(value));
-}
 
 inline SDL_GPUSamplerAddressMode sdl_compute_address(std::string_view value) {
     if (value == "repeat")
@@ -67,7 +54,7 @@ inline void create_sdl_gpu_compute_texture(SDL_GPUDevice* device,
         info.type = options.sampled_view_dimension == "cube" ? SDL_GPU_TEXTURETYPE_CUBE
                     : options.extent[2] > 1                  ? SDL_GPU_TEXTURETYPE_2D_ARRAY
                                                              : SDL_GPU_TEXTURETYPE_2D;
-        info.format = sdl_compute_texture_format(options.format);
+        info.format = sdl_named_texture_format(options.format);
         info.width = options.extent[0];
         info.height = options.extent[1];
         info.layer_count_or_depth = options.extent[2];

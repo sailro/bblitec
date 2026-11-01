@@ -4,6 +4,7 @@ import { join, resolve } from "node:path";
 import test from "node:test";
 import { compileSource } from "../src/compiler.js";
 import { runRmlUiFixture } from "./native-fixture.js";
+import { hostUiOptions } from "./host-page-fixture.js";
 
 test("optional DOM calls snapshot the receiver and skip absent-call arguments", (t) => {
     const directory = resolve("artifacts/ui-optional-calls");
@@ -109,13 +110,13 @@ test("optional DOM calls snapshot the receiver and skip absent-call arguments", 
         if (visits !== 1) throw new Error("absent query continuation");
         globalThis.close();
     `,
-        {
-            fileName: join(directory, "entry.ts"),
-            nativeHostUi: {
-                sourcePath: "test/ui-optional-calls.test.ts",
-                elements: [{ tag: "div", attributes: { id: "host" } }],
+        hostUiOptions(
+            { elements: [{ tag: "div", attributes: { id: "host" } }] },
+            {
+                path: "test/ui-optional-calls.test.ts",
+                fileName: join(directory, "entry.ts"),
             },
-        },
+        ),
     );
     assert.equal(result.cpp.match(/bbl::ui_query_element\(/g)?.length, 1);
     writeFileSync(join(directory, "program.hpp"), result.cpp);

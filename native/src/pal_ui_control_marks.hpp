@@ -121,7 +121,7 @@ public:
                     .palette->checkmark;
             return Rml::Colourb{mark.r, mark.g, mark.b};
         };
-        const auto color = (summary ? style.color() : check()).ToPremultiplied(style.opacity());
+        const auto color = (summary ? style.color() : check()).ToPremultiplied();
         const float font_size = style.font_size();
         if (summary) {
             render_disclosure(*element, data, color, font_size, open);

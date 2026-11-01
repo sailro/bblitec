@@ -13,6 +13,7 @@ import {
     optionalNativeFixtureTools,
     runNativeFixtureCompiler,
 } from "./native-fixture.js";
+import { pinnedError } from "./pinned-errors.js";
 
 test("uniform arenas align slots, batch dirty ranges and dispose with their task", (t) => {
     const tools = optionalNativeFixtureTools(false);
@@ -59,11 +60,11 @@ int main(){
  task->flush_owned();assert(allocation->writes==1&&allocation->last_offset==0&&allocation->last_size==520&&allocation->bytes[519]==4);
  task->flush_owned();assert(allocation->writes==1);
  bbl::update_compute_uniform_slot(arena,1,{},16);task->flush_owned();assert(allocation->writes==1);
- for(double slot:{-1.0,1.5,3.0}){bool failed=false;try{(void)bbl::compute_uniform_slot_offset(arena,slot);}catch(const std::exception& e){failed=std::string(e.what())=="#1005";}assert(failed);}
- bool range=false;try{bbl::update_compute_uniform_slot(arena,1,data,16);}catch(const std::exception& e){range=std::string(e.what())=="#1008";}assert(range);
+ for(double slot:{-1.0,1.5,3.0}){bool failed=false;try{(void)bbl::compute_uniform_slot_offset(arena,slot);}catch(const std::exception& e){failed=std::string(e.what())=="${pinnedError("ComputeUniformArena: slot must be an integer in [0, ${a0}].")}";}assert(failed);}
+ bool range=false;try{bbl::update_compute_uniform_slot(arena,1,data,16);}catch(const std::exception& e){range=std::string(e.what())=="${pinnedError("ComputeUniformArena: update exceeds the slot's ${a0}-byte capacity.")}";}assert(range);
  auto another=bbl::create_compute_uniform_arena(task,32,1);auto second=device->last;
  task->dispose();assert(task->disposed&&arena->destroyed&&another->destroyed&&allocation->destroys==1&&second->destroys==1&&engine->native_resource_owners.empty());
- bool dead=false;try{(void)bbl::compute_uniform_slot_offset(arena,0);}catch(const std::exception& e){dead=std::string(e.what())=="#1004";}assert(dead);
+ bool dead=false;try{(void)bbl::compute_uniform_slot_offset(arena,0);}catch(const std::exception& e){dead=std::string(e.what())=="${pinnedError("ComputeUniformArena has been disposed.")}";}assert(dead);
  }
  bbl::js::collect_cycles();assert(observed.expired()&&bbl::js::managed_node_count()==initial);
 }

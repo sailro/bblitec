@@ -9,11 +9,6 @@ std::string environment_variable(const char*) { return {}; }
 double performance_milliseconds() { return 0; }
 } // namespace bbl::pal
 
-namespace {
-bool reduced = false;
-bool read_motion_preference() { return reduced; }
-} // namespace
-
 int main() {
     using namespace bbl;
     static_cast<void>(pal::system_reduced_motion());
@@ -24,18 +19,25 @@ int main() {
     {
         Engine engine;
         const auto sheet = ui_create_element(engine, "style");
-        ui_add_style_rule(engine, sheet, UiStyleSelectorKind::Class, "panel", "", "", false, -1,
-                          "width:40px;background-color:#123456;", UiScrollbarPart::None, false,
-                          false, UiMotionPreference::NoPreference);
-        ui_add_style_rule(engine, sheet, UiStyleSelectorKind::Class, "panel", "", "", false, -1,
-                          "width:80px;background-color:#abcdef;animation:none;transition:none;",
-                          UiScrollbarPart::None, false, false, UiMotionPreference::Reduce);
+        ui_add_style_rule(engine, sheet,
+                          {.primary = "panel",
+                           .style = "width:40px;background-color:#123456;",
+                           .media = {.reduced_motion = false}});
+        ui_add_style_rule(
+            engine, sheet,
+            {.primary = "panel",
+             .style = "width:80px;background-color:#abcdef;animation:none;transition:none;",
+             .media = {.reduced_motion = true}});
         ui_append_to_root(engine, sheet);
         const auto panel = ui_create_element(engine, "div");
         ui_set_attribute(engine, panel, "class", "panel");
         ui_set_attribute(engine, panel, "style", "height:20px;");
         ui_append_to_root(engine, panel);
-        pal::UiRmlRuntime runtime(engine, window, 640, 480, read_motion_preference);
+        pal::UiRmlRuntime runtime(engine, window, 640, 480);
+        const auto prefer = [&](bool reduce) {
+            pal::supply_ui_rml_media_device(runtime, reduce, std::nullopt);
+        };
+        prefer(false);
         const auto check = [&](float width, uint8_t red) {
             pal::update_ui_rml_runtime(runtime, 640, 480);
             auto* raw = runtime.projected_elements.at(panel.value).element;
@@ -47,23 +49,24 @@ int main() {
                 }));
         };
         check(40, 0x12);
-        reduced = true;
+        prefer(true);
         check(80, 0xab);
-        reduced = false;
+        prefer(false);
         check(40, 0x12);
         ui_clear_style_rules(engine, sheet);
         pal::update_ui_rml_runtime(runtime, 640, 480);
-        assert(!runtime.observes_motion_preference);
-        ui_add_style_rule(engine, sheet, UiStyleSelectorKind::Class, "panel", "", "", false, -1,
-                          "--bbl-intrinsic-min-width:10px;", UiScrollbarPart::None, false, false,
-                          UiMotionPreference::Reduce);
+        assert(!runtime.observes_motion_preference());
+        ui_add_style_rule(engine, sheet,
+                          {.primary = "panel",
+                           .style = "--bbl-intrinsic-min-width:10px;",
+                           .media = {.reduced_motion = true}});
         pal::update_ui_rml_runtime(runtime, 640, 480);
-        assert(runtime.observes_motion_preference);
+        assert(runtime.observes_motion_preference());
         assert(runtime.projected_elements.at(panel.value).intrinsic_min_width.empty());
-        reduced = true;
+        prefer(true);
         pal::update_ui_rml_runtime(runtime, 640, 480);
         assert(!runtime.projected_elements.at(panel.value).intrinsic_min_width.empty());
-        reduced = false;
+        prefer(false);
         pal::update_ui_rml_runtime(runtime, 640, 480);
         assert(runtime.projected_elements.at(panel.value).intrinsic_min_width.empty());
     }
@@ -76,7 +79,7 @@ int main() {
         ui_set_style_property(engine, panel, "width", "min(12rem, 90vw)");
         ui_set_style_property(engine, panel, "height", "10px");
         ui_append_child(engine, body, panel);
-        pal::UiRmlRuntime runtime(engine, window, 640, 480, read_motion_preference);
+        pal::UiRmlRuntime runtime(engine, window, 640, 480);
         const auto check = [&](std::uint32_t width, float expected) {
             pal::update_ui_rml_runtime(runtime, width, 480);
             auto* element = runtime.projected_elements.at(panel.value).element;

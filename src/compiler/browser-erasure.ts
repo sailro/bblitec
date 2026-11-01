@@ -47,7 +47,8 @@ import {
     writesUnobservedCanvasMetadata,
 } from "./canvas-instrumentation.js";
 import { isStaticMember, staticClassMember } from "./class-members.js";
-import { platformHandleKind } from "./data-types.js";
+import { isTouchListType, platformHandleKind } from "./data-types.js";
+import { isInputSnapshotHandleKind } from "./data-types/handles.js";
 import {
     declaredIn,
     declaredInDomLibrary,
@@ -73,7 +74,7 @@ import {
 } from "./window-events.js";
 import { stringLiteral } from "../cpp-literals.js";
 import { documentLookupId } from "../ui-selector.js";
-import { nativeHostUiElements } from "../native-host-ui.js";
+import { HOST_PRIMARY_CANVAS_ID } from "../host-primary-canvas.js";
 import {
     isNullable,
     presentMembers,
@@ -128,6 +129,7 @@ const NATIVE_DOM_BRIDGE_KINDS = new EmissionSet<Value["kind"]>([
     "static-fetch-response",
     "platform-keyboard-event",
     "platform-mouse-event",
+    "touch",
     "custom-event",
     "dom-event",
     "ui-element",
@@ -188,6 +190,7 @@ function hasNativeSpelling(value: NonNullable<Value["browserValue"]>): boolean {
 interface BrowserErasureContext extends Pick<
     LoweringServices,
     | "isNativeWorkerExpression"
+    | "dynamicBindings"
     | "unwrap"
     | "canvasSizeProperty"
     | "isCanvasElement"
@@ -210,12 +213,6 @@ interface BrowserErasureContext extends Pick<
     | "sourceFile"
     | "symbols"
 > {}
-
-/**
- * The id the host page gives its primary canvas, and so the one a program
- * finds it by when its engine canvas is not looked up by an id of its own.
- */
-const HOST_PRIMARY_CANVAS_ID = "renderCanvas";
 
 /**
  * Each program's primary canvas ids, keyed by its entry: a fact of the
@@ -351,12 +348,7 @@ function engineCanvasLookups(context: PrimaryCanvasContext) {
 }
 
 function hasImplicitCanvasHost(context: PrimaryCanvasContext): boolean {
-    if (context.options.hostPage) return false;
-    for (const element of nativeHostUiElements(
-        context.options.nativeHostUi?.elements ?? [],
-    ))
-        if (element.tag.toLowerCase() === "canvas") return false;
-    return true;
+    return context.options.hostPage === undefined;
 }
 
 /** A bare canvas query reaching createEngine selects the implicit host canvas only without an authored canvas. */
@@ -720,7 +712,7 @@ export class BrowserErasure {
                         this.context.sourceFiles(),
                         call,
                         index,
-                        this.context.options.nativeHostUi,
+                        this.context.options.hostPage?.hostUi,
                     )
                 ) {
                     writesOnlyCanvasMetadata = true;
@@ -1104,11 +1096,15 @@ export class BrowserErasure {
             (type.flags & ts.TypeFlags.Union) !== 0
                 ? (type as ts.UnionType).types
                 : [type];
-        // Gamepads are platform handles the native input model reads.
+        // Gamepads and touches are platform values the native input model reads.
         if (
             members.some((member) => {
                 const handle = platformHandleKind(member);
-                return handle === "gamepad" || handle === "gamepad-button";
+                return (
+                    (handle !== undefined &&
+                        isInputSnapshotHandleKind(handle)) ||
+                    isTouchListType(member)
+                );
             })
         ) {
             return false;
@@ -2000,26 +1996,6 @@ export class BrowserErasure {
             // Native keyboard events target the SDL surface directly. Treat
             // that surface as the focusable canvas the entry page establishes.
             return { kind: "number", value: 0 };
-        }
-        if (
-            ts.isPropertyAccessExpression(unwrapped) &&
-            unwrapped.name.text === "matches" &&
-            !this.context.options.workers &&
-            ts.isCallExpression(unwrapped.expression) &&
-            isLibraryStatic(
-                this.context.checker,
-                unwrapped.expression.expression,
-                "window",
-                "matchMedia",
-            ) &&
-            unwrapped.expression.arguments.length === 1 &&
-            this.browserValueOf(argumentAt(unwrapped.expression, 0))?.kind ===
-                "string"
-        ) {
-            // The native executable is an SDL desktop surface with mouse
-            // hover and a fine pointer. A coarse/no-hover media query is the
-            // source's touch-layout fork, so its native value is false.
-            return { kind: "boolean", value: false };
         }
         if (ts.isPrefixUnaryExpression(unwrapped)) {
             const operand = this.browserValueOf(unwrapped.operand);

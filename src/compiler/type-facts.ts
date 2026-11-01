@@ -7,6 +7,11 @@ import {
 } from "./syntax.js";
 import { presenceFlagCpp, type Value } from "./values/model.js";
 
+/** Includes auto-typed JavaScript bindings whose checker type is `any`. */
+export function isAnyTyped(type: ts.Type): boolean {
+    return (type.flags & ts.TypeFlags.Any) !== 0;
+}
+
 /**
  * What a value of one member of a type is at run time. `void` is its own
  * kind: a result its caller is not meant to read, whose run-time value only

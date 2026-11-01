@@ -1729,8 +1729,27 @@ void write_node_particle_column(int set, int system, const char* column, double 
                 "variable statement",
                 "expression statement",
                 "if statement",
+                "if statement",
+                "if statement",
                 "expression statement",
             ],
+        );
+        const [, attach, list, add, start, frame] = loop.statement.statements;
+        // The scene's particle discovery list is read only by
+        // getParticleSystems, which has no compiler route.
+        this.context.assertAccessedOnlyIn("_particleSystems", [
+            [sceneModule, "registerNodeParticleSet"],
+            [sceneModule, "getParticleSystems"],
+        ]);
+        this.context.assertStatementShapes(
+            loop,
+            [list!, add!],
+            `if (!scene._particleSystems) {
+                const systems: ParticleSystem[] = (scene._particleSystems = []);
+                scene._disposables.push(() => { systems.length = 0; });
+            }
+            if (!scene._particleSystems.includes(system)) { scene._particleSystems.push(system); }`,
+            "particle scene discovery list",
         );
         this.context.assertExpressionShape(
             loop.expression,
@@ -1742,39 +1761,38 @@ void write_node_particle_column(int set, int system, const char* column, double 
             "createParticleBillboard(system)",
             "particle scene billboard creation",
         );
-        const attach = loop.statement.statements[1] as ts.ExpressionStatement;
         this.context.assertExpressionShape(
-            attach.expression,
+            (attach as ts.ExpressionStatement).expression,
             "(system._registerBillboard ?? addFacingBillboardSystem)(scene, billboard)",
             "particle scene attachment",
         );
-        const start = loop.statement.statements[2] as ts.IfStatement;
-        if (!ts.isBlock(start.thenStatement) || start.elseStatement) {
+        const autoStart = start as ts.IfStatement;
+        if (!ts.isBlock(autoStart.thenStatement) || autoStart.elseStatement) {
             this.context.contractError(
-                start,
+                autoStart,
                 "Particle auto-start must have one block and no else arm.",
             );
         }
         this.context.assertExpressionShape(
-            start.expression,
+            autoStart.expression,
             "autoStart",
             "particle scene start condition",
         );
         this.context.assertStatementInventory(
-            start,
-            start.thenStatement.statements,
+            autoStart,
+            autoStart.thenStatement.statements,
             "registerNodeParticleSet",
             "auto-start restates one call",
             ["expression statement"],
         );
         this.context.assertExpressionShape(
-            (start.thenStatement.statements[0] as ts.ExpressionStatement)
+            (autoStart.thenStatement.statements[0] as ts.ExpressionStatement)
                 .expression,
             "startParticleSystem(system)",
             "particle scene start",
         );
         this.context.assertExpressionShape(
-            (loop.statement.statements[3] as ts.ExpressionStatement).expression,
+            (frame as ts.ExpressionStatement).expression,
             "scene._beforeRender.push((deltaMs) => { const ratio = deltaMs > 0 ? deltaMs / FRAME_MS : 1; animateParticleSystem(system, ratio); syncParticleBillboard(system, billboard); })",
             "particle scene frame callback",
         );

@@ -33,6 +33,15 @@ Rules:
 - RGB and vector tuple inputs accept conditional expressions; only the selected arm evaluates.
 - Loose equality across types refuses. Telling `null` from `undefined` needs tagged storage; otherwise strict comparison refuses.
   An array keeps the tag per element, and a map built from `[key, record]` pairs reads the record lane checked.
+- A binding TypeScript types `any` (`var observer = null`) is stored as the type assigned to it, nullable as its
+  initializer; member calls through it, and through its properties (`c.signal`), dispatch on that stored type and
+  throw when it is absent.
+- A hoisted `var` a function may read before its assignment is stored undefined until assigned: absence tests,
+  `typeof` and timer cancellation read the undefined, any other read throws while unassigned. A function its own
+  initializer hands to a scheduler, an observer or a promise reaction (`var poll = setInterval(f)`) reads it assigned.
+- A short circuit TypeScript types `any` holds the storage both operands lower to.
+- A Babylon Lite call completes with `undefined` where its pinned body does, as a source function's must.
+- An unread `await` (`await x;`, `void await x`, a comma's left) of a non-thenable takes its turn and drops the value.
 - A stored class field that some constructions bind to one value and others leave absent keeps a presence slot.
 - A class instance built before anything stored one replays with its class shared from that construction; a field
   holding a stored class is a slot. A stored record method nothing can read is stored empty when its body refuses.
@@ -132,6 +141,8 @@ Rules:
 ## Engine and frame loop
 
 - One engine per entry setup. Rebinding an engine alias refuses.
+- `createSurface` takes a retained canvas, or an element whose tag only run time knows (a Window document's lookup):
+  that selects the Window realm, which throws unless the element is a canvas.
 - `msaaSamples`: 1 for numeric 1, else 4; other constants refuse.
 - Native loops own extent refresh; `resizeEngine` runs the pin's `resizeSurface` on an application realm's DOM canvas.
 - `enableAsyncShaderPipelineCompilation` adds nothing: scene preparation compiles pipelines before the first frame.
@@ -214,6 +225,14 @@ composition and source albedo reads with `KHR_texture_transform` refuse.
 - Clustered point/spot lights and containers can be stored in application records and arrays. Light scalar fields and
   retained position/diffuse/direction tuples are mutable; `markClusteredLightContainerDirty` publishes edits.
   Populate lights and scene meshes before attaching the container; capacity and point/spot layout stay fixed.
+- Rectangular area lights (`createRectAreaLight`, `enableRectAreaLights`) with solid emission light PBR and Standard
+  receivers; Standard `roughness` feeds the LTC lookup. An unprocessed `emissionTexture`, area shadows, Node lighting
+  in an area scene, and a layered PBR BRDF under a reaching area light refuse at run time with the pin's messages.
+- Textured area emission: `processAreaLightTexture` over a `loadTexture2D` texture with generation-known source and
+  options runs the pin's processing at generation. Each scene draws under its own area lighting (none, solid or
+  textured), and its emission snapshot follows image and light changes.
+- A light's `parent` may be a mesh, transform node or imported root, a mesh's `parent` may be a light, and
+  `light.rotationQuaternion.set` composes with its transform.
 - Standard, PBR (clearcoat, sheen, iridescence, anisotropy, transmission), Grid, shader and node materials.
   PBR field writes accept a material narrowed by `isPbrMaterial`; `baseColorTexture` replacement takes a loaded, solid
   or stored file texture before scene registration.

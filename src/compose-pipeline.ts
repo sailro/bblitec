@@ -65,11 +65,9 @@ import {
 import { composeNodeMaterial } from "./pinned-node-material.js";
 import type { PinnedVariantManifestEntry } from "./pinned-pbr-variant-output.js";
 import { writePinnedPbrVariants } from "./pinned-pbr-variant-output.js";
-import {
-    pinnedSceneArms,
-    pinnedSingleLightTypes,
-    type PinnedSingleLightType,
-} from "./pinned-scene-arms.js";
+import { pinnedSceneArms } from "./pinned-scene-arms.js";
+import { reachedRectAreaLightings } from "./pinned-rect-area-lights.js";
+import { reachedLightKinds, type LightKind } from "./compiler/types.js";
 import {
     babylonRenderableCount,
     composeSceneStandardVariants,
@@ -159,7 +157,7 @@ function standardPluginMeshFeatureValues(
 /** The values `main`'s remainder (emit options, activation inventory)
  *  consumes, under the names it consumed them by when they were inline. */
 interface ComposedScenePipeline {
-    lightKinds: PinnedSingleLightType[];
+    lightKinds: LightKind[];
     /** The upstream loader/runtime tone-mapping states this scene can reach. */
     toneMappingStates: boolean[];
     gltfAssets: CompileAsset[];
@@ -215,10 +213,10 @@ interface ComposedScenePipeline {
  * that exception here, where the static scene-arm optimization is decided.
  */
 export function staticSceneLightArms(
-    lightKinds: readonly PinnedSingleLightType[],
+    lightKinds: readonly LightKind[],
     hasShadowReceiver: boolean,
 ): {
-    lightKinds: PinnedSingleLightType[];
+    lightKinds: LightKind[];
     multiLight: boolean;
     noLight: boolean;
 } {
@@ -337,8 +335,10 @@ export async function composeScenePipeline({
             : undefined;
     }
     const hasEnvironment = result.manifest.features.includes("environment:ibl");
-    const lightKinds = pinnedSingleLightTypes.filter((kind) =>
-        result.manifest.features.includes(`light:${kind}`),
+    const lightKinds = reachedLightKinds(result.manifest.features);
+    // The area lightings a scene of the program can draw under.
+    const rectAreaLightings = reachedRectAreaLightings(
+        result.manifest.features,
     );
     // Whether any light in this scene names the meshes it applies to, which
     // is what lets `light_affects_mesh` answer false and therefore what
@@ -423,6 +423,7 @@ export async function composeScenePipeline({
             : {}),
         environment: hasEnvironment,
         fog: result.manifest.features.includes("renderer:fog"),
+        ...(rectAreaLightings ? { rectAreaLightings } : {}),
     });
     // The pin's enableSceneTransmission marks every material in the scene
     // `_linearImageProcessing` (markPbrMaterialsLinear), so each composed
@@ -1008,6 +1009,7 @@ export async function composeScenePipeline({
                         ]),
                 ),
                 fog: result.manifest.features.includes("renderer:fog"),
+                ...(rectAreaLightings ? { rectAreaLightings } : {}),
                 vertexColors: result.manifest.features.includes(
                     "material:standard-vertex-colors",
                 ),

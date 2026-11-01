@@ -158,9 +158,13 @@ bool hide_physics_body(const PhysicsViewerHandle& viewer, PhysicsBody body) {
     return true;
 }
 
+// Every bookkeeping list empties before the meshes leave the scene; with
+// onSceneChange unadmitted, batchSceneChanges is the plain mutation.
 void dispose_physics_viewer(const PhysicsViewerHandle& viewer) {
-    while (!viewer->bodies.empty()) hide_physics_body(viewer, viewer->bodies.front());
+    const std::vector<MeshHandle> meshes = std::exchange(viewer->meshes, {});
+    viewer->bodies.clear();
     unregister_physics_viewer_update(*viewer);
+    for (const MeshHandle mesh : meshes) remove_from_scene(viewer->scene, mesh);
 }
 `;
     return { header, source };
@@ -170,7 +174,8 @@ const bodyContracts: readonly (readonly [string, string])[] = [
     [
         "createPhysicsViewer",
         `const viewer: PhysicsViewer = {
-        scene, world, _bodies: [], _meshes: [], _constraintMeshes: [], _constraintLines: [], _constraintDisks: [], _constraintArrowheads: [],
+        scene, world, _bodies: [], _meshes: [], _constraintMeshes: [], _constraintKeys: [], _constraintGroups: [],
+        _constraintLines: [], _constraintDisks: [], _constraintArrowheads: [],
         _color: options.color ?? [1, 1, 1, 1], _registered: false, _update: () => { updatePhysicsViewer(viewer); },
     }; return viewer;`,
     ],
@@ -199,10 +204,12 @@ const bodyContracts: readonly (readonly [string, string])[] = [
     ],
     [
         "disposePhysicsViewer",
-        `while (viewer._bodies.length > 0) { hidePhysicsBody(viewer, viewer._bodies[0]!); }
-        while (viewer._constraintMeshes.length > 0) { removeFromScene(viewer.scene, viewer._constraintMeshes.pop()!); }
+        `const meshes = viewer._meshes.splice(0).concat(viewer._constraintMeshes.splice(0));
+        viewer._bodies.length = 0;
         viewer._constraintLines.length = 0; viewer._constraintDisks.length = 0; viewer._constraintArrowheads.length = 0;
-        unregisterViewerUpdate(viewer);`,
+        viewer._constraintKeys.length = 0; viewer._constraintGroups.length = 0;
+        unregisterViewerUpdate(viewer);
+        batchSceneChanges(viewer.scene, () => { for (const mesh of meshes) { removeFromScene(viewer.scene, mesh); } });`,
     ],
     [
         "registerViewerUpdate",

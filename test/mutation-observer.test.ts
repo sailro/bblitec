@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
-import test from "node:test";
+import test, { type TestContext } from "node:test";
 import { compileSource } from "../src/compiler.js";
 import { emitUpstreamGenerated } from "../src/upstream-lower.js";
 import { runRmlUiFixture } from "./native-fixture.js";
@@ -19,6 +19,26 @@ function compile(body: string) {
     `,
         { fileName: join(directory, "entry.ts") },
     );
+}
+
+/**
+ * Runs a program in the Window realm fixture, which requires every observer
+ * disconnected when the realm ends.
+ */
+function runObserverFixture(t: TestContext, cpp: string): void {
+    writeFileSync(join(directory, "program.hpp"), cpp);
+    emitUpstreamGenerated(directory, ["core", "backend:sdl"]);
+    runRmlUiFixture(t, "mutation-observer", {
+        macros: {
+            BBLITE_WORKERS: 1,
+            BBLITE_OFFSCREEN_SURFACES: 1,
+            BBLITE_HAS_DOM_INPUT: 1,
+            BBLITE_HAS_PBR_RENDERER: 0,
+            BBLITE_HAS_SDL_GPU: 1,
+            BBLITE_HAS_DAWN: 0,
+        },
+        includeDirectories: [join(directory, "upstream/include")],
+    });
 }
 
 test("a reached observer selects the Window host before any engine or worker declaration", () => {
@@ -70,19 +90,102 @@ test("Window attribute observers coalesce microtasks, filter targets, disconnect
             }, 0);
         }, 0);
     `);
-    writeFileSync(join(directory, "program.hpp"), result.cpp);
-    emitUpstreamGenerated(directory, ["core", "backend:sdl"]);
-    runRmlUiFixture(t, "mutation-observer", {
-        macros: {
-            BBLITE_WORKERS: 1,
-            BBLITE_OFFSCREEN_SURFACES: 1,
-            BBLITE_HAS_DOM_INPUT: 1,
-            BBLITE_HAS_PBR_RENDERER: 0,
-            BBLITE_HAS_SDL_GPU: 1,
-            BBLITE_HAS_DAWN: 0,
-        },
-        includeDirectories: [join(directory, "upstream/include")],
-    });
+    runObserverFixture(t, result.cpp);
+});
+
+test("an auto-typed classic binding holds the observer assigned to it and calls it from a closure", (t) => {
+    // `var observer = null` is `any` at its declaration and inside `hide`
+    // (a page's classic script is JavaScript): the assignment types its
+    // storage, and `hide` calls through it.
+    mkdirSync(directory, { recursive: true });
+    const result = compileSource(
+        `
+        var overlay = document.createElement("div");
+        var status = document.createElement("div");
+        var observer = null;
+        function hide() {
+            if (observer) {
+                observer.disconnect();
+                observer = null;
+            }
+            overlay.classList.add("is-hidden");
+        }
+        function check() {
+            if (status.dataset.ready === "true") {
+                hide();
+                return true;
+            }
+            return false;
+        }
+        if (!check()) {
+            observer = new MutationObserver(check);
+            observer.observe(status, { attributes: true, attributeFilter: ["data-ready"] });
+        }
+        setTimeout(function () {
+            status.dataset.ready = "true";
+            setTimeout(function () {
+                if (!overlay.classList.contains("is-hidden")) throw new Error("observer callback");
+                globalThis.close();
+            }, 0);
+        }, 0);
+    `,
+        { fileName: join(directory, "classic.js") },
+    );
+    assert.match(
+        result.cpp,
+        /make_gc_shared<bbl::js::Nullable<std::shared_ptr<bbl::pal::MutationObserver>>>/,
+    );
+    assert.match(result.cpp, /\(\*\(\*v_\w*observer\)\)->disconnect\(\)/);
+    // A declared nullable observer takes the same storage, and an optional
+    // call disconnects it under the chain's presence test.
+    const declared = compileSource(
+        `const element = document.createElement("div");
+            let observer: MutationObserver | null = null;
+            function stop(): void { observer?.disconnect(); observer = null; }
+            observer = new MutationObserver(stop);
+            observer.observe(element, {attributes:true});
+            setTimeout(stop, 0);`,
+        { fileName: join(directory, "declared.ts") },
+    ).cpp;
+    assert.match(
+        declared,
+        /bbl::js::Nullable<std::shared_ptr<bbl::pal::MutationObserver>>/,
+    );
+    assert.match(declared, /\(\*v_bblite_optional_chain_\d+\)->disconnect\(\)/);
+    runObserverFixture(t, result.cpp);
+});
+
+test("an observer callback its own var initializer creates reads that var assigned", (t) => {
+    // The loader overlay's shape: `observer` is unassigned while its
+    // initializer builds the callback, which the observer runs only later.
+    mkdirSync(directory, { recursive: true });
+    const result = compileSource(
+        `
+        var target = document.createElement("div");
+        var observed = 0;
+        var observer = new MutationObserver(function () {
+            observed++;
+            if (target.dataset.ready === "true") observer.disconnect();
+        });
+        observer.observe(target, { attributes: true, attributeFilter: ["data-ready"] });
+        setTimeout(function () {
+            target.dataset.ready = "true";
+            setTimeout(function () {
+                target.dataset.ready = "false";
+                setTimeout(function () {
+                    if (observed !== 1) throw new Error("the callback disconnected its own observer");
+                    globalThis.close();
+                }, 0);
+            }, 0);
+        }, 0);
+    `,
+        { fileName: join(directory, "own-initializer.js") },
+    );
+    assert.match(
+        result.cpp,
+        /make_gc_shared<std::shared_ptr<bbl::pal::MutationObserver>>/,
+    );
+    runObserverFixture(t, result.cpp);
 });
 
 test("Window attribute observers explicitly refuse records, subtree and old values", () => {

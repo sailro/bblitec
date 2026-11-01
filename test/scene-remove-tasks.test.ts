@@ -8,6 +8,7 @@ import {
     optionalNativeFixtureTools,
     runGeneratedProgram,
 } from "./native-fixture.js";
+import { createPinnedScene, type PinnedScene } from "./pinned-scene.js";
 
 interface PinMesh {
     name: string;
@@ -34,7 +35,7 @@ test("removeFromScene keeps queued task requests and empties built entries, as t
             this: void,
             config: object,
             engine: object,
-            scene: object,
+            scene: PinnedScene<PinMesh>,
         ): PinTask;
         addMeshToTask(
             this: void,
@@ -47,10 +48,18 @@ test("removeFromScene keeps queued task requests and empties built entries, as t
         enableRenderTaskMeshRefresh(this: void, task: PinTask): void;
     }>("frame-graph/render-task-mesh-refresh.js");
     const { removeFromScene } = await importPinnedModule<{
-        removeFromScene(this: void, scene: object, mesh: PinMesh): void;
+        removeFromScene(
+            this: void,
+            scene: PinnedScene<PinMesh>,
+            mesh: PinMesh,
+        ): void;
     }>("scene/scene-remove.js");
     const { registerMeshScene } = await importPinnedModule<{
-        registerMeshScene(this: void, scene: object, mesh: PinMesh): void;
+        registerMeshScene(
+            this: void,
+            scene: PinnedScene<PinMesh>,
+            mesh: PinMesh,
+        ): void;
     }>("scene/mesh-scene-registry.js");
     const material = {
         _buildGroup: {
@@ -73,18 +82,9 @@ test("removeFromScene keeps queued task requests and empties built entries, as t
             queue: { writeBuffer() {} },
         },
     };
-    const tasks: PinTask[] = [];
-    const scene = {
-        meshes: [] as PinMesh[],
-        lights: [],
-        _renderables: [],
-        _renderableVersion: 1,
-        _meshDisposables: new Map(),
-        _groups: new Map(),
-        _materialSwapQueue: [],
-        _disposables: [],
-        _frameGraph: { _tasks: tasks },
-    };
+    // Registration builds the scene before its tasks record.
+    const scene = await createPinnedScene<PinMesh>({ engine }, { built: true });
+    const tasks = scene._frameGraph._tasks;
     const rt = {
         _descriptor: { format: "rgba8unorm", samples: 1 },
         _eager: true,
@@ -101,7 +101,7 @@ test("removeFromScene keeps queued task requests and empties built entries, as t
     const m1 = mesh("m1"),
         m2 = mesh("m2");
     // A second scene keeps m1, so this removal is not its disposal.
-    registerMeshScene({ _materialSwapQueue: [] }, m1);
+    registerMeshScene(await createPinnedScene<PinMesh>(), m1);
     registerMeshScene(scene, m1);
     scene.meshes.push(m1, m2);
     const task = (refresh: boolean, autoMirror?: boolean): PinTask => {

@@ -1,4 +1,5 @@
 import ts from "typescript";
+import { receiverType } from "./dynamic-binding-storage.js";
 import type { LoweringServices } from "./lowering-services.js";
 import type { Value } from "./types.js";
 import { libraryName, namedMember } from "./symbols.js";
@@ -8,6 +9,7 @@ import { jsonAbsenceCpp } from "./values/model.js";
 
 type Context = Pick<
     LoweringServices,
+    | "dynamicBindings"
     | "unwrap"
     | "libraryGlobal"
     | "checker"
@@ -64,7 +66,10 @@ export function compileCustomEventConstructor(
 }
 
 export function customEventDispatchTarget(
-    context: Pick<Context, "unwrap" | "libraryGlobal" | "checker">,
+    context: Pick<
+        Context,
+        "unwrap" | "libraryGlobal" | "checker" | "dynamicBindings"
+    >,
     call: ts.CallExpression,
 ): "document" | "window" | undefined {
     const callee = namedMember(
@@ -75,9 +80,7 @@ export function customEventDispatchTarget(
     let target = context.libraryGlobal(callee.expression);
     if (!target) {
         const symbol = context.checker
-            .getNonNullableType(
-                context.checker.getTypeAtLocation(callee.expression),
-            )
+            .getNonNullableType(receiverType(context, callee.expression))
             .getSymbol();
         if (
             symbol &&

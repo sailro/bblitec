@@ -3,7 +3,7 @@ import test from "node:test";
 import { compileSource } from "../src/compiler.js";
 import { runRmlUiFixture } from "./native-fixture.js";
 
-test("reduced-motion source and host rules share the native condition", () => {
+test("reduced-motion rules lower to the native condition", () => {
     const result = compileSource(
         `
         import { createEngine } from "@babylonjs/lite";
@@ -15,32 +15,14 @@ test("reduced-motion source and host rules share the native condition", () => {
         panel.className = "panel";
         document.body.appendChild(panel);
     `,
-        {
-            nativeHostUi: {
-                sourcePath: "fixture.json",
-                elements: [],
-                styleRules: [
-                    {
-                        kind: "class",
-                        primary: "panel",
-                        reducedMotion: true,
-                        style: "animation:none;",
-                    },
-                ],
-            },
-        },
     );
     assert.match(
         result.cpp,
-        /ui_add_style_rule[^\n]+UiMotionPreference::Reduce/,
+        /ui_add_style_rule[^\n]+\.media = \{\.reduced_motion = true\}/,
     );
     assert.match(
         result.cpp,
-        /ui_add_style_rule[^\n]+UiMotionPreference::NoPreference/,
-    );
-    assert.match(
-        result.cpp,
-        /ui_add_host_style_rule[^\n]+UiMotionPreference::Reduce/,
+        /ui_add_style_rule[^\n]+\.media = \{\.reduced_motion = false\}/,
     );
 });
 
@@ -59,7 +41,7 @@ test("media rules retain native grid tracks", () => {
         `);
         assert.match(
             result.cpp,
-            /grid-template-columns:[^\n]+UiMotionPreference::Reduce/,
+            /grid-template-columns:[^\n]+\.media = \{\.reduced_motion = true\}/,
         );
     }
 });

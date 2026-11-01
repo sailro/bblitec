@@ -67,18 +67,10 @@ create_dawn_compute_group_layout(WGPUDevice device, const ComputeGroupLayoutDesc
         }
         if (input.texture) {
             const auto& value = *input.texture;
-            if (value.sample_type == "float")
-                entry.texture.sampleType = WGPUTextureSampleType_Float;
-            else if (value.sample_type == "unfilterable-float")
-                entry.texture.sampleType = WGPUTextureSampleType_UnfilterableFloat;
-            else if (value.sample_type == "depth")
-                entry.texture.sampleType = WGPUTextureSampleType_Depth;
-            else if (value.sample_type == "sint")
-                entry.texture.sampleType = WGPUTextureSampleType_Sint;
-            else if (value.sample_type == "uint")
-                entry.texture.sampleType = WGPUTextureSampleType_Uint;
-            else
+            const auto sample_type = dawn_texture_sample_type(value.sample_type);
+            if (!sample_type)
                 throw std::runtime_error("Invalid compute texture sample type.");
+            entry.texture.sampleType = *sample_type;
             entry.texture.viewDimension = dawn_compute_view_dimension(value.view_dimension);
             entry.texture.multisampled = value.multisampled;
         }
@@ -104,7 +96,7 @@ create_dawn_compute_group_layout(WGPUDevice device, const ComputeGroupLayoutDesc
             else
                 throw std::runtime_error("Invalid compute storage texture access.");
             entry.storageTexture.viewDimension = dawn_compute_view_dimension(value.view_dimension);
-            entry.storageTexture.format = dawn_compute_texture_format(value.format);
+            entry.storageTexture.format = dawn_named_texture_format(value.format);
         }
         entries.push_back(entry);
     }

@@ -186,15 +186,19 @@ struct EngineOptions {
     std::vector<std::pair<std::string, double>> required_limits{};
 };
 
-/** Browser-neutral keyboard data delivered by the platform event loop. */
-struct PlatformKeyboardEvent : PlatformEventFlags {
-    std::string code{};
-    std::string key{};
-    bool repeat = false;
+/** The modifier keys a keyboard, mouse or touch event reports. */
+struct PlatformModifierKeys {
     bool shift_key = false;
     bool ctrl_key = false;
     bool alt_key = false;
     bool meta_key = false;
+};
+
+/** Browser-neutral keyboard data delivered by the platform event loop. */
+struct PlatformKeyboardEvent : PlatformEventFlags, PlatformModifierKeys {
+    std::string code{};
+    std::string key{};
+    bool repeat = false;
 };
 
 /** A storage notification delivered to a different Window sharing the storage area. */
@@ -212,7 +216,7 @@ struct PlatformTransitionEvent : PlatformEventFlags {
 /** Browser-neutral mouse data delivered by the platform event loop. */
 enum class DomInputEventKind { Event, Mouse, Pointer, Input };
 
-struct PlatformMouseEvent : PlatformEventFlags {
+struct PlatformMouseEvent : PlatformEventFlags, PlatformModifierKeys {
     double button = 0.0;
     double buttons = 0.0;
     double client_x = 0.0;
@@ -223,10 +227,6 @@ struct PlatformMouseEvent : PlatformEventFlags {
     std::string pointer_type = "mouse";
     double pointer_id = 1;
     bool is_primary = true;
-    bool shift_key = false;
-    bool ctrl_key = false;
-    bool alt_key = false;
-    bool meta_key = false;
     double screen_x = 0.0;
     double screen_y = 0.0;
     double pressure = 0.0;
@@ -892,6 +892,47 @@ enum class LightKind {
     hemispheric,
     point,
     spot,
+    // src/light/rect-area-light.ts: a single-sided rectangle emitting along
+    // its local -Z.
+    rect_area,
+};
+
+/**
+ * src/light/area-light-ltc.ts decodeAreaLightLtc: the LTC1 and LTC2 tables,
+ * square rgba16float images of raw half-float words in texel order -- what
+ * the pin's `queue.writeTexture` uploads. Their extent and row pitch are the
+ * pin's own, written by the generated `enable_rect_area_lights`.
+ */
+struct AreaLightLtcTables {
+    std::uint32_t size = 0;
+    std::uint32_t row_bytes = 0;
+    std::vector<std::uint8_t> ltc1;
+    std::vector<std::uint8_t> ltc2;
+};
+
+/**
+ * src/light/process-area-light-texture.ts processAreaLightTexture's result:
+ * a square rgba8unorm image and its whole mip chain, packaged by generation
+ * at `path` (`for_each_area_light_image_level` reads its layout), which the
+ * backend uploading it reads and drops. Each call is a distinct image, as
+ * each pinned call allocates its own texture. An image with no path is a
+ * texture the processor did not produce (`unprocessed_area_light_image`).
+ */
+struct AreaLightImage {
+    std::uint32_t size = 0;
+    std::uint32_t levels = 0;
+    std::string path;
+};
+
+/**
+ * src/light/area-light-emission.ts prepareAreaLightEmission's scene
+ * snapshot: one array layer per distinct image among the packed lights, in
+ * first-use order, and per packed light slot its layer plus one (zero for
+ * solid emission), padded to whole vec4<u32> rows.
+ */
+struct AreaLightEmission {
+    std::vector<std::shared_ptr<const AreaLightImage>> layers;
+    std::vector<std::uint32_t> slots;
 };
 
 enum class MaterialAlphaMode {
@@ -964,6 +1005,28 @@ struct PixelViewport {
     std::int32_t y = 0;
     std::int32_t width = 0;
     std::int32_t height = 0;
+    bool operator==(const PixelViewport&) const = default;
+};
+
+/**
+ * The page's layout viewport within its window (`pal::update_engine_canvas_metrics` lays it out
+ * before callbacks): the safe rectangle under `viewport-fit=auto`, the whole window under
+ * `cover`. `pixels` places paint in the `drawable_width` x `drawable_height` drawable it was laid
+ * out for; the window coordinates place platform input, which SDL reports in them;
+ * `inset_*` are the window's unsafe edges in CSS px, which env() reports under `cover`. Empty
+ * until the platform first lays the page out.
+ */
+struct PageViewport {
+    PixelViewport pixels{};
+    std::int32_t drawable_width = 0, drawable_height = 0;
+    double window_x = 0, window_y = 0, window_width = 0, window_height = 0;
+    double inset_top = 0, inset_right = 0, inset_bottom = 0, inset_left = 0;
+    [[nodiscard]] bool laid_out() const { return pixels.width > 0 && pixels.height > 0; }
+    /** Whether the page spans its whole window, as it does wherever the window has no insets. */
+    [[nodiscard]] bool whole_window() const {
+        return pixels == PixelViewport{0, 0, drawable_width, drawable_height};
+    }
+    bool operator==(const PageViewport&) const = default;
 };
 
 /**
@@ -2422,6 +2485,8 @@ struct TransformNodeRecord {
      */
     std::vector<MeshHandle> parented_meshes;
     std::vector<TransformNodeHandle> parented_nodes;
+    /** Lights whose `parent` is this node, invalidated with it. */
+    std::vector<LightHandle> parented_lights;
     /** Bumped by every transform write, which is what a child's world recomposes against. */
     std::uint64_t transform_version = 0;
 };
@@ -2525,6 +2590,15 @@ struct MeshRecord {
     std::optional<double> provider_seen_version;
     /** The provider's world read when its version last moved (the pin's cached world). */
     std::optional<std::array<float, 16>> provider_world_snapshot;
+    /**
+     * `mesh.parent = light` (`set_mesh_light_parent`): the world composes
+     * under the light's, read live through `light_world_matrix`. Upstream a
+     * light is a tagged host that pushes invalidation, which the light's own
+     * writes do here (`mark_light_children_dirty`).
+     */
+    LightHandle light_parent{};
+    /** Lights whose `parent` is this mesh, invalidated with it. */
+    std::vector<LightHandle> parented_lights;
     /**
      * `cloneMeshNode` left the imported hierarchy behind: the clone keeps
      * its source's local lanes but no longer inherits the root mirror the
@@ -2913,6 +2987,10 @@ struct MaterialRecord {
     // Written by each Standard factory (createStandardMaterial, both .babylon
     // arms) from the pin's own literal; no other family reads it.
     float specular_power = 0.0f;
+    // StandardMaterialProps.roughness, the LTC lookup roughness the
+    // rect-area extension writes into material float 22; unset reads as its
+    // writer's `?? 0`.
+    float standard_roughness = 0.0f;
     float diffuse_level = 1.0f;
     float opacity_level = 1.0f;
     float ambient_level = 1.0f;
@@ -3247,6 +3325,21 @@ inline std::uint32_t material_family_bit(const MaterialRecord& record) {
 struct LightRecord {
     LightKind kind = LightKind::directional;
     double parameter_version = 0.0;
+    /**
+     * A rectangular light's local width and height: JavaScript numbers its
+     * `_writeLightUbo` halves and scales by the world axes.
+     */
+    double width = 0.0;
+    double height = 0.0;
+    /**
+     * The node `light.parent` names (`set_light_parent`), whose
+     * `parented_lights` registers this light; an invalid handle for none.
+     */
+    SceneNodeHandle parent_node{AssetHandle{}};
+    /** Meshes whose `parent` is this light (`MeshRecord::light_parent`). */
+    std::vector<MeshHandle> parented_meshes;
+    /** A rectangular light's `emissionTexture`: a processed image, or null. */
+    std::shared_ptr<const AreaLightImage> emission_texture;
     Vec3 position{};
     Vec3 rotation{};
     Vec3 scaling{1.0f, 1.0f, 1.0f};
@@ -3585,6 +3678,8 @@ struct AssetRecord {
     // A cloned root shares the indices and maps them to its own mesh handles.
     std::shared_ptr<const AssetMeshWalks> source_mesh_walks{};
     std::vector<LightHandle> lights;
+    /** Lights whose `parent` is this imported root, invalidated with it. */
+    std::vector<LightHandle> parented_lights;
     /**
      * The cameras the `_camera` loader feature instantiated, one per
      * referencing glTF node in node order — `AssetContainer.cameras`.
@@ -3819,8 +3914,6 @@ enum class UiStyleSelectorKind : std::uint8_t {
     IdDescendantClass,
     /** `tag.class`, the element's own tag gated on one of its classes. */
     TagClass,
-    /** `tag[attribute="identifier"]`, with a statically validated value. */
-    TagAttribute,
     /** `tag > .class`, an immediate parent tag and child class. */
     TagChildClass,
 };
@@ -3828,7 +3921,40 @@ enum class UiStyleSelectorKind : std::uint8_t {
 enum class UiScrollbarPart : std::uint8_t { None, Scrollbar, Thumb, Track, Button, Corner };
 enum class UiRangePart : std::uint8_t { None, Thumb, Track };
 enum class UiOrientation : std::uint8_t { Any, Portrait, Landscape };
-enum class UiMotionPreference : std::uint8_t { Any, Reduce, NoPreference };
+/** A pointing device's precision, as the pointer media feature names it. */
+enum class PointerPrecision : std::uint8_t { None, Coarse, Fine };
+
+/** The primary pointing device, as the pointer and hover media features report it. */
+struct InputCapabilities {
+    PointerPrecision pointer = PointerPrecision::None;
+    bool hover = false;
+    bool operator==(const InputCapabilities&) const = default;
+};
+
+/** The device state the preference and input media features read. */
+struct UiMediaDevice {
+    bool reduced_motion = false;
+    InputCapabilities input{};
+    bool operator==(const UiMediaDevice&) const = default;
+};
+
+/**
+ * A media query's device features, each absent when the query does not
+ * name it: `prefers-reduced-motion` (true: reduce), `hover` and `pointer`.
+ */
+struct UiMediaCondition {
+    std::optional<bool> reduced_motion{};
+    std::optional<bool> hover{};
+    std::optional<PointerPrecision> pointer{};
+    bool operator==(const UiMediaCondition&) const = default;
+    [[nodiscard]] bool empty() const { return !reduced_motion && !hover && !pointer; }
+    [[nodiscard]] bool names_input() const { return hover || pointer; }
+    [[nodiscard]] bool matches(const UiMediaDevice& device) const {
+        return (!reduced_motion || *reduced_motion == device.reduced_motion) &&
+               (!hover || *hover == device.input.hover) &&
+               (!pointer || *pointer == device.input.pointer);
+    }
+};
 
 enum class UiSelectorTestKind : std::uint8_t {
     Tag,
@@ -3886,20 +4012,20 @@ struct UiGeneratedContent {
  * The typed selector is deliberately smaller than CSS. It is sufficient to
  * serialize an exact RmlUi selector and to inspect private structural
  * adaptation metadata without adding a browser selector engine to the PAL.
+ * Every member has a default, so a rule designates only its own.
  */
 struct UiStyleRule {
     UiStyleSelectorKind selector = UiStyleSelectorKind::Class;
-    std::string primary;
-    std::string secondary;
-    std::string tag;
-    std::string style;
+    std::string primary{};
+    std::string secondary{};
+    std::string tag{};
+    std::string style{};
     /** A negative value means the rule is not inside a max-width query. */
     double max_width = -1.0;
     bool hover = false;
     bool focus_visible = false;
     bool active = false;
     UiScrollbarPart scrollbar = UiScrollbarPart::None;
-    UiMotionPreference motion = UiMotionPreference::Any;
     std::vector<UiSelectorStep> sequence{};
     UiGeneratedPart generated = UiGeneratedPart::None;
     std::optional<UiGeneratedContent> content{};
@@ -3907,6 +4033,8 @@ struct UiStyleRule {
     /** A negative value means no containing-block size query. */
     double container_max_width = -1.0;
     UiOrientation orientation = UiOrientation::Any;
+    /** The device features of the rule's media query. */
+    UiMediaCondition media{};
 };
 
 /** One event's listeners on a retained element, shared so a dispatch outlives storage growth. */
@@ -4036,25 +4164,97 @@ struct UiElementRecord {
 inline constexpr std::uint8_t ui_pointer_hover = 1, ui_pointer_active = 2;
 
 /**
- * The pixels of a `width` x `height` target that a canvas laid out in a
- * `layout_width` x `layout_height` viewport presents its GPU content in:
- * its content box, scaled and truncated to whole pixels. The UI frame
- * clips what it paints beneath the canvas to the same rectangle.
+ * The pixels of a `width` x `height` target that a canvas laid out in `page`
+ * presents its GPU content in: its content box from the viewport's origin,
+ * scaled from the drawable the page laid out in (the target itself before
+ * it did) and truncated to whole pixels. The UI frame clips what it paints
+ * beneath the canvas to the same rectangle.
  */
 [[nodiscard]] inline PixelViewport presented_canvas_rect(const UiElementRecord& canvas,
-                                                         double layout_width, double layout_height,
+                                                         const PageViewport& page,
                                                          std::uint32_t width,
                                                          std::uint32_t height) {
     const UiContentBox& box = canvas.content_box;
-    const double scale_x = static_cast<double>(width) / layout_width;
-    const double scale_y = static_cast<double>(height) / layout_height;
+    const double scale_x = page.laid_out() ? static_cast<double>(width) / page.drawable_width : 1.0;
+    const double scale_y =
+        page.laid_out() ? static_cast<double>(height) / page.drawable_height : 1.0;
     return PixelViewport{
-        static_cast<std::int32_t>(box.left * scale_x),
-        static_cast<std::int32_t>(box.top * scale_y),
+        static_cast<std::int32_t>((page.pixels.x + box.left) * scale_x),
+        static_cast<std::int32_t>((page.pixels.y + box.top) * scale_y),
         std::max<std::int32_t>(1, static_cast<std::int32_t>(box.width * scale_x)),
         std::max<std::int32_t>(1, static_cast<std::int32_t>(box.height * scale_y)),
     };
 }
+
+/** Where the page's canvas draws in a frame target, and the extent it lays out in. */
+struct PageCanvas {
+    /** The page viewport in the target; the whole target when the page fills it. */
+    PixelViewport rect{};
+    /** Whether the page leaves part of the target to the letterbox. */
+    bool letterboxed = false;
+    /** The viewport a pass drawing the frame narrows to: the page's, when letterboxed. */
+    [[nodiscard]] std::optional<PixelViewport> viewport() const {
+        return letterboxed ? std::optional(rect) : std::nullopt;
+    }
+    [[nodiscard]] std::uint32_t width() const { return static_cast<std::uint32_t>(rect.width); }
+    [[nodiscard]] std::uint32_t height() const { return static_cast<std::uint32_t>(rect.height); }
+};
+
+/**
+ * The page's canvas in a `target_width` x `target_height` frame target, scaled from the drawable
+ * the page laid out in as presented canvases are: whatever draws the page's canvas draws there.
+ */
+[[nodiscard]] inline PageCanvas page_canvas(const PageViewport& page, std::uint32_t target_width,
+                                            std::uint32_t target_height) {
+    if (!page.laid_out() || page.whole_window())
+        return {{0, 0, static_cast<std::int32_t>(target_width),
+                 static_cast<std::int32_t>(target_height)},
+                false};
+    const auto scale = [](std::int32_t value, std::uint32_t target, std::int32_t drawable) {
+        return static_cast<std::int32_t>(static_cast<std::int64_t>(value) * target / drawable);
+    };
+    const PixelViewport& pixels = page.pixels;
+    return {{scale(pixels.x, target_width, page.drawable_width),
+             scale(pixels.y, target_height, page.drawable_height),
+             std::max<std::int32_t>(1, scale(pixels.width, target_width, page.drawable_width)),
+             std::max<std::int32_t>(1, scale(pixels.height, target_height, page.drawable_height))},
+            true};
+}
+
+/**
+ * Presses by `Key` (a mouse button, a touch contact) the page received, which keep their moves
+ * and releases wherever they land (`pal::page_platform_event`), and the presses it never received,
+ * whose moves and releases it never receives either.
+ */
+template <typename Key> struct PressCapture {
+    std::vector<Key> received, dropped;
+
+    /** A press at a position `inside` the page or not: whether the page receives it. */
+    bool press(const Key& key, bool inside) {
+        lift(key);
+        (inside ? received : dropped).push_back(key);
+        return inside;
+    }
+    /** Whether the page receives a move or the release (`lifts`) of `key` at `inside`. */
+    bool follow(const Key& key, bool inside, bool lifts) {
+        const bool kept = std::find(received.begin(), received.end(), key) != received.end();
+        const bool lost = std::find(dropped.begin(), dropped.end(), key) != dropped.end();
+        if (lifts)
+            lift(key);
+        return kept || (!lost && inside);
+    }
+    void lift(const Key& key) {
+        std::erase(received, key);
+        std::erase(dropped, key);
+    }
+};
+
+/** The pointer and touch presses inside and outside the page viewport. */
+struct PageInputCapture {
+    PressCapture<std::uint8_t> buttons;
+    /** By SDL touch device and finger. */
+    PressCapture<std::pair<std::uint64_t, std::uint64_t>> touches;
+};
 
 /** Dispatches to the element's `type` listeners; the list outlives a listener that grows the
  * element arena or removes it. */
@@ -4438,6 +4638,8 @@ struct Engine {
     bool pointer_locked = false;
     /** Window engines send platform requests to their display thread. */
     std::function<void(bool)> request_platform_pointer_lock;
+    /** Window-owned file dialogs run on the display thread; only native payloads cross it. */
+    std::function<void(std::function<void(Engine&)>)> dispatch_file_action;
     /** The Window display's locked DOM canvas, separate from renderer records. */
     std::optional<UiElementHandle> pointer_lock_canvas;
     /** CSS cursor requested on the engine's browser canvas. */
@@ -4456,6 +4658,17 @@ struct Engine {
     UiElementHandle ui_focused_element{};
     std::uint64_t ui_focus_revision = 0;
     bool ui_focus_visible = true;
+    /** The page's `viewport-fit=cover`: its layout spans the window's unsafe edges, which env() reports. */
+    bool ui_viewport_fit_cover = false;
+    /** Whether a retained UI lays a page out (`pal::UiRmlRuntime`), in the window's safe area. */
+    bool ui_lays_out_page = false;
+    /** Where the page lays out in its window (`pal::update_engine_canvas_metrics` keeps it). */
+    PageViewport ui_page_viewport{};
+    /** Diagnostic window insets, read once for this runtime by the platform layer. */
+    std::optional<std::array<int, 4>> ui_diagnostic_safe_area;
+    bool ui_diagnostic_safe_area_read = false;
+    /** Pointer and touch presses inside and outside the page viewport. */
+    PageInputCapture ui_page_capture{};
     /** The control whose text select() last selected; the projection applies each revision. */
     UiElementHandle ui_text_selection{};
     std::uint64_t ui_text_selection_revision = 0;
@@ -4469,8 +4682,6 @@ struct Engine {
         UiElementHandle html, head, body;
         [[nodiscard]] bool active() const noexcept { return html.value != invalid_handle; }
     } ui_document_roots;
-    /** Audited host-page rules, preceding scene-created sheets in cascade. */
-    std::vector<UiStyleRule> ui_host_style_rules;
     std::function<void(UiElementHandle, const std::string&)> ui_attribute_changed;
     /** A Window display's details `open` change goes to the realm, whose change fires `toggle`. */
     std::function<void(UiElementHandle)> ui_details_toggled;
@@ -4575,6 +4786,18 @@ struct Engine {
     /** Creation-ordered handles retained for source values that escape scope. */
     std::vector<MaterialHandle> scene_material_slots;
     std::vector<LightRecord> lights;
+    /**
+     * src/light/area-light-ltc.ts: the two decoded LTC tables, loaded by the
+     * first `enableRectAreaLights` and shared by every scene the way the
+     * pin's one pixel request is. Each backend uploads them once per device.
+     */
+    std::shared_ptr<const AreaLightLtcTables> area_light_ltc;
+    /**
+     * A processAreaLightTexture call ran (`_installRectAreaEmission`), so
+     * `enableRectAreaLights` hands a packed light's texture to the emission
+     * snapshot instead of refusing it.
+     */
+    bool area_light_emission_installed = false;
     std::vector<TransformNodeRecord> transform_nodes;
     /** Reclaimed transform-node slots `create_transform_node` reuses. */
     std::vector<std::uint32_t> free_transform_node_slots;
@@ -5020,9 +5243,11 @@ inline bool mesh_handle_current(const Engine& engine, MeshHandle mesh) {
  * chain, which no native world read represents.
  */
 inline bool imported_hierarchy_unlinked(const Engine& engine, AssetHandle owner) {
-    if (owner.value >= engine.assets.size()) return false;
+    if (owner.value >= engine.assets.size())
+        return false;
     const auto& record = engine.assets[owner.value];
-    if (record.hierarchy_linked) return false;
+    if (record.hierarchy_linked)
+        return false;
     if (record.linked_import_nodes != 0)
         throw std::runtime_error(
             "A world matrix of an imported hierarchy with only some parent links set is not "
@@ -5258,14 +5483,19 @@ inline void reclaim_mesh_names(Engine& engine) {
 
 /**
  * Takes `mesh` out of the invalidation registry (`parented_meshes`) of the
- * parent `record` names, a transform node or a mesh, which is the pin's
+ * parent `record` names, a transform node, a mesh or a light, which is the pin's
  * `_removeChild` in the parent setter. The traversal `children` lists are
  * the pin's own arrays and keep their entries.
  */
-inline void unregister_from_parents(Engine& engine, const MeshRecord& record, MeshHandle mesh) {
+inline void unregister_from_parents(Engine& engine, MeshRecord& record, MeshHandle mesh) {
     if (TransformNodeRecord* node = handle_find(engine.transform_nodes, record.transform_parent)) {
         std::erase(node->parented_meshes, mesh);
     }
+    // A light parent's lane is only its handle, so it is dropped here too.
+    if (LightRecord* light = handle_find(engine.lights, record.light_parent)) {
+        std::erase(light->parented_meshes, mesh);
+    }
+    record.light_parent = LightHandle{};
     if (MeshRecord* parent = handle_find(engine.meshes, record.parent)) {
         std::erase(parent->parented_meshes, mesh);
         offer_retired_mesh_slot(engine, record.parent);
@@ -5886,6 +6116,18 @@ struct SceneState {
      * carries is only the per-scene watcher.
      */
     bool mirrored_meshes = false;
+    /**
+     * `enableRectAreaLights` installed this scene's lighting extension
+     * (`scene._lighting`): its PBR and Standard renderables compose the area
+     * arms, and its rectangular lights pass `_validateLighting`.
+     */
+    bool rect_area_lighting = false;
+    /**
+     * The textured emission snapshot `enableRectAreaLights` prepared, or
+     * null when no packed light carries a processed image (the scene's
+     * area lighting then stays solid).
+     */
+    std::shared_ptr<const AreaLightEmission> area_light_emission;
     Color4 clear_color{};
     CameraHandle camera{};
     std::vector<MeshHandle> meshes;
@@ -6671,6 +6913,58 @@ template <typename Values>
     return matrix;
 }
 
+/**
+ * The tables `enableRectAreaLights` loaded, for a backend's lazy per-device
+ * upload: a scene drawn with area lighting enabled it, so they are loaded.
+ */
+inline const AreaLightLtcTables& required_area_light_ltc(const Engine& engine) {
+    if (!engine.area_light_ltc)
+        throw std::runtime_error(
+            "A scene draws with rect-area lighting, but enableRectAreaLights loaded no LTC "
+            "tables.");
+    return *engine.area_light_ltc;
+}
+
+/**
+ * The pin's packed-light walk (`fillLightsData`, `writeMeshLightSelection`,
+ * the emission `snapshot`): the scene's lights in order, every native kind
+ * writing a lights-block entry, until `capacity` (MAX_LIGHTS) are packed.
+ * `visit` receives each packed light and its slot.
+ */
+template <typename Visit>
+inline void for_each_packed_light(const Scene& scene, const Engine& engine, std::size_t capacity,
+                                  Visit&& visit) {
+    std::size_t slot = 0;
+    for (const LightHandle handle : scene.lights) {
+        if (slot >= capacity)
+            break;
+        const LightRecord* light = handle_find(engine.lights, handle);
+        if (!light)
+            continue;
+        visit(*light, slot);
+        ++slot;
+    }
+}
+
+/**
+ * A light's world moved: every mesh under it re-bakes, the push upstream's
+ * tagged host makes to its children. Lights under one of those meshes follow
+ * through `mark_mesh_dirty`.
+ */
+inline void mark_light_children_dirty(Engine& engine, const LightRecord& light) {
+    const std::vector<MeshHandle> children = light.parented_meshes;
+    for (const MeshHandle child : children)
+        mark_mesh_dirty(engine, child);
+}
+
+/** Every light registered under a node (`parented_lights`) follows it. */
+inline void mark_parented_lights_dirty(Engine& engine, const std::vector<LightHandle>& lights) {
+    for (const LightHandle light : lights) {
+        if (const LightRecord* record = handle_find(engine.lights, light))
+            mark_light_children_dirty(engine, *record);
+    }
+}
+
 /** Drops a provider parent: a node parent, or none, takes the field. */
 inline void clear_mesh_world_matrix_provider(MeshRecord& record) {
     record.provider_world = {};
@@ -6970,6 +7264,45 @@ LightHandle create_directional_light(Engine& engine, Vec3 direction, double inte
 LightHandle create_point_light(Engine& engine, Vec3 position, double intensity = 1.0);
 LightHandle create_spot_light(Engine& engine, Vec3 position, Vec3 direction, double angle,
                               float exponent, double intensity = 1.0);
+// src/light/rect-area-light.ts createRectAreaLight, with its validateSize
+// checks; width, height and intensity are validating accessors upstream.
+LightHandle create_rect_area_light(Engine& engine, Vec3 position, double width, double height,
+                                   double intensity);
+void set_rect_area_light_position(Engine& engine, LightHandle light, Vec3 position);
+void set_rect_area_light_width(Engine& engine, LightHandle light, double width);
+void set_rect_area_light_height(Engine& engine, LightHandle light, double height);
+void set_rect_area_light_intensity(Engine& engine, LightHandle light, double intensity);
+// The same accessors on the record, which the generic setLightIntensity
+// store reaches.
+void set_rect_area_light_width(LightRecord& light, double width);
+void set_rect_area_light_height(LightRecord& light, double height);
+void set_rect_area_light_intensity(LightRecord& light, double intensity);
+// src/light/enable-rect-area-lights.ts enableRectAreaLights: the scene's
+// half of the opt-in (generation registered the extensions and decoded the
+// LTC tables this loads).
+void enable_rect_area_lights(Scene& scene, const std::string& ltc1, const std::string& ltc2);
+// The scene half of enableRectAreaLights again, as every build's
+// `_lighting._prepare()` re-runs it.
+void refresh_rect_area_lighting(Scene& scene);
+// src/light/process-area-light-texture.ts processAreaLightTexture: the
+// packaged levels of the image generation processed.
+std::shared_ptr<const AreaLightImage> process_area_light_texture(Engine& engine,
+                                                                 const std::string& path);
+// A texture the processor did not produce, as `emissionTexture` accepts it.
+std::shared_ptr<const AreaLightImage> unprocessed_area_light_image();
+// rect-area-light.ts's `emissionTexture` accessor.
+void set_rect_area_light_emission(Engine& engine, LightHandle light,
+                                  std::shared_ptr<const AreaLightImage> image);
+// scene-core.ts buildScene's `light._validateLighting?.(scene._lighting)`,
+// dispatched by kind to each hooked kind's own validation.
+void validate_scene_lighting(const Scene& scene);
+void validate_rect_area_light_lighting(const Scene& scene, const LightRecord& light);
+// A light's SceneNode hierarchy (src/light/light-base.ts createLightBase):
+// its parent, a node under it, and its quaternion.
+// `light.parent = node`: a mesh, a transform node, an imported root, or none.
+void set_light_parent(Engine& engine, LightHandle light, SceneNodeHandle parent);
+void set_mesh_light_parent(Engine& engine, MeshHandle mesh, LightHandle light);
+void set_light_rotation_quaternion(Engine& engine, LightHandle light, Vec4 rotation);
 // Per-kind ObservableVec3 setters. Lighting and shadow fits read these fields;
 // light_world_matrix recomposes the current transform when consumed.
 void set_point_light_position(Engine& engine, LightHandle light, Vec3 position);
@@ -7402,7 +7735,6 @@ void set_asset_root_rotation_quaternion_component(Engine& engine, AssetHandle as
                                                   std::size_t component, double value);
 Vec3d asset_root_rotation(Engine& engine, AssetHandle asset);
 std::array<float, 16> asset_root_world_matrix(Engine& engine, AssetHandle asset);
-void set_light_asset_parent(Engine& engine, LightHandle light, AssetHandle parent);
 
 // A retained SceneNode may be a mesh, a transform node, or an imported root.
 MeshVisibility& scene_node_visibility(Engine& engine, const SceneNodeHandle& node);

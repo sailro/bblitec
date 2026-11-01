@@ -4,10 +4,56 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import test from "node:test";
 import { compileSource } from "../src/compiler.js";
+import { parseMediaQuery } from "../src/media-query.js";
+import { parseUiMediaQuery } from "../src/ui-style-rule.js";
 import {
     optionalNativeFixtureTools,
     runNativeFixtureCompiler,
 } from "./native-fixture.js";
+
+test("sheets and matchMedia share device feature grammar and refusal rules", () => {
+    for (const query of [
+        "(hover)",
+        "(HOVER: none) and (pointer: COARSE)",
+        " \f(prefers-reduced-motion: no-preference) and (hover: hover)\r",
+    ]) {
+        const conditions = parseMediaQuery(query, "window");
+        assert.ok(conditions, query);
+        assert.deepEqual(parseUiMediaQuery(`@media ${query}`), conditions);
+    }
+    for (const query of [
+        "(hover)and (pointer: fine)",
+        "(hover) and(pointer: fine)",
+        "(hover) and",
+        "(hover:)",
+        "(hover) and (hover: none)",
+        "(pointer)",
+        "(hover), (pointer: fine)",
+        "(hover) or (pointer: fine)",
+        "(hover)\u00a0",
+    ]) {
+        assert.equal(parseMediaQuery(query, "window"), undefined, query);
+        assert.equal(parseUiMediaQuery(`@media ${query}`), undefined, query);
+        assert.throws(
+            () => compileSource(`window.matchMedia(${JSON.stringify(query)});`),
+            /represented media grammar/,
+        );
+    }
+    for (const number of [".5", "1.", "1e0", "1.5e+1"])
+        assert.equal(
+            parseMediaQuery(`(resolution:${number}dppx)`, "window")?.resolution,
+            Number(number),
+        );
+    for (const number of ["1e309", "1e-999", "0x1", "-1", "+1", "1 "])
+        assert.equal(
+            parseMediaQuery(`(resolution:${number}dppx)`, "window"),
+            undefined,
+        );
+    assert.equal(
+        parseMediaQuery("(resolution:1dppx) and (hover)", "window"),
+        undefined,
+    );
+});
 
 test("Window media queries retain typed nullable values, live matches and change listeners", (t) => {
     const directory = resolve("artifacts/media-query");

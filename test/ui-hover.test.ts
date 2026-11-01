@@ -24,7 +24,7 @@ test("source stylesheet hover uses the existing selector kinds and state flag", 
         .split("\n")
         .filter((line) => line.includes("bbl::ui_add_style_rule("));
     assert.equal(rules.length, 6);
-    for (const rule of rules) assert.match(rule, /, true, /);
+    for (const rule of rules) assert.match(rule, /\.hover = true/);
     for (const kind of [
         "Class",
         "Id",
@@ -66,15 +66,15 @@ test("source CSS shares active and keyboard-focus states with host rules", () =>
     assert.equal(rules.length, 3);
     assert.match(
         rules[0]!,
-        /, false, -1[^\n]*UiScrollbarPart::None, false, true/,
+        /\.primary = "entry", \.style = "[^"]*", \.active = true\}/,
     );
     assert.match(
         rules[1]!,
-        /, false, -1[^\n]*UiScrollbarPart::None, true, false/,
+        /\.primary = "entry", \.style = "[^"]*", \.focus_visible = true\}/,
     );
     assert.match(
         rules[2]!,
-        /, true, -1[^\n]*UiScrollbarPart::None, true, true/,
+        /\.style = "[^"]*", \.hover = true, \.focus_visible = true, \.active = true\}/,
     );
     for (const state of ["active", "focus-visible"])
         assert.match(

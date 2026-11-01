@@ -24,7 +24,6 @@ import {
     writeFileSync,
 } from "node:fs";
 import { basename, dirname, extname, join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
 import {
     comparePayload,
     deployedPayloads,
@@ -44,7 +43,7 @@ import {
     publishPackageOutput,
     writePackageReceipt,
 } from "./package-output.js";
-import { findRepositoryRoot } from "./repository-root.js";
+import { compilerRepositoryRoot } from "./repository-root.js";
 import { readShippingProfile } from "./shipping-profile.js";
 import {
     compiledBackend,
@@ -55,6 +54,7 @@ import { flagNumber, isMainModule, parseFlags } from "./tooling/flags.js";
 import { readCompiledAssetSources } from "./tooling/generated-readers.js";
 import { runCaptured } from "./tooling/logged-process.js";
 import { asObject } from "./json-fields.js";
+import { readUpstreamPin } from "./upstream-source.js";
 
 export type ShippingPlatform = "win32" | "linux" | "darwin";
 
@@ -471,17 +471,7 @@ function readme(
     target: Host,
     root: string,
 ): string {
-    const pin = asObject(
-        JSON.parse(
-            readFileSync(join(root, "upstream", "babylon-lite.json"), "utf8"),
-        ),
-    );
-    const field = (key: string): string => {
-        const value = pin?.[key];
-        if (typeof value !== "string")
-            throw new Error(`upstream/babylon-lite.json lacks ${key}.`);
-        return value;
-    };
+    const pin = readUpstreamPin(root);
     const fidelity: string[] = [];
     for (const [file, label] of [
         ["report-gpu.json", "SDL_GPU"],
@@ -560,8 +550,8 @@ function readme(
             : []),
         "Compiler source:",
         "  https://github.com/sailro/bblitec",
-        `  ${field("package")} ${field("version")}`,
-        `  Pinned upstream commit: ${field("sourceVersion")}`,
+        `  ${pin.package} ${pin.version}`,
+        `  Pinned upstream commit: ${pin.sourceVersion}`,
         "",
         "Third-party notices are included in the licenses directory.",
     ];
@@ -603,9 +593,7 @@ export function validateDesktopBuilds(
             `Unable to read the architectures of ${executable}`,
         ).trim(),
 ): Slice[] {
-    const root =
-        options.root ??
-        findRepositoryRoot(dirname(fileURLToPath(import.meta.url)));
+    const root = options.root ?? compilerRepositoryRoot();
     const target = host(options.platform ?? shippingPlatform());
     const { scene } = options;
     if (!/^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/.test(scene))
@@ -647,9 +635,7 @@ export function validateDesktopBuilds(
 export function packageDesktopDemo(
     options: DesktopPackageOptions,
 ): DesktopPackageReceipt {
-    const root =
-        options.root ??
-        findRepositoryRoot(dirname(fileURLToPath(import.meta.url)));
+    const root = options.root ?? compilerRepositoryRoot();
     const target = host(options.platform ?? shippingPlatform());
     const { scene } = options;
     const slices = validateDesktopBuilds({ ...options, root });

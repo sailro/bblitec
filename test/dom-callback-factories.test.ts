@@ -4,6 +4,7 @@ import { join, resolve } from "node:path";
 import test from "node:test";
 import { compileSource } from "../src/compiler.js";
 import { cppFunction, runRmlUiFixture } from "./native-fixture.js";
+import { hostUiOptions } from "./host-page-fixture.js";
 
 test("callbacks passed through helpers keep per-evaluation identity and removal", (t) => {
     const directory = resolve("artifacts/dom-callback-factories");
@@ -236,13 +237,13 @@ test("callbacks passed through helpers keep per-evaluation identity and removal"
         for (const value of [1, 2, 3]) stops.push(follow(() => value));
         stops[2]!();
     `,
-        {
-            fileName: join(directory, "entry.ts"),
-            nativeHostUi: {
-                sourcePath: "test/dom-callback-factories.test.ts",
-                elements: [{ tag: "div", attributes: { id: "prebuilt" } }],
+        hostUiOptions(
+            { elements: [{ tag: "div", attributes: { id: "prebuilt" } }] },
+            {
+                path: "test/dom-callback-factories.test.ts",
+                fileName: join(directory, "entry.ts"),
             },
-        },
+        ),
     );
     writeFileSync(join(directory, "program.hpp"), result.cpp);
     const scene = readFileSync("src/lowering/scene-lowerer.ts", "utf8");

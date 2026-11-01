@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { compileSource } from "../src/compiler.js";
-import { uiStyleSelector } from "../src/ui-style-rule.js";
 import { runRmlUiFixture } from "./native-fixture.js";
 
 function compileSheet(css: string) {
@@ -22,15 +21,6 @@ test("range parts retain originating selectors, part states and authored decorat
     assert.match(result.cpp, /UiRangePart::Track/);
     assert.match(result.cpp, /UiSelectorTestKind::Disabled/);
     assert.match(result.cpp, /margin-top:-4px/);
-    assert.equal(
-        uiStyleSelector({
-            kind: "class",
-            primary: "level",
-            range: "thumb",
-            hover: true,
-        }),
-        ".level::-webkit-slider-thumb:hover",
-    );
     assert.throws(
         () =>
             compileSheet(
@@ -74,51 +64,3 @@ test("Gecko range rules follow Chromium selector-list rejection without changing
 
 test("native custom range parts preserve dimensions, cascade, values and control input", (t) =>
     runRmlUiFixture(t, "ui-range-parts"));
-
-test("host range rules share target validation and native emission", () => {
-    const source =
-        "import {createEngine} from '@babylonjs/lite';await createEngine({});";
-    const host = {
-        sourcePath: "fixture.json",
-        elements: [],
-        styleRules: [
-            {
-                kind: "class" as const,
-                primary: "level",
-                range: "thumb" as const,
-                style: "appearance:none;width:18px",
-            },
-        ],
-    };
-    assert.match(
-        compileSource(source, { nativeHostUi: host }).cpp,
-        /ui_add_host_style_rule[^\n]*UiRangePart::Thumb/,
-    );
-    assert.throws(
-        () =>
-            compileSource(source, {
-                nativeHostUi: {
-                    ...host,
-                    styleRules: [
-                        { ...host.styleRules[0]!, scrollbar: "thumb" },
-                    ],
-                },
-            }),
-        /exclusive thumb or track/,
-    );
-    assert.throws(
-        () =>
-            compileSource(source, {
-                nativeHostUi: {
-                    ...host,
-                    styleRules: [
-                        {
-                            ...host.styleRules[0]!,
-                            style: "outline:1px solid red",
-                        },
-                    ],
-                },
-            }),
-        /requires an authored retained element/,
-    );
-});

@@ -76,10 +76,16 @@ int main() {
         assert(inner_raw->GetParentNode() == runtime.document_body);
         const auto first = ui_create_element(engine, "style");
         const auto last = ui_create_element(engine, "style");
-        ui_add_style_rule(engine, first, UiStyleSelectorKind::TagChildClass, "direct", {}, "html",
-                          false, -1, "height:13px");
-        ui_add_style_rule(engine, last, UiStyleSelectorKind::TagChildClass, "direct", {}, "html",
-                          false, -1, "height:17px");
+        ui_add_style_rule(engine, first,
+                          {.selector = UiStyleSelectorKind::TagChildClass,
+                           .primary = "direct",
+                           .tag = "html",
+                           .style = "height:13px"});
+        ui_add_style_rule(engine, last,
+                          {.selector = UiStyleSelectorKind::TagChildClass,
+                           .primary = "direct",
+                           .tag = "html",
+                           .style = "height:17px"});
         ui_append_child(engine, head, first);
         ui_append_child(engine, head, last);
         pal::update_ui_rml_runtime(runtime, 640, 480);

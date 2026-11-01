@@ -5,6 +5,9 @@
 #include <bblite/runtime.hpp>
 #include "pal_sdl_gpu_commands.hpp"
 #include "pal_dawn_resources.hpp"
+namespace bbl::pal {
+#include "sdl-page-viewport.hpp"
+}
 #include <cassert>
 #include <functional>
 #include <optional>
@@ -56,6 +59,12 @@ extern "C" void wgpuRenderPassEncoderRelease(WGPURenderPassEncoder pass) {
     assert(pass == &dawn_pass);
 }
 extern "C" void wgpuRenderPassEncoderSetPipeline(WGPURenderPassEncoder, WGPURenderPipeline) {}
+extern "C" void wgpuRenderPassEncoderSetViewport(WGPURenderPassEncoder, float, float, float, float,
+                                                 float, float) {}
+extern "C" void wgpuRenderPassEncoderSetScissorRect(WGPURenderPassEncoder, uint32_t, uint32_t,
+                                                    uint32_t, uint32_t) {}
+extern "C" void SDLCALL SDL_SetGPUViewport(SDL_GPURenderPass*, const SDL_GPUViewport*) {}
+extern "C" void SDLCALL SDL_SetGPUScissor(SDL_GPURenderPass*, const SDL_Rect*) {}
 extern "C" void wgpuRenderPassEncoderSetBindGroup(WGPURenderPassEncoder, uint32_t, WGPUBindGroup,
                                                   size_t, const uint32_t*) {}
 extern "C" void wgpuRenderPassEncoderSetVertexBuffer(WGPURenderPassEncoder, uint32_t, WGPUBuffer,

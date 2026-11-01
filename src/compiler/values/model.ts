@@ -30,6 +30,18 @@ export type Value<K extends ValueKind = ValueKind> = Readonly<
           >)
 >;
 
+/** Stored data type, or the intrinsic scalar storage of an unannotated value. */
+export function valueDataType(value: Value): DataType | undefined {
+    return (
+        value.dataType ??
+        (value.kind === "number" ||
+        value.kind === "boolean" ||
+        value.kind === "string"
+            ? { kind: value.kind }
+            : undefined)
+    );
+}
+
 const payloadFields = new Map<ValueKind, ReadonlySet<string>>(
     Object.entries({ ...valueMetadataFields, ...generationPayloadFields }).map(
         ([kind, fields]) => [kind as ValueKind, new Set<string>(fields)],

@@ -49,10 +49,25 @@ import {
     type UboFieldSlot,
 } from "./lowering/pinned-ubo-writer-lowerer.js";
 import type { PinnedVariantManifestEntry } from "./pinned-pbr-variant-output.js";
-import type { PinnedStandardVariantManifestEntry } from "./pinned-standard-variants.js";
+import type {
+    PinnedStandardExtensionWriter,
+    PinnedStandardVariantManifestEntry,
+} from "./pinned-standard-variants.js";
 import { packagedWgsl } from "./pinned-wgsl-build.js";
 import { lowerMaterialPluginUniformBody } from "./lowering/material-plugin-uniforms.js";
 import { stringLiteral } from "./cpp-literals.js";
+import {
+    lightKindFacts,
+    lightKinds as allLightKinds,
+    nativeLightKind,
+    type LightKind,
+} from "./compiler/types.js";
+import {
+    rectAreaLightingKeyCpp,
+    rectAreaSlotDeclarationsCpp,
+    rectAreaTextureRows,
+    type RectAreaLightingMode,
+} from "./pinned-rect-area-lights.js";
 
 /**
  * A layer writer's presence test: the record flag standing for the pin's
@@ -540,6 +555,22 @@ function variantFields(members: readonly WgslMemberSyntax[]): {
     };
 }
 
+/**
+ * A selector row's area lighting in a program whose key carries it: every
+ * arm such a program composes is an area arm (`pinnedSceneArms`), so a row
+ * without one would resolve only an unlit scene and is refused instead.
+ */
+function areaLightingKey(
+    selector: PinnedVariantManifestEntry["selectors"][number],
+): number {
+    if (selector.areaLighting === undefined)
+        throw new Error(
+            "A PBR variant selector of an area-lit program carries no area " +
+                "lighting, so the key could not resolve it.",
+        );
+    return selector.areaLighting;
+}
+
 /** The struct a composed module declares, or a refusal naming the module. */
 function composedStruct(
     wgsl: string,
@@ -655,6 +686,9 @@ interface VariantBinding {
         | "texture2dUint"
         | "textureCube"
         | "textureCubeArray"
+        // A layered float texture sampled through a filtering sampler: the
+        // rect-area emission array.
+        | "texture2dArray"
         // The shadow receiver's three: a PCF map is a depth texture read
         // through a comparison sampler, an ESM map an ordinary float one
         // read through an ordinary sampler, a CSM map a LAYERED depth one
@@ -782,6 +816,10 @@ function textureBindingKind(
         // fragment selects per cascade.
         case "texture_depth_2d_array":
             return "textureDepth2dArray";
+        // The rect-area emission array: one layer per processed image,
+        // sampled with an explicit layer and level.
+        case "texture_2d_array<f32>":
+            return "texture2dArray";
         case "texture_depth_2d":
             return "textureDepth2d";
         // An integer texture is `textureLoad`ed by construction -- WebGPU
@@ -799,7 +837,8 @@ function textureBindingKind(
             throw new Error(
                 `Binding '${name}' declares ${type}, which this port does ` +
                     "not lower. A composed variant reaches texture_2d<f32>, " +
-                    "texture_2d<u32>, texture_cube<f32>, texture_depth_2d, " +
+                    "texture_2d<u32>, texture_2d_array<f32>, " +
+                    "texture_cube<f32>, texture_depth_2d, " +
                     "texture_depth_2d_array and " +
                     "texture_multisampled_2d<f32>.",
             );
@@ -941,32 +980,48 @@ function variantCppName(fragmentKey: string): string {
  * and a hemispheric light's ground colour reusing `vLightDirection`. None of
  * that is restated here; it is walked out of each declaration.
  */
-const lightWriters: ReadonlyArray<{
-    kind: string;
+function lightWriter(kind: LightKind): {
+    kind: LightKind;
     modulePath: string;
     symbolName: string;
-}> = [
-    {
-        kind: "Point",
-        modulePath: "src/light/point-light.ts",
-        symbolName: "createPointLight#_writeLightUbo",
-    },
-    {
-        kind: "Directional",
-        modulePath: "src/light/directional-light.ts",
-        symbolName: "createDirectionalLight#_writeLightUbo",
-    },
-    {
-        kind: "Spot",
-        modulePath: "src/light/spot-light.ts",
-        symbolName: "createSpotLight#_writeLightUbo",
-    },
-    {
-        kind: "Hemispheric",
-        modulePath: "src/light/hemispheric.ts",
-        symbolName: "createHemisphericLight#_writeLightUbo",
-    },
-];
+} {
+    const facts = lightKindFacts[kind];
+    return {
+        kind,
+        modulePath: facts.modulePath,
+        symbolName: `${facts.factory}#_writeLightUbo`,
+    };
+}
+
+/**
+ * `upstream/light_kinds.hpp`: the pin's own `lightType` for each native light
+ * kind, out of `lightKindFacts`. `getPackedSingleLightType` returns these
+ * strings and the composer keys the single-light arm on them, so a selector
+ * row, a live light and a render capture all spell a kind the same way.
+ */
+export function lightKindsHeader(): string {
+    return `// src/compiler/types.ts lightKindFacts
+#pragma once
+
+#include <bblite/runtime.hpp>
+
+namespace bbl::upstream {
+
+inline const char* pinned_light_type(LightKind kind) {
+    switch (kind) {
+${allLightKinds
+    .map(
+        (kind) =>
+            `    case LightKind::${lightKindFacts[kind].native}:\n        return "${kind}";`,
+    )
+    .join("\n")}
+    }
+    return "";
+}
+
+} // namespace bbl::upstream
+`;
+}
 
 /** How the light writers' reads map onto our own `LightRecord`. */
 const lightSources: Readonly<Record<string, string>> = {
@@ -980,6 +1035,9 @@ const lightSources: Readonly<Record<string, string>> = {
     intensity: "light.intensity",
     range: "light.range",
     exponent: "light.exponent",
+    // The rectangle's local extent, scaled by its world axes in the writer.
+    width: "light.width",
+    height: "light.height",
     // The factory computes `Math.cos(angle * 0.5)` once and the writer captures
     // it; the record carries that cosine for the precision reason recorded in
     // TODO.md rather than recomputing it per frame.
@@ -1166,7 +1224,7 @@ export function lightUniformsBlock(
      * only for the kinds it reaches, so emitting all four would reference a
      * module a lightless scene does not build.
      */
-    lightKinds: readonly string[],
+    lightKinds: readonly LightKind[],
 ): string {
     const slots: UboFieldSlot[] = [
         { name: "vLightData", offset: 0, lanes: 4 },
@@ -1174,33 +1232,34 @@ export function lightUniformsBlock(
         { name: "vLightSpecular", offset: 32, lanes: 4 },
         { name: "vLightDirection", offset: 48, lanes: 4 },
     ];
-    const writers = lightWriters
-        .filter((light) => lightKinds.includes(light.kind.toLowerCase()))
-        .map(
-            (light) =>
-                `// ${light.modulePath} ${light.symbolName}\n` +
-                `inline void write_${light.kind.toLowerCase()}_light(\n` +
-                `    const LightRecord& light,\n` +
-                `    LightEntry& out) {\n` +
-                `    const auto world = light_world_matrix(light);\n` +
-                `${lowerPinnedUboWriter(context, {
-                    modulePath: light.modulePath,
-                    symbolName: light.symbolName,
-                    sourceLocal: "",
-                    offsetParameter: "offset",
-                    baseField: "vLightData",
-                    propertySources: lightSources,
-                    vectorProperties: lightVectors,
-                    laneSources: { worldMatrix: lightMatrixLanes },
-                    bufferWriters: {
-                        writeWorldLightDirection: {
-                            cpp: "write_world_light_direction",
-                            lanes: 3,
-                        },
+    const reachedLightWriters = allLightKinds
+        .filter((kind) => lightKinds.includes(kind))
+        .map(lightWriter);
+    const writers = reachedLightWriters.map(
+        (light) =>
+            `// ${light.modulePath} ${light.symbolName}\n` +
+            `inline void write_${nativeLightKind(light.kind)}_light(\n` +
+            `    const LightRecord& light,\n` +
+            `    LightEntry& out) {\n` +
+            `    const auto world = light_world_matrix(light);\n` +
+            `${lowerPinnedUboWriter(context, {
+                modulePath: light.modulePath,
+                symbolName: light.symbolName,
+                sourceLocal: "",
+                offsetParameterIndex: 1,
+                baseField: "vLightData",
+                propertySources: lightSources,
+                vectorProperties: lightVectors,
+                laneSources: { worldMatrix: lightMatrixLanes },
+                bufferWriters: {
+                    writeWorldLightDirection: {
+                        cpp: "write_world_light_direction",
+                        lanes: 3,
                     },
-                    slots,
-                }).join("\n")}\n}`,
-        );
+                },
+                slots,
+            }).join("\n")}\n}`,
+    );
     const members = slots
         .map(
             (slot) =>
@@ -1215,9 +1274,6 @@ export function lightUniformsBlock(
     // Always declared, so a PAL needs no per-kind guard of its own; a scene that
     // compiles no light gets a body that writes nothing, because it has no light
     // to write.
-    const reachedLightWriters = lightWriters.filter((light) =>
-        lightKinds.includes(light.kind.toLowerCase()),
-    );
     const dispatch = [
         "",
         "",
@@ -1232,8 +1288,8 @@ export function lightUniformsBlock(
             : [
                   "    switch (light.kind) {",
                   ...reachedLightWriters.flatMap((light) => [
-                      `        case LightKind::${light.kind.toLowerCase()}:`,
-                      `            write_${light.kind.toLowerCase()}_light(light, out);`,
+                      `        case LightKind::${nativeLightKind(light.kind)}:`,
+                      `            write_${nativeLightKind(light.kind)}_light(light, out);`,
                       "            return;",
                   ]),
                   "        default:",
@@ -1320,7 +1376,11 @@ export function sceneUniformsStruct(
 export function pinnedSharedVariantDecls(
     context: LoweringContext,
     provenance: string,
+    /** The area lightings a scene can draw under: their scene key, and the
+     *  layered float texture kind the textured one binds. */
+    rectAreaLightings?: readonly RectAreaLightingMode[],
 ): string {
+    const textureArrays = rectAreaLightings?.includes("textured") === true;
     const receiveShadowsBit = context.pinnedNumber(
         "src/material/mesh-features.ts",
         "MSH_RECEIVE_SHADOWS",
@@ -1372,7 +1432,14 @@ enum class PinnedBindingKind {
     // sample type WebGPU names Uint rather than UnfilterableFloat.
     texture2dUint,
     textureCube,
-    textureCubeArray,
+    textureCubeArray,${
+        textureArrays
+            ? `
+    // A layered float texture sampled through a filtering sampler: the
+    // rect-area emission array.
+    texture2dArray,`
+            : ""
+    }
     // The shadow receiver's three: a PCF map is a depth texture read through
     // a comparison sampler, an ESM one an ordinary float texture read
     // through an ordinary sampler, a CSM one a layered depth texture -- and
@@ -1435,7 +1502,7 @@ struct PinnedShadowBinding {
     bool fragment;
 };
 
-${pinnedLightModeCpp()}
+${pinnedLightModeCpp()}${rectAreaLightings ? `\n${rectAreaLightingKeyCpp()}\n` : ""}
 ${materialShadowReceiverCpp(context)}
 ${pinnedSceneLayoutCpp()}
 } // namespace bbl::upstream
@@ -1454,17 +1521,23 @@ export function pinnedPbrVariantsHeader(
     pinnedMaxLights: number,
     provenance: string,
     variants: readonly PinnedVariantManifestEntry[],
-    lightKinds: readonly string[],
+    lightKinds: readonly LightKind[],
     renderableMeshFeatures: readonly number[],
     runtimeMeshFeatures?: number,
     pinnedMaterialCount?: number,
     scenePbrMaterialIndices: readonly number[] = [],
+    // The program's area lightings (`reachedRectAreaLightings`), which the
+    // key carries; absent, the header is the one a program without area
+    // lighting always had.
+    rectAreaLightings?: readonly RectAreaLightingMode[],
 ): CppModule {
     const cpp = new CppDefinitions();
     const blocks: string[] = [];
     const table: string[] = [];
     // Filled as the variants are emitted, so the indices match the table order.
     const selectors: string[] = [];
+    const areaKeyed = rectAreaLightings !== undefined;
+    const areaRefusals: string[] = [];
     const pbrShadowRows: string[] = [];
     const bindingRows: string[] = [];
     const attributeRows: string[] = [];
@@ -1767,6 +1840,7 @@ export function pinnedPbrVariantsHeader(
                     `${selector.lightMode}, ` +
                     `"${selector.singleLightType}", ` +
                     `${selector.toneMapping ? "true" : "false"}, ` +
+                    (areaKeyed ? `${areaLightingKey(selector)}u, ` : "") +
                     `${
                         selector.geometryTask ??
                         "std::numeric_limits<std::size_t>::max()"
@@ -1774,6 +1848,11 @@ export function pinnedPbrVariantsHeader(
                     `${table.length}},`,
             );
         }
+        if (variant.areaSelectedRefusal !== undefined)
+            areaRefusals.push(
+                `    case ${table.length}:\n` +
+                    `        return ${stringLiteral(variant.areaSelectedRefusal)};`,
+            );
         // Every writer the variant has, not just the base one. The pin fills its
         // block the same way — `_writeMaterialData` first, then `ext.writeUbo`
         // for each registered extension in registration order — and a writer
@@ -2030,13 +2109,40 @@ struct PbrVariantSelector {
     std::uint32_t mesh_features;
     std::uint32_t light_mode;
     std::string_view single_light_type;
-    bool tone_mapping;
+    bool tone_mapping;${
+        areaKeyed
+            ? `
+    /** The scene's area lighting (\`scene_rect_area_lighting\`). */
+    std::uint32_t area_lighting;`
+            : ""
+    }
     /** The geometry-output task an MRT variant draws in, npos for the
      *  colour passes -- part of the key so a geometry draw never resolves
      *  a colour variant or the reverse. */
     std::size_t geometry_task;
     std::size_t variant;
-};
+};${
+        areaKeyed
+            ? `
+
+// src/material/pbr/fragments/rect-area-light-fragment.ts rectAreaPbrExt.frag:
+// the refusal of a variant's renderable a packed area light reaches
+// (RECT_AREA_PBR_SELECTED), composed by generation; empty where the pin
+// composes it.
+inline std::string_view pbr_variant_area_selected_refusal(std::size_t variant) {
+${
+    areaRefusals.length > 0
+        ? `    switch (variant) {
+${areaRefusals.join("\n")}
+    default:
+        return {};
+    }`
+        : `    static_cast<void>(variant);
+    return {};`
+}
+}`
+            : ""
+    }
 
 ${cpp.table("PbrVariantSelector", "pbr_variant_selectors", selectors.length, `${selectors.join("\n")}`)}
 
@@ -2117,27 +2223,6 @@ ${variantMaterialCases.join("\n")}
     std::size_t bytes)`,
 )}
 
-/**
- * The pin's own name for a light's kind.
- *
- * \`getPackedSingleLightType\` returns these strings and the composer keys the
- * single-light arm on them, so a selector row and a live light have to agree on
- * the spelling. LightKind is our enum; the strings are the pin's.
- */
-inline std::string_view pinned_single_light_type(const LightRecord& light) {
-    switch (light.kind) {
-        case LightKind::hemispheric:
-            return "hemispheric";
-        case LightKind::directional:
-            return "directional";
-        case LightKind::point:
-            return "point";
-        case LightKind::spot:
-            return "spot";
-    }
-    return "";
-}
-
 /** The variant a renderable composes, or \`npos\` when none was emitted. */
 inline std::size_t pbr_variant_for(
     std::uint32_t material_index,
@@ -2145,7 +2230,7 @@ inline std::size_t pbr_variant_for(
     std::uint32_t mesh_features,
     std::uint32_t light_mode,
     std::string_view single_light_type,
-    bool tone_mapping,
+    bool tone_mapping,${areaKeyed ? "\n    std::uint32_t area_lighting," : ""}
     std::size_t geometry_task = std::numeric_limits<std::size_t>::max()) {
     for (const PbrVariantSelector& selector : pbr_variant_selectors) {
         if (
@@ -2154,7 +2239,7 @@ inline std::size_t pbr_variant_for(
             selector.mesh_features == mesh_features &&
             selector.light_mode == light_mode &&
             selector.single_light_type == single_light_type &&
-            selector.tone_mapping == tone_mapping &&
+            selector.tone_mapping == tone_mapping &&${areaKeyed ? "\n            selector.area_lighting == area_lighting &&" : ""}
             selector.geometry_task == geometry_task) {
             return selector.variant;
         }
@@ -2202,6 +2287,10 @@ export interface MaterialTextureSlotFeatures {
      *  the MESH's rather than the material's, like the bone palette. */
     vat: boolean;
     vatInstances: boolean;
+    /** The area lightings a scene can draw under
+     *  (`reachedRectAreaLightings`), whose scene-owned rows
+     *  (`rectAreaTextureRows`) the slot table carries. */
+    rectAreaLightings?: readonly RectAreaLightingMode[];
 }
 
 /** One emitted row; `slot: null` marks a scene-owned resource. */
@@ -2517,6 +2606,18 @@ function materialTextureSlotRows(features: MaterialTextureSlotFeatures): {
             },
         );
     }
+    // The area lightings' LTC tables and emission array: scene-owned like
+    // the BRDF LUT, from the backend's allocations rather than a material.
+    state.push(
+        ...rectAreaTextureRows(features.rectAreaLightings).map(
+            (row): MaterialSlotRow => ({
+                source: row.source,
+                fallback: "white",
+                textureName: row.texture,
+                samplerName: row.sampler,
+            }),
+        ),
+    );
     return { mesh, state };
 }
 
@@ -2600,6 +2701,7 @@ export function materialTextureSlotsHeader(
             `MaterialTextureFallback::${row.fallback}, ` +
             `"${row.textureName}", "${row.samplerName}"},`,
     );
+    const areaSlots = rectAreaSlotDeclarationsCpp(features.rectAreaLightings);
     return cpp.finish(`// ${provenance}
 // The material texture-slot table both render backends execute: which
 // record field fills each slot, its fallback texel, and the pin's own
@@ -2683,8 +2785,8 @@ enum class MaterialTextureSource {
     /** Its per-slice light range (rgba32uint, textureLoad). */
     clustered_cells,
     /** Its per-tile light mask (r32uint, textureLoad). */
-    clustered_indices,
-};
+    clustered_indices,${areaSlots.enumerators}
+};${areaSlots.constants}
 
 enum class MaterialTextureFallback {
     white,
@@ -2895,6 +2997,10 @@ export function pinnedStandardVariantsHeader(
     provenance: string,
     variants: readonly PinnedStandardVariantManifestEntry[],
     uvOffset = false,
+    /** `writeStdMaterialData`'s extension writers, in the pin's sorted order
+     *  (`StandardSceneComposition.extensionWriters`): its loop runs each for
+     *  every material. */
+    extensionWriters: readonly PinnedStandardExtensionWriter[] = [],
 ): CppModule {
     const cpp = new CppDefinitions();
     if (variants.length === 0) {
@@ -2963,6 +3069,22 @@ export function pinnedStandardVariantsHeader(
         },
         slots,
     }).join("\n");
+    // `for (const ext of _getStdExtsSorted()) ext._writeUbo?.(data, mat)`:
+    // the reached area extensions each store the LTC roughness into the
+    // block's spare float 22.
+    const extensionWriterBody = extensionWriters
+        .map(
+            (writer) =>
+                "\n" +
+                lowerPinnedUboWriter(context, {
+                    ...writer,
+                    sourceLocal: "material",
+                    baseField: "dc",
+                    propertySources: { roughness: "material.roughness" },
+                    slots,
+                }).join("\n"),
+        )
+        .join("");
     // And the reverse direction: every field the struct declares (padding
     // aside) must be written, or a lane uploads a zero the fragment reads.
     const unwritten = fields
@@ -3153,7 +3275,7 @@ using bbl::Color3;
 // (diffuse_color, specular_power, bump_level, lightmap_level and
 // reflection_coord_mode map directly).
 struct StandardMaterialProps {
-${propsMembers.join("\n")}${uvOffset ? "\n    std::array<double, 2> uv_offset{};" : ""}
+${propsMembers.join("\n")}${uvOffset ? "\n    std::array<double, 2> uv_offset{};" : ""}${extensionWriters.length > 0 ? "\n    // The optional roughness the area writers read; unset is their `?? 0`.\n    float roughness = 0.0f;" : ""}
 };
 
 // src/material/standard/standard-template.ts matUniforms
@@ -3179,7 +3301,7 @@ ${cpp.function(
     [[maybe_unused]] const StandardMaterialProps& material,
     float texture_level,
     StandardMaterialUniforms& out)`,
-    materialWriterBody,
+    materialWriterBody + extensionWriterBody,
 )}
 
 // src/material/standard/standard-template.ts upUniforms — the vertex-stage

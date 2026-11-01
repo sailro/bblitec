@@ -372,6 +372,10 @@ struct PinnedVariantKey {
     std::uint32_t light_mode = 0;
     std::string_view single_light_type;
     bool tone_mapping = false;
+#if BBLITE_RECT_AREA_LIGHTS
+    /** `scene_rect_area_lighting`: the area arm the scene draws under. */
+    std::uint32_t area_lighting = 0;
+#endif
     /** Why the key is unusable, when it is; empty once `resolved`. */
     std::string refusal;
     bool resolved = false;

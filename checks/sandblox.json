@@ -1,13 +1,25 @@
 {
   "scene": "sandblox",
-  "notes": "Held movement keys reach the focused canvas with retained UI present.",
+  "notes": "Held movement keys reach the focused canvas; export/import/export preserves a live application and subsequent movement.",
+  "env": { "BBLITE_LOCAL_STORAGE_ROOT": "artifacts/check/sandblox/storage" },
   "phases": [
     { "id": "idle", "frame": 120 },
-    { "id": "walk", "frame": 120, "tape": ["-*10", "+KeyW", "-*90", "-KeyW"] }
+    { "id": "walk", "frame": 120, "tape": ["-*10", "UiClick@640:360", "+UiKey@W", "-*90", "-UiKey@W"] },
+    {
+      "id": "file-roundtrip",
+      "frame": 480,
+      "env": {
+        "BBLITE_FILE_DIALOG_SAVE_PATH": "artifacts/check/sandblox/roundtrip.json",
+        "BBLITE_FILE_DIALOG_OPEN_PATH": "artifacts/check/sandblox/roundtrip.json"
+      },
+      "tape": ["-*180", "UiClick@1120:697", "-*60", "UiClick@1230:697", "-*60", "UiClick@1120:697", "-*30", "UiClick@640:360", "+UiKey@W", "-*90", "-UiKey@W"]
+    }
   ],
   "expect": [
     { "kind": "capture-differs", "phase": "walk", "vs": "idle", "path": "camera" },
     { "kind": "capture-compare", "phase": "walk", "vs": "idle", "path": "camera.target[2]", "op": ">", "notes": "The camera target follows the character root position." },
-    { "kind": "image-mad", "phase": "walk", "vs": "idle", "min": 1 }
+    { "kind": "image-mad", "phase": "walk", "vs": "idle", "min": 1 },
+    { "kind": "capture-compare", "phase": "file-roundtrip", "vs": "idle", "path": "camera.target[2]", "op": ">", "notes": "Movement remains responsive after file dialogs and imported-world replacement." },
+    { "kind": "image-mad", "phase": "file-roundtrip", "vs": "idle", "min": 1 }
   ]
 }

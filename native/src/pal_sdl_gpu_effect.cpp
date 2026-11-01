@@ -13,6 +13,7 @@
 #include <bblite/features/has_effect_renderer.hpp>
 
 #include <bblite/pal.hpp>
+#include "pal_gpu_samples.hpp"
 #include "pal_gpu_backend.hpp"
 #include <bblite/runtime.hpp>
 
@@ -77,9 +78,7 @@ public:
         // multisampled, and straight into it when it is not. The count is
         // the generated read of the pin's own surface declaration
         // (`msaaSamples === 1 ? 1 : 4`), not a re-typed 4.
-        samples = frame_options.single_sample
-                      ? 1u
-                      : upstream::preferred_sample_count(engine.options.msaa_samples);
+        samples = surface_sample_count(frame_options, engine.options.msaa_samples);
 
         // Registration order is draw order across renderers, as it is in the
         // pinned `engine._renderingContexts`.

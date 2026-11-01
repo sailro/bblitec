@@ -18,6 +18,7 @@ import {
     optionalNativeFixtureTools,
     runGeneratedProgram,
 } from "./native-fixture.js";
+import { createPinnedScene, type PinnedScene } from "./pinned-scene.js";
 
 interface PinTask {
     name: string;
@@ -183,7 +184,7 @@ test("RenderTask.dispose releases owned targets once and later adds and records 
             this: void,
             config: object,
             engine: object,
-            scene: object,
+            scene: PinnedScene,
         ): DisposablePinTask;
         addMeshToTask(
             this: void,
@@ -199,7 +200,7 @@ test("RenderTask.dispose releases owned targets once and later adds and records 
     const engine = {
         _device: { createBuffer: () => ({ destroy() {} }) },
     };
-    const scene = { _renderables: [], _renderableVersion: 1 };
+    const scene = await createPinnedScene({ engine }, { built: true });
     // An RTT's target releases through its hook, a plain target destroys
     // its textures, and the swapchain's (eager, no hook) is kept.
     const rtt = (name: string): object => ({

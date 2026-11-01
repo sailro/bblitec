@@ -23,6 +23,7 @@ import {
     optionalNativeFixtureTools,
     runNativeFixtureCompiler,
 } from "./native-fixture.js";
+import { pinnedError } from "./pinned-errors.js";
 import { writeSharedVariantHeaders } from "./variant-headers.js";
 
 const prefix = `
@@ -198,7 +199,11 @@ test("actual pinned node builders retain private slots and start the complete fa
     const failing = scene();
     core.addToScene(failing, mesh(missing));
     core.addToScene(failing, mesh(valid));
-    await assert.rejects(core.buildScene(failing), /#410/);
+    await assert.rejects(core.buildScene(failing), {
+        message: pinnedError(
+            'NodeMaterial: texture binding "${a0}" not set. Provide it via options.textures or material.inputs["${a1}"].texture before the first render.',
+        ),
+    });
     assert.equal(
         bindings.length,
         3,

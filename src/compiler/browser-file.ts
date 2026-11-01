@@ -2,6 +2,7 @@ import { EmissionSet, writable } from "./emission-transaction.js";
 import { fileTypes } from "../file-types.js";
 import type { LoweringServices } from "./lowering-services.js";
 import ts from "typescript";
+import { receiverType } from "./dynamic-binding-storage.js";
 import { argumentAt } from "./syntax.js";
 import { documentEngine } from "./window-events.js";
 import { ApplicationRealmRequired } from "./worker-modules.js";
@@ -18,6 +19,7 @@ export interface BrowserFileContext extends Pick<
     LoweringServices,
     | "objectProperty"
     | "checker"
+    | "dynamicBindings"
     | "options"
     | "defaultEngine"
     | "unwrap"
@@ -474,7 +476,7 @@ export function compileBrowserFileElementAccess(
 ): Value | undefined {
     const ownerExpression = context.unwrap(expression.expression);
     const ownerType = context.checker.getNonNullableType(
-        context.checker.getTypeAtLocation(expression.expression),
+        receiverType(context, expression.expression),
     );
     const propertyFiles =
         ts.isPropertyAccessExpression(ownerExpression) &&

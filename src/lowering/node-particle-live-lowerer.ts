@@ -155,6 +155,13 @@ export const HOOK_NAMES = [
 type HookName = (typeof HOOK_NAMES)[number];
 
 /**
+ * The optional data a system carries for discovery only: its NPE SystemBlock's
+ * `name`. No pinned particle body reads it, and a lowered read of a member
+ * outside the system's fields and hooks refuses.
+ */
+const DISCOVERY_NAMES = ["name"] as const;
+
+/**
  * What the executed pin reported about one live system, read off the
  * `ParticleSystem` its own build produced. Every field is a cross-check on
  * the evaluation this module performs, not an input to it.
@@ -2723,7 +2730,8 @@ export class NodeParticleLiveLowerer {
      * returned literal. The buffer, the step list and the eight slots are
      * the structure the lowering itself emits -- the slots are asserted to
      * be exactly `SLOT_NAMES`, and the `ParticleSystem` interface's
-     * optional members exactly `HOOK_NAMES` -- everything else is a field.
+     * optional members exactly `DISCOVERY_NAMES` then `HOOK_NAMES` --
+     * everything else is a field.
      */
     private systemDefaults(): Map<string, number | boolean> {
         if (this.systemFields) return this.systemFields;
@@ -2786,11 +2794,12 @@ export class NodeParticleLiveLowerer {
                     member.questionToken !== undefined,
             )
             .map((member) => declaredKey(member.name));
-        if (optional.join(",") !== HOOK_NAMES.join(",")) {
+        const known = [...DISCOVERY_NAMES, ...HOOK_NAMES];
+        if (optional.join(",") !== known.join(",")) {
             this.context.contractError(
                 declaration,
                 `ParticleSystem's optional members are [${optional.join(", ")}]; the ` +
-                    `live lowering refuses [${HOOK_NAMES.join(", ")}].`,
+                    `live lowering knows [${known.join(", ")}].`,
             );
         }
         this.systemFields = fields;

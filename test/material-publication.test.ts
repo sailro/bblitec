@@ -20,6 +20,8 @@ import { CameraLowerer } from "../src/lowering/camera-lowerer.js";
 import { pinnedSurfaceHeader } from "../src/lowering/pinned-surface.js";
 import { meshFeaturesNamespace } from "../src/lowering/mesh-attribute-features.js";
 import { featurelessPbrMaterialFeatures } from "./variant-headers.js";
+import { sceneContextSource } from "./pinned-scene.js";
+import { pinnedDeclaration, pinnedModuleSource } from "./pinned-source.js";
 
 test("material output publication and captured draw identity follow source frame boundaries", async (t) => {
     const native = optionalNativeFixtureTools(false);
@@ -31,10 +33,7 @@ test("material output publication and captured draw identity follow source frame
     const directory = resolve("artifacts/test-material-publication");
     mkdirSync(directory, { recursive: true });
     const declaration = (module: string, name: string): string =>
-        context
-            .functionDeclaration(module, name)
-            .declaration.getText()
-            .replace(/^export /, "");
+        pinnedDeclaration(context, module, name);
     const swap = "src/scene/scene-material-swap.ts";
     const renderTask = "src/frame-graph/render-task-base.ts";
     const pbr = context.functionDeclaration(
@@ -45,20 +44,17 @@ test("material output publication and captured draw identity follow source frame
     assert.ok(ts.isArrowFunction(draw) && ts.isBlock(draw.body));
     const guard = draw.body.statements[0]!.getText();
     const moduleSource = (module: string, omitOrder = false): string =>
-        context
-            .sourceFile(module)
-            .statements.filter(
-                (node) =>
-                    !ts.isImportDeclaration(node) &&
-                    !(
-                        omitOrder &&
-                        ts.isVariableStatement(node) &&
-                        node.declarationList.declarations[0]?.name.getText() ===
-                            "byOrder"
-                    ),
-            )
-            .map((node) => node.getText().replace(/^export /, ""))
-            .join("\n");
+        pinnedModuleSource(
+            context,
+            module,
+            (node) =>
+                !(
+                    omitOrder &&
+                    ts.isVariableStatement(node) &&
+                    node.declarationList.declarations[0]?.name.getText() ===
+                        "byOrder"
+                ),
+        );
 
     // Complete source renderFrame and task bundle body establish the actual synchronous
     // submit boundary and distinguish cached opaque replay from a direct draw callback.
@@ -78,6 +74,7 @@ test("material output publication and captured draw identity follow source frame
         ${declaration("src/camera/camera.ts", "_applyCameraViewport")}
         ${declaration(renderTask, "executePassBody")}
         ${declaration(renderTask, "drawList")}
+        ${sceneContextSource(context)}
         let scene, task, draws, pending;
         const makeOutput = (mesh, isOverride = false) => {
             const mat = mesh.material;
@@ -91,20 +88,20 @@ test("material output publication and captured draw identity follow source frame
                 return {renderables: meshes.map(mesh => makeOutput(mesh)), rebuildSingle: (_scene, mesh) => makeOutput(mesh)};
             }, {_materialFamily: 'pbr'});
             const group = [mesh]; group.r = (_scene, mesh) => makeOutput(mesh); group.o = [];
-            scene = {meshes: [mesh], _groups: new Map(), _materialSwapQueue: [], _meshDisposables: new Map(),
-                _renderables: [], _renderableVersion: 0, _materialEpoch: 0, _drawCallsPre: 0, camera: null,
-                _built: true, _disposables: [], _frameGraph: {build() {}}};
-            materials.forEach(material => material._buildGroup = builder);
-            scene._groups.set(builder, group);
-            if (!first) { const output = makeOutput(mesh); scene._renderables.push(output); group.o.push(output); }
             const encoder = {finish: () => ({})};
-            const engine = {_cbs: [], surfaces: [{_renderingContexts: [scene]}],
+            const engine = {_cbs: [], surfaces: [{_renderingContexts: []}],
                 _device: {createCommandEncoder: () => encoder, queue: {submit() {}},
                     createRenderBundleEncoder: () => {
                         const start = draws.length;
                         return {setBindGroup() {}, setPipeline() {}, finish() { const recorded = draws.splice(start); return recorded; }};
                     }}};
-            scene.surface = {engine};
+            // The swaps run after the initial build.
+            scene = Object.assign(createSceneContext({engine}, {defaultRenderTask: false}), {_built: true});
+            scene.meshes.push(mesh);
+            engine.surfaces[0]._renderingContexts.push(scene);
+            materials.forEach(material => material._buildGroup = builder);
+            scene._groups.set(builder, group);
+            if (!first) { const output = makeOutput(mesh); scene._renderables.push(output); group.o.push(output); }
             task = {scene, engine, _config: {rt: {_descriptor: {}}}, _targetSignature: {}, _ob: [], _sceneBG: {},
                 _lastVersion: -1, _lastVis: -1, _opaqueBindings: [], _directBindings: [], _transparentBindings: []};
             const pass = {setBindGroup() {}, setPipeline() {}, executeBundles(bundles) { for (const bundle of bundles) draws.push(...bundle); }};
@@ -119,6 +116,7 @@ test("material output publication and captured draw identity follow source frame
                 }
                 return executePassBody(task, pass);
             };
+            // No render task: frames record the test task, and each phase sets its own update.
             scene._update = () => {}; scene._record = record;
             draws = []; renderFrame(engine, 16); // Prime the old opaque bundle.
             if (first) group.r = undefined;
@@ -126,6 +124,7 @@ test("material output publication and captured draw identity follow source frame
             else if (kind.startsWith('thin')) mesh._runtimeThinBuild = buildRuntimeThinMesh;
             if (!first) mesh.material = materials[1];
             scene._materialSwapQueue.push(mesh);
+            // The pin's update drops the drain's promise; this one keeps it.
             scene._update = () => { pending = processMaterialSwaps(scene); };
             draws = []; renderFrame(engine, 16);
             const before = draws.slice(), outputsBefore = scene._renderables.map(output => output.mat.id);
@@ -134,7 +133,7 @@ test("material output publication and captured draw identity follow source frame
             if (kind === 'first-removed') scene.meshes.length = 0;
             if (kind === 'first-disposed') scene._z = true;
             await pending;
-            scene._update = () => { for (const callback of scene._beforeRender ?? []) callback(); };
+            scene._update = () => { for (const callback of scene._beforeRender) callback(); };
             draws = []; let failed = false;
             try { renderFrame(engine, 16); } catch { failed = true; }
             return {before, outputsBefore, after: draws.slice(), outputsAfter: scene._renderables.map(output => output.mat.id), failed};
@@ -176,6 +175,7 @@ test("material output publication and captured draw identity follow source frame
         ${declaration(swap, "processMaterialSwaps")}
         ${moduleSource("src/scene/scene-runtime-mesh-build.ts")}
         ${moduleSource("src/scene/scene-rebuild.ts", true)}
+        ${sceneContextSource(context)}
         return async () => {
             const material = {id: 0}, mesh = {material};
             const builder = async (_scene, meshes) => ({
@@ -183,12 +183,14 @@ test("material output publication and captured draw identity follow source frame
             });
             material._buildGroup = builder;
             const engine = {};
-            const scenes = [0, 1].map(() => ({
-                meshes: [mesh], _groups: new Map([[builder, [mesh]]]),
-                _materialSwapQueue: [mesh], _meshDisposables: new Map(),
-                _renderables: [], _renderableVersion: 0, _materialEpoch: 0,
-                _built: true, _disposables: [], _frameGraph: {build() {}}, surface: {engine},
-            }));
+            const scenes = [0, 1].map(() => {
+                // The swaps run after the initial build.
+                const scene = Object.assign(createSceneContext({engine}, {defaultRenderTask: false}), {_built: true});
+                scene.meshes.push(mesh);
+                scene._groups.set(builder, [mesh]);
+                scene._materialSwapQueue.push(mesh);
+                return scene;
+            });
             const pending = scenes.map(processMaterialSwaps);
             scenes[0]._z = true;
             await Promise.all(pending);

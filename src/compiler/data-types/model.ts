@@ -51,6 +51,7 @@ export type HandleKind =
     | "pointer-drag"
     | "gamepad"
     | "gamepad-button"
+    | "touch"
     | "scene"
     | "render-target"
     | "transmission-grab"

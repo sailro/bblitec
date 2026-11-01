@@ -66,16 +66,19 @@ test(
     "laid-out canvas panes retain physical bounds at any CSS density",
     { skip: !nativeTools },
     () => {
-        const source = sharedGpuSource();
+        const source = readFileSync("native/src/pal_gpu_surface.hpp", "utf8");
         runCpp(
             "canvas-pane-density",
             `
         #include <bblite/runtime.hpp>
         #include <cassert>
-        namespace bbl::pal { ${cppFunction(source, "PixelViewport laid_out_canvas_pane(")} }
+        namespace bbl::pal { ${cppFunction(source, "inline PixelViewport laid_out_canvas_pane(")} }
         int main() {
             bbl::Engine engine;
             engine.options.width = 1200; engine.options.height = 800;
+            engine.ui_page_viewport.pixels = {0, 0, 1200, 800};
+            engine.ui_page_viewport.drawable_width = 1200;
+            engine.ui_page_viewport.drawable_height = 800;
             engine.ui_elements.emplace_back();
             engine.ui_elements.back().client_rect = {580, 80, 440, 640};
             engine.ui_elements.back().content_box = {600, 100, 400, 600};
@@ -1013,7 +1016,6 @@ test(
             "void ui_set_inner_rml(",
             "void ui_clear_style_rules(",
             "void ui_add_style_rule(",
-            "void ui_add_host_style_rule(",
             "void require_insertable(",
             "UiElementHandle ui_append_child(",
             "UiElementHandle ui_append_to_root(",
@@ -1051,7 +1053,7 @@ test(
             assert(engine.ui_style_revision == 5);
             ui_append_to_root(engine, first);
             assert(engine.ui_style_revision == 5);
-            ui_add_style_rule(engine, first, UiStyleSelectorKind::Class, "item", "", "", false, -1, "color:red;", UiScrollbarPart::None);
+            ui_add_style_rule(engine, first, {.primary = "item", .style = "color:red;"});
             assert(engine.ui_style_revision == 6);
             ui_clear_style_rules(engine, first);
             ui_clear_style_rules(engine, first);
@@ -1065,8 +1067,6 @@ test(
             assert(after_remove > before_replace);
             ui_remove(engine, first);
             assert(engine.ui_style_revision == after_remove);
-            ui_add_host_style_rule(engine, UiStyleSelectorKind::Class, "item", "", "", false, -1, "color:blue;", false, false, UiScrollbarPart::None);
-            assert(engine.ui_style_revision == after_remove + 1);
         }
     `,
             ["/DBBLITE_HAS_UI=1"],
@@ -1142,7 +1142,7 @@ test(
             ui_set_text(source, UiElementHandle{0}, "text-only update");
             auto text_snapshot = pal::snapshot_document(source, text_since);
             assert(text_snapshot->text_updates && text_snapshot->text_updates->size() == 1);
-            assert(text_snapshot->elements.empty() && text_snapshot->styles.empty());
+            assert(text_snapshot->elements.empty());
             pal::apply_document(target, std::move(*text_snapshot), post);
             assert(target.ui_elements[0].text == "text-only update");
             assert(target.ui_style_revision == 8);

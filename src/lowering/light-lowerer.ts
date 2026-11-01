@@ -5,6 +5,21 @@ import { lowerPinnedBody } from "./pinned-body-lowerer.js";
 import { pinnedHeader } from "./pinned-header.js";
 import { lightVersionBumpBody } from "./light-parameters.js";
 import { recordAt } from "../compiler/record-access.js";
+import { lightKindFacts, type LightKind } from "../compiler/types.js";
+
+/**
+ * What a light kind adds to the shared factory shape: its own includes, a
+ * helper scope ahead of the factory, extra parameters and record fields, a
+ * prologue run before the record exists, and entry points after it.
+ */
+export interface LightFactoryExtension {
+    includes: string;
+    before: string;
+    parameters: readonly string[];
+    prologue: string;
+    fields: string;
+    after: string;
+}
 
 interface HemisphericDefaults {
     diffuseColor: [number, number, number];
@@ -18,7 +33,15 @@ interface PositionalLightDefaults {
 }
 
 export class LightLowerer {
-    public constructor(private readonly context: LoweringContext) {}
+    /**
+     * `childMeshes`: a mesh can sit under a light (`light:hierarchy`), so a
+     * write that moves the light's world pushes the invalidation down
+     * (`mark_light_children_dirty`).
+     */
+    public constructor(
+        private readonly context: LoweringContext,
+        private readonly childMeshes = false,
+    ) {}
     public lowerSpotAngleSetter(): string {
         const { file, declaration } = this.context.functionDeclaration(
             "src/light/spot-light.ts",
@@ -188,12 +211,89 @@ ${body}
     public lowerSpotFactory(): LoweredSource {
         return this.lowerLightFactory("spot");
     }
+    /**
+     * `upstream/src/light_validation.cpp`: `buildScene`'s
+     * `light._validateLighting?.(scene._lighting)` over the scene's lights,
+     * dispatched by kind to each reached kind's lowered hook
+     * (`validate_<kind>_light_lighting`, emitted beside its factory). Which
+     * kinds install the hook is `LightKindFacts.validatesLighting`, checked
+     * here against each factory's own object.
+     */
+    public lowerLightingValidation(kinds: readonly LightKind[]): LoweredSource {
+        const modulePath = "src/scene/scene-core.ts";
+        const symbolName = "buildScene";
+        this.context.expectShapeCount(
+            this.context.functionDeclaration(modulePath, symbolName)
+                .declaration,
+            "light._validateLighting?.(scene._lighting)",
+            "Per-light lighting validation",
+        );
+        const hooked = kinds.filter((kind) => {
+            const facts = lightKindFacts[kind];
+            const object = this.context.callObjectArgument(
+                this.context.functionDeclaration(
+                    facts.modulePath,
+                    facts.factory,
+                ).declaration,
+                "applyLightBase",
+                1,
+            );
+            const installs = object.properties.some(
+                (property) =>
+                    property.name !== undefined &&
+                    this.context.propertyName(property.name) ===
+                        "_validateLighting",
+            );
+            if (installs !== facts.validatesLighting)
+                this.context.contractError(
+                    object,
+                    `Expected ${facts.factory} ${facts.validatesLighting ? "to" : "not to"} install _validateLighting.`,
+                );
+            return installs;
+        });
+        return {
+            modulePath,
+            symbolName,
+            header: "",
+            source: `// ${this.context.provenance(modulePath, symbolName)}
+#include <bblite/runtime.hpp>
+namespace bbl {
+void validate_scene_lighting(const Scene& scene) {
+    for (const LightHandle handle : scene.lights) {
+        const LightRecord* light = handle_find(scene.engine->lights, handle);
+        if (!light) continue;
+${hooked
+    .map(
+        (kind) =>
+            `        if (light->kind == LightKind::${lightKindFacts[kind].native}) validate_${lightKindFacts[kind].native}_light_lighting(scene, *light);`,
+    )
+    .join("\n")}
+    }
+}
+} // namespace bbl
+`,
+        };
+    }
+
+    /** The rectangular factory: the shared factory shape plus the pin's
+     *  own extent, its validation and the scene opt-in beside it. */
+    public lowerRectAreaFactory(
+        extension: LightFactoryExtension,
+    ): LoweredSource {
+        return this.lowerLightFactory("rectArea", extension);
+    }
 
     private lowerLightFactory(
-        kind: "hemispheric" | "point" | "directional" | "spot",
+        kind: LightKind,
+        extension?: LightFactoryExtension,
     ): LoweredSource {
-        const modulePath = `src/light/${kind === "hemispheric" ? kind : kind + "-light"}.ts`;
-        const symbolName = `create${kind[0]!.toUpperCase() + kind.slice(1)}Light`;
+        const {
+            modulePath,
+            factory: symbolName,
+            native,
+            positional,
+            direction: hasDirection,
+        } = lightKindFacts[kind];
         const { file, declaration } = this.context.functionDeclaration(
             modulePath,
             symbolName,
@@ -205,10 +305,8 @@ ${body}
                       modulePath,
                       symbolName,
                       kind,
-                      kind !== "directional",
+                      kind === "point" || kind === "spot",
                   );
-        const positional = kind === "point" || kind === "spot";
-        const hasDirection = kind !== "point";
         const base = this.context.callExpression(
             declaration,
             "createLightBase",
@@ -242,18 +340,56 @@ ${body}
             ...(positional ? ["Vec3 position"] : []),
             ...(hasDirection ? ["Vec3 direction"] : []),
             ...(kind === "spot" ? ["double angle", "float exponent"] : []),
+            ...(extension?.parameters ?? []),
             "double intensity",
         ];
         const vectors = ["position", ...(hasDirection ? ["direction"] : [])];
         const setters = vectors
             .map(
                 (vector) => `
-void set_${kind}_light_${vector}(Engine& engine, LightHandle light, Vec3 value) {
+void set_${native}_light_${vector}(Engine& engine, LightHandle light, Vec3 value) {
     auto& record = ${recordAt("engine.lights", "light")};
     record.${vector} = value;
-    ${lightVersionBumpBody(this.context, "record.parameter_version")}
+    ${lightVersionBumpBody(this.context, "record.parameter_version")}${
+        this.childMeshes && vector === "position"
+            ? "\n    mark_light_children_dirty(engine, record);"
+            : ""
+    }
 }`,
             )
+            .join("\n");
+        // The positional writers pack an attenuation range the directional
+        // record fills with Number.MAX_VALUE; the hemispheric one packs its
+        // ground colour; a kind with its own extent (the rectangle) stores
+        // that instead.
+        const kindFields =
+            defaults.groundColor !== undefined
+                ? `light.ground_color = ${this.context.cppColor3(defaults.groundColor)};`
+                : extension
+                  ? extension.fields
+                  : "light.range = std::numeric_limits<float>::max();";
+        // The spot's cone is its own slice of the shared shape; every other
+        // kind's additions arrive through the extension, after it.
+        const spot = kind === "spot";
+        const before = [
+            spot
+                ? `namespace {
+${this.lowerSpotAngleSetter()}
+}`
+                : "",
+            extension?.before ?? "",
+        ]
+            .filter(Boolean)
+            .join("\n");
+        const after = [
+            spot
+                ? `void set_spot_light_angle(Engine& engine, LightHandle light, double angle) {
+    refresh_spot_light_cone(${recordAt("engine.lights", "light")}, angle);
+}`
+                : "",
+            extension?.after ?? "",
+        ]
+            .filter(Boolean)
             .join("\n");
         return {
             modulePath,
@@ -263,35 +399,23 @@ void set_${kind}_light_${vector}(Engine& engine, LightHandle light, Vec3 value) 
 #include <bblite/runtime.hpp>
 #include <bblite/upstream/light_matrix.hpp>
 #include <cmath>
-namespace bbl {
-${
-    kind === "spot"
-        ? `namespace {
-${this.lowerSpotAngleSetter()}
-}`
-        : ""
-}
-LightHandle create_${kind}_light(${parameters.join(", ")}) {
-    LightRecord light;
-    light.kind = LightKind::${kind};
+${extension?.includes ?? ""}namespace bbl {
+${before}
+LightHandle create_${native}_light(${parameters.join(", ")}) {
+${extension?.prologue ?? ""}    LightRecord light;
+    light.kind = LightKind::${native};
     light.position = ${position};
     ${hasDirection ? "light.direction = direction;" : ""}
     light.intensity = intensity;
     light.diffuse_color = ${this.context.cppColor3(defaults.diffuseColor)};
     light.specular_color = ${this.context.cppColor3(defaults.specularColor)};
-    ${defaults.groundColor !== undefined ? `light.ground_color = ${this.context.cppColor3(defaults.groundColor)};` : "light.range = std::numeric_limits<float>::max();"}
-    ${kind === "spot" ? "light.exponent = exponent; initialize_spot_light_cone(light, angle);" : ""}
+    ${kindFields}
+    ${spot ? "light.exponent = exponent; initialize_spot_light_cone(light, angle);" : ""}
     engine.lights.push_back(light);
     return LightHandle{static_cast<std::uint32_t>(engine.lights.size() - 1)};
 }
 ${setters}
-${
-    kind === "spot"
-        ? `void set_spot_light_angle(Engine& engine, LightHandle light, double angle) {
-    refresh_spot_light_cone(${recordAt("engine.lights", "light")}, angle);
-}`
-        : ""
-}
+${after}
 } // namespace bbl
 `,
         };
@@ -329,7 +453,7 @@ ${
     private extractPositionalLightDefaults(
         modulePath: string,
         symbolName: string,
-        expectedType: "directional" | "point" | "spot",
+        expectedType: Exclude<LightKind, "hemispheric">,
         requireRange: boolean,
     ): PositionalLightDefaults {
         const { file, declaration } = this.context.functionDeclaration(
@@ -371,4 +495,128 @@ ${
             ),
         };
     }
+}
+
+/**
+ * `upstream/src/light_hierarchy.cpp`: the SceneNode half every light shares
+ * -- its parent, a mesh under it and its quaternion. A light is a tagged
+ * host upstream: a mesh under it composes the light's world as it is now
+ * (`mesh_world_matrix`'s light lane), and each write that moves the light's
+ * world pushes the invalidation down (`mark_light_children_dirty`), as a
+ * move of the node above it does through `parented_lights`.
+ */
+export function lowerLightHierarchy(context: LoweringContext): LoweredSource {
+    const modulePath = "src/light/light-base.ts";
+    context.assertExpressionShape(
+        context.callExpression(
+            context.functionDeclaration(modulePath, "createLightBase")
+                .declaration,
+            "initSceneNodeTransform",
+        ),
+        'initSceneNodeTransform({name: "", children: []}, position[0], position[1], position[2])',
+        "Light SceneNode transform initialization",
+    );
+    const bump = lightVersionBumpBody(context, "record.parameter_version");
+    const light = recordAt("engine.lights", "light");
+    return {
+        modulePath,
+        symbolName: "createLightBase",
+        header: "",
+        source: `// ${context.provenance(modulePath, "createLightBase")}
+// ${context.provenance("src/scene/world-matrix-state.ts", "createWorldMatrixState")}
+#include <bblite/runtime.hpp>
+#include <bblite/upstream/pinned_world_transform.hpp>
+#include <bblite/upstream/renderer_plan.hpp>
+#include <algorithm>
+#include <array>
+#include <functional>
+#include <variant>
+namespace bbl {
+
+namespace {
+// The invalidation registry of the node a light is parented to.
+std::vector<LightHandle>* light_parent_registry(Engine& engine, const SceneNodeHandle& node) {
+    if (const MeshHandle* mesh = std::get_if<MeshHandle>(&node)) {
+        return mesh->value == invalid_handle ? nullptr
+                                             : &${recordAt("engine.meshes", "*mesh")}.parented_lights;
+    }
+    if (const TransformNodeHandle* transform = std::get_if<TransformNodeHandle>(&node)) {
+        return transform->value == invalid_handle
+                   ? nullptr
+                   : &${recordAt("engine.transform_nodes", "*transform")}.parented_lights;
+    }
+    const AssetHandle asset = std::get<AssetHandle>(node);
+    return asset.value == invalid_handle ? nullptr
+                                         : &${recordAt("engine.assets", "asset")}.parented_lights;
+}
+
+// The node's world, read live the way light_world_matrix reads every parent.
+std::function<std::array<float, 16>()> light_parent_world(Engine& engine,
+                                                         const SceneNodeHandle& node) {
+    if (const MeshHandle* mesh = std::get_if<MeshHandle>(&node)) {
+        return [&engine, parent = *mesh] {
+            return upstream::mesh_world_matrix(engine, ${recordAt("engine.meshes", "parent")});
+        };
+    }
+    if (const TransformNodeHandle* transform = std::get_if<TransformNodeHandle>(&node)) {
+        return [&engine, parent = *transform] {
+            return upstream::transform_node_world(engine, parent);
+        };
+    }
+    return [&engine, parent = std::get<AssetHandle>(node)] {
+        return asset_root_world_matrix(engine, parent);
+    };
+}
+} // namespace
+
+// \`light.parent = node\`: a mesh, a transform node, an imported root, or
+// none (an invalid handle). The node registers the light, so the node's own
+// invalidation reaches the meshes under the light.
+void set_light_parent(Engine& engine, LightHandle light, SceneNodeHandle parent) {
+    auto& record = ${light};
+    if (std::vector<LightHandle>* previous = light_parent_registry(engine, record.parent_node)) {
+        std::erase_if(*previous,
+                      [light](LightHandle entry) { return entry.value == light.value; });
+    }
+    std::vector<LightHandle>* registry = light_parent_registry(engine, parent);
+    record.parent_node = parent;
+    record.parent_world_matrix = registry ? light_parent_world(engine, parent)
+                                          : std::function<std::array<float, 16>()>{};
+    if (registry) registry->push_back(light);
+    ${bump}
+    mark_light_children_dirty(engine, record);
+}
+
+// \`mesh.parent = light\`: the mesh's light lane. The pin's setter returns on
+// an unchanged parent before anything else.
+void set_mesh_light_parent(Engine& engine, MeshHandle mesh, LightHandle light) {
+    MeshRecord& record = ${recordAt("engine.meshes", "mesh")};
+    auto& parent = ${light};
+    if (record.light_parent.value == light.value) return;
+    unregister_from_parents(engine, record, mesh);
+    clear_mesh_world_matrix_provider(record);
+    record.parent = MeshHandle{};
+    record.transform_parent = TransformNodeHandle{};
+    record.parent_world.reset();
+    record.light_parent = light;
+    if (std::find(parent.parented_meshes.begin(), parent.parented_meshes.end(), mesh) ==
+        parent.parented_meshes.end()) {
+        parent.parented_meshes.push_back(mesh);
+    }
+    mark_mesh_dirty(engine, mesh);
+}
+
+// The ObservableQuat write every SceneNode takes; light_world_matrix
+// composes it with the rest of the TRS.
+void set_light_rotation_quaternion(Engine& engine, LightHandle light, Vec4 rotation) {
+    auto& record = ${light};
+    record.rotation_quaternion = rotation;
+    record.has_rotation_quaternion = true;
+    ${bump}
+    mark_light_children_dirty(engine, record);
+}
+
+} // namespace bbl
+`,
+    };
 }

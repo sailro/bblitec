@@ -8,6 +8,7 @@ import {
     optionalNativeFixtureTools,
     runGeneratedProgram,
 } from "./native-fixture.js";
+import { hostUiOptions } from "./host-page-fixture.js";
 
 const setup = `import {createEngine, createRenderTargetTexture, createSurfaceRenderTargetTexture, withSampledDepthTexture} from "@babylonjs/lite";
 async function main() {
@@ -48,13 +49,7 @@ test("host document queries before engine setup retain nullable elements", () =>
             await createEngine(document.getElementById("renderCanvas") as HTMLCanvasElement);
         }
         void main();`,
-        {
-            nativeHostUi: {
-                sourcePath: "fixture.json",
-                elements: [],
-                styleRules: [],
-            },
-        },
+        hostUiOptions({ elements: [] }),
     );
     assert.ok(result.manifest.features.includes("platform:window"));
     assert.match(result.cpp, /ui_query_element/);

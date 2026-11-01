@@ -7,6 +7,8 @@
 #include <bblite/js_data.hpp>
 #include <bblite/js_error.hpp>
 
+#include <algorithm>
+#include <array>
 #include <cmath>
 #include <map>
 #include <mutex>
@@ -14,6 +16,8 @@
 #include <set>
 #include <tuple>
 #include <atomic>
+#include <type_traits>
+#include <utility>
 #include <variant>
 
 namespace bbl {
@@ -40,9 +44,10 @@ public:
     }
 
     /** The target's `on<type>` handler: a non-capture listener at its first position. */
-    void set_handler(DomEventTarget target, std::string type, Callback callback) {
+    void set_handler(DomEventTarget target, std::string type, Callback callback,
+                     bool passive = false) {
         listeners_[key(target, std::move(type), false)].set_handler(
-            callback ? wrap(std::move(callback), false) : Callback{});
+            callback ? wrap(std::move(callback), passive) : Callback{});
     }
 
     void remove(DomEventTarget target, std::string type, std::size_t identity,
@@ -141,19 +146,87 @@ private:
 struct DomEventBatch;
 struct DomTouchContact {
     PlatformMouseEvent pointer;
-    /** The hit path of the contact's press. */
+    /** The hit path of the contact's press, which its touch events keep targeting. */
     std::vector<DomEventTarget> path;
-    /** The path its events last targeted: its capture target's while captured. */
+    /** The path its pointer events last targeted: its capture target's while captured. */
     std::vector<DomEventTarget> target_path;
     bool gesture = false;
+    /** Press order, the order TouchEvent lists contacts in. */
+    std::uint64_t order = 0;
+    /** The press position and time (SDL nanoseconds), which a tap stays close to. */
+    double start_x = 0, start_y = 0;
+    std::uint64_t pressed_at = 0;
+    /** Whether `target_path` is the hit test at the contact's position, not a capture target's. */
+    bool target_hit = false;
+    /** Whether the contact can still end as a tap: primary, alone on the surface, within the
+     * slop and before a long press. */
+    bool tap = true;
 };
+
+/** Chromium's max_touch_move_in_pixels_for_click, in CSS pixels. */
+inline constexpr double dom_touch_tap_slop = 15;
+/** Chromium's long_press_time_in_ms, after which a held contact no longer taps. */
+inline constexpr std::uint64_t dom_touch_long_press_ns = 500'000'000;
+
+/** What a Touch reports beside its target. */
+struct DomTouchFields {
+    double identifier = 0;
+    double client_x = 0, client_y = 0, screen_x = 0, screen_y = 0, force = 0;
+    [[nodiscard]] bool operator==(const DomTouchFields&) const = default;
+};
+
+/** One Touch as its TouchEvent carries it: native identities only, so the event crosses the
+ * Window mailbox; `dom_touch_list` makes the script's Touch values. */
+struct PlatformTouchPoint : DomTouchFields {
+    DomEventTarget target{};
+};
+
+/** A script Touch. */
+struct DomTouch : DomTouchFields {
+    DomEventTargetValue target{};
+    [[nodiscard]] bool operator==(const DomTouch&) const = default;
+};
+
+enum class DomTouchListKind { Touches, TargetTouches, ChangedTouches };
+
+/** A TouchEvent: the touches on the surface after the change, in press order, and the ones it
+ * changed (one target's, as Chromium groups them). */
+struct PlatformTouchEvent : PlatformEventFlags, PlatformModifierKeys {
+    std::vector<PlatformTouchPoint> touches, changed_touches;
+    /** The script's lists by `DomTouchListKind`, made on first read and dropped once the event
+     * dispatched (`DomEventBatch::dispatch`): a list reads as one object while listeners run. */
+    mutable std::array<std::optional<js::Array<DomTouch>>, 3> lists{};
+};
+
+/** TouchEvent.touches, targetTouches (the touches whose target is the event's) or
+ * changedTouches, read while the event dispatches. */
+inline js::Array<DomTouch> dom_touch_list(const PlatformTouchEvent& event, DomTouchListKind kind) {
+    auto& list = event.lists[static_cast<std::size_t>(kind)];
+    if (!list) {
+        auto& owner = dom_event_owner(event);
+        const auto target = dom_event_state(event).target;
+        list.emplace();
+        for (const auto& point :
+             kind == DomTouchListKind::ChangedTouches ? event.changed_touches : event.touches)
+            if (kind != DomTouchListKind::TargetTouches || point.target == target)
+                list->push_back(DomTouch{point, dom_target_value(owner, point.target)});
+    }
+    return *list;
+}
 
 inline double touch_wheel_delta_y(double previous, double current) {
     return previous > 0 && current > 0 ? -300 * std::log(current / previous) : 0;
 }
 
-/** The mouse's PointerEvent.pointerId; touch contacts number from 2. */
+/** The mouse's PointerEvent.pointerId. */
 inline constexpr double dom_mouse_pointer_id = 1;
+/** Touch contacts take the lowest free pointerId from this one. */
+inline constexpr double dom_first_touch_pointer_id = 2;
+
+/** A contact's Touch.identifier: its pointerId, numbered from 0. */
+inline double dom_touch_identifier(double pointer_id) {
+    return pointer_id - dom_first_touch_pointer_id;
+}
 
 /**
  * Pointer Events capture state where script runs: each pointer's pending
@@ -186,6 +259,10 @@ struct DomInput {
     DomEventListeners<PlatformDragEvent> drag;
     DomEventListeners<PlatformStorageEvent> storage;
     DomEventListeners<PlatformGamepadEvent> gamepad;
+    DomEventListeners<PlatformTouchEvent> touch;
+    /** Where script runs: the touches whose touchstart or touchend a listener canceled, which
+     * end without a tap. */
+    std::set<double> canceled_taps;
     std::set<std::string> event_types;
     std::set<std::uint32_t> pointer_elements;
     std::uint64_t revision = 0;
@@ -204,6 +281,8 @@ struct DomInput {
     bool platform_mouse_capture = false;
     std::set<double> suppress_compatibility_mouse;
     std::map<std::pair<std::uint64_t, std::uint64_t>, DomTouchContact> touches;
+    /** Presses so far: the next contact's `order`. */
+    std::uint64_t touch_presses = 0;
     bool native_pointer_default = false;
     bool canvas_background = true;
     bool pending_resize = false;
@@ -222,6 +301,7 @@ struct DomInput {
         drag.gc_trace(visitor);
         storage.gc_trace(visitor);
         gamepad.gc_trace(visitor);
+        touch.gc_trace(visitor);
     }
 #endif
 };
@@ -260,15 +340,93 @@ inline DomInput& listen_dom_keyboard(Engine& engine, const std::string& type) {
     return listen_dom_type(engine, type);
 }
 
-/** `on_dom_<family>` adds one listener; false for a duplicate. */
-inline bool on_dom_pointer(Engine& engine, DomEventTarget target, std::string type,
-                           std::size_t identity,
-                           DomEventListeners<PlatformMouseEvent>::Callback callback,
-                           bool capture = false, bool once = false, bool passive = false,
-                           ListenerLeasePtr lease = {}) {
-    return listen_dom_pointer(engine, target, type)
-        .pointer.add(target, std::move(type), identity, std::move(callback), capture, once, passive,
-                     std::move(lease));
+/** Chromium's top-level event targets (`IsTopLevelNode`). */
+inline bool dom_top_level_target(const Engine& engine, DomEventTarget target) {
+    if (target.kind == DomEventTargetKind::Window || target.kind == DomEventTargetKind::Document)
+        return true;
+    const auto& roots = engine.ui_document_roots;
+    return target.kind == DomEventTargetKind::Element && roots.active() &&
+           (target.element == roots.html.value || target.element == roots.body.value);
+}
+
+/** Shared by addEventListener's omitted passive option and on<type> handlers. */
+inline bool dom_listener_passive_default(const Engine& engine, DomEventTarget target,
+                                         std::string_view type) {
+    return (type == "touchstart" || type == "touchmove" || type == "wheel" ||
+            type == "mousewheel") &&
+           dom_top_level_target(engine, target);
+}
+
+/**
+ * A family whose listeners make their element a hit target (`listen_dom_pointer`): pointer
+ * events, file drags (sourced while a type is listened) and touches, `Family` naming its
+ * `DomInput` registry. `on` adds one
+ * listener, false for a duplicate; `set_handler` is `target.on<type> = callback`, an empty
+ * callback removing the handler. `on_dom_<family>`, `off_dom_<family>` and
+ * `set_dom_<family>_handler` name them for generated code.
+ */
+template <auto Family> struct DomHitTestedListeners {
+    using Callback =
+        typename std::remove_reference_t<decltype(std::declval<DomInput&>().*Family)>::Callback;
+
+    static bool on(Engine& engine, DomEventTarget target, std::string type, std::size_t identity,
+                   Callback callback, bool capture = false, bool once = false,
+                   std::optional<bool> passive = std::nullopt, ListenerLeasePtr lease = {}) {
+        const bool resolved_passive =
+            passive.value_or(dom_listener_passive_default(engine, target, type));
+        return (listen_dom_pointer(engine, target, type).*Family)
+            .add(target, std::move(type), identity, std::move(callback), capture, once,
+                 resolved_passive, std::move(lease));
+    }
+    static void off(Engine& engine, DomEventTarget target, std::string type, std::size_t identity,
+                    bool capture = false) {
+        if (engine.dom_input)
+            ((*engine.dom_input).*Family).remove(target, std::move(type), identity, capture);
+    }
+    static void set_handler(Engine& engine, DomEventTarget target, std::string type,
+                            Callback callback) {
+        if (callback)
+            listen_dom_pointer(engine, target, type);
+        else if (!engine.dom_input)
+            return;
+        const bool passive = dom_listener_passive_default(engine, target, type);
+        ((*engine.dom_input).*Family)
+            .set_handler(target, std::move(type), std::move(callback), passive);
+    }
+};
+using DomPointerListeners = DomHitTestedListeners<&DomInput::pointer>;
+using DomDragListeners = DomHitTestedListeners<&DomInput::drag>;
+using DomTouchListeners = DomHitTestedListeners<&DomInput::touch>;
+
+template <typename... Arguments> bool on_dom_pointer(Arguments&&... arguments) {
+    return DomPointerListeners::on(std::forward<Arguments>(arguments)...);
+}
+template <typename... Arguments> void off_dom_pointer(Arguments&&... arguments) {
+    DomPointerListeners::off(std::forward<Arguments>(arguments)...);
+}
+inline void set_dom_pointer_handler(Engine& engine, DomEventTarget target, std::string type,
+                                    DomPointerListeners::Callback callback) {
+    DomPointerListeners::set_handler(engine, target, std::move(type), std::move(callback));
+}
+template <typename... Arguments> bool on_dom_drag(Arguments&&... arguments) {
+    return DomDragListeners::on(std::forward<Arguments>(arguments)...);
+}
+template <typename... Arguments> void off_dom_drag(Arguments&&... arguments) {
+    DomDragListeners::off(std::forward<Arguments>(arguments)...);
+}
+inline void set_dom_drag_handler(Engine& engine, DomEventTarget target, std::string type,
+                                 DomDragListeners::Callback callback) {
+    DomDragListeners::set_handler(engine, target, std::move(type), std::move(callback));
+}
+template <typename... Arguments> bool on_dom_touch(Arguments&&... arguments) {
+    return DomTouchListeners::on(std::forward<Arguments>(arguments)...);
+}
+template <typename... Arguments> void off_dom_touch(Arguments&&... arguments) {
+    DomTouchListeners::off(std::forward<Arguments>(arguments)...);
+}
+inline void set_dom_touch_handler(Engine& engine, DomEventTarget target, std::string type,
+                                  DomTouchListeners::Callback callback) {
+    DomTouchListeners::set_handler(engine, target, std::move(type), std::move(callback));
 }
 
 inline bool on_dom_keyboard(Engine& engine, DomEventTarget target, std::string type,
@@ -282,15 +440,6 @@ inline bool on_dom_keyboard(Engine& engine, DomEventTarget target, std::string t
 }
 
 /** `target.on<type> = callback`; an empty callback removes the handler. */
-inline void set_dom_pointer_handler(Engine& engine, DomEventTarget target, std::string type,
-                                    DomEventListeners<PlatformMouseEvent>::Callback callback) {
-    if (callback)
-        listen_dom_pointer(engine, target, type);
-    else if (!engine.dom_input)
-        return;
-    engine.dom_input->pointer.set_handler(target, std::move(type), std::move(callback));
-}
-
 inline void set_dom_keyboard_handler(Engine& engine, DomEventTarget target, std::string type,
                                      DomEventListeners<PlatformKeyboardEvent>::Callback callback) {
     if (callback)
@@ -298,12 +447,6 @@ inline void set_dom_keyboard_handler(Engine& engine, DomEventTarget target, std:
     else if (!engine.dom_input)
         return;
     engine.dom_input->keyboard.set_handler(target, std::move(type), std::move(callback));
-}
-
-inline void off_dom_pointer(Engine& engine, DomEventTarget target, std::string type,
-                            std::size_t identity, bool capture = false) {
-    if (engine.dom_input)
-        engine.dom_input->pointer.remove(target, std::move(type), identity, capture);
 }
 
 inline void off_dom_keyboard(Engine& engine, DomEventTarget target, std::string type,
@@ -326,32 +469,6 @@ inline void off_dom_transition(Engine& engine, DomEventTarget target, std::strin
                                std::size_t identity, bool capture = false) {
     if (engine.dom_input)
         engine.dom_input->transition.remove(target, std::move(type), identity, capture);
-}
-
-/** The platform sources file drags while a listened type names them. */
-inline bool on_dom_drag(Engine& engine, DomEventTarget target, std::string type,
-                        std::size_t identity,
-                        DomEventListeners<PlatformDragEvent>::Callback callback,
-                        bool capture = false, bool once = false, bool passive = false,
-                        ListenerLeasePtr lease = {}) {
-    return listen_dom_pointer(engine, target, type)
-        .drag.add(target, std::move(type), identity, std::move(callback), capture, once, passive,
-                  std::move(lease));
-}
-
-inline void off_dom_drag(Engine& engine, DomEventTarget target, std::string type,
-                         std::size_t identity, bool capture = false) {
-    if (engine.dom_input)
-        engine.dom_input->drag.remove(target, std::move(type), identity, capture);
-}
-
-inline void set_dom_drag_handler(Engine& engine, DomEventTarget target, std::string type,
-                                 DomEventListeners<PlatformDragEvent>::Callback callback) {
-    if (callback)
-        listen_dom_pointer(engine, target, type);
-    else if (!engine.dom_input)
-        return;
-    engine.dom_input->drag.set_handler(target, std::move(type), std::move(callback));
 }
 
 inline bool on_dom_storage(Engine& engine, DomEventTarget target, std::string type,
@@ -471,26 +588,44 @@ inline void dom_pointer_dispatched(DomPointerCaptures& captures, const PlatformM
  * without deadlocking behind a synchronous input acknowledgement. */
 struct DomEventBatch {
     using Payload = std::variant<PlatformMouseEvent, PlatformKeyboardEvent, PlatformTransitionEvent,
-                                 PlatformDragEvent, PlatformGamepadEvent>;
+                                 PlatformDragEvent, PlatformGamepadEvent, PlatformTouchEvent>;
     struct Entry {
         Payload payload;
         bool controls_default = false;
+        /** The Touch.identifier whose tap this event belongs to: skipped once a listener
+         * canceled that touch's touchstart or touchend. */
+        std::optional<double> tap{};
     };
     std::vector<Entry> events;
     bool default_prevented = false;
+    /** The pointers, touch contacts included, this batch ends. */
     std::vector<double> released_pointers;
+    /** Whether dispatch skipped a canceled touch's tap. */
+    bool tap_withheld = false;
     bool primary_touch = false;
     std::atomic<bool> completed = false;
 
     template <typename Event> void add(Event event, bool controls_default = false) {
         events.push_back({std::move(event), controls_default});
     }
+    /** Another prepared batch's events and releases, after this one's. */
+    void append(DomEventBatch&& other) {
+        events.insert(events.end(), std::make_move_iterator(other.events.begin()),
+                      std::make_move_iterator(other.events.end()));
+        released_pointers.insert(released_pointers.end(), other.released_pointers.begin(),
+                                 other.released_pointers.end());
+    }
     template <typename Invoke> void dispatch(Engine& engine, Invoke&& invoke) {
         struct Complete {
             DomEventBatch& batch;
             ~Complete() { batch.completed.store(true, std::memory_order_release); }
         } complete{*this};
-        for (auto& entry : events)
+        for (auto& entry : events) {
+            if (entry.tap && engine.dom_input &&
+                engine.dom_input->canceled_taps.contains(*entry.tap)) {
+                tap_withheld = true;
+                continue;
+            }
             std::visit(
                 [&](const auto& event) {
                     if (engine.dom_input) {
@@ -521,16 +656,27 @@ struct DomEventBatch {
                                                         std::memory_order_release);
                         } else if constexpr (std::is_same_v<PayloadType, PlatformGamepadEvent>)
                             engine.dom_input->gamepad.dispatch(event, invoke, &engine);
-                        else
+                        else if constexpr (std::is_same_v<PayloadType, PlatformTouchEvent>) {
+                            engine.dom_input->touch.dispatch(event, invoke, &engine);
+                            event.lists = {};
+                            const auto& type = event.dom->type;
+                            if (event.default_prevented &&
+                                (type == "touchstart" || type == "touchend"))
+                                for (const auto& point : event.changed_touches)
+                                    engine.dom_input->canceled_taps.insert(point.identifier);
+                        } else
                             engine.dom_input->keyboard.dispatch(event, invoke, &engine);
                     }
                     if (entry.controls_default && event.default_prevented)
                         default_prevented = true;
                 },
                 entry.payload);
+        }
         if (engine.dom_input)
-            for (const auto id : released_pointers)
+            for (const auto id : released_pointers) {
                 engine.dom_input->suppress_compatibility_mouse.erase(id);
+                engine.dom_input->canceled_taps.erase(dom_touch_identifier(id));
+            }
     }
     void dispatch(Engine& engine) {
         dispatch(engine, [](auto& callback, const auto& event) { callback(event); });
@@ -821,13 +967,21 @@ inline bool dom_has_pointer_capture(DomEventTargetValue value, double pointer_id
     return pending == value.target && dom_capture_target_connected(engine, *pending);
 }
 
+/** Which boundary events a pointer's move fires: both families (the mouse's only for a primary
+ * pointer), a touch contact's pointer events, or its tap's compatibility mouse events. */
+enum class DomBoundaryEvents { PointerAndMouse, Pointer, Mouse };
+
 /** A boundary event has its own target and path. Sharing a parent does not
  * create a second parent enter/leave event, while over/out still bubble. */
-inline void append_dom_pointer_boundary(DomEventBatch& batch, const PlatformMouseEvent& payload,
-                                        const std::vector<DomEventTarget>& previous,
-                                        const std::vector<DomEventTarget>& next) {
+inline void
+append_dom_pointer_boundary(DomEventBatch& batch, const PlatformMouseEvent& payload,
+                            const std::vector<DomEventTarget>& previous,
+                            const std::vector<DomEventTarget>& next,
+                            DomBoundaryEvents events = DomBoundaryEvents::PointerAndMouse) {
     if (previous == next)
         return;
+    const bool pointer = events != DomBoundaryEvents::Mouse;
+    const bool mouse = events != DomBoundaryEvents::Pointer && payload.is_primary;
     const auto previous_target = previous.empty() ? std::nullopt : std::optional{previous.front()};
     const auto next_target = next.empty() ? std::nullopt : std::optional{next.front()};
     std::size_t old_count = previous.size(), new_count = next.size();
@@ -836,8 +990,9 @@ inline void append_dom_pointer_boundary(DomEventBatch& batch, const PlatformMous
         --new_count;
     }
     if (previous_target) {
-        batch.add(dom_event(payload, "pointerout", previous, true, true, next_target));
-        if (payload.is_primary)
+        if (pointer)
+            batch.add(dom_event(payload, "pointerout", previous, true, true, next_target));
+        if (mouse)
             batch.add(dom_event(payload, "mouseout", previous, true, true, next_target));
         for (std::size_t index = 0; index < old_count; ++index) {
             if (previous[index].kind == DomEventTargetKind::Document ||
@@ -845,14 +1000,16 @@ inline void append_dom_pointer_boundary(DomEventBatch& batch, const PlatformMous
                 continue;
             const std::vector<DomEventTarget> path(
                 previous.begin() + static_cast<std::ptrdiff_t>(index), previous.end());
-            batch.add(dom_event(payload, "pointerleave", path, false, false, next_target));
-            if (payload.is_primary)
+            if (pointer)
+                batch.add(dom_event(payload, "pointerleave", path, false, false, next_target));
+            if (mouse)
                 batch.add(dom_event(payload, "mouseleave", path, false, false, next_target));
         }
     }
     if (next_target) {
-        batch.add(dom_event(payload, "pointerover", next, true, true, previous_target));
-        if (payload.is_primary)
+        if (pointer)
+            batch.add(dom_event(payload, "pointerover", next, true, true, previous_target));
+        if (mouse)
             batch.add(dom_event(payload, "mouseover", next, true, true, previous_target));
         for (std::size_t index = new_count; index > 0; --index) {
             if (next[index - 1].kind == DomEventTargetKind::Document ||
@@ -860,8 +1017,9 @@ inline void append_dom_pointer_boundary(DomEventBatch& batch, const PlatformMous
                 continue;
             const std::vector<DomEventTarget> path(
                 next.begin() + static_cast<std::ptrdiff_t>(index - 1), next.end());
-            batch.add(dom_event(payload, "pointerenter", path, false, false, previous_target));
-            if (payload.is_primary)
+            if (pointer)
+                batch.add(dom_event(payload, "pointerenter", path, false, false, previous_target));
+            if (mouse)
                 batch.add(dom_event(payload, "mouseenter", path, false, false, previous_target));
         }
     }
@@ -919,6 +1077,13 @@ inline bool dom_release_pointer_capture_after(Engine& engine, DomEventBatch& bat
 
 enum class DomPointerAction { Move, Down, Up, Wheel, Leave, Cancel };
 
+/** Whether a click may target `target`: an element or the canvas the UI lets activate. */
+inline bool dom_activates(const DomInput& input, DomEventTarget target) {
+    return (target.kind == DomEventTargetKind::Element ||
+            target.kind == DomEventTargetKind::Canvas) &&
+           (!input.can_activate || input.can_activate(target));
+}
+
 /** Mouse input over `path` (the hit test). A captured pointer's events, its
  * compatibility mouse events and its hover follow the capture target until the
  * capture ends; boundary events then reach the pointer's position. */
@@ -974,9 +1139,7 @@ inline std::shared_ptr<DomEventBatch> dom_pointer_input(Engine& engine, DomPoint
                 if (std::find(input.pressed_path.begin(), input.pressed_path.end(),
                               target[index]) == input.pressed_path.end())
                     continue;
-                if ((target[index].kind == DomEventTargetKind::Element ||
-                     target[index].kind == DomEventTargetKind::Canvas) &&
-                    (!input.can_activate || input.can_activate(target[index])))
+                if (dom_activates(input, target[index]))
                     batch->add(dom_event(payload, "click",
                                          std::vector<DomEventTarget>(
                                              target.begin() + static_cast<std::ptrdiff_t>(index),
@@ -1005,10 +1168,14 @@ inline std::shared_ptr<DomEventBatch> dom_pointer_input(Engine& engine, DomPoint
     return batch;
 }
 
-/** Direct touch: its pointerdown implicitly captures the contact to its target
+/** Direct touch's pointer events, which Chromium dispatches before the touch's
+ * TouchEvent: its pointerdown implicitly captures the contact to its target
  * (`dom_pointer_dispatching`), so later events follow the capture target; a
- * released capture leaves them at the element under the contact. Contact
- * identity and primary status survive motion, sibling releases and cancel. */
+ * released capture leaves them at the element under the contact. pointerup and
+ * pointercancel release the capture, then the contact leaves (pointerout,
+ * pointerleave). Contact identity and primary status survive motion, sibling
+ * releases and cancel. Compatibility mouse events wait for a tap
+ * (`append_dom_touch_tap`). */
 inline std::shared_ptr<DomEventBatch> dom_touch_input(Engine& engine, DomPointerAction action,
                                                       DomTouchContact& contact) {
     auto batch = std::make_shared<DomEventBatch>();
@@ -1017,41 +1184,32 @@ inline std::shared_ptr<DomEventBatch> dom_touch_input(Engine& engine, DomPointer
     if (contact.path.empty())
         return batch;
     auto path = contact.path;
+    contact.target_hit = false;
     if (action != DomPointerAction::Down) {
         const auto& input = *engine.dom_input;
         if (auto captured = dom_process_pointer_capture(engine, *batch, pointer))
             path = std::move(*captured);
-        else if (input.hit_path)
+        else if (input.hit_path) {
             path = input.hit_path(pointer.client_x, pointer.client_y);
+            contact.target_hit = !path.empty();
+        }
         if (path.empty())
             path = contact.target_path;
-        append_dom_pointer_boundary(*batch, pointer, contact.target_path, path);
+        append_dom_pointer_boundary(*batch, pointer, contact.target_path, path,
+                                    DomBoundaryEvents::Pointer);
     }
     contact.target_path = path;
-    const auto add = [&](std::string type, bool controls_default = false) {
-        batch->add(dom_event(pointer, std::move(type), path), controls_default);
-    };
     switch (action) {
     case DomPointerAction::Down:
-        append_dom_pointer_boundary(*batch, pointer, {}, path);
-        add("pointerdown", true);
-        if (pointer.is_primary)
-            add("mousedown", true);
+        append_dom_pointer_boundary(*batch, pointer, {}, path, DomBoundaryEvents::Pointer);
+        batch->add(dom_event(pointer, "pointerdown", path), true);
         break;
     case DomPointerAction::Move:
-        add("pointermove");
-        if (pointer.is_primary)
-            add("mousemove");
+        batch->add(dom_event(pointer, "pointermove", path));
         break;
     case DomPointerAction::Up:
-        add("pointerup");
+        batch->add(dom_event(pointer, "pointerup", path));
         dom_release_pointer_capture_after(engine, *batch, pointer);
-        if (pointer.is_primary)
-            add("mouseup");
-        if ((path.front().kind == DomEventTargetKind::Element ||
-             path.front().kind == DomEventTargetKind::Canvas) &&
-            (!engine.dom_input->can_activate || engine.dom_input->can_activate(path.front())))
-            add("click", true);
         break;
     case DomPointerAction::Cancel:
         batch->add(dom_event(pointer, "pointercancel", path, true, false));
@@ -1061,10 +1219,109 @@ inline std::shared_ptr<DomEventBatch> dom_touch_input(Engine& engine, DomPointer
         throw std::logic_error("Unsupported direct-touch action.");
     }
     if (action == DomPointerAction::Up || action == DomPointerAction::Cancel) {
-        append_dom_pointer_boundary(*batch, pointer, path, {});
+        append_dom_pointer_boundary(*batch, pointer, path, {}, DomBoundaryEvents::Pointer);
         batch->released_pointers.push_back(pointer.pointer_id);
     }
     return batch;
+}
+
+/** A contact as its TouchEvents list it, at the target of its press. */
+inline PlatformTouchPoint dom_touch_point(const DomTouchContact& contact) {
+    const auto& pointer = contact.pointer;
+    return {{.identifier = dom_touch_identifier(pointer.pointer_id),
+             .client_x = pointer.client_x,
+             .client_y = pointer.client_y,
+             .screen_x = pointer.screen_x,
+             .screen_y = pointer.screen_y,
+             .force = pointer.pressure},
+            contact.path.front()};
+}
+
+/**
+ * The TouchEvent of the contacts `changed` selects, which Chromium dispatches
+ * after their pointer events: touchstart, touchmove, touchend or touchcancel
+ * (which cannot be canceled) as `action` says, one event per target, at the
+ * target of each contact's press, and none while no listener names the type.
+ * Its lists hold contacts in press order; `touches` those still on the
+ * surface: an ending contact is only among the changed ones.
+ */
+template <typename Changed>
+void append_dom_touch_event(DomEventBatch& batch, const DomInput& input, DomPointerAction action,
+                            Changed&& changed) {
+    const std::string type = action == DomPointerAction::Down   ? "touchstart"
+                             : action == DomPointerAction::Up   ? "touchend"
+                             : action == DomPointerAction::Move ? "touchmove"
+                                                                : "touchcancel";
+    if (!input.event_types.contains(type))
+        return;
+    const bool ending = action == DomPointerAction::Up || action == DomPointerAction::Cancel;
+    std::vector<const DomTouchContact*> contacts;
+    for (const auto& [key, contact] : input.touches) {
+        (void)key;
+        if (!contact.path.empty())
+            contacts.push_back(&contact);
+    }
+    std::sort(contacts.begin(), contacts.end(),
+              [](const auto* left, const auto* right) { return left->order < right->order; });
+    std::vector<PlatformTouchPoint> touches;
+    std::vector<const DomTouchContact*> targets;
+    for (const auto* contact : contacts) {
+        const bool change = changed(*contact);
+        if (!(ending && change))
+            touches.push_back(dom_touch_point(*contact));
+        if (change && std::none_of(targets.begin(), targets.end(), [&](const auto* first) {
+                return first->path.front() == contact->path.front();
+            }))
+            targets.push_back(contact);
+    }
+    for (std::size_t index = 0; index < targets.size(); ++index) {
+        const auto& first = *targets[index];
+        PlatformTouchEvent payload;
+        static_cast<PlatformModifierKeys&>(payload) = first.pointer;
+        for (const auto* contact : contacts)
+            if (changed(*contact) && contact->path.front() == first.path.front())
+                payload.changed_touches.push_back(dom_touch_point(*contact));
+        payload.touches = touches;
+        batch.add(dom_event(std::move(payload), type, first.path, true,
+                            action != DomPointerAction::Cancel));
+    }
+}
+
+/**
+ * Chromium's tap, after the touchend of a contact that can still tap: the
+ * compatibility mouse events at the element under it (boundary events from
+ * the mouse's last element, mousemove, mousedown, mouseup), then click. A
+ * canceled pointerdown withholds mousemove, mousedown and mouseup
+ * (DomEventBatch::dispatch); a canceled touchstart or touchend withholds the
+ * whole tap.
+ */
+inline void append_dom_touch_tap(Engine& engine, DomEventBatch& batch,
+                                 const DomTouchContact& contact) {
+    if (!contact.tap || contact.path.empty())
+        return;
+    auto& input = *engine.dom_input;
+    auto payload = contact.pointer;
+    payload.button = 0;
+    payload.buttons = 0;
+    auto path = contact.target_hit ? contact.target_path
+                : input.hit_path   ? input.hit_path(payload.client_x, payload.client_y)
+                                   : contact.path;
+    if (path.empty())
+        path = contact.path;
+    const auto first = batch.events.size();
+    append_dom_pointer_boundary(batch, payload, input.hover_path, path, DomBoundaryEvents::Mouse);
+    input.hover_path = path;
+    batch.add(dom_event(payload, "mousemove", path));
+    auto pressed = payload;
+    pressed.buttons = 1;
+    // The press and release reached native input already; only click activates.
+    batch.add(dom_event(pressed, "mousedown", path));
+    batch.add(dom_event(payload, "mouseup", path));
+    if (dom_activates(input, path.front()))
+        batch.add(dom_event(payload, "click", path), true);
+    for (auto entry = batch.events.begin() + static_cast<std::ptrdiff_t>(first);
+         entry != batch.events.end(); ++entry)
+        entry->tap = dom_touch_identifier(payload.pointer_id);
 }
 
 } // namespace bbl

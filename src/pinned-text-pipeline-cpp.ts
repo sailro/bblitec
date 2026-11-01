@@ -8,6 +8,7 @@ import { nativeDepthCompare } from "./lowering/pinned-depth-state.js";
 import {
     composeTextPipeline,
     type ComposedTextPipeline,
+    type TextBindingKind,
 } from "./pinned-text-pipeline.js";
 
 /** The default pass can resize between the pin's supported sample counts. */
@@ -66,6 +67,14 @@ export function textPipelineStem(
     return `text-${index}.${stage === "vertex" ? "vert" : "frag"}`;
 }
 
+/** The reflected binding kind each pinned text layout entry kind declares. */
+const textBindingKinds = {
+    uniform: "uniformBuffer",
+    "read-only-storage": "storageBuffer",
+    "unfilterable-float": "texture2dLoad",
+    uint: "texture2dUint",
+} as const satisfies Record<TextBindingKind, string>;
+
 /** The actual descriptor and reflected resource names are one PAL binding ABI. */
 export function textPipelineHeader(
     rows: readonly ComposedTextPipeline[],
@@ -88,12 +97,7 @@ export function textPipelineHeader(
         const binding = bindings.find((row) => row.binding === entry.binding);
         const kind =
             "buffer" in entry ? entry.buffer.type : entry.texture.sampleType;
-        const expected =
-            kind === "uniform"
-                ? "uniformBuffer"
-                : kind === "read-only-storage"
-                  ? "storageBuffer"
-                  : "texture2dLoad";
+        const expected = textBindingKinds[kind];
         if (
             !binding ||
             binding.kind !== expected ||

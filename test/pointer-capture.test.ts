@@ -154,8 +154,9 @@ test("pointer capture retargets engine-canvas input until release, pointerup or 
                     expect("cancelled gesture", "DocCAR", "GL");
                     if (canvas.hasPointerCapture(1)) throw new Error("cancelled capture");
                     requestAnimationFrame(() => {
-                        // A touch press captures implicitly until its release.
-                        expect("touch", "DocU", "gl");
+                        // A touch press captures implicitly until its release; its drag
+                        // fires no compatibility mouse events (Chromium taps only).
+                        expect("touch", "DoU", "gl");
                         requestAnimationFrame(() => {
                             expect("captured drag", "Doc", "G");
                             // Disabling controls mid-drag releases every pointer they hold.

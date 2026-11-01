@@ -85,7 +85,7 @@ int main() {
                    element->GetText() == value);
             const auto color = element->GetProperty(Rml::PropertyId::Color)->Get<Rml::Colourb>();
             assert(color.red == 0x12 && color.green == 0x34 && color.blue == 0x56);
-            assert(std::abs(element->GetComputedValues().opacity() - 0.8f) < 0.001f);
+            assert(std::abs(element->GetComputedValues().group_opacity() - 0.8f) < 0.001f);
             const auto owner =
                 raw(handle)->GetProperty(Rml::PropertyId::Color)->Get<Rml::Colourb>();
             assert(owner.red == 0x33 && owner.green == 0x44 && owner.blue == 0x55);
@@ -99,7 +99,7 @@ int main() {
                form_text(hint)->GetText() == "Typed");
         assert(form_text(hint)->GetProperty(Rml::PropertyId::Color)->Get<Rml::Colourb>().red ==
                0x33);
-        assert(form_text(hint)->GetComputedValues().opacity() == 1.0f);
+        assert(form_text(hint)->GetComputedValues().group_opacity() == 1.0f);
         ui_set_form_value(engine, hint, "");
         update();
         placeholder(hint, "Type");

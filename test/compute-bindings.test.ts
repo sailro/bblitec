@@ -5,6 +5,7 @@ import {
     optionalNativeFixtureTools,
     runGeneratedProgram,
 } from "./native-fixture.js";
+import { pinnedError } from "./pinned-errors.js";
 
 test("compute binding sets preserve dynamic slots, cached groups and volatile invalidation", (t) => {
     const tools = optionalNativeFixtureTools(false);
@@ -53,9 +54,9 @@ int main(){
  invalidate=true;assert(bbl::ensure_compute_binding_groups(binding)!=groups&&validations==2&&gets==2&&device->groups.size()==6);
  assert(binding->resource_epoch==1);bbl::ensure_compute_binding_groups(binding,false);assert(validations==2&&gets==2);
  engine->resource_epoch=2;bbl::ensure_compute_binding_groups(binding,false);assert(gets==3&&device->groups.size()==9);
- for(const bool extra:{false,true}){auto bad=resources;if(extra)bad.emplace("unknown",std::monostate{});else bad.clear();bool failed=false;try{(void)bbl::create_compute_binding_set(shader,bad);}catch(const std::exception& e){failed=std::string(e.what())==(extra?"#918":"#919");}assert(failed);}
+ for(const bool extra:{false,true}){auto bad=resources;if(extra)bad.emplace("unknown",std::monostate{});else bad.clear();bool failed=false;try{(void)bbl::create_compute_binding_set(shader,bad);}catch(const std::exception& e){failed=std::string(e.what())==(extra?"${pinnedError('ComputeBindingSet: resource "${a0}" was not declared by ComputeShader "${a1}".')}":"${pinnedError('ComputeBindingSet: binding "${a0}" has no resource.')}");}assert(failed);}
  bbl::dispose_compute_binding_set(binding);bbl::dispose_compute_binding_set(binding);assert(binding->destroyed&&!binding->groups&&!binding->device&&uniform->allocation);
- bool disposed=false;try{(void)bbl::ensure_compute_binding_groups(binding);}catch(const std::exception& e){disposed=std::string(e.what())=="#920";}assert(disposed);
+ bool disposed=false;try{(void)bbl::ensure_compute_binding_groups(binding);}catch(const std::exception& e){disposed=std::string(e.what())=="${pinnedError('ComputeBindingSet for "${a0}" has been disposed.')}";}assert(disposed);
 }
 `,
         {

@@ -272,8 +272,7 @@ int main() {
         assert(source.ui_only_text_changed_since(revision, since));
         auto snapshot = snapshot_document(source, since);
         assert(snapshot->text_updates && snapshot->text_updates->size() == 1);
-        assert(snapshot->elements.empty() && snapshot->listeners.empty() &&
-               snapshot->styles.empty());
+        assert(snapshot->elements.empty() && snapshot->listeners.empty());
         apply_document(display, std::move(*snapshot), {});
         assert(ui_element(display, label).text == "Latest");
         assert(ui_element(display, label).click_callbacks.size() == 1);

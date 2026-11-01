@@ -18,7 +18,7 @@ import {
 } from "./pinned-numeric-lowerer.js";
 import { pinnedHeader } from "./pinned-header.js";
 import { lowerPinnedStatements } from "./pinned-body-lowerer.js";
-import { sameSource, soleBindingName } from "../compiler/syntax.js";
+import { sameSource } from "../compiler/syntax.js";
 
 const morphModule = "src/morph/create-morph-targets.ts";
 
@@ -59,16 +59,11 @@ export function morphTargetsHeader(context: LoweringContext): string {
         morphModule,
         "createMorphTargets",
     );
-    const parameters = declaration.parameters.map((parameter) =>
-        soleBindingName(parameter.name),
+    context.assertParameterNames(
+        declaration,
+        ["engine", "targets", "vertexCount", "morphWeights", "names?"],
+        "createMorphTargets",
     );
-    if (parameters.join(",") !== "engine,targets,vertexCount,morphWeights") {
-        context.contractError(
-            declaration,
-            "Expected createMorphTargets(engine, targets, vertexCount, " +
-                "morphWeights).",
-        );
-    }
     const bindings = new Map<string, PinnedBinding>([
         [
             "targets.length",

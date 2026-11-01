@@ -17,6 +17,7 @@ import { materializePinnedText } from "../src/pinned-text-data.js";
 import { readAssetBytesSync } from "../src/compiler/asset-bytes-sync.js";
 import { pinnedLabPublicUrl } from "../src/pinned-lab-public.js";
 import { stringLiteral } from "../src/cpp-literals.js";
+import { pinnedDeclaration } from "./pinned-source.js";
 import {
     cppFunction,
     cppRecord,
@@ -116,14 +117,10 @@ test("retained text CPU state matches pinned transforms, Euler cache, uniform wr
         _dirtyEnd: 0,
     };
     const renderable = createTextRenderable(data);
-    const { file, declaration } = context.functionDeclaration(
-        "src/text/text-renderable.ts",
-        "updateTextRenderable",
-    );
     // Execute the real function with recording resource seams. The supplied VP,
     // aspect and camera key are exactly the native adapter's input boundary.
     const js = ts.transpileModule(
-        `${declaration.getText(file).replace(/^export\s+/, "")}\nreturn updateTextRenderable;`,
+        `${pinnedDeclaration(context, "src/text/text-renderable.ts", "updateTextRenderable")}\nreturn updateTextRenderable;`,
         {
             compilerOptions: { target: ts.ScriptTarget.ES2022 },
         },

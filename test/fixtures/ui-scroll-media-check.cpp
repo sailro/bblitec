@@ -51,8 +51,11 @@ int main() try {
         const auto sheet = ui_create_element(engine, "style");
         ui_append_to_root(engine, sheet);
         ui_add_class_style(engine, sheet, "panel", "flex-wrap:nowrap;background-color:green;");
-        ui_add_style_rule(engine, sheet, UiStyleSelectorKind::Class, "panel", {}, {}, false, 480,
-                          "flex-wrap:wrap;margin-left:14px;text-align:right;background-color:red;");
+        ui_add_style_rule(
+            engine, sheet,
+            {.primary = "panel",
+             .style = "flex-wrap:wrap;margin-left:14px;text-align:right;background-color:red;",
+             .max_width = 480});
         pal::UiRmlRuntime runtime(engine, window, 640, 480);
         const auto update = [&](int width = 640) {
             pal::fixture_time_ms += 100;

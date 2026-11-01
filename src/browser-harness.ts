@@ -63,6 +63,7 @@
 // with it only that bake's context.
 import type { Server } from "node:http";
 import { chromium, type Browser, type Page } from "playwright-core";
+import { HOST_PRIMARY_CANVAS_ID } from "./host-primary-canvas.js";
 import { transpileForBrowser } from "./typescript-transpile.js";
 import { resolveBrowserPath } from "./browser-path.js";
 import { captureSettleMilliseconds } from "./capture-timing.js";
@@ -163,19 +164,14 @@ export async function withBrowserPage<T>(
                   deviceScaleFactor: options.deviceScaleFactor ?? 1,
               }
             : undefined;
-        let page: Page;
-        if (options.shared) {
-            // Closing this connection closes the context opened through it,
-            // and only that: the page's own crash or failure stays its own.
-            browser = await chromium.connect(
-                await generationBrowserEndpoint(launch),
-                { timeout: 60_000 },
-            );
-            page = await (await browser.newContext(pageOptions)).newPage();
-        } else {
-            browser = await chromium.launch(launchOptions(launch));
-            page = await browser.newPage(pageOptions);
-        }
+        // Closing a shared connection closes the context opened through it,
+        // and only that: the page's own crash or failure stays its own.
+        browser = options.shared
+            ? await chromium.connect(await generationBrowserEndpoint(launch), {
+                  timeout: 60_000,
+              })
+            : await chromium.launch(launchOptions(launch));
+        const page = await (await browser.newContext(pageOptions)).newPage();
         const pageErrorPrefix = options.pageErrorPrefix;
         if (pageErrorPrefix !== undefined) {
             page.on("pageerror", (error) => {
@@ -219,10 +215,9 @@ export async function waitForSceneReady(
     await waitForCanvasSettles(page, [canvasReadySettle], 120_000);
     if (awaitFrozenPose) {
         await page.waitForFunction(
-            () =>
-                document.getElementById("renderCanvas")?.dataset
-                    .animationFrozen === "true",
-            undefined,
+            (id: string) =>
+                document.getElementById(id)?.dataset.animationFrozen === "true",
+            HOST_PRIMARY_CANVAS_ID,
             { timeout: 120_000 },
         );
     }
@@ -345,40 +340,6 @@ async function waitForCanvasSettles(
 }
 
 /**
- * Hide everything the demo page draws OUTSIDE its canvas, before the shot.
- *
- * This is the CANVAS-ONLY attribution mode's tool. Since retained UI
- * became product support the port DOES reproduce reached DOM/CSS
- * (through RmlUi -- docs/ui.md), and the canonical goldens are full-page
- * by default; `BBLITE_CAPTURE_UI=0` requests the canvas-only capture
- * that subtracts the UI from a residual, and that mode is where this
- * helper runs. Both screenshot harnesses take it through the same
- * `captureUiEnabled()` fork, so the golden and the instrumented capture
- * cannot disagree about what a screenshot contains.
- *
- * Every scene keeps its own page otherwise: this hides siblings of the
- * canvas, it does not touch the scene or anything the scene drew into the
- * canvas. It does suppress the canvas's host focus outline: that decoration
- * is retained UI, not a canvas pixel, and otherwise survives after every
- * sibling was hidden. A scene whose behaviour depends on DOM the port does not
- * reproduce (a control that must be clicked before the frame under test)
- * is out of scope -- see docs/fidelity.md.
- */
-export async function hideNonCanvasChrome(page: Page): Promise<void> {
-    await page.evaluate(() => {
-        const canvas = document.getElementById("renderCanvas");
-        if (canvas instanceof HTMLElement) {
-            canvas.style.outline = "none";
-        }
-        for (const element of Array.from(document.body.children)) {
-            if (element !== canvas) {
-                (element as HTMLElement).style.visibility = "hidden";
-            }
-        }
-    });
-}
-
-/**
  * Serve one page module, wait for the global it installs, and return what
  * that global's call resolved to.
  *
@@ -407,24 +368,117 @@ export async function runPageGlobal(
 }
 
 /**
- * The page-side chunked base64 encoder, as a source fragment.
+ * The page-side base64 encoder, as a source fragment: `bblBase64(bytes)`
+ * encodes a `Uint8Array` or `Uint8ClampedArray` with the browser's own
+ * `Uint8Array.prototype.toBase64`, and throws in a browser without it.
  *
  * Bytes cross the page boundary as text because the boundary serializes
  * JSON: a number per byte costs about four bytes of wire each and turns a
- * megapixel read-back into ten seconds. The chunking is what keeps
- * `String.fromCharCode` off its argument limit, and it is one copy because
- * four harnesses had grown four.
+ * megapixel read-back into ten seconds. `decodePageBase64` is the Node side.
  */
 export const pageBase64Script =
     "const bblBase64 = (bytes) => {\n" +
-    '    let binary = "";\n' +
-    "    for (let index = 0; index < bytes.length; index += 0x8000) {\n" +
-    "        binary += String.fromCharCode.apply(\n" +
-    "            null,\n" +
-    "            bytes.subarray(index, index + 0x8000),\n" +
-    "        );\n" +
+    '    if (typeof Uint8Array.prototype.toBase64 !== "function") {\n' +
+    '        throw new Error("bblBase64 needs Uint8Array.prototype.toBase64, which this browser lacks.");\n' +
     "    }\n" +
-    "    return btoa(binary);\n" +
+    "    const tag = Object.prototype.toString.call(bytes);\n" +
+    '    if (tag !== "[object Uint8Array]" && tag !== "[object Uint8ClampedArray]") {\n' +
+    '        throw new TypeError("bblBase64 encodes a Uint8Array or Uint8ClampedArray, not " + tag + ".");\n' +
+    "    }\n" +
+    "    return new Uint8Array(bytes.buffer, bytes.byteOffset, bytes.byteLength).toBase64();\n" +
+    "};\n";
+
+/**
+ * A page's `bblBase64` text decoded straight into a payload behind
+ * little-endian uint32 `header` words, refusing anything but exactly
+ * `expected` bytes. `what` names the bytes in the refusal.
+ */
+export function decodePageBase64(
+    text: string,
+    header: readonly number[],
+    expected: number,
+    what: string,
+): Buffer {
+    const decoded = Buffer.byteLength(text, "base64");
+    if (decoded !== expected)
+        throw new Error(`${what} holds ${decoded} bytes, not ${expected}.`);
+    const start = header.length * 4;
+    const payload = Buffer.alloc(start + expected);
+    header.forEach((word, index) => payload.writeUInt32LE(word, index * 4));
+    if (payload.write(text, start, "base64") !== expected)
+        throw new Error(`${what} is not base64.`);
+    return payload;
+}
+
+/** The `count` header words of a `decodePageBase64` payload; undefined
+ *  when the payload is shorter than its header. */
+export function pagePayloadHeader(
+    payload: Uint8Array,
+    count: number,
+): number[] | undefined {
+    if (payload.byteLength < count * 4) return undefined;
+    const view = new DataView(payload.buffer, payload.byteOffset, count * 4);
+    return Array.from({ length: count }, (_, index) =>
+        view.getUint32(index * 4, true),
+    );
+}
+
+/**
+ * The page-side texture read-back, as a source fragment:
+ * `bblReadTextureLevels(device, texture, bytesPerTexel)` resolves to every mip
+ * level of a 2D, 2D-array or cube texture, every layer, as `{ packed }`:
+ * one tightly packed buffer (level-major, the copies' 256-byte row pitch
+ * removed). All levels copy into one staging
+ * buffer at 256-byte-aligned offsets, under one submit and one map. The
+ * texture needs `COPY_SRC`.
+ */
+export const pageTextureLevelsScript =
+    "const bblReadTextureLevels = async (device, texture, bytesPerTexel) => {\n" +
+    "    const layers = texture.depthOrArrayLayers;\n" +
+    "    const copies = [];\n" +
+    "    let staged = 0;\n" +
+    "    let packedBytes = 0;\n" +
+    "    for (let mipLevel = 0; mipLevel < texture.mipLevelCount; mipLevel++) {\n" +
+    "        const width = Math.max(1, texture.width >> mipLevel);\n" +
+    "        const height = Math.max(1, texture.height >> mipLevel);\n" +
+    "        const rowBytes = width * bytesPerTexel;\n" +
+    "        const rowPitch = Math.ceil(rowBytes / 256) * 256;\n" +
+    "        copies.push({ mipLevel, width, height, rowBytes, rowPitch, staged, packed: packedBytes });\n" +
+    "        staged += rowPitch * height * layers;\n" +
+    "        packedBytes += rowBytes * height * layers;\n" +
+    "    }\n" +
+    "    const readback = device.createBuffer({\n" +
+    "        size: staged,\n" +
+    "        usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,\n" +
+    "    });\n" +
+    "    try {\n" +
+    "        const encoder = device.createCommandEncoder();\n" +
+    "        for (const copy of copies) {\n" +
+    "            encoder.copyTextureToBuffer(\n" +
+    "                { texture, mipLevel: copy.mipLevel },\n" +
+    "                { buffer: readback, offset: copy.staged, bytesPerRow: copy.rowPitch, rowsPerImage: copy.height },\n" +
+    "                { width: copy.width, height: copy.height, depthOrArrayLayers: layers },\n" +
+    "            );\n" +
+    "        }\n" +
+    "        device.queue.submit([encoder.finish()]);\n" +
+    "        await readback.mapAsync(GPUMapMode.READ);\n" +
+    "        const mapped = new Uint8Array(readback.getMappedRange());\n" +
+    "        const packed = new Uint8Array(packedBytes);\n" +
+    "        for (const copy of copies) {\n" +
+    "            const rows = copy.height * layers;\n" +
+    "            if (copy.rowPitch === copy.rowBytes) {\n" +
+    "                packed.set(mapped.subarray(copy.staged, copy.staged + rows * copy.rowBytes), copy.packed);\n" +
+    "            } else {\n" +
+    "                for (let row = 0; row < rows; row++) {\n" +
+    "                    const from = copy.staged + row * copy.rowPitch;\n" +
+    "                    packed.set(mapped.subarray(from, from + copy.rowBytes), copy.packed + row * copy.rowBytes);\n" +
+    "                }\n" +
+    "            }\n" +
+    "        }\n" +
+    "        return { packed };\n" +
+    "    } finally {\n" +
+    "        readback.destroy();\n" +
+    "    }\n" +
     "};\n";
 
 /**

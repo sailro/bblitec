@@ -145,21 +145,27 @@ test("keeps RmlUi recording backend-neutral and realizes it in scene and sprite 
     assert.match(projection, /class UiRenderRecorder/);
     assert.match(projection, /record_ui_rml_frame/);
     assert.doesNotMatch(projection, /crosshair/);
-    // One compositor per backend: the scene renderer passes its sample
-    // count and gets the multisampled layer; sprite and Window hosts blend
-    // directly.
+    // One compositor per backend: every host passes the page UI's sample
+    // count (`FrameOptions::page_ui_sample_count`) and gets the
+    // multisampled layer.
     assert.match(
         sdl,
-        /render_sprite_ui_sdl_gpu_frame\([\s\S]{0,200}state\.sample_count\)/,
+        /render_sprite_ui_sdl_gpu_frame\([\s\S]{0,200}state\.ui_samples\)/,
     );
     assert.match(
         dawn,
-        /render_sprite_ui_dawn_frame\([\s\S]{0,200}state\.sample_count\)/,
+        /render_sprite_ui_dawn_frame\([\s\S]{0,200}state\.ui_samples\)/,
     );
     assert.match(spriteSdlUi, /layer\.multisample/);
     assert.match(spriteDawnUi, /multisample_view/);
-    assert.match(spriteSdl, /render_sprite_ui_sdl_gpu_frame/);
-    assert.match(spriteDawn, /render_sprite_ui_dawn_frame/);
+    assert.match(
+        spriteSdl,
+        /render_sprite_ui_sdl_gpu_frame\([\s\S]{0,200}ui_samples\)/,
+    );
+    assert.match(
+        spriteDawn,
+        /render_sprite_ui_dawn_frame\([\s\S]{0,200}ui_samples\)/,
+    );
     assert.match(spriteSdl, /handle_ui_rml_event/);
     assert.match(spriteDawn, /handle_ui_rml_event/);
     assert.match(
@@ -255,6 +261,10 @@ test("the retained cascade keeps the greater importance, then specificity, then 
         return;
     }
     const projection = readFileSync("native/src/pal_ui_rml.cpp", "utf8");
+    const lengthMath = readFileSync(
+        "native/src/pal_ui_length_math.hpp",
+        "utf8",
+    );
     runGeneratedProgram(
         tools,
         "ui-cascade-winner",
@@ -266,10 +276,10 @@ test("the retained cascade keeps the greater importance, then specificity, then 
 #include <string>
 #include <string_view>
 #include <utility>
+${cppFunction(lengthMath, "inline std::string_view trim_css_token(")}
 ${[
     "char ascii_lower(",
     "bool ascii_iequals(",
-    "std::string_view trim_css_token(",
     "std::pair<std::string_view, bool> split_css_important(",
 ]
     .map((signature) => cppFunction(projection, signature))

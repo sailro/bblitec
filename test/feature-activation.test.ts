@@ -441,6 +441,7 @@ function familyInputs(): FeatureActivationInputs {
             uboFloats: [],
             attributes: [],
             usesInstanceIndex: false,
+            usesLightsUbo: false,
             shadowBindings: [],
             caster: null,
             textures: [],

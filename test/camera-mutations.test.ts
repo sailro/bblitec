@@ -11,6 +11,7 @@ import { LoweringContext } from "../src/lowering/context.js";
 import { importPinnedModule } from "../src/pinned-shader-composer.js";
 import { UpstreamSourceStore } from "../src/upstream-source.js";
 import { cameraSources } from "./camera-fixture.js";
+import { createPinnedScene, type PinnedScene } from "./pinned-scene.js";
 import {
     optionalNativeFixtureTools,
     runNativeFixtureCompiler,
@@ -59,11 +60,11 @@ test("camera transform versions observe pinned setters, reentrant limits and inp
             this: void,
             camera: PinCamera,
             canvas: object,
-            scene: object,
+            scene: PinnedScene,
         ): () => void;
     }>("camera/arc-rotate-controls.js");
     const camera = createArcRotateCamera(0, 1, 5, { x: 0, y: 0, z: 0 });
-    const scene = { _beforeRender: [] as (() => void)[] };
+    const scene = await createPinnedScene();
     attachControl(
         camera,
         { addEventListener() {}, removeEventListener() {} },
@@ -114,12 +115,13 @@ test("camera transform versions observe pinned setters, reentrant limits and inp
     camera.inertialRadiusOffset = 4;
     camera.inertialPanningX = 10;
     camera.inertialPanningY = -8;
-    scene._beforeRender[0]!();
+    // The inertia hook takes no delta.
+    scene._beforeRender[0]!(0);
     observe();
-    scene._beforeRender[0]!();
+    scene._beforeRender[0]!(0);
     observe();
     const nonFinite = createArcRotateCamera(0, 1, 5, { x: 0, y: 0, z: 0 });
-    const nonFiniteScene = { _beforeRender: [] as (() => void)[] };
+    const nonFiniteScene = await createPinnedScene();
     attachControl(
         nonFinite,
         { addEventListener() {}, removeEventListener() {} },
@@ -129,10 +131,10 @@ test("camera transform versions observe pinned setters, reentrant limits and inp
     nonFinite.radius = NaN;
     nonFinite.inertialAlphaOffset = 1;
     nonFinite.inertialRadiusOffset = 1;
-    nonFiniteScene._beforeRender[0]!();
+    nonFiniteScene._beforeRender[0]!(0);
     assert.ok(Number.isNaN(nonFinite.beta) && Number.isNaN(nonFinite.radius));
     const duplicate = createArcRotateCamera(0, 1, 5, { x: 0, y: 0, z: 0 });
-    const duplicateScene = { _beforeRender: [] as (() => void)[] };
+    const duplicateScene = await createPinnedScene();
     attachControl(
         duplicate,
         { addEventListener() {}, removeEventListener() {} },
@@ -144,7 +146,7 @@ test("camera transform versions observe pinned setters, reentrant limits and inp
         duplicateScene,
     );
     duplicate.inertialAlphaOffset = 0.2;
-    for (const callback of duplicateScene._beforeRender) callback();
+    for (const callback of duplicateScene._beforeRender) callback(0);
     assert.equal(duplicate.worldMatrixVersion, 2);
     assert.ok(Math.abs(duplicate.alpha - 0.38) < 1e-12);
     const output = resolve("artifacts/camera-mutations");

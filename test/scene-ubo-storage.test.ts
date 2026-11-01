@@ -10,6 +10,7 @@ import {
     optionalNativeFixtureTools,
     runNativeFixtureCompiler,
 } from "./native-fixture.js";
+import { createPinnedScene, type PinnedScene } from "./pinned-scene.js";
 
 test("pinned task storage owns zeroed clean scratch and independent retained jitter sequences", async (t) => {
     const native = optionalNativeFixtureTools(false);
@@ -22,9 +23,9 @@ test("pinned task storage owns zeroed clean scratch and independent retained jit
             this: void,
             config: object,
             engine: object,
-            scene: object,
+            scene: PinnedScene,
         ): {
-            scene: object;
+            scene: PinnedScene;
             _suData: Float32Array;
             _sceneUBO: { size: number };
             _sceneUboCacheKey: unknown[];
@@ -35,14 +36,13 @@ test("pinned task storage owns zeroed clean scratch and independent retained jit
             this: void,
             config: object,
             engine: object,
-            scene: object,
+            scene: PinnedScene,
         ): {
             samples: number;
             _halton: Float32Array;
             _jitterScratch: Float32Array;
         };
     }>("post-process/taa.js");
-    const scene = { lights: [], _disposables: [] };
     const target = {
         _width: 64,
         _height: 32,
@@ -61,6 +61,7 @@ test("pinned task storage owns zeroed clean scratch and independent retained jit
             },
         },
     };
+    const scene = await createPinnedScene({ engine });
     const source = createRenderTask(
         { rt: target, name: "source" },
         engine,

@@ -6,6 +6,7 @@
 #include <webgpu/webgpu.h>
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <source_location>
 #include <stdexcept>
 #include <string>
@@ -244,6 +245,38 @@ create_dawn_texture_view(WGPUTexture texture, const WGPUTextureViewDescriptor* d
                          std::source_location site = std::source_location::current()) {
     require_dawn_resource(texture, "texture view source", site);
     return require_dawn_resource(wgpuTextureCreateView(texture, descriptor), label, site);
+}
+
+/**
+ * Narrows a pass to `resolved`, its viewport and scissor, or leaves it at the whole target (the
+ * SDL backend's `set_pass_viewport`): a camera's viewport (`_applyCameraViewport`), or the page
+ * viewport a letterboxed page's canvas draws in. Set after the pass begins, as upstream does.
+ */
+inline void set_pass_viewport(WGPURenderPassEncoder pass,
+                              const std::optional<PixelViewport>& resolved) {
+    if (!resolved.has_value())
+        return;
+    const PixelViewport& rect = *resolved;
+    wgpuRenderPassEncoderSetViewport(pass, static_cast<float>(rect.x), static_cast<float>(rect.y),
+                                     static_cast<float>(rect.width),
+                                     static_cast<float>(rect.height), 0.0f, 1.0f);
+    wgpuRenderPassEncoderSetScissorRect(
+        pass, static_cast<std::uint32_t>(rect.x), static_cast<std::uint32_t>(rect.y),
+        static_cast<std::uint32_t>(rect.width), static_cast<std::uint32_t>(rect.height));
+}
+
+/**
+ * Opens a sprite or text context's pass over a `width` x `height` frame target: a pass drawing the
+ * frame narrows to the page's canvas (`page_canvas`), one drawing a render texture keeps its
+ * target. Returns the canvas, whose extent the context lays out and projects in.
+ */
+inline PageCanvas set_page_canvas_viewport(WGPURenderPassEncoder pass, const Engine& engine,
+                                           std::uint32_t width, std::uint32_t height,
+                                           bool frame_target) {
+    const PageCanvas canvas = page_canvas(engine.ui_page_viewport, width, height);
+    if (frame_target)
+        set_pass_viewport(pass, canvas.viewport());
+    return canvas;
 }
 
 } // namespace bbl::pal

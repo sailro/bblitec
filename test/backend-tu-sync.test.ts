@@ -227,8 +227,11 @@ test("scene replacement restarts both backends without retaining a dead root", (
     }
     const shared = sharedGpuSource();
     assert.match(
-        shared,
-        /engine\.renderer_restart_requested = !engine\.scenes\(\)\.empty\(\);/,
+        cppFunction(
+            shared,
+            "bool request_renderer_restart_if_scene_set_changed(",
+        ),
+        /engine\.renderer_restart_requested = !engine\.scenes\(\)\.empty\(\) \|\| engine\.offscreen_run != nullptr;/,
     );
 });
 

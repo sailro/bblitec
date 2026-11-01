@@ -1,4 +1,4 @@
-import type { HandleKind } from "./model.js";
+import type { DataType, HandleKind } from "./model.js";
 
 const handleCppTypes: Record<HandleKind, string> = {
     "custom-event": "bbl::PlatformCustomEvent",
@@ -57,6 +57,7 @@ const handleCppTypes: Record<HandleKind, string> = {
     "pointer-drag": "bbl::PointerDragHandle",
     gamepad: "bbl::GamepadHandle",
     "gamepad-button": "bbl::GamepadButtonHandle",
+    touch: "bbl::DomTouch",
     scene: "bbl::Scene",
     "render-target": "bbl::RenderTargetHandle",
     task: "bbl::TaskHandle",
@@ -165,6 +166,33 @@ export function belongsToEntryEngine(kind: HandleKind): boolean {
         kind !== "node-input" &&
         kind !== "picking-info" &&
         kind !== "ui-element"
+    );
+}
+
+/**
+ * Window platform objects (`MediaQueryList`, `MutationObserver`): each is
+ * one shared runtime object the Window realm owns, so a nullable binding
+ * holds it in ordinary nullable storage.
+ */
+export function isWindowHandleKind(kind: HandleKind): boolean {
+    return kind === "worker-media-query" || kind === "worker-mutation-observer";
+}
+
+/**
+ * Platform input state the native input model answers though the DOM
+ * declares it (a gamepad, its buttons, a Touch): never browser-only, and a
+ * function parameter keeps it as its handle.
+ */
+export function isInputSnapshotHandleKind(kind: HandleKind): boolean {
+    return kind === "gamepad" || kind === "gamepad-button" || kind === "touch";
+}
+
+/** Whether a data type lists input snapshots, as a TouchEvent's TouchList does. */
+export function isInputSnapshotList(type: DataType | undefined): boolean {
+    return (
+        type?.kind === "vector" &&
+        type.element.kind === "handle" &&
+        isInputSnapshotHandleKind(type.element.handle)
     );
 }
 

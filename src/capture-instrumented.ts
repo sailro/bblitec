@@ -18,12 +18,12 @@ import { join, resolve } from "node:path";
 import {
     captureUiEnabled,
     createSuiteSceneServer,
+    screenshotScenePage,
     suiteBrowserModule,
     suiteBrowserModuleDigest,
 } from "./capture-suite-reference.js";
 import {
     screenshotCaptureBrowserArgs,
-    hideNonCanvasChrome,
     pageBase64Script,
     waitForSceneReady,
     withBrowserPage,
@@ -50,7 +50,6 @@ import {
     type SceneDefinition,
 } from "./scene-registry.js";
 import { readUpstreamPin } from "./upstream-source.js";
-import { readNativeHostUi } from "./native-host-ui.js";
 
 /**
  * The pinned package a capture rendered through, as the sidecar records it.
@@ -357,7 +356,7 @@ export async function runInstrumentedCapture(
     const animationGroups = scene.parity?.referenceAnimationGroups;
     const skipDrawIndexCount = options.skipDrawIndexCount ?? 0;
     // The golden's page composition, mirrored exactly: full page vs
-    // canvas-only, the audited host-page UI, and the fixed-frame
+    // canvas-only, the host page's UI, and the fixed-frame
     // derivation are what the parity reference capture used — or the
     // byte-identity check below compares two different conventions,
     // which is how every retained-UI scene once read DIFFERS forever.
@@ -392,13 +391,6 @@ export async function runInstrumentedCapture(
         // pinned sequence here too, or the capture describes a
         // different set of particles than the golden renders.
         seededRandom: usesSeededRandom(scene),
-        // The same audited host-page elements the golden's page
-        // carries. Served in the HTML ahead of the module script,
-        // after the init-script hooks are installed — the injection
-        // cannot disturb hook timing.
-        ...(scene.nativeHostUi
-            ? { hostUi: readNativeHostUi(scene.nativeHostUi) }
-            : {}),
     });
     await withBrowserPage(
         server,
@@ -427,14 +419,11 @@ export async function runInstrumentedCapture(
             // The shared fixed clock holds the reference's CSS phase.
             // Match its full-page or canvas-only capture mode.
             const screenshotPath = join(outputDirectory, "screenshot.png");
-            if (captureUi) {
-                await page.screenshot({ path: screenshotPath });
-            } else {
-                await hideNonCanvasChrome(page);
-                await page.locator("#renderCanvas").screenshot({
-                    path: screenshotPath,
-                });
-            }
+            await screenshotScenePage(
+                page,
+                screenshotPath,
+                sceneReferencePage(scene),
+            );
 
             const dump = await page.evaluate<{
                 shaders: { label: string; code: string }[];

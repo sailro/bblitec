@@ -2,6 +2,7 @@ import type ts from "typescript";
 import type { LoweringServices } from "../lowering-services.js";
 import type { Value } from "../types.js";
 import { recordAt } from "../record-access.js";
+import { cameraVectorComponentWrite } from "../camera-setters.js";
 
 type Vec3WriteContext = Pick<
     LoweringServices,
@@ -58,7 +59,7 @@ export function writeVec3Lanes(
         for (const [index, axis] of ["x", "y", "z"].entries())
             context.emit({
                 kind: "expression",
-                code: `bbl::write_camera_vector_component(${record}, &bbl::CameraRecord::${vector.field}, &bbl::Vec3d::${axis}, ${components[index]});`,
+                code: `${cameraVectorComponentWrite(record, vector.field, axis, components[index]!, true)};`,
             });
         return;
     }

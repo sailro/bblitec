@@ -29,7 +29,7 @@ Source pin: [upstream/babylon-lite.json](../upstream/babylon-lite.json). `upstre
 | Reached APIs, properties, globals | Generated code, PAL units, native dependencies |
 | Call options, asset loader predicates | Runtime features, codecs, material variants |
 | Pinned composition | Shader arms, layouts, bindings |
-| Registry | Source, title, host UI, reference query, attribution |
+| Registry | Source, host page, title, reference query, attribution |
 | Build options | Backend, capture, size, PCH |
 
 Reaching a factory activates its module even when an option disables it; only a literal parser opt-out

@@ -1,6 +1,10 @@
 import { stringLiteral } from "../cpp-literals.js";
 import ts from "typescript";
 import { cameraRecordField } from "../compiler/properties.js";
+import {
+    cameraScalarWrite,
+    cameraVectorComponentWrite,
+} from "../compiler/camera-setters.js";
 import { snakeCase } from "../cpp-literals.js";
 import { LoweringContext } from "./context.js";
 import {
@@ -11,7 +15,7 @@ import {
     type PinnedNumericScope,
 } from "./pinned-numeric-lowerer.js";
 import { lowerPinnedBody } from "./pinned-body-lowerer.js";
-import { isAssignmentOperator, sameSource } from "../compiler/syntax.js";
+import { sameSource } from "../compiler/syntax.js";
 
 const ARC = "src/camera/arc-rotate.ts";
 const CONTROLS = "src/camera/arc-rotate-controls.ts";
@@ -88,12 +92,12 @@ export class CameraMutationLowerer {
 
     private lower(
         file: ts.SourceFile,
-        body: ts.Block,
+        statements: readonly ts.Statement[],
         bindings: Map<string, PinnedBinding>,
         calls: ReadonlyMap<string, PinnedCallSpelling> = new Map(),
         adapter: Pick<ControlAdapter, "statement" | "expression"> = {},
     ): string {
-        return lowerPinnedBody(file, body.statements, {
+        return lowerPinnedBody(file, statements, {
             bindings,
             calls,
 
@@ -226,7 +230,7 @@ export class CameraMutationLowerer {
         );
         const scalar = this.lower(
             file,
-            setter.body,
+            setter.body.statements,
             new Map([
                 [
                     "scalars[key]",
@@ -257,7 +261,7 @@ export class CameraMutationLowerer {
                 );
             return this.lower(
                 observable,
-                setter.body,
+                setter.body.statements,
                 new Map([
                     [
                         `this._${axis}`,
@@ -288,7 +292,7 @@ export class CameraMutationLowerer {
             );
         const bulkBody = this.lower(
             observable,
-            bulk.body,
+            bulk.body.statements,
             new Map(
                 axes.flatMap((axis): [string, PinnedBinding][] => [
                     [
@@ -337,7 +341,7 @@ export class CameraMutationLowerer {
                 );
             return this.lower(
                 freeFile,
-                setter.body,
+                setter.body.statements,
                 new Map([
                     [
                         field,
@@ -380,8 +384,9 @@ ${bulkBody}
 }`;
     }
 
-    /** Route writes in the actual pin body through its accessor, then reuse
-     * numeric lowering for every condition, intermediate and store order. */
+    /** Lower the actual pin body in place: its camera writes go through the
+     * setters their bindings name, and numeric lowering keeps every
+     * condition, intermediate and store order. */
     private controlBody(name: string, adapter: ControlAdapter = {}): string {
         const file = this.context.sourceFile(CONTROLS);
         const declaration = this.context.findNodes(
@@ -391,88 +396,35 @@ ${bulkBody}
         )[0];
         if (!declaration?.body)
             this.context.contractError(file, `Missing ${name}.`);
-        const transformed = ts.transform(declaration.body, [
-            (context) => {
-                const visit: ts.Visitor = (node) => {
-                    if (ts.isBinaryExpression(node)) {
-                        const path = this.context
-                            .propertyPath(node.left)
-                            ?.join(".");
-                        const field = scalarFields.find(
-                            (field) => path === `camera.${field}`,
-                        );
-                        const axis = axes.find(
-                            (axis) => path === `camera.target.${axis}`,
-                        );
-                        if (field || axis) {
-                            const operators = new Map<
-                                ts.SyntaxKind,
-                                ts.BinaryOperator | undefined
-                            >([
-                                [ts.SyntaxKind.EqualsToken, undefined],
-                                [
-                                    ts.SyntaxKind.PlusEqualsToken,
-                                    ts.SyntaxKind.PlusToken,
-                                ],
-                                [
-                                    ts.SyntaxKind.MinusEqualsToken,
-                                    ts.SyntaxKind.MinusToken,
-                                ],
-                            ]);
-                            if (operators.has(node.operatorToken.kind)) {
-                                const operator = operators.get(
-                                    node.operatorToken.kind,
-                                );
-                                const value =
-                                    operator === undefined
-                                        ? node.right
-                                        : ts.factory.createBinaryExpression(
-                                              node.left,
-                                              operator,
-                                              node.right,
-                                          );
-                                return ts.factory.createCallExpression(
-                                    ts.factory.createIdentifier(
-                                        `write_${field ?? `target_${axis}`}`,
-                                    ),
-                                    undefined,
-                                    [value],
-                                );
-                            }
-                            if (isAssignmentOperator(node.operatorToken.kind)) {
-                                this.context.contractError(
-                                    node,
-                                    "Camera control setter gained an unsupported compound assignment.",
-                                );
-                            }
-                        }
-                    }
-                    if (
-                        (ts.isPrefixUnaryExpression(node) ||
-                            ts.isPostfixUnaryExpression(node)) &&
-                        this.context.propertyPath(node.operand)?.[0] ===
-                            "camera"
-                    ) {
-                        this.context.contractError(
-                            node,
-                            "Camera control gained an unrepresented unary store.",
-                        );
-                    }
-                    return ts.visitEachChild(node, visit, context);
-                };
-                return (node) => ts.visitNode(node, visit) as ts.Block;
-            },
-        ]);
-        const translated = ts.createSourceFile(
-            `${name}.ts`,
-            `function body() ${ts.createPrinter().printNode(ts.EmitHint.Unspecified, transformed.transformed[0]!, file)}`,
-            ts.ScriptTarget.Latest,
-            true,
+        const { declaration: attach } = this.context.functionDeclaration(
+            CONTROLS,
+            "attachControl",
         );
-        transformed.dispose();
-        const body = translated.statements[0];
-        if (!body || !ts.isFunctionDeclaration(body) || !body.body)
-            throw new Error("Camera body reconstruction failed.");
+        // attachControl's own arrow helpers this body calls (`decayInertia`)
+        // are declared ahead of it, as the closure has them.
+        const helpers = new Set<ts.VariableStatement>();
+        for (const call of this.context.findNodes(
+            declaration.body,
+            ts.isCallExpression,
+        )) {
+            const helper = ts.isIdentifier(call.expression)
+                ? this.context.declarationOf(call.expression)
+                : undefined;
+            const statement = helper?.parent.parent;
+            if (
+                helper &&
+                ts.isVariableDeclaration(helper) &&
+                helper.initializer &&
+                ts.isArrowFunction(
+                    this.context.unwrapExpression(helper.initializer),
+                ) &&
+                statement &&
+                ts.isVariableStatement(statement) &&
+                statement.parent === attach.body
+            )
+                helpers.add(statement);
+        }
+        const statements = [...helpers, ...declaration.body.statements];
         const bindings = new Map<string, PinnedBinding>();
         bindings.set("Math.PI", { cpp: "pi_double", type: "scalar" });
         for (const property of [
@@ -492,17 +444,27 @@ ${bulkBody}
                 type: "scalar",
             });
         }
-        for (const access of this.context.findNodes(
-            body,
-            ts.isPropertyAccessExpression,
+        for (const access of statements.flatMap((statement) =>
+            this.context.findNodes(statement, ts.isPropertyAccessExpression),
         )) {
             const path = this.context.propertyPath(access);
             if (path?.length === 2 && path[0] === "camera") {
                 const field = cameraRecordField(path[1]!);
+                const setter = scalarFields.find((name) => name === path[1]);
                 if (field)
                     bindings.set(path.join("."), {
                         cpp: `camera.${field}`,
                         type: "scalar",
+                        ...(setter
+                            ? {
+                                  store: (value: string) =>
+                                      cameraScalarWrite(
+                                          "camera",
+                                          setter,
+                                          value,
+                                      ),
+                              }
+                            : {}),
                     });
                 else if (path[1]?.endsWith("Limit")) {
                     const field = snakeCase(path[1]);
@@ -514,17 +476,16 @@ ${bulkBody}
                 }
             }
         }
+        // The target vector is the camera's own: an alias of it
+        // (`const target = camera.target`) writes through the same setters.
+        bindings.set("camera.target", { cpp: "camera.target", type: "opaque" });
         for (const axis of axes)
             bindings.set(`camera.target.${axis}`, {
                 cpp: `camera.target.${axis}`,
                 type: "scalar",
+                store: (value) =>
+                    cameraVectorComponentWrite("camera", "target", axis, value),
             });
-        const attach = this.context.findNodes(
-            file,
-            (node): node is ts.FunctionDeclaration =>
-                ts.isFunctionDeclaration(node) &&
-                node.name?.text === "attachControl",
-        )[0]!;
         // The keyboard enabler and keyboard options are refused by the scene intrinsic.
         this.context.assertExpressionShape(
             this.context.variableInitializer(attach, "keyboardAttachment"),
@@ -549,25 +510,7 @@ ${bulkBody}
         }
         for (const [source, binding] of adapter.bindings ?? [])
             bindings.set(source, binding);
-        return this.lower(
-            translated,
-            body.body,
-            bindings,
-            new Map([
-                ...scalarFields.map((field): [string, PinnedCallSpelling] => [
-                    `write_${field}`,
-                    (args) =>
-                        `write_camera_scalar(camera, &CameraRecord::${field}, ${args.join(", ")})`,
-                ]),
-                ...axes.map((axis): [string, PinnedCallSpelling] => [
-                    `write_target_${axis}`,
-                    (args) =>
-                        `write_camera_vector_component(camera, &CameraRecord::target, &Vec3d::${axis}, ${args.join(", ")})`,
-                ]),
-                ...(adapter.calls ?? []),
-            ]),
-            adapter,
-        );
+        return this.lower(file, statements, bindings, adapter.calls, adapter);
     }
 
     public clamp(): string {

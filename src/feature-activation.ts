@@ -553,7 +553,7 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
     "light:included-meshes": {
         provenance:
             "src/light/types.ts LightBase.includedOnlyMeshIds, read by " +
-            "src/render/lights-ubo.ts affectsMesh; the id it joins on is " +
+            "src/render/mesh-light-selection.ts lightAffectsMeshId; the id it joins on is " +
             "src/mesh/mesh.ts Mesh.id",
         consumers: ["features.cmake", "variant table"],
     },
@@ -562,6 +562,44 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
             "src/light/clustered.ts, with the spot arm behind " +
             "src/light/clustered-spot-support.ts",
         consumers: ["features.cmake", "variant table"],
+    },
+    "light:rect-area": {
+        provenance:
+            "src/light/rect-area-light.ts#createRectAreaLight, its " +
+            "_writeLightUbo and the _validateLighting buildScene runs",
+        consumers: ["features.cmake", "variant table"],
+    },
+    "light:rect-area-lighting": {
+        provenance:
+            "src/light/enable-rect-area-lights.ts#enableRectAreaLights: " +
+            "rectAreaPbrExt and rectAreaStdExt " +
+            "(src/material/{pbr,standard}/fragments/rect-area-light-fragment.ts), " +
+            "the area single/multi light sources and the LTC tables " +
+            "(src/light/area-light-ltc.ts#decodeAreaLightLtc)",
+        consumers: [
+            "features.cmake",
+            "render_capabilities.hpp",
+            "variant table",
+        ],
+    },
+    "light:hierarchy": {
+        provenance:
+            "src/light/light-base.ts#createLightBase: a light's SceneNode " +
+            "parent and rotationQuaternion, and a node parented to a light " +
+            "(src/scene/world-matrix-state.ts)",
+        consumers: CMAKE,
+    },
+    "light:rect-area-emission": {
+        provenance:
+            "src/light/process-area-light-texture.ts#processAreaLightTexture " +
+            "and the textured scene snapshot it installs " +
+            "(src/light/area-light-emission.ts#prepareAreaLightEmission, " +
+            "src/light/area-light-emission-setup.ts)",
+        consumers: [
+            "features.cmake",
+            "render_capabilities.hpp",
+            "variant table",
+        ],
     },
     "loader:babylon": {
         provenance: "src/loader-babylon/load-babylon.ts",
@@ -2079,6 +2117,51 @@ function capabilityRows(
             ],
             "no scene material enables local cubemap probes",
             "src/material/pbr/enable-pbr-local-cubemap.ts: enablePbrLocalCubemap installs the probe binding and packing state",
+            [
+                "render_capabilities.hpp",
+                "material_texture_slots.hpp",
+                "variant table",
+            ],
+        ),
+        checkedRow(
+            "BBLITE_RECT_AREA_LIGHTS",
+            "capability",
+            has("light:rect-area-lighting"),
+            [
+                [
+                    has("light:rect-area-lighting"),
+                    "scene source reached light:rect-area-lighting",
+                ],
+            ],
+            "no scene enables rect-area lighting",
+            "src/light/enable-rect-area-lights.ts installs the scene's area " +
+                "lighting, whose rectAreaPbrExt and rectAreaStdExt fragments " +
+                "bind the two LTC tables " +
+                "(src/light/area-light-ltc.ts#bindAreaLightLtc); every " +
+                "variant key carries the scene's area lighting",
+            [
+                "render_capabilities.hpp",
+                "material_texture_slots.hpp",
+                "variant table",
+            ],
+        ),
+        checkedRow(
+            "BBLITE_RECT_AREA_EMISSION",
+            "capability",
+            has("light:rect-area-lighting") && has("light:rect-area-emission"),
+            [
+                [
+                    has("light:rect-area-lighting") &&
+                        has("light:rect-area-emission"),
+                    "scene source reached light:rect-area-lighting and " +
+                        "light:rect-area-emission",
+                ],
+            ],
+            "no area-lit scene can carry a processed emission image",
+            "src/light/area-light-emission-setup.ts registers " +
+                "rectAreaEmissionPbrExt and rectAreaEmissionStdExt, whose " +
+                "fragments bind the scene's emission array, its sampler and " +
+                "slot block (src/light/area-light-emission.ts#bindAreaLightEmission)",
             [
                 "render_capabilities.hpp",
                 "material_texture_slots.hpp",

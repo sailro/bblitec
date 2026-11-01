@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { pinnedDeclaration } from "./pinned-source.js";
 import test from "node:test";
 import ts from "typescript";
 import { gltfVariantNames, GLTF_VARIANT_PLAN } from "../src/gltf-document.js";
@@ -79,13 +80,9 @@ interface VariantData {
 
 /** Execute the complete pinned loader function, recording only resource leaves. */
 async function sourcePlan(json: JsonObject, context: LoweringContext) {
-    const { declaration } = context.functionDeclaration(
-        module,
-        "loadVariantMaterials",
-    );
     const source = ts.createSourceFile(
         module,
-        declaration.getText().replace(/^export\s+/, ""),
+        pinnedDeclaration(context, module, "loadVariantMaterials"),
         ts.ScriptTarget.Latest,
         true,
     );
@@ -152,13 +149,14 @@ async function sourcePlan(json: JsonObject, context: LoweringContext) {
         [],
         () => ({}),
     );
-    const { declaration: selection } = context.functionDeclaration(
+    const selection = pinnedDeclaration(
+        context,
         "src/loader-gltf/material-variants.ts",
         "selectVariant",
     );
     const select = createJavaScriptFunction(
         transpileCommonJs(
-            `${selection.getText().replace(/^export\s+/, "")}\nreturn selectVariant;`,
+            `${selection}\nreturn selectVariant;`,
             "selection.ts",
         ),
     )() as (container: { materialVariants: VariantData }, name: string) => void;

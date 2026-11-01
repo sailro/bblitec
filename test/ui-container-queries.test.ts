@@ -1,8 +1,6 @@
 import assert from "node:assert/strict";
-import { mkdirSync, writeFileSync } from "node:fs";
 import test from "node:test";
 import { compileSource } from "../src/compiler.js";
-import { readNativeHostUi } from "../src/native-host-ui.js";
 import { runRmlUiFixture } from "./native-fixture.js";
 
 const source = (
@@ -10,7 +8,7 @@ const source = (
 ) => `import {createEngine} from '@babylonjs/lite';await createEngine({});
     const sheet=document.createElement('style');sheet.textContent=${JSON.stringify(css)};document.head.appendChild(sheet);`;
 
-test("container rules preserve conditions across source and host emission", () => {
+test("container rules preserve their conditions through emission", () => {
     const css = `.parent{container-type:inline-size}.reset{container-type:normal}
         @media(max-width:800px){@container(max-width:320px){.row{display:grid;grid-template-columns:1fr}.row:hover{opacity:.5}}}
         @container(max-width:320px){@container(max-width:200px){.small{height:10px}}}
@@ -19,38 +17,15 @@ test("container rules preserve conditions across source and host emission", () =
     assert.match(result.cpp, /container-type:inline-size/);
     assert.match(
         result.cpp,
-        /800\.0, "display:grid;grid-template-columns:1fr;--bbl-authored-display:1;"[^\n]*320\.0\);/,
+        /"display:grid;grid-template-columns:1fr;--bbl-authored-display:1;", \.max_width = 800\.0, \.container_max_width = 320\.0\}\);/,
     );
-    assert.match(result.cpp, /"small"[^\n]*200\.0\);/);
-    assert.match(result.cpp, /UiMotionPreference::Reduce[^\n]*320\.0\);/);
-    mkdirSync("artifacts/ui-container-queries", { recursive: true });
-    const path = "artifacts/ui-container-queries/host.json";
-    writeFileSync(
-        path,
-        JSON.stringify({
-            elements: [],
-            styleRules: [
-                {
-                    kind: "class",
-                    primary: "row",
-                    style: "height:20px",
-                    containerMaxWidth: 320,
-                },
-                {
-                    kind: "sequence",
-                    primary: "input[type=range]",
-                    style: "height:8px",
-                    range: "thumb",
-                    containerMaxWidth: 320,
-                },
-            ],
-        }),
-    );
-    const host = readNativeHostUi(path);
-    assert.equal(host.styleRules?.[0]?.containerMaxWidth, 320);
     assert.match(
-        compileSource(source(""), { nativeHostUi: host }).cpp,
-        /ui_add_host_style_rule[^\n]*320\.0\);/,
+        result.cpp,
+        /"small"[^\n]*\.container_max_width = 200\.0\}\);/,
+    );
+    assert.match(
+        result.cpp,
+        /\.container_max_width = 320\.0, \.media = \{\.reduced_motion = true\}\}\);/,
     );
 });
 

@@ -6,6 +6,7 @@ import {
     isGlobalUndefined,
     isSymbolPropertyKey,
     namedMember,
+    resolvedSymbol,
 } from "./symbols.js";
 import {
     validateObjectProperties,
@@ -362,6 +363,23 @@ function messageDataType(
     );
 }
 
+/**
+ * A `location` member the Window realm answers at run time: navigation, and
+ * the query a runtime Window application reads (`runtimeLocationSearch`).
+ */
+export function isRuntimeLocationMember(
+    context: Pick<WorkerLoweringContext, "options" | "libraryGlobal">,
+    member: { name: string; expression: ts.Expression },
+): boolean {
+    return (
+        (member.name === "reload" ||
+            member.name === "assign" ||
+            (context.options.runtimeLocationSearch === true &&
+                (member.name === "search" || member.name === "href"))) &&
+        context.libraryGlobal(member.expression) === "location"
+    );
+}
+
 export function isNativeWorkerExpression(
     context: WorkerLoweringContext,
     expression: ts.Expression,
@@ -393,15 +411,7 @@ export function isNativeWorkerExpression(
         if (inner?.kind === "handle" && inner.handle === "worker-media-query")
             return true;
     }
-    if (
-        member &&
-        (member.name === "reload" ||
-            member.name === "assign" ||
-            (context.options.runtimeLocationSearch &&
-                (member.name === "search" || member.name === "href"))) &&
-        context.libraryGlobal(member.expression) === "location"
-    )
-        return true;
+    if (member && isRuntimeLocationMember(context, member)) return true;
     const globalMember = context.libraryGlobal(node);
     if (
         globalMember !== undefined &&
@@ -439,14 +449,39 @@ export function isNativeWorkerExpression(
 export function timerCancellation(
     context: Pick<
         LoweringServices,
-        "checker" | "compileNumber" | "compileValue" | "fail"
+        | "bindings"
+        | "checker"
+        | "compileNumber"
+        | "compileValue"
+        | "fail"
+        | "unwrap"
     >,
     argument: ts.Expression,
     cancel: (identifier: string) => string,
 ): string {
-    if (!isNullable(context.checker.getTypeAtLocation(argument)))
+    // A binding its declared type calls present may still hold no id: a
+    // `var` read before its assignment cancels nothing.
+    const { checker } = context;
+    const name = context.unwrap(argument);
+    const declaration = ts.isIdentifier(name)
+        ? resolvedSymbol(checker, name)?.valueDeclaration
+        : undefined;
+    const unassigned =
+        ts.isIdentifier(name) &&
+        declaration !== undefined &&
+        ts.isVariableDeclaration(declaration) &&
+        !isNullable(checker.getTypeAtLocation(declaration.name))
+            ? context.bindings.lookupOptional(name)
+            : undefined;
+    if (
+        unassigned?.dataType?.kind !== "optional" &&
+        !isNullable(checker.getTypeAtLocation(argument))
+    )
         return cancel(context.compileNumber(argument, "double"));
-    const value = context.compileValue(argument);
+    const value =
+        unassigned?.dataType?.kind === "optional"
+            ? unassigned
+            : context.compileValue(argument);
     if (
         value.kind !== "data" ||
         value.dataType?.kind !== "optional" ||

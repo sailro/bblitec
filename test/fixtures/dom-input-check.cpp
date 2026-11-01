@@ -4,6 +4,7 @@
 #include "../../artifacts/dom-input/focus.hpp"
 #include "pal_ui_rml.cpp"
 #include "pal_platform_events.hpp"
+#include "finger-events.hpp"
 #include <cassert>
 
 namespace bbl::pal {
@@ -161,14 +162,8 @@ int main() {
         pal::UiRmlRuntime runtime(engine, window, 640, 480);
         pal::update_ui_rml_runtime(runtime, 640, 480);
         const auto touch = [&](SDL_EventType type, SDL_FingerID id, float x, float y) {
-            SDL_Event event{};
-            event.type = type;
-            event.tfinger.windowID = SDL_GetWindowID(window);
-            event.tfinger.touchID = 9;
-            event.tfinger.fingerID = id;
-            event.tfinger.x = x / 640;
-            event.tfinger.y = y / 480;
-            const auto batch = pal::prepare_dom_platform_input(engine, event);
+            const auto batch = pal::prepare_dom_platform_input(
+                engine, finger_event(type, 9, id, x / 640, y / 480, SDL_GetWindowID(window)));
             dispatch_dom_batch(engine, batch);
             return batch->default_prevented;
         };
@@ -195,7 +190,7 @@ int main() {
     {
         Engine engine;
         pal::update_engine_canvas_metrics(engine, 640, 480, 2, 1);
-        int downs = 0, moves = 0, cancels = 0, clicks = 0;
+        int downs = 0, moves = 0, cancels = 0, mouse_cancels = 0, clicks = 0;
         int native_downs = 0, native_clicks = 0, native_cancels = 0;
         engine.mouse_down_callbacks.add(1, [&](const PlatformMouseEvent& event) {
             ++native_downs;
@@ -217,7 +212,7 @@ int main() {
                                if (event.dom->type == "pointermove")
                                    ++moves;
                                if (event.dom->type == "pointercancel")
-                                   ++cancels;
+                                   ++(event.pointer_type == "touch" ? cancels : mouse_cancels);
                                if (event.dom->type == "click")
                                    ++clicks;
                                if (event.dom->type == "wheel") {
@@ -229,13 +224,7 @@ int main() {
         pal::update_ui_rml_runtime(runtime, 640, 480);
         assert(engine.dom_input->hit_path(80, 120).front() == DomEventTarget::canvas());
         const auto touch = [&](SDL_EventType type, SDL_FingerID id, float x) {
-            SDL_Event event{};
-            event.type = type;
-            event.tfinger.touchID = 3;
-            event.tfinger.fingerID = id;
-            event.tfinger.x = x;
-            event.tfinger.y = .5f;
-            auto batch = pal::prepare_dom_platform_input(engine, event);
+            auto batch = pal::prepare_dom_platform_input(engine, finger_event(type, 3, id, x, .5f));
             dispatch_dom_batch(engine, batch);
             pal::dispatch_touch_defaults(engine, *batch);
             return batch->default_prevented;
@@ -262,7 +251,34 @@ int main() {
         SDL_Event blur{};
         blur.type = SDL_EVENT_WINDOW_FOCUS_LOST;
         dispatch_dom_batch(engine, pal::prepare_dom_platform_input(engine, blur));
-        assert(cancels == 2 && engine.dom_input->touches.empty());
+        // Focus loss also cancels the mouse, which the first tap moved over the canvas.
+        assert(cancels == 2 && mouse_cancels == 1 && engine.dom_input->touches.empty());
+        // Canvas touch listeners: a passive one cannot cancel; a drag past the slop fires no
+        // click, in the DOM or through the engine's click hook.
+        std::string touches;
+        on_dom_touch(
+            engine, DomEventTarget::canvas(), "touchstart", 2,
+            [&](const PlatformTouchEvent& event) {
+                assert(event.dom->target == DomEventTarget::canvas());
+                assert(event.touches.size() == 1 && event.changed_touches.size() == 1);
+                assert(event.changed_touches[0].client_x == 80 &&
+                       event.changed_touches[0].client_y == 120);
+                event.prevent_default();
+                touches += event.default_prevented ? "S!" : "S";
+            },
+            false, false, true);
+        on_dom_touch(engine, DomEventTarget::canvas(), "touchend", 2,
+                     [&](const PlatformTouchEvent& event) {
+                         assert(event.touches.empty() && event.changed_touches.size() == 1);
+                         touches += 'E';
+                     });
+        touch(SDL_EVENT_FINGER_DOWN, 1, .25f);
+        touch(SDL_EVENT_FINGER_UP, 1, .25f);
+        assert(touches == "SE" && downs == 4 && clicks == 2 && native_clicks == 2);
+        touch(SDL_EVENT_FINGER_DOWN, 1, .25f);
+        touch(SDL_EVENT_FINGER_MOTION, 1, .5f);
+        touch(SDL_EVENT_FINGER_UP, 1, .5f);
+        assert(touches == "SESE" && downs == 5 && clicks == 2 && native_clicks == 2);
         engine.dom_input->canvas_background = false;
         assert(engine.dom_input->hit_path(80, 120).front() != DomEventTarget::canvas());
         int resized = 0;
@@ -319,11 +335,8 @@ int main() {
         on_dom_pointer(engine, DomEventTarget::canvas(), "pointercancel", 1,
                        [&](const PlatformMouseEvent&) { ++cancels; });
         for (const SDL_FingerID id : {1, 2}) {
-            SDL_Event event{};
-            event.type = SDL_EVENT_FINGER_DOWN;
-            event.tfinger.touchID = 3;
-            event.tfinger.fingerID = id;
-            event.tfinger.x = static_cast<float>(id) / 3;
+            SDL_Event event =
+                finger_event(SDL_EVENT_FINGER_DOWN, 3, id, static_cast<float>(id) / 3, 0);
             dispatch_dom_batch(engine, pal::prepare_dom_platform_input(engine, event));
         }
         assert(downs == 2 &&

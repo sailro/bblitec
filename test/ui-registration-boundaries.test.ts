@@ -4,6 +4,7 @@ import { join, resolve } from "node:path";
 import test from "node:test";
 import { compileSource } from "../src/compiler.js";
 import { runRmlUiFixture } from "./native-fixture.js";
+import { hostUiOptions } from "./host-page-fixture.js";
 
 test("primary canvas lookup preserves scene ownership and ordinary queries stay retained", () => {
     for (const lookup of [
@@ -146,14 +147,14 @@ test("retained canvas metadata reads the native counter without recovery activat
         const engine = await createEngine(canvas);
         Object.assign(canvas.dataset, {drawCalls: engine.drawCallCount, ready: true});
     `,
-        {
-            nativeHostUi: {
-                sourcePath: "test/ui-registration-boundaries.test.ts",
+        hostUiOptions(
+            {
                 elements: [
                     { tag: "canvas", attributes: { id: "renderCanvas" } },
                 ],
             },
-        },
+            { path: "test/ui-registration-boundaries.test.ts" },
+        ),
     );
     assert.ok(result.manifest.features.includes("platform:window"));
     assert.ok(!result.manifest.features.includes("engine:device-recovery"));

@@ -1,3 +1,4 @@
+import { compilerRepositoryRoot } from "./repository-root.js";
 /**
  * The pin's own build step between its source and its package.
  *
@@ -28,8 +29,8 @@
  */
 import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
-import { dirname, resolve } from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 import vm from "node:vm";
 import ts from "typescript";
 
@@ -37,7 +38,6 @@ import { cachedBakeSync, moduleIdentity } from "./bake-cache.js";
 import { transpileCommonJs } from "./typescript-transpile.js";
 // A cycle with the store, which imports this module: benign, because the
 // root walk is a hoisted declaration this module reaches only at call time.
-import { findRepositoryRoot } from "./upstream-source.js";
 
 /** Where the pinned script lives in this repository's corpus. */
 const PINNED_WGSL_BUILD_SCRIPT =
@@ -154,9 +154,7 @@ export function packagedWgsl(
         .join("");
     const cached = packagedWgslCache.get(source);
     if (cached !== undefined) return cached;
-    const transformed = pinnedTaggedWgslTransform(
-        findRepositoryRoot(dirname(fileURLToPath(import.meta.url))),
-    )(
+    const transformed = pinnedTaggedWgslTransform(compilerRepositoryRoot())(
         `import { wgsl } from "./wgsl.js";\nconst marker = wgsl\`${source}\`;\n`,
         "marker.ts",
     );

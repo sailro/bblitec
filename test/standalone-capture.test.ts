@@ -73,10 +73,17 @@ test("standalone renderers synchronize live contexts, batch uploads and capture 
     );
     writeFileSync(
         join(directory, "texture-copy.hpp"),
-        cppRecord(
-            readFileSync("native/src/pal_sdl_gpu_shared.hpp", "utf8"),
-            "struct SdlCopyTextureDestination final : GpuObject {",
-        ),
+        [
+            cppRecord(
+                sdlShared,
+                "struct SdlCopyTextureDestination final : GpuObject {",
+            ),
+            cppFunction(sdlShared, "inline void set_pass_viewport("),
+            cppFunction(
+                sdlShared,
+                "inline PageCanvas set_page_canvas_viewport(SDL_GPURenderPass* pass",
+            ),
+        ].join("\n"),
     );
     writeFileSync(
         join(directory, "dawn-acquire.hpp"),

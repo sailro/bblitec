@@ -68,12 +68,18 @@ import {
 } from "./pinned-numeric-expression.js";
 import { cppCondition } from "../cpp-expressions.js";
 import { constantOf, unwrapExpression } from "./context.js";
-import { CPP_RECORD, type CppRecordShape, cppVector } from "./cpp-types.js";
+import {
+    CPP_RECORD,
+    CPP_SCALAR,
+    type CppRecordShape,
+    cppVector,
+} from "./cpp-types.js";
 import {
     PINNED_ARITHMETIC_OPERATORS,
     PINNED_ASSIGNMENT_OPERATORS,
     PINNED_BITWISE_ASSIGNMENT_OPERATORS,
     compoundAssignmentStore,
+    compoundAssignmentValue,
     PINNED_COMPARISON_OPERATORS,
     JS_BITWISE_FUNCTIONS,
     foldNumericBinary,
@@ -338,6 +344,13 @@ export interface PinnedBinding {
     materializeAlias?: true;
     /** Indexed stores through a platform view, including its bounds and rounding rules. */
     indexedStore?: (owner: string, index: string, value: string) => string;
+    /**
+     * A member written through its owner's setter (a camera's
+     * `write_camera_scalar`): the whole statement for a store of `value`.
+     * A compound store passes the combined value; an update or a store in
+     * value position refuses.
+     */
+    store?: (value: string) => string;
     /** For a view, the C++ expression giving its byte length. */
     bytesCpp?: string;
     /**
@@ -871,8 +884,15 @@ export class PinnedNumericLowerer {
 
     private localNames: Set<string>;
 
-    /** Local helper closures a builder declares and calls; see below. */
-    private readonly helpers = new Map<ts.Symbol | symbol, ts.ArrowFunction>();
+    /**
+     * Local helper closures a body declares and calls: a block-bodied one
+     * is inlined at each call, an expression-bodied one is the native
+     * `lambda` it was declared as. See `localHelper`.
+     */
+    private readonly helpers = new Map<
+        ts.Symbol | symbol,
+        { arrow: ts.ArrowFunction; lambda?: string }
+    >();
 
     /** How many helper bodies are being written out right now. */
     private inlining = 0;
@@ -940,16 +960,27 @@ export class PinnedNumericLowerer {
         if (ts.isVariableStatement(statement)) {
             const helper = this.localHelper(statement.declarationList);
             if (helper) {
+                const identity = this.sourceBindings.identity(helper.name);
                 // A builder's own `const createCap = (isTop) => {...}`.
                 // Recorded rather than emitted: it closes over the arrays
                 // the body is already growing, and every call names a
                 // literal argument, so inlining at each call site is what
                 // the pin's own two calls mean.
-                this.helpers.set(
-                    this.sourceBindings.identity(helper.name),
+                if (ts.isBlock(helper.arrow.body)) {
+                    this.helpers.set(identity, { arrow: helper.arrow });
+                    return [];
+                }
+                const value = this.valueHelper(
+                    helper.name,
                     helper.arrow,
+                    helper.arrow.body,
+                    indent,
                 );
-                return [];
+                this.helpers.set(identity, {
+                    arrow: helper.arrow,
+                    lambda: value.cpp,
+                });
+                return value.lines;
             }
             return this.declarations(statement.declarationList, indent);
         }
@@ -2447,6 +2478,25 @@ export class PinnedNumericLowerer {
             );
             if (operator) {
                 const target = unwrapExpression(expression.left);
+                // A member the caller writes through its setter takes the
+                // whole value the pin stores, combined for a compound store.
+                const store = this.binding(target)?.store;
+                if (store) {
+                    const right = this.storedValue(
+                        expression.left,
+                        expression.right,
+                    );
+                    return store(
+                        operator === "="
+                            ? right
+                            : compoundAssignmentValue(
+                                  operator,
+                                  this.expression(target),
+                                  right,
+                                  undefined,
+                              ).cpp,
+                    );
+                }
                 const owner = ts.isElementAccessExpression(target)
                     ? this.elementOwner(target)
                     : undefined;
@@ -2992,7 +3042,72 @@ export class PinnedNumericLowerer {
             : `bbl::js::${spelling.conversion}(${source.cpp})`;
     }
 
-    /** `const f = (a, b) => { ... }` — a void helper the body calls. */
+    /**
+     * `const f = (a: number, b: number): number => expression` — a value
+     * helper the body calls (`attachControl`'s `decayInertia`). It is one
+     * native lambda over the pin's own expression: a call evaluates its
+     * arguments into the lambda's parameters, which the expression may
+     * reassign as JavaScript parameters are copies, and the lambda closes
+     * over the body's locals by reference as the arrow does. The pin's own
+     * `number`/`boolean` annotations type the parameters and the result.
+     */
+    private valueHelper(
+        name: ts.Identifier,
+        arrow: ts.ArrowFunction,
+        body: ts.Expression,
+        indent: string,
+    ): { cpp: string; lines: string[] } {
+        const primitive = (
+            node: ts.Node,
+            type: ts.TypeNode | undefined,
+        ): readonly ["scalar" | "bool", string] =>
+            type?.kind === ts.SyntaxKind.NumberKeyword
+                ? ["scalar", CPP_SCALAR.number]
+                : type?.kind === ts.SyntaxKind.BooleanKeyword
+                  ? ["bool", CPP_SCALAR.boolean]
+                  : this.fail(node, "value helper type");
+        const parameters = arrow.parameters.map((parameter) => {
+            if (
+                !ts.isIdentifier(parameter.name) ||
+                parameter.initializer ||
+                parameter.dotDotDotToken ||
+                parameter.questionToken
+            ) {
+                this.fail(parameter, "value helper parameter");
+            }
+            const [type, cppType] = primitive(parameter, parameter.type);
+            return {
+                name: parameter.name,
+                cpp: this.localName(parameter.name.text),
+                type,
+                cppType,
+            };
+        });
+        const [, result] = primitive(arrow, arrow.type);
+        const value = this.withBindings(() => {
+            for (const parameter of parameters)
+                this.bindLocal(parameter.name, {
+                    cpp: parameter.cpp,
+                    type: parameter.type,
+                });
+            return this.expression(body);
+        });
+        const cpp = this.localName(name.text);
+        this.localNames.add(cpp);
+        const signature = parameters
+            .map((parameter) => `${parameter.cppType} ${parameter.cpp}`)
+            .join(", ");
+        return {
+            cpp,
+            lines: [
+                `${indent}const auto ${cpp} = [&](${signature}) -> ${result} {`,
+                `${indent}    return ${value};`,
+                `${indent}};`,
+            ],
+        };
+    }
+
+    /** `const f = (a, b) => ...` — a helper arrow the body declares and calls. */
     private localHelper(
         list: ts.VariableDeclarationList,
     ): { name: ts.Identifier; arrow: ts.ArrowFunction } | undefined {
@@ -3002,7 +3117,7 @@ export class PinnedNumericLowerer {
             return undefined;
         }
         const initializer = unwrapExpression(declaration.initializer);
-        return ts.isArrowFunction(initializer) && ts.isBlock(initializer.body)
+        return ts.isArrowFunction(initializer)
             ? { name: declaration.name, arrow: initializer }
             : undefined;
     }
@@ -3028,7 +3143,9 @@ export class PinnedNumericLowerer {
         if (!ts.isCallExpression(node)) return undefined;
         const callee = unwrapExpression(node.expression);
         if (!ts.isIdentifier(callee)) return undefined;
-        const arrow = this.helpers.get(this.sourceBindings.identity(callee));
+        const arrow = this.helpers.get(
+            this.sourceBindings.identity(callee),
+        )?.arrow;
         if (!arrow || !ts.isBlock(arrow.body)) return undefined;
         if (arrow.parameters.length !== node.arguments.length) {
             this.fail(node, `helper '${callee.text}' arity`);
@@ -3457,6 +3574,9 @@ export class PinnedNumericLowerer {
 
     private assignmentTarget(expression: ts.Expression): string {
         const unwrapped = unwrapExpression(expression);
+        // A setter-written member is stored only by a whole statement.
+        if (this.binding(unwrapped)?.store)
+            this.fail(unwrapped, "setter store outside a statement");
         const adapted = this.assignmentDomain(unwrapped);
         if (adapted !== undefined) return adapted;
         if (ts.isIdentifier(unwrapped)) {
@@ -4575,8 +4695,18 @@ export class PinnedNumericLowerer {
             this.translationActivity?.request("call", node, this.file);
             return result;
         }
-        // `steps[s]!(i)` -- a call through a bound function list.
         const indexed = unwrapExpression(callee);
+        const helper =
+            this.helpers.size > 0 && ts.isIdentifier(indexed)
+                ? this.helpers.get(this.sourceBindings.identity(indexed))
+                : undefined;
+        if (helper?.lambda !== undefined) {
+            if (helper.arrow.parameters.length !== node.arguments.length)
+                this.fail(node, "value helper arity");
+            this.translationActivity?.request("call", node, this.file);
+            return `${helper.lambda}(${args.join(", ")})`;
+        }
+        // `steps[s]!(i)` -- a call through a bound function list.
         if (ts.isElementAccessExpression(indexed)) {
             const list = this.elementOwner(indexed);
             if (list?.type === "function-list") {
@@ -4870,14 +5000,18 @@ export class PinnedNumericLowerer {
                 } ${this.identityOf(right)})`;
             }
         }
-        // `(state._flag = true)` as a value: the store, whose value is what
-        // it stored. A typed-array element would read back narrowed, so only
-        // a binding or a member is a target here.
-        if (node.operatorToken.kind === ts.SyntaxKind.EqualsToken) {
+        // `(state._flag = true)` or `(offset *= factor)` as a value: the
+        // store, whose value is what it stored, as C++'s own assignment
+        // yields it over these scalars. A typed-array element would read
+        // back narrowed, so only a binding or a member is a target here.
+        const assignment = PINNED_ASSIGNMENT_OPERATORS.get(
+            node.operatorToken.kind,
+        );
+        if (assignment !== undefined) {
             if (ts.isElementAccessExpression(unwrapExpression(node.left))) {
                 this.fail(node, "element store in value position");
             }
-            return `(${this.assignmentTarget(node.left)} = ${this.storedValue(node.left, node.right)})`;
+            return `(${this.assignmentTarget(node.left)} ${assignment} ${this.storedValue(node.left, node.right)})`;
         }
         switch (node.operatorToken.kind) {
             case ts.SyntaxKind.QuestionQuestionToken: {

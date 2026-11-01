@@ -13,8 +13,10 @@ import test from "node:test";
 import { jsonArray, jsonObject } from "./json.js";
 import { compileSource, surveySource } from "../src/compiler.js";
 import { refusalClass, type SurveyReport } from "../src/compiler/survey.js";
-import { registrySceneCompileOptions } from "../src/native-host-ui.js";
-import { getScene } from "../src/scene-registry.js";
+import {
+    getScene,
+    registrySceneCompileOptions,
+} from "../src/scene-registry.js";
 
 // Three refusals in two functions, each followed by a statement that still
 // lowers: the survey must reach all of them and continue past each.

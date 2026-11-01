@@ -28,6 +28,12 @@ export interface SceneNodeTransformDescriptor {
         | "set_scene_node_rotation_quaternion_component"
         | "set_scene_node_scaling_component";
     meshSetter?: "set_mesh_rotation_quaternion";
+    /**
+     * A light's write of the lane (`createLightBase` gives every light the
+     * SceneNode TRS, which `light_world_matrix` composes); a lane without one
+     * is not writable on a light.
+     */
+    lightSetter?: "set_light_rotation_quaternion";
     assetSetter: `set_asset_root_${SceneNodeTransformDescriptor["nativeField"]}`;
     assetComponentSetter: `set_asset_root_${SceneNodeTransformDescriptor["nativeField"]}_component`;
 }
@@ -68,6 +74,7 @@ export const SCENE_NODE_TRANSFORMS = [
         sceneNodeComponentSetter:
             "set_scene_node_rotation_quaternion_component",
         meshSetter: "set_mesh_rotation_quaternion",
+        lightSetter: "set_light_rotation_quaternion",
         assetSetter: "set_asset_root_rotation_quaternion",
         assetComponentSetter: "set_asset_root_rotation_quaternion_component",
     },

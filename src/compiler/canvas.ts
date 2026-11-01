@@ -15,6 +15,8 @@ import { isWindowObserver, windowInterfaceTypeof } from "./dom-targets.js";
 import { ApplicationRealmRequired } from "./worker-modules.js";
 import { nativeFunctionValue } from "./native-function-values.js";
 import { resolvedBuiltinConstructor } from "./builtin-constructors.js";
+import { receiverType } from "./dynamic-binding-storage.js";
+import { parseMediaQuery } from "../media-query.js";
 
 export interface CanvasContext
     extends
@@ -27,6 +29,7 @@ export interface CanvasContext
             | "callbackIdentity"
             | "defaultEngine"
             | "requireDefaultEngine"
+            | "dynamicBindings"
         > {}
 
 function hasDomInterface(
@@ -35,7 +38,7 @@ function hasDomInterface(
     name: string,
 ): boolean {
     const symbol = context.checker
-        .getNonNullableType(context.checker.getTypeAtLocation(expression))
+        .getNonNullableType(receiverType(context, expression))
         .getSymbol();
     return (
         symbol?.name === name &&
@@ -51,7 +54,7 @@ function hasDomMethod(
     interfaceName: string,
 ): boolean {
     const type = context.checker.getNonNullableType(
-        context.checker.getTypeAtLocation(expression.expression),
+        receiverType(context, expression.expression),
     );
     const method = type.getProperty(expression.name);
     return (
@@ -303,6 +306,15 @@ export function compileCanvasValue(
                     "matchMedia requires one media query string.",
                 );
             requireWindowHost(context, node);
+            const query = context.unwrap(argumentAt(node, 0));
+            if (
+                ts.isStringLiteralLike(query) &&
+                parseMediaQuery(query.text, "window") === undefined
+            )
+                return context.fail(
+                    query,
+                    "matchMedia query is outside the represented media grammar.",
+                );
             return {
                 kind: "worker-media-query",
                 dataType: { kind: "handle", handle: "worker-media-query" },
@@ -355,11 +367,11 @@ export function compileCanvasValue(
                 )
             );
         }
-        if (
-            member !== undefined &&
-            hasDomMethod(context, member, "MutationObserver")
-        ) {
-            const owner = context.compileValue(member.expression);
+        // A MutationObserver method call on a present observer.
+        const observerCall = (
+            owner: Value,
+            member: NamedMember,
+        ): Value | undefined => {
             if (owner.kind !== "worker-mutation-observer") return undefined;
             if (member.name === "disconnect" && !node.arguments.length)
                 return { kind: "void", cpp: `${owner.cpp}->disconnect()` };
@@ -421,7 +433,18 @@ export function compileCanvasValue(
                 kind: "void",
                 cpp: `${owner.cpp}->observe(${element.cpp}, ${filter === undefined ? "std::nullopt" : `std::vector<std::string>{${filter.join(",")}}`})`,
             };
-        }
+        };
+        if (
+            member !== undefined &&
+            hasDomMethod(context, member, "MutationObserver")
+        )
+            // A nullable observer calls through the chain's presence test.
+            return context.dataLowerer.chainReceiverCall(
+                context.compileValue(member.expression),
+                member.access,
+                node,
+                (owner) => observerCall(owner, member),
+            );
         if (
             member !== undefined &&
             member.name === "transferControlToOffscreen" &&

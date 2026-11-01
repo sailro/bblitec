@@ -169,15 +169,15 @@ int main() try {
         ui_set_style_property(engine, fade, "opacity", "0");
         at(1900);
         at(1925);
-        check(close_to(raw(fade)->GetComputedValues().opacity() * 100, 100, "fade delayed"),
+        check(close_to(raw(fade)->GetComputedValues().group_opacity() * 100, 100, "fade delayed"),
               "the delay holds the start value");
         at(2000);
         const double eased = 1 - bezier(0.42, 0, 1, 1, 0.5);
-        check(close_to(raw(fade)->GetComputedValues().opacity() * 100, float(eased * 100),
+        check(close_to(raw(fade)->GetComputedValues().group_opacity() * 100, float(eased * 100),
                        "fade eased"),
               "ease-in after the delay");
         at(2100);
-        check(close_to(raw(fade)->GetComputedValues().opacity() * 100, 0, "fade end"),
+        check(close_to(raw(fade)->GetComputedValues().group_opacity() * 100, 0, "fade end"),
               "the opacity ends at the declaration");
 
         // cssText replaces declarations through the style attribute.

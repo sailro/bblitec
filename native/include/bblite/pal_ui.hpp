@@ -137,8 +137,18 @@ bool ui_toggle_attribute(Engine& engine, UiElementHandle element, std::string na
                          std::optional<bool> force = std::nullopt);
 std::string ui_escape_rml(std::string_view text);
 void ui_set_attribute(Engine& engine, UiElementHandle element, std::string name, std::string value);
+/**
+ * A reflected `property` write through an element of statically unknown tag: its content attribute
+ * `name` when the element is one of `tags`; on another element the write would add an expando
+ * property, which throws NotSupportedError.
+ */
+void ui_set_declared_attribute(Engine& engine, UiElementHandle element,
+                               std::initializer_list<std::string_view> tags,
+                               std::string_view property, std::string name, std::string value);
 void ui_set_style_property(Engine& engine, UiElementHandle element, std::string name,
                            std::string value);
+/** What a run-time `background` shorthand gives a longhand: its CSS-wide keyword, else `initial`. */
+std::string ui_background_longhand(std::string_view shorthand, std::string_view initial);
 std::string ui_get_style_property(Engine& engine, UiElementHandle element, std::string_view name);
 std::string ui_remove_style_property(Engine& engine, UiElementHandle element,
                                      std::string_view name);
@@ -150,22 +160,8 @@ void ui_add_class_style(Engine& engine, UiElementHandle stylesheet, std::string 
                         std::string style);
 void ui_clear_style_rules(Engine& engine, UiElementHandle stylesheet);
 void ui_add_id_style(Engine& engine, UiElementHandle stylesheet, std::string id, std::string style);
-void ui_add_style_rule(
-    Engine& engine, UiElementHandle stylesheet, UiStyleSelectorKind selector, std::string primary,
-    std::string secondary, std::string tag, bool hover, double max_width, std::string style,
-    UiScrollbarPart scrollbar = UiScrollbarPart::None, bool focus_visible = false,
-    bool active = false, UiMotionPreference motion = UiMotionPreference::Any,
-    std::vector<UiSelectorStep> sequence = {}, UiGeneratedPart generated = UiGeneratedPart::None,
-    std::optional<UiGeneratedContent> content = std::nullopt, UiRangePart range = UiRangePart::None,
-    double container_max_width = -1.0, UiOrientation orientation = UiOrientation::Any);
-void ui_add_host_style_rule(
-    Engine& engine, UiStyleSelectorKind selector, std::string primary, std::string secondary,
-    std::string tag, bool hover, double max_width, std::string style, bool focus_visible = false,
-    bool active = false, UiScrollbarPart scrollbar = UiScrollbarPart::None,
-    UiMotionPreference motion = UiMotionPreference::Any, std::vector<UiSelectorStep> sequence = {},
-    UiGeneratedPart generated = UiGeneratedPart::None,
-    std::optional<UiGeneratedContent> content = std::nullopt, UiRangePart range = UiRangePart::None,
-    double container_max_width = -1.0, UiOrientation orientation = UiOrientation::Any);
+/** Appends `rule` to the `<style>` element `stylesheet`. */
+void ui_add_style_rule(Engine& engine, UiElementHandle stylesheet, UiStyleRule rule);
 js::Array<UiElementHandle> ui_query_class(Engine& engine, UiElementHandle root,
                                           std::string_view class_name);
 UiElementHandle ui_append_child(Engine& engine, UiElementHandle parent, UiElementHandle child);
@@ -321,6 +317,13 @@ struct UiRenderOperation {
     std::uint32_t before_draw = 0, index = 0;
 };
 
+/** A group with no spatial filters needs only the pixels its draws reach. */
+struct UiBoundedLayer {
+    std::uint32_t id = 0;
+    PixelViewport rect{};
+    std::uint32_t composite_first_index = 0;
+};
+
 /** A backdrop snapshot and separable blur, ordered between ordinary UI draws. */
 struct UiBackdrop {
     static constexpr std::uint32_t sample_index_count = 6;
@@ -354,16 +357,25 @@ struct UiRenderFrame {
     std::vector<UiBackdrop> backdrops;
     std::vector<UiLayerComposite> composites;
     std::vector<UiRenderOperation> operations;
+    std::vector<UiBoundedLayer> bounded_layers;
     std::uint32_t layer_count = 0;
     /**
      * First index of the trailing full-frame quad the recorder appends after
-     * the RmlUi draws. No entry in `draws` references it: the scene renderers
-     * draw its six indices to composite their resolved transparent UI layer
-     * over the frame, and consumers that blend `draws` straight into their
-     * target (the sprite drivers) carry it inert.
+     * the RmlUi draws. No entry in `draws` references it: multisampled consumers
+     * draw its six indices to composite their resolved transparent UI layer.
+     * Bounded groups carry their own local quad in `bounded_layers`.
      */
     std::uint32_t composite_first_index = 0;
 };
+
+inline UiBoundedLayer ui_layer_target(const UiRenderFrame& frame, std::uint32_t layer) {
+    for (const auto& bounded : frame.bounded_layers)
+        if (bounded.id == layer)
+            return bounded;
+    return {layer,
+            {0, 0, static_cast<std::int32_t>(frame.width), static_cast<std::int32_t>(frame.height)},
+            frame.composite_first_index};
+}
 
 /** SDL swapchain textures cannot be sampled or copied for backdrop effects. */
 inline bool ui_frame_reads_target(const UiRenderFrame& frame) {
@@ -375,15 +387,17 @@ inline bool ui_frame_reads_target(const UiRenderFrame& frame) {
     return false;
 }
 
+/** An untextured quad in premultiplied `red`, `green`, `blue` and `alpha`. */
 inline void append_ui_quad(UiRenderFrame& frame, float left, float top, float right, float bottom,
-                           std::uint8_t color) {
+                           std::uint8_t red, std::uint8_t green, std::uint8_t blue,
+                           std::uint8_t alpha) {
     const std::uint32_t base = static_cast<std::uint32_t>(frame.vertices.size());
     frame.vertices.insert(frame.vertices.end(),
                           {
-                              UiRenderVertex{left, top, color, color, color, 255, 0, 0},
-                              UiRenderVertex{right, top, color, color, color, 255, 1, 0},
-                              UiRenderVertex{right, bottom, color, color, color, 255, 1, 1},
-                              UiRenderVertex{left, bottom, color, color, color, 255, 0, 1},
+                              UiRenderVertex{left, top, red, green, blue, alpha, 0, 0},
+                              UiRenderVertex{right, top, red, green, blue, alpha, 1, 0},
+                              UiRenderVertex{right, bottom, red, green, blue, alpha, 1, 1},
+                              UiRenderVertex{left, bottom, red, green, blue, alpha, 0, 1},
                           });
     frame.indices.insert(frame.indices.end(), {
                                                   base,
@@ -393,6 +407,12 @@ inline void append_ui_quad(UiRenderFrame& frame, float left, float top, float ri
                                                   base + 2,
                                                   base + 3,
                                               });
+}
+
+/** An opaque untextured quad in grey `color`. */
+inline void append_ui_quad(UiRenderFrame& frame, float left, float top, float right, float bottom,
+                           std::uint8_t color) {
+    append_ui_quad(frame, left, top, right, bottom, color, color, color, 255);
 }
 
 /** Browser host chrome for a programmatically focused render canvas. */
@@ -415,11 +435,6 @@ inline void append_canvas_focus_outline(UiRenderFrame& frame, UiClientRect recta
                      0, 0, frame.width, frame.height, false});
 }
 
-inline void append_canvas_focus_outline(UiRenderFrame& frame) {
-    append_canvas_focus_outline(frame, UiClientRect{0, 0, static_cast<double>(frame.width),
-                                                    static_cast<double>(frame.height)});
-}
-
 /** Opaque RmlUi projection of an engine's retained UI tree. */
 struct UiRmlRuntime;
 
@@ -436,6 +451,12 @@ void update_ui_rml_runtime(UiRmlRuntime& runtime, std::uint32_t width, std::uint
  * follow `performance_milliseconds()`.
  */
 void set_ui_rml_time(UiRmlRuntime& runtime, std::optional<double> milliseconds);
+/**
+ * The device state the media features read, as a host read it for its frame: the
+ * runtime reads a feature left absent itself, while a sheet observes it.
+ */
+void supply_ui_rml_media_device(UiRmlRuntime& runtime, std::optional<bool> reduced_motion,
+                                std::optional<InputCapabilities> input);
 /**
  * When time-driven UI work (animations, transitions, caret blink, scrolling,
  * animated gradient text) next changes the document after an update at a set

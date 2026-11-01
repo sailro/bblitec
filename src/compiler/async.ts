@@ -5,7 +5,12 @@ import type {
     NativeReturnValueCompiler,
 } from "./lowering-services.js";
 import ts from "typescript";
-import { absenceOf, knownCondition, undefinedValue } from "./values/model.js";
+import {
+    absenceOf,
+    knownCondition,
+    undefinedValue,
+    valueDataType,
+} from "./values/model.js";
 import { schedulerOf } from "./schedulers.js";
 import {
     hasUndefinedCompletion,
@@ -27,6 +32,8 @@ import {
     valueOperands,
     outermostWrapper,
     positionalParameter,
+    valueConsumer,
+    choosesOperand,
     functionKind,
     isAsyncFunction,
     type SupportedFunction,
@@ -131,6 +138,26 @@ interface AsyncContext extends Pick<
 export class PendingActivationsRequired extends Error {
     constructor() {
         super("A constructed promise requires pending-activation unwinding.");
+    }
+}
+
+/**
+ * Whether nothing reads what an await settles to: a discarded value
+ * (`await x;`, `void await x`), a comma's left operand, or a yielded
+ * operand (a `?:` arm, a short circuit's right) of a selection nothing reads.
+ */
+function settlementUnread(node: ts.AwaitExpression): boolean {
+    for (let at: ts.Expression = outermostWrapper(node); ;) {
+        const consumer = valueConsumer(at);
+        if (consumer.kind === "discarded") return true;
+        if (consumer.kind !== "operand") return false;
+        const { selection, yielded } = consumer;
+        // `,` drops its left operand; `?:` reads its condition.
+        if (!yielded) return !choosesOperand(selection);
+        // A short circuit reads the left operand it yields in part.
+        if (ts.isBinaryExpression(selection) && selection.left === at)
+            return false;
+        at = outermostWrapper(selection);
     }
 }
 
@@ -293,18 +320,12 @@ export class AsyncLowerer {
                 ) &&
                 awaitedType !== undefined &&
                 isVoid(awaitedType);
-            let operand = erasedVoid
+            const operand = erasedVoid
                 ? undefined
                 : context.compileValue(node.expression);
-            // `await null;` yields like any await; nothing reads its null.
-            if (
-                operand?.kind === "json-null" &&
-                ts.isExpressionStatement(outermostWrapper(node).parent)
-            ) {
-                context.emitDiscardedValue(operand);
-                operand = undefined;
-            }
-            const awaited = this.asPromise(operand, node);
+            const awaited = this.asPromise(operand, node, {
+                unread: settlementUnread(node),
+            });
             const temporary = this.suspend(awaited, "await_result");
             const settled = awaited.promiseResult!;
             // An owned engine pair is never taken or rebound, so a
@@ -1192,7 +1213,7 @@ export class AsyncLowerer {
             source = context.checker.getTypeAtLocation(node),
         ): void => {
             if (!type) {
-                value = this.asPromise(value, node, source);
+                value = this.asPromise(value, node, { source });
                 const result = value.promiseResult;
                 const owned =
                     result && representedResultType(context.dataTypes, result);
@@ -1324,7 +1345,7 @@ export class AsyncLowerer {
         source = this.context.checker.getTypeAtLocation(node),
     ): string {
         return this.context.dataLowerer.compileKnownValueForSink(
-            this.asPromise(value, node, source, target),
+            this.asPromise(value, node, { source, target }),
             target,
             node,
         );
@@ -1467,19 +1488,13 @@ export class AsyncLowerer {
             expected?: ts.Type,
         ): Value => {
             const promise = this.pinArgument(
-                this.asPromise(value, source, expected),
+                this.asPromise(value, source, { source: expected }),
                 "all_input",
                 source,
             );
             if (!settled) return promise;
             const output = promise.promiseResult!;
-            const type =
-                output.dataType ??
-                (output.kind === "number" ||
-                output.kind === "boolean" ||
-                output.kind === "string"
-                    ? { kind: output.kind }
-                    : undefined);
+            const type = valueDataType(output);
             if (!type && output.kind !== "void")
                 return context.fail(
                     call,
@@ -2156,13 +2171,7 @@ export class AsyncLowerer {
             argument ?? node,
             context.checker.getTypeAtLocation(argument ?? node),
         );
-        const own =
-            value.dataType ??
-            (value.kind === "string" ||
-            value.kind === "number" ||
-            value.kind === "boolean"
-                ? { kind: value.kind }
-                : undefined);
+        const own = valueDataType(value);
         const settlement = (
             type: ts.Type | undefined,
         ): DataType | undefined => {
@@ -2307,13 +2316,21 @@ export class AsyncLowerer {
     /**
      * `value` as a settled promise, converted against `source` (the awaited
      * expression's type). No value -- an erased await's -- settles void and
-     * reads no type.
+     * reads no type. A non-thenable settlement nothing reads (`unread`:
+     * `await x;`) runs, then settles void.
      */
     private asPromise(
         value: Value | undefined,
         node: ts.Node,
-        source?: ts.Type,
-        target?: DataType<"promise">,
+        {
+            source,
+            target,
+            unread = false,
+        }: {
+            source?: ts.Type | undefined;
+            target?: DataType<"promise"> | undefined;
+            unread?: boolean;
+        } = {},
     ): Value {
         if (value?.kind === "promise") return value;
         if (value) {
@@ -2322,7 +2339,10 @@ export class AsyncLowerer {
             if (adopted) return adopted;
             value = this.normalizeUndefined(value, source);
             this.refuseThenable(value, node, source);
-            value = this.ownResult(value, node, source);
+            if (unread) {
+                this.context.emitDiscardedValue(value);
+                value = undefined;
+            } else value = this.ownResult(value, node, source);
         }
         if (!value || value.kind === "void") {
             if (value) this.context.emitDiscardedValue(value);

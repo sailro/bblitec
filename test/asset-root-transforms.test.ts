@@ -5,7 +5,10 @@ import test from "node:test";
 import { compileSource } from "../src/compiler.js";
 import { assetRootTransformSource } from "../src/lowering/asset-root-transform.js";
 import { LoweringContext } from "../src/lowering/context.js";
-import { LightLowerer } from "../src/lowering/light-lowerer.js";
+import {
+    LightLowerer,
+    lowerLightHierarchy,
+} from "../src/lowering/light-lowerer.js";
 import { pinnedMatrixHeader } from "../src/lowering/pinned-matrix.js";
 import { pinnedWorldTransformHeader } from "../src/lowering/pinned-world-transform.js";
 import { importPinnedModule } from "../src/pinned-shader-composer.js";
@@ -63,6 +66,19 @@ test(
         writeFileSync(
             join(headers, "pinned_world_transform.hpp"),
             pinnedWorldTransformHeader(context),
+        );
+        // The light hierarchy's mesh and transform-node arms, which a light
+        // under an imported root never reaches.
+        writeFileSync(
+            join(headers, "renderer_plan.hpp"),
+            `#pragma once
+#include <bblite/runtime.hpp>
+#include <stdexcept>
+namespace bbl::upstream {
+inline std::array<float, 16> mesh_world_matrix(const Engine&, const MeshRecord&) { throw std::logic_error("mesh parent"); }
+inline std::array<float, 16> transform_node_world(const Engine&, TransformNodeHandle) { throw std::logic_error("node parent"); }
+}
+`,
         );
         const steps: string[] = [];
         function snapshot(cpp: string) {
@@ -138,9 +154,10 @@ test(
 namespace bbl {
 AssetRecord& asset_record(Engine& engine, std::uint32_t asset) {return engine.assets.at(asset);}
 void mark_mesh_dirty(Engine& engine, MeshHandle mesh) {++engine.meshes.at(mesh.value).transform_version;}
-${assetRootTransformSource(context)}
+${assetRootTransformSource(context, false, true)}
 }
 ${lightMatrix.source}
+${lowerLightHierarchy(context).source}
 int main() {
     bbl::Engine engine;
     engine.assets.emplace_back(); engine.meshes.emplace_back();
@@ -159,11 +176,13 @@ int main() {
     assert(bbl::asset_container_root(engine, asset) == asset);
     engine.lights.emplace_back();
     engine.lights[0].position = {-.5f,.25f,1};
-    bbl::set_light_asset_parent(engine, bbl::LightHandle{0}, asset);
+    bbl::set_light_parent(engine, bbl::LightHandle{0}, bbl::SceneNodeHandle{asset});
+    assert(engine.assets[0].parented_lights.size() == 1);
     ${steps.join("\n")}
     assert(engine.meshes[0].transform_version > 5);
-    bbl::set_light_asset_parent(engine, bbl::LightHandle{0}, {});
+    bbl::set_light_parent(engine, bbl::LightHandle{0}, bbl::SceneNodeHandle{bbl::AssetHandle{}});
     assert(!engine.lights[0].parent_world_matrix);
+    assert(engine.assets[0].parented_lights.empty());
     assert(bbl::upstream::light_world_matrix(engine.lights[0])[12] == -.5f);
 }
 `,

@@ -4,10 +4,11 @@ import {
     type ServerResponse,
 } from "node:http";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, statSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { extname, relative, resolve, sep } from "node:path";
-import type { NativeHostUi } from "./compiler/types.js";
+import type { Page } from "playwright-core";
+import { HOST_PRIMARY_CANVAS_ID } from "./host-primary-canvas.js";
 import type { ReferenceSettle } from "./scene-registry.js";
 import { applyCaptureAnimationPose } from "./capture-animation-pose.js";
 import {
@@ -15,11 +16,10 @@ import {
     engineFrameCaptureModule,
     waitForCapturedEngines,
 } from "./capture-engine-frames.js";
-import { nativeHostUiStyleRules, uiStyleSelector } from "./ui-style-rule.js";
 import ts from "typescript";
 import { moduleSpecifiers } from "./typescript-module-specifiers.js";
 import { rewriteModuleSpecifiers } from "./module-specifier-rewrite.js";
-import { pinnedLabPublicFile } from "./pinned-lab-materializers.js";
+import { pinnedLabPublicFile, servedFile } from "./pinned-lab-materializers.js";
 
 // ---------------------------------------------------------------------------
 // Lazy module loads
@@ -153,7 +153,9 @@ export function pinnedLabPublicAssetPath(requestPath: string): string {
         relative === "HavokPhysics.wasm"
         ? "HavokPhysics.wasm"
         : relative.replace(
-              /^(?:.*\/)?(?:lab\/lite\/src\/demos|(?:lite\/)?bundle\/demos)\//,
+              // A page served from the lab root requests its demo modules
+              // beneath `lite/src/demos/`.
+              /^(?:.*\/)?(?:lite\/src\/demos|(?:lite\/)?bundle\/demos)\//,
               "",
           );
 }
@@ -169,7 +171,8 @@ export function pinnedLabPublicAssetPath(requestPath: string): string {
  */
 export function bundledDemoAssetPath(requestPath: string): string | undefined {
     const relative = requestPath.replace(/^\/+/, "").replaceAll("\\", "/");
-    const marker = "lab/lite/src/demos/";
+    // The lab's demo modules, beneath the repository or the lab root.
+    const marker = "lite/src/demos/";
     const markerIndex = relative.indexOf(marker);
     if (markerIndex < 0) return undefined;
     const prefix = relative.slice(0, markerIndex + marker.length);
@@ -195,21 +198,14 @@ export function flattenedBundledDemoAssetPath(
     root = resolve("."),
 ): string | undefined {
     const relativePath = requestPath.replace(/^\/+/, "").replaceAll("\\", "/");
-    const marker = "lab/lite/src/demos/";
+    const marker = "lite/src/demos/";
     const markerIndex = relativePath.indexOf(marker);
     if (markerIndex < 0) return undefined;
     const prefix = relativePath.slice(0, markerIndex + marker.length);
     const parts = relativePath.slice(prefix.length).split("/");
     for (let omitted = 1; omitted < parts.length; omitted += 1) {
         const candidate = `${prefix}${parts.slice(omitted).join("/")}`;
-        const candidatePath = resolve(root, candidate);
-        if (
-            candidatePath.startsWith(`${root}${sep}`) &&
-            existsSync(candidatePath) &&
-            statSync(candidatePath).isFile()
-        ) {
-            return candidate;
-        }
+        if (servedFile(root, candidate) !== undefined) return candidate;
     }
     return undefined;
 }
@@ -225,8 +221,7 @@ type SuiteAnimationPoseProtocol = "applied-group-pose-v1";
 const entryReadyMarks =
     'document.documentElement.setAttribute("data-fixed-engine-starting", "true");' +
     'document.documentElement.setAttribute("data-capture-ready", "true");';
-const fixedEngineStartMarker =
-    'document.getElementById("renderCanvas")?.setAttribute("data-fixed-engine-starting", "true");\n    await startEngine(engine);';
+const fixedEngineStartMarker = `document.getElementById(${JSON.stringify(HOST_PRIMARY_CANVAS_ID)})?.setAttribute("data-fixed-engine-starting", "true");\n    await startEngine(engine);`;
 const documentEngineStartMarker =
     'document.documentElement.setAttribute("data-fixed-engine-starting", "true");\n    await startEngine(engine);';
 
@@ -485,6 +480,27 @@ const seededRandomScript =
     " return ((t ^ (t >>> 14)) >>> 0) / 4294967296;" +
     " }; })();";
 
+/** Where a capture page records its engine canvases. */
+const engineCanvasRecordKey = "bblite.capture.engine-canvases";
+
+/**
+ * Records each engine canvas -- one given a WebGPU context, or handed to a
+ * worker engine -- from before any page script runs: the canvas-only
+ * screenshot keeps them alone (`screenshotScenePage`), and asking a canvas
+ * for a context afterwards would create one on a canvas that has none.
+ */
+const engineCanvasRecorderScript =
+    "(() => { const engines = new WeakSet();" +
+    ` Object.defineProperty(window, Symbol.for(${JSON.stringify(engineCanvasRecordKey)}), { value: engines });` +
+    " const getContext = HTMLCanvasElement.prototype.getContext;" +
+    " HTMLCanvasElement.prototype.getContext = function (type, ...rest) {" +
+    " const context = getContext.call(this, type, ...rest);" +
+    ' if (context && type === "webgpu") engines.add(this);' +
+    " return context; };" +
+    " const transfer = HTMLCanvasElement.prototype.transferControlToOffscreen;" +
+    " HTMLCanvasElement.prototype.transferControlToOffscreen = function () {" +
+    " engines.add(this); return transfer.call(this); }; })();";
+
 interface SuiteCaptureOptions {
     /** Preserve browser scrollbars, including their layout width. */
     showScrollbars?: boolean;
@@ -520,14 +536,12 @@ interface SuiteCaptureOptions {
      * so the native scene takes the branch the reference page takes.
      */
     search?: string;
-    /** Audited host-page elements that surround the immutable scene module. */
-    hostUi?: NativeHostUi;
     /**
      * The directory `/` paths name, for a page outside the repository: its
      * modules and files are served from it before the repository's.
      */
     siteRoot?: string;
-    /** The public directory root-relative asset URLs are served from first. */
+    /** The directory the site serves at "/" ahead of its root, as Vite does. */
     publicDir?: string;
     /**
      * The program starts no engine and writes no canvas readiness: it is
@@ -544,53 +558,6 @@ export function captureUiEnabled(
     environment: NodeJS.ProcessEnv = process.env,
 ): boolean {
     return environment.BBLITE_CAPTURE_UI !== "0";
-}
-
-function hostUiBootstrapScript(
-    hostUi: NonNullable<SuiteCaptureOptions["hostUi"]>,
-): string {
-    const payload = JSON.stringify({ elements: hostUi.elements }).replaceAll(
-        "</script",
-        "<\\/script",
-    );
-    const styleSheet = nativeHostUiStyleRules(hostUi)
-        .map((rule) => {
-            let body = `${uiStyleSelector(rule)}{${rule.style}}`;
-            if (rule.containerMaxWidth !== undefined)
-                body = `@container(max-width:${rule.containerMaxWidth}px){${body}}`;
-            if (rule.orientation !== undefined)
-                body = `@media(orientation:${rule.orientation}){${body}}`;
-            if (rule.reducedMotion !== undefined)
-                body = `@media(prefers-reduced-motion:${rule.reducedMotion ? "reduce" : "no-preference"}){${body}}`;
-            return rule.maxWidth === undefined
-                ? body
-                : `@media(max-width:${rule.maxWidth}px){${body}}`;
-        })
-        .join("\n");
-    const stylePayload = JSON.stringify(styleSheet).replaceAll(
-        "</script",
-        "<\\/script",
-    );
-    return `<script>(() => {
-const hostUi = ${payload};
-const hostStyleSheet = ${stylePayload};
-if (hostStyleSheet) {
-    const style = document.createElement("style");
-    style.textContent = hostStyleSheet;
-    document.head.appendChild(style);
-}
-const create = (record) => {
-    if (record.tag === undefined) return document.createTextNode(record.text);
-    const element = document.createElement(record.tag);
-    for (const [name, value] of Object.entries(record.attributes ?? {})) {
-        element.setAttribute(name, value);
-    }
-    if (record.text !== undefined) element.textContent = record.text;
-    for (const child of record.children ?? []) element.appendChild(create(child));
-    return element;
-};
-for (const element of hostUi.elements) document.body.appendChild(create(element));
-})();</script>\n`;
 }
 
 /**
@@ -658,29 +625,26 @@ export function createSuiteSceneServer(
               .join("/")
               .replace(/\.ts$/, ".js")}`
         : "/scene.js";
-    const seedScript = options.seededRandom
-        ? `<script>${seededRandomScript}</script>\n`
-        : "";
+    // Plain scripts that run before every page script.
+    const startScripts =
+        `<script>${engineCanvasRecorderScript}</script>\n` +
+        (options.seededRandom
+            ? `<script>${seededRandomScript}</script>\n`
+            : "");
     const fixedFrameScript =
         options.fixedAnimationFrame === undefined ||
         options.independentEngines !== undefined
             ? ""
             : `<script>${fixedAnimationFrameScript(options.fixedAnimationFrame)}</script>\n`;
-    const hostUiScript = options.hostUi
-        ? hostUiBootstrapScript(options.hostUi)
-        : "";
-    const hideNonCanvasAtFixedFrame =
-        options.fixedAnimationFrame !== undefined && !captureUiEnabled();
     let html = `<!doctype html><html><head><style>
 html,body,canvas{margin:0;width:${width}px;height:${height}px;overflow:hidden;display:block}
-${hideNonCanvasAtFixedFrame ? "body>:not(#renderCanvas){visibility:hidden!important}" : ""}
-</style></head><body><canvas id="renderCanvas" width="${width}" height="${height}"></canvas>
-${seedScript}${fixedFrameScript}${hostUiScript}<script type="module" src="${entryPath}"></script></body></html>`;
+</style></head><body><canvas id="${HOST_PRIMARY_CANVAS_ID}" width="${width}" height="${height}"></canvas>
+${startScripts}${fixedFrameScript}<script type="module" src="${entryPath}"></script></body></html>`;
     if (options.hostPage) {
         const original = readFileSync(resolve(options.hostPage), "utf8");
         html = hostPageWithEntry(original, entryPath).replace(
             "<head>",
-            `<head>${seedScript}${fixedFrameScript}`,
+            `<head>${startScripts}${fixedFrameScript}`,
         );
     }
     const capturedEngines = new Set<string>();
@@ -774,14 +738,13 @@ ${seedScript}${fixedFrameScript}${hostUiScript}<script type="module" src="${entr
             return;
         }
         const relative = decodeURIComponent(url.pathname).replace(/^\/+/, "");
+        // The site's public files serve first, untransformed, as Vite
+        // serves them; then its root's.
         const publicPath =
-            publicDir === undefined ? undefined : resolve(publicDir, relative);
-        if (
-            publicPath !== undefined &&
-            publicPath.startsWith(`${publicDir}${sep}`) &&
-            existsSync(publicPath) &&
-            statSync(publicPath).isFile()
-        ) {
+            publicDir === undefined
+                ? undefined
+                : servedFile(publicDir, relative);
+        if (publicPath !== undefined) {
             serveLocalFile(
                 response,
                 publicPath,
@@ -791,27 +754,24 @@ ${seedScript}${fixedFrameScript}${hostUiScript}<script type="module" src="${entr
             return;
         }
         for (const servedRoot of servedRoots) {
-            const path = resolve(servedRoot, relative);
+            const path = url.pathname.endsWith(".ts")
+                ? undefined
+                : servedFile(servedRoot, relative);
             // Local TypeScript modules transpile on demand. Corpus scenes
             // write both specifier styles: the ESM ".js" one the demo build
             // rewrites, and the bare extensionless one bundlers resolve (the
             // sprite scenes import `../_shared/sprite-atlas-image`), so the
             // sibling to compile is found either way.
-            if (
-                url.pathname.endsWith(".ts") ||
-                !existsSync(path) ||
-                !statSync(path).isFile()
-            ) {
-                const typescriptPath = url.pathname.endsWith(".ts")
-                    ? path
-                    : url.pathname.endsWith(".js")
-                      ? `${path.slice(0, -3)}.ts`
-                      : `${path}.ts`;
-                if (
-                    typescriptPath.startsWith(`${servedRoot}${sep}`) &&
-                    existsSync(typescriptPath) &&
-                    statSync(typescriptPath).isFile()
-                ) {
+            if (path === undefined) {
+                const typescriptPath = servedFile(
+                    servedRoot,
+                    url.pathname.endsWith(".ts")
+                        ? relative
+                        : url.pathname.endsWith(".js")
+                          ? `${relative.slice(0, -3)}.ts`
+                          : `${relative}.ts`,
+                );
+                if (typescriptPath !== undefined) {
                     const sourceText = readFileSync(typescriptPath, "utf8");
                     const fixedFrameSource =
                         options.fixedAnimationFrame === undefined ||
@@ -838,12 +798,7 @@ ${seedScript}${fixedFrameScript}${hostUiScript}<script type="module" src="${entr
                     );
                     return;
                 }
-            }
-            if (
-                path.startsWith(`${servedRoot}${sep}`) &&
-                existsSync(path) &&
-                statSync(path).isFile()
-            ) {
+            } else {
                 serveLocalFile(
                     response,
                     path,
@@ -853,34 +808,35 @@ ${seedScript}${fixedFrameScript}${hostUiScript}<script type="module" src="${entr
                 return;
             }
         }
-        const bundledRelative = bundledDemoAssetPath(relative);
-        const bundledPath =
-            bundledRelative === undefined
-                ? undefined
-                : resolve(root, bundledRelative);
-        if (
-            bundledPath !== undefined &&
-            bundledPath.startsWith(`${root}${sep}`) &&
-            existsSync(bundledPath) &&
-            statSync(bundledPath).isFile()
-        ) {
-            response.writeHead(200, {
-                "Content-Type": mimeType(bundledPath),
-            });
-            response.end(readFileSync(bundledPath));
-            return;
-        }
-        const flattenedRelative = flattenedBundledDemoAssetPath(relative, root);
-        const flattenedPath =
-            flattenedRelative === undefined
-                ? undefined
-                : resolve(root, flattenedRelative);
-        if (flattenedPath !== undefined) {
-            response.writeHead(200, {
-                "Content-Type": mimeType(flattenedPath),
-            });
-            response.end(readFileSync(flattenedPath));
-            return;
+        // A demo module's bundle-relative asset, beneath the root serving it.
+        for (const servedRoot of servedRoots) {
+            const bundledRelative = bundledDemoAssetPath(relative);
+            const bundledPath =
+                bundledRelative === undefined
+                    ? undefined
+                    : servedFile(servedRoot, bundledRelative);
+            if (bundledPath !== undefined) {
+                response.writeHead(200, {
+                    "Content-Type": mimeType(bundledPath),
+                });
+                response.end(readFileSync(bundledPath));
+                return;
+            }
+            const flattenedRelative = flattenedBundledDemoAssetPath(
+                relative,
+                servedRoot,
+            );
+            const flattenedPath =
+                flattenedRelative === undefined
+                    ? undefined
+                    : resolve(servedRoot, flattenedRelative);
+            if (flattenedPath !== undefined) {
+                response.writeHead(200, {
+                    "Content-Type": mimeType(flattenedPath),
+                });
+                response.end(readFileSync(flattenedPath));
+                return;
+            }
         }
         // Pinned lab/public assets back every scene source: corpus
         // scenes and project-owned gates share the demo asset roots.
@@ -1020,7 +976,7 @@ const schedule = () => {
         if (
             engineStartFrame < 0 &&
             (marks.dataset.fixedEngineStarting === "true" ||
-                document.getElementById("renderCanvas")?.dataset.fixedEngineStarting === "true")
+                document.getElementById(${JSON.stringify(HOST_PRIMARY_CANVAS_ID)})?.dataset.fixedEngineStarting === "true")
         ) {
             engineStartFrame = frame;
         }
@@ -1146,12 +1102,8 @@ export async function captureSuiteReference(
     if (existsSync(referencePath) && !force) return;
     // Past the cached-reference early return, the browser is genuinely
     // needed; only now does the harness (playwright + typescript) load.
-    const {
-        hideNonCanvasChrome,
-        screenshotCaptureBrowserArgs,
-        waitForSceneReady,
-        withBrowserPage,
-    } = browserHarness();
+    const { screenshotCaptureBrowserArgs, waitForSceneReady, withBrowserPage } =
+        browserHarness();
     const moduleSource = suiteBrowserModule(
         sourcePath,
         transform,
@@ -1197,27 +1149,64 @@ export async function captureSuiteReference(
                 await page.evaluate(waitForCapturedEngines, 60_000);
             }
             mkdirSync(resolve(referencePath, ".."), { recursive: true });
-            if (captureUiEnabled()) {
-                await page.screenshot({ path: referencePath });
-            } else {
-                if (
-                    options.independentEngines !== undefined ||
-                    options.hostPage !== undefined
-                ) {
-                    // Keep every canvas at its authored page position. Hidden
-                    // ancestors retain layout; visibility is restored on canvases.
-                    await page.addStyleTag({
-                        content:
-                            "body *{visibility:hidden!important}body canvas{visibility:visible!important}html,body{background:#000!important}",
-                    });
-                    await page.screenshot({ path: referencePath });
-                    return;
-                }
-                await hideNonCanvasChrome(page);
-                await page
-                    .locator("#renderCanvas")
-                    .screenshot({ path: referencePath });
-            }
+            await screenshotScenePage(page, referencePath, options);
         },
     );
+}
+
+/**
+ * A scene page's screenshot at `path`: the whole page, or with
+ * `BBLITE_CAPTURE_UI=0` its canvases alone. The golden and the instrumented
+ * capture both take it, so they cannot disagree about what it contains.
+ *
+ * Canvas-only hides every element (hidden ancestors keep their layout) and
+ * keeps the engine canvases visible without their focus outline, which is
+ * retained UI rather than a canvas pixel; the rules outrank the page's own.
+ * A host page or independent engines keep every engine canvas at its
+ * authored position over black, as the native canvas-only frame does; any
+ * other canvas is UI there. Otherwise the primary canvas is shot alone. A
+ * scene whose
+ * frame depends on DOM the port does not reproduce (a control that must be
+ * clicked first) is out of scope -- see docs/fidelity.md.
+ */
+export async function screenshotScenePage(
+    page: Page,
+    path: string,
+    options: Pick<SuiteCaptureOptions, "hostPage" | "independentEngines">,
+): Promise<void> {
+    if (captureUiEnabled()) {
+        await page.screenshot({ path });
+        return;
+    }
+    const everyCanvas =
+        options.hostPage !== undefined ||
+        options.independentEngines !== undefined;
+    const primary = `#${HOST_PRIMARY_CANVAS_ID}`;
+    await page.addStyleTag({
+        content:
+            "body *{visibility:hidden!important}canvas{outline:none!important}" +
+            (everyCanvas
+                ? "html,body{background:#000!important}"
+                : `${primary}{visibility:visible!important}`),
+    });
+    if (everyCanvas) {
+        await page.evaluate((key) => {
+            const engines: unknown = Reflect.get(window, Symbol.for(key));
+            if (!(engines instanceof WeakSet)) {
+                throw new Error(
+                    "The capture page did not record its engine canvases.",
+                );
+            }
+            for (const canvas of document.querySelectorAll("canvas")) {
+                if (engines.has(canvas)) {
+                    canvas.style.setProperty(
+                        "visibility",
+                        "visible",
+                        "important",
+                    );
+                }
+            }
+        }, engineCanvasRecordKey);
+        await page.screenshot({ path });
+    } else await page.locator(primary).screenshot({ path });
 }

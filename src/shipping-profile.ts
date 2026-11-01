@@ -6,9 +6,8 @@
  */
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
-import { findRepositoryRoot } from "./repository-root.js";
+import { join, resolve } from "node:path";
+import { compilerRepositoryRoot } from "./repository-root.js";
 import { runCaptured } from "./tooling/logged-process.js";
 
 export interface ShippingFeatures {
@@ -60,11 +59,7 @@ export function writeShippingProfile(
             `-DBBLITE_GENERATED_DIR=${resolve(generatedDirectory)}`,
             `-DBBLITE_PROFILE_OUTPUT=${output}`,
             "-P",
-            join(
-                findRepositoryRoot(dirname(fileURLToPath(import.meta.url))),
-                "tools",
-                "shipping-profile.cmake",
-            ),
+            join(compilerRepositoryRoot(), "tools", "shipping-profile.cmake"),
         ],
         `tools/shipping-profile.cmake failed for ${generatedDirectory}`,
     );

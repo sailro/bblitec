@@ -2,7 +2,7 @@
  * `scene -- check <id> --observe`: the browser half of a declared check.
  *
  * Serves the scene's corpus source through the same harness the golden
- * capture uses — the pinned package, the registry host page and host UI,
+ * capture uses — the pinned package, the registry host page,
  * the seeded random stub — with the check's source hooks injected, plays
  * the declared page actions, and records each step's state and
  * screenshot into `artifacts/check/<id>/browser/`. The provenance triple
@@ -23,7 +23,7 @@ import {
     createSuiteSceneServer,
     suiteBrowserModule,
 } from "../capture-suite-reference.js";
-import { readNativeHostUi } from "../native-host-ui.js";
+import { HOST_PRIMARY_CANVAS_ID } from "../host-primary-canvas.js";
 import { usesSeededRandom } from "../parity-scene.js";
 import { compareImages } from "../parity.js";
 import { sceneReferencePage, type SceneDefinition } from "../scene-registry.js";
@@ -85,7 +85,7 @@ export function applyObserveHooks(
 
 const DEFAULT_STATE_EXPRESSION =
     "typeof window.__observe === 'function' ? window.__observe() : " +
-    "(() => { const canvas = document.getElementById('renderCanvas'); " +
+    `(() => { const canvas = document.getElementById(${JSON.stringify(HOST_PRIMARY_CANVAS_ID)}); ` +
     "return { dataset: { ...canvas.dataset }, viewport: { width: canvas.width, height: canvas.height } }; })()";
 
 async function letFramesPass(page: Page, count: number): Promise<void> {
@@ -173,9 +173,9 @@ async function navigateReady(
     await gotoScenePage(page, origin, search);
     if (ready === "none") return;
     await page.waitForFunction(
-        (flag: string) =>
-            document.getElementById("renderCanvas")?.dataset[flag] === "true",
-        ready,
+        ({ flag, id }: { flag: string; id: string }) =>
+            document.getElementById(id)?.dataset[flag] === "true",
+        { flag: ready, id: HOST_PRIMARY_CANVAS_ID },
         { timeout: 120_000 },
     );
 }
@@ -199,9 +199,6 @@ export async function runObserve(options: ObserveRunOptions): Promise<string> {
         sourcePath: scene.source,
         seededRandom: usesSeededRandom(scene),
         ...(hostPage !== undefined ? { hostPage } : {}),
-        ...(scene.nativeHostUi
-            ? { hostUi: readNativeHostUi(scene.nativeHostUi) }
-            : {}),
     });
     const viewport = spec.viewport ?? [1280, 720];
     const stateExpression = spec.state ?? DEFAULT_STATE_EXPRESSION;
@@ -326,7 +323,7 @@ export async function runObserve(options: ObserveRunOptions): Promise<string> {
                     const path = resolve(outputDirectory, image);
                     if (step.screenshot === "canvas") {
                         await page
-                            .locator("#renderCanvas")
+                            .locator(`#${HOST_PRIMARY_CANVAS_ID}`)
                             .screenshot({ path });
                     } else {
                         await page.screenshot({ path });

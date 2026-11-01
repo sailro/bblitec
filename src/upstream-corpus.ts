@@ -1,6 +1,4 @@
-import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
-import { findRepositoryRoot } from "./upstream-source.js";
+import { findRepositoryRoot, readPinFile } from "./upstream-source.js";
 
 export interface CorpusFile {
     upstreamPath: string;
@@ -69,12 +67,11 @@ export interface BabylonLiteCorpusManifest {
 export function readBabylonLiteCorpus(
     repositoryRoot = findRepositoryRoot(),
 ): BabylonLiteCorpusManifest {
-    const path = resolve(repositoryRoot, "upstream/babylon-lite-corpus.json");
-    const value: unknown = JSON.parse(readFileSync(path, "utf8"));
-    if (typeof value !== "object" || value === null || Array.isArray(value)) {
-        throw new Error(`Invalid Babylon Lite corpus manifest: ${path}.`);
-    }
-    const manifest = value as Partial<BabylonLiteCorpusManifest>;
+    const path = "upstream/babylon-lite-corpus.json";
+    const manifest = readPinFile(
+        path,
+        repositoryRoot,
+    ) as Partial<BabylonLiteCorpusManifest>;
     if (
         typeof manifest.package !== "string" ||
         typeof manifest.version !== "string" ||

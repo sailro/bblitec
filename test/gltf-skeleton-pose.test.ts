@@ -3,7 +3,6 @@ import { execFileSync } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import test from "node:test";
-import ts from "typescript";
 import { LoweringContext } from "../src/lowering/context.js";
 import { lowerGltfSkeletonPose } from "../src/lowering/gltf/skeleton-pose.js";
 import { lowerMatrixComposeCpp } from "../src/lowering/gltf/matrix-leaves.js";
@@ -17,6 +16,7 @@ import {
     optionalNativeFixtureTools,
     runNativeFixtureCompiler,
 } from "./native-fixture.js";
+import { pinnedDeclaration, pinnedModuleSource } from "./pinned-source.js";
 
 const module = "src/skeleton/skeleton-pose.ts";
 const matrix = (x = 0) =>
@@ -46,16 +46,9 @@ function sourceCase(
     override: boolean,
     worldOverride: boolean,
 ) {
-    const text = context
-        .sourceFile(module)
-        .statements.filter((node) => !ts.isImportDeclaration(node))
-        .map((node) => node.getText().replace(/^export /, ""))
-        .join("\n");
+    const text = pinnedModuleSource(context, module);
     const math = (name: string, path: string) =>
-        context
-            .functionDeclaration(path, name)
-            .declaration.getText()
-            .replace(/^export /, "");
+        pinnedDeclaration(context, path, name);
     const build = context.functionDeclaration(
         "src/skeleton/bone-control.ts",
         "buildSkeletons",

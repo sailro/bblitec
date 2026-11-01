@@ -18,6 +18,7 @@ import type { DataType } from "./data-types.js";
 import { undefinedOnly, holdsOnly, PRIMITIVE_KINDS } from "./type-facts.js";
 import { undefinedValue } from "./values/model.js";
 import type { ClassHierarchy } from "./class-members.js";
+import { engineBodies, isEngineDeclaration } from "./engine-bodies.js";
 
 /** Existing library operations with an actual undefined completion. */
 function undefinedLibraryCall(
@@ -175,6 +176,20 @@ export function provenUndefinedValue(
         const callee = unwrapExpression(expression.expression);
         const declaration = calledDeclaration(context.checker, expression);
         if (undefinedLibraryCall(context.checker, expression)) return true;
+        // A Babylon Lite function runs its pinned body, proven as a source
+        // function's is: its typing's `void` proves nothing.
+        const pinned =
+            declaration && isEngineDeclaration(declaration)
+                ? engineBodies().bodies(declaration)
+                : undefined;
+        if (pinned)
+            return pinned.every((body) =>
+                hasUndefinedCompletion(
+                    engineBodies().checkerFor(body),
+                    body,
+                    awaited,
+                ),
+            );
         if (ts.isIdentifier(callee)) {
             const bound = context.bindings.lookupOptional(callee);
             const stored = bound?.dataType;

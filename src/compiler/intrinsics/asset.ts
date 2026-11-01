@@ -21,8 +21,13 @@ import {
     loadTexture2DDefaults,
     loadTexture2DOptionFields,
     loadTexture2DSamplerCpp,
+    pinnedAddressMode,
+    pinnedTextureFilter,
     textureFilterByPin,
+    type PinnedAddressMode,
 } from "../../pinned-address-modes.js";
+import type { Texture2DOptions } from "@babylonjs/lite";
+import { unlessRuntimeValue } from "../compile-error.js";
 import {
     compileTableOption,
     staticTableOption,
@@ -729,6 +734,27 @@ function compileLoadTexture2D(
     let premultiplyAlpha: boolean = loadTexture2DDefaults.premultiplyAlpha;
     let addressModeU = `bbl::${addressModeByPin[loadTexture2DDefaults.addressModeU]}`;
     let addressModeV = `bbl::${addressModeByPin[loadTexture2DDefaults.addressModeV]}`;
+    // The options the call passed, as the pin's own `Texture2DOptions`, kept
+    // when every one is known at generation, for a generation-time replay
+    // of this load (`processAreaLightTexture`).
+    let loaderOptions: Texture2DOptions | undefined = {};
+    const recordOption = <Name extends keyof Texture2DOptions>(
+        name: Name,
+        value: Texture2DOptions[Name] | undefined,
+    ): void => {
+        if (value === undefined) loaderOptions = undefined;
+        else if (loaderOptions) loaderOptions[name] = value;
+    };
+    // An option `compileTableOption` already resolved and checked, read
+    // back as its generation-known spelling.
+    const staticAddressMode = (
+        expression: ts.Expression,
+    ): PinnedAddressMode | undefined => {
+        const key = unlessRuntimeValue(() =>
+            context.compileStringLiteral(expression),
+        );
+        return key === undefined ? undefined : pinnedAddressMode(key);
+    };
     if (call.arguments[2]) {
         const options = context.expectObjectLiteral(call.arguments[2]);
         for (const property of options.properties) {
@@ -747,6 +773,7 @@ function compileLoadTexture2D(
                 textureFilter,
                 minExpression,
             );
+            recordOption("minFilter", pinnedTextureFilter(minFilter));
         }
         const magExpression = context.objectProperty(options, "magFilter");
         if (magExpression) {
@@ -755,6 +782,7 @@ function compileLoadTexture2D(
                 textureFilter,
                 magExpression,
             );
+            recordOption("magFilter", pinnedTextureFilter(magFilter));
         }
         const addressUExpression = context.objectProperty(
             options,
@@ -766,6 +794,7 @@ function compileLoadTexture2D(
                 textureAddressMode,
                 addressUExpression,
             );
+            recordOption("addressModeU", staticAddressMode(addressUExpression));
         }
         const addressVExpression = context.objectProperty(
             options,
@@ -777,33 +806,22 @@ function compileLoadTexture2D(
                 textureAddressMode,
                 addressVExpression,
             );
+            recordOption("addressModeV", staticAddressMode(addressVExpression));
         }
-        const mipExpression = context.objectProperty(options, "mipMaps");
-        if (mipExpression) {
-            mipMaps =
-                knownCondition(context.compileBoolean(mipExpression)) === true;
-        }
-        const invertExpression = context.objectProperty(options, "invertY");
-        if (invertExpression) {
-            invertY =
-                knownCondition(context.compileBoolean(invertExpression)) ===
-                true;
-        }
-        const srgbExpression = context.objectProperty(options, "srgb");
-        if (srgbExpression) {
-            srgb =
-                knownCondition(context.compileBoolean(srgbExpression)) === true;
-        }
-        const premultiplyExpression = context.objectProperty(
-            options,
-            "premultiplyAlpha",
-        );
-        if (premultiplyExpression) {
-            premultiplyAlpha =
-                knownCondition(
-                    context.compileBoolean(premultiplyExpression),
-                ) === true;
-        }
+        const booleanOption = (
+            name: "mipMaps" | "invertY" | "srgb" | "premultiplyAlpha",
+        ): boolean | undefined => {
+            const expression = context.objectProperty(options, name);
+            if (!expression) return undefined;
+            const known = knownCondition(context.compileBoolean(expression));
+            recordOption(name, known);
+            return known === true;
+        };
+        mipMaps = booleanOption("mipMaps") ?? mipMaps;
+        invertY = booleanOption("invertY") ?? invertY;
+        srgb = booleanOption("srgb") ?? srgb;
+        premultiplyAlpha =
+            booleanOption("premultiplyAlpha") ?? premultiplyAlpha;
     }
     // `maxAnisotropy: allLinear ? 4 : 1` — the rule, and the mip
     // filter it folds in, live in `pinned-address-modes.ts` because
@@ -839,6 +857,7 @@ function compileLoadTexture2D(
                 : {
                       source: url.startsWith("data:") ? url : asset!.source,
                       entryFileName: context.options.fileName,
+                      ...(loaderOptions ? { loaderOptions } : {}),
                   }),
         },
         engineCpp: engine.engineCpp ?? engine.cpp,

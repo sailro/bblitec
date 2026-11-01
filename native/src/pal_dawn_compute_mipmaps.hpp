@@ -26,7 +26,7 @@ create_dawn_compute_mipmap_pipeline(WGPUDevice device, const std::string& format
     result->sampler =
         require_dawn_resource(wgpuDeviceCreateSampler(device, &sampler), "mipmap sampler");
     WGPUColorTargetState target = WGPU_COLOR_TARGET_STATE_INIT;
-    target.format = dawn_compute_texture_format(format);
+    target.format = dawn_named_texture_format(format);
     WGPUFragmentState fragment = WGPU_FRAGMENT_STATE_INIT;
     fragment.module = result->shader;
     fragment.entryPoint = {"fs", 2};

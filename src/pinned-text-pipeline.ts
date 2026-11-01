@@ -48,10 +48,28 @@ interface TextPipelineDescriptor {
     };
 }
 
+/** The buffer types and texture sample types a pinned text layout declares. */
+export type TextBindingKind =
+    "uniform" | "read-only-storage" | "unfilterable-float" | "uint";
+
 interface TextBindingLayout {
     entries: readonly ({ binding: number; visibility: number } & (
-        | { buffer: { type: "uniform" | "read-only-storage" } }
-        | { texture: { sampleType: "unfilterable-float" } }
+        | {
+              buffer: {
+                  type: Extract<
+                      TextBindingKind,
+                      "uniform" | "read-only-storage"
+                  >;
+              };
+          }
+        | {
+              texture: {
+                  sampleType: Extract<
+                      TextBindingKind,
+                      "unfilterable-float" | "uint"
+                  >;
+              };
+          }
     ))[];
 }
 

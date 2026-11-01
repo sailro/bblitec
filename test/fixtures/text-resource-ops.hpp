@@ -166,17 +166,17 @@ struct RecorderDevice final : GpuDevice, TextPipelineProvider {
 };
 
 /** The pin's records, filled as the fixtures' JavaScript twins are. */
-js::TypedArray<float> pattern_floats(std::size_t count, std::size_t seed) {
+template <typename T> js::TypedArray<T> pattern_array(std::size_t count, std::size_t seed) {
     std::vector<std::uint8_t> bytes(count);
     for (std::size_t i = 0; i < count; ++i)
         bytes[i] = static_cast<std::uint8_t>((i * 37 + seed) & 255);
-    return js::TypedArray<float>(js::ArrayBuffer(std::move(bytes)));
+    return js::TypedArray<T>(js::ArrayBuffer(std::move(bytes)));
 }
 std::shared_ptr<SharedAtlas> text_atlas() {
     auto atlas = std::make_shared<SharedAtlas>();
-    atlas->curve_tex_data = pattern_floats(131072, 3);
-    atlas->band_tex_data = pattern_floats(131072, 4);
-    atlas->meta_data = pattern_floats(384, 5);
+    atlas->curve_tex_data = pattern_array<float>(131072, 3);
+    atlas->band_tex_data = pattern_array<std::uint32_t>(131072, 4);
+    atlas->meta_data = pattern_array<float>(384, 5);
     atlas->curve_texels_used = 3;
     atlas->band_texels_used = 7;
     atlas->slot_count = 3;

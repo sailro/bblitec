@@ -7,9 +7,11 @@
 
 #include <bblite/runtime.hpp>
 #include <bblite/upstream/render_capabilities.hpp>
+#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <optional>
 #include <span>
 #include <utility>
@@ -35,8 +37,8 @@ inline bool surface_canvas_laid_out(const Engine& engine, UiElementHandle canvas
 /** The laid-out canvas's presented rectangle (`presented_canvas_rect`) in the target. */
 inline PixelViewport laid_out_canvas_pane(const Engine& engine, UiElementHandle canvas,
                                           std::uint32_t target_width, std::uint32_t target_height) {
-    return presented_canvas_rect(handle_at(engine.ui_elements, canvas), engine.options.width,
-                                 engine.options.height, target_width, target_height);
+    return presented_canvas_rect(handle_at(engine.ui_elements, canvas), engine.ui_page_viewport,
+                                 target_width, target_height);
 }
 
 /** An auxiliary registered scene whose surface canvas retained layout never placed. */
@@ -46,21 +48,35 @@ inline bool unplaced_surface_scene(const Engine& engine, const Scene& scene) {
 }
 
 /**
- * The 2D frame host's text and sprite contexts draw the whole window, which
+ * The 2D frame host's text and sprite contexts draw the page viewport, which
  * presents an authored engine canvas only while layout gives it the whole
- * window.
+ * page viewport.
  */
-inline void require_window_filling_engine_canvas(const Engine& engine, std::uint32_t width,
-                                                 std::uint32_t height) {
+inline void require_page_filling_engine_canvas(const Engine& engine, std::uint32_t width,
+                                               std::uint32_t height) {
     if (!engine.surface_canvas || !surface_canvas_laid_out(engine, *engine.surface_canvas))
         return;
-    const PixelViewport pane = laid_out_canvas_pane(engine, *engine.surface_canvas, width, height);
-    if (pane.x != 0 || pane.y != 0 || pane.width != static_cast<std::int32_t>(width) ||
-        pane.height != static_cast<std::int32_t>(height))
+    if (laid_out_canvas_pane(engine, *engine.surface_canvas, width, height) !=
+        page_canvas(engine.ui_page_viewport, width, height).rect)
         throw std::runtime_error("A text or sprite renderer presents an authored engine canvas "
-                                 "only while it fills the window.");
+                                 "only while it fills the page viewport.");
 }
 #endif
+
+/**
+ * A registered scene that runs its own frame graph -- a surface scene, or
+ * one with tasks -- is no utility layer of the scene pass before it: it
+ * clears and presents through its own tasks.
+ */
+inline bool scene_runs_own_graph(const Scene& scene) {
+    return scene.surface_canvas || scene.has_frame_passes();
+}
+
+/** Whether any of `scenes` runs a frame graph, which the task resources serve. */
+inline bool scenes_run_frame_graphs(std::span<const std::shared_ptr<Scene>> scenes) {
+    return std::any_of(scenes.begin(), scenes.end(),
+                       [](const auto& scene) { return scene->has_frame_passes(); });
+}
 
 /**
  * The equal pane of `scene` among the primary scene and the unplaced

@@ -73,12 +73,13 @@ interface UboWriterRequest {
     /** The field the writer's `offsets.get(...)` names. */
     baseField: string;
     /**
-     * The parameter carrying the base offset, where the pin passes it in rather
-     * than looking it up. The light writers take `(data, offset)` and index from
-     * there, so that parameter names the base field the same way an
+     * The position of the parameter carrying the base offset, where the pin
+     * passes it in rather than looking it up. The light writers take
+     * `(data, offset)` and index from there, so that parameter -- whatever
+     * the writer names it -- names the base field the same way an
      * `offsets.get` local would.
      */
-    offsetParameter?: string;
+    offsetParameterIndex?: number;
     /** Every field of the variant, so `off + n` resolves to a name. */
     slots: readonly UboFieldSlot[];
     /**
@@ -1612,8 +1613,15 @@ export function lowerPinnedUboWriter(
         };
     }
     const offsetLocals = new Map<string, string>();
-    if (request.offsetParameter !== undefined) {
-        offsetLocals.set(request.offsetParameter, request.baseField);
+    if (request.offsetParameterIndex !== undefined) {
+        const parameter = declaration.parameters[request.offsetParameterIndex];
+        if (!parameter || !ts.isIdentifier(parameter.name))
+            return context.contractError(
+                declaration,
+                `Expected ${request.symbolName} to take its base offset at ` +
+                    `parameter ${request.offsetParameterIndex}.`,
+            );
+        offsetLocals.set(parameter.name.text, request.baseField);
     }
     const state: WriterState = {
         context,

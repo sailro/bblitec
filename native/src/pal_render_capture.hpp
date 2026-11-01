@@ -37,6 +37,7 @@
 #include <bblite/pal.hpp>
 #include <bblite/runtime.hpp>
 #include <bblite/upstream/render_capabilities.hpp>
+#include <bblite/upstream/light_kinds.hpp>
 
 // The custom-shader stage blocks are reported through the same
 // `shader_stage_block_floats` packing both backends push, so a capture
@@ -443,20 +444,6 @@ inline const char* camera_kind_name(CameraKind kind) {
         return "free";
     case CameraKind::geospatial:
         return "geospatial";
-    }
-    return "unknown";
-}
-
-inline const char* light_kind_name(LightKind kind) {
-    switch (kind) {
-    case LightKind::directional:
-        return "directional";
-    case LightKind::hemispheric:
-        return "hemispheric";
-    case LightKind::point:
-        return "point";
-    case LightKind::spot:
-        return "spot";
     }
     return "unknown";
 }
@@ -870,7 +857,7 @@ inline void write_mesh(JsonWriter& json, std::size_t index, const MeshRecord& me
 inline void write_light(JsonWriter& json, std::size_t index, const LightRecord& light) {
     json.begin_object();
     json.field("index", index);
-    json.field("kind", light_kind_name(light.kind));
+    json.field("kind", upstream::pinned_light_type(light.kind));
     json.field("position", light.position);
     json.field("direction", light.direction);
     json.field("intensity", light.intensity);

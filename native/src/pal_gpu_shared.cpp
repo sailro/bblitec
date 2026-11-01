@@ -42,6 +42,7 @@
 
 #if BBLITE_HAS_PBR_RENDERER
 #include <bblite/upstream/pinned_world_transform.hpp>
+#include <bblite/upstream/light_kinds.hpp>
 #include <bblite/upstream/pinned_rgbd.hpp>
 #include <bblite/upstream/pinned_matrix.hpp>
 #endif
@@ -152,14 +153,17 @@ std::optional<PixelViewport> equal_surface_pane(const Engine& engine, const Scen
     }
     if (pane_count == 1 || pane_index == npos)
         return std::nullopt;
-    const std::uint64_t width = target_width;
-    const auto x0 = static_cast<std::int32_t>(width * pane_index / pane_count);
-    const auto x1 = static_cast<std::int32_t>(width * (pane_index + 1) / pane_count);
+    // The panes split the page viewport, the area a browser lays the canvases out in.
+    const PixelViewport page =
+        page_canvas(engine.ui_page_viewport, target_width, target_height).rect;
+    const std::uint64_t width = static_cast<std::uint64_t>(page.width);
+    const auto x0 = page.x + static_cast<std::int32_t>(width * pane_index / pane_count);
+    const auto x1 = page.x + static_cast<std::int32_t>(width * (pane_index + 1) / pane_count);
     return PixelViewport{
         x0,
-        0,
+        page.y,
         std::max<std::int32_t>(1, x1 - x0),
-        std::max<std::int32_t>(1, static_cast<std::int32_t>(target_height)),
+        std::max<std::int32_t>(1, page.height),
     };
 #else
     (void)engine;
@@ -179,7 +183,10 @@ std::optional<PixelViewport> scene_surface_pane(const Engine& engine, const Scen
         return laid_out_canvas_pane(engine, *scene.surface_canvas, width, height);
     }
 #endif
-    return equal_surface_pane(engine, scene, width, height);
+    if (const auto pane = equal_surface_pane(engine, scene, width, height))
+        return pane;
+    // A canvas without layout fills the page viewport.
+    return page_canvas(engine.ui_page_viewport, width, height).viewport();
 }
 
 std::optional<PixelViewport> surface_canvas_pane(const Engine& engine,
@@ -778,6 +785,13 @@ const TextureData* material_slot_texture(const MaterialRecord& material,
     case Source::clustered_lights:
     case Source::clustered_cells:
     case Source::clustered_indices:
+#if BBLITE_RECT_AREA_LIGHTS
+    case Source::rect_area_ltc1:
+    case Source::rect_area_ltc2:
+#endif
+#if BBLITE_RECT_AREA_EMISSION
+    case Source::rect_area_emission:
+#endif
         return nullptr;
     }
     return nullptr;
@@ -1082,7 +1096,7 @@ PinnedVariantKey pinned_variant_key(const Scene& scene, const Engine& engine,
             continue;
         }
         ++light_count;
-        key.single_light_type = upstream::pinned_single_light_type(*light);
+        key.single_light_type = upstream::pinned_light_type(light->kind);
     }
     // The receive bit rides the mesh row rather than the material, which is
     // why it is read back from the mesh half of the key; the arm it selects
@@ -1094,6 +1108,9 @@ PinnedVariantKey pinned_variant_key(const Scene& scene, const Engine& engine,
     if (key.light_mode != 1)
         key.single_light_type = "";
     key.tone_mapping = scene.environment.tone_mapping_enabled;
+#if BBLITE_RECT_AREA_LIGHTS
+    key.area_lighting = upstream::scene_rect_area_lighting(scene);
+#endif
     key.resolved = true;
     return key;
 }
@@ -1105,7 +1122,11 @@ std::string pinned_variant_request(const PinnedVariantKey& key, std::size_t geom
            std::to_string(key.material_view) + ", mesh features " +
            std::to_string(key.mesh_features) + ", light mode " + std::to_string(key.light_mode) +
            ", single light '" + std::string(key.single_light_type) + "'" + ", tone mapping " +
-           (key.tone_mapping ? "on" : "off") + ", geometry task " +
+           (key.tone_mapping ? "on" : "off") +
+#if BBLITE_RECT_AREA_LIGHTS
+           ", area lighting " + std::to_string(key.area_lighting) +
+#endif
+           ", geometry task " +
            (geometry_task == npos ? std::string("none") : std::to_string(geometry_task));
 }
 
@@ -1146,10 +1167,28 @@ pinned_variant_for_draw(const Scene& scene, const Engine& engine,
     // the guard missing from the composed fragments, not pass structure.
     const std::size_t variant = upstream::pbr_variant_for(
         key.material_index, key.material_view, static_cast<std::uint32_t>(key.mesh_features),
-        key.light_mode, key.single_light_type, key.tone_mapping, geometry_task);
+        key.light_mode, key.single_light_type, key.tone_mapping,
+#if BBLITE_RECT_AREA_LIGHTS
+        key.area_lighting,
+#endif
+        geometry_task);
     if (variant == npos) {
         return npos;
     }
+#if BBLITE_RECT_AREA_LIGHTS
+    // `rectAreaPbrFeatures`: a packed area light reaching the renderable adds
+    // RECT_AREA_PBR_SELECTED, under which the pin refuses the layered BRDF
+    // generation recorded for this variant.
+    if (const std::string_view refusal = upstream::pbr_variant_area_selected_refusal(variant);
+        !refusal.empty()) {
+        for_each_packed_light(scene, engine, upstream::pinned_max_lights,
+                              [&](const LightRecord& light, std::size_t) {
+                                  if (light.kind == LightKind::rect_area &&
+                                      upstream::light_affects_mesh(light, draw.item.mesh))
+                                      throw std::runtime_error(std::string(refusal));
+                              });
+    }
+#endif
     // A skeleton variant needs the palette to exist or the deformation is
     // lost.
     const bool skeleton_variant = pinned_variant_skeleton(variant);
@@ -1178,6 +1217,11 @@ StandardVariantKey standard_variant_key(const Scene& scene, const Engine& engine
     }
     const MaterialRecord& material = handle_at(engine.materials, draw.item.material);
     key.features = upstream::standard_material_features(material);
+#if BBLITE_RECT_AREA_LIGHTS
+    // `renderFeatures.features | sceneShader._materialFeatures`: the bits of
+    // the scene's own area lighting, none for a scene that never enabled it.
+    key.features |= upstream::standard_scene_material_features(scene);
+#endif
     key.plugin_index = material.plugin_signature_index;
     if (material.no_color) {
         key.features |= upstream::standard_no_color_output_flag;
@@ -1624,12 +1668,10 @@ void configure_engine_scene_layout([[maybe_unused]] Engine& engine) {
 #endif
 }
 
-const ExternalRenderablePass* prepare_external_pass(ExternalRenderablePass& pass, Engine& engine,
-                                                    const Scene& scene,
-                                                    const GpuRenderTargetSignature& signature,
-                                                    [[maybe_unused]] const RetainedSceneBlock& retained,
-                                                    const GpuDrawUpdateContext& context,
-                                                    FunctionRef<GpuCommandEncoderHandle()> encoder) {
+const ExternalRenderablePass* prepare_external_pass(
+    ExternalRenderablePass& pass, Engine& engine, const Scene& scene,
+    const GpuRenderTargetSignature& signature, [[maybe_unused]] const RetainedSceneBlock& retained,
+    const GpuDrawUpdateContext& context, FunctionRef<GpuCommandEncoderHandle()> encoder) {
     if (scene.state->external_renderables.empty() && pass.empty())
         return nullptr;
     pass.follow(engine, scene, signature);
@@ -1639,8 +1681,7 @@ const ExternalRenderablePass* prepare_external_pass(ExternalRenderablePass& pass
     const upstream::SceneUniforms& block = retained.pass.block();
     pass.write_scene_group(
         engine,
-        std::span<const std::uint8_t>(reinterpret_cast<const std::uint8_t*>(&block),
-                                      sizeof(block)),
+        std::span<const std::uint8_t>(reinterpret_cast<const std::uint8_t*>(&block), sizeof(block)),
         pinned_lights_block(scene, engine));
 #endif
     pass.prepare(engine, context, encoder());
@@ -1653,17 +1694,14 @@ std::vector<std::uint8_t> pinned_lights_block(const Scene& scene, const Engine& 
     std::array<std::uint32_t, 4> header{};
     std::array<upstream::LightEntry, upstream::pinned_max_lights> entries{};
     std::uint32_t count = 0;
-    for (const LightHandle handle : scene.lights) {
-        if (count >= upstream::pinned_max_lights)
-            break;
-        const LightRecord* light = handle_find(engine.lights, handle);
-        if (!light)
-            continue;
-        // Which writer each kind takes is generated: the scene compiles arms
-        // only for the kinds it reaches, so the mapping cannot be restated here.
-        upstream::write_pinned_light(*light, entries[count]);
-        ++count;
-    }
+    for_each_packed_light(scene, engine, upstream::pinned_max_lights,
+                          [&](const LightRecord& light, std::size_t slot) {
+                              // Which writer each kind takes is generated: the scene
+                              // compiles arms only for the kinds it reaches, so the
+                              // mapping cannot be restated here.
+                              upstream::write_pinned_light(light, entries[slot]);
+                              ++count;
+                          });
     header[0] = count;
 #if BBLITE_FLOATING_ORIGIN
     apply_light_floating_origin(entries, count, scene, engine);

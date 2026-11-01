@@ -9,6 +9,7 @@ import { lowerWorldAabbHelpers } from "../src/lowering/world-bounds-lowerer.js";
 import { importPinnedModule } from "../src/pinned-shader-composer.js";
 import { doctoredContext } from "./doctored-store.js";
 import { cameraSources } from "./camera-fixture.js";
+import { createPinnedScene, type PinnedScene } from "./pinned-scene.js";
 import {
     optionalNativeFixtureTools,
     runNativeFixtureCompiler,
@@ -103,7 +104,7 @@ test("free camera controls match the pinned buttons, keys and frame delta", asyn
             this: void,
             camera: ReturnType<typeof createFreeCamera>,
             canvas: Canvas,
-            scene: { _beforeRender: Array<(delta: number) => void> },
+            scene: PinnedScene,
         ): () => void;
     }>("camera/free-camera-controls.js");
     // Every DOM button the pin distinguishes, keys from each arm, and
@@ -136,7 +137,7 @@ test("free camera controls match the pinned buttons, keys and frame delta", asyn
     ];
     const camera = createFreeCamera({ x: 2, y: 3, z: 4 }, { x: 0, y: 0, z: 1 });
     const expected: number[] = [camera._yaw, camera._pitch];
-    const scene = { _beforeRender: [] as Array<(delta: number) => void> };
+    const scene = await createPinnedScene();
     const events = new Map<string, Listener>();
     attachFreeControl(camera, canvasStub(events), scene);
     for (const frame of frames) {
@@ -238,7 +239,7 @@ test("arc-rotate pointer handlers match the pinned buttons, deferral and wheel",
             this: void,
             camera: ArcCamera,
             canvas: Canvas,
-            scene: { _beforeRender: Array<() => void> },
+            scene: PinnedScene,
             options: object,
         ): () => void;
     }>("camera/arc-rotate-controls.js");
@@ -285,7 +286,7 @@ test("arc-rotate pointer handlers match the pinned buttons, deferral and wheel",
         })),
     ];
     const camera = createArcRotateCamera(0.3, 1.1, 7, { x: 1, y: 2, z: 3 });
-    const scene = { _beforeRender: [] as Array<() => void> };
+    const scene = await createPinnedScene();
     const events = new Map<string, Listener>();
     const live = { ...flags };
     attachControl(camera, canvasStub(events), scene, {
@@ -329,7 +330,8 @@ test("arc-rotate pointer handlers match the pinned buttons, deferral and wheel",
                 deltaY: step.deltaY,
                 preventDefault() {},
             });
-        else scene._beforeRender[0]!();
+        // The inertia hook takes no delta.
+        else scene._beforeRender[0]!(0);
         expected.push(...observe());
     }
     let lastX = 0;

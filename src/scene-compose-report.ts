@@ -46,11 +46,8 @@ import {
 } from "./pinned-material-arms.js";
 import { composePinnedPbrVariant } from "./pinned-pbr-variants.js";
 import { packagedGltfMeshPlan } from "./gltf-mesh-plan.js";
-import {
-    pinnedSceneArms,
-    pinnedSingleLightTypes,
-    type PinnedSceneArm,
-} from "./pinned-scene-arms.js";
+import { pinnedSceneArms, type PinnedSceneArm } from "./pinned-scene-arms.js";
+import { lightKinds } from "./compiler/types.js";
 
 /** The browser's PBR fragments, by capture file name. `--capture <dir>`
  *  reads a capture written somewhere other than
@@ -118,7 +115,8 @@ const normalize = (text: string): string => text.replace(/\s+/g, " ").trim();
  */
 async function sceneCandidates(): Promise<readonly PinnedSceneArm[]> {
     const request = {
-        lightKinds: pinnedSingleLightTypes,
+        // A rectangular light composes no arm without area lighting.
+        lightKinds,
         multiLight: true,
         noLight: true,
         toneMapping: [false, true],

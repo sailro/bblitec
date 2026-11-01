@@ -1,18 +1,15 @@
+import { compilerRepositoryRoot } from "../repository-root.js";
 import { dirname, resolve, sep } from "node:path";
-import { fileURLToPath } from "node:url";
 import ts from "typescript";
 import { compilerPackageTypings, isBabylonModule } from "./symbols.js";
 import type { HostPageProgram } from "./types.js";
-import { hostPageModulePath, hostPageRoot } from "../host-page.js";
+import { hostPageServedFile } from "../host-page.js";
 import { sharedPinnedContext } from "../lowering/context.js";
 import {
     isLibraryTyping,
     libraryTypingFile,
 } from "../typescript-library-files.js";
-import {
-    findRepositoryRoot,
-    repositoryRelativePath,
-} from "../upstream-source.js";
+import { repositoryRelativePath } from "../upstream-source.js";
 
 /**
  * The pinned members the published typings erase.
@@ -167,24 +164,26 @@ export function createCompilerProgram(
 ): CompilerProgram {
     const rootName = resolve(fileName);
     const loaderName = page?.loader ? resolve(page.loader.fileName) : undefined;
-    const startup = new Map(
-        (page?.startup ?? []).map((script) => [
-            resolve(script.fileName),
-            script.source,
-        ]),
+    // Classic scripts in page order; an external one is its own file.
+    const startupNames = (page?.startup ?? []).map((script) =>
+        resolve(script.fileName),
     );
-    const pageRoot = page ? hostPageRoot(page) : undefined;
+    const inlineStartup = new Map(
+        (page?.startup ?? []).flatMap((script) =>
+            script.source === undefined
+                ? []
+                : [[resolve(script.fileName), script.source] as const],
+        ),
+    );
     const virtualSource = (path: string): string | undefined => {
         const absolute = resolve(path);
         return absolute === rootName
             ? source
             : absolute === loaderName
               ? page?.loader?.source
-              : startup.get(absolute);
+              : inlineStartup.get(absolute);
     };
-    const repositoryRoot = findRepositoryRoot(
-        dirname(fileURLToPath(import.meta.url)),
-    );
+    const repositoryRoot = compilerRepositoryRoot();
     const { babylon: babylonTypes, webGpu: webGpuTypes } =
         compilerPackageTypings();
     const options: ts.CompilerOptions = {
@@ -269,12 +268,13 @@ export function createCompilerProgram(
             compilerOptions,
         ) =>
             moduleLiterals.map((moduleLiteral) => {
-                // A page's bundler serves its directory at "/", so a
-                // root-relative specifier names a file beneath it.
+                // The page's site serves a root-relative specifier, and the
+                // page loader's, as the page's own module script loads it.
                 const moduleName =
-                    (pageRoot !== undefined &&
-                        moduleLiteral.text.startsWith("/") &&
-                        hostPageModulePath(moduleLiteral.text, pageRoot)) ||
+                    (page !== undefined &&
+                        (moduleLiteral.text.startsWith("/") ||
+                            resolve(containingFile) === loaderName) &&
+                        hostPageServedFile(page, moduleLiteral.text)) ||
                     moduleLiteral.text;
                 if (isBabylonModule(moduleName)) {
                     return {
@@ -343,7 +343,7 @@ export function createCompilerProgram(
             rootName,
             webGpuTypes,
             ...(loaderName ? [loaderName] : []),
-            ...startup.keys(),
+            ...startupNames,
         ],
         options,
         host,
@@ -355,13 +355,14 @@ export function createCompilerProgram(
         );
     }
     const nodeModules = `${sep}node_modules${sep}`;
-    // The page itself is read in place of its synthesized loader module.
+    // The page itself is read in place of its synthesized loader module and
+    // inline scripts; an external classic script is a file of its own.
     const localFiles = program
         .getSourceFiles()
         .map((file) =>
             resolve(rawTextSourcePath(file.fileName) ?? file.fileName),
         )
-        .filter((path) => path !== loaderName && !startup.has(path))
+        .filter((path) => path !== loaderName && !inlineStartup.has(path))
         .concat(page ? [resolve(page.path)] : [])
         .filter((path) => !path.includes(nodeModules))
         .map((path) => repositoryRelativePath(repositoryRoot, path))
@@ -373,9 +374,9 @@ export function createCompilerProgram(
         sourceFile,
         localFiles,
         ...(loaderFile ? { loaderFile } : {}),
-        ...(startup.size
+        ...(startupNames.length
             ? {
-                  startupFiles: [...startup.keys()].map((name) =>
+                  startupFiles: startupNames.map((name) =>
                       program.getSourceFile(name)!,
                   ),
               }

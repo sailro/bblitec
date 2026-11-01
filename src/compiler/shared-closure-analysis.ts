@@ -5,7 +5,7 @@ import {
 } from "./analysis-walk.js";
 import { EmissionMap, EmissionSet, journaled } from "./emission-transaction.js";
 import ts from "typescript";
-import { schedulerOf } from "./schedulers.js";
+import { runsArgumentAfterReturn, schedulerOf } from "./schedulers.js";
 import { isRebound } from "./binding-rebinds.js";
 import {
     choosesOperand,
@@ -23,7 +23,6 @@ import {
 import { presentMembers, callSignatures } from "./type-facts.js";
 import { isDeterministicRandomRead } from "./deterministic-random.js";
 import type { LoweringServices } from "./lowering-services.js";
-import { promiseReactionOf } from "./promises.js";
 import { keptArguments } from "./kept-values.js";
 import { memberAccessors, namedMember } from "./symbols.js";
 import { isListenerRegistration } from "./receiver-methods.js";
@@ -200,7 +199,8 @@ export class SharedClosureAnalysis {
 
     /**
      * The argument a call keeps past its own return: a listener
-     * registration its second, a browser timer or RAF its first.
+     * registration its second, one a library call runs after returning
+     * (`runsArgumentAfterReturn`: a timer, RAF or promise reaction).
      * Frame registrations also retain callbacks past a helper/block's end.
      */
     private retainsCallbackArgument(
@@ -221,16 +221,13 @@ export class SharedClosureAnalysis {
         }
         if (isListenerRegistration(this.context.checker, call))
             return index === 1;
-        const reaction = promiseReactionOf(callee, this.context.checker);
-        if (reaction)
-            return index === 0 || (reaction.reaction === "then" && index === 1);
-        const scheduler = schedulerOf(this.context.checker, call.expression);
-        return (
-            scheduler !== undefined &&
-            (scheduler !== "frame" || includeFrameRegistrations) &&
-            index === 0 &&
-            call.arguments.length >= 1
-        );
+        // A frame callback outlives the call only where frame registrations count.
+        if (
+            !includeFrameRegistrations &&
+            schedulerOf(this.context.checker, call.expression) === "frame"
+        )
+            return false;
+        return runsArgumentAfterReturn(this.context.checker, call, index);
     }
 
     /**

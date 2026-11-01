@@ -2,9 +2,11 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 import { compileSource } from "../src/compiler.js";
-import { registrySceneCompileOptions } from "../src/native-host-ui.js";
 import { pinnedLabPublicUrl } from "../src/pinned-lab-public.js";
-import { getScene } from "../src/scene-registry.js";
+import {
+    getScene,
+    registrySceneCompileOptions,
+} from "../src/scene-registry.js";
 
 const labDeployment = { publicUrl: pinnedLabPublicUrl() };
 

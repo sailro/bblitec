@@ -14,7 +14,6 @@ export default defineConfig([
         "native/**",
         "reference/**",
         "test/fixtures/**",
-        "ui/**",
         "upstream/**",
     ]),
     {

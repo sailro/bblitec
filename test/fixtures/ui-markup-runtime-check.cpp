@@ -76,12 +76,19 @@ int main() {
         Engine engine;
         const auto sheet = ui_create_element(engine, "style");
         ui_add_class_style(engine, sheet, "history", "scrollbar-width:thin;");
-        ui_add_style_rule(engine, sheet, UiStyleSelectorKind::Class, "history", {}, {}, false, -1,
-                          "width:12px;height:10px;", UiScrollbarPart::Scrollbar);
-        ui_add_style_rule(engine, sheet, UiStyleSelectorKind::Class, "history", {}, {}, false, -1,
-                          "background-color:#abcdef;", UiScrollbarPart::Thumb);
-        ui_add_style_rule(engine, sheet, UiStyleSelectorKind::Class, "history", {}, {}, true, -1,
-                          "background-color:#fedcba;", UiScrollbarPart::Thumb);
+        ui_add_style_rule(engine, sheet,
+                          {.primary = "history",
+                           .style = "width:12px;height:10px;",
+                           .scrollbar = UiScrollbarPart::Scrollbar});
+        ui_add_style_rule(engine, sheet,
+                          {.primary = "history",
+                           .style = "background-color:#abcdef;",
+                           .scrollbar = UiScrollbarPart::Thumb});
+        ui_add_style_rule(engine, sheet,
+                          {.primary = "history",
+                           .style = "background-color:#fedcba;",
+                           .hover = true,
+                           .scrollbar = UiScrollbarPart::Thumb});
         ui_append_to_root(engine, sheet);
         const auto root = ui_create_element(engine, "div");
         ui_set_attribute(engine, root, "style", "scrollbar-color:rgb(33, 66, 99) transparent;");

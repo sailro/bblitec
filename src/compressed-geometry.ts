@@ -22,8 +22,6 @@ import type { AssetDecoders, DracoDecoderAssets } from "./asset-decoders.js";
 //
 // An asset that uses none of them is returned unchanged, so a pass cannot
 // churn the assets that do not need it.
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { join, resolve } from "node:path";
 import { createContext, runInContext } from "node:vm";
 
 import {
@@ -41,7 +39,7 @@ import {
 } from "./pinned-shader-composer.js";
 import { javascriptModuleUrl } from "./data-url.js";
 import { pinnedLabPublicUrl } from "./pinned-lab-public.js";
-import { readUpstreamPin } from "./upstream-source.js";
+import { downloadCached } from "./asset-download-cache.js";
 import type { GlbChunks } from "./glb-container.js";
 
 const DRACO_EXTENSION = "KHR_draco_mesh_compression";
@@ -107,28 +105,12 @@ function declaredExtensions(json: JsonRecord): string[] {
 }
 
 /**
- * A decoder artifact from the pin, cached under `.cache` by commit so a
- * generation run is offline after the first fetch and a pin bump cannot
- * silently reuse the previous decoder.
+ * A decoder artifact from the pin's lab public folder. Its URL names the
+ * pinned commit, so the asset download cache keeps a generation run offline
+ * after the first fetch and a pin bump cannot reuse the previous decoder.
  */
 async function pinnedArtifact(name: string): Promise<Buffer> {
-    const pin = readUpstreamPin().sourceVersion;
-    const directory = resolve(".cache", "pinned-decoders", pin);
-    const path = join(directory, name);
-    if (existsSync(path)) {
-        return readFileSync(path);
-    }
-    const url = `${pinnedLabPublicUrl()}${name}`;
-    const response = await fetch(url);
-    if (!response.ok) {
-        throw new Error(
-            `Failed to download the pinned ${name}: HTTP ${response.status}.`,
-        );
-    }
-    const bytes = Buffer.from(await response.arrayBuffer());
-    mkdirSync(directory, { recursive: true });
-    writeFileSync(path, bytes);
-    return bytes;
+    return Buffer.from(await downloadCached(`${pinnedLabPublicUrl()}${name}`));
 }
 
 const dracoModules = new Map<string, Promise<unknown>>();

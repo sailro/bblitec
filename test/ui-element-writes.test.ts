@@ -6,6 +6,7 @@ import { PNG } from "pngjs";
 import { compileSource } from "../src/compiler.js";
 import type { NativeHostUi } from "../src/compiler/types.js";
 import { runRmlUiFixture } from "./native-fixture.js";
+import { hostUiOptions } from "./host-page-fixture.js";
 
 const directory = resolve("artifacts/ui-element-writes");
 
@@ -29,13 +30,20 @@ const program = (body: string): string => `
     globalThis.close();
 `;
 
-const compile = (body: string, nativeHostUi?: NativeHostUi) => {
+/** Compiles `program(body)`, hosted by a page beside it when given its host model. */
+const compile = (body: string, hostUi?: NativeHostUi) => {
     mkdirSync(directory, { recursive: true });
     writeFileSync(join(directory, "worker.ts"), "self.close();");
-    return compileSource(program(body), {
-        fileName: join(directory, "entry.ts"),
-        ...(nativeHostUi ? { nativeHostUi } : {}),
-    });
+    const fileName = join(directory, "entry.ts");
+    return compileSource(
+        program(body),
+        hostUi
+            ? hostUiOptions(hostUi, {
+                  path: join(directory, "page.html"),
+                  fileName,
+              })
+            : { fileName },
+    );
 };
 
 test("writes through stored retained elements lower inside runtime iteration", (t) => {
@@ -122,7 +130,6 @@ test("with retained UI, writes through unprojected DOM elements refuse instead o
 
 test("outside Worker hosts, dataset writes lower when observable and erase as instrumentation otherwise", () => {
     const host: NativeHostUi = {
-        sourcePath: "ui/dataset-host.json",
         elements: [
             { tag: "canvas", attributes: { id: "renderCanvas" } },
             { tag: "div", attributes: { id: "panel" } },
@@ -151,7 +158,10 @@ test("outside Worker hosts, dataset writes lower when observable and erase as in
             panel.textContent = panel.dataset.state ?? "";
             panel.dataset.styled = "yes";
         `),
-        { fileName: join(directory, "scene.ts"), nativeHostUi: host },
+        hostUiOptions(host, {
+            path: join(directory, "dataset.html"),
+            fileName: join(directory, "scene.ts"),
+        }),
     );
     // Read back, or selected by a host rule: the retained attribute.
     assert.match(
@@ -189,7 +199,6 @@ test("inert canvas focus order and packaged image sources lower explicitly", () 
     // and the write selects between them at run time.
     writeFileSync(join(directory, "tall.png"), PNG.sync.write(texture));
     const host: NativeHostUi = {
-        sourcePath: "ui/art-host.json",
         elements: [
             {
                 tag: "img",
@@ -259,13 +268,13 @@ test("host data attribute image sources select at run time natively", (t) => {
         art.src = portrait ? art.dataset.portraitSrc! : art.dataset.landscapeSrc!;
         other.src = portrait ? other.dataset.landscapeSrc! : other.dataset.portraitSrc!;
     `),
-        {
-            fileName: join(imageDirectory, "entry.ts"),
-            nativeHostUi: {
-                sourcePath: "ui/image-host.json",
-                elements: [image("art"), image("other")],
+        hostUiOptions(
+            { elements: [image("art"), image("other")] },
+            {
+                path: join(imageDirectory, "image.html"),
+                fileName: join(imageDirectory, "entry.ts"),
             },
-        },
+        ),
     );
     writeFileSync(join(imageDirectory, "program.hpp"), result.cpp);
     runRmlUiFixture(t, "ui-image-source", {

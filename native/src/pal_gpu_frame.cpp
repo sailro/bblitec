@@ -40,7 +40,9 @@ bool request_renderer_restart_if_scene_set_changed(
 #endif
     if (!registered_scene_set_changed(engine, planned))
         return false;
-    engine.renderer_restart_requested = !engine.scenes().empty();
+    // A realm's animation loop outlives a mode's last scene: an asynchronous replacement
+    // can register after this frame. Standalone runs retain their empty-scene exit.
+    engine.renderer_restart_requested = !engine.scenes().empty() || engine.offscreen_run != nullptr;
     return true;
 }
 

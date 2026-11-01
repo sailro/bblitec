@@ -3,6 +3,7 @@ import { execFileSync } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import test from "node:test";
+import type { SceneContextOptions } from "@babylonjs/lite";
 import ts from "typescript";
 import { LoweringContext } from "../src/lowering/context.js";
 import {
@@ -19,6 +20,8 @@ import {
     optionalNativeFixtureTools,
     runNativeFixtureCompiler,
 } from "./native-fixture.js";
+import { sceneContextSource, type PinnedScene } from "./pinned-scene.js";
+import { pinnedDeclaration } from "./pinned-source.js";
 
 const sceneModule = "src/flow-graph/scene-flow-graph.ts";
 const cleanupModule = "src/loader-gltf/gltf-scene-cleanup.ts";
@@ -26,13 +29,12 @@ const featureModule = "src/loader-gltf/gltf-feature-interactivity.ts";
 interface Runtime {
     id: number;
 }
-interface Scene {
+/** The pin's scene with the flow-graph members this lifecycle drives. */
+interface Scene extends PinnedScene {
     _flowGraphs?: Runtime[];
-    _flowGraphTick?: () => void;
+    _flowGraphTick?: (deltaMs: number) => void;
     _flowGraphDispose?: () => void;
-    _beforeRender: Array<() => void>;
-    _disposables: Array<() => void>;
-    _flowGraphPointerRefresh: () => void;
+    _flowGraphPointerRefresh?: () => void;
 }
 interface Container {
     flowGraphRuntimes?: Promise<Runtime[]>;
@@ -48,19 +50,13 @@ async function sourceResult(context: LoweringContext): Promise<object> {
             "detachFlowGraph",
             "removeFlowGraphCoordinator",
             "runFlowGraphs",
-        ].map((name) =>
-            context
-                .functionDeclaration(sceneModule, name)
-                .declaration.getText()
-                .replace(/^export /, ""),
+        ].map((name) => pinnedDeclaration(context, sceneModule, name)),
+        pinnedDeclaration(
+            context,
+            cleanupModule,
+            "_registerAssetContainerSceneCleanup",
         ),
-        context
-            .functionDeclaration(
-                cleanupModule,
-                "_registerAssetContainerSceneCleanup",
-            )
-            .declaration.getText()
-            .replace(/^export /, ""),
+        sceneContextSource(context),
     ].join("\n");
     const functions = createJavaScriptFunction(
         "createFgRuntime",
@@ -69,7 +65,7 @@ async function sourceResult(context: LoweringContext): Promise<object> {
         "ensureFlowGraphCoordinator",
         "disposeFlowGraph",
         transpileCommonJs(text, sceneModule) +
-            "\nreturn {runFlowGraphs, detachFlowGraph, _registerAssetContainerSceneCleanup};",
+            "\nreturn {runFlowGraphs, detachFlowGraph, _registerAssetContainerSceneCleanup, createSceneContext};",
     )(
         async (graph: { fail?: boolean }) => {
             if (graph.fail) throw new Error("construct");
@@ -98,6 +94,11 @@ async function sourceResult(context: LoweringContext): Promise<object> {
             scene: Scene,
             cleanup: () => void,
         ): void;
+        createSceneContext(
+            this: void,
+            surface: object,
+            options: SceneContextOptions,
+        ): Scene;
     };
     const apply = context.methodDeclaration(
         featureModule,
@@ -125,22 +126,28 @@ async function sourceResult(context: LoweringContext): Promise<object> {
         [{ graph: {}, accessors: {} }],
     ) as (scene: Scene, container: Container) => void;
     const scene = (): Scene => {
-        const result: Scene = {
-            _beforeRender: [],
-            _disposables: [],
-            _flowGraphPointerRefresh: () =>
-                events.push(`p${result._flowGraphs?.length ?? 0}`),
-        };
+        const result = functions.createSceneContext(
+            { engine: {} },
+            { defaultRenderTask: false },
+        );
+        // Records the pointer refreshes the pin requests.
+        result._flowGraphPointerRefresh = () =>
+            events.push(`p${result._flowGraphs?.length ?? 0}`);
         return result;
     };
     const first = scene(),
         second = scene(),
         container: Container = {};
+    // The scene's own disposer (its frame graph) precedes the lifecycle's.
+    const own = first._disposables.length;
     for (const target of [first, first, second]) {
         callback(target, container);
         await container.flowGraphRuntimes;
     }
-    const slots = [first._disposables.length, second._disposables.length];
+    const slots = [
+        first._disposables.length - own,
+        second._disposables.length - own,
+    ];
     container._sceneCleanups!.get(first)!();
     container._sceneCleanups!.get(second)!();
     const remaining = [

@@ -34,6 +34,7 @@ import {
 } from "./browser-harness.js";
 import { cachedJsonBake, moduleIdentity } from "./bake-cache.js";
 import type { Ktx2DecoderAssets } from "./asset-decoders.js";
+import { HOST_PRIMARY_CANVAS_ID } from "./host-primary-canvas.js";
 
 /** One transcoded level, as the pin's own `writeTexture` call carried it. */
 export interface TranscodedMipLevel {
@@ -119,7 +120,7 @@ ${decoder ? `setKtx2DecoderUrl(${JSON.stringify(decoder.url)}, ${JSON.stringify(
 
 ${pageBase64Script}
 window.__transcodeBasis = async () => {
-    const canvas = document.getElementById("renderCanvas");
+    const canvas = document.getElementById(${JSON.stringify(HOST_PRIMARY_CANVAS_ID)});
     // A Vulkan browser can expose ETC2 even though SDL cannot upload it.
     // Let the pinned loader choose using the native compression families.
     const formats = ${JSON.stringify(uploadableCompressedFormats)};

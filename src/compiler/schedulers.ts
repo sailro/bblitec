@@ -1,5 +1,8 @@
-import type ts from "typescript";
+import ts from "typescript";
+import { isWindowObserver } from "./dom-targets.js";
+import { promiseReactionOf } from "./promises.js";
 import { libraryGlobal } from "./symbols.js";
+import { unwrapExpression } from "./syntax.js";
 
 /** How a library scheduler runs the callback it is handed: never before it returns. */
 export type SchedulerKind =
@@ -30,6 +33,30 @@ export function schedulerOf(
 ): SchedulerKind | undefined {
     const name = libraryGlobal(checker, callee);
     return name === undefined ? undefined : SCHEDULERS.get(name);
+}
+
+/**
+ * Whether a library call or construction hands its argument at `index` on
+ * to run only after it returns: a scheduler's callback, an observer's
+ * (`MutationObserver` reports later), a promise reaction's.
+ */
+export function runsArgumentAfterReturn(
+    checker: ts.TypeChecker,
+    node: ts.CallExpression | ts.NewExpression,
+    index: number,
+): boolean {
+    if (ts.isNewExpression(node))
+        return (
+            index === 0 &&
+            isWindowObserver(libraryGlobal(checker, node.expression))
+        );
+    const reaction = promiseReactionOf(
+        unwrapExpression(node.expression),
+        checker,
+    );
+    if (reaction)
+        return index === 0 || (reaction.reaction === "then" && index === 1);
+    return index === 0 && schedulerOf(checker, node.expression) !== undefined;
 }
 
 /** The scheduler whose registration a library cancel function (`clearTimeout`) undoes. */

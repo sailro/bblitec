@@ -114,6 +114,9 @@ export interface ComposedNodeMaterial {
     attributes: readonly ComposedNodeAttribute[];
     /** The emitted vertex entry point consumes the instance-index builtin. */
     usesInstanceIndex: boolean;
+    /** The graph's lighting blocks read the scene lights block: the pin's
+     *  `_state.usesLightsUbo`, which an area-enabled scene validates. */
+    usesLightsUbo: boolean;
     /** The texture pairs the graph declares, in the pin's allocation order. */
     textures: readonly ComposedNodeTextureBinding[];
     /** Public input handles, as the actual pinned factory exposes them. */
@@ -808,6 +811,7 @@ export async function composeNodeMaterial(
         uboFloats,
         attributes,
         usesInstanceIndex: material._state.usesInstanceIndex === true,
+        usesLightsUbo: material._state.usesLightsUbo === true,
         textures: material._compile._textureBindings.map((binding) => ({
             name: binding._name,
             texture: binding._texBinding,

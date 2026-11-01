@@ -12,6 +12,7 @@ import {
     optionalNativeFixtureTools,
     runNativeFixtureCompiler,
 } from "./native-fixture.js";
+import { pinnedError } from "./pinned-errors.js";
 
 test("render-task shared depth policy and mesh refresh preserve source guards and current material", (t) => {
     const tools = optionalNativeFixtureTools(false);
@@ -58,12 +59,12 @@ int main(){
  add_render_task_mesh(engine,task,{1},{1},false);assert(shader_packets==2);
  rejects([&]{add_render_task_mesh(engine,task,{1},{0},true);},"per-task material overrides");
  auto late=create_render_task(engine,scene,options);engine.frame_tasks[late.value].record_state=FrameTaskRecordState::recorded;
- rejects([&]{enable_render_task_mesh_refresh(engine,late);},"#153");
+ rejects([&]{enable_render_task_mesh_refresh(engine,late);},"${pinnedError("enableRenderTaskMeshRefresh must be called before the render task is recorded.")}");
  add_render_task_mesh(engine,late,{1},{1},true);
  assert(shader_snapshots==3 && shader_packets==3);
  options.auto_mirror=true;auto automatic=create_render_task(engine,scene,options);
- rejects([&]{enable_render_task_mesh_refresh(engine,automatic);},"#154");
- scene.disposed=true;rejects([&]{add_render_task_mesh(engine,task,{0},{1},false);},"#155");
+ rejects([&]{enable_render_task_mesh_refresh(engine,automatic);},"${pinnedError("enableRenderTaskMeshRefresh requires an explicit render task with autoMirror: false.")}");
+ scene.disposed=true;rejects([&]{add_render_task_mesh(engine,task,{0},{1},false);},"${pinnedError("RenderTask has been disposed.", { module: "src/frame-graph/render-task-mesh-refresh.ts", name: "enableRenderTaskMeshRefresh" })}");
  assert(!upstream::render_task_loads_depth(false,false,true));assert(upstream::render_task_loads_depth(false,false,false));
  assert(upstream::render_task_loads_depth(true,true,true));assert(!upstream::render_task_loads_depth(true,false,false));
 }

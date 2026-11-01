@@ -1152,7 +1152,8 @@ function assertShadowRenderGateContracts(context: LoweringContext): void {
             identity,
             `${ensure} caster-array identity`,
         );
-        // PCF also rebuilds when a caster's view material changes, except a
+        // PCF also rebuilds when a caster's view material, its own
+        // renderable or its terminal's render features change, except a
         // caster held while its view cannot be built: it waits on the pin's
         // asynchronous factory imports and group builds, which native
         // registration settles before the first frame.
@@ -1178,7 +1179,13 @@ function assertShadowRenderGateContracts(context: LoweringContext): void {
                     const mesh = casterMeshes[i]!;
                     const material = mesh.material;
                     const terminal = material ? resolveShadowCasterMaterial(material) : null;
-                    if (existing._casterMaterials[i] !== terminal || existing._casterMatGens[i] !== (terminal?._csmGen ?? 0)) {
+                    const features = terminal?._renderFeatures;
+                    if (
+                        existing._casterMaterials[i] !== terminal ||
+                        existing._casterMatGens[i] !== (terminal?._csmGen ?? 0) ||
+                        existing._casterMeshGens[i] !== mesh._renderableGen ||
+                        (!!features && existing._casterMatFeatures[i] !== features)
+                    ) {
                         changed = !(material && existing._held?.has(mesh) && holdShadowCaster(scene, sg, material));
                     }
                 }

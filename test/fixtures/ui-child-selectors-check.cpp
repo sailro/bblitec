@@ -18,15 +18,22 @@ int main() {
         Engine engine;
         const auto sheet = ui_create_element(engine, "style");
         const auto rule = [&](const char* tag, const char* style) {
-            ui_add_style_rule(engine, sheet, UiStyleSelectorKind::TagChildClass, "entry", "", tag,
-                              false, -1, style);
+            ui_add_style_rule(engine, sheet,
+                              {.selector = UiStyleSelectorKind::TagChildClass,
+                               .primary = "entry",
+                               .tag = tag,
+                               .style = style});
         };
         rule("div", "background-color:#ff0000;");
         rule("span", "background-color:#00ff00;");
         rule("body", "background-color:#0000ff;");
         rule("html", "background-color:#ffff00;");
-        ui_add_style_rule(engine, sheet, UiStyleSelectorKind::TagChildClass, "entry", "active",
-                          "span", false, -1, "background-color:#00ffff;");
+        ui_add_style_rule(engine, sheet,
+                          {.selector = UiStyleSelectorKind::TagChildClass,
+                           .primary = "entry",
+                           .secondary = "active",
+                           .tag = "span",
+                           .style = "background-color:#00ffff;"});
         // Later source order cannot overcome a parent tag's specificity.
         ui_add_class_style(engine, sheet, "entry", "background-color:#111111;");
         ui_add_class_style(engine, sheet, "other", "background-color:#222222;");

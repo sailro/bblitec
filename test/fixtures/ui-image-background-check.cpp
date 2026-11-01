@@ -51,6 +51,42 @@ int main() try {
             "position:absolute;left:50%;top:50%;padding:10px;background-color:black;--bbl-absolute-inline:1;");
         ui_set_attribute(engine, warning, "hidden", "");
         ui_append_to_root(engine, warning);
+        // Each CSS-wide keyword on every PAL longhand, as sheets and a run-time shorthand write it.
+        const auto keywords = ui_create_element(engine, "div");
+        ui_set_attribute(
+            engine, keywords, "style",
+            "position:absolute;left:200px;top:20px;width:100px;height:80px;background-clip:padding-box;--bbl-background-image:\"fixture.png\";--bbl-background-size:contain;--bbl-background-repeat:no-repeat;--bbl-background-position:center center;--bbl-background-color:#123456;");
+        ui_append_to_root(engine, keywords);
+        const auto keyword_child = [&](std::string_view keyword) {
+            std::string style = "position:absolute;left:0px;top:0px;width:50px;height:40px;";
+            for (const std::string_view longhand :
+                 {"clip", "image", "size", "position", "repeat", "origin", "attachment", "color"})
+                style +=
+                    "--bbl-background-" + std::string(longhand) + ":" + std::string(keyword) + ";";
+            const auto child = ui_create_element(engine, "div");
+            ui_set_attribute(engine, child, "style", style);
+            ui_append_child(engine, keywords, child);
+            return child;
+        };
+        const auto inherits = keyword_child("inherit");
+        const auto initial = keyword_child("initial");
+        const auto unset = keyword_child("UNSET");
+        const auto written = ui_create_element(engine, "div");
+        ui_append_child(engine, keywords, written);
+        // The declarations src/compiler/ui-projection.ts emitUiBackgroundShorthand emits.
+        const auto write_background = [&](const std::string& shorthand) {
+            ui_set_style_property(engine, written, "--bbl-background-color", shorthand);
+            ui_set_style_property(engine, written, "background-clip", "border-box");
+            for (const auto& [longhand, initial_value] :
+                 {std::pair{"clip", ""}, std::pair{"image", "none"}, std::pair{"size", "auto"},
+                  std::pair{"position", "0% 0%"}, std::pair{"repeat", "repeat"},
+                  std::pair{"origin", "padding-box"}, std::pair{"attachment", "scroll"}})
+                ui_set_style_property(engine, written, "--bbl-background-" + std::string(longhand),
+                                      ui_background_longhand(shorthand, initial_value));
+        };
+        assert(ui_background_longhand(" Inherit ", "none") == "inherit");
+        assert(ui_background_longhand("#123456", "none") == "none");
+        write_background("inherit");
 
         pal::UiRmlRuntime runtime(engine, window, 640, 480);
 
@@ -77,23 +113,52 @@ int main() try {
         const auto normalDecorator = rawNormal->GetProperty("decorator")->ToString();
         assert(normalTransform && normalTransform->GetNumPrimitives() == 1);
         assert(normalDecorator.find("linear-gradient") != std::string::npos);
+        const auto raw = [&](UiElementHandle element) {
+            return runtime.projected_elements.at(element.value).element;
+        };
+        const auto clip = [](Rml::Element* element) {
+            return element->GetProperty(Rml::PropertyId::BackgroundClip)->Get<int>();
+        };
+        const int padding_box = clip(raw(keywords));
+        assert(padding_box != 0);
+        for (auto* element : {raw(inherits), raw(written)}) {
+            assert(element->GetComputedValues().background_color() ==
+                   Rml::Colourb(0x12, 0x34, 0x56));
+            assert(element->GetProperty("decorator")->ToString().find("fixture.png") !=
+                   std::string::npos);
+            assert(clip(element) == padding_box);
+        }
+        for (auto* element : {raw(initial), raw(unset)}) {
+            assert(element->GetComputedValues().background_color().alpha == 0);
+            assert(!element->GetLocalProperty("decorator"));
+            assert(clip(element) == 0);
+        }
         const auto& frame = pal::record_ui_rml_frame(runtime, 640, 480);
         assert(std::any_of(frame.draws.begin(), frame.draws.end(),
                            [](const auto& draw) { return draw.texture_id != 0; }));
+        // A colour after a keyword clears the keyword's clip override.
+        write_background("#abcdef");
+        update();
+        assert(raw(written)->GetComputedValues().background_color() ==
+               Rml::Colourb(0xab, 0xcd, 0xef));
+        assert(!raw(written)->GetLocalProperty("decorator"));
+        assert(clip(raw(written)) == 0);
         ui_set_style_property(engine, parent, "--bbl-background-color", "#abcdef");
         ui_set_style_property(engine, parent, "bbl-zero-clip", "1");
         update();
         assert(rawChild->GetComputedValues().background_color() == Rml::Colourb(0xab, 0xcd, 0xef));
         assert(rawParent->GetBox().GetSize().x == 100.f && rawParent->GetBox().GetSize().y == 80.f);
         assert(rawChild->IsVisible() && rawChild->Focus());
-        assert(rawChild->GetComputedValues().opacity() == 0);
+        assert(rawParent->GetComputedValues().group_opacity() == 0);
+        assert(rawChild->GetComputedValues().group_opacity() == 0);
         assert(runtime.context->GetElementAtPoint({75, 65}) != rawChild);
         ui_set_style_property(engine, parent, "bbl-zero-clip", "0");
         ui_set_style_property(engine, child, "scale", "1");
         ui_set_style_property(engine, child, "bbl-transform", "none");
         ui_set_style_property(engine, child, "--bbl-background-image", "none");
         update();
-        assert(rawChild->GetComputedValues().opacity() == 1);
+        assert(rawParent->GetComputedValues().group_opacity() == 1);
+        assert(rawChild->GetComputedValues().group_opacity() == 1);
         assert(!rawChild->GetProperty<Rml::TransformPtr>("transform"));
         assert(rawNormal->GetProperty<Rml::TransformPtr>("transform") == normalTransform);
         assert(rawNormal->GetProperty("decorator")->ToString() == normalDecorator);

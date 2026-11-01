@@ -1,6 +1,7 @@
 #include "pal_window_presenter.hpp"
 
 #include "pal_sdl_gpu_offscreen.hpp"
+#include "pal_gpu_frame.hpp"
 #include "pal_sdl_gpu_sprite_ui.hpp"
 #include <deque>
 
@@ -20,6 +21,9 @@ public:
         configure_sdl_canvas_window(device_.get(), window_);
         if (!SDL_ClaimWindowForGPUDevice(device_.get(), window_))
             gpu_error("SDL_ClaimWindowForGPUDevice Window");
+        ui_samples_ = sprite_ui_sdl_gpu_layer_samples(
+            device_.get(), SDL_GetGPUSwapchainTextureFormat(device_.get(), window_),
+            read_frame_options().page_ui_sample_count());
     }
     ~SdlWindowPresenter() override {
         SDL_WaitForGPUIdle(device_.get());
@@ -100,7 +104,8 @@ public:
         };
         SpriteUiSdlCpuSample ui_sample;
         render_sprite_ui_sdl_gpu_frame(device_.get(), command, destination, format, ui_, ui,
-                                       external_texture, cpu_profile_ ? &ui_sample : nullptr);
+                                       external_texture, cpu_profile_ ? &ui_sample : nullptr,
+                                       ui_samples_, target.clear_color);
         const double ui_recorded = cpu_profile_ ? monotonic_milliseconds() : 0;
         UiSdlReadableSurface::present(command, destination, swapchain, width, height);
         const double blit_recorded = cpu_profile_ ? monotonic_milliseconds() : 0;
@@ -158,6 +163,8 @@ private:
     Device device_;
     SdlOffscreenDevice shared_;
     SpriteUiSdlResources ui_;
+    /** The page UI's multisampled layer (`FrameOptions::page_ui_sample_count`). */
+    std::optional<SDL_GPUSampleCount> ui_samples_;
     UiSdlReadableSurface composite_;
     std::deque<InFlight> in_flight_;
     SDL_GPUPresentMode present_mode_ = SDL_GPU_PRESENTMODE_VSYNC;

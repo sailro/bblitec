@@ -49,8 +49,8 @@ struct DawnTextGpuDevice final : DawnTextGpuResources, TextPipelineProvider {
                 entry.buffer.type = WGPUBufferBindingType_Uniform;
             else if (kind == "read-only-storage")
                 entry.buffer.type = WGPUBufferBindingType_ReadOnlyStorage;
-            else if (kind == "unfilterable-float") {
-                entry.texture.sampleType = WGPUTextureSampleType_UnfilterableFloat;
+            else if (const auto sample_type = dawn_texture_sample_type(kind)) {
+                entry.texture.sampleType = *sample_type;
                 entry.texture.viewDimension = WGPUTextureViewDimension_2D;
             } else
                 throw std::runtime_error("Unmapped text bind-group layout kind.");

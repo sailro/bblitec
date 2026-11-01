@@ -5,6 +5,7 @@
 // through are their own files (pal_dawn_scene_<family>.cpp), compiled with it
 // as one translation unit (pal_dawn_scene_all.cpp).
 #include <bblite/upstream/pinned_surface.hpp>
+#include "pal_gpu_samples.hpp"
 #include "pal_gpu_common.hpp"
 #include "pal_gpu_frame.hpp"
 #include "pal_gpu_textures.hpp"
@@ -85,18 +86,6 @@ void bind_thin_buffers(DawnMesh& row, const GpuHandle& args) {
 #else
 void bind_thin_buffers(DawnMesh&, const GpuHandle&) {}
 #endif
-
-void set_pass_viewport(WGPURenderPassEncoder pass, const std::optional<PixelViewport>& resolved) {
-    if (!resolved.has_value())
-        return;
-    const PixelViewport& rect = *resolved;
-    wgpuRenderPassEncoderSetViewport(pass, static_cast<float>(rect.x), static_cast<float>(rect.y),
-                                     static_cast<float>(rect.width),
-                                     static_cast<float>(rect.height), 0.0f, 1.0f);
-    wgpuRenderPassEncoderSetScissorRect(
-        pass, static_cast<std::uint32_t>(rect.x), static_cast<std::uint32_t>(rect.y),
-        static_cast<std::uint32_t>(rect.width), static_cast<std::uint32_t>(rect.height));
-}
 
 void set_task_camera_viewport(WGPURenderPassEncoder pass, const CameraRecord* camera,
                               std::uint32_t target_width, std::uint32_t target_height) {
@@ -760,6 +749,12 @@ class DawnSceneRun {
             const MaterialRecord* material = handle_find(engine.materials, draw.item.material);
             DawnDrawState& standard_state =
                 ensure_standard_draw_buffers(state, mesh, draw.item.material.value);
+            // A new emission snapshot of the draw's scene stales the held
+            // group, which the encode then rebuilds over the new one.
+            if (refresh_area_light_group(state, standard_state, scene) && standard_state.group) {
+                wgpuBindGroupRelease(standard_state.group);
+                standard_state.group = nullptr;
+            }
             // The bind group builds at encode: a depth-sampled emissive render
             // texture's view resolves only after the frame-graph textures exist.
             standard_state.group_key =
@@ -812,7 +807,7 @@ class DawnSceneRun {
         return {variant,
                 &ensure_pinned_draw_bindings(state, mesh, draw.item.material.value, variant,
                                              handle_find(engine.materials, draw.item.material),
-                                             /*build_group=*/frame)};
+                                             /*build_group=*/frame, scene)};
 #else
         if (frame)
             dawn_error("PBR draw in a build with no composed variant table; the transcribed "
@@ -1087,9 +1082,7 @@ public:
         // pin's own surface declaration, not a re-typed 4; there is no
         // capability probe here because WebGPU guarantees 4x support on the
         // surface formats this backend renders to, where SDL_GPU must ask.
-        state.sample_count = frame_options.single_sample
-                                 ? 1u
-                                 : upstream::preferred_sample_count(engine.options.msaa_samples);
+        state.sample_count = surface_sample_count(frame_options, engine.options.msaa_samples);
 
         DeviceOptions device_options = frame_device_options(frame_options);
         device_options.max_vertex_attributes = scene_vertex_attribute_limit();
@@ -1137,6 +1130,8 @@ public:
         height = state.surface_height;
 #if BBLITE_HAS_UI && !BBLITE_WORKERS
         ui_runtime.reset(create_ui_rml_runtime(engine, state.window, width, height));
+        // WebGPU guarantees 4x sampling of the UI layer's surface format.
+        state.ui_samples = frame_options.page_ui_sample_count();
 #endif
 
 #if BBLITE_HAS_SPRITE_RENDERER
@@ -1276,6 +1271,11 @@ public:
             environment_jobs.emplace_back([&] {
                 upload_environment(state, environment);
                 upload_brdf(state, environment);
+#if BBLITE_RECT_AREA_LIGHTS
+                // The startup scene's area resources, read and uploaded
+                // here rather than on its first frame.
+                prepare_area_lighting(state, scene, engine);
+#endif
                 state.reflection_cubes.reserve(reflection_cubes.size());
                 state.reflection_cube_views.reserve(reflection_cubes.size());
                 for (const auto& cube : reflection_cubes) {
@@ -1705,6 +1705,8 @@ public:
             // Scene callbacks may have changed layer membership or instance
             // data, so every sprite context synchronizes and uploads now.
             sync_dawn_scene_sprites(state, rows.engine);
+            const PageCanvas canvas =
+                page_canvas(rows.engine.ui_page_viewport, data.width, data.height);
             for (DawnSpritePass& sprite_pass : state.sprite_passes) {
                 // `spriteRendererUpdate` runs the renderer's own hooks
                 // before it reads its layers, so an overlay HUD's hook is
@@ -1714,7 +1716,7 @@ public:
                                              sprite_pass, state.sprite_render_textures,
                                              state.sprite_render_texture_views);
                 upload_dawn_sprite_pass(state.device, state.queue, rows.engine, sprite_pass,
-                                        data.width, data.height, delta_ms);
+                                        canvas.width(), canvas.height(), delta_ms);
             }
             // A build since the last frame (its renderable version) may have
             // published depth-hosted layers; the scene pass follows them.
@@ -1958,6 +1960,9 @@ public:
                                                     sizeof(overlay_scene_block));
             const std::vector<std::uint8_t> overlay_lights =
                 pinned_lights_block(*overlay_scene, engine);
+#if BBLITE_RECT_AREA_LIGHTS
+            prepare_area_lighting(state, *overlay_scene, engine);
+#endif
             DawnGpuDevice{state.queue}.write_buffer(overlay.lights_uniforms, 0,
                                                     overlay_lights.data(), overlay_lights.size());
         }
@@ -1991,7 +1996,7 @@ public:
         pass_scene = &scene;
         pass_meshes = &state.meshes;
 
-        if (scene.has_frame_passes()) {
+        if (scenes_run_frame_graphs(data_.active_registered_scenes)) {
 #if !BBLITE_HAS_TAA
             for (std::size_t graph_layer = 0; graph_layer < data_.active_registered_scenes.size();
                  ++graph_layer) {
@@ -2379,7 +2384,8 @@ public:
                             state, mesh, standard_material, variant, standard_state.mesh_uniforms,
                             standard_state.material_uniforms, standard_state.uv_uniforms,
                             standard_state.uv_transform_uniforms, nullptr,
-                            standard_render_views(state, engine, standard_material));
+                            standard_render_views(state, engine, standard_material),
+                            area_light_emission_of(standard_state));
                     }
                     const InstanceStreams standard_streams =
                         instance_streams_for(handle_at(engine.meshes, draw.item.mesh), mesh);
@@ -2501,7 +2507,8 @@ public:
             }
             return drew;
         };
-        if (!scene.has_frame_passes()) {
+        const bool whole_frame_graph = scene.has_frame_passes();
+        if (!whole_frame_graph) {
             write_material_uniforms(render_plan.draw_lists.opaque,
                                     current_frame().frame_pass_matrices);
             write_material_uniforms(render_plan.draw_lists.transparent,
@@ -2796,7 +2803,8 @@ public:
             for (std::size_t layer = 0;
                  layer < overlay_plans.size() && layer < state.overlay_meshes.size(); ++layer) {
                 Scene* overlay_scene = data_.active_registered_scenes[layer + 1u].get();
-                if (!overlay_scene)
+                // A scene with its own graph runs it after this pass.
+                if (!overlay_scene || scene_runs_own_graph(*overlay_scene))
                     continue;
                 if (layer < overlay_topology_versions.size() &&
                     overlay_scene->render_topology_version != overlay_topology_versions[layer]) {
@@ -2872,9 +2880,12 @@ public:
             if (transmission) {
                 encode_image_processing(state, encoder, surface_view, scene);
             }
-        } else {
-            // Frame-graph execution replaces the main pass entirely,
-            // mirroring the SDL task loop.
+        }
+        // Frame-graph execution replaces the main pass entirely, mirroring the
+        // SDL task loop; after a direct pass, the scenes that run their own
+        // graph run it, presenting into that pass's image.
+        if (whole_frame_graph ||
+            scenes_run_frame_graphs(std::span(data_.active_registered_scenes).subspan(1))) {
             // The task encoding now: every target lookup below resolves
             // through `pal::resolve_render_target` naming it.
             pal::TargetUser target_user = pal::frame_pass_target_user;
@@ -3321,27 +3332,30 @@ public:
                             // them into the frame encoder before its pass begins; group 0
                             // reads the block the frame's pass blocks wrote for the task.
                             const ExternalRenderablePass* const task_externals =
-                                !task.render.auto_mirror ? nullptr :
-                                prepare_external_pass(
-                                    state.external_passes.task(handle), engine, graph_scene,
-                                    GpuRenderTargetSignature{
-                                        dawn_webgpu_format_name(target.color_format),
-                                        pass_descriptor.depthStencilAttachment
-                                            ? js::Nullable<std::string>(dawn_webgpu_format_name(
-                                                  borrowed_depth_view
-                                                      ? WGPUTextureFormat_Depth24PlusStencil8
-                                                      : target.depth_format))
-                                            : js::Nullable<std::string>(),
-                                        {},
-                                        static_cast<double>(
-                                            target_sample_count(state, target_record))},
-                                    data_.pass_blocks.task(handle),
-                                    GpuDrawUpdateContext{static_cast<double>(target.width),
-                                                         static_cast<double>(target.height),
-                                                         task_pass_camera_handle(engine, task)},
-                                    external_encoder);
+                                !task.render.auto_mirror
+                                    ? nullptr
+                                    : prepare_external_pass(
+                                          state.external_passes.task(handle), engine, graph_scene,
+                                          GpuRenderTargetSignature{
+                                              dawn_webgpu_format_name(target.color_format),
+                                              pass_descriptor.depthStencilAttachment
+                                                  ? js::Nullable<
+                                                        std::string>(dawn_webgpu_format_name(
+                                                        borrowed_depth_view
+                                                            ? WGPUTextureFormat_Depth24PlusStencil8
+                                                            : target.depth_format))
+                                                  : js::Nullable<std::string>(),
+                                              {},
+                                              static_cast<double>(
+                                                  target_sample_count(state, target_record))},
+                                          data_.pass_blocks.task(handle),
+                                          GpuDrawUpdateContext{
+                                              static_cast<double>(target.width),
+                                              static_cast<double>(target.height),
+                                              task_pass_camera_handle(engine, task)},
+                                          external_encoder);
 #else
-                            const ExternalRenderablePass* const task_externals = nullptr;
+                        const ExternalRenderablePass* const task_externals = nullptr;
 #endif
                             const DawnPassTimestamps color_timestamps{timing_sequence.pass()};
                             pass_descriptor.timestampWrites = color_timestamps.get();
@@ -3430,7 +3444,7 @@ public:
                             draw_opaque_bucket(render_task.draw_lists.opaque, task_externals,
                                                draw_task_list, draw_external);
 #else
-                            draw_task_list(render_task.draw_lists.opaque);
+                        draw_task_list(render_task.draw_lists.opaque);
 #endif
 #if BBLITE_HAS_BILLBOARDS
                             if (task.render.scene_stages) {
@@ -3519,7 +3533,7 @@ public:
                                 for (std::size_t layer = 0; layer < overlay_plans.size(); ++layer) {
                                     const Scene& utility =
                                         *data_.active_registered_scenes[layer + 1];
-                                    if (utility.surface_canvas || utility.has_frame_passes())
+                                    if (scene_runs_own_graph(utility))
                                         continue;
                                     color_attachment.loadOp = WGPULoadOp_Load;
                                     depth_attachment.depthLoadOp = WGPULoadOp_Clear;
@@ -4095,10 +4109,10 @@ public:
                     }
                 }
 #if BBLITE_HAS_TAA
-                if (frame_graph_presented)
+                if (whole_frame_graph && frame_graph_presented)
                     retain_temporal_presentation(state, encoder, surface_texture.texture, width,
                                                  height);
-            } else if (state.temporal_presented) {
+            } else if (whole_frame_graph && state.temporal_presented) {
                 present_stopped_temporal_frame(state, encoder, surface_view);
                 frame_graph_presented = true;
             }
@@ -4137,6 +4151,8 @@ public:
                 sprite_descriptor.colorAttachments = &sprite_attachment;
                 DawnRenderPass sprite_encoder{
                     wgpuCommandEncoderBeginRenderPass(encoder, &sprite_descriptor)};
+                set_page_canvas_viewport(sprite_encoder, engine, width, height,
+                                         !renderer.has_target);
                 record_dawn_sprite_pass(sprite_encoder, engine,
                                         handle_at(state.sprite_passes, handle));
                 wgpuRenderPassEncoderEnd(sprite_encoder);
@@ -4185,7 +4201,7 @@ public:
         const bool ui_after_capture_copy = capture_frame && !capture_ui;
         if (!ui_after_capture_copy) {
             render_sprite_ui_dawn_frame(state, encoder, surface_texture.texture, surface_view,
-                                        state.ui, ui_frame, nullptr, state.sample_count);
+                                        state.ui, ui_frame, nullptr, state.ui_samples);
             if (capture_frame && capture_ui) {
                 capture_source = surface_texture.texture;
             }
@@ -4230,7 +4246,7 @@ public:
             // uses in one submission can leave Dawn's map future unresolved.
             DawnCommandEncoder ui_encoder{wgpuDeviceCreateCommandEncoder(state.device, nullptr)};
             render_sprite_ui_dawn_frame(state, ui_encoder, surface_texture.texture, surface_view,
-                                        state.ui, ui_frame, nullptr, state.sample_count);
+                                        state.ui, ui_frame, nullptr, state.ui_samples);
             DawnCommandBuffer ui_command{wgpuCommandEncoderFinish(ui_encoder, nullptr)};
             submit_dawn_command(state.queue, ui_command);
             ui_command.reset();

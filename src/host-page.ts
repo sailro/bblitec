@@ -1,46 +1,36 @@
 /**
  * An HTML page as a program's host: the module its module script evaluates,
  * and the markup, attributes and `<style>` sheets around it as the native
- * host UI model (`NativeHostUi`), which the reviewed `ui/*.json` companions
- * also describe. `host-page-parser.ts` parses the page with Chromium.
- *
- * What the host model cannot represent refuses here, naming the page:
- * external and head classic scripts, data scripts, inline event handlers, external style sheets,
- * foreign (SVG/MathML) markup and head content with an effect.
+ * host UI model (`NativeHostUi`). `host-page-parser.ts` parses the page
+ * with Chromium. What the host model cannot represent refuses here, naming
+ * the page ([host pages](../docs/ui.md#host-pages)).
  */
-import { existsSync, readFileSync } from "node:fs";
-import { dirname, resolve } from "node:path";
+import { readFileSync } from "node:fs";
+import { dirname, relative, resolve, sep } from "node:path";
 import ts from "typescript";
-import { deploymentAssetSource } from "./compiler/deployment.js";
 import type {
     CompileOptions,
+    HostPage,
     HostPageProgram,
-    NativeHostUi,
     NativeHostUiElement,
     NativeHostUiNode,
     NativeHostUiStyleSheet,
     PageLoaderModule,
     PageStartupScript,
 } from "./compiler/types.js";
+import { servedFile } from "./pinned-lab-materializers.js";
 import {
     parseHostPageMarkup,
     type HostPageDocument,
     type HostPageElement,
     type HostPageNode,
 } from "./host-page-parser.js";
+import { retainsText } from "./compiler/ui-authored-markup.js";
 import {
     dynamicImportSpecifier,
     isRelativeSpecifier,
     moduleSpecifiers,
 } from "./typescript-module-specifiers.js";
-
-export interface HostPage extends HostPageProgram {
-    title?: string;
-    /** The module the page's module script evaluates. */
-    entry: string;
-    /** Absent for a page without markup, sheets or attributes. */
-    hostUi?: NativeHostUi;
-}
 
 /** Whether a source path names an HTML page rather than a module. */
 export function isHostPagePath(path: string): boolean {
@@ -52,16 +42,88 @@ export function hostPageRoot(page: HostPageProgram): string {
     return resolve(page.root ?? dirname(resolve(page.path)));
 }
 
+/** An origin the page's root-relative URLs resolve beneath. */
+const pageOrigin = "http://page.invalid";
+
+/** The page's own URL beneath its site root. */
+function hostPageUrl(page: HostPageProgram): URL {
+    return new URL(
+        relative(hostPageRoot(page), resolve(page.path))
+            .split(sep)
+            .map(encodeURIComponent)
+            .join("/"),
+        `${pageOrigin}/`,
+    );
+}
+
 /**
- * The file a root-relative or relative module specifier names beneath the
- * page's root, as the bundler serving it resolves the URL; undefined for
- * another origin.
+ * The decoded site path of a URL the page names, resolved against the page
+ * as the browser resolves it; undefined for another origin. A static host
+ * serves the path, whatever the URL's query or fragment.
  */
-export function hostPageModulePath(
-    specifier: string,
-    root: string,
+function hostPageUrlPath(
+    page: HostPageProgram,
+    url: string,
 ): string | undefined {
-    return deploymentAssetSource(specifier, { publicDir: root });
+    const resolved = new URL(url, hostPageUrl(page));
+    return resolved.origin === pageOrigin
+        ? decodeURIComponent(resolved.pathname)
+        : undefined;
+}
+
+/**
+ * The file the page's site serves at a decoded path: its public directory's,
+ * which Vite serves first, else its root's.
+ */
+function hostPageSiteFile(
+    page: HostPageProgram,
+    path: string,
+): string | undefined {
+    return (
+        (page.publicDir === undefined
+            ? undefined
+            : servedFile(page.publicDir, path)) ??
+        servedFile(hostPageRoot(page), path)
+    );
+}
+
+/**
+ * The file the page's site serves at a URL the page names: its scripts'
+ * and modules' sources (`hostPageSiteFile`); undefined for another origin
+ * or a path the site serves no file at.
+ */
+export function hostPageServedFile(
+    page: HostPageProgram,
+    url: string,
+): string | undefined {
+    const path = hostPageUrlPath(page, url);
+    return path === undefined ? undefined : hostPageSiteFile(page, path);
+}
+
+/**
+ * The file a URL in the page's document names, as a source
+ * `resolveBundledAsset` reads: a file the page's site serves is that file;
+ * a URL beneath the entry module's directory is the module's own asset,
+ * which native packaging serves at the public root (`moduleRelativeUrl`);
+ * any other path is the deployment's. Another origin's URL is returned as
+ * written.
+ */
+export function hostPageDocumentAsset(
+    page: HostPageProgram,
+    url: string,
+): string {
+    const path = hostPageUrlPath(page, url);
+    if (path === undefined) return url;
+    const served = hostPageSiteFile(page, path);
+    if (served) return served;
+    const moduleDirectory = page.entryUrl
+        ? decodeURIComponent(
+              new URL(".", new URL(page.entryUrl, pageOrigin)).pathname,
+          )
+        : undefined;
+    return moduleDirectory && path.startsWith(moduleDirectory)
+        ? `/${path.slice(moduleDirectory.length)}`
+        : path;
 }
 
 const xhtml = "http://www.w3.org/1999/xhtml";
@@ -163,19 +225,19 @@ function pageEntry(
     script: HostPageElement,
     page: HostPageProgram & { lines: PageLines },
     fail: (message: string) => never,
-): { entry: string; loader?: PageLoaderModule } {
-    const root = hostPageRoot(page);
+): { entry: string; entryUrl: string; loader?: PageLoaderModule } {
+    const urlOf = (specifier: string): string =>
+        new URL(specifier, hostPageUrl(page)).pathname;
     const modulePath = (specifier: string): string => {
-        if (/[?#]/.test(specifier))
-            fail(`module '${specifier}' carries a query or fragment.`);
         const path =
-            hostPageModulePath(specifier, root) ??
+            hostPageUrlPath(page, specifier) ??
             fail(`loads module '${specifier}' from another origin.`);
-        return existsSync(path)
-            ? path
-            : fail(
-                  `module '${specifier}' resolves to '${path}', which does not exist.`,
-              );
+        return (
+            hostPageSiteFile(page, path) ??
+            fail(
+                `module '${specifier}' names '${path}', where its site serves no file.`,
+            )
+        );
     };
     for (const name of Object.keys(script.attributes ?? {}))
         if (name !== "type" && name !== "src")
@@ -185,7 +247,10 @@ function pageEntry(
     if (src !== undefined) {
         if (!isWhitespace(inline))
             fail("module script has both a src attribute and inline text.");
-        return { entry: page.entry ? resolve(page.entry) : modulePath(src) };
+        return {
+            entry: page.entry ? resolve(page.entry) : modulePath(src),
+            entryUrl: urlOf(src),
+        };
     }
     // Line numbers in the inline script follow the page's own lines.
     const fileName = `${resolve(page.path)}.inline-module.ts`;
@@ -221,13 +286,17 @@ function pageEntry(
             fail(
                 "inline module script runs statements after importing its entry; only a dynamic import() can precede them.",
             );
-        return { entry };
+        return { entry, entryUrl: urlOf(specifier) };
     }
     if (dynamic.length !== imports.length || dynamic.length > 1)
         fail(
             "inline module script must import its entry once, statically or dynamically.",
         );
-    return { entry, loader: { fileName, source, specifier } };
+    return {
+        entry,
+        entryUrl: urlOf(specifier),
+        loader: { fileName, source, specifier },
+    };
 }
 
 /**
@@ -260,6 +329,7 @@ export function hostPageFromDocument(
     const styleSheets: NativeHostUiStyleSheet[] = [];
     const scripts: HostPageElement[] = [];
     let title: string | undefined;
+    let viewportFitCover = false;
     const startup: PageStartupScript[] = [];
 
     const readStyle = (element: HostPageElement): void => {
@@ -290,20 +360,23 @@ export function hostPageFromDocument(
             if (attributeCount === 1 && charset?.toLowerCase() === "utf-8")
                 continue;
             // The native window is the whole layout viewport at scale one,
-            // which the user cannot zoom.
+            // which the user cannot zoom; `viewport-fit` decides whether it
+            // spans the window's unsafe edges.
+            const viewport = content
+                .split(",")
+                .map((entry) => entry.trim().replace(/\s*=\s*/, "="));
             if (
                 attributeCount === 2 &&
                 name === "viewport" &&
-                content
-                    .split(",")
-                    .map((entry) => entry.trim().replace(/\s*=\s*/, "="))
-                    .every((entry) =>
-                        /^(?:width=device-width|(?:initial|minimum|maximum)-scale=1(?:\.0*)?|user-scalable=(?:no|0)|viewport-fit=(?:auto|cover))$/.test(
-                            entry,
-                        ),
-                    )
-            )
+                viewport.every((entry) =>
+                    /^(?:width=device-width|(?:initial|minimum|maximum)-scale=1(?:\.0*)?|user-scalable=(?:no|0)|viewport-fit=(?:auto|cover))$/.test(
+                        entry,
+                    ),
+                )
+            ) {
+                viewportFitCover = viewport.includes("viewport-fit=cover");
                 continue;
+            }
             // Browser chrome and search metadata; the light scheme is the
             // native controls' own.
             if (
@@ -335,12 +408,29 @@ export function hostPageFromDocument(
             );
         return handlers.length > 0;
     };
+    // An external classic script runs at its parser position as inline text
+    // does, from the file the site serves at its URL.
+    const classicScriptFile = (src: string): string | undefined => {
+        const path = src.trim() ? hostPageUrlPath(page, src) : undefined;
+        const file =
+            path === undefined ? undefined : hostPageSiteFile(page, path);
+        if (!file)
+            refuse(
+                `classic <script src="${src}"> ${path === undefined ? "loads from another origin or no URL" : "names no file its site serves"}.`,
+            );
+        return file;
+    };
     const hostNodes = (
         nodes: readonly HostPageNode[],
-        within: string,
+        parent: string,
     ): NativeHostUiNode[] =>
         nodes.flatMap((node): NativeHostUiNode[] => {
-            if (node.tag === undefined) return [node];
+            if (node.tag === undefined)
+                return retainsText(parent, node.text, (message) =>
+                    fail(`<${parent}> ${message}`),
+                )
+                    ? [node]
+                    : [];
             if (node.tag === "script") {
                 scripts.push(node);
                 const type = node.attributes?.type?.trim().toLowerCase();
@@ -353,13 +443,26 @@ export function hostPageFromDocument(
                     return [];
                 }
                 for (const attribute of Object.keys(node.attributes ?? {}))
-                    if (attribute !== "type")
+                    if (attribute !== "type" && attribute !== "src")
                         refuse(
                             `classic <script> attribute '${attribute}' is not represented.`,
                         );
                 const inline = textContent(node);
-                const fileName = `${resolve(page.path)}.inline-classic-${startup.length + 1}.js`;
-                const source = "\n".repeat(lines.line(inline) - 1) + inline;
+                const src = node.attributes?.src;
+                const external =
+                    src === undefined ? undefined : classicScriptFile(src);
+                if (src !== undefined && !isWhitespace(inline))
+                    refuse(
+                        "classic <script> has both a src attribute and inline text.",
+                    );
+                if (src !== undefined && !external) return [];
+                const fileName =
+                    external ??
+                    `${resolve(page.path)}.inline-classic-${startup.length + 1}.js`;
+                // Line numbers in an inline script follow the page's own lines.
+                const source = external
+                    ? readFileSync(external, "utf8")
+                    : "\n".repeat(lines.line(inline) - 1) + inline;
                 const parsed = ts.createSourceFile(
                     fileName,
                     source,
@@ -381,11 +484,11 @@ export function hostPageFromDocument(
                     refuse(
                         "classic <script> requires expression statements; global declarations and control statements need shared script binding ownership.",
                     );
-                startup.push({ fileName, source });
+                startup.push(external ? { fileName } : { fileName, source });
                 return [
                     {
                         tag: "script",
-                        text: inline,
+                        ...(external ? {} : { text: inline }),
                         ...(node.attributes
                             ? { attributes: node.attributes }
                             : {}),
@@ -406,25 +509,21 @@ export function hostPageFromDocument(
                     ? `is foreign (${node.namespace}) markup`
                     : unrepresentedElements.get(node.tag);
             if (reason) {
-                refuse(`<${node.tag}> in ${within}: ${reason}.`);
+                refuse(`<${node.tag}> in <${parent}>: ${reason}.`);
                 return [];
             }
             if (inlineHandlers(node)) return [];
             const element: NativeHostUiElement = { tag: node.tag };
             if (node.attributes) element.attributes = node.attributes;
-            const children = hostNodes(node.children ?? [], `<${node.tag}>`);
+            const children = hostNodes(node.children ?? [], node.tag);
             if (children.length > 0) element.children = children;
             return [element];
         });
 
     inlineHandlers(body);
-    // White space opening or closing the body (around its scripts, say)
-    // collapses away at the edges of its block.
-    const elements = hostNodes(body.children ?? [], "<body>");
-    const blank = (node: NativeHostUiNode | undefined): boolean =>
-        node !== undefined && node.tag === undefined && isWhitespace(node.text);
-    while (blank(elements[0])) elements.shift();
-    while (blank(elements.at(-1))) elements.pop();
+    // White space opening or closing the body stays in the document, as the
+    // browser keeps it; layout collapses it away at the edges of its block.
+    const elements = hostNodes(body.children ?? [], "body");
 
     const modules = scripts.filter(
         (script) => script.attributes?.type?.trim().toLowerCase() === "module",
@@ -439,27 +538,38 @@ export function hostPageFromDocument(
         );
     const [script] = modules;
     if (!script) return fail("has no module script naming its entry.");
-    const { entry, loader } = pageEntry(script, { ...page, lines }, fail);
+    const { entry, entryUrl, loader } = pageEntry(
+        script,
+        { ...page, lines },
+        fail,
+    );
 
     const htmlAttributes = html.attributes ?? {};
     const bodyAttributes = body.attributes ?? {};
     // The document language alone has no native rendering.
     const hasDocument =
-        elements.length > 0 ||
+        viewportFitCover ||
+        elements.some(
+            (node) => node.tag !== undefined || !isWhitespace(node.text),
+        ) ||
         styleSheets.length > 0 ||
         Object.keys(bodyAttributes).length > 0 ||
         Object.keys(htmlAttributes).some((name) => name !== "lang");
     return {
         path: page.path,
         ...(page.root !== undefined ? { root: page.root } : {}),
+        ...(page.publicDir !== undefined ? { publicDir: page.publicDir } : {}),
         ...(title ? { title } : {}),
         entry,
+        entryUrl,
         ...(loader ? { loader } : {}),
         ...(startup.length ? { startup } : {}),
         ...(hasDocument
             ? {
                   hostUi: {
-                      sourcePath: page.path,
+                      ...(viewportFitCover
+                          ? { viewportFitCover: true as const }
+                          : {}),
                       ...(html.attributes ? { htmlAttributes } : {}),
                       ...(body.attributes ? { bodyAttributes } : {}),
                       ...(styleSheets.length > 0 ? { styleSheets } : {}),
@@ -475,7 +585,6 @@ export function hostPageCompileOptions(page: HostPage): CompileOptions {
     return {
         fileName: page.entry,
         hostPage: page,
-        ...(page.hostUi ? { nativeHostUi: page.hostUi } : {}),
         ...(page.title ? { title: page.title } : {}),
     };
 }

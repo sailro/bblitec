@@ -91,6 +91,15 @@ import {
 import { plainUboSpec } from "./pinned-material-arms.js";
 import { refuseGeneration } from "./generation-refusal.js";
 import { pinnedBabylonMaterials } from "./pinned-babylon-materials.js";
+import {
+    pinnedAreaStandardContext,
+    pinnedRectAreaEmissionStandard,
+    pinnedRectAreaStandard,
+    rectAreaLightingModes,
+    rectAreaTextureRows,
+    type RectAreaLighting,
+    type RectAreaLightingMode,
+} from "./pinned-rect-area-lights.js";
 
 /** The pinned modules the contracts below are keyed on when they refuse. */
 const STANDARD_MATERIAL_MODULE =
@@ -160,6 +169,14 @@ export interface PinnedStandardComposeOptions {
     passFeatures?: number;
     /** `scene.fog`: composes the pin's std-fog fragment as the scene shader. */
     fog?: boolean;
+    /**
+     * `enableRectAreaLights(scene)` installed the scene's Standard hooks:
+     * `standard-group-builder.ts` then takes the scene shader context from
+     * the lighting's `_standard(fog)` (the solid or the textured area
+     * context), whose `_materialFeatures` every renderable ORs into its
+     * word before the extension loop.
+     */
+    rectAreaLighting?: RectAreaLighting;
     /**
      * The pin's opt-in vertex-colour fragment
      * (`enableStandardVertexColors` + a mesh colour buffer). `vertexAlpha`
@@ -292,6 +309,15 @@ async function registerStandardExtensions(): Promise<void> {
             }
             flags._registerStdExt(ext);
         }
+        // `enableRectAreaLights` registers the solid one and the emission
+        // seam the textured one. Each `_frag` composes only for a word
+        // carrying its own `_feature`, which only its area scene context ORs
+        // in, so registering both for every scene is inert the same way the
+        // eight above are.
+        flags._registerStdExt((await pinnedRectAreaStandard()).rectAreaStdExt);
+        flags._registerStdExt(
+            (await pinnedRectAreaEmissionStandard()).rectAreaEmissionStdExt,
+        );
     })();
     return registered;
 }
@@ -520,7 +546,27 @@ export async function composePinnedStandardVariant(
                 "spliced into the thin-instance fragment.",
         );
     }
-    let features = await pinnedStandardMaterialFeatures(material);
+    // The scene shader `standard-group-builder.ts` hands every renderable:
+    // the area context when the scene enabled area lighting (it carries the
+    // fog fragment itself), else the fog-only one.
+    const areaContext = options.rectAreaLighting
+        ? await pinnedAreaStandardContext(
+              options.rectAreaLighting,
+              options.fog ? fog.createStandardFogFragment() : null,
+          )
+        : undefined;
+    const sceneShader =
+        areaContext ??
+        (options.fog
+            ? {
+                  _features: flags.STD_SCENE_FOG,
+                  _fragments: [fog.createStandardFogFragment()],
+              }
+            : null);
+    // `rebuildSingle`: `renderFeatures.features | sceneShader._materialFeatures`.
+    let features =
+        (await pinnedStandardMaterialFeatures(material)) |
+        (areaContext?._materialFeatures ?? 0);
     const passFeatures = options.passFeatures ?? 0;
     // The ESM caster pass. `rebuildSingle` reads the depth code off the
     // material view the ESM generator built for this caster, so the view is
@@ -547,6 +593,12 @@ export async function composePinnedStandardVariant(
         ((features | passFeatures) &
             (flags.NO_COLOR_OUTPUT | flags.ESM_SHADOW_OUTPUT)) !==
         0;
+    // `getOrCreateStandardBindings(..., shadowOutput ? null : sceneShader)`.
+    // The caster views reach the fog-only context with `fog: false`; the
+    // area context keeps its material bit on the word above and drops the
+    // shader context here, exactly where the pin drops it.
+    const composedSceneShader =
+        areaContext && shadowOutput ? null : sceneShader;
     const colorAlpha = (await pinnedStandardMeshAlpha())(
         shadowOutput,
         options.vertexAlpha ?? options.vertexColors?.vertexAlpha ?? false,
@@ -637,12 +689,6 @@ export async function composePinnedStandardVariant(
                 : fragment,
         );
     }
-    const sceneShader = options.fog
-        ? {
-              _features: flags.STD_SCENE_FOG,
-              _fragments: [fog.createStandardFogFragment()],
-          }
-        : null;
     if (options.geometry) {
         // The pin's own MRT arm. `createStandardGeometryMaterialView` keys
         // the view on `(features & ~MATERIAL_ALPHA_BLEND) | GEOMETRY_OUTPUT`
@@ -692,7 +738,7 @@ export async function composePinnedStandardVariant(
             attachments,
             "",
             options.geometry.emitColor,
-            sceneShader,
+            composedSceneShader,
         );
         return {
             fragmentKey: composed._fragmentKey,
@@ -708,7 +754,7 @@ export async function composePinnedStandardVariant(
         meshFeatures,
         fragments,
         esmShadowDepthCode,
-        sceneShader,
+        composedSceneShader,
     );
     return {
         fragmentKey: composed._fragmentKey,
@@ -1439,6 +1485,10 @@ export interface StandardSceneCompositionInput {
     babylonAssets: readonly string[];
     babylonTextureModes?: ReadonlyMap<string, readonly boolean[]>;
     fog: boolean;
+    /** The area lightings a scene can draw under
+     *  (`reachedRectAreaLightings`); an installed one's scene shader context
+     *  is the pin's solid or textured area context. */
+    rectAreaLightings?: readonly RectAreaLightingMode[];
     /** `material:standard-vertex-colors` reached (the pin's opt-in). */
     vertexColors: boolean;
     /** `material:no-color-view` reached: depth-only views over the
@@ -1518,6 +1568,76 @@ export interface StandardSceneCompositionInput {
 export interface StandardSceneComposition {
     variants: PinnedStandardVariantManifestEntry[];
     selectors: PinnedStandardSelector[];
+    /**
+     * Per installed area lighting the program reaches, its scene context's
+     * executed `_materialFeatures`, which the runtime ORs into a scene's
+     * word (`standard_scene_material_features`).
+     */
+    areaMaterialFeatures?: Readonly<Partial<Record<RectAreaLighting, number>>>;
+    /** `writeStdMaterialData`'s extension writers (`standardExtensionWriters`). */
+    extensionWriters: readonly PinnedStandardExtensionWriter[];
+}
+
+/** One registered Standard extension's `_writeUbo`, as its source names it. */
+export interface PinnedStandardExtensionWriter {
+    readonly modulePath: string;
+    readonly symbolName: string;
+}
+
+/**
+ * `for (const ext of _getStdExtsSorted()) ext._writeUbo?.(data, mat)`: the
+ * registered extensions with a writer, in the pin's own sorted order. Of
+ * the process-global registry, only the ones this program's pin registers
+ * count: the solid area extension once `enableRectAreaLights` is reached,
+ * the textured one once `processAreaLightTexture` is. Another extension
+ * with a writer has no lowering here and refuses.
+ */
+export async function standardExtensionWriters(
+    lightings: readonly RectAreaLightingMode[] | undefined,
+): Promise<readonly PinnedStandardExtensionWriter[]> {
+    await registerStandardExtensions();
+    const flags = await importPinnedModule<{
+        _getStdExtsSorted: () => readonly (StdExtDescriptor & {
+            _writeUbo?: unknown;
+        })[];
+    }>("material/standard/standard-flags.js");
+    const area = [
+        {
+            id: (await pinnedRectAreaStandard()).rectAreaStdExt._id,
+            reached: lightings?.includes("solid") === true,
+            modulePath:
+                "src/material/standard/fragments/rect-area-light-fragment.ts",
+            symbolName: "rectAreaStdExt._writeUbo",
+        },
+        {
+            id: (await pinnedRectAreaEmissionStandard()).rectAreaEmissionStdExt
+                ._id,
+            reached: lightings?.includes("textured") === true,
+            modulePath:
+                "src/material/standard/fragments/rect-area-light-emission-fragment.ts",
+            symbolName: "rectAreaEmissionStdExt._writeUbo",
+        },
+    ];
+    return flags
+        ._getStdExtsSorted()
+        .filter((ext) => ext._writeUbo !== undefined)
+        .flatMap((ext) => {
+            const writer = area.find((entry) => entry.id === ext._id);
+            if (!writer)
+                refuseGeneration(
+                    "material:standard",
+                    `Standard extension '${ext._id}' writes the material block, ` +
+                        "and only the area extensions' writers are lowered.",
+                );
+            return writer.reached
+                ? [
+                      {
+                          modulePath: writer.modulePath,
+                          symbolName: writer.symbolName,
+                      },
+                  ]
+                : [];
+        });
 }
 
 /**
@@ -1812,112 +1932,134 @@ export async function composeSceneStandardVariants(
             variant: index,
         });
     };
-    for (const materialFeatures of featureValues) {
-        const material = representative.get(materialFeatures)!;
-        const reachableMeshValues =
-            material.pluginIndex === undefined
-                ? meshValues
-                : (pluginMeshValues[material.pluginIndex - 1] ?? []);
-        for (const meshFeatures of reachableMeshValues) {
-            // The word the runtime derives, mesh-phase extensions included:
-            // the selector is keyed by what `standard_variant_key` computes,
-            // not by the material's own bits.
-            const features = await pinnedStandardRenderableFeatures(
-                material,
-                meshFeatures,
-                input.skeleton,
-            );
-            const vertexColors =
-                input.vertexColors &&
-                (meshFeatures & meshBits.MSH_HAS_VERTEX_COLOR) !== 0
-                    ? { vertexColors: { vertexAlpha: false } }
-                    : {};
-            const baseOptions = {
-                fog: input.fog,
-                skeleton: input.skeleton ?? false,
-                ...vertexColors,
-            };
-            await add(material, meshFeatures, features, baseOptions);
-            const alpha = decideAlpha(
-                (features &
-                    (flags.NO_COLOR_OUTPUT | flags.ESM_SHADOW_OUTPUT)) !==
-                    0,
-                input.vertexAlpha ?? false,
-                vertexColors.vertexColors !== undefined,
-                (meshFeatures & meshBits.MSH_HAS_INSTANCE_COLOR) !== 0,
-            );
-            const alphaFeatures = features | alpha.features;
-            const alphaReachable = alpha.colorAlphaBlend;
-            if (alphaReachable) {
-                await add(material, meshFeatures, alphaFeatures, {
-                    ...baseOptions,
-                    vertexAlpha: true,
-                });
-            }
-            // Every caster view a shadow generator draws through, from
-            // the one contract `rebuildSingle` states: it derives
-            // `receiveShadows` as `!shadowOutput && ...`, so a caster view
-            // of a receiving mesh composes WITHOUT the shadow fragment, and
-            // it passes `null` for the scene shader, so none of them fogs.
-            // Only the bits each view's own factory sets differ.
-            const casterViews = [
-                {
-                    reached: input.noColorViews,
-                    clear: 0,
-                    set: flags.NO_COLOR_OUTPUT,
-                },
-                {
-                    // The ESM view clears the blend bit before setting its
-                    // own, which its pinned factory does too.
-                    reached: input.esmShadowViews,
-                    clear: flags.MATERIAL_ALPHA_BLEND,
-                    set: flags.ESM_SHADOW_OUTPUT,
-                },
-            ];
-            for (const view of casterViews) {
-                if (!view.reached || !input.sceneMaterials) continue;
-                await add(
-                    material,
-                    meshFeatures & ~meshBits.MSH_RECEIVE_SHADOWS,
-                    (features & ~view.clear) | view.set,
-                    {
-                        ...baseOptions,
-                        fog: false,
-                        passFeatures: view.set,
-                    },
-                );
-            }
-            for (const task of input.geometryTasks) {
-                const geometryOptions = {
-                    ...baseOptions,
-                    geometry: {
-                        attachments: task.attachments,
-                        emitColor: task.emitColor,
-                    },
+    // Each area lighting a scene can draw under composes its own words: the
+    // scene context's `_materialFeatures` ride every renderable's word, and
+    // the runtime ORs the same executed bits for the scene's own lighting
+    // (`standard_scene_material_features`).
+    const areaMaterialFeatures: Partial<Record<RectAreaLighting, number>> = {};
+    for (const mode of input.rectAreaLightings ?? [undefined]) {
+        const lighting = mode === "none" ? undefined : mode;
+        const sceneMaterialFeatures = lighting
+            ? (await pinnedAreaStandardContext(lighting, null))
+                  ._materialFeatures
+            : 0;
+        if (lighting) areaMaterialFeatures[lighting] = sceneMaterialFeatures;
+        for (const materialFeatures of featureValues) {
+            const material = representative.get(materialFeatures)!;
+            const reachableMeshValues =
+                material.pluginIndex === undefined
+                    ? meshValues
+                    : (pluginMeshValues[material.pluginIndex - 1] ?? []);
+            for (const meshFeatures of reachableMeshValues) {
+                // The word the runtime derives, mesh-phase extensions included:
+                // the selector is keyed by what `standard_variant_key` computes,
+                // not by the material's own bits.
+                const features =
+                    (await pinnedStandardRenderableFeatures(
+                        material,
+                        meshFeatures,
+                        input.skeleton,
+                    )) | sceneMaterialFeatures;
+                const vertexColors =
+                    input.vertexColors &&
+                    (meshFeatures & meshBits.MSH_HAS_VERTEX_COLOR) !== 0
+                        ? { vertexColors: { vertexAlpha: false } }
+                        : {};
+                const baseOptions = {
+                    fog: input.fog,
+                    skeleton: input.skeleton ?? false,
+                    ...(lighting ? { rectAreaLighting: lighting } : {}),
+                    ...vertexColors,
                 };
-                await add(
-                    material,
-                    meshFeatures,
-                    features,
-                    geometryOptions,
-                    task.index,
+                await add(material, meshFeatures, features, baseOptions);
+                const alpha = decideAlpha(
+                    (features &
+                        (flags.NO_COLOR_OUTPUT | flags.ESM_SHADOW_OUTPUT)) !==
+                        0,
+                    input.vertexAlpha ?? false,
+                    vertexColors.vertexColors !== undefined,
+                    (meshFeatures & meshBits.MSH_HAS_INSTANCE_COLOR) !== 0,
                 );
+                const alphaFeatures = features | alpha.features;
+                const alphaReachable = alpha.colorAlphaBlend;
                 if (alphaReachable) {
+                    await add(material, meshFeatures, alphaFeatures, {
+                        ...baseOptions,
+                        vertexAlpha: true,
+                    });
+                }
+                // Every caster view a shadow generator draws through, from
+                // the one contract `rebuildSingle` states: it derives
+                // `receiveShadows` as `!shadowOutput && ...`, so a caster view
+                // of a receiving mesh composes WITHOUT the shadow fragment, and
+                // it passes `null` for the scene shader, so none of them fogs.
+                // Only the bits each view's own factory sets differ.
+                const casterViews = [
+                    {
+                        reached: input.noColorViews,
+                        clear: 0,
+                        set: flags.NO_COLOR_OUTPUT,
+                    },
+                    {
+                        // The ESM view clears the blend bit before setting its
+                        // own, which its pinned factory does too.
+                        reached: input.esmShadowViews,
+                        clear: flags.MATERIAL_ALPHA_BLEND,
+                        set: flags.ESM_SHADOW_OUTPUT,
+                    },
+                ];
+                for (const view of casterViews) {
+                    if (!view.reached || !input.sceneMaterials) continue;
+                    await add(
+                        material,
+                        meshFeatures & ~meshBits.MSH_RECEIVE_SHADOWS,
+                        (features & ~view.clear) | view.set,
+                        {
+                            ...baseOptions,
+                            fog: false,
+                            passFeatures: view.set,
+                        },
+                    );
+                }
+                for (const task of input.geometryTasks) {
+                    const geometryOptions = {
+                        ...baseOptions,
+                        geometry: {
+                            attachments: task.attachments,
+                            emitColor: task.emitColor,
+                        },
+                    };
                     await add(
                         material,
                         meshFeatures,
-                        alphaFeatures,
-                        {
-                            ...geometryOptions,
-                            vertexAlpha: true,
-                        },
+                        features,
+                        geometryOptions,
                         task.index,
                     );
+                    if (alphaReachable) {
+                        await add(
+                            material,
+                            meshFeatures,
+                            alphaFeatures,
+                            {
+                                ...geometryOptions,
+                                vertexAlpha: true,
+                            },
+                            task.index,
+                        );
+                    }
                 }
             }
         }
     }
-    return { variants, selectors };
+    return {
+        variants,
+        selectors,
+        ...(input.rectAreaLightings ? { areaMaterialFeatures } : {}),
+        extensionWriters: await standardExtensionWriters(
+            input.rectAreaLightings,
+        ),
+    };
 }
 
 /**
@@ -2155,8 +2297,50 @@ function standardBindingResourceRows(
         .join("\n");
 }
 
+/**
+ * `standard_scene_material_features(scene)`: the scene context's executed
+ * `_materialFeatures` for the scene's own area lighting
+ * (`scene_rect_area_lighting`), which every renderable ORs into its word
+ * before the extension loop (standard-renderable.ts rebuildSingle), and the
+ * selector rows above carry.
+ */
+function standardSceneMaterialFeaturesCpp(
+    features: Readonly<Partial<Record<RectAreaLighting, number>>>,
+): string {
+    const cases = rectAreaLightingModes.flatMap((lighting, index) => {
+        const bits = lighting === "none" ? undefined : features[lighting];
+        return bits === undefined
+            ? []
+            : [`    case ${index}u:\n        return ${bits}u;`];
+    });
+    if (cases.length === 0)
+        throw new Error(
+            "An area-lit Standard program executed no area lighting's " +
+                "_materialFeatures.",
+        );
+    return `inline std::uint32_t standard_scene_material_features(const Scene& scene) {
+    switch (scene_rect_area_lighting(scene)) {
+${cases.join("\n")}
+    default:
+        return 0u;
+    }
+}`;
+}
+
 /** Inputs for the native-support block appended to standard_variants.hpp. */
 export interface PinnedStandardSupportOptions {
+    /**
+     * The area lightings a scene can draw under (`reachedRectAreaLightings`)
+     * and each installed one's executed `_materialFeatures`
+     * (`StandardSceneComposition.areaMaterialFeatures`): the scene word, the
+     * area binding rows and the roughness fill.
+     */
+    rectAreaLighting?: {
+        readonly lightings: readonly RectAreaLightingMode[];
+        readonly materialFeatures: Readonly<
+            Partial<Record<RectAreaLighting, number>>
+        >;
+    };
     skeleton?: boolean;
     vertexAlpha?: boolean;
     uvOffset?: boolean;
@@ -2260,6 +2444,20 @@ inline bool standard_variant_skeleton(const StandardVariantEntry& variant) {
 `;
         builtinBindings.push(standardSkeletonBinding(context));
     }
+    // The area extensions' scene-owned rows each backend fills from its
+    // own allocations, as `bindAreaLightLtc` and `bindAreaLightEmission` do.
+    builtinBindings.push(
+        ...rectAreaTextureRows(options.rectAreaLighting?.lightings).map(
+            (row): StandardBuiltinBinding => ({
+                ...row,
+                reflectionCube: false,
+                origin: [
+                    "rect-area-light{,-emission}-fragment.ts; the scene's",
+                    "area-light resources, outside the mesh slots.",
+                ],
+            }),
+        ),
+    );
     const derivation = lowerStandardFeatureDerivation(
         context,
         options.uvTransform,
@@ -2461,9 +2659,15 @@ inline StandardMaterialProps standard_material_props(
     props.uv_scale = {
         material.diffuse_u_scale,
         material.diffuse_v_scale,
-    };${options.uvOffset ? "\n    props.uv_offset = {material.standard_uv_offset_x, material.standard_uv_offset_y};" : ""}
+    };${options.uvOffset ? "\n    props.uv_offset = {material.standard_uv_offset_x, material.standard_uv_offset_y};" : ""}${options.rectAreaLighting ? "\n    props.roughness = material.standard_roughness;" : ""}
     return props;
-}
+}${
+        options.rectAreaLighting
+            ? `
+
+${standardSceneMaterialFeaturesCpp(options.rectAreaLighting.materialFeatures)}`
+            : ""
+    }
 
 // The composed variants' group-1 texture bindings, resolved by the pin's
 // own names. Slot-table rows cover every 2D slot; the cube reflection pair

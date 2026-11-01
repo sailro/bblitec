@@ -99,6 +99,7 @@ import {
     type NamedMember,
 } from "./symbols.js";
 import { absenceKind } from "./type-facts.js";
+import { requireAssignedBindingStorage } from "./dynamic-binding-storage.js";
 import {
     emitReachableStatements,
     enclosingLoopControl,
@@ -233,6 +234,7 @@ interface StatementLoweringContext extends Pick<
     | "emitStatement"
     | "evaluationOrder"
     | "dataValue"
+    | "dynamicBindings"
     | "fail"
 > {}
 
@@ -4571,7 +4573,8 @@ export class StatementLowerer {
             return this.emitExpression(context, unwrapped.right);
         }
         if (ts.isVoidExpression(unwrapped)) {
-            const operand = context.unwrap(unwrapped.expression);
+            // An awaited operand still takes its turn (`void await x;`).
+            const operand = unwrapExpression(unwrapped.expression);
             if (
                 ts.isIdentifier(operand) ||
                 operand.kind === ts.SyntaxKind.ThisKeyword
@@ -4585,7 +4588,7 @@ export class StatementLowerer {
             // `void call()` preserves the call's side effects and discards
             // only its value. At a statement boundary the value was already
             // unused, so lower the operand through the same statement path.
-            return this.emitExpression(context, operand);
+            return this.emitExpression(context, unwrapped.expression);
         }
         if (ts.isConditionalExpression(unwrapped)) {
             this.emitConditionalStatement(context, unwrapped);
@@ -4784,11 +4787,17 @@ export class StatementLowerer {
                         value.kind !== "json-null" ||
                         (value.cpp === "std::nullopt") !==
                             (target.cpp === "std::nullopt")
-                    )
+                    ) {
+                        requireAssignedBindingStorage(
+                            context,
+                            unwrapped.left,
+                            unwrapped.right,
+                        );
                         context.fail(
                             unwrapped,
                             "A generation-known absent binding requires storage before its value can change.",
                         );
+                    }
                     context.emitDiscardedValue(value);
                     return;
                 } else {
@@ -5211,6 +5220,26 @@ export class StatementLowerer {
         target: Value,
         transform: SceneNodeTransformDescriptor,
     ): boolean {
+        if (target.kind === "light") {
+            // `createLightBase` gives every light the SceneNode TRS lanes, and
+            // `light_world_matrix` composes them with the rest of the
+            // SceneNode transform, so a lane with a light setter is the same
+            // write a node takes.
+            if (!transform.lightSetter) return false;
+            const vector = `${transform.cppType}{${this.setCallComponents(
+                context,
+                call,
+                transform.components.length,
+                `${transform.sourceProperty}.set`,
+                transform.precision,
+            ).join(", ")}}`;
+            context.reachFeature("light:hierarchy", call);
+            context.emit({
+                kind: "expression",
+                code: `bbl::${transform.lightSetter}(${context.requireEngine(target, call)}, ${target.cpp}, ${vector});`,
+            });
+            return true;
+        }
         if (target.kind === "asset-root") {
             context.assetRegistry.assertAssetRootWritable(target, call);
             const components = this.setCallComponents(
@@ -5305,6 +5334,15 @@ export class StatementLowerer {
         target: Value,
     ): boolean {
         const property = owner.name;
+        const transform = sceneNodeTransformDescriptor(property);
+        if (transform?.lightSetter) {
+            return this.emitSceneNodeVectorSet(
+                context,
+                call,
+                target,
+                transform,
+            );
+        }
         if (property !== "position" && property !== "direction") {
             return false;
         }

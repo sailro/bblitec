@@ -25,6 +25,7 @@ import {
     type NodeParticleSnapshot,
     SLOT_NAMES,
 } from "./lowering/node-particle-live-lowerer.js";
+import { HOST_PRIMARY_CANVAS_ID } from "./host-primary-canvas.js";
 
 /**
  * The graph a `parseNodeParticleSource` call reached.
@@ -690,7 +691,7 @@ function driverModule(request: NodeParticleBakeRequest): string {
 ${graphImports(request)}
 ${pageBase64Script}
 window.__bakeNodeParticles = async () => {
-    const canvas = document.getElementById("renderCanvas");
+    const canvas = document.getElementById(${JSON.stringify(HOST_PRIMARY_CANVAS_ID)});
     const engine = await createEngine(canvas);
     // The pin's own recovery capture records every loadTexture2D against the
     // texture it produced, so a graph's texture URL and its options are read

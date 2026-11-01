@@ -9,10 +9,12 @@ import {
     type LocalCubemapPlan,
 } from "../src/pinned-local-cubemap.js";
 import { readUpstreamPin } from "../src/upstream-source.js";
+import { hostUiOptions } from "./host-page-fixture.js";
 import {
     optionalNativeFixtureTools,
     runNativeFixtureCompiler,
 } from "./native-fixture.js";
+import { pinnedError } from "./pinned-errors.js";
 import { pinnedLabPublicUrl } from "../src/pinned-lab-public.js";
 
 const labDeployment = { publicUrl: pinnedLabPublicUrl() };
@@ -75,21 +77,20 @@ int main() {assert(source_main()==0); assert(factories==2);}
 });
 
 test("retained surface admission follows actual canvas tags and registration boundaries", () => {
-    const nativeHostUi = {
-        sourcePath: "fixture.json",
+    const page = hostUiOptions({
         elements: [
             { tag: "canvas", attributes: { id: "renderCanvas" } },
             { tag: "canvas", attributes: { id: "secondary" } },
             { tag: "button", attributes: { id: "button" } },
         ],
-    };
+    });
     const source = (
         canvas: string,
     ) => `import {createEngine,createSurface,createSceneContext,registerScene} from "@babylonjs/lite";
     async function main() {const primary=document.getElementById("renderCanvas")!;
     const engine=await createEngine(primary); const surface=createSurface(engine,document.getElementById("${canvas}")!);
     const scene=createSceneContext(surface); await registerScene(scene);}`;
-    const valid = compileSource(source("secondary"), { nativeHostUi });
+    const valid = compileSource(source("secondary"), page);
     assert(valid.manifest.features.includes("renderer:surface"));
     assert.match(valid.cpp, /surface_canvas =/);
     const independentSamples = compileSource(
@@ -97,14 +98,14 @@ test("retained surface admission follows actual canvas tags and registration bou
             "createEngine(primary)",
             "createEngine(primary,{msaaSamples:1})",
         ),
-        { nativeHostUi },
+        page,
     );
     assert.doesNotMatch(
         independentSamples.cpp,
         /configure_scene_render_defaults\(bbl::create_scene_context\(v_surface\), true, 1u\)/,
     );
     assert.throws(
-        () => compileSource(source("button"), { nativeHostUi }),
+        () => compileSource(source("button"), page),
         /canvas elements/,
     );
     assert.throws(
@@ -254,7 +255,11 @@ test("pinned local probes retain distinct cube layers, grid bytes, writer fields
                 projectionSize: [1, -1, 1],
             },
         }),
-        /#416/,
+        {
+            message: pinnedError(
+                "[babylon-lite] ${a0} must contain three finite${a1} values",
+            ),
+        },
     );
     assert.deepEqual(
         await packLocalCubemap(plan),

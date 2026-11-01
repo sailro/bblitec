@@ -106,6 +106,16 @@ interface SceneCoreOptions {
     mirroredMeshes?: boolean;
     /** A mesh parent can be an IWorldMatrixProvider record. */
     worldMatrixProviders?: boolean;
+    /** `light:hierarchy`: lights under nodes and meshes under lights, the
+     *  invalidation registries between them and a mesh's light lane. */
+    lightChildren?: boolean;
+    /** The scene builds a light whose factory installs `_validateLighting`,
+     *  which `buildScene` runs (`validate_scene_lighting`). */
+    lightingValidation?: boolean;
+    /** `enableRectAreaLights` is reached: every build re-runs the scene's
+     *  half of it, as the group builders' `_lighting._prepare()` hooks do
+     *  (`refresh_rect_area_lighting`). */
+    rectAreaLighting?: boolean;
     parenting?: boolean;
     visibility?: boolean;
     geometryAccess?: boolean;
@@ -692,7 +702,9 @@ export class SceneLowerer {
         }
         const value = (input: number): string =>
             this.context.floatLiteral(input);
-        const meshDirtySource = this.meshDirtySource();
+        const meshDirtySource = this.meshDirtySource(
+            options.lightChildren === true,
+        );
         const visibilitySource = this.visibilitySource(options);
         // src/scene/transform-node.ts createTransformNode and the
         // ObservableVec3/ObservableQuat setters a scene writes on the node
@@ -880,7 +892,7 @@ std::uint32_t scene_material_families(const Scene& scene) {
 } // namespace
 
 ${lowerMeshMaterialSetter(this.context)}
-${this.sceneCreationSource(callbackDelta, value, clear, options)}${options.pbrSceneHooks ? lowerPbrMaterialGroups(this.context, options.gltfSceneHooks ?? options.pbrSceneHooks, options.thinBindings) : ""}${this.meshMembershipSource(options)}${this.assetCloneSource(cloneSuffix, nodeHierarchy)}${this.assetRootSource(nodeHierarchy)}${this.assetMembershipSource(options)}${this.eventRegistrationSource()}${this.sceneLifecycleSource(managerSeek, vatSeek, options)}void enable_scene_transmission(Scene& scene) {
+${this.sceneCreationSource(callbackDelta, value, clear, options)}${options.pbrSceneHooks ? lowerPbrMaterialGroups(this.context, options.gltfSceneHooks ?? options.pbrSceneHooks, options.thinBindings) : ""}${this.meshMembershipSource(options)}${this.assetCloneSource(cloneSuffix, nodeHierarchy)}${this.assetRootSource(nodeHierarchy, options.lightChildren === true)}${this.assetMembershipSource(options)}${this.eventRegistrationSource()}${this.sceneLifecycleSource(managerSeek, vatSeek, options)}void enable_scene_transmission(Scene& scene) {
     require_scene_engine(scene);
     scene.transmission_enabled = true;
 }
@@ -891,7 +903,12 @@ ${options.sceneNodeTransforms ? sceneNodeTransformsSource(options.transformNodes
         };
     }
 
-    private meshDirtySource(): string {
+    /**
+     * `lightChildren`: a light can sit under a mesh or node and a mesh under
+     * a light (`light:hierarchy`), so a node's invalidation also reaches the
+     * meshes under each light registered beneath it.
+     */
+    private meshDirtySource(lightChildren: boolean): string {
         return `
 void mark_mesh_dirty(Engine& engine, MeshHandle mesh) {
     if (mesh.value >= engine.meshes.size()) return;
@@ -899,7 +916,7 @@ void mark_mesh_dirty(Engine& engine, MeshHandle mesh) {
     ++record.transform_version;
     for (const MeshHandle child : record.parented_meshes) {
         mark_mesh_dirty(engine, child);
-    }
+    }${lightChildren ? "\n    mark_parented_lights_dirty(engine, record.parented_lights);" : ""}
 }
 
 // The same one level up. A node reaches the record arena through a factory
@@ -920,7 +937,7 @@ void mark_transform_node_dirty(
     }
     for (const TransformNodeHandle& child : record.parented_nodes) {
         mark_transform_node_dirty(engine, child, false);
-    }
+    }${lightChildren ? "\n    mark_parented_lights_dirty(engine, record.parented_lights);" : ""}
 }
 `;
     }
@@ -2181,7 +2198,7 @@ void erase_first_mesh(std::vector<MeshHandle>& list, MeshHandle mesh) {
 void clear_mesh_parent(Engine& engine, MeshHandle mesh) {
     MeshRecord& record = ${recordAt("engine.meshes", "mesh")};
     if (record.parent.value == invalid_handle &&
-        record.transform_parent.value == invalid_handle) {
+        record.transform_parent.value == invalid_handle${options.lightChildren ? " &&\n        record.light_parent.value == invalid_handle" : ""}) {
         return;
     }
     unregister_from_parents(engine, record, mesh);
@@ -2452,8 +2469,11 @@ MeshHandle clone_mesh_node(Engine& engine, MeshHandle mesh) {
 `;
     }
 
-    private assetRootSource(nodeHierarchy: boolean): string {
-        return `${assetRootTransformSource(this.context, nodeHierarchy)}
+    private assetRootSource(
+        nodeHierarchy: boolean,
+        lightChildren: boolean,
+    ): string {
+        return `${assetRootTransformSource(this.context, nodeHierarchy, lightChildren)}
 void add_asset_meshes(Scene& scene, const AssetRecord& record) {
     if (record.source_mesh_walks && record.source_mesh_walks->scene) {
         for (const auto index : *record.source_mesh_walks->scene) {
@@ -2830,6 +2850,8 @@ void register_scene(Scene& scene) {
             return registered && registered->shares_identity(scene);
         });
     if (found != scene.engine->scenes().end()) return;${managerSeek}${vatSeek}
+${options.lightingValidation ? "    validate_scene_lighting(scene);\n" : ""}\
+${options.rectAreaLighting ? "    refresh_rect_area_lighting(scene);\n" : ""}\
 ${options.pbrSceneHooks ? "    prepare_pbr_scene_build(scene);\n" : ""}\
     drain_scene_deferred_builders(scene);
 ${options.pbrSceneHooks ? "    finish_pbr_scene_build(scene);\n" : ""}\
@@ -3022,6 +3044,7 @@ ${
                 : ""
         }${options.deformedPosition ? `${lowerDeformedVertex(this.context)}\n` : ""}void rebuild_scene_renderables(Scene& scene) {
     require_scene_engine(scene);
+${options.rectAreaLighting ? "    refresh_rect_area_lighting(scene);\n" : ""}\
 ${options.pbrSceneHooks ? "    rebuild_pbr_material_group(scene, false, true);\n" : ""}\
 #if BBLITE_HAS_SHADOWS
     retire_scene_shadow_states(scene);

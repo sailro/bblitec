@@ -12,6 +12,7 @@
 #include "pal_gpu_common.hpp"
 #include "pal_gpu_shader_path.hpp"
 #include "pal_sdl_gpu_formats.hpp"
+#include "pal_webgpu_usage.hpp"
 #include "pal_sdl_gpu_texture_ops.hpp"
 #include "pal_sdl_gpu_canvas.hpp"
 
@@ -59,9 +60,8 @@ inline void save_texture_png(SDL_GPUDevice* device, SdlGpuCommand& command,
                              SDL_GPUTexture* swapchain, SDL_GPUTextureFormat format,
                              std::uint32_t width, std::uint32_t height, const std::string& path,
                              const std::string& raw_path = {}) {
-    const std::uint32_t bytes_per_pixel = format == SDL_GPU_TEXTUREFORMAT_R16G16B16A16_FLOAT ? 8u
-                                          : format == SDL_GPU_TEXTUREFORMAT_R16_FLOAT        ? 2u
-                                                                                             : 4u;
+    const auto bytes_per_pixel =
+        static_cast<std::uint32_t>(webgpu_texel_layout(sdl_webgpu_format_name(format)).bytes);
     const std::uint32_t source_row_bytes = width * bytes_per_pixel;
     const std::uint32_t aligned_row_bytes = (source_row_bytes + 255u) & ~255u;
     SDL_GPUTransferBufferCreateInfo transfer_info{};
@@ -1167,6 +1167,49 @@ inline void release_sprite_fragment_textures(SDL_GPUDevice* device,
         }
     }
     textures.clear();
+}
+
+/**
+ * Narrows a pass to `resolved`, its viewport and scissor, or leaves it at the whole target: the
+ * pin's `executePassBody` and geometry `executeTask` opening (`_applyCameraViewport`), where a
+ * camera without a viewport leaves the pass the way `if (!v) return` leaves it, and the page
+ * viewport a letterboxed page's canvas draws in.
+ *
+ * Set AFTER the pass begins, exactly where upstream sets it, so the load
+ * operation has already cleared or loaded the whole attachment -- a
+ * split-screen base scene clears the target and draws its half, and the
+ * overlay loads that and draws the other.
+ */
+inline void set_pass_viewport(SDL_GPURenderPass* pass,
+                              const std::optional<PixelViewport>& resolved) {
+    if (!resolved.has_value())
+        return;
+    const PixelViewport& rect = *resolved;
+    const SDL_GPUViewport viewport{
+        static_cast<float>(rect.x),
+        static_cast<float>(rect.y),
+        static_cast<float>(rect.width),
+        static_cast<float>(rect.height),
+        0.0f,
+        1.0f,
+    };
+    SDL_SetGPUViewport(pass, &viewport);
+    const SDL_Rect scissor{rect.x, rect.y, rect.width, rect.height};
+    SDL_SetGPUScissor(pass, &scissor);
+}
+
+/**
+ * Opens a sprite or text context's pass over a `width` x `height` frame target: a pass drawing the
+ * frame narrows to the page's canvas (`page_canvas`), one drawing a render texture keeps its
+ * target. Returns the canvas, whose extent the context lays out and projects in.
+ */
+inline PageCanvas set_page_canvas_viewport(SDL_GPURenderPass* pass, const Engine& engine,
+                                           std::uint32_t width, std::uint32_t height,
+                                           bool frame_target) {
+    const PageCanvas canvas = page_canvas(engine.ui_page_viewport, width, height);
+    if (frame_target)
+        set_pass_viewport(pass, canvas.viewport());
+    return canvas;
 }
 
 } // namespace bbl::pal

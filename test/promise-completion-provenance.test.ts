@@ -231,3 +231,31 @@ test("forward callback slots preserve hidden adoption and replacement boundaries
         /proven (?:undefined|nonthenable) completion/,
     );
 });
+
+test("a reaction completing with a Babylon Lite function typed void settles undefined in the Window realm", () => {
+    // The pinned function is the compiler's own intrinsic: its native call
+    // completes without a value, so no source annotation erased a result.
+    const source = (reaction: string) => `
+        import { addToScene, createBox, createEngine, createSceneContext, registerScene, type Mesh } from "@babylonjs/lite";
+        const hooks: { added(mesh: Mesh): void } = { added: (mesh) => { void mesh; } };
+        async function main(): Promise<void> {
+            const engine = await createEngine(document.getElementById("renderCanvas") as HTMLCanvasElement);
+            const scene = createSceneContext(engine);
+            const box = createBox(engine, 1);
+            await Promise.all([Promise.resolve(box).then(${reaction})]);
+            await registerScene(scene);
+            hooks.added(box);
+        }
+        void main();
+        new MutationObserver(() => {}).disconnect();
+    `;
+    const result = compileSource(source("(mesh) => addToScene(scene, mesh)"));
+    assert.match(result.cpp, /run_window_application/);
+    assert.match(result.cpp, /\.then\(bbl::js::make_closure\([^\n]*-> void \{/);
+    assert.match(result.cpp, /bbl::add_to_scene\(v_\w*scene, /);
+    // A source method typed void may still return what its annotation erased.
+    assert.throws(
+        () => compileSource(source("(mesh) => hooks.added(mesh)")),
+        /Promise reaction with a void result requires a proven undefined completion/,
+    );
+});

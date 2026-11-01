@@ -34,7 +34,7 @@ test("unrepresented animation shorthands refuse at generation", () => {
     const prefix = `const panel = document.createElement("div");`;
     for (const [value, diagnostic] of [
         ["spin 1s paused", /paused animations/],
-        ["spin 0s forwards", /positive duration/],
+        ["spin 0s forwards", /zero-duration animations/],
         ["spin 1s 1.5", /whole iteration counts/],
         ["spin 1s 0", /whole iteration counts/],
     ] as const)

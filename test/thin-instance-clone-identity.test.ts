@@ -12,6 +12,7 @@ import {
     optionalNativeFixtureTools,
     runGeneratedProgram,
 } from "./native-fixture.js";
+import { pinnedError } from "./pinned-errors.js";
 
 const imports = `import {createEngine,createBox,cloneTransformNode,setThinInstances,setThinInstanceCount,setThinInstanceDrawCount,type Mesh} from "@babylonjs/lite";`;
 
@@ -31,7 +32,7 @@ if(other.thinInstances===clone.thinInstances)throw new Error("separate pool owne
 setThinInstanceCount(clone,1);
 if(mesh.thinInstances!.count!==1)throw new Error("shared clone count");
 let caught=false;
-try{setThinInstanceDrawCount(mesh,2);}catch(error){caught=error instanceof Error&&error.message==="#599";}
+try{setThinInstanceDrawCount(mesh,2);}catch(error){caught=error instanceof Error&&error.message==="${pinnedError("setThinInstanceDrawCount requires a fully synchronized fixed-capacity pool")}";}
 if(!caught||clone.thinInstances!.count!==1)throw new Error("shared clone sync state");
 const wide=new Float64Array(64),view=wide.subarray(16,64);
 setThinInstances(other,view,3);

@@ -16,6 +16,7 @@ import {
 } from "./post-process-options.js";
 import { isScreenSpaceIntrinsic } from "../../pinned-screen-space.js";
 import { sharedPinnedContext } from "../../lowering/context.js";
+import { ApplicationRealmRequired } from "../worker-modules.js";
 
 /**
  * Why `resizeEngine` runs nothing natively, read off the pin once: the
@@ -305,7 +306,16 @@ export function compileEngineIntrinsic(
             const canvas = context.compileValue(argumentAt(call, 1));
             context.expectKind(canvas, "ui-element", argumentAt(call, 1));
             context.expectSameEngine(engine, canvas, call);
-            if (canvas.uiTag !== "canvas") {
+            // An element whose tag only run time knows is a Window
+            // document's: that realm attaches it as a surface only when it
+            // is a canvas (`window_canvas`), as the pin's `getContext`
+            // reads it.
+            if (canvas.uiTag === undefined && !context.options.workers)
+                throw new ApplicationRealmRequired();
+            const windowElement =
+                canvas.uiTag === undefined &&
+                !context.options.workers?.namespace;
+            if (canvas.uiTag !== "canvas" && !windowElement) {
                 context.fail(
                     call,
                     "Additional surfaces require retained canvas elements.",

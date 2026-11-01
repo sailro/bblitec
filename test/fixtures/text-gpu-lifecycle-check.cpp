@@ -5,8 +5,8 @@ int main() {
     Ops ops;
     auto atlas = text_atlas();
     auto data = std::make_shared<TextDataState>();
-    data->instances = pattern_floats(192, 1);
-    data->styles = pattern_floats(128, 2);
+    data->instances = pattern_array<float>(192, 1);
+    data->styles = pattern_array<float>(128, 2);
     data->instance_count = 3;
     data->style_count = 1;
     data->version = 1;

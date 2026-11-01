@@ -20,8 +20,8 @@ int main() {
     Ops ops;
     auto atlas = text_atlas();
     auto data = std::make_shared<TextDataState>();
-    data->instances = pattern_floats(192, 1);
-    data->styles = pattern_floats(128, 2);
+    data->instances = pattern_array<float>(192, 1);
+    data->styles = pattern_array<float>(128, 2);
     data->groups = {text_group(atlas, "atlas", 0, 3), text_group(atlas, "variant", 3, 2),
                     text_group(atlas, "atlas", 0, 0)};
     data->instance_count = 5;

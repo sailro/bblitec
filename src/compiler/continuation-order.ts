@@ -274,7 +274,7 @@ function pageNesting(context: OrderContext): PageNesting {
         nesting = new PageNesting(
             context.checker,
             context.sourceFiles(),
-            context.options.nativeHostUi,
+            context.options.hostPage?.hostUi,
         );
         pageNestings.set(context.checker, nesting);
     }

@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { regexText } from "./regex.js";
 import test from "node:test";
 import { LoweringContext } from "../src/lowering/context.js";
 import { lowerThinInstanceApi } from "../src/lowering/thin-instance-lowerer.js";
@@ -10,7 +11,7 @@ import {
     runGeneratedProgram,
 } from "./native-fixture.js";
 import { lightSetter } from "../src/compiler/assignments.js";
-import type { LightKind } from "../src/compiler/types.js";
+import { nativeLightKind, type LightKind } from "../src/compiler/types.js";
 import { CameraLowerer } from "../src/lowering/camera-lowerer.js";
 import { SceneLowerer } from "../src/lowering/scene-lowerer.js";
 import { subtreeVisibilityHeader } from "../src/lowering/subtree-visibility.js";
@@ -29,6 +30,7 @@ import { FactoryLowerer } from "../src/lowering/factory-lowerer.js";
 import { EnvironmentLowerer } from "../src/lowering/environment-lowerer.js";
 import { RendererLowerer } from "../src/lowering/renderer-lowerer.js";
 import { LightLowerer } from "../src/lowering/light-lowerer.js";
+import { RectAreaLightLowerer } from "../src/lowering/rect-area-light-lowerer.js";
 import { GeometryOutputLowerer } from "../src/lowering/geometry-output-lowerer.js";
 import { RenderTargetLowerer } from "../src/lowering/render-target-lowerer.js";
 import { pinnedSurfaceHeader } from "../src/lowering/pinned-surface.js";
@@ -78,13 +80,14 @@ import {
 } from "./glb-fixture.js";
 import { receiverShadowLightSlots } from "../src/compose-pipeline.js";
 import { materialVertexWgsl } from "../src/shader-builtins-standard.js";
+import { pinnedError } from "./pinned-errors.js";
 
 /** The provenance banner every generated source carries, derived from the
  *  pin so a version bump does not churn these assertions. */
 function pinnedProvenance(): RegExp {
     const pin = readUpstreamPin();
     const literal = `Generated from ${pin.package}@${pin.version}`;
-    return new RegExp(literal.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
+    return new RegExp(regexText(literal));
 }
 
 function reachedPrograms(names: string[]): CompiledShaderProgram[] {
@@ -699,6 +702,8 @@ test("light vector setters update the source transform lanes", () => {
         directional: lightLowerer.lowerDirectionalFactory().source,
         point: lightLowerer.lowerPointFactory().source,
         spot: lightLowerer.lowerSpotFactory().source,
+        rectArea: new RectAreaLightLowerer(new LoweringContext()).lower()
+            .source,
     };
     for (const kind of Object.keys(sources) as LightKind[]) {
         for (const vector of ["position", "direction"]) {
@@ -711,7 +716,7 @@ test("light vector setters update the source transform lanes", () => {
             )
                 continue;
             const body = sources[kind]
-                .split(`void set_${kind}_light_${vector}(`)[1]
+                .split(`void set_${nativeLightKind(kind)}_light_${vector}(`)[1]
                 ?.split("}")[0];
             assert.ok(body);
             assert.ok(body.includes(`record.${vector} = value;`));
@@ -1426,13 +1431,21 @@ test("generates ArcRotate and default camera factories from upstream constants",
     );
     assert.match(free.source, /camera\.kind = CameraKind::free/);
     assert.match(free.source, /camera\.angular_sensibility = 2000\.0;/);
+    // attachControl's own `decayInertia` travels with applyInertia as one
+    // native lambda over the pin's expression, its parameter a copy.
     assert.match(
         controls.source,
-        /if \(std::abs\(camera\.inertial_alpha_offset\) < 0\.001\) \{/,
+        /const auto decayInertia = \[&\]\(double offset, double factor, double epsilon\) -> double \{\n\s*return \(std::abs\(\(offset \*= factor\)\) < epsilon \? 0\.0 : offset\);/,
     );
     assert.match(
         controls.source,
-        /camera\.inertial_alpha_offset \*= camera\.inertia/,
+        /camera\.inertial_alpha_offset = decayInertia\(camera\.inertial_alpha_offset, camera\.inertia, 0\.001\);/,
+    );
+    // The pan writes through the pin's `target` alias reach the camera's
+    // own target, along the view plane's up vector.
+    assert.match(
+        controls.source,
+        /write_camera_vector_component\(camera, &CameraRecord::target, &Vec3d::y, \(camera\.target\.y \+ \(sinB \* panY\)\)\);/,
     );
     assert.match(
         controls.source,
@@ -2225,7 +2238,9 @@ test("emits the Sprite2D Y-sort extension only where a scene enables it", () => 
     // Depth-hosted layers are out of the pin's own support boundary.
     assert.match(
         sorted,
-        /if \(layer\.depth_mode != Sprite2DDepthMode::none\) \{\n\s*throw std::runtime_error\("#765"\);/,
+        new RegExp(
+            String.raw`if \(layer\.depth_mode != Sprite2DDepthMode::none\) \{\n\s*throw std::runtime_error\("${pinnedError('enableSprite2DYSort: only depth: "none" layers are supported.')}"\);`,
+        ),
     );
     // Every canonical mutation observes the extension where the pin does.
     for (const observer of [

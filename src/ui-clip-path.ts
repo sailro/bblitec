@@ -1,5 +1,5 @@
 /**
- * `clip-path` as RmlUi patch 0043 reads it: none, inset() with one to four
+ * `clip-path` as RmlUi patch 0042 reads it: none, inset() with one to four
  * lengths, or polygon() with an optional nonzero/evenodd fill rule, over
  * px/% lengths, unitless zero and calc() of them with scalar factors (a
  * runtime substitution standing for a number). Other basic shapes, `round`,

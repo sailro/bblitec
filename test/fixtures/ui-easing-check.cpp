@@ -66,8 +66,8 @@ int main() try {
             return false;
         };
         const auto opacity = [&](const char* id, double expected) {
-            return close_to(id, "opacity", element(id)->GetComputedValues().opacity(), expected,
-                            2e-3);
+            return close_to(id, "opacity", element(id)->GetComputedValues().group_opacity(),
+                            expected, 2e-3);
         };
         const auto width = [&](const char* id, double expected) {
             return close_to(id, "width", element(id)->GetBox().GetSize().x, expected, 0.5);

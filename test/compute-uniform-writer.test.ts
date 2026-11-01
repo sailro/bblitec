@@ -15,6 +15,7 @@ import {
     optionalNativeFixtureTools,
     runNativeFixtureCompiler,
 } from "./native-fixture.js";
+import { pinnedError } from "./pinned-errors.js";
 
 test("typed uniform writers share staging views and preserve field validation", (t) => {
     const tools = optionalNativeFixtureTools(false);
@@ -77,12 +78,12 @@ int main(){
  assert(arena->dirty_start==256&&arena->dirty_end==336);
  task->flush_owned();assert(device->last->writes==1&&device->last->last_offset==256&&device->last->last_size==80);
  bbl::set_compute_uniform_f32(another,"x",8);assert(data.get_float32(256,true)==8);
- bool missing=false;try{bbl::set_compute_uniform_f32(writer,"missing",1);}catch(const std::exception& e){missing=std::string(e.what())=="#1026";}assert(missing);
- bool kind=false;try{bbl::set_compute_uniform_f32(writer,"v",1);}catch(const std::exception& e){kind=std::string(e.what()).starts_with("#1028");}assert(kind);
- bool size=false;try{bbl::set_compute_uniform_matrix(writer,"m",bbl::UniformNumericView(vector));}catch(const std::exception& e){size=std::string(e.what()).starts_with("#1030");}assert(size);
- auto tooBig=std::make_shared<const bbl::ComputeUniformLayout>(bbl::ComputeUniformLayout{256,{}});bool large=false;try{bbl::create_compute_uniform_writer(arena,0,tooBig);}catch(const std::exception& e){large=std::string(e.what()).starts_with("#1023");}assert(large);
- auto half=std::make_shared<const bbl::ComputeUniformLayout>(bbl::ComputeUniformLayout{16,{{"h",{"f16",0,2,1,1,2,3,0}}}});bool f16=false;try{bbl::create_compute_uniform_writer(arena,0,half);}catch(const std::exception& e){f16=std::string(e.what())=="#1024";}assert(f16);
- task->dispose();bool dead=false;try{bbl::set_compute_uniform_f32(writer,"x",1);}catch(const std::exception& e){dead=std::string(e.what())=="#1025";}assert(dead);
+ bool missing=false;try{bbl::set_compute_uniform_f32(writer,"missing",1);}catch(const std::exception& e){missing=std::string(e.what())=="${pinnedError('ComputeUniformWriter: field "${a0}" was not declared.')}";}assert(missing);
+ bool kind=false;try{bbl::set_compute_uniform_f32(writer,"v",1);}catch(const std::exception& e){kind=std::string(e.what()).starts_with("${pinnedError("${a0}: field type ${a1} does not match this setter.")}");}assert(kind);
+ bool size=false;try{bbl::set_compute_uniform_matrix(writer,"m",bbl::UniformNumericView(vector));}catch(const std::exception& e){size=std::string(e.what()).starts_with("${pinnedError('${a0}: field "${a1}" expects ${a2} values, received ${a3}.')}");}assert(size);
+ auto tooBig=std::make_shared<const bbl::ComputeUniformLayout>(bbl::ComputeUniformLayout{256,{}});bool large=false;try{bbl::create_compute_uniform_writer(arena,0,tooBig);}catch(const std::exception& e){large=std::string(e.what()).starts_with("${pinnedError("ComputeUniformWriter: layout requires ${a0} bytes but arena slots contain ${a1} bytes.")}");}assert(large);
+ auto half=std::make_shared<const bbl::ComputeUniformLayout>(bbl::ComputeUniformLayout{16,{{"h",{"f16",0,2,1,1,2,3,0}}}});bool f16=false;try{bbl::create_compute_uniform_writer(arena,0,half);}catch(const std::exception& e){f16=std::string(e.what())=="${pinnedError("ComputeUniformWriter: f16 fields require createComputeUniformF16Writer.")}";}assert(f16);
+ task->dispose();bool dead=false;try{bbl::set_compute_uniform_f32(writer,"x",1);}catch(const std::exception& e){dead=std::string(e.what())=="${pinnedError("ComputeUniformWriter targets a disposed uniform arena.")}";}assert(dead);
 }
 `,
     );

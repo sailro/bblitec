@@ -1,5 +1,6 @@
 #pragma once
 #include "pal_gpu_frame.hpp"
+#include "pal_gpu_ui.hpp"
 #include "pal_ui_filter.hpp"
 #include "pal_dawn_ui_backdrop.hpp"
 #include "pal_dawn_shared.hpp"
@@ -30,6 +31,16 @@ struct UiFilterDawnResources {
     struct Layer {
         Texture texture;
         bool used = false;
+        WGPUBuffer screen = nullptr;
+        WGPUBindGroup screen_group = nullptr;
+        void release() {
+            texture.release();
+            if (screen_group)
+                wgpuBindGroupRelease(screen_group);
+            if (screen)
+                wgpuBufferRelease(screen);
+            *this = {};
+        }
     };
     struct Pass {
         WGPUBuffer buffer = nullptr;
@@ -60,6 +71,7 @@ struct UiFilterDawnResources {
     WGPUBindGroupLayout texture_layout = nullptr, uniform_layout = nullptr;
     std::vector<Layer> layers;
     std::vector<Workspace> workspaces;
+    UiTargetProfile profile{"dawn"};
     void begin_frame() {
         for (auto& layer : layers)
             layer.used = false;
@@ -71,7 +83,7 @@ struct UiFilterDawnResources {
     void finish_frame(std::size_t count) {
         for (auto& layer : layers)
             if (!layer.used)
-                layer.texture.release();
+                layer.release();
         for (std::size_t i = count; i < workspaces.size(); ++i)
             workspaces[i].release();
         if (workspaces.size() > count)
@@ -79,7 +91,7 @@ struct UiFilterDawnResources {
     }
     void release() {
         for (auto& layer : layers)
-            layer.texture.release();
+            layer.release();
         for (auto& workspace : workspaces)
             workspace.release();
         if (pipeline)
@@ -122,7 +134,13 @@ struct UiFilterDawnResources {
         if (layers.size() < id)
             layers.resize(id);
         auto& layer = layers[id - 1];
-        layer.texture.ensure(device, layout, sampler, frame.width, frame.height, format);
+        const auto rect = ui_layer_target(frame, id).rect;
+        const auto width = static_cast<std::uint32_t>(rect.width);
+        const auto height = static_cast<std::uint32_t>(rect.height);
+        if (!layer.texture.value.texture || layer.texture.width != width ||
+            layer.texture.height != height)
+            profile.allocated("filter-layer", width, height, 1, 4);
+        layer.texture.ensure(device, layout, sampler, width, height, format);
         if (!layer.used) {
             WGPURenderPassColorAttachment attachment = WGPU_RENDER_PASS_COLOR_ATTACHMENT_INIT;
             attachment.view = layer.texture.value.view;
@@ -138,12 +156,40 @@ struct UiFilterDawnResources {
         }
         return layer.texture.value;
     }
+
+    WGPUBindGroup screen_for(WGPUDevice device, WGPUQueue queue, WGPUBindGroupLayout layout,
+                             WGPUBindGroup root, const UiRenderFrame& frame, std::uint32_t id) {
+        if (id == 0)
+            return root;
+        auto& layer = layers.at(id - 1);
+        if (!layer.screen) {
+            WGPUBufferDescriptor buffer = WGPU_BUFFER_DESCRIPTOR_INIT;
+            buffer.size = 16;
+            buffer.usage = WGPUBufferUsage_Uniform | WGPUBufferUsage_CopyDst;
+            layer.screen =
+                require_dawn_resource(wgpuDeviceCreateBuffer(device, &buffer), "UI layer screen");
+            WGPUBindGroupEntry entry = WGPU_BIND_GROUP_ENTRY_INIT;
+            entry.binding = 0;
+            entry.buffer = layer.screen;
+            entry.size = 16;
+            WGPUBindGroupDescriptor group = WGPU_BIND_GROUP_DESCRIPTOR_INIT;
+            group.layout = layout;
+            group.entryCount = 1;
+            group.entries = &entry;
+            layer.screen_group = require_dawn_resource(wgpuDeviceCreateBindGroup(device, &group),
+                                                       "UI layer screen group");
+        }
+        const auto rect = ui_layer_target(frame, id).rect;
+        const std::array<float, 4> size{float(rect.width), float(rect.height), 0, 0};
+        DawnGpuDevice{queue}.write_buffer(layer.screen, 0, size.data(), sizeof(size));
+        return layer.screen_group;
+    }
 };
 
 inline void render_ui_composite_dawn(WGPUDevice device, WGPUQueue queue, WGPUCommandEncoder encoder,
                                      UiDawnTexture root, WGPUTextureFormat format,
                                      WGPUBuffer vertices, WGPUBuffer indices, WGPUSampler sampler,
-                                     WGPUBindGroup screen_group,
+                                     WGPUBindGroup screen_group, WGPUBindGroupLayout screen_layout,
                                      WGPUBindGroupLayout ui_texture_layout,
                                      WGPURenderPipeline composite_pipeline,
                                      UiFilterDawnResources& resources, const UiRenderFrame& frame,
@@ -165,8 +211,9 @@ inline void render_ui_composite_dawn(WGPUDevice device, WGPUQueue queue, WGPUCom
     WGPUTexelCopyTextureInfo from{};
     from.texture = source.texture;
     from.aspect = WGPUTextureAspect_All;
-    from.origin = {static_cast<std::uint32_t>(composite.left),
-                   static_cast<std::uint32_t>(composite.top), 0};
+    const auto source_rect = ui_layer_target(frame, composite.source).rect;
+    from.origin = {static_cast<std::uint32_t>(composite.left - source_rect.x),
+                   static_cast<std::uint32_t>(composite.top - source_rect.y), 0};
     WGPUTexelCopyTextureInfo to{};
     to.texture = textures.get(UiFilterSurface::Snapshot).value.texture;
     to.aspect = WGPUTextureAspect_All;
@@ -252,7 +299,11 @@ inline void render_ui_composite_dawn(WGPUDevice device, WGPUQueue queue, WGPUCom
     descriptor.colorAttachments = &attachment;
     DawnRenderPass pass{wgpuCommandEncoderBeginRenderPass(encoder, &descriptor)};
     wgpuRenderPassEncoderSetPipeline(pass, composite_pipeline);
-    wgpuRenderPassEncoderSetBindGroup(pass, 0, screen_group, 0, nullptr);
+    wgpuRenderPassEncoderSetBindGroup(pass, 0,
+                                      resources.screen_for(device, queue, screen_layout,
+                                                           screen_group, frame,
+                                                           composite.destination),
+                                      0, nullptr);
     wgpuRenderPassEncoderSetBindGroup(pass, 1, textures.get(plan.result).value.group, 0, nullptr);
     wgpuRenderPassEncoderSetVertexBuffer(pass, 0, vertices, 0, WGPU_WHOLE_SIZE);
     wgpuRenderPassEncoderSetIndexBuffer(pass, indices, WGPUIndexFormat_Uint32, 0, WGPU_WHOLE_SIZE);

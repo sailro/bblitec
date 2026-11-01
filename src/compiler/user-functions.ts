@@ -24,7 +24,12 @@ import {
     bindingIsOnlyCalledDirectly,
     bindingRebinds,
 } from "./binding-rebinds.js";
-import { absenceOf, knownCondition, undefinedValue } from "./values/model.js";
+import {
+    absenceOf,
+    knownCondition,
+    undefinedValue,
+    valueDataType,
+} from "./values/model.js";
 import { ApplicationRealmRequired } from "./worker-modules.js";
 import { pinOperand } from "./evaluation-order.js";
 import { CompileError } from "./compile-error.js";
@@ -64,7 +69,10 @@ import {
     type DataTypeRegistry,
 } from "./data-types.js";
 import type { Value } from "./types.js";
-import { isEngineScopedHandleKind } from "./data-types/handles.js";
+import {
+    isEngineScopedHandleKind,
+    isInputSnapshotHandleKind,
+} from "./data-types/handles.js";
 import { dataTypeKey } from "./data-types/operations.js";
 import { nativeStructuralViewType } from "./native-owner-carrier.js";
 import {
@@ -3584,8 +3592,7 @@ export class UserFunctionLowerer {
                         } as const;
                     const platformHandle =
                         inner?.kind === "handle" &&
-                        (inner.handle === "gamepad" ||
-                            inner.handle === "gamepad-button");
+                        isInputSnapshotHandleKind(inner.handle);
                     return mapped &&
                         mapped.kind !== "function" &&
                         (!context.dataTypes.carriesHandle(mapped) ||
@@ -5919,19 +5926,15 @@ export class UserFunctionLowerer {
             );
         const types = lanes.map(
             (value, index) =>
-                value.dataType ??
-                (value.kind === "number" ||
-                value.kind === "boolean" ||
-                value.kind === "string"
-                    ? { kind: value.kind }
-                    : ts.isCallExpression(callNode) && callNode.arguments[index]
-                      ? context.dataTypes.fromStoredTsType(
-                            this.checker.getTypeAtLocation(
-                                callNode.arguments[index],
-                            ),
-                            callNode.arguments[index],
-                        )
-                      : undefined),
+                valueDataType(value) ??
+                (ts.isCallExpression(callNode) && callNode.arguments[index]
+                    ? context.dataTypes.fromStoredTsType(
+                          this.checker.getTypeAtLocation(
+                              callNode.arguments[index],
+                          ),
+                          callNode.arguments[index],
+                      )
+                    : undefined),
         );
         if (types.some((type) => !type))
             return context.fail(

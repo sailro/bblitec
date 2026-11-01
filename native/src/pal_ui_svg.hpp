@@ -98,10 +98,6 @@ inline std::vector<UiSelectorStep> ui_svg_style_sequence(const UiStyleRule& rule
         add(Kind::Tag, rule.tag);
         add(Kind::Class, rule.primary);
         break;
-    case UiStyleSelectorKind::TagAttribute:
-        add(Kind::Tag, rule.tag);
-        add(Kind::Equals, rule.primary, rule.secondary);
-        break;
     case UiStyleSelectorKind::ClassDescendantTag:
         add(Kind::Class, rule.primary);
         result.push_back({Relation::Descendant, {}});

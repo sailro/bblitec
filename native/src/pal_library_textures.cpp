@@ -47,8 +47,9 @@ std::shared_ptr<library::Texture2D> library_texture(Engine& engine, const Textur
     const GpuBackend& backend = library_backend(engine);
     // The fallback texel stands in for an undecodable image, as the
     // renderer's own material uploads take it.
-    auto image = library_images(engine).acquire(
-        data, data.srgb, library_fallback_texel, [&] { return backend.library_image(engine, data); });
+    auto image = library_images(engine).acquire(data, data.srgb, library_fallback_texel, [&] {
+        return backend.library_image(engine, data);
+    });
     auto texture = std::make_shared<library::Texture2D>();
     texture->texture = image->texture;
     texture->view = image->texture->create_view();

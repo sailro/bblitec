@@ -1,6 +1,11 @@
 import { isUndefinedDataType } from "../data-types.js";
 import ts from "typescript";
-import { absenceOf, absenceOfNull, jsonAbsenceCpp } from "../values/model.js";
+import {
+    absenceOf,
+    absenceOfNull,
+    jsonAbsenceCpp,
+    valueDataType,
+} from "../values/model.js";
 import { isHandleKind } from "../data-types/handles.js";
 import { absenceKind, declaredContextualType } from "../type-facts.js";
 import { hasNonNullAssertion } from "../syntax.js";
@@ -227,13 +232,7 @@ function valueJson(
     }
     if (value.kind === "tuple" && !value.cpp)
         return compileJsonTupleView(lowerer, value, node);
-    const type =
-        value.dataType ??
-        (value.kind === "number" ||
-        value.kind === "boolean" ||
-        value.kind === "string"
-            ? { kind: value.kind }
-            : undefined);
+    const type = valueDataType(value);
     const cpp =
         value.kind === "number"
             ? lowerer.context.castNumber(value, "double")

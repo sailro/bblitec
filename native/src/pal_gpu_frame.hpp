@@ -87,6 +87,14 @@ struct FrameOptions {
     // frame timestamps are; see `FrameClock::advance`.
     double frame_delta_ms = 0.0;
 
+    /**
+     * The page UI's sample count, whatever the engine surface's: a browser antialiases the
+     * page's edges and rounded corners in every frame; no layer for a BBLITE_MSAA=1 diagnostic run.
+     */
+    [[nodiscard]] std::optional<std::uint32_t> page_ui_sample_count() const {
+        return single_sample ? std::nullopt : std::optional<std::uint32_t>{4};
+    }
+
     [[nodiscard]] bool skip_copy_task(const CopyTaskOptions& copy) const {
         return !copy_task_filter.empty() && copy.has_viewport &&
                copy.name.find("-impostor-") != std::string::npos && copy.name != copy_task_filter;
@@ -466,6 +474,10 @@ inline constexpr long memory_profile_frames = 30;
 
 class MemoryProfile {
 public:
+    [[nodiscard]] static bool enabled() {
+        static const bool value = environment_variable("BBLITE_MEM_PROFILE") == "1";
+        return value;
+    }
     [[nodiscard]] bool due(long frame) const {
         return stream_ != 0 && frame % memory_profile_frames == 0;
     }
@@ -491,7 +503,7 @@ public:
 private:
     static std::uint32_t start() {
         static std::atomic<std::uint32_t> started = 0;
-        return environment_variable("BBLITE_MEM_PROFILE") == "1" ? ++started : 0;
+        return enabled() ? ++started : 0;
     }
     const std::uint32_t stream_ = start();
 };

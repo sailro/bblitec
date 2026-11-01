@@ -1,0 +1,286 @@
+Collapsible white space takes no layout space where CSS removes it. Collapsible spaces ending a line are removed
+from its text, so the line, its shrink-to-fit width, its closed inline boxes, underline and text-overflow end before
+them; preserved spaces ending a pre-wrap line hang. Neither makes a word overflow the line, and their width is
+measured only for a line end or an overflowing token. White space between inline boxes collapses to one space, and
+into a preceding one. An inline container whose lines all collapsed away (white space between block boxes) does not
+exist for margin collapsing.
+CSS Text 3: https://www.w3.org/TR/css-text-3/#white-space-phase-1
+CSS Text 3: https://www.w3.org/TR/css-text-3/#white-space-phase-2
+CSS 2.2: https://www.w3.org/TR/CSS22/visuren.html#inline-formatting
+
+diff --git a/Source/Core/ElementText.cpp b/Source/Core/ElementText.cpp
+index eec0e96..d395cd4 100644
+--- a/Source/Core/ElementText.cpp
++++ b/Source/Core/ElementText.cpp
+@@ -254,6 +254,9 @@ bool ElementText::GenerateLine(String& line, int& line_length, float& line_width
+ 		// Generate the next token and determine its pixel-length.
+ 		bool break_line = BuildToken(token, next_token_begin, string_end, line.empty() && trim_whitespace_prefix, collapse_white_space,
+ 			break_at_endline, text_transform_property, decode_escape_characters);
++		// Text of collapsible white space alone, as between two inline boxes, collapses to one space.
++		if (token.empty() && collapse_white_space && !trim_whitespace_prefix && token_begin == text.c_str() && next_token_begin == string_end)
++			token = ' ';
+ 		float token_width = font_engine_interface->GetStringWidth(font_face_handle, token, text_shaping_context, previous_codepoint);
+ 
+ 		// If we're breaking to fit a line box, check if the token can fit on the line before we add it.
+@@ -262,7 +265,25 @@ bool ElementText::GenerateLine(String& line, int& line_length, float& line_width
+ 			const bool is_last_token = LastToken(next_token_begin, string_end, collapse_white_space, break_at_endline);
+ 			float max_token_width = maximum_line_width - (is_last_token ? line_width + right_spacing_width : line_width);
+ 
+-			if (token_width > max_token_width)
++			// Spaces ending the token are removed or hang at a line end, so they never make the token overflow.
++			bool overflows = token_width > max_token_width;
++			if (overflows && (collapse_white_space || white_space_property == WhiteSpace::Prewrap))
++			{
++				const size_t content_end = token.find_last_not_of(' ');
++				const char* spaces = token.data() + (content_end == String::npos ? 0 : content_end + 1);
++				if (spaces != token.data() + token.size())
++				{
++					const Character prior = (spaces == token.data()
++							? previous_codepoint
++							: StringUtilities::ToCharacter(StringUtilities::SeekBackwardUTF8(spaces - 1, token.data()), spaces));
++					overflows = token_width -
++							font_engine_interface->GetStringWidth(font_face_handle, StringView(spaces, token.data() + token.size()), text_shaping_context,
++								prior) >
++						max_token_width;
++				}
++			}
++
++			if (overflows)
+ 			{
+ 				if (word_break == WordBreak::BreakAll || ((word_break == WordBreak::BreakWord || overflow_wrap) && line.empty()))
+ 				{
+diff --git a/Source/Core/Layout/BlockContainer.cpp b/Source/Core/Layout/BlockContainer.cpp
+index 7720123..b1792d9 100644
+--- a/Source/Core/Layout/BlockContainer.cpp
++++ b/Source/Core/Layout/BlockContainer.cpp
+@@ -496,8 +496,13 @@ InlineContainer* BlockContainer::EnsureOpenInlineContainer()
+ 
+ const LayoutBox* BlockContainer::GetOpenLayoutBox() const
+ {
+-	if (!child_boxes.empty())
+-		return child_boxes.back().get();
++	// Margins collapse through an inline container whose lines all collapsed away.
++	for (auto it = child_boxes.rbegin(); it != child_boxes.rend(); ++it)
++	{
++		if ((*it)->GetType() == Type::InlineContainer && rmlui_static_cast<const InlineContainer*>(it->get())->IsCollapsed())
++			continue;
++		return it->get();
++	}
+ 	return nullptr;
+ }
+ 
+diff --git a/Source/Core/Layout/InlineContainer.cpp b/Source/Core/Layout/InlineContainer.cpp
+index 00ff6a8..a55317e 100644
+--- a/Source/Core/Layout/InlineContainer.cpp
++++ b/Source/Core/Layout/InlineContainer.cpp
+@@ -211,6 +211,12 @@ void InlineContainer::UpdateLineBoxPlacement(LineBox* line_box, float minimum_wi
+ 	line_box->SetLineBox(line_position, available_width, minimum_dimensions.y);
+ }
+ 
++bool InlineContainer::IsCollapsed() const
++{
++	return box_size.y <= 0.f &&
++		std::all_of(line_boxes.begin(), line_boxes.end(), [](const UniquePtr<LineBox>& line_box) { return line_box->CanCollapseLine(); });
++}
++
+ float InlineContainer::GetShrinkToFitWidth() const
+ {
+ 	float content_width = 0.0f;
+diff --git a/Source/Core/Layout/InlineContainer.h b/Source/Core/Layout/InlineContainer.h
+index 99e43e3..9c6c33e 100644
+--- a/Source/Core/Layout/InlineContainer.h
++++ b/Source/Core/Layout/InlineContainer.h
+@@ -52,6 +52,9 @@ public:
+ 
+ 	/// Returns the position and tentative size of the currently open line box, if any.
+ 	bool GetOpenLineBoxDimensions(float& out_vertical_position, Vector2f& out_tentative_size) const;
++	/// Whether the closed container's lines all collapsed away (collapsible white space alone): CSS 2.2 9.4.2 treats
++	/// such lines as not existing for margin collapsing.
++	bool IsCollapsed() const;
+ 	/// Returns an estimate for the position of a hypothetical next box to be placed, relative to the content box of this container.
+ 	Vector2f GetStaticPositionEstimate(bool inline_level_box) const;
+ 
+diff --git a/Source/Core/Layout/InlineLevelBox.cpp b/Source/Core/Layout/InlineLevelBox.cpp
+index 8e18d66..add92df 100644
+--- a/Source/Core/Layout/InlineLevelBox.cpp
++++ b/Source/Core/Layout/InlineLevelBox.cpp
+@@ -2,6 +2,8 @@
+ #include "../../../Include/RmlUi/Core/ComputedValues.h"
+ #include "../../../Include/RmlUi/Core/Core.h"
+ #include "../../../Include/RmlUi/Core/ElementText.h"
++#include "../../../Include/RmlUi/Core/ElementUtilities.h"
++#include "../../../Include/RmlUi/Core/StringUtilities.h"
+ #include "../../../Include/RmlUi/Core/FontEngineInterface.h"
+ #include "LayoutDetails.h"
+ #include "LayoutPools.h"
+@@ -162,10 +164,44 @@ FragmentConstructor InlineLevelBox_Text::CreateFragment(InlineLayoutMode mode, f
+ 	if (overflow)
+ 		out_overflow_handle = line_begin + line_length;
+ 
++	const bool ends_in_collapsible_space = IsCollapsible(text_element->GetComputedValues().white_space()) && !line_contents.empty() &&
++		line_contents.back() == ' ';
++
+ 	LayoutFragmentHandle fragment_handle = (LayoutFragmentHandle)fragments.size();
+ 	fragments.push_back(std::move(line_contents));
+ 
+-	return FragmentConstructor{FragmentType::TextRun, line_width, fragment_handle, out_overflow_handle};
++	return FragmentConstructor{FragmentType::TextRun, line_width, fragment_handle, out_overflow_handle, ends_in_collapsible_space};
++}
++
++bool InlineLevelBox_Text::IsCollapsible(Style::WhiteSpace white_space)
++{
++	return white_space == Style::WhiteSpace::Normal || white_space == Style::WhiteSpace::Nowrap || white_space == Style::WhiteSpace::Preline;
++}
++
++float InlineLevelBox_Text::TrimTrailingWhiteSpace(LayoutFragmentHandle handle)
++{
++	// CSS Text 3 4.1.3: collapsible spaces ending a line are removed; preserved ones (pre-wrap) hang.
++	ElementText* text_element = GetTextElement();
++	const Style::WhiteSpace white_space = text_element->GetComputedValues().white_space();
++	const bool removed = IsCollapsible(white_space);
++	if (!removed && white_space != Style::WhiteSpace::Prewrap)
++		return 0.f;
++
++	String& contents = fragments[(size_t)handle];
++	const size_t content_end = contents.find_last_not_of(' ');
++	const size_t spaces_begin = (content_end == String::npos ? 0 : content_end + 1);
++	if (spaces_begin == contents.size())
++		return 0.f;
++
++	const Character prior = (content_end == String::npos
++			? Character::Null
++			: StringUtilities::ToCharacter(StringUtilities::SeekBackwardUTF8(contents.data() + content_end, contents.data()),
++				  contents.data() + spaces_begin));
++	const float width =
++		ElementUtilities::GetStringWidth(text_element, StringView(contents.data() + spaces_begin, contents.data() + contents.size()), prior);
++	if (removed)
++		contents.erase(spaces_begin);
++	return width;
+ }
+ 
+ void InlineLevelBox_Text::Submit(const PlacedFragment& placed_fragment)
+diff --git a/Source/Core/Layout/InlineLevelBox.h b/Source/Core/Layout/InlineLevelBox.h
+index af1220d..6244235 100644
+--- a/Source/Core/Layout/InlineLevelBox.h
++++ b/Source/Core/Layout/InlineLevelBox.h
+@@ -25,6 +25,9 @@ public:
+ 	// Submit a fragment's position and size to be displayed on the underlying element.
+ 	virtual void Submit(const PlacedFragment& placed_fragment) = 0;
+ 
++	// At a line end: removes the spaces ending the fragment, or lets them hang, returning their width.
++	virtual float TrimTrailingWhiteSpace(LayoutFragmentHandle /*handle*/) { return 0.f; }
++
+ 	float GetHeightAboveBaseline() const { return height_above_baseline; }
+ 	float GetDepthBelowBaseline() const { return depth_below_baseline; }
+ 	Style::VerticalAlign::Type GetVerticalAlign() const { return vertical_align_type; }
+@@ -103,10 +106,13 @@ public:
+ 
+ 	void Submit(const PlacedFragment& placed_fragment) override;
+ 
++	float TrimTrailingWhiteSpace(LayoutFragmentHandle handle) override;
++
+ 	String DebugDumpNameValue() const override;
+ 
+ private:
+ 	ElementText* GetTextElement();
++	static bool IsCollapsible(Style::WhiteSpace white_space);
+ 
+ 	Vector2f element_offset;
+ 	StringList fragments;
+diff --git a/Source/Core/Layout/InlineTypes.h b/Source/Core/Layout/InlineTypes.h
+index bbf262c..4307c8a 100644
+--- a/Source/Core/Layout/InlineTypes.h
++++ b/Source/Core/Layout/InlineTypes.h
+@@ -25,6 +25,7 @@ struct FragmentConstructor {
+ 	float layout_width = 0.f;
+ 	LayoutFragmentHandle fragment_handle = {}; // Handle to enable the inline-level box to reference any fragment-specific data.
+ 	LayoutOverflowHandle overflow_handle = {}; // Overflow handle is non-zero when there is another fragment to be layed out.
++	bool ends_in_collapsible_space = false;    // A text run ending with collapsible white space, after which white space collapses.
+ };
+ 
+ struct PlacedFragment {
+diff --git a/Source/Core/Layout/LineBox.cpp b/Source/Core/Layout/LineBox.cpp
+index 722575a..605fcca 100644
+--- a/Source/Core/Layout/LineBox.cpp
++++ b/Source/Core/Layout/LineBox.cpp
+@@ -21,7 +21,8 @@ void LineBox::SetLineBox(Vector2f _line_position, float _line_width, float _line
+ bool LineBox::AddBox(InlineLevelBox* box, InlineLayoutMode layout_mode, LayoutOverflowHandle& inout_overflow_handle)
+ {
+ 	RMLUI_ASSERT(!is_closed);
+-	const bool first_box = !HasContent();
++	// White space at the start of a line, or after collapsible white space, collapses away (CSS Text 3 4.1.1).
++	const bool first_box = collapses_leading_space;
+ 
+ 	// Find the spacing this element must leave on its right side, to account for its parent inline boxes to be closed later.
+ 	float open_spacing_right = 0.f;
+@@ -77,6 +78,8 @@ bool LineBox::AddBox(InlineLevelBox* box, InlineLayoutMode layout_mode, LayoutOv
+ 
+ 		box_cursor = box_placement_cursor + constructor.layout_width;
+ 		open_spacing_left = 0.f;
++		if (constructor.type == FragmentType::SizedBox || constructor.layout_width > 0.f)
++			collapses_leading_space = constructor.ends_in_collapsible_space;
+ 
+ 		if (constructor.overflow_handle)
+ 		{
+@@ -194,10 +197,37 @@ UniquePtr<LineBox> LineBox::SplitLine(bool split_all_open_boxes)
+ 	return new_line;
+ }
+ 
++void LineBox::HangTrailingWhiteSpace()
++{
++	for (int i = (int)fragments.size() - 1; i >= 0; i--)
++	{
++		Fragment& fragment = fragments[i];
++		if (fragment.type == FragmentType::InlineBox)
++			continue;
++		const float hanging =
++			(fragment.type == FragmentType::TextRun ? Math::Min(fragment.box->TrimTrailingWhiteSpace(fragment.fragment_handle), fragment.layout_width)
++													: 0.f);
++		if (hanging <= 0.f)
++			return;
++
++		// The run's closed ancestors end, and the empty boxes after it start, that much earlier.
++		fragment.layout_width -= hanging;
++		box_cursor -= hanging;
++		for (FragmentIndex parent = fragment.parent; parent != RootFragmentIndex; parent = fragments[parent].parent)
++			if (fragments[parent].children_end_index > 0)
++				fragments[parent].layout_width = Math::Max(fragments[parent].layout_width - hanging, 0.f);
++		for (int j = i + 1; j < (int)fragments.size(); j++)
++			fragments[j].position.x -= hanging;
++		return;
++	}
++}
++
+ UniquePtr<LineBox> LineBox::DetermineVerticalPositioning(const InlineBoxRoot* root_inline_box, bool split_all_open_boxes, float& out_height_of_line)
+ {
+ 	RMLUI_ASSERT(!is_closed && !is_vertically_positioned);
+ 
++	HangTrailingWhiteSpace();
++
+ 	UniquePtr<LineBox> new_line_box = SplitLine(split_all_open_boxes);
+ 
+ 	RMLUI_ASSERT(open_fragments_leaf == RootFragmentIndex); // Ensure all open fragments are either closed or split.
+diff --git a/Source/Core/Layout/LineBox.h b/Source/Core/Layout/LineBox.h
+index 7eed0cd..2629124 100644
+--- a/Source/Core/Layout/LineBox.h
++++ b/Source/Core/Layout/LineBox.h
+@@ -117,6 +117,9 @@ private:
+ 	// Place an open fragment.
+ 	void CloseFragment(Fragment& open_fragment, float right_inner_edge_position);
+ 
++	// Removes the white space ending the line's last text run from its text (or lets it hang) and from the line's width.
++	void HangTrailingWhiteSpace();
++
+ 	// Splits the line, returning a new line if there are any open fragments.
+ 	UniquePtr<LineBox> SplitLine(bool split_all_open_boxes);
+ 
+@@ -173,6 +176,9 @@ private:
+ 	FragmentIndex open_fragments_leaf = RootFragmentIndex;
+ 
+ 	bool has_content = false;
++	// Whether white space a following text run begins with collapses away: at the start of the line, until a
++	// box places content, and after collapsible white space.
++	bool collapses_leading_space = true;
+ 	bool is_vertically_positioned = false;
+ 	bool is_closed = false;
+ 

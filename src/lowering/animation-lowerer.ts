@@ -5,6 +5,7 @@ import {
     propertyAnimationLanes,
 } from "../compiler/property-animation.js";
 import { LoweredSource, LoweringContext } from "./context.js";
+import { cameraScalarWrite } from "../compiler/camera-setters.js";
 import { lowerAnimationManagerClock } from "./animation-manager.js";
 import { lowerGltfAnimationEvaluator } from "./gltf/animation-evaluator.js";
 import { lowerAnimationGroupRegistration } from "./gltf/animation-group-registration.js";
@@ -40,7 +41,7 @@ export class AnimationLowerer {
             const whole =
                 components.length === 0
                     ? record === "camera" && cameraVersions
-                        ? `write_camera_scalar(camera, &CameraRecord::${lane.field}, value[0]);`
+                        ? `${cameraScalarWrite("camera", lane.field, "value[0]")};`
                         : `${target} = value[0];`
                     : `${target} = ${lane.vector}{${components
                           .map((_unused, index) => `value[${index}]`)

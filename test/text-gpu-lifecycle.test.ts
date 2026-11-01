@@ -20,19 +20,13 @@ import {
 } from "./native-fixture.js";
 import { doctoredContext } from "./doctored-store.js";
 import { webgpuFlagNamespaces } from "../src/webgpu-flags.js";
+import { pinnedDeclaration } from "./pinned-source.js";
 
 // Real pinned function bodies with only the device and pipeline resolution
 // replaced by recorders. No fixture reimplementation of resource state decisions.
 function pinnedFunctions(context: LoweringContext): string {
     const module = (path: string, names: string[]) =>
-        names
-            .map((name) =>
-                context
-                    .functionDeclaration(path, name)
-                    .declaration.getText()
-                    .replace(/^export\s+/, ""),
-            )
-            .join("\n");
+        names.map((name) => pinnedDeclaration(context, path, name)).join("\n");
     const renderable = "src/text/text-renderable.ts";
     return ts.transpileModule(
         [
@@ -235,7 +229,7 @@ test("text GPU helpers preserve pinned identities, byte uploads, growth, failure
     }
     interface AtlasObservation {
         _curveTexData: Float32Array;
-        _bandTexData: Float32Array;
+        _bandTexData: Uint32Array;
         _metaData: Float32Array;
         _curveTexelsUsed: number;
         _bandTexelsUsed: number;
@@ -261,7 +255,7 @@ test("text GPU helpers preserve pinned identities, byte uploads, growth, failure
     }
     const atlas: AtlasObservation = {
         _curveTexData: pattern(131072, 3),
-        _bandTexData: pattern(131072, 4),
+        _bandTexData: new Uint32Array(pattern(131072, 4).buffer),
         _metaData: pattern(384, 5),
         _curveTexelsUsed: 3,
         _bandTexelsUsed: 7,
@@ -330,7 +324,6 @@ test("text GPU helpers preserve pinned identities, byte uploads, growth, failure
         "TEXT_UBO_BYTES",
         "GLYPH_METADATA_BYTES",
         "TEX_WIDTH",
-        "BYTES_PER_ROW",
         "getOrCreateTextPipeline",
         "getEffectiveAspectRatio",
         "_cameraChangeKey",
@@ -377,7 +370,6 @@ test("text GPU helpers preserve pinned identities, byte uploads, growth, failure
         constants("src/text/text-renderable.ts", "TEXT_UBO_BYTES"),
         constants("src/text/glyph-storage.ts", "GLYPH_METADATA_FLOATS") * 4,
         constants("src/text/_gpu/text-textures.ts", "TEX_WIDTH"),
-        constants("src/text/_gpu/text-textures.ts", "BYTES_PER_ROW"),
         () => pipelines,
         unused,
         unused,
@@ -667,11 +659,12 @@ test("a changed pinned GPU statement is a changed native statement, and unknown 
         ],
         [
             // The descriptor reaches the backend as the pin builds it; the
-            // backends create rgba32float atlases and refuse any other.
+            // backends create the rgba32float curve and rg32uint band
+            // atlases and refuse any other.
             "src/text/_gpu/text-textures.ts",
-            'format: "rgba32float"',
-            'format: "rgba16float"',
-            /\.format = "rgba16float";/,
+            '_bandTex: createAtlasTexture(device, bandRows, "text-slug-bands", "rg32uint")',
+            '_bandTex: createAtlasTexture(device, bandRows, "text-slug-bands", "rg16uint")',
+            /"text-slug-bands", "rg16uint"/,
         ],
         [module, "cap *= 2;", "cap *= 3;", /cap \*= 3\.0;/],
     ] as const)

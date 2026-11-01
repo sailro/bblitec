@@ -37,11 +37,13 @@ using WGPUQueue = Recorder*;
 using WGPUTexture = Texture*;
 struct WGPUTexelCopyTextureInfo {
     Texture* texture;
+    std::uint32_t mipLevel = 0;
 };
 #define WGPU_TEXEL_COPY_TEXTURE_INFO_INIT                                                          \
     {                                                                                              \
     }
 struct WGPUTexelCopyBufferLayout {
+    std::uint64_t offset = 0;
     std::uint32_t bytesPerRow = 0, rowsPerImage = 0;
 };
 struct WGPUExtent3D {
@@ -58,6 +60,7 @@ static void wgpuQueueWriteTexture(Recorder* recorder, const WGPUTexelCopyTexture
                                   const WGPUExtent3D* extent) {
     require(layout->bytesPerRow == extent->width * 16 && layout->rowsPerImage == extent->height,
             "Dawn texture row pitch changed");
+    require(layout->offset == 0 && texture->mipLevel == 0, "Dawn texture level write changed");
     require(extent->depthOrArrayLayers == 1, "Dawn texture depth changed");
     recorder->texture(texture->texture, bytes, size, extent->width, extent->height);
 }

@@ -200,10 +200,35 @@ PinnedResource state_resource_for(const GpuState& state, upstream::MaterialTextu
     case upstream::MaterialTextureSource::clustered_indices:
         return {state.clustered.indices, nullptr};
 #endif
+#if BBLITE_RECT_AREA_LIGHTS
+    // bindAreaLightLtc's pairs: the device's two LTC tables, each with the
+    // pin's linear clamp-to-edge sampler.
+    case upstream::MaterialTextureSource::rect_area_ltc1:
+        return {state.area_light_ltc[0], state.background_sampler};
+    case upstream::MaterialTextureSource::rect_area_ltc2:
+        return {state.area_light_ltc[1], state.background_sampler};
+#endif
+#if BBLITE_RECT_AREA_EMISSION
+    // bindAreaLightEmission's array, with the pin's linear clamp-to-edge,
+    // linear-mip sampler.
+    case upstream::MaterialTextureSource::rect_area_emission:
+        return {area_light_emission_binding(state).array, state.background_sampler};
+#endif
     default:
         return {};
     }
 }
+
+#if BBLITE_RECT_AREA_EMISSION
+/**
+ * bindAreaLightEmission's slot block, whichever family draws: the bytes a
+ * uniform push takes, from the scene's snapshot.
+ */
+PinnedStageBlock area_light_emission_slots_block(const GpuState& state) {
+    const std::vector<std::uint32_t>& slots = area_light_emission_binding(state).source->slots;
+    return {slots.data(), slots.size() * sizeof(std::uint32_t)};
+}
+#endif
 #endif
 
 #if BBLITE_HAS_PBR_RENDERER
@@ -725,6 +750,10 @@ void draw_pinned_variant(
             }
         }
 #endif
+#if BBLITE_RECT_AREA_EMISSION
+        if (block == upstream::rect_area_emission_slots_block)
+            return area_light_emission_slots_block(state);
+#endif
         return {};
     };
 #if BBLITE_PBR_SHADOWS
@@ -767,6 +796,12 @@ void draw_pinned_variant(
 #if BBLITE_HAS_CLUSTERED_LIGHTS
             if (name == "clusteredLightParams")
                 return state.clustered.params;
+#endif
+#if BBLITE_RECT_AREA_EMISSION
+            // The slot block the shader compile demoted: the fragment's four
+            // uniform slots go to scene, lights, mesh and material.
+            if (name == upstream::rect_area_emission_slots_block)
+                return area_light_emission_binding(state).slots;
 #endif
 #if BBLITE_LOCAL_CUBEMAP
             if (local_cubemap) {
@@ -1382,6 +1417,12 @@ PinnedResource standard_resource_for(GpuState& state, const GpuMesh& mesh,
             // level).
             return {render_textures.base_color, state.ground_sampler};
         }
+        // A scene-owned row (the area LTC pairs and emission array), resolved
+        // the way the PBR family's are.
+        if (const PinnedResource scene_owned = state_resource_for(state, row.source);
+            scene_owned.texture != nullptr) {
+            return scene_owned;
+        }
         const GpuMeshSlotMembers members = mesh_slot_members(row.source);
         if (members.texture != nullptr) {
             return {mesh.*members.texture, mesh.*members.sampler};
@@ -1612,6 +1653,10 @@ void draw_standard_variant(
             }
         }
 #endif
+#if BBLITE_RECT_AREA_EMISSION
+        if (block == upstream::rect_area_emission_slots_block)
+            return area_light_emission_slots_block(state);
+#endif
         return {};
     };
 #if BBLITE_STANDARD_SHADOWS
@@ -1640,6 +1685,12 @@ void draw_standard_variant(
                                       [[maybe_unused]] std::size_t slot) -> SDL_GPUBuffer* {
         if (name == "gp")
             return geometry_params_buffer;
+#if BBLITE_RECT_AREA_EMISSION
+        // The slot block once the shader compile demoted it out of the four
+        // uniform slots.
+        if (name == upstream::rect_area_emission_slots_block)
+            return area_light_emission_binding(state).slots;
+#endif
 #if BBLITE_STANDARD_SHADOWS
         if (SDL_GPUBuffer* info = shadow_info_buffer_at(state, fragment_shadow_rows.storage[slot]))
             return info;

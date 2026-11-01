@@ -61,7 +61,7 @@ int main() try {
         const auto opacity = [&](const char* id) {
             return runtime.projected_elements.at(ui_get_element_by_id(engine, id).value)
                 .element->GetComputedValues()
-                .opacity();
+                .group_opacity();
         };
 
         ui_set_attribute(engine, ui_get_element_by_id(engine, "title"), "style",

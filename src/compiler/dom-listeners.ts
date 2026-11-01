@@ -85,10 +85,6 @@ const serviceNames = new Set([
     "fullscreenerror",
     "load",
     "DOMContentLoaded",
-    "touchstart",
-    "touchmove",
-    "touchend",
-    "touchcancel",
     "animationstart",
     "animationend",
     "animationiteration",
@@ -137,6 +133,13 @@ const DOM_LISTENER_FAMILIES = {
         },
         elementHandler: true,
     },
+    // TouchEvent adds its touch lists and modifiers. SDL finger events
+    // source them (pal_platform_events.hpp).
+    touch: {
+        names: new Set(["touchstart", "touchmove", "touchend", "touchcancel"]),
+        event: { cppType: "const bbl::PlatformTouchEvent&", baseView: true },
+        elementHandler: true,
+    },
     // TransitionEvent adds propertyName; the UI projection sources it.
     transition: {
         names: new Set(["transitionend"]),
@@ -170,6 +173,7 @@ const NAMED_FAMILIES: readonly NamedDomListenerFamily[] = [
     "keyboard",
     "gamepad",
     "pointer",
+    "touch",
     "transition",
     "drag",
 ];
@@ -321,13 +325,20 @@ export function declaresListenerSignal(
 /**
  * `addEventListener` options as the DOM flattens them: `capture` alone for a
  * removal; `capture`, `once`, `passive` and `signal` for an addition.
+ * `passiveDefault` is the C++ condition an addition that leaves `passive`
+ * undefined takes, false when absent. The native target owns that default.
  */
 export function listenerOptions(
     context: ListenerOptionsContext,
     expression: ts.Expression | undefined,
     removing: boolean,
+    passiveDefault?: string,
 ): ListenerOptions {
-    const result = { capture: "false", once: "false", passive: "false" };
+    const result = {
+        capture: "false",
+        once: "false",
+        passive: passiveDefault ?? "false",
+    };
     if (!expression) return result;
     if (
         valueKindOf(context.checker.getTypeAtLocation(expression)) === "boolean"
@@ -351,6 +362,9 @@ export function listenerOptions(
             ...(removing
                 ? {}
                 : {
+                      ...(passiveDefault === undefined
+                          ? {}
+                          : { undefinedDefaults: { passive: passiveDefault } }),
                       consume: {
                           signal: (value: Value, present?: string) => {
                               signal = listenerSignal(
@@ -449,12 +463,13 @@ export function signalListener(
     context: ListenerOptionsContext,
     options: ts.Expression | undefined,
     listener: string,
+    passiveDefault?: string,
 ): { listener: string; options: ListenerOptions } {
     return {
         listener: declaresListenerSignal(context.checker, options)
             ? pinCpp(context, listener, "event_listener")
             : listener,
-        options: listenerOptions(context, options, false),
+        options: listenerOptions(context, options, false, passiveDefault),
     };
 }
 
@@ -705,6 +720,7 @@ export function emitDomEventListener(
         context,
         call.arguments[2],
         compiled.cpp,
+        `bbl::dom_listener_passive_default(${prefix})`,
     );
     context.emit({
         kind: "expression",

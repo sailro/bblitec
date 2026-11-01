@@ -291,6 +291,7 @@ generation, `npm run corpus:verify` and validation. Preview with
 - Diff the upstream `lab/` inventory between the two commits; new scenes and demos join the catalog's `staged` list until
   registered.
 - Lab files the pin fetches instead of committing come from its corpus `tooling` scripts (`src/pinned-lab-materializers.ts`).
+- Error codes (`#N`) are numbered by the package build; tests look them up by message (`test/pinned-errors.ts`).
 
 ## API coverage
 

@@ -102,10 +102,10 @@ test(
             "subpixel-rendering.patch",
         );
         const rmlui = names("rmlui", []);
-        assert.equal(rmlui.length, 46);
+        assert.equal(rmlui.length, 48);
         assert.deepEqual(
             rmlui.map((name) => Number(name.slice(0, 4))),
-            rmlui.map((_, index) => index + 1),
+            Array.from({ length: 48 }, (_, index) => index + 1),
         );
         assert.throws(
             () => names("dawn", ["windows"]),
@@ -196,6 +196,43 @@ function fixture(root: string): void {
     );
 }
 
+test("patches:check permits deleted identifiers but rejects reordered patches", (t) => {
+    const root = scratch(t, "patch-number-gaps-");
+    fixture(root);
+    const path = join(root, "native/patches/manifest.json");
+    write(
+        path,
+        readFileSync(path, "utf8").replace(
+            "demo/0001-first.patch",
+            "demo/0003-first.patch",
+        ),
+    );
+    renameSync(
+        join(root, "native/patches/demo/0001-first.patch"),
+        join(root, "native/patches/demo/0003-first.patch"),
+    );
+    assert.deepEqual(checkPatchInventory(root), []);
+    copyFileSync(
+        join(root, "native/patches/demo/0003-first.patch"),
+        join(root, "native/patches/demo/0004-second.patch"),
+    );
+    const second = JSON.stringify({
+        library: "demo",
+        file: "native/patches/demo/0004-second.patch",
+        purpose: "fixture",
+        upstream: { state: "unsubmitted" },
+        variants: ["all"],
+    });
+    write(
+        path,
+        readFileSync(path, "utf8").replace(
+            '"patches":[',
+            `"patches":[${second},`,
+        ),
+    );
+    assert.match(checkPatchInventory(root).join("\n"), /strictly increasing/);
+});
+
 test("patches:check reports orphans, missing files, headers, numbering and port coverage", (t) => {
     const cases: [string, (root: string) => void, RegExp][] = [
         [
@@ -275,15 +312,15 @@ test("patches:check reports orphans, missing files, headers, numbering and port 
                     path,
                     readFileSync(path, "utf8").replace(
                         "demo/0001-first.patch",
-                        "demo/0002-first.patch",
+                        "demo/0000-first.patch",
                     ),
                 );
                 renameSync(
                     join(root, "native/patches/demo/0001-first.patch"),
-                    join(root, "native/patches/demo/0002-first.patch"),
+                    join(root, "native/patches/demo/0000-first.patch"),
                 );
             },
-            /0002-first\.patch: its number is not its position 1 among the demo script patches/,
+            /0000-first\.patch: script patch identifiers must be positive and strictly increasing/,
         ],
         [
             "unknown variant",

@@ -13,26 +13,20 @@
 #include <SDL3/SDL.h>
 
 #include <algorithm>
+#include <array>
 #include <charconv>
+#include <cmath>
 #include <optional>
+#include <sstream>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <utility>
 #include <vector>
 
+#include "pal_input_capabilities.hpp"
 #include "pal_runtime_trace.hpp"
 
-namespace bbl::pal {
-/** How many touch devices SDL reports. */
-[[nodiscard]] inline int touch_device_count() {
-    int count = 0;
-    auto* touches = SDL_GetTouchDevices(&count);
-    if (!touches)
-        throw std::runtime_error(std::string("SDL_GetTouchDevices: ") + SDL_GetError());
-    SDL_free(touches);
-    return count;
-}
-} // namespace bbl::pal
 #if BBLITE_HAS_BROWSER_FILE
 #include "pal_file_dialog.hpp"
 #endif
@@ -63,6 +57,83 @@ inline bool is_emulated_pointer_event(const SDL_Event& event) {
                                       event.tfinger.touchID == SDL_PEN_TOUCHID));
 }
 
+/**
+ * Moves one platform event into the page viewport (`Engine::ui_page_viewport`), the coordinates
+ * every consumer reads input in -- a pointer or drop position from the viewport's origin, a touch
+ * position and motion as fractions of the viewport -- and tells whether the page receives it. A
+ * browser delivers no pointer press, touch or wheel in the letterbox a page without
+ * `viewport-fit=cover` leaves around its safe rectangle. A press the page received keeps its moves
+ * and its release wherever they land, as Chromium's pointer capture and implicit touch capture
+ * keep them; a press it never received keeps neither (`Engine::ui_page_capture`).
+ */
+inline bool page_platform_event(Engine& engine, SDL_Event& event) {
+    const PageViewport& page = engine.ui_page_viewport;
+    PageInputCapture& capture = engine.ui_page_capture;
+    const bool letterboxed = page.laid_out() && !page.whole_window();
+    const auto x = static_cast<float>(page.window_x), y = static_cast<float>(page.window_y);
+    const auto move = [&](float& px, float& py) {
+        if (letterboxed) {
+            px -= x;
+            py -= y;
+        }
+    };
+    // Whether a moved position lies in the page; a locked pointer has no position.
+    const auto inside = [&](float px, float py) {
+        return !letterboxed || engine.pointer_locked ||
+               (px >= 0 && py >= 0 && px < page.window_width && py < page.window_height);
+    };
+    switch (event.type) {
+    case SDL_EVENT_MOUSE_MOTION:
+        move(event.motion.x, event.motion.y);
+        return !capture.buttons.received.empty() || inside(event.motion.x, event.motion.y);
+    case SDL_EVENT_MOUSE_BUTTON_DOWN:
+        move(event.button.x, event.button.y);
+        return capture.buttons.press(event.button.button, inside(event.button.x, event.button.y));
+    case SDL_EVENT_MOUSE_BUTTON_UP:
+        move(event.button.x, event.button.y);
+        return capture.buttons.follow(event.button.button, inside(event.button.x, event.button.y),
+                                      true);
+    case SDL_EVENT_MOUSE_WHEEL:
+        move(event.wheel.mouse_x, event.wheel.mouse_y);
+        return inside(event.wheel.mouse_x, event.wheel.mouse_y);
+    case SDL_EVENT_DROP_BEGIN:
+    case SDL_EVENT_DROP_POSITION:
+    case SDL_EVENT_DROP_FILE:
+    case SDL_EVENT_DROP_TEXT:
+    case SDL_EVENT_DROP_COMPLETE:
+        move(event.drop.x, event.drop.y);
+        return true;
+    case SDL_EVENT_WINDOW_FOCUS_LOST:
+        // Focus loss cancels every press.
+        capture = {};
+        return true;
+    default:
+        break;
+    }
+    if (!is_touch_event(event))
+        return true;
+    int width = 0, height = 0;
+    const bool moved =
+        letterboxed &&
+        SDL_GetWindowSize(SDL_GetWindowFromID(event.tfinger.windowID), &width, &height) &&
+        width > 0 && height > 0;
+    if (moved) {
+        event.tfinger.x = (event.tfinger.x * static_cast<float>(width) - x) /
+                          static_cast<float>(page.window_width);
+        event.tfinger.y = (event.tfinger.y * static_cast<float>(height) - y) /
+                          static_cast<float>(page.window_height);
+        event.tfinger.dx *= static_cast<float>(width / page.window_width);
+        event.tfinger.dy *= static_cast<float>(height / page.window_height);
+    }
+    const std::pair<std::uint64_t, std::uint64_t> key{event.tfinger.touchID,
+                                                      event.tfinger.fingerID};
+    const bool in = !moved || (event.tfinger.x >= 0 && event.tfinger.y >= 0 &&
+                               event.tfinger.x < 1 && event.tfinger.y < 1);
+    if (event.type == SDL_EVENT_FINGER_DOWN)
+        return capture.touches.press(key, in);
+    return capture.touches.follow(key, in, event.type != SDL_EVENT_FINGER_MOTION);
+}
+
 /** True for live user input that must not leak into deterministic test runs. */
 inline bool is_platform_input_event(const SDL_Event& event) {
     return event.type == SDL_EVENT_KEY_DOWN || event.type == SDL_EVENT_KEY_UP ||
@@ -88,20 +159,33 @@ inline std::string keyboard_event_key(std::string_view code) {
     return std::string(code);
 }
 
-inline bool dispatch_platform_keyboard_event(Engine& engine, std::string_view code, bool down,
-                                             bool repeat, bool shift_key = false,
-                                             bool ctrl_key = false, bool alt_key = false,
-                                             bool meta_key = false, bool include_dom = true) {
-    trace_keyboard_event(code, down, repeat);
-    const PlatformKeyboardEvent event{
+/** The modifier keys an SDL modifier state holds. */
+inline PlatformModifierKeys dom_modifiers(SDL_Keymod modifiers) {
+    return {
+        .shift_key = (modifiers & SDL_KMOD_SHIFT) != 0,
+        .ctrl_key = (modifiers & SDL_KMOD_CTRL) != 0,
+        .alt_key = (modifiers & SDL_KMOD_ALT) != 0,
+        .meta_key = (modifiers & SDL_KMOD_GUI) != 0,
+    };
+}
+
+/** The keyboard event a platform key reports. */
+inline PlatformKeyboardEvent platform_keyboard_event(std::string_view code, bool repeat,
+                                                     PlatformModifierKeys modifiers) {
+    PlatformKeyboardEvent event{
         .code = std::string(code),
         .key = keyboard_event_key(code),
         .repeat = repeat,
-        .shift_key = shift_key,
-        .ctrl_key = ctrl_key,
-        .alt_key = alt_key,
-        .meta_key = meta_key,
     };
+    static_cast<PlatformModifierKeys&>(event) = modifiers;
+    return event;
+}
+
+inline bool dispatch_platform_keyboard_event(Engine& engine, std::string_view code, bool down,
+                                             bool repeat, PlatformModifierKeys modifiers = {},
+                                             bool include_dom = true) {
+    trace_keyboard_event(code, down, repeat);
+    const auto event = platform_keyboard_event(code, repeat, modifiers);
     bool prevented = false;
     if (include_dom && engine.dom_input) {
         const auto& input = *engine.dom_input;
@@ -516,11 +600,13 @@ public:
             return;
         }
         if (!up_only) {
-            dispatch_platform_keyboard_event(engine, event_code, true, false, false, ctrl_key);
+            dispatch_platform_keyboard_event(engine, event_code, true, false,
+                                             {.ctrl_key = ctrl_key});
             release_pointer_lock_on_escape(window, engine, event_code, true);
         }
         if (!down_only) {
-            dispatch_platform_keyboard_event(engine, event_code, false, false, false, ctrl_key);
+            dispatch_platform_keyboard_event(engine, event_code, false, false,
+                                             {.ctrl_key = ctrl_key});
         }
     }
 
@@ -719,11 +805,101 @@ inline std::string_view keyboard_event_code(SDL_Scancode scancode) {
     }
 }
 
-/** Apply one SDL size/density snapshot to the browser canvas metrics. */
+/** A window's safe rectangle and its size, in window coordinates. */
+struct WindowSafeArea {
+    SDL_Rect safe{};
+    int width = 0, height = 0;
+};
+
+/**
+ * `BBLITE_SAFE_AREA_INSETS`, read once: top, right, bottom and left window-coordinate insets that
+ * give a desktop window unsafe edges, as a notched phone's, to diagnose a page laid out inside
+ * them.
+ */
+inline const std::optional<std::array<int, 4>>& diagnostic_safe_area_insets(Engine& engine) {
+    if (engine.ui_diagnostic_safe_area_read)
+        return engine.ui_diagnostic_safe_area;
+    engine.ui_diagnostic_safe_area = []() -> std::optional<std::array<int, 4>> {
+        const std::string text = environment_variable("BBLITE_SAFE_AREA_INSETS");
+        if (text.empty())
+            return std::nullopt;
+        const auto refuse = [] {
+            throw std::invalid_argument("BBLITE_SAFE_AREA_INSETS needs four comma-separated "
+                                        "nonnegative integers: top,right,bottom,left.");
+        };
+        std::array<int, 4> read{};
+        std::istringstream values(text);
+        std::string value;
+        for (int& inset : read) {
+            if (!std::getline(values, value, ',') || value.empty() ||
+                value.find_first_not_of("0123456789") != std::string::npos)
+                refuse();
+            inset = std::stoi(value);
+        }
+        if (text.back() == ',' || std::getline(values, value, ','))
+            refuse();
+        return read;
+    }();
+    engine.ui_diagnostic_safe_area_read = true;
+    return engine.ui_diagnostic_safe_area;
+}
+
+/** The window's safe area: SDL's, or the diagnostic insets' (`diagnostic_safe_area_insets`). */
+inline WindowSafeArea window_safe_area(SDL_Window* window, Engine& engine) {
+    WindowSafeArea area;
+    if (!SDL_GetWindowSize(window, &area.width, &area.height) ||
+        !SDL_GetWindowSafeArea(window, &area.safe))
+        throw std::runtime_error(std::string("SDL window safe area: ") + SDL_GetError());
+    if (const auto& insets = diagnostic_safe_area_insets(engine)) {
+        const auto [top, right, bottom, left] = *insets;
+        area.safe = {left, top, std::max(0, area.width - left - right),
+                     std::max(0, area.height - top - bottom)};
+    }
+    return area;
+}
+
+/**
+ * Apply one SDL size/density snapshot to the browser canvas metrics and lay the page viewport
+ * (`Engine::ui_page_viewport`) out in the `width` x `height` drawable of a window with `area`
+ * (none: the drawable spans a window without insets). A browser keeps a page without
+ * `viewport-fit=cover` inside the window's safe rectangle and lays a `cover` page out over the
+ * whole window; the client extent is the page's. True when the canvas extent changed.
+ */
 inline bool update_engine_canvas_metrics(Engine& engine, int width, int height,
-                                         double display_scale, double pixel_density) {
-    const double client_width = width / display_scale;
-    const double client_height = height / display_scale;
+                                         double display_scale, double pixel_density,
+                                         const std::optional<WindowSafeArea>& area = std::nullopt) {
+    const WindowSafeArea window = area && area->width > 0 && area->height > 0
+                                      ? *area
+                                      : WindowSafeArea{{0, 0, width, height}, width, height};
+    PageViewport page;
+    page.pixels = {0, 0, width, height};
+    page.drawable_width = width;
+    page.drawable_height = height;
+    const double scale_x = static_cast<double>(width) / window.width;
+    const double scale_y = static_cast<double>(height) / window.height;
+    const SDL_Rect& safe = window.safe;
+    if (!engine.ui_viewport_fit_cover) {
+        const auto edge = [](double value, int limit) {
+            return std::clamp(static_cast<int>(std::lround(value)), 0, limit);
+        };
+        const int left = edge(safe.x * scale_x, width), top = edge(safe.y * scale_y, height);
+        const int right = edge((safe.x + safe.w) * scale_x, width);
+        const int bottom = edge((safe.y + safe.h) * scale_y, height);
+        if (right > left && bottom > top)
+            page.pixels = {left, top, right - left, bottom - top};
+    }
+    page.window_x = page.pixels.x / scale_x;
+    page.window_y = page.pixels.y / scale_y;
+    page.window_width = page.pixels.width / scale_x;
+    page.window_height = page.pixels.height / scale_y;
+    // CSS px per window coordinate.
+    const double to_client = pixel_density / display_scale;
+    page.inset_top = safe.y * to_client;
+    page.inset_right = (window.width - safe.x - safe.w) * to_client;
+    page.inset_bottom = (window.height - safe.y - safe.h) * to_client;
+    page.inset_left = safe.x * to_client;
+    const double client_width = page.pixels.width / display_scale;
+    const double client_height = page.pixels.height / display_scale;
     const bool changed = engine.options.width != width || engine.options.height != height ||
                          engine.canvas_client_width != client_width ||
                          engine.canvas_client_height != client_height;
@@ -731,7 +907,8 @@ inline bool update_engine_canvas_metrics(Engine& engine, int width, int height,
     engine.options.height = height;
     engine.canvas_client_width = client_width;
     engine.canvas_client_height = client_height;
-    engine.canvas_window_to_client_scale = pixel_density / display_scale;
+    engine.canvas_window_to_client_scale = to_client;
+    engine.ui_page_viewport = page;
     return changed;
 }
 
@@ -768,8 +945,11 @@ inline bool sync_engine_canvas_size(SDL_Window* window, Engine& engine) {
     if (window && SDL_GetWindowSizeInPixels(window, &width, &height) && width > 0 && height > 0) {
         const float display_scale = window_render_density(window, engine.options);
         const float pixel_density = SDL_GetWindowPixelDensity(window);
+        // A retained page lays out in the window's safe area.
         const bool changed = update_engine_canvas_metrics(
-            engine, width, height, display_scale, pixel_density > 0.0f ? pixel_density : 1.0f);
+            engine, width, height, display_scale, pixel_density > 0.0f ? pixel_density : 1.0f,
+            engine.ui_lays_out_page ? std::optional(window_safe_area(window, engine))
+                                    : std::nullopt);
         if (changed && engine.dom_input)
             engine.dom_input->pending_resize = true;
         return changed;
@@ -1089,10 +1269,9 @@ inline void handle_platform_event(const SDL_Event& event, Engine& engine, bool i
         const std::string_view code = keyboard_event_code(event.key.scancode);
         if (code.empty())
             return;
-        dispatch_platform_keyboard_event(
-            engine, code, event.type == SDL_EVENT_KEY_DOWN, event.key.repeat,
-            (event.key.mod & SDL_KMOD_SHIFT) != 0, (event.key.mod & SDL_KMOD_CTRL) != 0,
-            (event.key.mod & SDL_KMOD_ALT) != 0, (event.key.mod & SDL_KMOD_GUI) != 0, include_dom);
+        dispatch_platform_keyboard_event(engine, code, event.type == SDL_EVENT_KEY_DOWN,
+                                         event.key.repeat, dom_modifiers(event.key.mod),
+                                         include_dom);
         // Escape is reserved by the browser host to leave pointer lock; the
         // application does not need to register document.exitPointerLock()
         // for that affordance. SDL relative mode has no corresponding
@@ -1173,12 +1352,21 @@ inline void handle_platform_event(const SDL_Event& event, Engine& engine, bool i
 
 inline void append_touch_cancel(Engine& engine, DomEventBatch& batch, DomTouchContact contact) {
     contact.pointer.buttons = 0;
-    auto cancelled = dom_touch_input(engine, DomPointerAction::Cancel, contact);
-    batch.events.insert(batch.events.end(), std::make_move_iterator(cancelled->events.begin()),
-                        std::make_move_iterator(cancelled->events.end()));
-    batch.released_pointers.insert(batch.released_pointers.end(),
-                                   cancelled->released_pointers.begin(),
-                                   cancelled->released_pointers.end());
+    batch.append(std::move(*dom_touch_input(engine, DomPointerAction::Cancel, contact)));
+}
+
+/** What the platform reports beside a pointer packet: the keyboard modifiers and, from the
+ * window's position, the screen coordinates. */
+inline void set_dom_pointer_context(const Engine& engine, PlatformMouseEvent& pointer,
+                                    SDL_WindowID window_id) {
+    static_cast<PlatformModifierKeys&>(pointer) = dom_modifiers(SDL_GetModState());
+    if (auto* window = SDL_GetWindowFromID(window_id)) {
+        int x = 0, y = 0;
+        if (SDL_GetWindowPosition(window, &x, &y)) {
+            pointer.screen_x = x * engine.canvas_window_to_client_scale + pointer.client_x;
+            pointer.screen_y = y * engine.canvas_window_to_client_scale + pointer.client_y;
+        }
+    }
 }
 
 /** Build an owned script input transaction before running native defaults.
@@ -1210,7 +1398,7 @@ inline std::shared_ptr<DomEventBatch> prepare_dom_platform_input(Engine& engine,
             event.type == SDL_EVENT_FINGER_UP || event.type == SDL_EVENT_FINGER_CANCELED;
         auto found = input.touches.find(key);
         if (down && found == input.touches.end()) {
-            double id = 2;
+            double id = dom_first_touch_pointer_id;
             while (std::any_of(input.touches.begin(), input.touches.end(), [id](const auto& item) {
                 return item.second.pointer.pointer_id == id;
             }))
@@ -1219,6 +1407,14 @@ inline std::shared_ptr<DomEventBatch> prepare_dom_platform_input(Engine& engine,
             contact.pointer.pointer_type = "touch";
             contact.pointer.pointer_id = id;
             contact.pointer.is_primary = input.touches.empty();
+            contact.order = ++input.touch_presses;
+            contact.pressed_at = event.tfinger.timestamp;
+            // A second contact ends every tap: Chromium taps with one finger.
+            contact.tap = contact.pointer.is_primary;
+            for (auto& [held, other] : input.touches) {
+                (void)held;
+                other.tap = false;
+            }
             found = input.touches.emplace(key, std::move(contact)).first;
         }
         if (found == input.touches.end())
@@ -1245,16 +1441,17 @@ inline std::shared_ptr<DomEventBatch> prepare_dom_platform_input(Engine& engine,
         pointer.movement_x = event.tfinger.dx * engine.canvas_client_width;
         pointer.movement_y = event.tfinger.dy * engine.canvas_client_height;
         pointer.pressure = released ? 0 : event.tfinger.pressure;
-        if (auto* window = SDL_GetWindowFromID(event.tfinger.windowID)) {
-            int x = 0, y = 0;
-            if (SDL_GetWindowPosition(window, &x, &y)) {
-                pointer.screen_x = x * engine.canvas_window_to_client_scale + pointer.client_x;
-                pointer.screen_y = y * engine.canvas_window_to_client_scale + pointer.client_y;
-            }
-        }
-        if (down)
+        set_dom_pointer_context(engine, pointer, event.tfinger.windowID);
+        if (down) {
             contact.path = input.hit_path ? input.hit_path(pointer.client_x, pointer.client_y)
                                           : dom_canvas_path();
+            contact.start_x = pointer.client_x;
+            contact.start_y = pointer.client_y;
+        } else if (event.type == SDL_EVENT_FINGER_CANCELED ||
+                   std::hypot(pointer.client_x - contact.start_x,
+                              pointer.client_y - contact.start_y) > dom_touch_tap_slop ||
+                   event.tfinger.timestamp - contact.pressed_at > dom_touch_long_press_ns)
+            contact.tap = false;
         if (down && !contact.path.empty() &&
             contact.path.front().kind == DomEventTargetKind::Canvas &&
             std::any_of(input.touches.begin(), input.touches.end(),
@@ -1262,6 +1459,10 @@ inline std::shared_ptr<DomEventBatch> prepare_dom_platform_input(Engine& engine,
             contact.gesture = true;
         std::shared_ptr<DomEventBatch> batch;
         const double current_span = canvas_span();
+        const auto action = down                                      ? DomPointerAction::Down
+                            : event.type == SDL_EVENT_FINGER_UP       ? DomPointerAction::Up
+                            : event.type == SDL_EVENT_FINGER_CANCELED ? DomPointerAction::Cancel
+                                                                      : DomPointerAction::Move;
         if (down && current_span > 0 && input.event_types.contains("wheel")) {
             batch = std::make_shared<DomEventBatch>();
             for (auto& [id, item] : input.touches) {
@@ -1284,31 +1485,27 @@ inline std::shared_ptr<DomEventBatch> prepare_dom_platform_input(Engine& engine,
                 batch->add(dom_event(wheel, "wheel", contact.path), true);
             }
         } else {
-            batch =
-                dom_touch_input(engine,
-                                down                                      ? DomPointerAction::Down
-                                : event.type == SDL_EVENT_FINGER_UP       ? DomPointerAction::Up
-                                : event.type == SDL_EVENT_FINGER_CANCELED ? DomPointerAction::Cancel
-                                                                          : DomPointerAction::Move,
-                                contact);
+            batch = dom_touch_input(engine, action, contact);
         }
-        if (released)
+        // Touch events follow every contact's pointer events, a wheel gesture's contacts too.
+        append_dom_touch_event(*batch, input, action,
+                               [&](const DomTouchContact& each) { return &each == &contact; });
+        if (action == DomPointerAction::Up)
+            append_dom_touch_tap(engine, *batch, contact);
+        if (released) {
+            // dom_touch_input releases the pointer of a contact outside a wheel gesture.
+            if (contact.gesture)
+                batch->released_pointers.push_back(pointer.pointer_id);
             input.touches.erase(found);
+        }
         return batch;
     }
     auto& input = *engine.dom_input;
     auto batch = std::make_shared<DomEventBatch>();
     if (event.type == SDL_EVENT_KEY_DOWN || event.type == SDL_EVENT_KEY_UP) {
         const auto code = keyboard_event_code(event.key.scancode);
-        const PlatformKeyboardEvent key{
-            .code = std::string(code),
-            .key = keyboard_event_key(code),
-            .repeat = event.key.repeat,
-            .shift_key = (event.key.mod & SDL_KMOD_SHIFT) != 0,
-            .ctrl_key = (event.key.mod & SDL_KMOD_CTRL) != 0,
-            .alt_key = (event.key.mod & SDL_KMOD_ALT) != 0,
-            .meta_key = (event.key.mod & SDL_KMOD_GUI) != 0,
-        };
+        const auto key =
+            platform_keyboard_event(code, event.key.repeat, dom_modifiers(event.key.mod));
         auto path = input.focus_path ? input.focus_path() : dom_canvas_path();
         batch->add(
             dom_event(key, event.type == SDL_EVENT_KEY_DOWN ? "keydown" : "keyup", std::move(path)),
@@ -1319,7 +1516,6 @@ inline std::shared_ptr<DomEventBatch> prepare_dom_platform_input(Engine& engine,
                    wheel = event.type == SDL_EVENT_MOUSE_WHEEL;
         if (!move && !wheel)
             update_tracked_mouse_button(event.button);
-        const auto modifiers = SDL_GetModState();
         PlatformMouseEvent pointer{
             .button = move || wheel ? -1.0 : static_cast<double>(event.button.button - 1),
             .buttons = dom_mouse_buttons(tracked_mouse_buttons()),
@@ -1334,24 +1530,14 @@ inline std::shared_ptr<DomEventBatch> prepare_dom_platform_input(Engine& engine,
             .movement_x = move ? static_cast<double>(event.motion.xrel) : 0,
             .movement_y = move ? static_cast<double>(event.motion.yrel) : 0,
             .delta_y = wheel ? dom_wheel_delta_y(event.wheel) : 0,
-            .shift_key = (modifiers & SDL_KMOD_SHIFT) != 0,
-            .ctrl_key = (modifiers & SDL_KMOD_CTRL) != 0,
-            .alt_key = (modifiers & SDL_KMOD_ALT) != 0,
-            .meta_key = (modifiers & SDL_KMOD_GUI) != 0,
             .pressure = tracked_mouse_buttons() == 0 ? 0.0 : 0.5,
         };
         if (move && engine.pointer_lock_canvas)
             trace_pointer_motion(engine, event.motion, pointer);
-        const auto window_id = move    ? event.motion.windowID
-                               : wheel ? event.wheel.windowID
-                                       : event.button.windowID;
-        if (auto* window = SDL_GetWindowFromID(window_id)) {
-            int x = 0, y = 0;
-            if (SDL_GetWindowPosition(window, &x, &y)) {
-                pointer.screen_x = x * engine.canvas_window_to_client_scale + pointer.client_x;
-                pointer.screen_y = y * engine.canvas_window_to_client_scale + pointer.client_y;
-            }
-        }
+        set_dom_pointer_context(engine, pointer,
+                                move    ? event.motion.windowID
+                                : wheel ? event.wheel.windowID
+                                        : event.button.windowID);
         auto path =
             input.hit_path ? input.hit_path(pointer.client_x, pointer.client_y)
             : canvas_contains_client_point(engine, pointer)
@@ -1379,9 +1565,13 @@ inline std::shared_ptr<DomEventBatch> prepare_dom_platform_input(Engine& engine,
             input.hover_path.clear();
             for (auto& [key, contact] : input.touches) {
                 (void)key;
-                if (!contact.gesture)
+                if (contact.gesture)
+                    batch->released_pointers.push_back(contact.pointer.pointer_id);
+                else
                     append_touch_cancel(engine, *batch, contact);
             }
+            append_dom_touch_event(*batch, input, DomPointerAction::Cancel,
+                                   [](const DomTouchContact&) { return true; });
             input.touches.clear();
         }
         batch->add(dom_event(PlatformMouseEvent{},
@@ -1402,9 +1592,17 @@ inline std::shared_ptr<DomEventBatch> prepare_dom_platform_input(Engine& engine,
     return batch;
 }
 
-/** Legacy engine hooks (including glTF interactivity) receive the same primary
- * compatibility stream as DOM mouse listeners. Secondary/UI contacts stay separate. */
+/** Legacy engine hooks (including glTF interactivity) receive the primary
+ * contact's canvas pointer events; their click fires only for a tap's click.
+ * Secondary/UI contacts stay separate. */
 inline void dispatch_touch_defaults(Engine& engine, const DomEventBatch& batch) {
+    const bool tapped =
+        !batch.tap_withheld &&
+        std::any_of(batch.events.begin(), batch.events.end(), [](const auto& entry) {
+            const auto* pointer = std::get_if<PlatformMouseEvent>(&entry.payload);
+            return pointer && pointer->dom && pointer->dom->type == "click" &&
+                   pointer->dom->target == DomEventTarget::canvas();
+        });
     for (const auto& entry : batch.events) {
         const auto* pointer = std::get_if<PlatformMouseEvent>(&entry.payload);
         if (!pointer || !pointer->dom || pointer->dom->target != DomEventTarget::canvas())
@@ -1414,14 +1612,13 @@ inline void dispatch_touch_defaults(Engine& engine, const DomEventBatch& batch) 
             engine.canvas_click_armed = false;
             engine.mouse_cancel_callbacks.dispatch(*pointer);
         }
-        if (batch.default_prevented) {
-            if (pointer->is_primary && type == "mouseup")
-                engine.canvas_click_armed = false;
+        if (pointer->is_primary && type == "pointerup" && (!tapped || batch.default_prevented))
+            engine.canvas_click_armed = false;
+        if (batch.default_prevented)
             continue;
-        }
-        if (type == "mousedown" || type == "mouseup")
-            dispatch_platform_mouse_button(engine, *pointer, type == "mousedown", false);
-        else if (type == "mousemove")
+        if (pointer->is_primary && (type == "pointerdown" || type == "pointerup"))
+            dispatch_platform_mouse_button(engine, *pointer, type == "pointerdown", false);
+        else if (pointer->is_primary && type == "pointermove")
             dispatch_platform_mouse_move(engine, *pointer, false);
         else if (type == "wheel")
             dispatch_platform_wheel_event(engine, pointer->delta_y, pointer->client_x,
@@ -1464,6 +1661,8 @@ inline void poll_platform_events(Engine& engine, bool& running, bool test_pass,
         if (test_pass && is_platform_input_event(event) && !is_replayed_ui_event(event)) {
             continue;
         }
+        if (!page_platform_event(engine, event))
+            continue;
         end_press_mouse_capture(event);
         const auto batch = prepare_dom_platform_input(engine, event);
         if (batch) {
@@ -1489,12 +1688,9 @@ inline void poll_platform_events(Engine& engine, bool& running, bool test_pass,
             // application listener itself. Camera controls still yield to UI.
             const auto code = keyboard_event_code(event.key.scancode);
             const bool prevented =
-                !code.empty() &&
-                dispatch_platform_keyboard_event(
-                    engine, code, event.type == SDL_EVENT_KEY_DOWN, event.key.repeat,
-                    (event.key.mod & SDL_KMOD_SHIFT) != 0, (event.key.mod & SDL_KMOD_CTRL) != 0,
-                    (event.key.mod & SDL_KMOD_ALT) != 0, (event.key.mod & SDL_KMOD_GUI) != 0,
-                    false);
+                !code.empty() && dispatch_platform_keyboard_event(
+                                     engine, code, event.type == SDL_EVENT_KEY_DOWN,
+                                     event.key.repeat, dom_modifiers(event.key.mod), false);
             release_pointer_lock_on_escape(SDL_GetWindowFromID(event.key.windowID), engine, code,
                                            event.type == SDL_EVENT_KEY_DOWN);
             if (!prevented && ui_filter(event))

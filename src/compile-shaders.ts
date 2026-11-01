@@ -48,7 +48,7 @@ import {
     type OfflineShaderStage,
 } from "./shader-composition.js";
 import { isMainModule, parseFlags } from "./tooling/flags.js";
-import { findRepositoryRoot } from "./repository-root.js";
+import { compilerRepositoryRoot } from "./repository-root.js";
 import {
     tintToolBuildCommand,
     tintToolMismatch,
@@ -154,11 +154,6 @@ function sha256(value: string): string {
 
 function digestUpper(path: string): string {
     return contentDigest(path).toUpperCase();
-}
-
-/** The checkout this compiler runs from, whose tool sources bblite-tint must record. */
-function compilerRepositoryRoot(): string {
-    return findRepositoryRoot(dirname(fileURLToPath(import.meta.url)));
 }
 
 function shaderCompilerIdentity(): string {

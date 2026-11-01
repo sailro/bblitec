@@ -1,11 +1,71 @@
 {
   "scene": "antigravity-racer",
-  "notes": "Split-screen presents distinct canvas views, survives returning through the menu, and can transition to the track editor on both backends.",
+  "notes": "Split-screen presents distinct canvas views. Full mode and Attract/Escape lifecycles must keep rendering and support editor selection, dragging, nudging and reset on both backends.",
   "capture": false,
   "phases": [
     { "id": "split", "frame": 600, "tape": ["-*240", "UiKey@Down", "-*10", "UiKey@Return"] },
     { "id": "split-reentered", "frame": 900, "tape": ["-*240", "UiKey@Down", "-*10", "UiKey@Return", "-*180", "UiKey@Escape", "-*10", "UiKey@Down", "-*10", "UiKey@Down", "-*10", "UiKey@Return", "-*180", "UiKey@Down", "-*10", "UiKey@Return"] },
-    { "id": "editor-after-split", "frame": 900, "env": { "BBLITE_CAPTURE_UI": "1" }, "tape": ["-*240", "UiKey@Down", "-*10", "UiKey@Return", "-*180", "UiKey@Escape", "-*10", "UiKey@Down", "-*10", "UiKey@Down", "-*10", "UiKey@Return", "-*180", "UiKey@Down", "-*10", "UiKey@Down", "-*10", "UiKey@Down", "-*10", "UiKey@Down", "-*10", "UiKey@Return"] }
+    { "id": "editor-after-split", "frame": 900, "env": { "BBLITE_CAPTURE_UI": "1" }, "tape": ["-*240", "UiKey@Down", "-*10", "UiKey@Return", "-*180", "UiKey@Escape", "-*10", "UiKey@Down", "-*10", "UiKey@Down", "-*10", "UiKey@Return", "-*180", "UiKey@Down", "-*10", "UiKey@Down", "-*10", "UiKey@Down", "-*10", "UiKey@Down", "-*10", "UiKey@Return"] },
+    {
+      "id": "editor-after-all-modes",
+      "notes": "Race 1P -> Escape/Home -> Split -> Escape/Home -> Test -> Escape/Home -> Attract -> Escape/Home -> Editor. Checkpoints: editor, picked point 2, dragged, nudged; final image: reset. SDL packets use the real-time clock.",
+      "frame": 2789,
+      "env": {
+        "BBLITE_CAPTURE_UI": "1",
+        "BBLITE_FRAME_DELTA_MS": "0",
+        "BBLITE_CAPTURE_ENGINE_FRAMES": "",
+        "BBLITE_ANIMATION_SEEK_SECONDS": "0",
+        "BBLITE_WINDOW_TRACE": "1",
+        "BBLITE_SCREENSHOT_FRAMES": "2379,2481,2606,2718",
+        "BBLITE_LOCAL_STORAGE_ROOT": "artifacts/check/antigravity-racer/storage-all-modes"
+      },
+      "tape": [
+        "-*200",
+        "UiMove@640:268", "-*10", "UiClick@640:268", "-*240",
+        "UiKey@Escape", "-*60", "UiMove@640:423", "-*10", "UiClick@640:423", "-*180",
+        "UiMove@640:323", "-*10", "UiClick@640:323", "-*240",
+        "UiKey@Escape", "-*60", "UiMove@640:423", "-*10", "UiClick@640:423", "-*180",
+        "UiMove@640:378", "-*10", "UiClick@640:378", "-*240",
+        "UiKey@Escape", "-*60", "UiMove@640:423", "-*10", "UiClick@640:423", "-*180",
+        "UiMove@640:433", "-*10", "UiClick@640:433", "-*240", "UiKey@Escape", "-*240",
+        "UiMove@640:489", "-*10", "UiClick@640:489", "-*160",
+        "UiMove@285:577", "-*10", "UiClick@285:577", "-*90",
+        "UiMove@345:578", "-*40", "+UiMouseLeft@345:578",
+        "UiMove@355:578", "UiMove@365:578", "UiMove@375:578", "UiMove@385:578",
+        "UiMove@395:578", "UiMove@405:578", "UiMove@415:578", "UiMove@425:578",
+        "UiMove@435:578", "UiMove@445:578", "UiMove@455:578", "UiMove@465:578",
+        "-UiMouseLeft@465:578", "-*70",
+        "+UiKey@Right", "-*60", "-UiKey@Right", "-*50",
+        "UiClick@1110:192", "-*70"
+      ]
+    },
+    {
+      "id": "editor-after-attract-escape",
+      "notes": "Attract -> Escape/Home -> Editor removes the last scene from inside onBeforeRender before async replacement. Checkpoints: editor, picked point 2, dragged, nudged; final image: reset.",
+      "frame": 1274,
+      "env": {
+        "BBLITE_CAPTURE_UI": "1",
+        "BBLITE_FRAME_DELTA_MS": "0",
+        "BBLITE_CAPTURE_ENGINE_FRAMES": "",
+        "BBLITE_ANIMATION_SEEK_SECONDS": "0",
+        "BBLITE_WINDOW_TRACE": "1",
+        "BBLITE_SCREENSHOT_FRAMES": "864,966,1091,1203",
+        "BBLITE_LOCAL_STORAGE_ROOT": "artifacts/check/antigravity-racer/storage-attract-escape"
+      },
+      "tape": [
+        "-*200",
+        "UiMove@640:433", "-*10", "UiClick@640:433", "-*240", "UiKey@Escape", "-*240",
+        "UiMove@640:489", "-*10", "UiClick@640:489", "-*160",
+        "UiMove@285:577", "-*10", "UiClick@285:577", "-*90",
+        "UiMove@345:578", "-*40", "+UiMouseLeft@345:578",
+        "UiMove@355:578", "UiMove@365:578", "UiMove@375:578", "UiMove@385:578",
+        "UiMove@395:578", "UiMove@405:578", "UiMove@415:578", "UiMove@425:578",
+        "UiMove@435:578", "UiMove@445:578", "UiMove@455:578", "UiMove@465:578",
+        "-UiMouseLeft@465:578", "-*70",
+        "+UiKey@Right", "-*60", "-UiKey@Right", "-*50",
+        "UiClick@1110:192", "-*70"
+      ]
+    }
   ],
   "expect": [
     { "kind": "viewport", "phase": "*", "equals": [1280, 720] },

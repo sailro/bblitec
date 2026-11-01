@@ -21,6 +21,7 @@ import {
     optionalNativeFixtureTools,
     runNativeFixtureCompiler,
 } from "./native-fixture.js";
+import { pinnedDeclaration, pinnedModuleSource } from "./pinned-source.js";
 
 const module = "src/animation/weighted-gltf-mixer.ts";
 const identity = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1];
@@ -115,18 +116,7 @@ const bits = (values: Float32Array) => [
 ];
 
 function sourceResult(context: LoweringContext, overrides: boolean): unknown {
-    const printer = ts.createPrinter();
-    const text = (path: string) => {
-        const file = context.sourceFile(path);
-        return file.statements
-            .filter((statement) => !ts.isImportDeclaration(statement))
-            .map((statement) =>
-                printer
-                    .printNode(ts.EmitHint.Unspecified, statement, file)
-                    .replace(/^export /gm, ""),
-            )
-            .join("\n");
-    };
+    const text = (path: string) => pinnedModuleSource(context, path);
     const events: unknown[] = [],
         palettes: number[][] = [];
     const types = context.sourceFile("src/animation/types.ts");
@@ -147,28 +137,23 @@ function sourceResult(context: LoweringContext, overrides: boolean): unknown {
         "\n" +
         text(module) +
         "\n" +
-        context
-            .functionDeclaration(
-                "src/math/compose-mat4-into-buffer.ts",
-                "composeMat4IntoBuffer",
-            )
-            .declaration.getText()
-            .replace(/^export /, "") +
+        pinnedDeclaration(
+            context,
+            "src/math/compose-mat4-into-buffer.ts",
+            "composeMat4IntoBuffer",
+        ) +
         "\n" +
-        context
-            .functionDeclaration(
-                "src/math/multiply-mat4-into-buffer.ts",
-                "multiplyMat4IntoBuffer",
-            )
-            .declaration.getText()
-            .replace(/^export /, "") +
+        pinnedDeclaration(
+            context,
+            "src/math/multiply-mat4-into-buffer.ts",
+            "multiplyMat4IntoBuffer",
+        ) +
         "\n" +
-        context
-            .functionDeclaration(
-                "src/skeleton/bone-control.ts",
-                "applyOverridesToTRS",
-            )
-            .declaration.getText() +
+        pinnedDeclaration(
+            context,
+            "src/skeleton/bone-control.ts",
+            "applyOverridesToTRS",
+        ) +
         `
 const _boneApplier = (overrides, trs, count, hiddenOnly) => {
     events.push(["bones", !!hiddenOnly]); applyOverridesToTRS(overrides, trs, count, hiddenOnly);

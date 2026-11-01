@@ -15,6 +15,7 @@ import {
     optionalNativeFixtureTools,
     runNativeFixtureCompiler,
 } from "./native-fixture.js";
+import { pinnedDeclaration } from "./pinned-source.js";
 
 const module = "src/skeleton/bone-control.ts";
 test("bone visibility stores and eager-bake calls follow the complete source setter", (t) => {
@@ -35,12 +36,7 @@ test("bone visibility stores and eager-bake calls follow the complete source set
     const actions = [true, false, false, true, true, false, true];
     const cases = variants.map((context) => {
         const source = ["ensureOverride", "setBoneVisible"]
-            .map((name) =>
-                context
-                    .functionDeclaration(module, name)
-                    .declaration.getText()
-                    .replace(/^export /, ""),
-            )
+            .map((name) => pinnedDeclaration(context, module, name))
             .join("\n");
         const run = createJavaScriptFunction(
             transpileCommonJs(source, module) + "\nreturn setBoneVisible;",

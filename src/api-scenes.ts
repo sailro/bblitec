@@ -1,7 +1,6 @@
 import { readFileSync } from "node:fs";
 import { compileSource } from "./compiler.js";
-import { registrySceneCompileOptions } from "./native-host-ui.js";
-import { scenes } from "./scene-registry.js";
+import { registrySceneCompileOptions, scenes } from "./scene-registry.js";
 import { readBabylonLiteCorpus } from "./upstream-corpus.js";
 
 const corpus = readBabylonLiteCorpus();
@@ -20,7 +19,7 @@ if (missing.length)
         `API collection omits corpus entries: ${missing.map((entry) => entry.id).join(", ")}`,
     );
 
-// Generation only, with the registry's query and host companion. No native outputs
+// Generation only, with the registry's query and host page. No native outputs
 // are overwritten by this measurement.
 for (const scene of scenes) {
     process.env.BBLITE_API_SCENE = `scene:${scene.id}`;

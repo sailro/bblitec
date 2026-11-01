@@ -20,12 +20,13 @@ import { existsSync } from "node:fs";
 import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import { findRepositoryRoot, readUpstreamPin } from "../upstream-source.js";
 import { pinnedLabPublicUrl } from "../pinned-lab-public.js";
-import { pinnedLabPublicFile } from "../pinned-lab-materializers.js";
+import { pinnedLabPublicAsset } from "../pinned-lab-materializers.js";
 import {
     pixelsAssetSource,
     spriteAtlasAssetSource,
 } from "../executed-module-assets.js";
 import { dataUrlAssetName, isDataUrl } from "../data-url.js";
+import { hostPageDocumentAsset } from "../host-page.js";
 import {
     notJson,
     staticJsonValue,
@@ -46,9 +47,15 @@ export interface AssetRegistryContext extends Pick<
     | "fail"
 > {}
 
-function basenameWithoutExtension(name: string): string {
+export function basenameWithoutExtension(name: string): string {
     const dot = name.lastIndexOf(".");
     return dot > 0 ? name.slice(0, dot) : name;
+}
+
+/** The file name an asset source ends in, query and fragment dropped. */
+export function assetSourceName(source: string, fallback: string): string {
+    const sourcePath = source.split(/[?#]/, 1)[0] ?? source;
+    return sourcePath.split(/[\\/]/).pop() || fallback;
 }
 
 /**
@@ -215,19 +222,23 @@ export function registerUiImageAsset(
     source: string,
     logicalPath: string,
 ): CompileAsset {
-    const output = logicalPath.replace(/\\/g, "/").replace(/^\/+/, "");
+    // The native document sits at the asset root, which `./` also names.
+    const output = logicalPath
+        .replace(/\\/g, "/")
+        .replace(/^\/+/, "")
+        .split("/")
+        .filter((part) => part !== ".")
+        .join("/");
     if (
         output.length === 0 ||
-        output
-            .split("/")
-            .some((part) => part === "" || part === "." || part === "..")
+        output.split("/").some((part) => part === "" || part === "..")
     ) {
         throw new Error(
             `Retained UI image path '${logicalPath}' is not a bounded root-relative asset path.`,
         );
     }
     source = resolveBundledAsset(
-        source,
+        documentAssetSource(context, source),
         context.options.fileName,
         context.options,
     );
@@ -242,6 +253,19 @@ export function registerUiImageAsset(
     requireUniqueOutput(context.assetOutputs, asset);
     context.assets.set(key, asset);
     return asset;
+}
+
+/**
+ * The source a URL of the program's document (markup, style sheets, an img
+ * src) names: a host page resolves it as the browser does
+ * (`hostPageDocumentAsset`); without one it is the URL as written.
+ */
+export function documentAssetSource(
+    context: Pick<LoweringServices, "options">,
+    url: string,
+): string {
+    const page = context.options.hostPage;
+    return page ? hostPageDocumentAsset(page, url) : url;
 }
 
 /** Packaged names must be unambiguous on every supported filesystem. */
@@ -312,7 +336,6 @@ export function assetRecord(
         placement.deployment,
     );
     const materializationSource = source;
-    const sourcePath = source.split(/[?#]/, 1)[0] ?? source;
     // A data URL's text IS the payload, so it names nothing; the media type
     // does the naming instead, which keeps the packaged file's extension --
     // and with it the reached image codec -- derivable as it is for every
@@ -320,7 +343,7 @@ export function assetRecord(
     const inline = isDataUrl(source);
     const sourceName = inline
         ? dataUrlAssetName(source)
-        : sourcePath.split(/[\\/]/).pop() || `${kind}.bin`;
+        : assetSourceName(source, `${kind}.bin`);
     const packagedName =
         kind === "gltf" && /\.gltf$/i.test(sourceName)
             ? sourceName.replace(/\.gltf$/i, ".glb")
@@ -525,7 +548,7 @@ export function resolveBundledAsset(
         entryFileName &&
         deployment.publicUrl === pinnedLabPublicUrl()
     ) {
-        const local = pinnedLabPublicFile(
+        const local = pinnedLabPublicAsset(
             findRepositoryRoot(dirname(resolve(entryFileName))),
             source.split(/[?#]/, 1)[0]!,
         );

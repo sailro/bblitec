@@ -11,6 +11,7 @@ import {
     propertyPath,
     sameSource,
     sameSyntax,
+    soleBindingName,
     variableKind,
 } from "../compiler/syntax.js";
 import {
@@ -649,6 +650,27 @@ export class LoweringContext {
     }
 
     /**
+     * A pinned signature's parameter list, by name and in order, or
+     * generation refuses under `label`. A name carries the pin's markers:
+     * `...rest`, `optional?` and `defaulted=`.
+     */
+    public assertParameterNames(
+        declaration: ts.SignatureDeclaration,
+        names: readonly string[],
+        label: string,
+    ): void {
+        const actual = declaration.parameters.map(
+            (parameter) =>
+                `${parameter.dotDotDotToken ? "..." : ""}${soleBindingName(parameter.name)}${parameter.questionToken ? "?" : ""}${parameter.initializer ? "=" : ""}`,
+        );
+        if (actual.join() !== names.join())
+            this.contractError(
+                declaration,
+                `${label}: expected (${names.join(", ")}), found (${actual.join(", ")}).`,
+            );
+    }
+
+    /**
      * A native seam's contract over a pinned function: its statements keep
      * the shapes of `source`, or generation refuses under `label`.
      */
@@ -895,12 +917,23 @@ export class LoweringContext {
      * target is the binding or property `name`, whatever the receiver.
      */
     public writersOf(name: string): readonly WriteSite[] {
-        let index = writerIndexes.get(this);
+        return this.pinnedAccesses().writes.get(name) ?? [];
+    }
+
+    /** One pinned walk owns the write and property-access indexes. */
+    private pinnedAccesses(): PinnedAccesses {
+        let index = accessIndexes.get(this);
         if (!index) {
-            const built = new Map<string, WriteSite[]>();
+            const writes = new Map<string, WriteSite[]>();
+            const members = new Map<string, ts.PropertyAccessExpression[]>();
             for (const modulePath of this.store.listSources()) {
                 if (!modulePath.startsWith("src/")) continue;
                 const visit = (node: ts.Node): void => {
+                    if (ts.isPropertyAccessExpression(node)) {
+                        const accesses = members.get(node.name.text) ?? [];
+                        accesses.push(node);
+                        members.set(node.name.text, accesses);
+                    }
                     for (const write of writeSites(node)) {
                         const target = write.target;
                         const written = ts.isIdentifier(target)
@@ -909,18 +942,18 @@ export class LoweringContext {
                               ? target.name.text
                               : undefined;
                         if (written === undefined) continue;
-                        const writes = built.get(written) ?? [];
-                        writes.push(write);
-                        built.set(written, writes);
+                        const sites = writes.get(written) ?? [];
+                        sites.push(write);
+                        writes.set(written, sites);
                     }
                     ts.forEachChild(node, visit);
                 };
                 visit(this.sourceFile(modulePath));
             }
-            index = built;
-            writerIndexes.set(this, index);
+            index = { writes, members };
+            accessIndexes.set(this, index);
         }
-        return index.get(name) ?? [];
+        return index;
     }
 
     /**
@@ -936,15 +969,38 @@ export class LoweringContext {
     ): void {
         const owner = this.functionDeclaration(module, installer).declaration;
         const writes = this.writersOf(name).map((write) => write.node);
-        // By span, not node identity: a store may parse a module per read.
-        const inOwner = (write: ts.Node): boolean =>
-            write.getSourceFile().fileName === owner.getSourceFile().fileName &&
-            write.pos >= owner.pos &&
-            write.end <= owner.end;
-        if (!writes.length || !writes.every(inOwner))
+        if (!writes.length || !writes.every((write) => within(write, owner)))
             this.contractError(
                 owner,
                 `Expected '${name}' written only by '${installer}'.`,
+            );
+    }
+
+    /**
+     * Assert that the member `name` is read and written, anywhere in the
+     * pin, only inside the listed functions: state they alone keep, which a
+     * lowering may leave unrepresented while none of them that reads it
+     * has a compiler route.
+     */
+    public assertAccessedOnlyIn(
+        name: string,
+        owners: readonly (readonly [module: string, symbol: string])[],
+    ): void {
+        const declarations = owners.map(
+            ([module, symbol]) =>
+                this.functionDeclaration(module, symbol).declaration,
+        );
+        const accesses = this.pinnedAccesses().members.get(name) ?? [];
+        const stray = accesses.find(
+            (access) =>
+                !declarations.some((declaration) =>
+                    within(access, declaration),
+                ),
+        );
+        if (!accesses.length || stray)
+            this.contractError(
+                stray ?? declarations[0]!,
+                `Expected '${name}' accessed only in ${owners.map(([, symbol]) => symbol).join(", ")}.`,
             );
     }
 
@@ -1526,6 +1582,36 @@ export class LoweringContext {
         return this.numericValue(initializer, file);
     }
 
+    /**
+     * A pinned function's `name = <number>` parameter default, at `index`:
+     * the value every call that omits the argument takes, which the port
+     * emits at those call sites rather than restating it.
+     */
+    public numericParameterDefault(
+        declaration: ts.FunctionDeclaration,
+        index: number,
+        name: string,
+    ): number {
+        const parameter = declaration.parameters[index];
+        const initializer =
+            parameter?.initializer &&
+            this.unwrapExpression(parameter.initializer);
+        if (
+            !parameter ||
+            !ts.isIdentifier(parameter.name) ||
+            parameter.name.text !== name ||
+            !initializer ||
+            !ts.isNumericLiteral(initializer)
+        )
+            return this.contractError(
+                parameter ?? declaration,
+                `Expected ${declaration.name?.text ?? "the function"}'s ` +
+                    `parameter ${index + 1} to be \`${name} = <number>\`; ` +
+                    "the port emits that default where a call omits it.",
+            );
+        return Number(initializer.text);
+    }
+
     /** The string a pinned module-scope `const` states. */
     public pinnedString(modulePath: string, name: string): string {
         const { initializer, file } = this.requiredConstant(
@@ -1721,11 +1807,23 @@ export class LoweringContext {
 }
 
 let sharedPinned: LoweringContext | undefined;
-/** `LoweringContext.writersOf`'s index, one per context's sources. */
-const writerIndexes = new WeakMap<
-    LoweringContext,
-    ReadonlyMap<string, WriteSite[]>
->();
+interface PinnedAccesses {
+    writes: ReadonlyMap<string, WriteSite[]>;
+    members: ReadonlyMap<string, ts.PropertyAccessExpression[]>;
+}
+const accessIndexes = new WeakMap<LoweringContext, PinnedAccesses>();
+
+/**
+ * Whether `node` lies inside `owner`, by span rather than node identity:
+ * a store may parse a module once per read.
+ */
+function within(node: ts.Node, owner: ts.Node): boolean {
+    return (
+        node.getSourceFile().fileName === owner.getSourceFile().fileName &&
+        node.pos >= owner.pos &&
+        node.end <= owner.end
+    );
+}
 
 /**
  * The one context a process reads pinned facts through outside a scene's

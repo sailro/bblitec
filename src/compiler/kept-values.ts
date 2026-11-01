@@ -4,6 +4,7 @@ import {
     LIBRARY_CALL_FACTS,
 } from "./library-call-facts.js";
 import { isStoringDataCall, mutatingArrayMethods } from "./receiver-methods.js";
+import { runsArgumentAfterReturn } from "./schedulers.js";
 import {
     calledDeclaration,
     declarationInDefaultLibrary,
@@ -81,7 +82,8 @@ export function constructionKeepsArguments(
 /**
  * The arguments a call or construction keeps past its return: a
  * construction for its methods, a storing data call (`push`, `splice`,
- * `fill`, `set`, `new Map(entries)`) in the container.
+ * `fill`, `set`, `new Map(entries)`) in the container, a library
+ * construction's callback it runs later (`new MutationObserver(cb)`).
  */
 export function keptArguments(
     checker: ts.TypeChecker,
@@ -93,6 +95,10 @@ export function keptArguments(
         isStoringDataCall(node, checker)
     )
         return node.arguments ?? [];
+    if (ts.isNewExpression(node))
+        return (node.arguments ?? []).filter((_, index) =>
+            runsArgumentAfterReturn(checker, node, index),
+        );
     return [];
 }
 

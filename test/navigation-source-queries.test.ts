@@ -20,6 +20,7 @@ import {
     runNativeFixtureCompiler,
     runGeneratedProgram,
 } from "./native-fixture.js";
+import { pinnedError } from "./pinned-errors.js";
 
 const imports = `import {createNavigationPluginAsync,createNavMeshFromSources,findClosestPointWithinInto,navRayBlockedFast,disposeNavigationPlugin,computePath} from 'babylon-lite';`;
 const sourceProgram = `${imports}
@@ -52,7 +53,7 @@ function firstPath(points:{x:number;y:number;z:number}[]):number {
 }
 if(firstPath([{x:0,y:0,z:0},{x:2,y:0,z:2}])<2)throw new Error('runtime path');
 disposeNavigationPlugin(alias);disposeNavigationPlugin(plugin);
-let rejected=false;try{navRayBlockedFast(plugin,{x:0,y:0,z:0},{x:0,y:0,z:0});}catch(error){rejected=error.message==='#615';}
+let rejected=false;try{navRayBlockedFast(plugin,{x:0,y:0,z:0},{x:0,y:0,z:0});}catch(error){rejected=error.message==='${pinnedError("Navmesh not ready. Call createNavMesh first.")}';}
 if(!rejected)throw new Error('disposed query');
 createNavMeshFromSources(alias,sources,{doNotReverseIndices:true});
 if(!findClosestPointWithinInto(plugin,{x:0,y:1,z:0},{x:1,y:2,z:1},result))throw new Error('rebuild');
@@ -134,7 +135,7 @@ int main(){
     const auto changed=changed::merge_nav_meshes(engine,meshes);
     assert(changed.positions[0]==14);
     mesh.cpu_streams->indices.reset();bool rejected=false;
-    try{bbl::upstream::merge_nav_meshes(engine,meshes);}catch(const std::runtime_error& error){rejected=std::string(error.what())=="#613";}
+    try{bbl::upstream::merge_nav_meshes(engine,meshes);}catch(const std::runtime_error& error){rejected=std::string(error.what())=="${pinnedError('Mesh "${a0}" missing CPU geometry for navmesh')}";}
     assert(rejected);
     mesh.cpu_streams.reset();geometry.vertices.resize(3);geometry.indices={0,2,1};geometry.source_indices_reversed=true;
     const auto fallback=bbl::upstream::merge_nav_meshes(engine,{{0}});

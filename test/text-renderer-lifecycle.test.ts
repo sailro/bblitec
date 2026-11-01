@@ -11,6 +11,7 @@ import { TextGpuLowerer } from "../src/lowering/text-gpu-lowerer.js";
 import { TextLowerer } from "../src/lowering/text-lowerer.js";
 import { TextRendererLowerer } from "../src/lowering/text-renderer-lowerer.js";
 import { webgpuFlagNamespaces } from "../src/webgpu-flags.js";
+import { pinnedDeclaration } from "./pinned-source.js";
 import {
     optionalNativeFixtureTools,
     runNativeFixtureCompiler,
@@ -39,14 +40,7 @@ test("standalone text source and native agree on affine uploads, layer order, sh
         writeFileSync(resolve(directory, "bblite", `${name}.hpp`), text);
     }
     const module = (path: string, names: string[]) =>
-        names
-            .map((name) =>
-                c
-                    .functionDeclaration(path, name)
-                    .declaration.getText()
-                    .replace(/^export\s+/, ""),
-            )
-            .join("\n");
+        names.map((name) => pinnedDeclaration(c, path, name)).join("\n");
     const constants = (path: string, name: string) => {
         const f = c.sourceFile(path);
         return c.numericValue(c.variableInitializer(f, name), f);
@@ -242,7 +236,6 @@ test("standalone text source and native agree on affine uploads, layer order, sh
         "TEXT_UBO_BYTES",
         "GLYPH_METADATA_BYTES",
         "TEX_WIDTH",
-        "BYTES_PER_ROW",
         "getOrCreateTextPipeline",
         "getTextPipelineCache",
         "KIND",
@@ -290,7 +283,6 @@ test("standalone text source and native agree on affine uploads, layer order, sh
         constants("src/text/text-renderer.ts", "TEXT_UBO_BYTES"),
         constants("src/text/glyph-storage.ts", "GLYPH_METADATA_FLOATS") * 4,
         constants("src/text/_gpu/text-textures.ts", "TEX_WIDTH"),
-        constants("src/text/_gpu/text-textures.ts", "BYTES_PER_ROW"),
         (...args: unknown[]) => {
             assert.deepEqual(args, [engine, "bgra8unorm", 1, null, false]);
             return pipelines;
@@ -305,7 +297,7 @@ test("standalone text source and native agree on affine uploads, layer order, sh
         );
     const atlas = {
         _curveTexData: pattern(131072, 3),
-        _bandTexData: pattern(131072, 4),
+        _bandTexData: new Uint32Array(pattern(131072, 4).buffer),
         _metaData: pattern(384, 5),
         _curveTexelsUsed: 3,
         _bandTexelsUsed: 7,

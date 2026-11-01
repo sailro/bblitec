@@ -5,6 +5,7 @@ import { resolve } from "node:path";
 import test from "node:test";
 import { LoweringContext } from "../src/lowering/context.js";
 import { lowerAnimationGroupRegistration } from "../src/lowering/gltf/animation-group-registration.js";
+import { pinnedErrorCodeOf } from "../src/lowering/pinned-error.js";
 import {
     transpileCommonJs,
     createJavaScriptFunction,
@@ -17,8 +18,13 @@ import {
 
 const module = "src/animation/animation-group-task.ts";
 function contexts(): LoweringContext[] {
+    const pinned = new LoweringContext();
+    const attached = pinnedErrorCodeOf(
+        pinned,
+        'AnimationGroup "${a0}" is already attached to another AnimationManager',
+    );
     return [
-        new LoweringContext(),
+        pinned,
         doctoredContext(
             module,
             "if (owner === manager)",
@@ -27,7 +33,7 @@ function contexts(): LoweringContext[] {
         doctoredContext(module, "> order)", "< order)"),
         doctoredContext(
             module,
-            "ThrowLiteError(0, group.name)",
+            `ThrowLiteError(${attached}, group.name)`,
             "ThrowLiteError(9999, group.name)",
         ),
     ];

@@ -15,6 +15,8 @@ import {
     optionalNativeFixtureTools,
     runNativeFixtureCompiler,
 } from "./native-fixture.js";
+import { sceneContextSource } from "./pinned-scene.js";
+import { pinnedDeclaration, pinnedModuleSource } from "./pinned-source.js";
 
 const rebuildModule = "src/scene/scene-rebuild.ts",
     transmissionModule = "src/frame-graph/transmission.ts";
@@ -29,15 +31,8 @@ function sourceOracle(
     context: LoweringContext,
 ): (input: Scenario) => Promise<unknown> {
     const declaration = (module: string, name: string) =>
-        context
-            .functionDeclaration(module, name)
-            .declaration.getText()
-            .replace(/^export /, "");
-    const rebuild = context
-        .sourceFile(rebuildModule)
-        .statements.filter((node) => !ts.isImportDeclaration(node))
-        .map((node) => node.getText().replace(/^export /, ""))
-        .join("\n");
+        pinnedDeclaration(context, module, name);
+    const rebuild = pinnedModuleSource(context, rebuildModule);
     const source = transpileCommonJs(
         `
         const _lateCleanup = undefined;
@@ -53,14 +48,15 @@ function sourceOracle(
         ${rebuild}
         ${["_t", "markPbrMaterialsLinear", "enableSceneTransmission"].map((name) => declaration(transmissionModule, name)).join("\n")}
         ${declaration("src/material/pbr/pbr-transmission-ext.ts", "registerPbrTransmission")}
+        ${sceneContextSource(context)}
         function enableSceneTransmissionTasks(scene) {
             scene.events.push("enable:" + !!scene._p);
             scene.enabled = true;
         }
         return async input => {
-            const scene = {meshes: [], _groups: new Map(), _renderables: [], _uniformUpdaters: [],
-                _disposables: [], _meshDisposables: new Map(), _frameGraph: {build() {}}, surface: {engine: {}},
-                _built: true, events: [], enabled: input.enabled};
+            // A rebuild runs on a built scene; events and enabled record the transmission hooks.
+            const scene = Object.assign(createSceneContext({engine: {}}, {defaultRenderTask: false}),
+                {_built: true, events: [], enabled: input.enabled});
             const builder = Object.assign(async (scene, meshes) => {
                 scene.events.push("begin:" + !!scene._p);
                 registerPbrTransmission(scene, scene.surface.engine, meshes);

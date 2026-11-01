@@ -412,6 +412,18 @@ js::Promise<js::PromiseVoid> run_realm_frames(std::shared_ptr<Engine> engine,
 #endif
             if (!engine->renderer_restart_requested)
                 break;
+            // The pin's startEngine keeps requesting RAF while _renderFn exists, even when
+            // _renderFrame sees no registered contexts. Let pending loads/timers register the
+            // next context instead of ending the engine or constructing an empty scene driver.
+            while (!engine->device_disposed && !engine->stopped && engine->scenes().empty() &&
+                   renderer_kind(*engine) == RendererKind::scene) {
+                js::Promise<js::PromiseVoid> next;
+                pal::EventLoop::current().request_animation_frame(
+                    [next](double) { next.resolve(js::PromiseVoid{}); });
+                co_await next;
+            }
+            if (engine->device_disposed || engine->stopped)
+                break;
         }
     } catch (const pal::WorkerTerminated&) {
         throw;

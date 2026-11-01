@@ -42,6 +42,7 @@ import {
 import type { PinnedClusteredMarker } from "./pinned-clustered-lights.js";
 import { applyPinnedLocalCubemap } from "./pinned-local-cubemap.js";
 import type { PinnedSceneArm } from "./pinned-scene-arms.js";
+import { rectAreaLayeredRefusal } from "./pinned-rect-area-lights.js";
 import { pinnedReceiverReachesArm } from "./pinned-light-mode.js";
 import type { ShadowLightSlot } from "./pinned-shadow-slots.js";
 import { pinnedReceiveShadowsBit } from "./pinned-mesh-features.js";
@@ -844,6 +845,13 @@ export interface PinnedRenderableVariant {
     lightMode: 0 | 1 | 2;
     singleLightType: string;
     toneMapping: boolean;
+    /** The arm's area lighting key (`PinnedSceneArm.areaLighting`). */
+    areaLighting?: number;
+    /**
+     * The pin's refusal of this renderable under a selected area light
+     * (`areaSelectedRefusal`), which the runtime raises when one reaches it.
+     */
+    areaSelectedRefusal?: string;
     /** The geometry-output task this MRT variant draws in, absent for the
      *  colour passes. The selector table keys on it so a geometry draw never
      *  resolves a colour variant or the reverse. */
@@ -860,6 +868,46 @@ export interface PinnedRenderableVariant {
     pluginUniformFields?: readonly string[];
     pluginTextureBindings?: readonly string[];
     meshBindingLayout?: PinnedPbrVariant["meshBindingLayout"];
+}
+
+/**
+ * The pin's answer for an area arm's renderable an area light reaches:
+ * `rectAreaPbrFeatures` adds RECT_AREA_PBR_SELECTED, which only gates the
+ * area extension's layered-BRDF refusal, so the arm composes without it and
+ * the key never carries it. Composing again with it returns that refusal,
+ * or nothing once both stages prove byte-identical.
+ */
+async function areaSelectedRefusal(
+    input: Parameters<typeof composePinnedPbrVariant>[0],
+    options: PinnedComposeOptions,
+    arm: PinnedSceneArm,
+    unselected: { vertexWgsl: string; fragmentWgsl: string },
+): Promise<{ areaSelectedRefusal?: string }> {
+    if (arm.areaSelectedFeatures === undefined) return {};
+    const refusal = rectAreaLayeredRefusal();
+    try {
+        const selected = await composePinnedPbrVariant(input, {
+            ...options,
+            sceneFeatures: arm.areaSelectedFeatures,
+        });
+        if (
+            selected.vertexWgsl !== unselected.vertexWgsl ||
+            selected.fragmentWgsl !== unselected.fragmentWgsl
+        )
+            throw new Error(
+                "RECT_AREA_PBR_SELECTED changed a composed PBR stage, so the " +
+                    "selected bit would have to key the variant.",
+            );
+        return {};
+    } catch (error) {
+        if (
+            error instanceof Error &&
+            (error.message === `#${refusal.code}` ||
+                error.message.includes(refusal.message))
+        )
+            return { areaSelectedRefusal: refusal.message };
+        throw error;
+    }
 }
 
 /**
@@ -959,7 +1007,7 @@ export async function composeRenderableVariants(
                         : scene.materialView === "esm-shadow"
                           ? { esmShadowView: true as const }
                           : {};
-                const variant = await composePinnedPbrVariant(subject.input, {
+                const composeOptions: PinnedComposeOptions = {
                     ...arm.options,
                     ...materialViewOptions,
                     meshFeatures,
@@ -967,7 +1015,11 @@ export async function composeRenderableVariants(
                     ...(scene.shadowLights
                         ? { shadowLights: scene.shadowLights }
                         : {}),
-                });
+                };
+                const variant = await composePinnedPbrVariant(
+                    subject.input,
+                    composeOptions,
+                );
                 variants.push({
                     materialIndex: materialIndexBase + subject.index,
                     materialName: subject.name,
@@ -979,6 +1031,15 @@ export async function composeRenderableVariants(
                     lightMode: arm.lightMode,
                     singleLightType: arm.singleLightType,
                     toneMapping: arm.toneMapping,
+                    ...(arm.areaLighting !== undefined
+                        ? { areaLighting: arm.areaLighting }
+                        : {}),
+                    ...(await areaSelectedRefusal(
+                        subject.input,
+                        composeOptions,
+                        arm,
+                        variant,
+                    )),
                     armLabel: arm.label,
                     fragmentKey: variant.fragmentKey,
                     arms: pinnedVariantArms(
@@ -1015,6 +1076,9 @@ export async function composeRenderableVariants(
                         lightMode: arm.lightMode,
                         singleLightType: arm.singleLightType,
                         toneMapping: arm.toneMapping,
+                        ...(arm.areaLighting !== undefined
+                            ? { areaLighting: arm.areaLighting }
+                            : {}),
                         geometryTask: task.index,
                         armLabel: `${arm.label} geometry ${task.index}`,
                         fragmentKey: geometry.fragmentKey,
@@ -1510,6 +1574,15 @@ export async function composeScenePbrVariants(
                     lightMode: arm.lightMode,
                     singleLightType: arm.singleLightType,
                     toneMapping: arm.toneMapping,
+                    ...(arm.areaLighting !== undefined
+                        ? { areaLighting: arm.areaLighting }
+                        : {}),
+                    ...(await areaSelectedRefusal(
+                        input,
+                        composeOptions,
+                        arm,
+                        variant,
+                    )),
                     armLabel: arm.label,
                     fragmentKey: variant.fragmentKey,
                     arms: pinnedVariantArms(

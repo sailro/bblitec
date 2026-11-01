@@ -3,6 +3,7 @@ import test from "node:test";
 import { readFileSync } from "node:fs";
 import { compileSource, CompileError } from "../src/compiler.js";
 import type { NativeHostUi, NativeHostUiNode } from "../src/compiler/types.js";
+import { hostUiOptions } from "./host-page-fixture.js";
 
 const source = `import {createEngine,startEngine} from '@babylonjs/lite';
 async function main() {const engine=await createEngine({});await startEngine(engine);}main();`;
@@ -32,7 +33,6 @@ const host = (): NativeHostUi => {
         ],
     });
     return {
-        sourcePath: "test/ui-fractional-grid.test.ts",
         elements: [
             {
                 tag: "div",
@@ -76,7 +76,7 @@ const host = (): NativeHostUi => {
 };
 
 test("fractional host grids preserve explicit track order and form border-box sizing", () => {
-    const result = compileSource(source, { nativeHostUi: host() });
+    const result = compileSource(source, hostUiOptions(host()));
     assert.match(result.cpp, /grid-template-columns:\s*70px 1fr 48px/);
     assert.match(result.cpp, /box-sizing:\s*border-box/);
     assert.match(result.cpp, /Drag canvas to move/);
@@ -119,13 +119,13 @@ test("fractional host grids admit implicit rows and minimum tracks while refusin
         else row.attributes!.style += ";grid-template-rows:repeat(1,20px);";
         if (mutation === "negative")
             assert.throws(
-                () => compileSource(source, { nativeHostUi: ui }),
+                () => compileSource(source, hostUiOptions(ui)),
                 CompileError,
                 mutation,
             );
         else
             assert.match(
-                compileSource(source, { nativeHostUi: ui }).cpp,
+                compileSource(source, hostUiOptions(ui)).cpp,
                 /grid-template-columns/,
             );
     }

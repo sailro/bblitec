@@ -10,6 +10,7 @@ import {
     optionalNativeFixtureTools,
     runGeneratedProgram,
 } from "./native-fixture.js";
+import { sceneContextSource } from "./pinned-scene.js";
 
 const module = "src/scene/scene-change.ts";
 
@@ -30,11 +31,12 @@ test("scene disposal preserves callback order, cleanup and source failure aggreg
             ),
         ],
     ] as const) {
-        const declarations = ["throwFailures", "disposeSceneCallbacks"]
-            .map((name) =>
+        const declarations = [
+            ...["throwFailures", "disposeSceneCallbacks"].map((name) =>
                 context.functionDeclaration(module, name).declaration.getText(),
-            )
-            .join("\n");
+            ),
+            sceneContextSource(context),
+        ].join("\n");
         const expected: unknown = runInNewContext(
             transpileCommonJs(
                 declarations +
@@ -42,7 +44,7 @@ test("scene disposal preserves callback order, cleanup and source failure aggreg
             const results = [];
             for (let mask = 0; mask < 8; ++mask) {
                 const calls = [];
-                const scene = { _disposables: [] };
+                const scene = createSceneContext({engine: {}}, {defaultRenderTask: false});
                 scene._disposables.push(() => {
                     calls.push(1);
                     scene._disposables.push(() => calls.push(99));

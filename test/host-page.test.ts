@@ -1,15 +1,15 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { join, resolve } from "node:path";
 import test from "node:test";
 import { compileSource, surveySource } from "../src/compiler.js";
-import { nativeHostUiElements } from "../src/native-host-ui.js";
+import { nativeHostUiElements, type HostPage } from "../src/compiler/types.js";
 import {
     hostPageCompileOptions,
     hostPageFromDocument,
     readHostPage,
-    type HostPage,
 } from "../src/host-page.js";
+import { hostUiOptions } from "./host-page-fixture.js";
 import type { HostPageElement, HostPageNode } from "../src/host-page-parser.js";
 
 const fixture = "examples/regression-host-page/page.html";
@@ -187,7 +187,6 @@ test("a page sheet's refusal names the line of its rule", () => {
     const styled: HostPage = {
         ...host,
         hostUi: {
-            sourcePath: fixture,
             styleSheets: [
                 {
                     text: "\nbody { margin: 0; }\np { float: inline-start; }\n",
@@ -212,7 +211,7 @@ test("markup the host model cannot represent refuses, naming the page", () => {
                     [],
                     [element("script", { src: "external.js" }), entryScript],
                 ),
-            /classic <script>/,
+            /classic <script src="external.js"> names no file/,
         ],
         [() => page([element("script")], [entryScript]), /in the head/],
         [
@@ -338,4 +337,111 @@ test("a fixed-scale viewport is inert and a zoomable one refuses", () => {
         () => viewport("width=device-width, maximum-scale=5"),
         /head metadata <meta name="viewport"/,
     );
+});
+
+test("an external classic script runs the file the site serves at its URL", () => {
+    const root = resolve("artifacts/test-host-page-classic-src");
+    mkdirSync(join(root, "public"), { recursive: true });
+    writeFileSync(join(root, "entry.ts"), "globalThis.close();");
+    const script = "(function () { document.body.dataset.ready = 'true'; })();";
+    writeFileSync(join(root, "public/loader.js"), script);
+    writeFileSync(join(root, "public/shadowed.js"), script);
+    writeFileSync(join(root, "shadowed.js"), "(function () {})();");
+    const read = (src: string, attributes = "", publicDir = "public") => {
+        const path = join(root, "page.html");
+        writeFileSync(
+            path,
+            `<!doctype html><html><head><title>Classic src</title></head><body>
+            <script src="${src}"${attributes}></script>
+            <script type="module" src="/entry.ts"></script></body></html>`,
+        );
+        return readHostPage({
+            path,
+            ...(publicDir ? { publicDir: join(root, publicDir) } : {}),
+        });
+    };
+    // The declared public directory serves at the site root ahead of the
+    // root's own files, as Vite serves it; a static host serves the path
+    // whatever the query or fragment.
+    for (const [src, file] of [
+        ["/loader.js", "public/loader.js"],
+        ["loader.js", "public/loader.js"],
+        ["/loader.js?v=1#top", "public/loader.js"],
+        ["/shadowed.js", "public/shadowed.js"],
+    ] as const) {
+        const host = read(src);
+        // The script is its file, which the program reads.
+        assert.deepEqual(host.startup, [{ fileName: join(root, file) }]);
+        const [element] = nativeHostUiElements(host.hostUi?.elements ?? []);
+        assert.deepEqual(element, {
+            tag: "script",
+            attributes: { src },
+            startupScript: join(root, file),
+        });
+        const result = compileSource(
+            "globalThis.close();",
+            hostPageCompileOptions(host),
+        );
+        assert.ok(result.manifest.inputs.some((input) => input.endsWith(file)));
+        assert.match(result.cpp, /"data-ready"/);
+    }
+    for (const [src, attributes, publicDir, message] of [
+        ["/missing.js", "", "public", /names no file its site serves/],
+        ["/loader.js", "", "", /names no file its site serves/],
+        ["https://example.com/loader.js", "", "public", /another origin/],
+        ["/loader.js", " async", "public", /attribute 'async'/],
+    ] as const)
+        assert.throws(() => read(src, attributes, publicDir), message);
+});
+
+test("a module script loads the file its site serves at its URL, resolved against the page", () => {
+    const root = resolve("artifacts/test-host-page-module-src");
+    mkdirSync(join(root, "pages"), { recursive: true });
+    mkdirSync(join(root, "public"), { recursive: true });
+    writeFileSync(join(root, "pages/entry.ts"), "globalThis.close();");
+    writeFileSync(join(root, "public/served.ts"), "globalThis.close();");
+    const path = join(root, "pages/page.html");
+    const read = (src: string) => {
+        writeFileSync(
+            path,
+            `<!doctype html><html><head></head><body><script type="module" src="${src}"></script></body></html>`,
+        );
+        return readHostPage({
+            path,
+            root,
+            publicDir: join(root, "public"),
+        });
+    };
+    assert.equal(read("entry.ts").entry, join(root, "pages/entry.ts"));
+    assert.equal(read("./entry.ts?v=1").entry, join(root, "pages/entry.ts"));
+    assert.equal(read("/served.ts").entry, join(root, "public/served.ts"));
+    assert.throws(() => read("/entry.ts"), /where its site serves no file/);
+});
+
+test("host page text nodes interleave with elements in document order", () => {
+    const hostUi = {
+        elements: [
+            {
+                tag: "a",
+                attributes: { class: "credit" },
+                children: [{ tag: "b", text: "Title" }, { text: " by Author" }],
+            },
+            { text: "after" },
+        ],
+    };
+    assert.deepEqual(
+        [...nativeHostUiElements(hostUi.elements)].map(
+            (element) => element.tag,
+        ),
+        ["a", "b"],
+    );
+    const cpp = compileSource(
+        `import { createEngine } from "@babylonjs/lite";
+        await createEngine({});`,
+        hostUiOptions(hostUi),
+    ).cpp;
+    const bold = cpp.indexOf('"Title"');
+    const tail = cpp.search(/bbl::ui_append_text\([^;]*" by Author"\);/);
+    assert.ok(bold >= 0 && tail > bold, "text follows its preceding element");
+    assert.match(cpp, /bbl::ui_append_text\([^,]+, \{\}, "after"\);/);
 });

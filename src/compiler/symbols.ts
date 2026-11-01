@@ -1,7 +1,6 @@
-import { basename, dirname, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { basename, resolve } from "node:path";
 import ts from "typescript";
-import { findRepositoryRoot } from "../repository-root.js";
+import { compilerRepositoryRoot } from "../repository-root.js";
 import {
     accessKey,
     propertyKey,
@@ -48,9 +47,7 @@ let packageTypings: CompilerPackageTypings | undefined;
  */
 export function compilerPackageTypings(): CompilerPackageTypings {
     if (!packageTypings) {
-        const root = findRepositoryRoot(
-            dirname(fileURLToPath(import.meta.url)),
-        );
+        const root = compilerRepositoryRoot();
         const modules = resolve(root, "node_modules");
         packageTypings = {
             babylon: resolve(modules, "@babylonjs", "lite", "index.d.ts"),

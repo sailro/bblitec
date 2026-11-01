@@ -23,7 +23,7 @@ import {
 import { recordAt } from "../compiler/record-access.js";
 import { billboardOrderHelpers } from "./billboard-order-lowerer.js";
 import { lowerBillboardInstances } from "./pinned-billboard-instances.js";
-import { sameSource, soleBindingName } from "../compiler/syntax.js";
+import { sameSource } from "../compiler/syntax.js";
 
 const systemModule = "src/sprite/billboard-sprite.ts";
 const sceneModule = "src/sprite/billboard-scene.ts";
@@ -300,16 +300,18 @@ export class BillboardLowerer {
             !sort ||
             !comparator ||
             !ts.isArrowFunction(comparator) ||
-            ts.isBlock(comparator.body) ||
-            comparator.parameters
-                .map((parameter) => soleBindingName(parameter.name))
-                .join(",") !== "left,right"
+            ts.isBlock(comparator.body)
         ) {
             return this.context.contractError(
                 declaration,
                 "Pinned billboard sort no longer orders its indices by one (left, right) comparator.",
             );
         }
+        this.context.assertParameterNames(
+            comparator,
+            ["left", "right"],
+            "Pinned billboard sort comparator",
+        );
         this.context.assertExpressionShape(
             sort.expression,
             "indices.subarray(0, count).sort",

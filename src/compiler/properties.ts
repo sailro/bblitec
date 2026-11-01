@@ -68,6 +68,7 @@ import { renderClosure } from "./closure-captures.js";
 import {
     borrowedPlatformEventKind,
     handleCppType,
+    touchListDataType,
     typedArrayBytesPerElement,
     type DataType,
 } from "./data-types.js";
@@ -1362,6 +1363,45 @@ export const propertyRules: readonly PropertyRule[] = [
         helper: "bbl::gamepad_button_pressed",
         helperTakesEngine: true,
     },
+    // A Touch snapshot (`bbl::DomTouch`); pageX/pageY read the client
+    // coordinates (docs/ui.md).
+    ...(
+        [
+            ["identifier", "identifier"],
+            ["clientX", "client_x"],
+            ["clientY", "client_y"],
+            ["pageX", "client_x"],
+            ["pageY", "client_y"],
+            ["screenX", "screen_x"],
+            ["screenY", "screen_y"],
+            ["force", "force"],
+        ] as const
+    ).map(([property, field]): PropertyRead => ({
+        owner: "touch",
+        property,
+        value: "number",
+        dataType: { kind: "number" },
+        field,
+    })),
+    {
+        owner: "touch",
+        property: "target",
+        value: "data",
+        dataType: { kind: "event-target" },
+        field: "target",
+    },
+    ...[
+        "radiusX",
+        "radiusY",
+        "rotationAngle",
+        "altitudeAngle",
+        "azimuthAngle",
+        "touchType",
+    ].map((property): RefusedProperty => ({
+        owner: "touch",
+        property,
+        unsupported: `SDL finger events report no contact geometry or stylus state, so Touch.${property} is not lowered.`,
+    })),
     {
         // Read as plain data, which is what lets `g.name !== "swimming"`
         // compile through the ordinary comparison path.
@@ -2127,13 +2167,47 @@ export function absentReceiverMessage(
     return `Cannot ${write ? "set" : "read"} properties of ${absence}${reading}`;
 }
 
-const KEY_EVENT_FIELDS = new EmissionMap<string, string>([
-    ["repeat", "repeat"],
+/** The modifier keys keyboard, mouse and touch events report (`bbl::PlatformModifierKeys`). */
+const MODIFIER_FIELDS = new EmissionMap<string, string>([
     ["shiftKey", "shift_key"],
     ["ctrlKey", "ctrl_key"],
     ["altKey", "alt_key"],
     ["metaKey", "meta_key"],
 ]);
+const KEY_EVENT_FIELDS = new EmissionMap<string, string>([
+    ["repeat", "repeat"],
+    ...MODIFIER_FIELDS,
+]);
+/** TouchEvent's lists and their `bbl::DomTouchListKind`. */
+const TOUCH_EVENT_LISTS: ReadonlyMap<string, string> = new Map([
+    ["touches", "Touches"],
+    ["targetTouches", "TargetTouches"],
+    ["changedTouches", "ChangedTouches"],
+]);
+
+/**
+ * A TouchEvent member of a borrowed base Event: a list, made once per event
+ * (`bbl::dom_touch_list`), or a modifier key. Undefined for other members.
+ */
+function touchEventMember(
+    context: Pick<LoweringServices, "reachJsData" | "dataLowerer">,
+    owner: Value,
+    property: string,
+): Value | undefined {
+    const payload = `${owner.cpp}.as<bbl::PlatformTouchEvent>()`;
+    const list = TOUCH_EVENT_LISTS.get(property);
+    if (list) {
+        context.reachJsData();
+        return context.dataLowerer.leafValue(
+            `bbl::dom_touch_list(${payload}, bbl::DomTouchListKind::${list})`,
+            touchListDataType(),
+        );
+    }
+    const modifier = MODIFIER_FIELDS.get(property);
+    return modifier
+        ? { kind: "boolean", cpp: `${payload}.${modifier}` }
+        : undefined;
+}
 const DOM_EVENT_FLAGS = new EmissionMap<string, string>([
     ["bubbles", "bubbles"],
     ["cancelable", "cancelable"],
@@ -2716,8 +2790,8 @@ export class PropertyAccessLowerer {
                     cpp: `${owner.cpp}.pointer_payload().${property === "pointerId" ? "pointer_id" : "pressure"}`,
                     dataType: { kind: "number" },
                 };
-            const modifier = KEY_EVENT_FIELDS.get(property);
-            if (modifier && property !== "repeat")
+            const modifier = MODIFIER_FIELDS.get(property);
+            if (modifier)
                 return {
                     kind: "boolean",
                     cpp: `${owner.cpp}.mouse_payload().${modifier}`,
@@ -2982,7 +3056,7 @@ export class PropertyAccessLowerer {
             this.context.isCanvasElement(ownerExpression) &&
             !this.context.ui.uiElementValue(ownerExpression)
         ) {
-            // The generated host's primary renderCanvas has no class
+            // The generated host's primary canvas has no class
             // attribute. Keep that browser fact available to multi-surface
             // code which mirrors its class onto an auxiliary canvas.
             return {
@@ -3292,6 +3366,11 @@ export class PropertyAccessLowerer {
                     impure: true,
                 };
             }
+            const touch =
+                eventInterface === "TouchEvent"
+                    ? touchEventMember(this.context, owner, property)
+                    : undefined;
+            if (touch) return touch;
             if (eventInterface === "GamepadEvent" && property === "gamepad") {
                 this.context.reachFeature("input:gamepad", expression);
                 return this.context.dataLowerer.leafValue(

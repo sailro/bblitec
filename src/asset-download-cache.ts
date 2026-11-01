@@ -58,6 +58,15 @@ export function readCachedDownload(url: string): Uint8Array | undefined {
     return existsSync(path) ? new Uint8Array(readFileSync(path)) : undefined;
 }
 
+interface DownloadedResource {
+    bytes: Uint8Array;
+    contentType?: string;
+}
+
+/** The request in flight per URL: concurrent misses of one URL share it,
+ *  and it leaves the map once settled, so a failure is retried. */
+const inFlight = new Map<string, Promise<DownloadedResource>>();
+
 /**
  * The same, keeping the response's content type.
  *
@@ -69,7 +78,7 @@ export function readCachedDownload(url: string): Uint8Array | undefined {
  */
 export async function downloadCachedResource(
     url: string,
-): Promise<{ bytes: Uint8Array; contentType?: string }> {
+): Promise<DownloadedResource> {
     const path = entryPath(url);
     if (existsSync(path)) {
         const type = existsSync(`${path}.type`)
@@ -80,6 +89,20 @@ export async function downloadCachedResource(
             ...(type ? { contentType: type } : {}),
         };
     }
+    let pending = inFlight.get(url);
+    if (!pending) {
+        pending = fetchAndStore(url, path).finally(() => inFlight.delete(url));
+        inFlight.set(url, pending);
+    }
+    const { bytes, contentType } = await pending;
+    // Each caller owns its bytes, as each cache hit does.
+    return { bytes: bytes.slice(), ...(contentType ? { contentType } : {}) };
+}
+
+async function fetchAndStore(
+    url: string,
+    path: string,
+): Promise<DownloadedResource> {
     const response = await fetch(url);
     if (!response.ok) {
         throw new Error(`Failed to download ${url}: HTTP ${response.status}.`);

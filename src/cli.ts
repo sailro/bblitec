@@ -1,11 +1,18 @@
 #!/usr/bin/env node
+import { compilerRepositoryRoot } from "./repository-root.js";
 
 // First, so the modules evaluated after it are compiled through the cache.
 import "./tooling/compile-cache.js";
 import { composePinnedBackgroundModules } from "./pinned-background-modules.js";
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+    existsSync,
+    mkdirSync,
+    readFileSync,
+    rmSync,
+    writeFileSync,
+} from "node:fs";
+import ts from "typescript";
 import { dirname, isAbsolute, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
 import { prepareAssetDecoders, type AssetDecoders } from "./asset-decoders.js";
 import {
     CompileAsset,
@@ -38,7 +45,6 @@ import {
 import { composeEsmShadow } from "./pinned-esm-shadow.js";
 import { composeComposite, composePostProcess } from "./pinned-post-process.js";
 import { composeScreenSpaceTask } from "./pinned-screen-space.js";
-import { readNativeHostUi } from "./native-host-ui.js";
 import {
     hostPageCompileOptions,
     isHostPagePath,
@@ -63,6 +69,14 @@ import { parseDataUrl } from "./data-url.js";
 import { localAssetPath } from "./asset-source.js";
 import { generateIblBrdfLutRgba16f } from "./ibl-brdf-lut.js";
 import {
+    decodedAreaLightLtc,
+    packagedAreaLightImage,
+    pinnedAreaLightImageShape,
+    pinnedAreaLightLtcShape,
+} from "./pinned-rect-area-lights.js";
+import { scenes as registryScenes } from "./scene-registry.js";
+import { areaLightLtcSources } from "./lowering/rect-area-light-lowerer.js";
+import {
     buildStampHeader,
     buildStampHeaderPath,
     buildStampInputsPath,
@@ -77,12 +91,14 @@ import {
 } from "./executed-module-assets.js";
 import {
     findRepositoryRoot,
+    readUpstreamPin,
     repositoryRelativePath,
 } from "./upstream-source.js";
 import { GeneratedTree } from "./generated-tree.js";
 import { asFeatures, projectFeatures } from "./compiler/output-projection.js";
 import { downloadCached } from "./asset-download-cache.js";
 import { readAssetBytesSync } from "./compiler/asset-bytes-sync.js";
+import { specifierSourceName } from "./compiler/syntax.js";
 import {
     emitAssetSpecializations,
     gltfAssetDocuments,
@@ -141,8 +157,9 @@ interface CliOptions {
     publicUrl?: string;
     siteUrl?: string;
     environment: Record<string, string>;
-    hostUi?: string;
     siteRoot?: string;
+    /** An HTML page's site public directory, when not `publicDir`. */
+    sitePublicDir?: string;
     /** The module an HTML page's module script loads in place of its URL. */
     pageEntry?: string;
     idDiagnostics: boolean;
@@ -170,8 +187,8 @@ const OPTION_FLAGS: ReadonlyArray<{ flag: string; value?: string }> = [
     { flag: "--public-url", value: "<url>" },
     { flag: "--site-url", value: "<url>" },
     { flag: "--env", value: "<NAME=value>" },
-    { flag: "--host-ui", value: "<json>" },
     { flag: "--site-root", value: "<directory>" },
+    { flag: "--site-public-dir", value: "<directory>" },
     { flag: "--page-entry", value: "<module.ts>" },
     { flag: "--id-diagnostics" },
     { flag: "--source-profile", value: "<function,...>" },
@@ -216,8 +233,8 @@ function parseArguments(arguments_: string[]): CliOptions {
     let publicUrl: string | undefined;
     let siteUrl: string | undefined;
     const environment = new Map<string, string>();
-    let hostUi: string | undefined;
     let siteRoot: string | undefined;
+    let sitePublicDir: string | undefined;
     let pageEntry: string | undefined;
     let idDiagnostics = false;
     let sourceProfile: string[] | undefined;
@@ -274,14 +291,14 @@ function parseArguments(arguments_: string[]): CliOptions {
                 initialSearch = value;
                 index += 1;
                 break;
-            case "--host-ui":
-                if (!value) usage();
-                hostUi = value;
-                index += 1;
-                break;
             case "--site-root":
                 if (!value) usage();
                 siteRoot = value;
+                index += 1;
+                break;
+            case "--site-public-dir":
+                if (!value) usage();
+                sitePublicDir = value;
                 index += 1;
                 break;
             case "--page-entry":
@@ -355,8 +372,8 @@ function parseArguments(arguments_: string[]): CliOptions {
         ...(publicDir ? { publicDir } : {}),
         ...(publicUrl ? { publicUrl } : {}),
         ...(siteUrl ? { siteUrl } : {}),
-        ...(hostUi ? { hostUi } : {}),
         ...(siteRoot ? { siteRoot } : {}),
+        ...(sitePublicDir ? { sitePublicDir } : {}),
         ...(pageEntry ? { pageEntry } : {}),
         ...(sourceProfile ? { sourceProfile } : {}),
         ...(coverage ? { coverage } : {}),
@@ -429,6 +446,29 @@ async function materializeAsset(
 
     if (asset.source === "generated:pinned-ibl-brdf-lut") {
         writeFileSync(destination, await generateIblBrdfLutRgba16f());
+        return;
+    }
+    // enableRectAreaLights' LTC tables: the pin fetches LTC_URL and runs
+    // decodeAreaLightLtc at enable; generation runs the same decode over the
+    // same pinned payload and packages the table the intrinsic registered.
+    const ltcTable = areaLightLtcSources.findIndex(
+        (source) => source === asset.source,
+    );
+    if (ltcTable >= 0) {
+        writeFileSync(destination, (await decodedAreaLightLtc())[ltcTable]!);
+        return;
+    }
+    // A processAreaLightTexture result: the pin's own load and processing,
+    // executed over the source's bytes, every level packaged.
+    const areaLightImage = asset.areaLightImage;
+    if (areaLightImage) {
+        writeFileSync(
+            destination,
+            await packagedAreaLightImage(
+                areaLightImage,
+                await assetBytes(areaLightImage.source, inputPath),
+            ),
+        );
         return;
     }
 
@@ -616,6 +656,38 @@ async function materializeAsset(
 }
 
 /**
+ * The registry scenes whose source imports `name` from the pinned package,
+ * as an adaptation's validation names them ("scenes 316, 317 and 318"):
+ * the registry, not a restated list, decides which scenes measure it.
+ */
+function registryScenesImporting(name: string): string {
+    const root = compilerRepositoryRoot();
+    const specifier = readUpstreamPin(root).package;
+    const numbers = registryScenes.flatMap((scene) => {
+        const path = resolve(root, scene.source);
+        if (!path.endsWith(".ts") || !existsSync(path)) return [];
+        const text = readFileSync(path, "utf8");
+        if (!text.includes(name)) return [];
+        const file = ts.createSourceFile(path, text, ts.ScriptTarget.Latest);
+        const imported = file.statements.some(
+            (statement) =>
+                ts.isImportDeclaration(statement) &&
+                ts.isStringLiteral(statement.moduleSpecifier) &&
+                statement.moduleSpecifier.text === specifier &&
+                statement.importClause?.namedBindings !== undefined &&
+                ts.isNamedImports(statement.importClause.namedBindings) &&
+                statement.importClause.namedBindings.elements.some(
+                    (element) => specifierSourceName(element) === name,
+                ),
+        );
+        return imported ? [scene.id.replace(/^scene/, "")] : [];
+    });
+    if (numbers.length === 0) return "no registry scene";
+    if (numbers.length === 1) return `scene ${numbers[0]}`;
+    return `scenes ${numbers.slice(0, -1).join(", ")} and ${numbers.at(-1)}`;
+}
+
+/**
  * The manifest as the generated tree records it.
  *
  * The compiler reports the files it read by their resolved paths: its own
@@ -625,8 +697,8 @@ async function materializeAsset(
  * worktree records the same bytes. A file outside the repository keeps
  * the relative path that reaches it from the root, or its absolute path
  * where none exists (another drive). A name that is not an absolute path
- * -- a host-UI companion's registry path, a virtual entry name -- is
- * already machine-independent and is recorded as given.
+ * -- a virtual entry name -- is already machine-independent and is
+ * recorded as given.
  */
 function recordedManifest(
     manifest: CompileResult["manifest"],
@@ -898,20 +970,21 @@ async function main(): Promise<void> {
     // fan-out's children already run under their parent's lock and take
     // nothing here.
     holdDistLock(`generate ${options.input}`);
-    // An HTML page names its entry and is that entry's host UI.
+    // An HTML page names its entry and is that entry's host UI. Its site
+    // serves the deployment's public files unless given its own.
+    const sitePublicDir = options.sitePublicDir ?? options.publicDir;
     const page = isHostPagePath(options.input)
         ? readHostPage({
               path: options.input,
               ...(options.siteRoot ? { root: options.siteRoot } : {}),
+              ...(sitePublicDir ? { publicDir: sitePublicDir } : {}),
               ...(options.pageEntry ? { entry: options.pageEntry } : {}),
           })
         : undefined;
-    if (page && options.hostUi)
-        throw new Error(
-            "--host-ui describes a TypeScript entry's host; an HTML page is its own host.",
-        );
     if (!page && options.siteRoot)
         throw new Error("--site-root applies to an HTML page input.");
+    if (!page && options.sitePublicDir)
+        throw new Error("--site-public-dir applies to an HTML page input.");
     if (!page && options.pageEntry)
         throw new Error("--page-entry applies to an HTML page input.");
     const inputPath = resolve(page?.entry ?? options.input);
@@ -933,9 +1006,6 @@ async function main(): Promise<void> {
         ...(options.publicDir ? { publicDir: options.publicDir } : {}),
         ...(options.publicUrl ? { publicUrl: options.publicUrl } : {}),
         ...(options.siteUrl ? { siteUrl: options.siteUrl } : {}),
-        ...(options.hostUi
-            ? { nativeHostUi: readNativeHostUi(options.hostUi) }
-            : {}),
         ...(options.sourceProfile
             ? { sourceProfile: options.sourceProfile }
             : {}),
@@ -1196,6 +1266,58 @@ async function main(): Promise<void> {
             await generateIblBrdfLutRgba16f(),
         );
         result.manifest.assets.push(brdfAsset);
+    }
+    if (result.manifest.features.includes("light:rect-area-lighting")) {
+        // The tables materializeAsset packaged for enableRectAreaLights.
+        const ltc = pinnedAreaLightLtcShape();
+        result.manifest.adaptations.push({
+            id: "executed-area-light-ltc-decode",
+            category: "asset-materialization",
+            sourceSemantics:
+                "enableRectAreaLights fetches the Babylon LTC payload " +
+                "(area-light-ltc.ts LTC_URL) at run time, decodes it with " +
+                `decodeAreaLightLtc into two ${ltc.size}x${ltc.size} ` +
+                "rgba16float tables and " +
+                "uploads them once per device.",
+            nativeSemantics:
+                "Generation downloads the same pinned payload, runs the pin's " +
+                "own decodeAreaLightLtc and packages its two tables; " +
+                "enableRectAreaLights loads them and each backend uploads " +
+                "them once per device with a linear clamp sampler.",
+            risk: "low",
+            validation: [
+                "the packaged bytes are decodeAreaLightLtc's output",
+                `${registryScenesImporting("enableRectAreaLights")} against ` +
+                    "their browser references",
+            ],
+        });
+    }
+    if (result.manifest.features.includes("light:rect-area-emission")) {
+        // processAreaLightTexture's images, packaged by materializeAsset.
+        const image = pinnedAreaLightImageShape();
+        result.manifest.adaptations.push({
+            id: "executed-area-light-texture",
+            category: "asset-materialization",
+            sourceSemantics:
+                "processAreaLightTexture scales the loaded source into a " +
+                `${image.size}x${image.size} rgba8unorm texture, reads it ` +
+                "back, blurs it " +
+                "(blurAreaLightPixels), uploads it and generates its mips " +
+                "on the device at run time.",
+            nativeSemantics:
+                "Generation runs the pin's own loadTexture2D and " +
+                "processAreaLightTexture over the same source bytes and " +
+                "options in headless WebGPU (bakeAreaLightTexture) and " +
+                "packages every level; processAreaLightTexture loads them, " +
+                "and each backend copies every image of the scene snapshot " +
+                "into its emission array level for level.",
+            risk: "low",
+            validation: [
+                "the packaged levels are bakeAreaLightTexture's read-back of the pin's texture",
+                `${registryScenesImporting("processAreaLightTexture")} ` +
+                    "against their browser references",
+            ],
+        });
     }
     // Resolve reached variant slugs to full program records: predeclared
     // names come from the pinned registry (no defaults), scene-local
@@ -1700,6 +1822,14 @@ async function main(): Promise<void> {
             ? {
                   pinnedStandardVariants: standardComposition.variants,
                   pinnedStandardSelectors: standardComposition.selectors,
+                  standardExtensionWriters:
+                      standardComposition.extensionWriters,
+                  ...(standardComposition.areaMaterialFeatures
+                      ? {
+                            standardAreaMaterialFeatures:
+                                standardComposition.areaMaterialFeatures,
+                        }
+                      : {}),
                   standardRenderableMeshFeatures:
                       standardRenderableMeshFeatures ?? [],
                   ...(standardRuntimeMeshFeatures !== undefined
@@ -1763,21 +1893,18 @@ ${imageCodecLines || '    ""'}
     }))
         tree.write(`upstream/include/${include}`, text);
     // The reached-file list: the program's files (recorded by the
-    // compiler) plus what this run read beside them -- the host-UI
-    // companion and every asset materialized from a repository path. A
-    // remote asset is pinned by URL and a data URL carries its bytes in the
-    // source, so neither is a file to list. `scene -- compile` skips a
-    // scene whose listed inputs are unchanged, so a read added here that
-    // is not listed is a read that skip cannot see.
-    const repositoryRoot = findRepositoryRoot(
-        dirname(fileURLToPath(import.meta.url)),
-    );
+    // compiler) plus what this run read beside them -- every asset
+    // materialized from a repository path. A remote asset is pinned by URL
+    // and a data URL carries its bytes in the source, so neither is a file
+    // to list. `scene -- compile` skips a scene whose listed inputs are
+    // unchanged, so a read added here that is not listed is a read that
+    // skip cannot see.
+    const repositoryRoot = compilerRepositoryRoot();
     const listInput = (path: string): void => {
         result.manifest.inputs.push(
             repositoryRelativePath(repositoryRoot, path),
         );
     };
-    if (options.hostUi) listInput(options.hostUi);
     for (const asset of result.manifest.assets) {
         const local = localAssetPath(asset.source, inputPath);
         if (local !== undefined) listInput(local);

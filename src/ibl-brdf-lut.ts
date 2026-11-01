@@ -7,6 +7,9 @@
 // entry point, bind group, workgroup counts).
 import { createServer } from "node:http";
 import {
+    decodePageBase64,
+    pageBase64Script,
+    pageTextureLevelsScript,
     webgpuComputeBrowserArgs,
     withBrowserPage,
 } from "./browser-harness.js";
@@ -134,37 +137,16 @@ async function runBrdfLutInChromium(shader: string): Promise<Uint8Array> {
                 layout: pipeline.getBindGroupLayout(0),
                 entries: [{ binding: 0, resource: texture.createView() }],
             });
-            const rowBytes = size * 8;
-            const rowPitch = Math.ceil(rowBytes / 256) * 256;
-            const readback = device.createBuffer({
-                size: rowPitch * size,
-                usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
-            });
             const encoder = device.createCommandEncoder();
             const pass = encoder.beginComputePass();
             pass.setPipeline(pipeline);
             pass.setBindGroup(0, bindGroup);
             pass.dispatchWorkgroups(Math.ceil(size / 8), Math.ceil(size / 8));
             pass.end();
-            encoder.copyTextureToBuffer(
-                { texture },
-                { buffer: readback, bytesPerRow: rowPitch },
-                { width: size, height: size },
-            );
             device.queue.submit([encoder.finish()]);
-            await readback.mapAsync(GPUMapMode.READ);
-            const mapped = new Uint8Array(readback.getMappedRange());
-            const packed = new Uint8Array(rowBytes * size);
-            for (let row = 0; row < size; row++) {
-                packed.set(mapped.subarray(row * rowPitch, row * rowPitch + rowBytes), row * rowBytes);
-            }
-            let binary = "";
-            for (let offset = 0; offset < packed.length; offset += 0x8000) {
-                binary += String.fromCharCode(...packed.subarray(offset, offset + 0x8000));
-            }
-            const encoded = btoa(binary);
-            readback.unmap();
-            readback.destroy();
+            ${pageBase64Script}
+            ${pageTextureLevelsScript}
+            const encoded = bblBase64((await bblReadTextureLevels(device, texture, 8)).packed);
             texture.destroy();
             device.destroy();
             return encoded;
@@ -174,13 +156,12 @@ async function runBrdfLutInChromium(shader: string): Promise<Uint8Array> {
                     "The BRDF LUT compute returned an invalid result.",
                 );
             }
-            const bytes = new Uint8Array(Buffer.from(result, "base64"));
-            if (bytes.byteLength !== lutBytes) {
-                throw new Error(
-                    `The BRDF LUT readback held ${bytes.byteLength} bytes; expected ${lutBytes}.`,
-                );
-            }
-            return bytes;
+            return decodePageBase64(
+                result,
+                [],
+                lutBytes,
+                "The BRDF LUT readback",
+            );
         },
     );
 }

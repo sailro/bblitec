@@ -1,5 +1,6 @@
 #include <bblite/js_data.hpp>
 #include "pal_camera_controls.hpp"
+#include "../finger-events.hpp"
 #include <cassert>
 #include <iostream>
 
@@ -93,13 +94,8 @@ int main() {
     allowed = true;
 
     const auto touch = [&](SDL_EventType type, SDL_FingerID id, float x, float y) {
-        SDL_Event finger{};
-        finger.type = type;
-        finger.tfinger.touchID = 5;
-        finger.tfinger.fingerID = id;
-        finger.tfinger.x = x;
-        finger.tfinger.y = y;
-        bbl::pal::handle_camera_pointer_event(finger, camera, state, 800, 400);
+        bbl::pal::handle_camera_pointer_event(finger_event(type, 5, id, x, y), camera, state, 800,
+                                              400);
     };
     camera.inertial_alpha_offset = 0;
     touch(SDL_EVENT_FINGER_DOWN, 10, .25f, .5f);

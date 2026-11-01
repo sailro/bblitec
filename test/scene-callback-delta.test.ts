@@ -15,6 +15,7 @@ import {
     runNativeFixtureCompiler,
     sharedGpuSource,
 } from "./native-fixture.js";
+import { createPinnedScene, type PinnedScene } from "./pinned-scene.js";
 
 const tools = optionalNativeFixtureTools(false);
 test(
@@ -84,7 +85,7 @@ test(
                 this: void,
                 camera: object,
                 canvas: object,
-                scene: object,
+                scene: PinnedScene,
                 options: object,
             ): () => void;
         }>("camera/arc-rotate-controls.js");
@@ -97,7 +98,7 @@ test(
             },
         };
         const pinnedOrder: number[] = [];
-        const context = { _beforeRender: [] };
+        const context = await createPinnedScene();
         for (const [camera, id] of [
             [first, 1],
             [second, 2],

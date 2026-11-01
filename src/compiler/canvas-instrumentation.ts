@@ -1,7 +1,6 @@
 import { EmissionSet } from "./emission-transaction.js";
 import ts from "typescript";
 import type { NativeHostUi } from "./types.js";
-import { nativeHostUiStyleRules } from "../ui-style-rule.js";
 import {
     accessedPropertySymbol,
     declarationInDefaultLibrary,
@@ -784,11 +783,7 @@ export function observesDatasetFields(
     // A selector, declared attribute, or any external source read can observe
     // the metadata. Dynamic property reads conservatively retain the helper.
     const hostText = host
-        ? JSON.stringify([
-              host.elements,
-              nativeHostUiStyleRules(host),
-              host.styleSheets,
-          ])
+        ? JSON.stringify([host.elements, host.styleSheets])
         : "";
     if (attributes.some((name) => hostText.includes(name))) return true;
     const hasDomType = (expression: ts.Expression, name: string): boolean => {
