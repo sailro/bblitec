@@ -587,6 +587,14 @@ inline void dom_pointer_dispatched(DomPointerCaptures& captures, const PlatformM
  * display checks completion between frames, so callbacks can request layout
  * without deadlocking behind a synchronous input acknowledgement. */
 struct DomEventBatch {
+private:
+    struct Dispatched {
+        std::shared_ptr<DomPointerCaptures> captures;
+        const PlatformMouseEvent& event;
+        ~Dispatched() { dom_pointer_dispatched(*captures, event); }
+    };
+
+public:
     using Payload = std::variant<PlatformMouseEvent, PlatformKeyboardEvent, PlatformTransitionEvent,
                                  PlatformDragEvent, PlatformGamepadEvent, PlatformTouchEvent>;
     struct Entry {
@@ -638,11 +646,7 @@ struct DomEventBatch {
                             if (suppressed.contains(event.pointer_id) &&
                                 (type == "mousedown" || type == "mouseup" || type == "mousemove"))
                                 return;
-                            struct Dispatched {
-                                std::shared_ptr<DomPointerCaptures> captures;
-                                const PlatformMouseEvent& event;
-                                ~Dispatched() { dom_pointer_dispatched(*captures, event); }
-                            } dispatched{engine.dom_input->pointer_captures, event};
+                            Dispatched dispatched{engine.dom_input->pointer_captures, event};
                             dom_pointer_dispatching(*dispatched.captures, event);
                             engine.dom_input->pointer.dispatch(event, invoke, &engine);
                             if (type == "pointerdown" && event.default_prevented)

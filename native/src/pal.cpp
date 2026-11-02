@@ -4,6 +4,7 @@
 
 #include <bblite/pal.hpp>
 #include "pal_file_io.hpp"
+#include "pal_input_capabilities.hpp"
 #include <bblite/runtime.hpp>
 #if BBLITE_WORKERS
 #include <bblite/pal_event_loop.hpp>

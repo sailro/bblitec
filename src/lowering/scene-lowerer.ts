@@ -131,6 +131,8 @@ interface SceneCoreOptions {
     /** Node materials capture texture slots in deferred scene groups. */
     nodeMaterials?: boolean;
     pbrSceneHooks?: boolean;
+    /** Composed PBR variants supply material feature metadata. */
+    pbrMaterials?: boolean;
     gltfSceneHooks?: boolean;
     thinBindings?: boolean;
     /** The scene reaches `disposeMeshGpu`. */
@@ -892,7 +894,7 @@ std::uint32_t scene_material_families(const Scene& scene) {
 } // namespace
 
 ${lowerMeshMaterialSetter(this.context)}
-${this.sceneCreationSource(callbackDelta, value, clear, options)}${options.pbrSceneHooks ? lowerPbrMaterialGroups(this.context, options.gltfSceneHooks ?? options.pbrSceneHooks, options.thinBindings) : ""}${this.meshMembershipSource(options)}${this.assetCloneSource(cloneSuffix, nodeHierarchy)}${this.assetRootSource(nodeHierarchy, options.lightChildren === true)}${this.assetMembershipSource(options)}${this.eventRegistrationSource()}${this.sceneLifecycleSource(managerSeek, vatSeek, options)}void enable_scene_transmission(Scene& scene) {
+${this.sceneCreationSource(callbackDelta, value, clear, options)}${options.pbrSceneHooks ? lowerPbrMaterialGroups(this.context, options.gltfSceneHooks ?? options.pbrSceneHooks, options.thinBindings, options.pbrMaterials) : ""}${this.meshMembershipSource(options)}${this.assetCloneSource(cloneSuffix, nodeHierarchy)}${this.assetRootSource(nodeHierarchy, options.lightChildren === true)}${this.assetMembershipSource(options)}${this.eventRegistrationSource()}${this.sceneLifecycleSource(managerSeek, vatSeek, options)}void enable_scene_transmission(Scene& scene) {
     require_scene_engine(scene);
     scene.transmission_enabled = true;
 }

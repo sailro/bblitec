@@ -383,9 +383,11 @@ ${lowerGltfOrmComposition(context)}
 /** compositeOrm over the two images \`decode\` turns into bitmaps, in the pin's order. */
 template <typename Decode, typename Image>
 std::shared_ptr<const pal::DecodedImage> gltf_orm_composite(const Decode& decode, const Image& mr, const Image& occ) {
-    const auto mr_image = decode(mr);
-    const auto occ_image = decode(occ);
-    return std::make_shared<const pal::DecodedImage>(gltf_composite_orm(mr_image, occ_image));
+    // Braced initialization sequences the decodes before composition, including
+    // when a decoder specialization always refuses and no composite can run.
+    return [](const std::array<pal::DecodedImage, 2>& images) {
+        return std::make_shared<const pal::DecodedImage>(gltf_composite_orm(images[0], images[1]));
+    }({decode(mr), decode(occ)});
 }
 GltfPbrValue gltf_pbr_composite_orm(const GltfPbrContext& context, const GltfPbrValue& mr, const GltfPbrValue& occ) {
     if (!context.composite_orm) throw std::runtime_error("Missing glTF bitmap decoder.");

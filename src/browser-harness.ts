@@ -55,12 +55,11 @@
 //   whose error propagates; a close error is only reachable when closing
 //   a server that is not running, which none of these paths can produce.
 //
-// Generation bakes (`shared`) differ in one respect: they do not launch.
-// Every bake of one generation, in the compile process or in a generation
-// child, opens its own browser context in the generation's one Chromium
-// per launch configuration, which a detached host process owns and closes
-// when the generation exits; their teardown closes the connection, and
-// with it only that bake's context.
+// Generation bakes (`shared`) normally connect to the generation's Chromium
+// per launch configuration, owned by a detached host until generation exits.
+// Headed Linux bakes instead launch separate browsers: multiple isolated
+// contexts in one headed Chromium can crash it. Every bake retains its own
+// context; teardown closes its connection or its own browser.
 import type { Server } from "node:http";
 import { chromium, type Browser, type Page } from "playwright-core";
 import { HOST_PRIMARY_CANVAS_ID } from "./host-primary-canvas.js";
@@ -117,9 +116,8 @@ interface BrowserPageOptions {
     /** Log console error messages as `<prefix>: <text>`; silent
      *  without. */
     consoleErrorPrefix?: string;
-    /** A generation bake: run in a browser context of the generation's
-     *  shared Chromium (`generation-browser.ts`) rather than in a
-     *  browser launched for this page alone. */
+    /** A generation bake: use the generation's shared Chromium except
+     *  on headed Linux, where each isolated bake owns a browser. */
     shared?: boolean;
 }
 
@@ -166,7 +164,9 @@ export async function withBrowserPage<T>(
             : undefined;
         // Closing a shared connection closes the context opened through it,
         // and only that: the page's own crash or failure stays its own.
-        browser = options.shared
+        const shared =
+            options.shared && (process.platform !== "linux" || launch.headless);
+        browser = shared
             ? await chromium.connect(await generationBrowserEndpoint(launch), {
                   timeout: 60_000,
               })

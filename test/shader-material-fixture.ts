@@ -23,7 +23,7 @@ export function compileShaderMaterialFixture(source: string) {
 #include <bblite/shader_uniforms.hpp>
 #include <cassert>
 namespace bbl::upstream {
-${plan.header.slice(plan.header.indexOf("enum class ShaderSystemMatrix"), plan.header.indexOf("std::uint32_t shader_variant_count()"))}
+${plan.header.slice(plan.header.indexOf("enum class ShaderSystemMatrix"), plan.header.indexOf("constexpr std::uint32_t shader_variant_count()"))}
 ${cppFunction(plan.source, "const ShaderVariantInfo& shader_variant_info(")}
 }
 namespace bbl {

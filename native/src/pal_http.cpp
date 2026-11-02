@@ -9,12 +9,14 @@
 #include <winhttp.h>
 #else
 #include <curl/curl.h>
+#if defined(__ANDROID__)
+#include "pal_android_tls.hpp"
+#endif
 #endif
 
 namespace bbl::pal {
 namespace {
 constexpr std::size_t maximum_request_body = 32u * 1024u * 1024u;
-constexpr std::size_t read_size = 64u * 1024u;
 
 void validate_request(const std::string& url, const HttpRequest& request) {
     if ((!url.starts_with("http://") && !url.starts_with("https://")) ||
@@ -72,6 +74,8 @@ void append_header_line(HttpHeaderList& list, std::string_view line) {
 }
 
 #ifdef _WIN32
+constexpr std::size_t read_size = 64u * 1024u;
+
 std::wstring wide(const std::string& value) {
     auto result = utf8_to_wide(value);
     if (!result)
@@ -387,10 +391,14 @@ void perform_http_transfer(const std::string& url, HttpRequest request, HttpExch
     // A cancellation before the wake was installed still stops the transfer here.
     if (exchange.canceled())
         return;
+    std::array<char, CURL_ERROR_SIZE> error_buffer{};
     const std::unique_ptr<CURL, decltype(&curl_easy_cleanup)> client(curl_easy_init(),
                                                                      curl_easy_cleanup);
     if (!client)
         throw std::runtime_error("HTTP client allocation failed.");
+#if defined(__ANDROID__)
+    configure_android_tls(client.get());
+#endif
     auto option = [&](CURLoption name, auto value) {
         if (curl_easy_setopt(client.get(), name, value) != CURLE_OK)
             throw std::runtime_error("HTTP client option failed.");
@@ -420,6 +428,7 @@ void perform_http_transfer(const std::string& url, HttpRequest request, HttpExch
         }
     } transfer{exchange, client.get(), {}, false, std::nullopt};
     option(CURLOPT_SHARE, shared.value);
+    option(CURLOPT_ERRORBUFFER, error_buffer.data());
     option(CURLOPT_URL, url.c_str());
     option(CURLOPT_PROTOCOLS_STR, "http,https");
     option(CURLOPT_REDIR_PROTOCOLS_STR, "http,https");
@@ -511,8 +520,9 @@ void perform_http_transfer(const std::string& url, HttpRequest request, HttpExch
     if (transfer.failure)
         throw std::runtime_error(*transfer.failure);
     if (performed != CURLE_OK)
-        throw std::runtime_error(std::string("HTTP transport failed: ") +
-                                 curl_easy_strerror(performed));
+        throw std::runtime_error(
+            std::string("HTTP transport failed: ") +
+            (error_buffer[0] ? error_buffer.data() : curl_easy_strerror(performed)));
     transfer.deliver_head();
     exchange.finish();
 #endif

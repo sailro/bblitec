@@ -1387,6 +1387,7 @@ ${lowerThinInstanceSync(context)}
                 vat: features.includes("mesh:vat"),
                 text: features.includes("text:renderable"),
                 nodeMaterials: nodeVariantList.length > 0,
+                pbrMaterials: (options.pinnedVariants ?? []).length > 0,
                 pbrSceneHooks:
                     features.includes("loader:gltf") ||
                     features.includes("material:shader") ||

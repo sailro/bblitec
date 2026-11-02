@@ -109,12 +109,14 @@ template <typename T> class Promise {
         T result() const override { return convert(source.result_value()); }
         void observe(typename State::Fulfilled fulfilled,
                      typename State::Rejected rejected) const override {
-            source.observe(make_closure(std::tuple{convert, std::move(fulfilled)},
-                                        [](auto& environment, const U& value) {
-                                            std::get<1>(environment)(
-                                                std::get<0>(environment)(value));
-                                        }),
-                           std::move(rejected));
+            source.observe(
+                make_closure(
+                    std::tuple{convert, std::move(fulfilled)},
+                    [](auto& environment, const U& value) {
+                        // Retain the observer before conversion, which can throw.
+                        std::get<1>(environment).snapshot()(std::get<0>(environment)(value));
+                    }),
+                std::move(rejected));
         }
         void gc_trace(const TraceVisitor& visitor) const override {
             visitor(source);

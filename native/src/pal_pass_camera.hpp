@@ -241,14 +241,16 @@ inline PassCamera build_kept_pass_camera(const Scene& scene, const Engine& engin
 inline const upstream::SceneUniforms&
 write_pass_scene_block(RetainedSceneBlock& retained, const Scene& scene, const Engine& engine,
                        const CameraRecord* camera, const std::array<float, 16>& view_projection) {
-    if constexpr (upstream::public_camera_matrix_caches)
+    if constexpr (upstream::public_camera_matrix_caches) {
         return retained.pass.block();
-    return retained.pass.write(
-        camera,
-        [&](const CameraRecord& written) {
-            return pinned_scene_block(scene, engine, written, view_projection);
-        },
-        retained.publish);
+    } else {
+        return retained.pass.write(
+            camera,
+            [&](const CameraRecord& written) {
+                return pinned_scene_block(scene, engine, written, view_projection);
+            },
+            retained.publish);
+    }
 }
 
 /** The same write over `pass`'s own camera and view-projection. */
@@ -267,14 +269,16 @@ write_billboard_scene_block(RetainedSceneBlock& retained, const Scene& scene, co
                             const CameraRecord* camera,
                             const std::array<float, 16>& view_projection,
                             const std::array<float, 16>& view) {
-    if constexpr (upstream::public_camera_matrix_caches)
+    if constexpr (upstream::public_camera_matrix_caches) {
         return retained.billboard.block();
-    return retained.billboard.write(
-        camera,
-        [&](const CameraRecord& written) {
-            return billboard_scene_block(scene, engine, written, view_projection, view);
-        },
-        retained.publish);
+    } else {
+        return retained.billboard.write(
+            camera,
+            [&](const CameraRecord& written) {
+                return billboard_scene_block(scene, engine, written, view_projection, view);
+            },
+            retained.publish);
+    }
 }
 #endif
 #endif

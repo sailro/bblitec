@@ -65,7 +65,7 @@ struct NodeVariant { std::size_t first_attribute, attribute_count; bool uses_ins
 constexpr std::array<NodeAttribute,3> node_variant_attributes{{{"world1"},{"world0"},{"position"}}};
 constexpr std::array<NodeVariant,3> node_variants{{{0,1,false},{1,1,false},{2,1,true}}};
 ${cppSection(renderer.header, "enum class RenderMaterialKind", "struct RenderDrawCommand")}
-${cppSection(renderer.header, "enum class ShaderSystemMatrix", "std::uint32_t shader_variant_count()")}
+${cppSection(renderer.header, "enum class ShaderSystemMatrix", "constexpr std::uint32_t shader_variant_count()")}
 const ShaderVariantInfo& shader_variant_info(std::uint32_t variant) {
     static const auto variants=[] {
         std::array<ShaderVariantInfo,4> result{};

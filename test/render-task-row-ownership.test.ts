@@ -149,7 +149,6 @@ mesh.material=material;addToScene(scene,mesh);
     const shared = readFileSync("native/src/pal_gpu_shared.cpp", "utf8");
     const sceneCore = new SceneLowerer(context).lowerCore().source;
     const renderFunctions = [
-        "std::uint32_t shader_variant_count(",
         "const ShaderVariantInfo& shader_variant_info(",
         "RenderItem bind_render_item(",
         "bool mesh_draws(",
@@ -206,6 +205,7 @@ struct Row {
 int main() {
     using namespace bbl;
     using namespace bbl::upstream;
+    static_assert(shader_variant_count() == 1);
     Engine engine;
     engine.materials.resize(3);
     for (unsigned index: {1u,2u}) {

@@ -5,6 +5,7 @@ import test from "node:test";
 import { compileSource } from "../src/compiler.js";
 import { doubleCpp } from "../src/cpp-literals.js";
 import { LoweringContext } from "../src/lowering/context.js";
+import { discoverWindowsBuildTools } from "../src/development-tools.js";
 import { CameraLowerer } from "../src/lowering/camera-lowerer.js";
 import { CameraMutationLowerer } from "../src/lowering/camera-mutation-lowerer.js";
 import { AnimationLowerer } from "../src/lowering/animation-lowerer.js";
@@ -22,8 +23,77 @@ import {
     cppFunction,
     cppRecord,
     optionalNativeFixtureTools,
+    runFixtureExecutable,
+    runNativeFixtureCompiler,
     runGeneratedProgram,
 } from "./native-fixture.js";
+
+test(
+    "pass block cache alternatives are discarded under MSVC LTCG",
+    { skip: process.platform !== "win32" },
+    () => {
+        const pass = readFileSync("native/src/pal_pass_camera.hpp", "utf8");
+        const tools = discoverWindowsBuildTools("msvc");
+        for (const cached of [false, true]) {
+            const directory = resolve(
+                "artifacts",
+                `camera-pass-ltcg-${cached}`,
+            );
+            mkdirSync(directory, { recursive: true });
+            const file = join(directory, "check.cpp");
+            const executable = join(directory, "check.exe");
+            writeFileSync(
+                file,
+                `#include <array>
+#include <cassert>
+#include <utility>
+struct Scene {};
+struct Engine {};
+struct CameraRecord {};
+namespace upstream {
+inline constexpr bool public_camera_matrix_caches = ${cached};
+struct SceneUniforms { int value = 0; };
+bool pass_scene_block_skips(const CameraRecord* camera) { return !camera; }
+}
+int writes = 0;
+upstream::SceneUniforms pinned_scene_block(const Scene&, const Engine&, const CameraRecord&, const std::array<float,16>&) { ++writes; return {13}; }
+upstream::SceneUniforms billboard_scene_block(const Scene&, const Engine&, const CameraRecord&, const std::array<float,16>&, const std::array<float,16>&) { ++writes; return {17}; }
+${cppRecord(pass, "template <class Block> class RetainedBlock")}
+struct RetainedSceneBlock {
+    bool publish = true;
+    RetainedBlock<upstream::SceneUniforms> pass, billboard;
+};
+${cppFunction(pass, "inline const upstream::SceneUniforms& write_pass_scene_block(")}
+${cppFunction(pass, "inline const upstream::SceneUniforms& write_billboard_scene_block(")}
+int main() {
+    RetainedSceneBlock retained;
+    Scene scene; Engine engine; CameraRecord camera;
+    const std::array<float,16> matrix{};
+    retained.pass.write(&camera, [](const CameraRecord&) { return upstream::SceneUniforms{7}; });
+    retained.billboard.write(&camera, [](const CameraRecord&) { return upstream::SceneUniforms{11}; });
+    assert(write_pass_scene_block(retained, scene, engine, &camera, matrix).value == ${cached ? 7 : 13});
+    assert(write_billboard_scene_block(retained, scene, engine, &camera, matrix, matrix).value == ${cached ? 11 : 17});
+    assert(writes == ${cached ? 0 : 2});
+    retained.publish = false;
+    (void)write_pass_scene_block(retained, scene, engine, &camera, matrix);
+    (void)write_billboard_scene_block(retained, scene, engine, &camera, matrix, matrix);
+    assert(writes == ${cached ? 0 : 2});
+}
+`,
+            );
+            runNativeFixtureCompiler(tools, [
+                "/O1",
+                "/GL",
+                `/Fo:${directory}/`,
+                `/Fe:${executable}`,
+                file,
+                "/link",
+                "/LTCG",
+            ]);
+            runFixtureExecutable(executable);
+        }
+    },
+);
 
 const entry = (
     body: string,

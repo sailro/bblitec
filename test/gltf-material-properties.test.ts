@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, posix, resolve } from "node:path";
 import test from "node:test";
 import ts from "typescript";
 import { LoweringContext } from "../src/lowering/context.js";
+import { discoverWindowsBuildTools } from "../src/development-tools.js";
 import { lowerGltfMaterialProperties } from "../src/lowering/gltf/material-properties.js";
 import {
     gltfCoreMaterialFields,
@@ -24,12 +25,90 @@ import {
     cppFunction,
     cppRecord,
     optionalNativeFixtureTools,
+    runFixtureExecutable,
     runNativeFixtureCompiler,
 } from "./native-fixture.js";
 import { doctoredContext } from "./doctored-store.js";
 
 type RecordValue = Record<string, unknown>;
 type MaterialFunction = (...args: unknown[]) => unknown;
+
+test(
+    "ORM decoding preserves order and refusals under MSVC LTCG",
+    { skip: process.platform !== "win32" },
+    () => {
+        const source = lowerGltfMaterialProperties(
+            new LoweringContext(),
+        ).source;
+        const directory = resolve("artifacts", "gltf-orm-ltcg");
+        mkdirSync(directory, { recursive: true });
+        const file = join(directory, "check.cpp");
+        const executable = join(directory, "check.exe");
+        writeFileSync(
+            file,
+            `#include <bblite/features/has_image_decoder.hpp>
+#include <bblite/pal_image.hpp>
+#include <array>
+#include <cassert>
+#include <memory>
+#include <stdexcept>
+#include <string>
+namespace bbl::pal {
+${cppFunction(readFileSync("native/src/pal_image.cpp", "utf8"), "DecodedImage decode_image(")}
+}
+namespace bbl {
+int compositions = 0;
+pal::DecodedImage gltf_composite_orm(const pal::DecodedImage& mr, const pal::DecodedImage& occ) {
+    ++compositions;
+    return {mr.width, occ.height, {}};
+}
+template<typename Decode, typename Image>
+${cppFunction(source, "std::shared_ptr<const pal::DecodedImage> gltf_orm_composite(")}
+}
+int main() {
+    using namespace bbl;
+    std::vector<int> order;
+    const auto decode = [&](int image) { order.push_back(image); return pal::DecodedImage{image, image, {}}; };
+    const auto result = gltf_orm_composite(decode, 2, 3);
+    assert((order == std::vector<int>{2, 3}) && compositions == 1);
+    assert(result->width == 2 && result->height == 3);
+    for (int failure : {2, 3}) {
+        order.clear();
+        bool rejected = false;
+        try {
+            (void)gltf_orm_composite([&](int image) {
+                order.push_back(image);
+                if (image == failure) throw std::runtime_error("decode failed");
+                return pal::DecodedImage{};
+            }, 2, 3);
+        } catch (const std::runtime_error& error) { rejected = std::string(error.what()) == "decode failed"; }
+        assert(rejected && compositions == 1);
+        assert((order == (failure == 2 ? std::vector<int>{2} : std::vector<int>{2, 3})));
+    }
+    bool rejected = false;
+    try {
+        (void)gltf_orm_composite([](int) { return pal::decode_image(std::span<const std::uint8_t>{}); }, 2, 3);
+    } catch (const std::runtime_error& error) {
+        rejected = std::string(error.what()) == "This scene was built without image decoding.";
+    }
+    assert(rejected && compositions == 1);
+}
+`,
+        );
+        runNativeFixtureCompiler(discoverWindowsBuildTools("msvc"), [
+            "/DBBLITE_HAS_IMAGE_DECODER=0",
+            "/O1",
+            "/Ob1",
+            "/GL",
+            `/Fo:${directory}/`,
+            `/Fe:${executable}`,
+            file,
+            "/link",
+            "/LTCG",
+        ]);
+        runFixtureExecutable(executable);
+    },
+);
 
 test("animated base-color target groups refuse uses beyond captured membership", () => {
     const context = doctoredContext(

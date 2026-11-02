@@ -5,10 +5,22 @@ import type { WindowsBuildTools } from "../src/development-tools.js";
 import {
     nativeFixtureArguments,
     nativeFixtureVcpkgRoot,
+    nativePosixFixtureOptions,
 } from "./native-fixture.js";
 
 const msvc = { compiler: "cl.exe" } as WindowsBuildTools;
 const clang = { compiler: "clang-cl.exe" } as WindowsBuildTools;
+
+test("POSIX fixtures read the product's standard and warning options", () => {
+    assert.deepEqual(nativePosixFixtureOptions(), [
+        "-std=c++20",
+        "-Wall",
+        "-Wextra",
+        "-Wpedantic",
+        "-Werror",
+        "-Wundef",
+    ]);
+});
 
 test("a fixture compile gets the product's options from CMake and its folders before the product's", () => {
     const fixtureFolder = resolve("artifacts/check/include");

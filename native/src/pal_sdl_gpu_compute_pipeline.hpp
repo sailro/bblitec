@@ -5,6 +5,9 @@
 #include <bblite/pal_compute_pipeline.hpp>
 #include <sstream>
 #include <algorithm>
+#include <charconv>
+#include <limits>
+#include <optional>
 
 namespace bbl::pal {
 struct SdlComputeGroupLayout final : ComputeGroupLayout {
@@ -115,6 +118,37 @@ inline OwnedSdlBuffer encode_sdl_workgroup_counts(SDL_GPUDevice* device,
     return counts;
 }
 
+/** Typed MSL allocations; an explicit empty record distinguishes zero storage from stale metadata. */
+inline void read_sdl_metal_workgroup_memory(std::istringstream& row,
+                                            std::optional<std::vector<Uint32>>& allocations) {
+    const auto read_unsigned = [&]() {
+        std::string token;
+        Uint32 value = 0;
+        if (!(row >> token))
+            throw std::runtime_error("Missing Metal workgroup-memory integer.");
+        const auto [end, error] = std::from_chars(token.data(), token.data() + token.size(), value);
+        if (error != std::errc{} || end != token.data() + token.size())
+            throw std::runtime_error("Invalid Metal workgroup-memory integer.");
+        return value;
+    };
+    if (allocations)
+        throw std::runtime_error("Invalid or duplicate Metal workgroup-memory metadata.");
+    const auto count = read_unsigned();
+    if (count > SDL_GPU_METAL_MAX_THREADGROUP_MEMORY_SLOTS)
+        throw std::runtime_error("Too many Metal workgroup-memory allocations.");
+    std::vector<Uint32> sizes;
+    for (Uint32 index = 0; index < count; ++index) {
+        const auto bytes = read_unsigned();
+        if (bytes > std::numeric_limits<Uint32>::max() - 15u)
+            throw std::runtime_error("Invalid Metal workgroup-memory allocation size.");
+        sizes.push_back(bytes);
+    }
+    std::string extra;
+    if (row >> extra)
+        throw std::runtime_error("Trailing Metal workgroup-memory metadata.");
+    allocations = std::move(sizes);
+}
+
 /** A compute stage compiled at generation: `<artifact>` and its `.slots` sidecar. */
 inline std::shared_ptr<SdlComputePipeline>
 load_sdl_gpu_compute_pipeline(SDL_GPUDevice* device, const std::string& artifact,
@@ -141,6 +175,7 @@ load_sdl_gpu_compute_pipeline(SDL_GPUDevice* device, const std::string& artifact
     SDL_GPUComputePipelineCreateInfo info{};
     std::string line;
     bool threads = false;
+    std::optional<std::vector<Uint32>> metal_allocations;
     while (std::getline(input, line)) {
         std::istringstream row(line);
         std::string key, name;
@@ -150,6 +185,10 @@ load_sdl_gpu_compute_pipeline(SDL_GPUDevice* device, const std::string& artifact
             if (threads || !(row >> info.threadcount_x >> info.threadcount_y >> info.threadcount_z))
                 throw std::runtime_error("Invalid compute workgroup metadata.");
             threads = true;
+            continue;
+        }
+        if (key == "@msl-workgroup-memory") {
+            read_sdl_metal_workgroup_memory(row, metal_allocations);
             continue;
         }
         SdlComputeSlot slot;
@@ -171,6 +210,8 @@ load_sdl_gpu_compute_pipeline(SDL_GPUDevice* device, const std::string& artifact
     }
     if (!threads)
         throw std::runtime_error("Compute artifact has no workgroup metadata.");
+    if (result->format == SDL_GPU_SHADERFORMAT_MSL && !metal_allocations)
+        throw std::runtime_error("Metal compute artifact has no workgroup-memory metadata.");
     info.code = code.data();
     info.code_size = code.size();
     info.entrypoint = entry.c_str();
@@ -181,6 +222,22 @@ load_sdl_gpu_compute_pipeline(SDL_GPUDevice* device, const std::string& artifact
     info.num_readwrite_storage_textures = result->counts[3];
     info.num_readwrite_storage_buffers = result->counts[4];
     info.num_uniform_buffers = result->counts[5];
+    auto release_properties = bbl::js::finally([&]() noexcept {
+        if (info.props)
+            SDL_DestroyProperties(info.props);
+    });
+    if (result->format == SDL_GPU_SHADERFORMAT_MSL && !metal_allocations->empty()) {
+        info.props = SDL_CreateProperties();
+        if (!info.props ||
+            !SDL_SetNumberProperty(
+                info.props,
+                SDL_PROP_GPU_COMPUTEPIPELINE_CREATE_METAL_THREADGROUP_MEMORY_COUNT_NUMBER,
+                static_cast<Sint64>(metal_allocations->size())) ||
+            !SDL_SetPointerProperty(
+                info.props, SDL_PROP_GPU_COMPUTEPIPELINE_CREATE_METAL_THREADGROUP_MEMORY_POINTER,
+                metal_allocations->data()))
+            gpu_error("SDL compute workgroup-memory properties");
+    }
     result->handle = SDL_CreateGPUComputePipeline(device, &info);
     if (!result->handle)
         gpu_error("SDL_CreateGPUComputePipeline");
