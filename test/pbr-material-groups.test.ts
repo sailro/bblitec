@@ -1,10 +1,12 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import test from "node:test";
 import ts from "typescript";
 import { LoweringContext } from "../src/lowering/context.js";
+import { SceneLowerer } from "../src/lowering/scene-lowerer.js";
+import { discoverWindowsBuildTools } from "../src/development-tools.js";
 import { lowerPbrMaterialGroups } from "../src/lowering/pbr-material-groups.js";
 import { lowerPbrTransmissionTransaction } from "../src/lowering/pbr-transmission-transaction.js";
 import { materialGroupIdentity } from "../src/lowering/material-group-identity.js";
@@ -15,6 +17,8 @@ import {
 import { doctoredContext } from "./doctored-store.js";
 import {
     optionalNativeFixtureTools,
+    cppFunction,
+    runFixtureExecutable,
     runNativeFixtureCompiler,
 } from "./native-fixture.js";
 import { meshFeaturesNamespace } from "../src/lowering/mesh-attribute-features.js";
@@ -25,6 +29,66 @@ import { pinnedDeclaration, pinnedModuleSource } from "./pinned-source.js";
 
 const sceneModule = "src/scene/scene-core.ts";
 const pbrModule = "src/material/pbr/pbr-renderable.ts";
+
+test(
+    "uncomposed PBR lazy capabilities preserve refusal under MSVC LTCG",
+    { skip: process.platform !== "win32" },
+    () => {
+        const source = new SceneLowerer(new LoweringContext()).lowerCore({
+            pbrSceneHooks: true,
+            pbrMaterials: false,
+        }).source;
+        const caps = cppFunction(source, "double pbr_lazy_caps(");
+        assert.doesNotMatch(
+            source,
+            /pbr_lazy_wgsl_needs|pbr_mesh_has_tangents/,
+        );
+        const directory = resolve("artifacts", "test-pbr-material-groups-ltcg");
+        mkdirSync(directory, { recursive: true });
+        const file = resolve(directory, "check.cpp");
+        const executable = resolve(directory, "check.exe");
+        writeFileSync(
+            file,
+            `#include <bblite/runtime.hpp>
+#include <cassert>
+#include <string>
+namespace bbl {
+${cppFunction(readFileSync("native/src/pal_gpu_shared.cpp", "utf8"), "std::uint32_t pinned_pbr_material_features(const Engine&, MaterialHandle)")}
+${cppFunction(source, "const MaterialRecord* pbr_mesh_material(")}
+${caps}
+}
+int main() {
+    using namespace bbl;
+    Engine engine;
+    engine.meshes.resize(1);
+    Scene scene;
+    scene.engine = &engine;
+    assert(pbr_lazy_caps(scene, MeshHandle{0}) == 0);
+    engine.materials.resize(1);
+    engine.meshes[0].material = MaterialHandle{0};
+    bool rejected = false;
+    try { (void)pbr_lazy_caps(scene, MeshHandle{0}); }
+    catch (const std::runtime_error& error) {
+        rejected = std::string(error.what()) ==
+            "PBR material features: a PBR material in a build with no composed variants.";
+    }
+    assert(rejected);
+}
+`,
+        );
+        runNativeFixtureCompiler(discoverWindowsBuildTools("msvc"), [
+            "/O1",
+            "/GL",
+            `/Fo:${directory}/`,
+            `/Fe:${executable}`,
+            file,
+            "/link",
+            "/LTCG",
+        ]);
+        runFixtureExecutable(executable);
+    },
+);
+
 type Operation =
     | ["add" | "remove" | "thin", number]
     | ["swap", number, number]

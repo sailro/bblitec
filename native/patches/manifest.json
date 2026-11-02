@@ -566,6 +566,13 @@
       "variants": ["vcpkg", "trimmed"]
     },
     {
+      "library": "sdl3",
+      "file": "native/vcpkg-overlay-ports/sdl3/metal-threadgroup-memory.patch",
+      "purpose": "Typed dynamic Metal threadgroup-memory lengths copied per compute pipeline and bound for direct and indirect dispatch",
+      "upstream": { "state": "unsubmitted" },
+      "variants": ["vcpkg", "trimmed"]
+    },
+    {
       "library": "sdl3-image",
       "file": "native/vcpkg-overlay-ports/sdl3-image/dependencies.diff",
       "purpose": "vcpkg's dependency discovery for SDL_image codecs",

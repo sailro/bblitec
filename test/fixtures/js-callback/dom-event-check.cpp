@@ -264,6 +264,45 @@ void physical_input_transactions() {
     require(keys.ready() && keys.default_prevented,
             "keyboard native default waits for source cancellation");
 }
+
+void pointer_dispatch_completion() {
+    for (const auto type : {"pointerup", "pointercancel"}) {
+        for (const bool fail : {false, true}) {
+            bbl::Engine engine;
+            const auto captures = bbl::dom_input(engine).pointer_captures;
+            auto event = pointer(type);
+            event.pointer_id = 42;
+            event.pointer_type = "touch";
+            captures->active[event.pointer_id] = true;
+            captures->pending[event.pointer_id] = child;
+            bool invoked = false;
+            bbl::on_dom_pointer(engine, child, type, 1, [&](const Event& value) {
+                require(captures->active.contains(value.pointer_id) &&
+                            captures->pending.contains(value.pointer_id),
+                        "pointer capture remains active during its terminal callback");
+                invoked = true;
+                if (fail)
+                    throw std::runtime_error("terminal pointer callback");
+            });
+            bbl::DomEventBatch batch;
+            batch.add(event);
+            bool threw = false;
+            try {
+                batch.dispatch(engine);
+            } catch (const std::runtime_error& error) {
+                threw = std::string(error.what()) == "terminal pointer callback";
+            }
+            require(invoked && threw == fail && batch.ready(),
+                    "batch completion survives terminal callback failure");
+            require(!captures->active.contains(event.pointer_id) &&
+                        !captures->pending.contains(event.pointer_id) &&
+                        captures->active.contains(bbl::dom_mouse_pointer_id),
+                    "pointer completion releases capture on normal and exceptional exits");
+            require(!event.dom->dispatching && event.dom->dispatch_engine == nullptr,
+                    "pointer completion restores the event's dispatch state");
+        }
+    }
+}
 } // namespace
 
 int main() {
@@ -274,5 +313,6 @@ int main() {
     keyboard();
     engine_ownership();
     physical_input_transactions();
+    pointer_dispatch_completion();
     std::cout << "dom-event-check: ok\n";
 }

@@ -17,7 +17,7 @@ struct WGPUBufferImpl {
     std::array<std::uint32_t, 5> arguments{};
 };
 std::vector<unsigned> bound;
-unsigned instances_drawn = 0, pipeline_binds = 0;
+unsigned instances_drawn = 0, pipeline_binds = 0, draw_calls = 0;
 bool forbid_count_read = false;
 SDL_GPUBuffer* sdl_indirect = nullptr;
 WGPUBuffer dawn_indirect = nullptr;
@@ -78,6 +78,7 @@ enum class VertexInputStream : std::uint32_t { vertex, instance_matrix, instance
 constexpr std::array vertex_streams{VertexInputStream::vertex, VertexInputStream::instance_matrix,
                                     VertexInputStream::instance_color};
 template <class Function, class... Args> void count_gpu_draw(Function function, Args... args) {
+    ++draw_calls;
     function(args...);
 }
 struct SdlMesh {
@@ -221,4 +222,18 @@ int main() {
     encode_variant_draw(nullptr, nullptr, pipeline, nullptr, nullptr, &dawn_vertices,
                         instance_streams_for(record, dawn), &dawn_vertices, 6);
     assert(dawn_indirect == nullptr && instances_drawn == 7);
+    // Empty direct draws are no-ops. Indirect counts belong to the GPU argument
+    // buffer, not the CPU placeholders passed to the encoder.
+    for (Uint32 indices : {0u, 6u})
+        for (Uint32 instances : {0u, 7u}) {
+            const auto before = draw_calls;
+            encode_sdl_gpu_indexed_draw(nullptr, indices, instances, nullptr);
+            assert(draw_calls == before + (indices != 0 && instances != 0 ? 1u : 0u));
+            if (indices != 0 && instances != 0)
+                assert(instances_drawn == instances);
+            sdl_indirect = nullptr;
+            const auto before_indirect = draw_calls;
+            encode_sdl_gpu_indexed_draw(nullptr, indices, instances, &sdl_args);
+            assert(sdl_indirect == &sdl_args && draw_calls == before_indirect + 1);
+        }
 }

@@ -820,6 +820,7 @@ int main(int argc, const char** argv) {
     // buffers; sampled, storage and writable textures; each sampler at its
     // first texture's index -- and the storage-buffer lengths SDL publishes at
     // buffer(30), one per storage slot.
+    std::optional<std::vector<uint32_t>> metal_workgroup_allocations;
     if (!arguments.msl.empty()) {
         TextureSamplers(pairs, entry_point);
         auto ir = LoweredIr(program);
@@ -865,6 +866,9 @@ int main(int argc, const char** argv) {
             Fail("MSL: " + Reason(result.Failure()));
         }
         WriteText(arguments.msl, result->msl);
+        if (*arguments.stage == Stage::kCompute) {
+            metal_workgroup_allocations = std::move(result->workgroup_allocations);
+        }
     }
 
     // SPIR-V: SDL's descriptor sets, each binding its HLSL register; a sampled
@@ -934,6 +938,14 @@ int main(int argc, const char** argv) {
         sidecar += "@workgroup " + std::to_string(hlsl.workgroup_info.x) + " " +
                    std::to_string(hlsl.workgroup_info.y) + " " +
                    std::to_string(hlsl.workgroup_info.z) + "\n";
+        if (metal_workgroup_allocations) {
+            sidecar +=
+                "@msl-workgroup-memory " + std::to_string(metal_workgroup_allocations->size());
+            for (const auto bytes : *metal_workgroup_allocations) {
+                sidecar += " " + std::to_string(bytes);
+            }
+            sidecar += "\n";
+        }
         for (const auto& slot : slots) {
             const auto sampler = samplers.find({slot.resource.bind_group, slot.resource.binding});
             sidecar += std::string(1, slot.kind) + std::to_string(slot.kind_index) + " " +

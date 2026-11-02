@@ -417,6 +417,7 @@ export class RendererLowerer {
                 options,
                 systemMatrixEnumerators,
                 linearToneMapping,
+                shaderVariantTable.length,
             ),
             source: this.renderPlanSourceCpp(options, {
                 viewMatrixBody,
@@ -953,6 +954,7 @@ ${
         },
         systemMatrixEnumerators: string,
         linearToneMapping: number,
+        shaderVariantCount: number,
     ): string {
         return `#pragma once
 
@@ -1262,7 +1264,9 @@ struct ShaderVariantInfo {
     bool depth_only_fragment = false;
 };
 
-std::uint32_t shader_variant_count();
+constexpr std::uint32_t shader_variant_count() {
+    return ${shaderVariantCount}u;
+}
 const ShaderVariantInfo& shader_variant_info(std::uint32_t variant);
 
 inline void require_shader_instance_layout(const RenderItem& item, const Engine& engine) {
@@ -1804,10 +1808,6 @@ RenderFeatures build_render_features(
         }
     }
     return result;
-}
-
-std::uint32_t shader_variant_count() {
-    return ${shaderVariantTable.length}u;
 }
 
 const ShaderVariantInfo& shader_variant_info(std::uint32_t variant) {

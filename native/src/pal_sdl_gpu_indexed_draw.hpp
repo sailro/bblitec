@@ -13,7 +13,8 @@ inline void encode_sdl_gpu_indexed_draw(SDL_GPURenderPass* pass, Uint32 index_co
                                         Uint32 instance_count, SDL_GPUBuffer* indirect_args) {
     if (indirect_args) {
         count_gpu_draw(SDL_DrawGPUIndexedPrimitivesIndirect, pass, indirect_args, 0, 1);
-    } else {
+    } else if (index_count != 0 && instance_count != 0) {
+        // Empty direct draws do no work; Metal requires both counts to be nonzero.
         count_gpu_draw(SDL_DrawGPUIndexedPrimitives, pass, index_count, instance_count, 0, 0, 0);
     }
 }

@@ -81,6 +81,7 @@ test(
             "vulkan-canvas-storage.patch",
             "metal-storage-array.patch",
             "gpu-adapter-info.patch",
+            "metal-threadgroup-memory.patch",
         ];
         assert.equal(trimmed.includes("fix-freebsd.patch"), false);
         assert.deepEqual(trimmed.slice(-(2 + gpu.length)), [
@@ -88,7 +89,7 @@ test(
             "0002-no-joystick-device-names.patch",
             ...gpu,
         ]);
-        assert.equal(trimmed.length, 11);
+        assert.equal(trimmed.length, 12);
         const port = names("sdl3", ["vcpkg"]);
         assert.equal(port[0], "fix-freebsd.patch");
         assert.deepEqual(port.slice(-gpu.length), gpu);

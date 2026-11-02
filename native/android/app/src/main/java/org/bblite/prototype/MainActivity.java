@@ -25,6 +25,11 @@ import java.nio.file.StandardCopyOption;
 public final class MainActivity extends SDLActivity {
     private CappedSurface surface;
 
+    public void verifyServerCertificates(byte[][] chain, String authType, String hostname)
+            throws java.security.cert.CertificateException {
+        AndroidTlsTrust.checkServerTrusted(chain, authType, hostname);
+    }
+
     public boolean prefersReducedMotion() {
         return MotionPreferences.reducedMotion(getContentResolver());
     }

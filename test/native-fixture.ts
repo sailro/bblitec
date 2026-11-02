@@ -371,13 +371,14 @@ function fixtureMacroFolder(overrides: ReadonlyMap<string, boolean>): string {
 interface ProductCompileOptions {
     readonly msvc: readonly string[];
     readonly clang: readonly string[];
+    readonly posix: readonly string[];
 }
 
 let productOptions: ProductCompileOptions | undefined;
 
 /**
  * The product's compile options as `native/CMakeLists.txt` gives
- * `bblite_core`: its C++ standard and options for MSVC or for clang-cl, with
+ * `bblite_core`: its C++ standard and options for each compiler, with
  * CMake's default dynamic runtime. The float model and source charset stay
  * at their defaults, as the product leaves them.
  */
@@ -389,12 +390,12 @@ function productCompileOptions(): ProductCompileOptions {
             cmake,
         );
     const options =
-        /if\(MSVC\)\s*target_compile_options\(bblite_core INTERFACE ([^)]*)\)\s*if\(CMAKE_CXX_COMPILER_ID STREQUAL "MSVC"\)\s*target_compile_options\(bblite_core INTERFACE ([^)]*)\)\s*else\(\)\s*target_compile_options\(bblite_core INTERFACE ([^)]*)\)/.exec(
+        /if\(MSVC\)\s*target_compile_options\(bblite_core INTERFACE ([^)]*)\)\s*if\(CMAKE_CXX_COMPILER_ID STREQUAL "MSVC"\)\s*target_compile_options\(bblite_core INTERFACE ([^)]*)\)\s*else\(\)\s*target_compile_options\(bblite_core INTERFACE ([^)]*)\)\s*endif\(\)\s*else\(\)\s*target_compile_options\(bblite_core INTERFACE ([^)]*)\)/.exec(
             cmake,
         );
     if (!standard || !options)
         throw new Error(
-            "native/CMakeLists.txt no longer spells bblite_core's standard and MSVC options as the fixture harness reads them.",
+            "native/CMakeLists.txt no longer spells bblite_core's standard and compiler options as the fixture harness reads them.",
         );
     const shared = [
         `/std:c++${standard[1]}`,
@@ -404,8 +405,14 @@ function productCompileOptions(): ProductCompileOptions {
     productOptions = {
         msvc: [...shared, ...options[2]!.split(/\s+/)],
         clang: [...shared, ...options[3]!.split(/\s+/)],
+        posix: [`-std=c++${standard[1]}`, ...options[4]!.split(/\s+/)],
     };
     return productOptions;
+}
+
+/** The same product-owned options for direct or CMake-based POSIX fixtures. */
+export function nativePosixFixtureOptions(): readonly string[] {
+    return productCompileOptions().posix;
 }
 
 /**

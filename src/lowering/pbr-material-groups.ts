@@ -65,6 +65,7 @@ export function lowerPbrMaterialGroups(
     context: LoweringContext,
     gltfSceneHooks = true,
     thinBindings = false,
+    pbrMaterials = true,
 ): string {
     const { file, declaration } = context.functionDeclaration(
         sceneModule,
@@ -445,7 +446,7 @@ void complete_scene_material_group(Scene& scene, MaterialHandle material) {
         group->rebuild_ready = true;
     }
 }
-${lowerPbrLazyCaps(context)}
+${lowerPbrLazyCaps(context, pbrMaterials)}
 ${lowerPbrGroupBuild(context, gltfSceneHooks)}
 void enqueue_pbr_material_swap(Scene& scene, MeshHandle mesh) {
 ${enqueue}
@@ -669,21 +670,30 @@ function wideningPublicationGuard(
  * (`lazyCapsWidening`): a material swap a live closure cannot compose goes
  * to the asynchronous group rebuild, as the pin's does.
  */
-function lowerPbrLazyCaps(context: LoweringContext): string {
+function lowerPbrLazyCaps(
+    context: LoweringContext,
+    pbrMaterials: boolean,
+): string {
     const module = pbrRenderableModule;
-    const needs = lowerPinnedFunction(
-        context,
-        "src/material/pbr/pbr-compose.ts",
-        "_pbrLazyWgslNeeds",
-        [
-            { pinned: "features", kind: "number", cpp: "features" },
-            { pinned: "meshFeatures", kind: "number", cpp: "mesh_features" },
-        ],
-        {
-            cppName: "pbr_lazy_wgsl_needs",
-            returns: "double",
-        },
-    );
+    const needs = pbrMaterials
+        ? lowerPinnedFunction(
+              context,
+              "src/material/pbr/pbr-compose.ts",
+              "_pbrLazyWgslNeeds",
+              [
+                  { pinned: "features", kind: "number", cpp: "features" },
+                  {
+                      pinned: "meshFeatures",
+                      kind: "number",
+                      cpp: "mesh_features",
+                  },
+              ],
+              {
+                  cppName: "pbr_lazy_wgsl_needs",
+                  returns: "double",
+              },
+          )
+        : "";
     const caps = context.functionDeclaration(module, "_lazyPbrCaps");
     const [material, absent, features, returned, ...rest] =
         caps.declaration.body!.statements;
@@ -700,7 +710,13 @@ function lowerPbrLazyCaps(context: LoweringContext): string {
          const features = ((mat._renderFeatures as MaterialRenderFeatures | undefined) ?? _computePbrMaterialFeatures(mat)).features;`,
         "PBR lazy-capability material features",
     );
-    const read = lowerPinnedBody(caps.file, caps.declaration.body!.statements, {
+    // Without composed PBR variants the feature read refuses. Keep the
+    // pinned absent-material guard, then return that read directly: no
+    // capability arithmetic can run after it, including under MSVC LTCG.
+    const statements = pbrMaterials
+        ? caps.declaration.body!.statements
+        : [material, absent, features];
+    const read = lowerPinnedBody(caps.file, statements, {
         bindings: new Map<string, PinnedBinding>([
             [
                 "mat._gammaAlbedo",
@@ -740,13 +756,13 @@ function lowerPbrLazyCaps(context: LoweringContext): string {
                 ];
             }
             if (statement === features) {
+                const featureRead = `static_cast<double>(pinned_pbr_material_features(*scene.engine, ${recordAt("scene.engine->meshes", "mesh")}.material))`;
+                if (!pbrMaterials) return [`${indent}return ${featureRead};`];
                 lowerer.bindLocal(variable.name, {
                     cpp: "features",
                     type: "scalar",
                 });
-                return [
-                    `${indent}const double features = static_cast<double>(pinned_pbr_material_features(*scene.engine, ${recordAt("scene.engine->meshes", "mesh")}.material));`,
-                ];
+                return [`${indent}const double features = ${featureRead};`];
             }
             return undefined;
         },
@@ -821,10 +837,16 @@ function lowerPbrLazyCaps(context: LoweringContext): string {
     );
     const appliedCpp = applies.expression(predicate.body);
     return `${needs}
+${
+    pbrMaterials
+        ? `
 // The mesh's \`_gpu.tangentBuffer\` port; a mesh with no geometry has none.
 bool pbr_mesh_has_tangents(const Scene& scene, MeshHandle mesh) {
     const auto geometry = ${recordAt("scene.engine->meshes", "mesh")}.geometry;
     return geometry != invalid_handle && scene.engine->geometries.at(geometry).has_tangents;
+}
+`
+        : ""
 }
 // ${context.provenance(module, "_lazyPbrCaps")}
 double pbr_lazy_caps(const Scene& scene, MeshHandle mesh) {

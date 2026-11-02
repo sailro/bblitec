@@ -30,7 +30,11 @@
 #include <algorithm>
 #include <atomic>
 #include <bit>
+#include <cerrno>
 #include <charconv>
+#include <cmath>
+#include <cstdlib>
+#include <locale.h>
 #include <optional>
 #include <string_view>
 #include <condition_variable>
@@ -38,6 +42,9 @@
 #include <sstream>
 #include <iomanip>
 #include <thread>
+#if defined(__APPLE__)
+#include <xlocale.h>
+#endif
 
 namespace bbl::pal {
 namespace {
@@ -220,6 +227,43 @@ struct CaptureSettle {
     double milliseconds = 0;
 };
 
+/** Complete general-format numbers, without a floating-point from_chars dependency. */
+std::optional<double> parse_capture_milliseconds(std::string_view source) {
+    if (source.empty() || source.front() == '+' || source.find_first_of(" \t\n\r\f\v") == 0)
+        return std::nullopt;
+    const auto magnitude = source.starts_with('-') ? source.substr(1) : source;
+    if (magnitude.starts_with("0x") || magnitude.starts_with("0X"))
+        return std::nullopt;
+    const std::string text(source);
+    char* end = nullptr;
+    const int previous_errno = errno;
+#if defined(_WIN32)
+    const auto locale = _create_locale(LC_NUMERIC, "C");
+#else
+    const auto locale = newlocale(LC_NUMERIC_MASK, "C", nullptr);
+#endif
+    if (!locale)
+        throw std::runtime_error("Cannot create the capture-settle numeric locale.");
+    errno = 0;
+#if defined(_WIN32)
+    const double number = _strtod_l(text.c_str(), &end, locale);
+#else
+    const double number = strtod_l(text.c_str(), &end, locale);
+#endif
+    const int error = errno;
+#if defined(_WIN32)
+    _free_locale(locale);
+#else
+    freelocale(locale);
+#endif
+    errno = previous_errno;
+    // A nonzero subnormal is representable even when strtod reports underflow.
+    if (end == text.c_str() || end != text.c_str() + text.size() ||
+        (error == ERANGE && (number == 0 || !std::isfinite(number))))
+        return std::nullopt;
+    return number;
+}
+
 const std::optional<CaptureSettle>& capture_settle() {
     static const std::optional<CaptureSettle> settle = []() -> std::optional<CaptureSettle> {
         const std::string text = environment_variable("BBLITE_CAPTURE_SETTLE");
@@ -228,15 +272,14 @@ const std::optional<CaptureSettle>& capture_settle() {
         const auto equals = text.find('=');
         const auto separator = text.rfind(';');
         CaptureSettle parsed;
-        const auto [end, error] =
+        const auto milliseconds =
             separator == std::string::npos
-                ? std::from_chars_result{text.data(), std::errc::invalid_argument}
-                : std::from_chars(text.data() + separator + 1, text.data() + text.size(),
-                                  parsed.milliseconds);
-        if (equals == std::string::npos || separator < equals || error != std::errc{} ||
-            end != text.data() + text.size() || parsed.milliseconds < 0)
+                ? std::nullopt
+                : parse_capture_milliseconds(std::string_view(text).substr(separator + 1));
+        if (equals == std::string::npos || separator < equals || !milliseconds || *milliseconds < 0)
             throw std::runtime_error(
                 "BBLITE_CAPTURE_SETTLE must read data-attribute=value|value;milliseconds.");
+        parsed.milliseconds = *milliseconds;
         parsed.attribute = text.substr(0, equals);
         std::string_view values(text.data() + equals + 1, separator - equals - 1);
         for (std::size_t start = 0; start <= values.size();) {
@@ -1571,10 +1614,10 @@ static Iteration<int> window_application_iterations(WorkerEntry initialize, Engi
     try {
         const auto frame_options = read_frame_options();
         // BBLITE_CAPTURE_ENGINE_FRAMES=1: the screenshot frame counts engine frames.
-        const auto engine_frames = environment_variable("BBLITE_CAPTURE_ENGINE_FRAMES");
+        const auto engine_frame_capture = environment_variable("BBLITE_CAPTURE_ENGINE_FRAMES");
         std::uint64_t capture_frame_count = 0;
-        if (!engine_frames.empty()) {
-            if (engine_frames != "1" || frame_options.screenshot_path.empty() ||
+        if (!engine_frame_capture.empty()) {
+            if (engine_frame_capture != "1" || frame_options.screenshot_path.empty() ||
                 frame_options.screenshot_frame < 0 || frame_options.screenshot_frame > 1000000) {
                 throw std::invalid_argument("BBLITE_CAPTURE_ENGINE_FRAMES=1 requires a screenshot "
                                             "and a screenshot frame in [0, 1000000].");

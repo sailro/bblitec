@@ -1,0 +1,105 @@
+Copy typed Metal threadgroup-memory lengths from pipeline properties. Nonzero
+allocations are rounded to 16 bytes and checked against the device budget.
+The common resource binder supplies both direct and indirect compute dispatch.
+
+diff --git a/include/SDL3/SDL_gpu.h b/include/SDL3/SDL_gpu.h
+--- a/include/SDL3/SDL_gpu.h
++++ b/include/SDL3/SDL_gpu.h
+@@ -2630,6 +2630,12 @@
+  *
+  * - `SDL_PROP_GPU_COMPUTEPIPELINE_CREATE_NAME_STRING`: a name that can be
+  *   displayed in debugging tools.
++ * - `SDL_PROP_GPU_COMPUTEPIPELINE_CREATE_METAL_THREADGROUP_MEMORY_COUNT_NUMBER`:
++ *   the number of indexed dynamic threadgroup-memory lengths for Metal.
++ * - `SDL_PROP_GPU_COMPUTEPIPELINE_CREATE_METAL_THREADGROUP_MEMORY_POINTER`:
++ *   a pointer to that many Uint32 byte lengths. The Metal backend copies the
++ *   lengths at creation, rounds nonzero lengths to 16 bytes, and validates the
++ *   device limit. Other backends do not use these properties.
+  *
+  * \param device a GPU Context.
+  * \param createinfo a struct describing the state of the compute pipeline to
+@@ -2647,6 +2653,9 @@
+     const SDL_GPUComputePipelineCreateInfo *createinfo);
+ 
+ #define SDL_PROP_GPU_COMPUTEPIPELINE_CREATE_NAME_STRING "SDL.gpu.computepipeline.create.name"
++#define SDL_GPU_METAL_MAX_THREADGROUP_MEMORY_SLOTS 31
++#define SDL_PROP_GPU_COMPUTEPIPELINE_CREATE_METAL_THREADGROUP_MEMORY_COUNT_NUMBER "SDL.gpu.computepipeline.create.metal.threadgroup_memory.count"
++#define SDL_PROP_GPU_COMPUTEPIPELINE_CREATE_METAL_THREADGROUP_MEMORY_POINTER "SDL.gpu.computepipeline.create.metal.threadgroup_memory.pointer"
+ 
+ /**
+  * Creates a pipeline object to be used in a graphics workflow.
+diff --git a/src/gpu/metal/SDL_gpu_metal.m b/src/gpu/metal/SDL_gpu_metal.m
+--- a/src/gpu/metal/SDL_gpu_metal.m
++++ b/src/gpu/metal/SDL_gpu_metal.m
+@@ -501,6 +501,8 @@
+     Uint32 threadcountX;
+     Uint32 threadcountY;
+     Uint32 threadcountZ;
++    Uint32 threadgroupMemoryCount;
++    Uint32 threadgroupMemoryLengths[SDL_GPU_METAL_MAX_THREADGROUP_MEMORY_SLOTS];
+ } MetalComputePipeline;
+ 
+ typedef struct MetalBuffer
+@@ -1053,6 +1055,21 @@
+         id<MTLComputePipelineState> handle;
+         MetalComputePipeline *pipeline;
+         NSError *error;
++        const Sint64 allocationCount = SDL_GetNumberProperty(createinfo->props, SDL_PROP_GPU_COMPUTEPIPELINE_CREATE_METAL_THREADGROUP_MEMORY_COUNT_NUMBER, 0);
++        const Uint32 *allocationSizes = SDL_GetPointerProperty(createinfo->props, SDL_PROP_GPU_COMPUTEPIPELINE_CREATE_METAL_THREADGROUP_MEMORY_POINTER, NULL);
++        Uint32 allocationLengths[SDL_GPU_METAL_MAX_THREADGROUP_MEMORY_SLOTS] = { 0 };
++        Uint64 allocationTotal = 0;
++
++        if (allocationCount < 0 || allocationCount > SDL_GPU_METAL_MAX_THREADGROUP_MEMORY_SLOTS || (allocationCount > 0 && allocationSizes == NULL)) {
++            SET_STRING_ERROR_AND_RETURN("Invalid Metal threadgroup-memory allocation vector", NULL);
++        }
++        for (Sint64 index = 0; index < allocationCount; ++index) {
++            if (allocationSizes[index] > SDL_MAX_UINT32 - 15u) {
++                SET_STRING_ERROR_AND_RETURN("Metal threadgroup-memory allocation size overflows alignment", NULL);
++            }
++            allocationLengths[index] = METAL_INTERNAL_NextHighestAlignment(allocationSizes[index], 16u);
++            allocationTotal += allocationLengths[index];
++        }
+ 
+         libraryFunction = METAL_INTERNAL_CompileShader(
+             renderer,
+@@ -1077,8 +1094,15 @@
+         if (error != NULL) {
+             SET_ERROR_AND_RETURN("Creating compute pipeline failed: %s", [[error description] UTF8String], NULL);
+         }
++        if (allocationTotal + handle.staticThreadgroupMemoryLength > renderer->device.maxThreadgroupMemoryLength) {
++            SET_STRING_ERROR_AND_RETURN("Metal threadgroup-memory allocations exceed the device limit", NULL);
++        }
+ 
+         pipeline = SDL_calloc(1, sizeof(MetalComputePipeline));
++        if (pipeline == NULL) {
++            SDL_OutOfMemory();
++            return NULL;
++        }
+         pipeline->handle = handle;
+         pipeline->header.numSamplers = createinfo->num_samplers;
+         pipeline->header.numReadonlyStorageTextures = createinfo->num_readonly_storage_textures;
+@@ -1089,6 +1113,8 @@
+         pipeline->threadcountX = createinfo->threadcount_x;
+         pipeline->threadcountY = createinfo->threadcount_y;
+         pipeline->threadcountZ = createinfo->threadcount_z;
++        pipeline->threadgroupMemoryCount = (Uint32)allocationCount;
++        SDL_memcpy(pipeline->threadgroupMemoryLengths, allocationLengths, sizeof(allocationLengths));
+ 
+         return (SDL_GPUComputePipeline *)pipeline;
+     }
+@@ -2826,6 +2852,15 @@
+ {
+     MetalComputePipeline *computePipeline = commandBuffer->compute_pipeline;
+     NSUInteger offsets[MAX_STORAGE_BUFFERS_PER_STAGE] = { 0 };
++
++    // The pinned MSL writer exposes typed dynamic allocations as indexed
++    // threadgroup arguments. Both direct and indirect dispatch bind here.
++    for (Uint32 index = 0; index < computePipeline->threadgroupMemoryCount; ++index) {
++        if (computePipeline->threadgroupMemoryLengths[index] != 0) {
++            [commandBuffer->computeEncoder setThreadgroupMemoryLength:computePipeline->threadgroupMemoryLengths[index]
++                                                             atIndex:index];
++        }
++    }
+ 
+     if (commandBuffer->needComputeSamplerBind) {
+         if (computePipeline->header.numSamplers > 0) {
