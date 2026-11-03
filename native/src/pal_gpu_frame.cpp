@@ -119,15 +119,27 @@ void begin_profiled_frame() {
 }
 } // namespace
 
-double advance_frame(Engine& engine, Scene& scene, FrameClock& frame_clock, double frame_delta_ms) {
+std::optional<double> begin_animation_turn(Engine& engine, FrameClock& frame_clock,
+                                           double frame_delta_ms) {
+    // The conductor began it before the engine's animation-frame function.
+    if (engine.animation_turn_conducted)
+        return engine.current_delta_ms;
     if (engine.stopped) {
         engine.current_delta_ms = 0.0;
-        return 0.0;
+        return std::nullopt;
     }
     begin_profiled_frame();
     const double delta_ms = frame_clock.advance(frame_delta_ms);
     engine.current_delta_ms = delta_ms;
     run_animation_frame_callbacks(engine);
+    return delta_ms;
+}
+
+double advance_frame(Engine& engine, Scene& scene, FrameClock& frame_clock, double frame_delta_ms) {
+    const auto turn = begin_animation_turn(engine, frame_clock, frame_delta_ms);
+    if (!turn)
+        return 0.0;
+    const double delta_ms = *turn;
     const double scene_delta_ms = scene_callback_delta(scene, delta_ms);
     run_scene_before_render(scene, scene_delta_ms);
     if (scene.state->process_material_groups)
@@ -151,14 +163,10 @@ double advance_frame(Engine& engine, Scene& scene, FrameClock& frame_clock, doub
 }
 
 double advance_frame(Engine& engine, FrameClock& frame_clock, double frame_delta_ms) {
-    if (engine.stopped) {
-        engine.current_delta_ms = 0.0;
+    const auto turn = begin_animation_turn(engine, frame_clock, frame_delta_ms);
+    if (!turn)
         return 0.0;
-    }
-    begin_profiled_frame();
-    const double delta_ms = frame_clock.advance(frame_delta_ms);
-    engine.current_delta_ms = delta_ms;
-    run_animation_frame_callbacks(engine);
+    const double delta_ms = *turn;
     project_tracked_material_colors(engine);
     refresh_world_matrix_providers(engine);
     return delta_ms;
@@ -166,14 +174,10 @@ double advance_frame(Engine& engine, FrameClock& frame_clock, double frame_delta
 
 double advance_frame(Engine& engine, FrameGraphContext& context, FrameClock& frame_clock,
                      double frame_delta_ms) {
-    if (engine.stopped) {
-        engine.current_delta_ms = 0.0;
+    const auto turn = begin_animation_turn(engine, frame_clock, frame_delta_ms);
+    if (!turn)
         return 0.0;
-    }
-    begin_profiled_frame();
-    const double delta_ms = frame_clock.advance(frame_delta_ms);
-    engine.current_delta_ms = delta_ms;
-    run_animation_frame_callbacks(engine);
+    const double delta_ms = *turn;
     const float callback_delta_ms = static_cast<float>(delta_ms);
     for (const auto& callback : context.updates) {
         callback(callback_delta_ms);
@@ -199,6 +203,11 @@ void finish_frame(Engine& engine) {
 #if BBLITE_SOURCE_PROFILE
     profile::allocation_totals.collection_ticks += profile::ticks() - collection_start;
 #endif
+    if (!engine.animation_turn_conducted)
+        finish_animation_turn(engine);
+}
+
+void finish_animation_turn(Engine& engine) {
     if (engine.stopped)
         return;
     engine.animation_frame_after_render = true;

@@ -212,7 +212,7 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
             "src/frame-graph/render-task-base.ts#_buildBindings + " +
             "#prepareRenderTaskPass + #executePassBody + " +
             "src/render/draw-update-batches.ts (a scene pass's lowered renderables)",
-        consumers: ["features.cmake", "feature macros"],
+        consumers: CMAKE,
     },
     "text:weight": {
         provenance: "src/text/set-font-weight-offset.ts#setFontWeightOffset",
@@ -407,7 +407,7 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
     "engine:webgpu-device": {
         provenance:
             "src/engine/engine.ts#createEngine (engine._device over the WebGPU subset)",
-        consumers: ["features.cmake", "feature macros"],
+        consumers: CMAKE,
     },
     "engine:device-recovery": {
         provenance:
@@ -1804,7 +1804,7 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
     "ui:svg-image": {
         provenance:
             "generation-validated inline SVG <image> markup over packaged PNG/JPEG assets",
-        consumers: ["features.cmake", "feature macros"],
+        consumers: CMAKE,
     },
     "data:locale": {
         provenance:
@@ -1847,6 +1847,15 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
             "the Web Storage sessionStorage object -- process memory shared " +
             "by the realms one window recreates, never written to disk",
         consumers: ["fidelity.json"],
+    },
+    "storage:indexeddb": {
+        provenance:
+            "the IndexedDB indexedDB object -- a host service like Web " +
+            "Storage, its object stores in one SQLite file per database " +
+            "under the same per-user root; its requests settle as event " +
+            "loop tasks",
+        consumers: CMAKE,
+        applicationRealm: true,
     },
 };
 

@@ -1,4 +1,5 @@
 import type ts from "typescript";
+import type { CompileError } from "./compile-error.js";
 import type { DataLowerer } from "./data-lowering.js";
 import type {
     DataTypeRegistry,
@@ -462,6 +463,8 @@ export interface LoweringServices {
     readonly speculating: boolean;
     /** Runs `work` in an emission transaction: committed on return, rolled back on a throw. */
     transaction(work: () => void): void;
+    /** The refusal a storage demand stands for once its replay refused it (`NativeRecordDemandRefused`). */
+    refusedDemand(error: unknown): CompileError | undefined;
     captureEmittedLines(
         emitBody: () => void,
         options?: { functionBody?: true },

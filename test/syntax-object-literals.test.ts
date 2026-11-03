@@ -5,6 +5,8 @@ import { compileSource } from "../src/compiler.js";
 import {
     isProtoSetter,
     lastWriter,
+    literalDataKeys,
+    literalPropertyValues,
     objectLiteralMembers,
     objectProperty,
     plainDataMembers,
@@ -42,6 +44,39 @@ test("the last writer decides a key; a later spread or run-time key may", () => 
     assert.equal(decides("({ b: 1 })", "a"), "absent");
     assert.equal(decides("({ a() { return 1; } })", "a"), "a() { return 1; }");
     assert.equal(objectProperty(literal("({ a: 1, ...dyn })"), "a"), undefined);
+});
+
+/** The texts a key can take through literal spreads, and whether one is always written. */
+function values(source: string, key: string): string {
+    const found = literalPropertyValues(literal(source), key);
+    return found === undefined
+        ? "unknown"
+        : `${found.values.map((value) => value.getText()).join(" | ")}${found.definite ? "" : " (maybe)"}`;
+}
+
+test("a key's values follow spreads of literals and their conditional arms", () => {
+    assert.equal(values("({ a: 1, ...(c ? { a: 2 } : {}) })", "a"), "1 | 2");
+    assert.equal(
+        values("({ ...(c ? { a: { x: 1 } } : null) })", "a"),
+        "{ x: 1 } (maybe)",
+    );
+    assert.equal(
+        values("({ a: 1, ...(c ? { a: 2 } : { a: 3 }) })", "a"),
+        "2 | 3",
+    );
+    assert.equal(values("({ ...{ a: 1 }, a: 4 })", "a"), "4");
+    // A falsy operand spreads nothing.
+    assert.equal(values("({ a: 1, ...(c && { a: 2 }) })", "a"), "1 | 2");
+    assert.equal(values("({ ...(c || { a: 2 }) })", "a"), "unknown");
+    assert.equal(values("({ ...(c ? { b: 1 } : null) })", "a"), " (maybe)");
+    // Anything else a spread or member could write stays unknown.
+    assert.equal(values("({ a: 1, ...(c ? base : {}) })", "a"), "unknown");
+    assert.equal(values("({ a: 1, get b() { return 2; } })", "a"), "unknown");
+    assert.deepEqual(
+        literalDataKeys(literal("({ a: 1, ...(c ? { b: 2 } : {}), d })")),
+        ["a", "b", "d"],
+    );
+    assert.equal(literalDataKeys(literal("({ a: 1, [k]: 2 })")), undefined);
 });
 
 test("__proto__: v sets the prototype; other spellings are own keys", () => {

@@ -43,6 +43,7 @@ import {
 import { pinnedLightModeCpp } from "./pinned-light-mode.js";
 import { pinnedSceneLayoutCpp } from "./pinned-scene-layout.js";
 import { materialShadowReceiverCpp } from "./lowering/material-shadow-receiver.js";
+import { pbrAlphaBlendFeatures } from "./lowering/render-bucket.js";
 import type { LoweringContext } from "./lowering/context.js";
 import {
     lowerPinnedUboWriter,
@@ -1509,10 +1510,27 @@ ${pinnedSceneLayoutCpp()}
 `;
 }
 
+/** One composed row a PBR material state selects (`pbr_material_state_rows`). */
+export interface PbrMaterialStateRow {
+    sourceRow: number;
+    blend: boolean;
+    pluginSignature: number;
+    baseColorFactorWritten: boolean;
+    row: number;
+}
+
 /**
  * Emits `upstream/pbr_variants.hpp`: one struct per variant plus the table that
  * names each variant's stages and byte size.
  */
+/** The blend bit a PBR state row is keyed by, from the pin's own term. */
+export function pbrMaterialBlendsCpp(context: LoweringContext): string {
+    return `/** The blend bit a state is keyed by: the pin's \`PBR_HAS_ALPHA_BLEND\` term over the record. */
+[[nodiscard]] inline bool pbr_material_blends(const MaterialRecord& material) {
+    return (${pbrAlphaBlendFeatures(context)}) != 0;
+}`;
+}
+
 export function pinnedPbrVariantsHeader(
     context: LoweringContext,
     sceneUniformsWgsl: string,
@@ -1530,6 +1548,7 @@ export function pinnedPbrVariantsHeader(
     // key carries; absent, the header is the one a program without area
     // lighting always had.
     rectAreaLightings?: readonly RectAreaLightingMode[],
+    materialStateRows: readonly PbrMaterialStateRow[] = [],
 ): CppModule {
     const cpp = new CppDefinitions();
     const blocks: string[] = [];
@@ -2153,6 +2172,24 @@ ${cpp.constant("std::size_t", "pbr_variant_material_count", materialCount)}
 // Source creation profiles select composition rows independently of how many
 // physical materials a runtime branch or loop has already allocated.
 ${cpp.table("std::uint32_t", "pbr_scene_material_indices", scenePbrMaterialIndices.length, scenePbrMaterialIndices.map((index) => `    ${index},`).join("\n"))}
+
+/**
+ * The composed row a material takes in each run-time state its program can
+ * reach before drawing it: the pin composes lazily from the material's props,
+ * so a source row's own state names that row, and a state the program writes
+ * (\`alphaBlend\`, \`alpha\`, \`baseColorFactor\`, \`plugins\`) the row
+ * composed for it.
+ */
+struct PbrMaterialStateRow {
+    std::uint32_t source_row;
+    bool blend;
+    std::uint8_t plugin_signature;
+    bool base_color_factor_written;
+    std::uint32_t row;
+};
+${cpp.table("PbrMaterialStateRow", "pbr_material_state_rows", materialStateRows.length, materialStateRows.map((state) => `    {${state.sourceRow}u, ${state.blend}, ${state.pluginSignature}u, ${state.baseColorFactorWritten}, ${state.row}u},`).join("\n"))}
+
+${pbrMaterialBlendsCpp(context)}
 
 /**
  * The mesh attributes each material is drawn with, or \`npos\` when the asset

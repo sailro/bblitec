@@ -7,6 +7,7 @@
 #include <bblite/js_promise.hpp>
 
 #include <algorithm>
+#include <atomic>
 #include <condition_variable>
 #include <cstdint>
 #include <deque>
@@ -206,13 +207,57 @@ struct HttpResponseHead {
 };
 
 /**
+ * The request body bytes one `keepalive` fetch holds in flight, against the Fetch standard's
+ * 64 KiB quota for all of them (one quota per process): taken when the fetch starts, returned
+ * when its transfer ends.
+ */
+class KeepaliveLease {
+public:
+    static constexpr std::size_t quota = 64u * 1024u;
+    /** A lease of `bytes`, or none when the bytes in flight would exceed the quota. */
+    static std::optional<KeepaliveLease> acquire(std::size_t bytes) {
+        auto& held = in_flight();
+        auto current = held.load();
+        do {
+            if (bytes > quota - std::min(current, quota))
+                return std::nullopt;
+        } while (!held.compare_exchange_weak(current, current + bytes));
+        return KeepaliveLease(bytes);
+    }
+    KeepaliveLease(KeepaliveLease&& other) noexcept : bytes_(std::exchange(other.bytes_, 0)) {}
+    KeepaliveLease& operator=(KeepaliveLease&& other) noexcept {
+        if (this != &other) {
+            release();
+            bytes_ = std::exchange(other.bytes_, 0);
+        }
+        return *this;
+    }
+    KeepaliveLease(const KeepaliveLease&) = delete;
+    KeepaliveLease& operator=(const KeepaliveLease&) = delete;
+    ~KeepaliveLease() { release(); }
+
+private:
+    explicit KeepaliveLease(std::size_t bytes) : bytes_(bytes) {}
+    void release() {
+        if (bytes_)
+            in_flight().fetch_sub(std::exchange(bytes_, 0));
+    }
+    static std::atomic<std::size_t>& in_flight() {
+        static std::atomic<std::size_t> bytes{0};
+        return bytes;
+    }
+    std::size_t bytes_ = 0;
+};
+
+/**
  * The thread-safe exchange between one transfer's transport thread and its realm. The transport
  * delivers the head, then body chunks, then the end or a failure; the realm polls, taking every
  * queued chunk as one, and, when it needs more, registers one completion the transport posts at
  * its next delivery. The end or failure is the realm's only in a task such a completion runs, as
  * the Fetch standard queues it as a task. A queue holding `high_water` bytes of chunk storage
  * blocks the transport until the realm reads (backpressure). `cancel` (either side, any thread)
- * discards queued bytes, wakes a blocked transport and ends what the transport reports.
+ * discards queued bytes, wakes a blocked transport and ends what the transport reports. `release`
+ * lets a transfer no realm observes run to its end, discarding what it delivers.
  */
 class HttpExchange {
 public:
@@ -235,12 +280,19 @@ public:
         head_ = std::move(head);
         post_locked(head_completion_);
     }
+    /** Transport: the keepalive bytes this transfer holds until it ends (set before it starts). */
+    void hold(KeepaliveLease lease) {
+        std::lock_guard lock(mutex_);
+        keepalive_ = std::move(lease);
+    }
     /** Queue a chunk; false once canceled (the transport then stops). */
     bool push(std::vector<std::uint8_t> chunk) {
         std::unique_lock lock(mutex_);
-        space_.wait(lock, [&] { return canceled_ || queued_ < high_water; });
+        space_.wait(lock, [&] { return canceled_ || released_ || queued_ < high_water; });
         if (canceled_)
             return false;
+        if (released_)
+            return true;
         queued_ += chunk.capacity();
         chunks_.push_back(std::move(chunk));
         post_locked(std::exchange(waiting_, 0));
@@ -248,6 +300,7 @@ public:
     }
     void finish() {
         std::lock_guard lock(mutex_);
+        keepalive_.reset();
         finished_ = true;
         post_locked(std::exchange(waiting_, 0));
     }
@@ -255,6 +308,7 @@ public:
         std::lock_guard lock(mutex_);
         if (finished_ || failure_ || canceled_)
             return;
+        keepalive_.reset();
         failure_ = std::move(message);
         post_locked(head_ ? std::exchange(waiting_, 0) : head_completion_);
     }
@@ -321,6 +375,7 @@ public:
             if (canceled_)
                 return;
             canceled_ = true;
+            keepalive_.reset();
             chunks_.clear();
             queued_ = 0;
             wake = wake_;
@@ -329,10 +384,19 @@ public:
         if (wake)
             wake();
     }
+    void release() {
+        {
+            std::lock_guard lock(mutex_);
+            released_ = true;
+            chunks_.clear();
+            queued_ = 0;
+        }
+        space_.notify_all();
+    }
 
 private:
     void post_locked(std::uint64_t completion) {
-        if (completion)
+        if (completion && !released_)
             inbox_->post(std::make_unique<CompletionEvent>(completion));
     }
 
@@ -346,6 +410,8 @@ private:
     bool finished_ = false;
     std::optional<std::string> failure_;
     bool canceled_ = false;
+    bool released_ = false;
+    std::optional<KeepaliveLease> keepalive_;
     std::uint64_t waiting_ = 0;
     std::function<void()> wake_;
 };
@@ -398,18 +464,29 @@ private:
     std::thread worker_;
 };
 
-/** A transfer's transport thread; destroying it cancels the exchange and hands the thread to the
+/** A transfer's transport thread; destroying it abandons the exchange and hands the thread to the
  * reaper, so no realm thread waits for a transfer to stop. */
 struct HttpTransport {
     std::shared_ptr<HttpExchange> exchange;
     JoiningThread thread;
+    /** A `keepalive` request outlives the realm that made it. */
+    bool keepalive = false;
     HttpTransport() = default;
     HttpTransport(const HttpTransport&) = delete;
     HttpTransport& operator=(const HttpTransport&) = delete;
     ~HttpTransport() {
-        if (exchange)
-            exchange->cancel();
+        abandon();
         HttpTransportReaper::instance().reap(std::move(thread));
+    }
+    /** The realm no longer observes the transfer: a keepalive one runs to its end (process exit
+     * joins it), any other is canceled. */
+    void abandon() {
+        if (!exchange)
+            return;
+        if (keepalive)
+            exchange->release();
+        else
+            exchange->cancel();
     }
 };
 

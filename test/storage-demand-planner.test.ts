@@ -1,8 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import ts from "typescript";
 import { compileSource, surveySource } from "../src/compiler.js";
 import { SourceCoverage } from "../src/compiler/source-coverage.js";
+import { DynamicBindingStorageRequired } from "../src/compiler/dynamic-binding-storage.js";
 import {
+    StorageDemandPlanner,
     storagePlanningStatistics,
     withStorageDemandPlanning,
 } from "../src/compiler/storage-demand-planner.js";
@@ -237,4 +240,68 @@ test("planning collects every record join one statement meets", () => {
         "storage-demand-planner/record-joins",
         planned.result.cpp,
     );
+});
+
+/** A one-file program, for driving the planner over real statements. */
+function plannedStatements(source: string) {
+    const options: ts.CompilerOptions = { target: ts.ScriptTarget.ES2022 };
+    const host = ts.createCompilerHost(options, true);
+    const file = ts.createSourceFile("input.ts", source, options.target!, true);
+    host.getSourceFile = (path) => (path === "input.ts" ? file : undefined);
+    const program = ts.createProgram(["input.ts"], options, host);
+    return { checker: program.getTypeChecker(), statements: file.statements };
+}
+
+test("a survey's plan goes on past a dependent demand, skipping what reads it", () => {
+    // Each record `let` demands dynamic storage; the statements reading one
+    // wait for the next attempt, and the unrelated one is still collected.
+    const { checker, statements } = plannedStatements(`
+        let first = { gain: 1 };
+        first = { gain: 2 };
+        const doubled = first.gain * 2;
+        let second = { level: 1 };
+        second = { level: 2 };
+    `);
+    const plan = (survey: boolean) => {
+        const before = storagePlanningStatistics();
+        const planner = new StorageDemandPlanner(checker, 0, survey);
+        const context = {
+            checker,
+            transaction: (work: () => void) => work(),
+        } as unknown as Parameters<typeof planner.attemptStatement>[0];
+        planner.run(() => {
+            for (const statement of statements)
+                planner.attemptStatement(context, statement, () => {
+                    if (
+                        ts.isVariableStatement(statement) &&
+                        (statement.declarationList.flags & ts.NodeFlags.Let) !==
+                            0
+                    )
+                        throw new DynamicBindingStorageRequired(
+                            statement.declarationList.declarations[0]!,
+                            undefined,
+                        );
+                });
+        });
+        const after = storagePlanningStatistics();
+        return {
+            demands: planner.demands.map((request) =>
+                request.kind === "dynamic"
+                    ? request.declaration.name.getText()
+                    : request.kind,
+            ),
+            dependent: after.dependent - before.dependent,
+            writes: after.writes - before.writes,
+        };
+    };
+    assert.deepEqual(plan(false), {
+        demands: ["first"],
+        dependent: 0,
+        writes: 1,
+    });
+    assert.deepEqual(plan(true), {
+        demands: ["first", "second"],
+        dependent: 3,
+        writes: 0,
+    });
 });

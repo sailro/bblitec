@@ -75,6 +75,19 @@ test("element event handler properties, containment, connection and layout exten
         bubble.classList.add("shown");
         hideBubble();
         record(bubble.classList.contains("shown") ? "0" : "7");
+        // Rectangles measured into an array keep their getters.
+        const row = document.createElement("div");
+        row.style.cssText = "position:absolute;left:0;top:100px";
+        for (const css of ["display:inline-block;width:10px;height:5px", "display:inline-block;width:20px;height:5px", "display:none"]) {
+            const cell = document.createElement("span");
+            cell.style.cssText = css;
+            row.appendChild(cell);
+        }
+        document.body.appendChild(row);
+        const rects = Array.from(row.children, (child) => child.getBoundingClientRect());
+        let walked = 0;
+        for (const child of row.children) walked += child.isConnected ? 1 : 0;
+        record(rects.length === 3 && walked === 3 && [...row.children].length === 3 && rects.every((rect) => rect.x === rect.left && rect.right === rect.left + rect.width && rect.bottom === rect.y + rect.height) ? "8" : "0");
         document.addEventListener("pointerdown", (event) => {
             if (event.target instanceof Element && event.target instanceof HTMLElement && button.contains(event.target as Node))
                 record("P");
@@ -109,16 +122,16 @@ test("element layout extents and rectangles read the retained border box", () =>
     );
     assert.match(
         cpp,
-        /static_cast<void>\(std::round\(bbl::ui_get_client_rect\([^;]+\)\.offset_width\)\)/,
+        /static_cast<void>\(std::round\(bbl::ui_get_client_rect\([^;]+\)\.unzoomed\(\)\.offset_width\)\)/,
     );
     for (const field of ["offset_height", "width", "height"])
         assert.match(
             cpp,
             new RegExp(
-                `std::round\\(bbl::ui_get_client_rect\\([^;]+\\)\\.${field}\\)`,
+                `std::round\\(bbl::ui_get_client_rect\\([^;]+\\)\\.unzoomed\\(\\)\\.${field}\\)`,
             ),
         );
-    assert.match(cpp, /v_bblite_ui_rect_\d+\.offset_width/);
+    assert.match(cpp, /\(v_bblite_ui_rect_\d+\)->offset_width/);
 });
 
 test("record-field controls take their declared interface's tag", () => {

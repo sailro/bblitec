@@ -1,5 +1,10 @@
 import ts from "typescript";
-import { undefinedValue } from "./values/model.js";
+import {
+    jsonAbsenceCpp,
+    optionalPresentCpp,
+    optionalValueCpp,
+    undefinedValue,
+} from "./values/model.js";
 import type { LoweringServices } from "./lowering-services.js";
 import { isStringValue, type Value } from "./types.js";
 import { expressionMayRunCode, objectLiteralMembers } from "./syntax.js";
@@ -410,6 +415,17 @@ export function thrownException(
     refusal: { node: ts.Node; message: string },
 ): { cpp: string; pointer: boolean } {
     const error = authoredErrorValue(context, thrown) ?? thrown;
+    // A borrowed DOM event cannot outlive its dispatch: it throws opaque, and
+    // natively reading the thrown value refuses.
+    if (
+        error.kind === "platform-mouse-event" ||
+        error.kind === "platform-keyboard-event" ||
+        error.kind === "dom-event"
+    )
+        return {
+            cpp: `std::make_exception_ptr(bbl::js::UnrepresentedThrownValue("Event"))`,
+            pointer: true,
+        };
     if (isJsonValue(error)) {
         if (!context.thrownValueKinds.has("string"))
             throw new ThrownValueStorageRequired("string");
@@ -428,6 +444,19 @@ export function thrownException(
             ),
             pointer: true,
         };
+    // A nullable Error (`reject(request.error)`) throws the error, or null.
+    if (
+        error.dataType?.kind === "optional" &&
+        error.dataType.inner.kind === "error"
+    ) {
+        if (!context.thrownValueKinds.has("string"))
+            throw new ThrownValueStorageRequired("string");
+        context.reachJson();
+        return {
+            cpp: `[](const auto& reason) -> std::exception_ptr { if (${optionalPresentCpp("reason")}) return ${optionalValueCpp("reason")}; return bbl::js::thrown_exception(${jsonAbsenceCpp("null")}); }(${error.cpp})`,
+            pointer: true,
+        };
+    }
     const value = thrownMessage(error);
     if (!value) return context.fail(refusal.node, refusal.message);
     if (value.staticString === undefined && !isStringValue(value))

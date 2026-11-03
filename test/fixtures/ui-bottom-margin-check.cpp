@@ -33,10 +33,12 @@ int main() try {
                                   const char* child_style, float height, float next_y,
                                   const char* nested_style = nullptr) {
             const auto root = make("position:absolute;left:0;top:0;width:200px;");
-            const auto parent = make(std::string("border-top:1px #000000;") + parent_style, root);
+            const auto parent =
+                make(std::string("border-top:1px solid #000000;") + parent_style, root);
             const auto child_parent =
-                nested_style ? make(std::string("border-top:1px #000000;") + nested_style, parent)
-                             : parent;
+                nested_style
+                    ? make(std::string("border-top:1px solid #000000;") + nested_style, parent)
+                    : parent;
             make(std::string("height:20px;") + child_style, child_parent);
             const auto next = make("height:10px;margin-top:8px;", root);
             cases.push_back({name, parent, next, height, next_y});
@@ -51,8 +53,8 @@ int main() try {
         add_case("nested negative margins", "margin-bottom:-4px;", "margin-bottom:-12px;", 22, 18,
                  "margin-bottom:-8px;");
         add_case("bottom padding barrier", "padding-bottom:4px;", "margin-bottom:8px;", 33, 41);
-        add_case("bottom border barrier", "border-bottom:2px #000000;", "margin-bottom:8px;", 31,
-                 39);
+        add_case("bottom border barrier", "border-bottom:2px solid #000000;", "margin-bottom:8px;",
+                 31, 39);
         add_case("top padding does not block bottom", "padding-top:4px;", "margin-bottom:8px;", 25,
                  33);
         add_case("definite height barrier", "height:40px;", "margin-bottom:8px;", 41, 49);

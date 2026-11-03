@@ -1,17 +1,22 @@
+import { domRectSnapshotCpp } from "./dom-rects.js";
 import { compileWebPlatformCall } from "./web-platform.js";
 import { journaled } from "./emission-transaction.js";
 import { deferredCapabilityDescriptor } from "./deferred-capabilities.js";
 import ts from "typescript";
-import { sameReference, namedMember, type NamedMember } from "./symbols.js";
+import { namedMember, type NamedMember } from "./symbols.js";
+import { uiComputedStyleRead } from "./properties.js";
 import { compileSyntheticEventDispatch } from "./synthetic-events.js";
 import { registerUiImageAsset } from "./assets.js";
-import { bakeCanvasReadback } from "./canvas-readback.js";
+import {
+    bakeCanvasReadback,
+    canvasReadbackProducer,
+} from "./canvas-readback.js";
 import {
     compileCharacterMethod,
     type CharacterIntrinsicContext,
 } from "./intrinsics/character-controller.js";
 import type { LoweringServices } from "./lowering-services.js";
-import { argumentAt } from "./syntax.js";
+import { argumentAt, isOperandSelection } from "./syntax.js";
 import {
     isPresentValue,
     isStringValue,
@@ -136,6 +141,7 @@ interface PlatformCallContext
             | "emit"
             | "engineLifecycle"
             | "browserErasure"
+            | "evaluationOrder"
             | "evaluator"
             | "expectArgumentCount"
             | "expectKind"
@@ -234,6 +240,35 @@ export class PlatformCalls {
                 undefinedDefaults: { focusVisible: true },
             },
         ).focusVisible;
+    }
+
+    /**
+     * `getContext("2d", attributes)`: `willReadFrequently` only hints how
+     * often pixels are read back, which nothing native configures. Other
+     * attributes change the backing store (`alpha: false` is opaque) and
+     * refuse.
+     */
+    private expectCanvasContextHints(attributes: ts.Expression): void {
+        const literal = this.context.unwrap(attributes);
+        if (!ts.isObjectLiteralExpression(literal))
+            return this.context.fail(
+                attributes,
+                "Canvas context attributes must be an object literal.",
+            );
+        for (const property of literal.properties) {
+            if (
+                !ts.isPropertyAssignment(property) ||
+                !ts.isIdentifier(property.name) ||
+                property.name.text !== "willReadFrequently"
+            )
+                this.context.fail(
+                    property,
+                    "Only the willReadFrequently canvas context attribute is represented.",
+                );
+            this.context.emitDiscardedValue(
+                this.context.compileValue(property.initializer),
+            );
+        }
     }
 
     /**
@@ -1310,6 +1345,35 @@ export class PlatformCalls {
             ? this.context.bindings.lookupOptional(style)
             : undefined;
         const styleMember = namedMember(this.context.checker, style);
+        // `getComputedStyle(el).getPropertyValue(name)`, or through a stored result.
+        const computed =
+            callee.name !== "getPropertyValue"
+                ? undefined
+                : retainedStyle?.uiComputedStyle
+                  ? retainedStyle
+                  : ts.isCallExpression(style) &&
+                      computedStyleElement(this.context, style)
+                    ? this.context.compileValue(style)
+                    : undefined;
+        if (computed?.kind === "ui-element" && computed.uiComputedStyle) {
+            this.context.expectArgumentCount(call, 1, 1);
+            // CSSOM matches a custom property's name exactly, any other ASCII-insensitively.
+            const written = this.context.compileStringLiteral(
+                argumentAt(call, 0),
+            );
+            const read = uiComputedStyleRead(
+                this.context.requireEngine(computed, call),
+                computed.cpp,
+                written.startsWith("--") ? written : written.toLowerCase(),
+                (text) => this.context.cppString(text),
+            );
+            if (!read)
+                this.context.fail(
+                    argumentAt(call, 0),
+                    `Computed style '${written}' is not represented; display, opacity, visibility, z-index and custom properties are.`,
+                );
+            return read;
+        }
         if (
             (styleMember?.name === "style" || retainedStyle?.uiStyle) &&
             ["setProperty", "getPropertyValue", "removeProperty"].includes(
@@ -1475,11 +1539,13 @@ export class PlatformCalls {
                     "ellipse",
                     "polyline",
                     "polygon",
+                    "text",
+                    "textPath",
                 ].includes(tag)
             )
                 this.context.fail(
                     call,
-                    `Native SVG element '${tag}' is outside the bounded svg/shape subset.`,
+                    `Native SVG element '${tag}' is outside the bounded svg/shape/text subset.`,
                 );
             if (!/^[a-z][a-z0-9-]*$/i.test(tag)) {
                 this.context.fail(
@@ -1504,10 +1570,7 @@ export class PlatformCalls {
                 uiTag: normalizedTag,
                 uiStaticId,
                 ...(normalizedTag === "canvas"
-                    ? {
-                          uiCanvas: true as const,
-                          uiCanvasId: this.ui.uiCanvasIds++,
-                      }
+                    ? { uiCanvas: true as const }
                     : {}),
             };
         }
@@ -1550,7 +1613,8 @@ export class PlatformCalls {
                           "matches",
                           "closest",
                           "removeChild",
-                      ].includes(callee.name)
+                      ].includes(callee.name) ||
+                      this.selectsPureReceiver(callee.expression)
                     ? this.ui.compileUiElementReceiver(callee.expression)
                     : this.ui.uiElementValue(callee.expression));
         if (element?.uiTag === "image-bitmap" && callee.name === "close") {
@@ -1562,7 +1626,7 @@ export class PlatformCalls {
             !element.uiCanvasContext &&
             callee.name === "getContext"
         ) {
-            this.context.expectArgumentCount(call, 1, 1);
+            this.context.expectArgumentCount(call, 1, 2);
             const context = this.context.compileStringLiteral(
                 argumentAt(call, 0),
             );
@@ -1572,6 +1636,8 @@ export class PlatformCalls {
                     "Retained native canvas only supports the '2d' context.",
                 );
             }
+            if (call.arguments.length === 2)
+                this.expectCanvasContextHints(argumentAt(call, 1));
             return {
                 ...element,
                 uiCanvasContext: true,
@@ -1597,13 +1663,24 @@ export class PlatformCalls {
             };
             switch (callee.name) {
                 case "scale":
-                    this.ui.recordUiCanvasLogicalScale(call);
                     return invocation("scale", 2);
+                case "save":
+                case "restore":
+                    return invocation(callee.name, 0);
+                case "translate":
+                    return invocation("translate", 2);
+                case "rotate":
+                    return invocation("rotate", 1);
+                case "transform":
+                    return invocation("transform", 6);
+                case "resetTransform":
+                    return invocation("reset_transform", 0);
+                case "setTransform":
+                    // The DOMMatrix2DInit form is not lowered.
+                    return call.arguments.length === 0
+                        ? invocation("reset_transform", 0)
+                        : invocation("set_transform", 6);
                 case "clearRect":
-                    this.ui.expectUiCanvasFullSurfaceClear(
-                        call,
-                        element.uiCanvasId,
-                    );
                     return invocation("clear_rect", 4);
                 case "fillRect":
                     return invocation("fill_rect", 4);
@@ -1637,7 +1714,43 @@ export class PlatformCalls {
                     return invocation("stroke", 0);
                 case "getImageData": {
                     this.context.expectArgumentCount(call, 4, 4);
-                    const atlas = bakeCanvasReadback(this.context, call);
+                    const producer = canvasReadbackProducer(this.context, call);
+                    if (!producer) {
+                        // Read back natively: the canvas's draws rasterized now.
+                        const image =
+                            this.context.allocateTemporaryCppName("image_data");
+                        this.context.emit({
+                            kind: "declaration",
+                            type: "const auto",
+                            name: image,
+                            initializer: `bbl::ui_canvas_get_image_data(${engine}, ${element.cpp}, ${number(0)}, ${number(1)}, ${number(2)}, ${number(3)})`,
+                        });
+                        this.context.reachJsData();
+                        return {
+                            kind: "record",
+                            cpp: "",
+                            recordProperties: {
+                                data: {
+                                    kind: "data",
+                                    cpp: `${image}.data`,
+                                    dataType: { kind: "u8array" },
+                                },
+                                width: {
+                                    kind: "number",
+                                    cpp: `${image}.width`,
+                                },
+                                height: {
+                                    kind: "number",
+                                    cpp: `${image}.height`,
+                                },
+                            },
+                        };
+                    }
+                    const atlas = bakeCanvasReadback(
+                        this.context,
+                        call,
+                        producer,
+                    );
                     for (const image of atlas.images) {
                         registerUiImageAsset(
                             this.context,
@@ -1714,7 +1827,7 @@ export class PlatformCalls {
                     };
                 }
                 case "drawImage": {
-                    this.context.expectArgumentCount(call, 5, 5);
+                    this.context.expectArgumentCount(call, 3, 9);
                     const source = this.context.compileValue(
                         argumentAt(call, 0),
                     );
@@ -1728,67 +1841,30 @@ export class PlatformCalls {
                     if (source.uiTag === "image-bitmap") {
                         return { kind: "void", cpp: "" };
                     }
+                    if (
+                        source.uiTag !== undefined &&
+                        source.uiTag !== "img" &&
+                        source.uiTag !== "canvas"
+                    )
+                        this.context.fail(
+                            argumentAt(call, 0),
+                            `Retained Canvas2D drawImage draws an img or canvas source, not <${source.uiTag}>.`,
+                        );
                     this.context.expectSameEngine(element, source, call);
-                    const extent = (
-                        argumentIndex: number,
-                        axis: "width" | "height",
-                    ): string => {
-                        const argument = this.context.unwrap(
-                            argumentAt(call, argumentIndex),
-                        );
-                        let dimension: ts.Expression = argument;
-                        let multiplier = "1.0";
-                        if (
-                            ts.isBinaryExpression(argument) &&
-                            argument.operatorToken.kind ===
-                                ts.SyntaxKind.AsteriskToken
-                        ) {
-                            const left = this.context.unwrap(argument.left);
-                            const right = this.context.unwrap(argument.right);
-                            const leftIsDimension =
-                                ts.isPropertyAccessExpression(left) &&
-                                left.name.text === axis;
-                            const rightIsDimension =
-                                ts.isPropertyAccessExpression(right) &&
-                                right.name.text === axis;
-                            if (leftIsDimension) {
-                                dimension = left;
-                                multiplier = this.context.compileNumber(
-                                    argument.right,
-                                    "double",
-                                );
-                            } else if (rightIsDimension) {
-                                dimension = right;
-                                multiplier = this.context.compileNumber(
-                                    argument.left,
-                                    "double",
-                                );
-                            }
-                        }
-                        if (
-                            !ts.isPropertyAccessExpression(dimension) ||
-                            dimension.name.text !== axis ||
-                            !sameReference(
-                                this.context.checker,
-                                dimension.expression,
-                                argumentAt(call, 0),
-                            )
-                        ) {
-                            this.context.fail(
-                                argumentAt(call, argumentIndex),
-                                `Retained Canvas2D drawImage ${axis} must be source.${axis}, optionally multiplied by a scale.`,
-                            );
-                        }
-                        return (
-                            `(bbl::ui_canvas_${axis}(${engine}, ${source.cpp}) * ` +
-                            `(${multiplier}))`
-                        );
-                    };
+                    // drawImage(source, dx, dy), (..., dw, dh) or (source, sx, sy, sw, sh, dx, dy, dw, dh).
+                    if (
+                        call.arguments.length !== 3 &&
+                        call.arguments.length !== 5
+                    )
+                        this.context.expectArgumentCount(call, 9, 9);
                     return {
                         kind: "void",
                         cpp:
                             `bbl::ui_canvas_draw_image(${engine}, ${element.cpp}, ${source.cpp}, ` +
-                            `${number(1)}, ${number(2)}, ${extent(3, "width")}, ${extent(4, "height")})`,
+                            `${call.arguments
+                                .slice(1)
+                                .map((_argument, index) => number(index + 1))
+                                .join(", ")})`,
                     };
                 }
                 case "fillText":
@@ -2548,42 +2624,25 @@ export class PlatformCalls {
         if (element && callee.name === "getBoundingClientRect") {
             this.context.expectArgumentCount(call, 0, 0);
             const engine = this.context.requireEngine(element, call);
+            // Measured at the call, whenever its getters are read.
             const rect = this.context.allocateTemporaryCppName("ui_rect");
             this.context.emit({
                 kind: "declaration",
                 type: "const auto",
                 name: rect,
-                initializer: `bbl::ui_get_client_rect(${engine}, ${element.cpp})`,
+                initializer: domRectSnapshotCpp(engine, element.cpp),
             });
-            const binding = this.context.registerNativeBinding(
-                rect,
-                false,
-                false,
-                "const bbl::UiClientRect",
-            );
-            const component = (name: string, extent?: string): Value => ({
-                kind: "number",
-                cpp: extent
-                    ? `(${rect}.${name} + ${rect}.${extent})`
-                    : `${rect}.${name}`,
-                dataType: { kind: "number" },
-                engineCpp: engine,
-                nativeCaptures: [binding],
-            });
+            const type = { kind: "dom-rect" } as const;
             return {
-                kind: "record",
-                cpp: "",
-                // DOMRect sizes are the border box, as offsetWidth/Height are.
-                recordProperties: {
-                    x: component("left"),
-                    y: component("top"),
-                    left: component("left"),
-                    top: component("top"),
-                    right: component("left", "offset_width"),
-                    bottom: component("top", "offset_height"),
-                    width: component("offset_width"),
-                    height: component("offset_height"),
-                },
+                ...this.context.dataLowerer.leafValue(rect, type),
+                nativeCaptures: [
+                    this.context.registerNativeBinding(
+                        rect,
+                        false,
+                        false,
+                        `const ${this.context.dataTypes.cppType(type)}`,
+                    ),
+                ],
             };
         }
         if (element && callee.name === "animate") {
@@ -2616,20 +2675,53 @@ export class PlatformCalls {
                     classOwner,
                 );
                 const method = callee.name;
+                // `add` and `remove` take any number of tokens, in order.
+                const tokens = method === "add" || method === "remove";
                 this.context.expectArgumentCount(
                     call,
                     1,
-                    method === "toggle" ? 2 : 1,
+                    method === "toggle"
+                        ? 2
+                        : tokens
+                          ? Math.max(1, call.arguments.length)
+                          : 1,
                 );
-                const name = this.context.compileStringLiteral(
-                    argumentAt(call, 0),
-                );
-                if (!/^[A-Za-z_][A-Za-z0-9_-]*$/.test(name)) {
-                    this.context.fail(
-                        argumentAt(call, 0),
-                        `Native UI class name '${name}' is not valid.`,
-                    );
-                }
+                // A token is static text, or a string read now, in
+                // argument order, for the PAL to validate.
+                const names = (
+                    tokens ? call.arguments : [argumentAt(call, 0)]
+                ).map((argument) => {
+                    const token = this.context.probeEmission(
+                        () => this.context.compileValue(argument),
+                        (value) => value.staticString !== undefined,
+                    )?.staticString;
+                    if (token === undefined) {
+                        const name =
+                            this.context.allocateTemporaryCppName("class_name");
+                        this.context.emit({
+                            kind: "declaration",
+                            type: "const std::string",
+                            name,
+                            initializer: this.ui.uiStringCpp(
+                                argument,
+                                "UI classList",
+                            ),
+                        });
+                        return { argument, cpp: name };
+                    }
+                    if (!/^[A-Za-z_][A-Za-z0-9_-]*$/.test(token)) {
+                        this.context.fail(
+                            argument,
+                            `Native UI class name '${token}' is not valid.`,
+                        );
+                    }
+                    return {
+                        argument,
+                        token,
+                        cpp: this.context.cppString(token),
+                    };
+                });
+                const name = names[0]!;
                 if (method === "contains") {
                     const engine = this.context.requireEngine(
                         classElement,
@@ -2638,7 +2730,7 @@ export class PlatformCalls {
                     return this.elementBoolean(
                         presenceFlagCpp(classElement),
                         call,
-                        `bbl::ui_has_class(${engine}, ${classElement.cpp}, ${this.context.cppString(name)})`,
+                        `bbl::ui_has_class(${engine}, ${classElement.cpp}, ${name.cpp})`,
                     );
                 }
                 // An unforced toggle flips the class and returns its presence.
@@ -2655,38 +2747,55 @@ export class PlatformCalls {
                         : method === "add"
                           ? "true"
                           : "false";
-                this.ui.recordUiStaticClass(
-                    classElement,
-                    name,
-                    method,
-                    enabled,
-                );
-                if (classElement.uiStaticId === undefined) {
-                    this.ui.uiUnknownClassMutations.push({
-                        className: name,
-                        site: call,
-                    });
+                for (const { argument, token } of names) {
+                    if (token !== undefined)
+                        this.ui.recordUiStaticClass(
+                            classElement,
+                            token,
+                            method,
+                            enabled,
+                        );
+                    else this.ui.recordUiRuntimeClass(classElement, argument);
                 }
                 const engine = this.context.requireEngine(classElement, call);
-                const toggle =
-                    `bbl::ui_toggle_class(${engine}, ${classElement.cpp}, ` +
-                    `${this.context.cppString(name)}`;
+                const elementCpp = classElement.cpp;
+                // add and remove run the token list's update steps; a toggle
+                // changes the list only with the class's presence.
+                const toggle = (token: { cpp: string }): string =>
+                    `bbl::${method === "toggle" ? "ui_toggle_class" : "ui_set_class"}(${engine}, ${elementCpp}, ${token.cpp}`;
+                const toggles = names.map(
+                    (token) => `${toggle(token)}, ${enabled})`,
+                );
                 return forced
                     ? {
                           kind: "void",
                           cpp: whenPresent(
                               classElement,
-                              `${toggle}, ${enabled})`,
+                              toggles.length === 1
+                                  ? toggles[0]!
+                                  : `(${toggles.join(", ")})`,
                           ),
                       }
                     : this.elementBoolean(
                           presenceFlagCpp(classElement),
                           call,
-                          `${toggle})`,
+                          `${toggle(name)})`,
                       );
             }
         }
         return undefined;
+    }
+
+    /**
+     * A receiver selecting among operands (`(head ?? box).appendChild(i)`)
+     * lowers before the method is known; pure, it has no effect a method
+     * this lowering leaves to another would repeat.
+     */
+    private selectsPureReceiver(receiver: ts.Expression): boolean {
+        return (
+            isOperandSelection(this.context.unwrap(receiver)) &&
+            this.context.evaluationOrder.isPureExpression(receiver)
+        );
     }
 
     /** A boolean element result; through `?.`, an absent element yields undefined. */

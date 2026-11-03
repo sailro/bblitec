@@ -380,6 +380,69 @@
       "variants": ["all"]
     },
     {
+      "library": "rmlui",
+      "file": "native/patches/rmlui/0049-css-percentage-math.patch",
+      "purpose": "CSS math over a percentage of a layout length (calc, and min/max/clamp of such terms) resolved at layout",
+      "upstream": { "state": "unsubmitted" },
+      "variants": ["all"]
+    },
+    {
+      "library": "rmlui",
+      "file": "native/patches/rmlui/0050-border-image-longhands.patch",
+      "purpose": "border-image as a shorthand over its five longhands, so a longhand cascades over another rule's shorthand",
+      "upstream": { "state": "unsubmitted" },
+      "variants": ["all"]
+    },
+    {
+      "library": "rmlui",
+      "file": "native/patches/rmlui/0051-decorator-origin-clip.patch",
+      "purpose": "Sized decorator layers placed in an origin box apart from their paint box, clipped to a rounded paint box",
+      "upstream": { "state": "unsubmitted" },
+      "variants": ["all"]
+    },
+    {
+      "library": "rmlui",
+      "file": "native/patches/rmlui/0052-grid-auto-flow.patch",
+      "purpose": "grid-auto-flow row and column auto-placement (column flow is row flow with the axes swapped)",
+      "upstream": { "state": "unsubmitted" },
+      "variants": ["all"]
+    },
+    {
+      "library": "rmlui",
+      "file": "native/patches/rmlui/0053-css-zoom.patch",
+      "purpose": "CSS zoom as an inherited effective zoom folded into each element's density-independent pixel ratio",
+      "upstream": { "state": "unsubmitted" },
+      "variants": ["all"]
+    },
+    {
+      "library": "rmlui",
+      "file": "native/patches/rmlui/0054-border-width-snapping.patch",
+      "purpose": "Border widths snap down to whole device pixels above one pixel, as CSS snaps a border width",
+      "upstream": { "state": "unsubmitted" },
+      "variants": ["all"]
+    },
+    {
+      "library": "rmlui",
+      "file": "native/patches/rmlui/0055-border-style.patch",
+      "purpose": "border-style longhands (none, hidden, solid, dashed) and Chromium dashed border geometry",
+      "upstream": { "state": "unsubmitted" },
+      "variants": ["all"]
+    },
+    {
+      "library": "rmlui",
+      "file": "native/patches/rmlui/0056-flex-order.patch",
+      "purpose": "flex item order: order-modified document order for layout and painting",
+      "upstream": { "state": "unsubmitted" },
+      "variants": ["all"]
+    },
+    {
+      "library": "rmlui",
+      "file": "native/patches/rmlui/0057-style-attribute-replace.patch",
+      "purpose": "a replaced or removed style attribute drops the declarations it no longer makes",
+      "upstream": { "state": "unsubmitted" },
+      "variants": ["all"]
+    },
+    {
       "library": "dawn",
       "file": "native/patches/dawn/0001-android-surface-loss.patch",
       "purpose": "Report Android Vulkan surface loss at the next acquisition without losing the device",

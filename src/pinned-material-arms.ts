@@ -46,7 +46,15 @@ import { rectAreaLayeredRefusal } from "./pinned-rect-area-lights.js";
 import { pinnedReceiverReachesArm } from "./pinned-light-mode.js";
 import type { ShadowLightSlot } from "./pinned-shadow-slots.js";
 import { pinnedReceiveShadowsBit } from "./pinned-mesh-features.js";
-import { pinnedPlugins } from "./pinned-material-plugins.js";
+import {
+    pinnedPlugins,
+    type MaterialPluginManifest,
+} from "./pinned-material-plugins.js";
+import {
+    pbrMaterialStatesOf,
+    type PbrMaterialState,
+    type PbrMaterialStates,
+} from "./pinned-pbr-material-states.js";
 import type {
     SceneMeshNamePredicate,
     ScenePbrLightmapManifest,
@@ -952,6 +960,10 @@ export async function composeRenderableVariants(
         shadowLights?: readonly ShadowLightSlot[];
         /** Whether a light may exclude individual meshes. */
         perMeshLightLists?: boolean;
+        /** The states program writes give the document's materials. */
+        materialStates?: PbrMaterialStates;
+        /** Whether `enableMaterialPlugins` registered the plugin bridges. */
+        pluginsRegistered?: boolean;
     } = {},
     geometryTasks: readonly PinnedGeometryTaskRequest[] = [],
 ): Promise<readonly PinnedRenderableVariant[]> {
@@ -971,14 +983,25 @@ export async function composeRenderableVariants(
         set.add(renderable.features);
         featureSets.set(renderable.material, set);
     }
-    const subjects = await materialSubjects(document, scene);
+    // Each material composes in every state the program's writes give it,
+    // each into the row its state selects.
+    const subjects: { subject: MaterialSubject; state: PbrMaterialState }[] =
+        [];
+    for (const subject of await materialSubjects(document, scene)) {
+        for (const state of await pbrMaterialStatesOf(
+            scene.materialStates,
+            materialIndexBase + subject.index,
+            subject.input,
+        ))
+            subjects.push({ subject, state });
+    }
     const variants: PinnedRenderableVariant[] = [];
     const receiveBit =
         scene.shadowLights && scene.shadowLights.length > 0
             ? await pinnedReceiveShadowsBit()
             : 0;
     const bits = await pinnedArmBits();
-    for (const subject of subjects) {
+    for (const { subject, state } of subjects) {
         // A material no primitive references still composes, at the attribute
         // set a primitive would have to have: scene code can assign it to a
         // mesh the asset does not, and a missing variant is a missing draw.
@@ -1017,11 +1040,11 @@ export async function composeRenderableVariants(
                         : {}),
                 };
                 const variant = await composePinnedPbrVariant(
-                    subject.input,
+                    state.input,
                     composeOptions,
                 );
                 variants.push({
-                    materialIndex: materialIndexBase + subject.index,
+                    materialIndex: state.row,
                     materialName: subject.name,
                     ...(scene.materialView
                         ? { materialView: scene.materialView }
@@ -1035,7 +1058,7 @@ export async function composeRenderableVariants(
                         ? { areaLighting: arm.areaLighting }
                         : {}),
                     ...(await areaSelectedRefusal(
-                        subject.input,
+                        state.input,
                         composeOptions,
                         arm,
                         variant,
@@ -1043,7 +1066,7 @@ export async function composeRenderableVariants(
                     armLabel: arm.label,
                     fragmentKey: variant.fragmentKey,
                     arms: pinnedVariantArms(
-                        subject.input,
+                        state.input,
                         subject.uv2Mask,
                         variant,
                         bits,
@@ -1051,13 +1074,18 @@ export async function composeRenderableVariants(
                     vertexWgsl: variant.vertexWgsl,
                     fragmentWgsl: variant.fragmentWgsl,
                     materialUboSpec: plainUboSpec(variant.materialUboSpec),
+                    ...pluginVariantFields(
+                        state.plugins,
+                        scene.pluginsRegistered,
+                        variant,
+                    ),
                 });
                 // The pin composes each geometry task's MRT arm from the
                 // same inputs through `composePbrGeometryShader`; only the
                 // fragment's return differs, one write per attachment.
                 for (const task of geometryTasks) {
                     const geometry = await composePinnedPbrVariant(
-                        subject.input,
+                        state.input,
                         {
                             ...arm.options,
                             meshFeatures,
@@ -1069,7 +1097,7 @@ export async function composeRenderableVariants(
                         },
                     );
                     variants.push({
-                        materialIndex: materialIndexBase + subject.index,
+                        materialIndex: state.row,
                         materialName: subject.name,
                         meshFeatures,
                         materialFeatures: geometry.features,
@@ -1083,7 +1111,7 @@ export async function composeRenderableVariants(
                         armLabel: `${arm.label} geometry ${task.index}`,
                         fragmentKey: geometry.fragmentKey,
                         arms: pinnedVariantArms(
-                            subject.input,
+                            state.input,
                             subject.uv2Mask,
                             geometry,
                             bits,
@@ -1091,12 +1119,46 @@ export async function composeRenderableVariants(
                         vertexWgsl: geometry.vertexWgsl,
                         fragmentWgsl: geometry.fragmentWgsl,
                         materialUboSpec: plainUboSpec(geometry.materialUboSpec),
+                        ...pluginVariantFields(
+                            state.plugins,
+                            scene.pluginsRegistered,
+                            geometry,
+                        ),
                     });
                 }
             }
         }
     }
     return variants;
+}
+
+/**
+ * What a variant composed with plugins hands the native binder: each
+ * plugin's uniform fields and texture pairs, and the mesh layout the bridge
+ * composed. A scene that never registered the bridges composes plugin-free.
+ */
+function pluginVariantFields(
+    plugins: readonly MaterialPluginManifest[] | undefined,
+    registered: boolean | undefined,
+    variant: PinnedPbrVariant,
+): Pick<
+    PinnedRenderableVariant,
+    "pluginUniformFields" | "pluginTextureBindings" | "meshBindingLayout"
+> {
+    if (!plugins || !registered) return {};
+    return {
+        pluginUniformFields: plugins.flatMap(
+            (plugin) => plugin.uniforms?.map((field) => field.name) ?? [],
+        ),
+        pluginTextureBindings: plugins.flatMap(
+            (plugin) =>
+                plugin.samplers?.flatMap((sampler) => [
+                    sampler.texture,
+                    sampler.sampler,
+                ]) ?? [],
+        ),
+        meshBindingLayout: variant.meshBindingLayout,
+    };
 }
 
 /**
@@ -1254,6 +1316,8 @@ export async function composeScenePbrVariants(
          * -- which is the port's own half of `pinnedReceiverReachesArm`.
          */
         perMeshLightLists?: boolean;
+        /** The states program writes give the scene's materials. */
+        materialStates?: PbrMaterialStates;
     } = {},
 ): Promise<readonly PinnedRenderableVariant[]> {
     if (materials.length === 0 || arms.length === 0) return [];
@@ -1512,7 +1576,21 @@ export async function composeScenePbrVariants(
                       ),
                   )
                 : materialFeatures;
-        for (const meshFeatures of drawFeatures) {
+        // Each state the program's writes give the material composes into
+        // the row it selects; a view draws its source's.
+        const draws = (
+            await pbrMaterialStatesOf(
+                scene.materialStates,
+                materialIndexBase +
+                    (material.sourceMaterialsBefore ??
+                        material.materialsBefore),
+                input,
+                material.plugins,
+            )
+        ).flatMap((state) =>
+            [...drawFeatures].map((meshFeatures) => ({ state, meshFeatures })),
+        );
+        for (const { state, meshFeatures } of draws) {
             for (const arm of arms) {
                 // A receiving mesh reaches fewer arms than the scene does, from
                 // the port's one statement of the pin's own light-mode rule --
@@ -1537,12 +1615,15 @@ export async function composeScenePbrVariants(
                         ? { shadowLights: scene.shadowLights }
                         : {}),
                 };
-                const cacheKey = material.plugins
+                const cacheKey = state.plugins
                     ? undefined
                     : JSON.stringify([
                           material.baseColorFactorRuntime
-                              ? { ...input, baseColorFactor: "runtime-array" }
-                              : input,
+                              ? {
+                                    ...state.input,
+                                    baseColorFactor: "runtime-array",
+                                }
+                              : state.input,
                           composeOptions,
                           material.localCubemapCandidates,
                       ]);
@@ -1551,16 +1632,13 @@ export async function composeScenePbrVariants(
                     : undefined;
                 if (!variant) {
                     variant = await composePinnedPbrVariant(
-                        input,
+                        state.input,
                         composeOptions,
                     );
                     if (cacheKey) compositionCache.set(cacheKey, variant);
                 }
                 variants.push({
-                    materialIndex:
-                        materialIndexBase +
-                        (material.sourceMaterialsBefore ??
-                            material.materialsBefore),
+                    materialIndex: state.row,
                     materialName: `scene-material-${
                         materialIndexBase + material.materialsBefore
                     }`,
@@ -1578,7 +1656,7 @@ export async function composeScenePbrVariants(
                         ? { areaLighting: arm.areaLighting }
                         : {}),
                     ...(await areaSelectedRefusal(
-                        input,
+                        state.input,
                         composeOptions,
                         arm,
                         variant,
@@ -1586,7 +1664,7 @@ export async function composeScenePbrVariants(
                     armLabel: arm.label,
                     fragmentKey: variant.fragmentKey,
                     arms: pinnedVariantArms(
-                        input,
+                        state.input,
                         composeOptions.uv2Mask ?? 0,
                         variant,
                         bits,
@@ -1594,24 +1672,11 @@ export async function composeScenePbrVariants(
                     vertexWgsl: variant.vertexWgsl,
                     fragmentWgsl: variant.fragmentWgsl,
                     materialUboSpec: plainUboSpec(variant.materialUboSpec),
-                    ...(material.plugins && scene.pluginsRegistered
-                        ? {
-                              pluginUniformFields: material.plugins.flatMap(
-                                  (plugin) =>
-                                      plugin.uniforms?.map(
-                                          (field) => field.name,
-                                      ) ?? [],
-                              ),
-                              pluginTextureBindings: material.plugins.flatMap(
-                                  (plugin) =>
-                                      plugin.samplers?.flatMap((sampler) => [
-                                          sampler.texture,
-                                          sampler.sampler,
-                                      ]) ?? [],
-                              ),
-                              meshBindingLayout: variant.meshBindingLayout,
-                          }
-                        : {}),
+                    ...pluginVariantFields(
+                        state.plugins,
+                        scene.pluginsRegistered,
+                        variant,
+                    ),
                 });
             }
         }

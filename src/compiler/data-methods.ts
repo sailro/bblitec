@@ -51,6 +51,7 @@ import {
     compileSearchParamsMethod,
     deploymentSearchParamsValue,
     RuntimeSearchParamsRequired,
+    searchParamsMutators,
 } from "./search-params.js";
 import { compileCollectionForEach } from "./collection-methods.js";
 import { pinOperand } from "./evaluation-order.js";
@@ -663,7 +664,8 @@ export function compileDataMethodCall(
         dynamicOwner?.kind === "browser" &&
         dynamicOwner.browserValue?.kind === "search-params"
     ) {
-        if (method === "set") throw new RuntimeSearchParamsRequired();
+        if (searchParamsMutators.has(method))
+            throw new RuntimeSearchParamsRequired();
         dynamicOwner = deploymentSearchParamsValue(
             lowerer,
             dynamicOwner.browserValue.search,

@@ -60,7 +60,9 @@ class MutationObserver {
 public:
     using Callback = js::Callback<void()>;
     explicit MutationObserver(Callback callback) : callback_(std::move(callback)) {}
-    void observe(UiElementHandle element, std::optional<std::vector<std::string>> filter);
+    /** Attribute changes of the element (with `subtree`, of its descendants too), filtered by name. */
+    void observe(UiElementHandle element, std::optional<std::vector<std::string>> filter,
+                 bool subtree = false);
     void disconnect();
     void notify(UiElementHandle element, const std::string& attribute);
     void gc_trace(const js::TraceVisitor& visitor) const { visitor(callback_); }
@@ -69,7 +71,11 @@ private:
     friend std::shared_ptr<MutationObserver> create_mutation_observer(Callback callback);
     std::weak_ptr<MutationObserver> self_;
     Callback callback_;
-    std::unordered_map<std::uint32_t, std::optional<std::vector<std::string>>> observed_;
+    struct Observation {
+        std::optional<std::vector<std::string>> filter;
+        bool subtree = false;
+    };
+    std::unordered_map<std::uint32_t, Observation> observed_;
     bool pending_ = false;
 };
 std::shared_ptr<MutationObserver> create_mutation_observer(MutationObserver::Callback callback);

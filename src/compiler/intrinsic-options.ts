@@ -13,6 +13,7 @@ import {
     compileRenderTargetOptions,
     compileRenderTaskOptions,
     compileSceneDefaultRenderTask,
+    type SceneDefaultRenderTask,
     type CompiledRenderTargetOptions,
     type EngineOptionContext,
 } from "./intrinsics/engine-options.js";
@@ -390,7 +391,7 @@ export class IntrinsicOptions {
 
     public compileSceneDefaultRenderTask(
         expression: ts.Expression | undefined,
-    ): boolean {
+    ): SceneDefaultRenderTask {
         return compileSceneDefaultRenderTask(this.context, expression);
     }
 

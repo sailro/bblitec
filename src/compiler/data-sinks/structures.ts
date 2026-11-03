@@ -3,6 +3,7 @@ import { EmissionMap } from "../emission-transaction.js";
 import {
     dataTypesEqual,
     isAbsentSpreadProperty,
+    lackedField,
     type DataStructField,
     type DataType,
 } from "../data-types.js";
@@ -627,11 +628,12 @@ function valueStruct(
             });
         // JavaScript stores the same object under the other type. A record
         // nothing else reaches, or one whose copy nothing can tell apart, is
-        // copied; any other source shares one layout with the target or
-        // refuses.
+        // copied; any other source, or one lacking a field the target
+        // requires, shares one layout with the target or refuses.
         if (
             (receiverAccessors && !copyDataSlots) ||
-            !unaliasedValue(lowerer, value, node)
+            !unaliasedValue(lowerer, value, node) ||
+            lackedField([...sourceFields.values()], fields)
         )
             lowerer.context.dataTypes.storeRecordAs(
                 sourceType,

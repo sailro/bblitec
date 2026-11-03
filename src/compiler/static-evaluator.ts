@@ -88,6 +88,7 @@ import {
     jsonScalarLiteral,
     notJson,
     selectedStaticExpression,
+    selectedStaticNumberValue,
     staticNumberValue,
     type StaticFoldContext,
 } from "./option-helpers.js";
@@ -1546,6 +1547,12 @@ export class StaticEvaluator {
             return expression.left;
         }
         if (ts.isPropertyAccessExpression(left)) {
+            // A global member no host installs reads undefined.
+            if (
+                this.isBrowserOnlyExpression(left) &&
+                this.evaluateBrowserValue(left)?.kind === "undefined"
+            )
+                return expression.right;
             // Records are identifier-bound, so only those owners are
             // probed: the probe is a full value compile with emit
             // authority, and an owner shape whose compilation emits
@@ -2126,20 +2133,34 @@ export class StaticEvaluator {
         };
     }
 
-    public staticTextValue(expression: ts.Expression): string | undefined {
-        const unwrapped = selectedStaticExpression(
-            {
-                conditions: {
-                    compileCondition: (node) =>
-                        this.evaluationOrder.isPureExpression(node)
-                            ? this.compileCondition(node)
-                            : "",
-                },
-                resolveStaticExpression: (node) =>
-                    this.resolveStaticExpression(node),
+    /**
+     * The conditions a selection settles: every one, or with `pure` only
+     * those compiling one can never repeat an effect of (another stays live).
+     */
+    private selection(pure: boolean) {
+        return {
+            ...this.staticFoldContext(),
+            conditions: {
+                compileCondition: (node: ts.Expression) =>
+                    !pure || this.evaluationOrder.isPureExpression(node)
+                        ? this.compileCondition(node)
+                        : "",
             },
-            expression,
-        );
+        };
+    }
+
+    /** The arm of `expression` its pure conditions settle (`selectedStaticExpression`). */
+    private selectedArm(expression: ts.Expression): ts.Expression | undefined {
+        return selectedStaticExpression(this.selection(true), expression);
+    }
+
+    /** The number of the arm pure conditions select (`selectedStaticNumberValue`). */
+    public staticSelectedNumber(expression: ts.Expression): number | undefined {
+        return selectedStaticNumberValue(this.selection(true), expression);
+    }
+
+    public staticTextValue(expression: ts.Expression): string | undefined {
+        const unwrapped = this.selectedArm(expression);
         if (!unwrapped) return undefined;
         if (unwrapped.kind === ts.SyntaxKind.NullKeyword) return "null";
         if (unwrapped.kind === ts.SyntaxKind.TrueKeyword) return "true";
@@ -2271,16 +2292,8 @@ export class StaticEvaluator {
      */
     private requiredText(expression: ts.Expression): string {
         const resolved =
-            selectedStaticExpression(
-                {
-                    conditions: {
-                        compileCondition: (node) => this.compileCondition(node),
-                    },
-                    resolveStaticExpression: (node) =>
-                        this.resolveStaticExpression(node),
-                },
-                expression,
-            ) ?? this.resolveStaticExpression(expression);
+            selectedStaticExpression(this.selection(false), expression) ??
+            this.resolveStaticExpression(expression);
         const number = this.staticNumberThroughRecords(resolved);
         if (number !== undefined) return String(number);
         if (
@@ -2312,15 +2325,23 @@ export class StaticEvaluator {
         return this.compileNumber(value, precision);
     }
 
+    /** `onAwait` also hears each `await` passed (a caller replaying them later). */
     public unwrap(
         expression: ts.Expression,
-        options: { readonly await?: boolean } = {},
+        options: { readonly await?: boolean; readonly onAwait?: OnAwait } = {},
     ): ts.Expression {
+        const heard = options.onAwait;
+        const onAwait = heard
+            ? (node: ts.AwaitExpression) => {
+                  this.onAwait(node);
+                  heard(node);
+              }
+            : this.onAwait;
         let current = expression;
         for (;;) {
             current = unwrapExpression(current, {
                 await: options.await ?? true,
-                onAwait: this.onAwait,
+                onAwait,
             });
             // The pin's `wgsl` tag is the identity over its template.
             const template = this.pinnedWgslTemplate(current);

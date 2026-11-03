@@ -158,8 +158,8 @@ function registerAs(
 }
 
 /** Readability is shared by literal, candidate-table and directory discovery. */
-function readablePackagedAsset(
-    context: StaticFetchContext,
+export function readablePackagedAsset(
+    context: Pick<StaticFetchContext, "options">,
     source: string,
 ): boolean {
     try {

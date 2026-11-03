@@ -1836,6 +1836,16 @@ void set_material_plugins(
     record.plugin_uniform_states.clear();
 }
 
+// \`material.plugins = [...material.plugins, plugin]\`: the list grows, so the
+// textures and uniform writers its earlier plugins bound stay, and the new
+// plugin's follow them.
+void set_material_plugin_signature(
+    Engine& engine,
+    MaterialHandle material,
+    std::uint8_t signature_index) {
+    standard_slot_material(engine, material).plugin_signature_index = signature_index;
+}
+
 void add_material_plugin_uniform_writer(
     Engine& engine, MaterialHandle material, MaterialRecord::PluginUniformWriter writer) {
     auto& writers = standard_slot_material(engine, material).plugin_uniform_writers;

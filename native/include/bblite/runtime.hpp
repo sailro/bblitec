@@ -199,6 +199,8 @@ struct PlatformKeyboardEvent : PlatformEventFlags, PlatformModifierKeys {
     std::string code{};
     std::string key{};
     bool repeat = false;
+    /** Inside an input method composition (`Engine::text_composing` when the key arrived). */
+    bool is_composing = false;
 };
 
 /** A storage notification delivered to a different Window sharing the storage area. */
@@ -329,7 +331,21 @@ struct UiClientRect {
     double offset_height = 0.0;
     double scroll_left = 0.0;
     double scroll_top = 0.0;
+    /** The element's effective CSS zoom, which client rectangles include. */
+    double zoom = 1.0;
     [[nodiscard]] bool operator==(const UiClientRect&) const = default;
+    /** Extents as offset, client and scroll reads report them: without the zoom. */
+    [[nodiscard]] UiClientRect unzoomed() const {
+        return {left,
+                top,
+                width / zoom,
+                height / zoom,
+                offset_width / zoom,
+                offset_height / zoom,
+                scroll_left / zoom,
+                scroll_top / zoom,
+                1.0};
+    }
 };
 
 /** An element's content box, in layout pixels. */
@@ -347,6 +363,8 @@ struct UiComputedStyle {
     std::string opacity;
     std::string visibility;
     std::string z_index;
+    /** The computed (specified, var()-substituted) values of the custom properties read, by name. */
+    std::vector<std::pair<std::string, std::string>> custom_properties;
     [[nodiscard]] bool operator==(const UiComputedStyle&) const = default;
 };
 
@@ -2959,6 +2977,11 @@ struct MaterialRecord {
     // Null means the producer omitted the property; copies retain JS identity.
     std::shared_ptr<std::vector<double>> source_base_color_factor{};
     std::shared_ptr<std::vector<double>> source_diffuse_color{};
+    /**
+     * `baseColorFactor` written after the material was made: the pin composes the factor's
+     * presence, so a write can move a PBR material to another composed row.
+     */
+    bool base_color_factor_written = false;
     // The family-specific public albedo property retains its original
     // Texture2D producer arm and identity, separately from upload data.
     std::optional<StoredTexture> source_albedo_texture{};
@@ -3127,6 +3150,17 @@ struct MaterialRecord {
     bool no_color = false;
     /** Original material copied into a no-colour/ESM view. */
     MaterialHandle source_material{};
+    /**
+     * The material a `{ ...material }` copy was made from. Unlike a view, the copy holds its own
+     * values; it composes as that material does.
+     */
+    MaterialHandle composition_source{};
+    /**
+     * The composed PBR row this material's first draw resolved: the pin computes a material's
+     * features on its first render and keeps them (`_renderFeatures`), so a later write changes
+     * no composition. A copy keeps its source's, as the spread copies that cache.
+     */
+    mutable std::uint32_t composed_pbr_row = invalid_handle;
     /**
      * An ESM caster view: `createStandardEsmShadowMaterialView` clears the
      * blend bit and sets `ESM_SHADOW_OUTPUT`, so this view writes the
@@ -3981,6 +4015,8 @@ enum class UiSelectorTestKind : std::uint8_t {
     Is,
     Where,
     Has,
+    /** The element a query runs on; the root where none does. */
+    Scope,
 };
 enum class UiSelectorRelation : std::uint8_t { Self, Descendant, Child, Next, Following };
 struct UiSelectorStep;
@@ -4054,6 +4090,12 @@ struct UiElementRecord {
         double x = 0.0;
         double y = 0.0;
     };
+    /** An image's premultiplied RGBA pixels, captured by the draws that blit it. */
+    struct CanvasBitmap {
+        int width = 0;
+        int height = 0;
+        std::vector<std::uint8_t> pixels;
+    };
     struct CanvasDrawCommand {
         enum class Kind { Fill, FillRect, Stroke, Blit, Text } kind = Kind::Fill;
         std::vector<CanvasPoint> points;
@@ -4062,7 +4104,14 @@ struct UiElementRecord {
         bool closed = false;
         bool round_join = false;
         bool round_cap = false;
+        /** A blit's canvas source; an image source is its captured `bitmap` instead. */
         UiElementHandle source{};
+        std::shared_ptr<const CanvasBitmap> bitmap;
+        /** A blit's source rectangle in source pixels; its destination quad is `points`. */
+        double source_x = 0.0;
+        double source_y = 0.0;
+        double source_width = 0.0;
+        double source_height = 0.0;
         double destination_x = 0.0;
         double destination_y = 0.0;
         double destination_width = 0.0;
@@ -4075,18 +4124,39 @@ struct UiElementRecord {
         std::string shadow_color = "rgba(0,0,0,0)";
         double shadow_blur = 0.0;
     };
-    struct CanvasState {
-        // Keep construction explicit while optional inspects this nested type.
-        CanvasState() {}
-        double width = 300.0;
-        double height = 150.0;
-        double scale_x = 1.0;
-        double scale_y = 1.0;
+    /** Canvas2D's current transformation matrix: x' = a x + c y + e, y' = b x + d y + f. */
+    struct CanvasTransform {
+        double a = 1.0;
+        double b = 0.0;
+        double c = 0.0;
+        double d = 1.0;
+        double e = 0.0;
+        double f = 0.0;
+    };
+    /** The drawing state `save()` pushes and `restore()` pops; the current path is not part of it. */
+    struct CanvasDrawingState {
+        CanvasTransform transform;
         std::string fill_style = "#000000";
         std::string stroke_style = "#000000";
         double line_width = 1.0;
         std::string line_join = "miter";
         std::string line_cap = "butt";
+        bool image_smoothing_enabled = true;
+        /** "low", "medium" or "high"; every smoothed draw samples bilinearly. */
+        std::string image_smoothing_quality = "low";
+        std::string font = "10px sans-serif";
+        std::string text_baseline = "alphabetic";
+        std::string shadow_color = "rgba(0,0,0,0)";
+        double shadow_blur = 0.0;
+    };
+    struct CanvasState {
+        // Keep construction explicit while optional inspects this nested type.
+        CanvasState() {}
+        double width = 300.0;
+        double height = 150.0;
+        CanvasDrawingState drawing;
+        /** The `save()` stack, innermost last. */
+        std::vector<CanvasDrawingState> saved;
         std::vector<CanvasPoint> path;
         bool path_closed = false;
         std::vector<CanvasDrawCommand> draws;
@@ -4094,11 +4164,6 @@ struct UiElementRecord {
         std::vector<std::uint8_t> pixels;
         std::uint64_t pixel_revision = 0;
         std::uint64_t draw_revision = 0;
-        bool image_smoothing_enabled = true;
-        std::string font = "10px sans-serif";
-        std::string text_baseline = "alphabetic";
-        std::string shadow_color = "rgba(0,0,0,0)";
-        double shadow_blur = 0.0;
     };
     std::string tag;
     bool svg_namespace = false;
@@ -4155,6 +4220,8 @@ struct UiElementRecord {
     /** Read by getComputedStyle; the layout serializes it once requested. */
     UiComputedStyle computed_style{};
     bool computed_style_requested = false;
+    /** The custom properties a computed read names; the layout serializes their values. */
+    std::vector<std::string> computed_custom_properties;
     std::optional<CanvasState> canvas;
     bool external_gpu_canvas = false;
     bool attached_to_root = false;
@@ -4548,6 +4615,11 @@ struct Engine {
     double canvas_client_height = 720.0;
     /** SDL window coordinates to browser client coordinates (CSS pixels). */
     double canvas_window_to_client_scale = 1.0;
+    /**
+     * An input method composition is open: from a non-empty text edit until it commits, empties,
+     * the window loses focus or its text input stops (`pal::observe_text_composition`).
+     */
+    bool text_composing = false;
     /** The engine draws into a Window realm's DOM canvas (the pin's `isDomCanvas`). */
     bool dom_canvas = false;
     /** The pin's `resizeSurface`, installed on every realm engine; frame heads run it. */
@@ -4568,6 +4640,28 @@ struct Engine {
      * the conductor leaves after finishing the frame in flight.
      */
     bool stopped = false;
+    /**
+     * `engine._renderFn`: the frame `startEngine` schedules, empty before it
+     * and after `stopEngine`. An application may replace it with a wrapper
+     * calling the one it read; the frame conductor then calls the function
+     * the previous frame armed as the engine's animation-frame callback.
+     */
+    js::Callback<void(double)> render_function;
+    /** `_renderFn` was written: until then the conductor renders directly. */
+    bool render_function_written = false;
+    /**
+     * What the frame in flight re-arms (the pin's `requestAnimationFrame(
+     * engine._renderFn)` at the end of its frame); empty stops the loop.
+     */
+    js::Callback<void(double)> armed_render_function;
+    /** The conducted frame's render, while the armed function runs. */
+    std::function<void()> conducted_render;
+    /**
+     * The conductor began this frame's animation turn (its clock and the
+     * callbacks registered before `startEngine`) and ends it after the
+     * armed function returns.
+     */
+    bool animation_turn_conducted = false;
     /**
      * The scene's own capture-readiness conditions, from a bounded
      * multi-frame drain. Every one must hold before a frame loop takes the
@@ -4695,6 +4789,9 @@ struct Engine {
     std::uint64_t ui_revision = 0;
     std::uint64_t ui_text_revision = 0;
     std::uint64_t ui_canvas_revision = 0;
+    /** Packaged images decoded for Canvas2D draws, by asset path, while a draw keeps them. */
+    std::unordered_map<std::string, std::weak_ptr<const UiElementRecord::CanvasBitmap>>
+        ui_canvas_bitmaps;
     std::uint64_t ui_style_revision = 0;
     bool ui_only_text_changed_since(std::uint64_t revision, std::uint64_t text_revision) const {
         return revision <= ui_revision && text_revision <= ui_text_revision &&
@@ -5794,6 +5891,34 @@ inline void set_surface_max_device_pixel_ratio(Engine& engine, double cap,
         engine.resize_surface = resize_surface;
 }
 
+/** `engine._renderFn` read. */
+[[nodiscard]] inline js::Callback<void(double)> engine_render_function(const Engine& engine) {
+    return engine.render_function;
+}
+
+/** `engine._renderFn = value`: the next frame re-arms with it. */
+inline void set_engine_render_function(Engine& engine, js::Callback<void(double)> value) {
+    engine.render_function = std::move(value);
+    engine.render_function_written = true;
+}
+
+/**
+ * `startEngine`'s `engine._renderFn`: the frame itself, which re-arms with
+ * whatever `_renderFn` holds once it rendered. Natively it is the render half
+ * of the frame the conductor is running, so it runs only inside that frame.
+ */
+inline void arm_engine_render_function(Engine& engine) {
+    engine.render_function = js::Callback<void(double)>([&engine](double) {
+        if (!engine.conducted_render)
+            throw std::logic_error(
+                "The engine's frame runs only inside its animation frame natively.");
+        engine.conducted_render();
+        engine.armed_render_function = engine.render_function;
+    });
+    engine.render_function_written = false;
+    engine.armed_render_function = engine.render_function;
+}
+
 /** A realm engine's surface resize, which the pin's createEngine runs once. */
 inline void install_surface_resize(Engine& engine, void (*resize_surface)(Engine&),
                                    void (*resize_canvas)(pal::OffscreenRun&, double,
@@ -5856,17 +5981,55 @@ template <typename Array = js::Array<double>>
 [[nodiscard]] inline bool material_color_has_bound_group(const Engine& engine,
                                                          MaterialHandle material);
 
+/** The record a whole-array colour write replaces, once its channel count and groups allow it. */
 template <typename Array>
-inline void set_material_diffuse_color(Engine& engine, MaterialHandle material,
-                                       const Array& values) {
-    if (values.size() != 3) {
-        throw std::runtime_error("Material diffuseColor requires three numeric channels.");
+[[nodiscard]] inline MaterialRecord&
+replaceable_material_color(Engine& engine, MaterialHandle material, const Array& values,
+                           std::size_t channels, const char* channels_refusal) {
+    if (values.size() != channels) {
+        throw std::runtime_error(channels_refusal);
     }
     auto& record = handle_at(engine.materials, material);
     if (record.source_colors_registered || material_color_has_bound_group(engine, material)) {
         throw std::runtime_error(
             "Replacing a registered material color requires per-group UBO snapshots.");
     }
+    return record;
+}
+
+/** `material.baseColorFactor = [...]`: the array kept by identity, as the pin keeps it. */
+template <typename Array>
+inline void set_material_base_color_factor(Engine& engine, MaterialHandle material,
+                                           const Array& values) {
+    auto& record = replaceable_material_color(
+        engine, material, values, 4, "Material baseColorFactor requires four numeric channels.");
+    record.source_base_color_factor = values.retained_storage();
+    record.base_color_factor = Color4{static_cast<float>(values[0]), static_cast<float>(values[1]),
+                                      static_cast<float>(values[2]), static_cast<float>(values[3])};
+    record.base_color_factor_written = true;
+}
+
+/**
+ * A PBR material's `alphaBlend`: blending is the authored alpha mode the renderer buckets and
+ * composes by. A material that alpha-tests (a glTF MASK cutoff) does not also blend natively.
+ */
+inline void set_pbr_alpha_blend(Engine& engine, MaterialHandle material, bool blend) {
+    auto& record = handle_at(engine.materials, material);
+    if (blend) {
+        if (record.alpha_mode == MaterialAlphaMode::mask)
+            throw std::runtime_error(
+                "A PBR material that alpha-tests does not also blend natively.");
+        record.alpha_mode = MaterialAlphaMode::blend;
+    } else if (record.alpha_mode == MaterialAlphaMode::blend) {
+        record.alpha_mode = MaterialAlphaMode::opaque;
+    }
+}
+
+template <typename Array>
+inline void set_material_diffuse_color(Engine& engine, MaterialHandle material,
+                                       const Array& values) {
+    auto& record = replaceable_material_color(
+        engine, material, values, 3, "Material diffuseColor requires three numeric channels.");
     record.source_diffuse_color = values.retained_storage();
     record.diffuse_color = Color3{static_cast<float>(values[0]), static_cast<float>(values[1]),
                                   static_cast<float>(values[2])};
@@ -7232,6 +7395,32 @@ inline void set_standard_diffuse_texture(Engine& engine, MaterialHandle material
 }
 void enable_material_uv_transform(Engine& engine, MaterialHandle material);
 void set_material_plugins(Engine& engine, MaterialHandle material, std::uint8_t signature_index);
+void set_material_plugin_signature(Engine& engine, MaterialHandle material,
+                                   std::uint8_t signature_index);
+/** The plugin list a material holds, as its family's signature (zero: none). */
+[[nodiscard]] inline std::uint8_t material_plugin_signature(const Engine& engine,
+                                                            MaterialHandle material) {
+    return handle_at(engine.materials, material).plugin_signature_index;
+}
+/**
+ * `{ ...material }`: a new material holding the source's values, composed as the source (its
+ * original, for a copy of a copy). Array props stay shared, as a shallow copy shares them; the
+ * plugin uniform writers become the copy's own list, so a plugin the copy adds reaches no other
+ * material, and the per-record upload caches start empty.
+ */
+inline MaterialHandle clone_material(Engine& engine, MaterialHandle source) {
+    MaterialRecord copy = handle_at(engine.materials, source);
+    if (copy.composition_source.value == invalid_handle)
+        copy.composition_source = source;
+    if (copy.plugin_uniform_writers)
+        copy.plugin_uniform_writers =
+            std::make_shared<std::vector<MaterialRecord::PluginUniformWriter>>(
+                *copy.plugin_uniform_writers);
+    copy.plugin_uniform_states.clear();
+    copy.shader_uniform_upload.reset();
+    engine.materials.push_back(std::move(copy));
+    return MaterialHandle{static_cast<std::uint32_t>(engine.materials.size() - 1)};
+}
 void add_material_plugin_uniform_writer(Engine& engine, MaterialHandle material,
                                         MaterialRecord::PluginUniformWriter writer);
 // The textures a plugin's `bindTextures` fills its declared bindings with,

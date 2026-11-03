@@ -204,6 +204,15 @@ private:
 void run_animation_frame_callbacks(Engine& engine);
 
 /**
+ * The animation-frame turn's start: the frame's delta, then the application
+ * RAF callbacks registered before `startEngine`. Empty for a stopped engine.
+ * Once the conductor began the turn (`Engine::animation_turn_conducted`), the
+ * frame's own `advance_frame` reads the delta it began with.
+ */
+[[nodiscard]] std::optional<double> begin_animation_turn(Engine& engine, FrameClock& frame_clock,
+                                                         double frame_delta_ms);
+
+/**
  * Everything a frame does before anything is drawn, for every loop that
  * has a scene: resolve the delta, run application RAF callbacks registered
  * before `startEngine`, then run the scene's own callbacks.
@@ -243,6 +252,13 @@ void run_animation_frame_callbacks(Engine& engine);
  * timeout queued anywhere in the turn is then drained at the turn boundary.
  */
 void finish_frame(Engine& engine);
+
+/**
+ * The turn's end `finish_frame` runs, or the conductor after the engine's
+ * animation-frame function returns: RAF callbacks registered after the
+ * awaited `startEngine`, then the zero-delay timeouts.
+ */
+void finish_animation_turn(Engine& engine);
 
 /**
  * Which requested captures have landed, and whether the loop may stop.

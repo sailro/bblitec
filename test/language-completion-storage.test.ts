@@ -139,6 +139,42 @@ test("void comparisons refuse an erased non-undefined completion", () => {
 });
 
 check(
+    "a-stored-callback-proven-to-return-new-arrays-stores-them-as-another-element-type",
+    `
+    interface State { all: () => number[]; add: (value: number) => void }
+    function make(values: readonly number[]): State {
+        const canonical = [...values];
+        return { all: () => canonical.filter((value) => value > 0), add: (value) => { canonical.push(value); } };
+    }
+    const state = make([1, -2, 3]);
+    let lanes: (number | undefined)[] = [undefined];
+    lanes = state.all();
+    lanes.push(undefined);
+    state.add(4);
+    if (lanes.length !== 3 || lanes[0] !== 1 || lanes[2] !== undefined || state.all().length !== 3)
+        throw new Error('fresh copy');
+    `,
+);
+
+test("a stored callback returning an array it keeps withdraws its fresh-result claim", () => {
+    assert.throws(
+        () =>
+            compileSource(`
+                interface State { all: () => number[] }
+                function make(values: readonly number[]): State {
+                    const canonical = [...values];
+                    return { all: () => canonical };
+                }
+                const state = make([1, 2]);
+                let lanes: (number | undefined)[] = [undefined];
+                lanes = state.all();
+                lanes.push(undefined);
+            `),
+        /An array stored as an array of another element type is a copy/,
+    );
+});
+
+check(
     "plain-then-fields-remain-ordinary-async-results",
     `
     async function create() { return {then: 3, value: 7}; }

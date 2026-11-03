@@ -191,17 +191,18 @@ test("stored runtime record factories retain explicit shape refusals", () => {
     `),
         /A compile-time record cannot be populated from runtime control flow/,
     );
-    assert.throws(
-        () =>
-            compileSource(`
-        function build(key:string):number {
-            const extra:Record<string,unknown>={};
-            extra[key]=1;
-            return Object.keys(extra).length;
-        }
-        const callbacks:Array<(key:string)=>number>=[build];
-        callbacks[0]!('active');
-    `),
-        /A compile-time record assignment requires a static string key/,
-    );
 });
+
+// A dictionary of unknown values written under a run-time key is a document.
+check(
+    "stored runtime record factories key a document",
+    `
+    function build(key:string):number {
+        const extra:Record<string,unknown>={};
+        extra[key]=1;
+        return Object.keys(extra).length;
+    }
+    const callbacks:Array<(key:string)=>number>=[build];
+    if(callbacks[0]!('active')!==1) throw new Error('runtime key');
+`,
+);

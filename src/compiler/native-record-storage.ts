@@ -1,4 +1,5 @@
 import { StorageDemand } from "./storage-demand.js";
+import type { CompileError } from "./compile-error.js";
 import type { StorageRequest } from "./replay-storage.js";
 import type ts from "typescript";
 import type { InstantiatedRecord, RecordJoin } from "./record-components.js";
@@ -166,6 +167,27 @@ export function mergeNativeRecordStorage(
               }
             : {}),
     };
+}
+
+/**
+ * A demanded record no native object can hold (`predeclareOwnedRecord`):
+ * the demand stands refused, and a statement demanding it again refuses.
+ */
+export class NativeRecordDemandRefused extends StorageDemand {
+    constructor(
+        readonly demand: NativeRecordStorageDemand,
+        readonly refusal: CompileError,
+    ) {
+        super(refusal.message);
+    }
+
+    get request(): StorageRequest {
+        return {
+            kind: "refused-record",
+            demand: this.demand,
+            refusal: this.refusal,
+        };
+    }
 }
 
 /** Re-emit earlier storage and aliases after a dynamic boundary demands ownership. */

@@ -236,6 +236,7 @@ import {
     meshUniformsBlock,
     lightUniformsBlock,
     pinnedPbrVariantsHeader,
+    type PbrMaterialStateRow,
     pinnedSharedVariantDecls,
     lightKindsHeader,
     pinnedStandardVariantsHeader,
@@ -653,6 +654,8 @@ export interface UpstreamEmitOptions {
     /** The runtime material-handle count the variant gate checks. */
     pinnedMaterialCount?: number;
     scenePbrMaterialIndices?: readonly number[];
+    /** The composed rows the program's PBR material writes select. */
+    pbrMaterialStateRows?: readonly PbrMaterialStateRow[];
     /** The mesh attribute bits per runtime mesh handle, creation-ordered. */
     renderableMeshFeatures?: readonly number[];
     meshProfiles?: MeshProfileTable;
@@ -3958,6 +3961,7 @@ ${shadow.blurFragmentWgsl}`,
                     options.pinnedMaterialCount,
                     options.scenePbrMaterialIndices,
                     reachedRectAreaLightings(features),
+                    options.pbrMaterialStateRows,
                 ),
             );
         }

@@ -167,14 +167,24 @@ function dataArgument(
     }
 }
 
-/** Capture one top-level Canvas2D readback from its active, closed invocation. */
-export function bakeCanvasReadback(
+/** A readback's closed producer: the module-level function whose one active invocation it bakes from. */
+export interface CanvasReadbackProducer {
+    owner: ts.FunctionDeclaration & { name: ts.Identifier; body: ts.Block };
+    invocation: NonNullable<
+        ReturnType<CanvasReadbackContext["userFunctions"]["invocationFor"]>
+    >;
+    closure: NonNullable<ReturnType<typeof sameFileClosure>>;
+}
+
+/**
+ * The producer a Canvas2D readback bakes from at generation: the readback
+ * initializes a top-level local of a module-level canvas-producing function.
+ * Any other readback reads its canvas back natively.
+ */
+export function canvasReadbackProducer(
     context: CanvasReadbackContext,
     call: ts.CallExpression,
-): {
-    pixels: Uint8Array;
-    images: ReadbackImage[];
-} {
+): CanvasReadbackProducer | undefined {
     let owner: ts.Node = call;
     while (owner.parent && !ts.isFunctionLike(owner)) owner = owner.parent;
     if (
@@ -182,25 +192,16 @@ export function bakeCanvasReadback(
         !owner.name ||
         !owner.body ||
         !ts.isSourceFile(owner.parent)
-    ) {
-        return context.fail(
-            call,
-            "Canvas readback requires a module-level function invocation.",
-        );
-    }
+    )
+        return undefined;
     const statement = call.parent;
     if (
         !ts.isVariableDeclaration(statement) ||
         !ts.isVariableDeclarationList(statement.parent) ||
         !ts.isVariableStatement(statement.parent.parent) ||
         statement.parent.parent.parent !== owner.body
-    ) {
-        return context.fail(
-            call,
-            "Canvas readback must initialize a top-level local in its producer.",
-        );
-    }
-    const invocation = context.userFunctions.invocationFor(owner);
+    )
+        return undefined;
     const closure = sameFileClosure(
         context.checker,
         owner,
@@ -208,16 +209,37 @@ export function bakeCanvasReadback(
             name === "createTexture2DFromPixels" || name === "loadTexture2D",
     );
     if (
-        !invocation ||
         !closure ||
-        !closure.some((member) => ownsCanvas(member, context.checker)) ||
+        !closure.some((member) => ownsCanvas(member, context.checker))
+    )
+        return undefined;
+    // A producer bakes per invocation: outside one (or with an argument
+    // left to its default) it refuses, and its caller inlines it.
+    const invocation = context.userFunctions.invocationFor(owner);
+    if (
+        !invocation ||
         invocation.call.arguments.length !== owner.parameters.length
-    ) {
+    )
         return context.fail(
             call,
             "Canvas readback requires a closed canvas-producing function with explicit arguments.",
         );
-    }
+    return {
+        owner: owner as CanvasReadbackProducer["owner"],
+        invocation,
+        closure,
+    };
+}
+
+/** Capture one top-level Canvas2D readback from its active, closed invocation. */
+export function bakeCanvasReadback(
+    context: CanvasReadbackContext,
+    call: ts.CallExpression,
+    { owner, invocation, closure }: CanvasReadbackProducer,
+): {
+    pixels: Uint8Array;
+    images: ReadbackImage[];
+} {
     checkClosedInputs(context, closure, canvasGlobals);
     const images: ReadbackImage[] = [];
     const files: Record<string, string> = {};

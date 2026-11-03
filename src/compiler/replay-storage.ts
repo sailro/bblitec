@@ -1,4 +1,5 @@
 import type ts from "typescript";
+import type { CompileError } from "./compile-error.js";
 import type { DataType } from "./data-types/model.js";
 import { erasedFieldWidens } from "./data-types/operations.js";
 import type { CompletionProof } from "./completion-storage.js";
@@ -33,6 +34,11 @@ export type StorageRequest =
           storage: DynamicBindingStorage | undefined;
       }
     | { kind: "record"; demand: NativeRecordStorageDemand }
+    | {
+          kind: "refused-record";
+          demand: NativeRecordStorageDemand;
+          refusal: CompileError;
+      }
     | { kind: "generic"; demand: GenericFunctionDemand }
     | { kind: "absence-tag"; declaration: AbsenceTagDeclaration }
     | { kind: "class-field-presence"; declaration: InstanceProperty }
@@ -43,6 +49,7 @@ export type StorageRequest =
           storage: DataType;
       }
     | { kind: "completion"; signatureSite: string; proof: CompletionProof }
+    | { kind: "unproven-completion"; signatureSite: string }
     | {
           kind: "tuple-array";
           declaration: ts.PropertySignature | ts.PropertyDeclaration;
@@ -75,6 +82,14 @@ export class ReplayStorage {
         NativeRecordStorageDemand["identity"] | InstantiatedRecord,
         NativeRecordStorageDemand
     >();
+    /**
+     * @unjournaled Demands outlive the attempts that met them. Record demands no native object can
+     * hold (`predeclareOwnedRecord` refused them): a statement demanding one again refuses.
+     */
+    readonly refusedRecords = new Map<
+        NativeRecordStorageDemand["identity"] | InstantiatedRecord,
+        CompileError
+    >();
     readonly genericFunctions = new GenericFunctionStorage();
     /** @unjournaled Demands outlive the attempts that met them. Source storages that keep `null` and `undefined` apart (`DataType<"tagged">`). */
     readonly absenceTags = new Set<ts.Declaration>();
@@ -86,6 +101,8 @@ export class ReplayStorage {
     readonly assertedHandleFields = new Map<ts.Declaration, DataType>();
     /** @unjournaled Completion contracts are monotonic across replay attempts. */
     readonly completions = new Map<string, CompletionProof>();
+    /** @unjournaled Demands outlive the attempts that met them. Signature sites whose own undefined completion a producer withdrew. */
+    readonly unprovenCompletions = new Set<string>();
     /** @unjournaled Demands outlive the attempts that met them. Record parameters holding their argument as one object. */
     readonly parameterObjects = new Set<ts.ParameterDeclaration>();
     /** @unjournaled Demands outlive the attempts that met them. Record properties storing their numeric tuples as growable arrays. */
@@ -106,6 +123,25 @@ export class ReplayStorage {
 
     public constructor(private readonly checker: ts.TypeChecker) {}
 
+    /** A record component's members demand apart: their shared key is renumbered as joins grow. */
+    private recordKey(
+        demand: NativeRecordStorageDemand,
+    ): NativeRecordStorageDemand["identity"] | InstantiatedRecord {
+        return (
+            demand.instantiation ??
+            (isRecordComponentKey(demand.identity)
+                ? recordIdentity(this.checker, demand.type)
+                : demand.identity)
+        );
+    }
+
+    /** The refusal a demand for a record no native object can hold stands for. */
+    public refusedRecord(
+        demand: NativeRecordStorageDemand,
+    ): CompileError | undefined {
+        return this.refusedRecords.get(this.recordKey(demand));
+    }
+
     /** Adds what `request` demands; false when this storage already holds it. */
     public add(request: StorageRequest): boolean {
         switch (request.kind) {
@@ -124,14 +160,16 @@ export class ReplayStorage {
                 this.dynamicBindings.set(request.declaration, request.storage);
                 return true;
             }
+            case "refused-record": {
+                const key = this.recordKey(request.demand);
+                if (this.refusedRecords.has(key)) return false;
+                this.records.delete(key);
+                this.refusedRecords.set(key, request.refusal);
+                return true;
+            }
             case "record": {
-                // A record component's members demand apart: their shared
-                // key is renumbered as joins grow.
-                const key =
-                    request.demand.instantiation ??
-                    (isRecordComponentKey(request.demand.identity)
-                        ? recordIdentity(this.checker, request.demand.type)
-                        : request.demand.identity);
+                const key = this.recordKey(request.demand);
+                if (this.refusedRecords.has(key)) return false;
                 const merged = mergeNativeRecordStorage(
                     this.records.get(key),
                     request.demand,
@@ -163,11 +201,18 @@ export class ReplayStorage {
             }
             case "completion": {
                 const known = this.completions.get(request.signatureSite);
-                if (known === "undefined" || known === request.proof)
+                // A fresh array is never thenable.
+                if (
+                    known === "undefined" ||
+                    known === request.proof ||
+                    (known === "fresh" && request.proof === "nonthenable")
+                )
                     return false;
                 this.completions.set(request.signatureSite, request.proof);
                 return true;
             }
+            case "unproven-completion":
+                return addNew(this.unprovenCompletions, request.signatureSite);
             case "tuple-array":
                 return addNew(this.tupleArraySlots, request.declaration);
             case "parameter-object":

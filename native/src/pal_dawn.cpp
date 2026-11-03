@@ -1590,6 +1590,13 @@ public:
         return FramePreparation::ready;
     }
 
+    /** The animation turn's start, when the conductor runs it ahead of the engine's function. */
+    bool begin_animation_turn() {
+        return pal::begin_animation_turn(data_.engine, data_.frame_clock,
+                                         data_.frame_options.frame_delta_ms)
+            .has_value();
+    }
+
     FramePreparation update() {
         [[maybe_unused]] auto& engine = data_.engine;
         [[maybe_unused]] auto& frame_options = data_.frame_options;
@@ -4404,7 +4411,7 @@ SceneRun run_dawn_engine(Engine& engine) {
         co_yield false;
     for (;;) {
         renderer.discard_frame();
-        const FrameOutcome outcome = conduct_frame(renderer);
+        const FrameOutcome outcome = conduct_frame(renderer, engine);
         if (outcome == FrameOutcome::stopped || outcome == FrameOutcome::restart)
             break;
 #if BBLITE_WORKERS

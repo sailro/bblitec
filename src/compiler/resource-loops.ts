@@ -943,8 +943,11 @@ export function loopBoundMayChange(
                         0
                     );
                 },
+                reached,
+                programAliases: arrayContents
+                    ? "loop-bound-contents"
+                    : "loop-bound-object",
                 mutates: (node, scan) => {
-                    if (!reached.has(node)) return false;
                     const namesAlias = (expression: ts.Expression): boolean => {
                         if (arrayContents) {
                             const target = unwrapExpression(expression);
@@ -1327,7 +1330,11 @@ export function parameterizedResourceLoop(
         fn.parameters.forEach((parameter, index) => {
             const input = parameterInput(context.checker, call, fn, index);
             // A spread or a rest leaves the parameter's value unknown.
-            if (input.kind === "unknown" || input.kind === "rest") {
+            if (
+                input.kind === "unknown" ||
+                input.kind === "rest" ||
+                input.kind === "element"
+            ) {
                 safe = false;
                 return;
             }

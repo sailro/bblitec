@@ -90,14 +90,17 @@ test(
         }
         void main();
     `);
-        const rect = /const auto (\w+) = bbl::ui_get_client_rect\(/.exec(
+        assert.match(
             result.cpp,
-        )?.[1];
-        assert.ok(rect);
+            /const auto \w+ = std::make_shared<const bbl::UiClientRect>\(bbl::ui_get_client_rect\(/,
+        );
         assert.equal(result.cpp.match(/bbl::ui_get_client_rect\(/g)?.length, 1);
-        // A bounding rectangle's extent is the border box.
-        for (const field of ["left", "top", "offset_width", "offset_height"])
-            assert.match(result.cpp, new RegExp(`= ${rect}\\.${field};`));
+        // The closures read the one snapshot they capture; its extent is the border box.
+        for (const field of ["left", "offset_width"])
+            assert.match(
+                result.cpp,
+                new RegExp(`\\(v_snapshot\\)->${field}\\b`),
+            );
         runGeneratedProgram(
             tools!,
             "platform-local-capture-check",

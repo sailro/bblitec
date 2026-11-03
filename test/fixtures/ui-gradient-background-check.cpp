@@ -90,17 +90,99 @@ int main() try {
         const auto last = (texture->width - 1) * 4;
         check(texture->rgba->at(last) < texture->rgba->at(last + 2),
               "Gradient ends blue at its own extent");
+        // CSS math over a percentage sizes and places a layer against its paint box.
         ui_set_attribute(
             engine, owner, "style",
-            "width:160px;height:60px;decorator:linear-gradient(red,blue) padding-box / 0dp 10dp / 50% 50%;");
+            "position:absolute;left:20px;top:30px;width:160px;height:60px;"
+            "--bbl-background-image:linear-gradient(red,blue) padding-box / calc(100% - 6px) "
+            "calc(100% - 12px) / 6px 6px;");
+        update();
+        bounds(pal::record_ui_rml_frame(runtime, 640, 480), 0, 26, 36, 154, 48);
+        ui_set_attribute(
+            engine, owner, "style",
+            "position:absolute;left:20px;top:30px;width:160px;height:60px;"
+            "--bbl-background-image:linear-gradient(red,blue) padding-box / 40px 10px / "
+            "calc(100% - 4px) 0px;");
+        update();
+        bounds(pal::record_ui_rml_frame(runtime, 640, 480), 0, 136, 30, 40, 10);
+        // Placed in the padding box and clipped to the rounded border box (CSS background-origin
+        // and background-clip): the layer reaches under the border and loses its corners.
+        ui_set_attribute(
+            engine, owner, "style",
+            "position:absolute;left:20px;top:30px;width:160px;height:60px;"
+            "border:6px solid transparent;border-radius:20px;"
+            "--bbl-background-image:linear-gradient(red,blue) border-box / calc(100% + 4px) "
+            "calc(100% + 4px) / -2px -2px / padding-box;");
+        update();
+        const auto& rounded = pal::record_ui_rml_frame(runtime, 640, 480);
+        const auto layer = static_cast<std::size_t>(
+            std::find_if(rounded.draws.begin(), rounded.draws.end(),
+                         [](const auto& draw) { return draw.texture_id != 0; }) -
+            rounded.draws.begin());
+        check(layer < rounded.draws.size(), "The layer draws");
+        bounds(rounded, layer, 24, 34, 164, 64);
+        const auto& draw = rounded.draws[layer];
+        for (std::uint32_t i = 0; i < draw.index_count; ++i) {
+            const auto& vertex = rounded.vertices.at(rounded.indices.at(draw.first_index + i));
+            check(std::hypot(vertex.x - 24, vertex.y - 34) > 2,
+                  "The rounded clip removes the layer's corner");
+        }
+        ui_set_attribute(
+            engine, owner, "style",
+            "width:160px;height:60px;--bbl-background-image:linear-gradient(red,blue) padding-box / 0dp 10dp / 50% 50%;");
         update();
         check(pal::record_ui_rml_frame(runtime, 640, 480).draws.size() == 1,
               "Zero-sized image paints nothing");
-        ui_set_attribute(engine, owner, "style", "width:160px;height:60px;decorator:none;");
+        ui_set_attribute(engine, owner, "style",
+                         "width:160px;height:60px;--bbl-background-image:none;");
         update();
         check(pal::record_ui_rml_frame(runtime, 640, 480).draws.size() == 1 &&
                   raw->GetNumChildren(true) == 1,
               "Layer removal preserves content");
+        // The background shorthand written at run time: gradient layers are the cascaded
+        // image, a colour after the shorthand's image reset removes them.
+        ui_set_attribute(engine, owner, "style", "width:160px;height:60px;");
+        ui_set_background(engine, owner,
+                          "radial-gradient(circle at 38% 32%, rgba(255,255,255,0.55), "
+                          "rgba(255,255,255,0) 60%), linear-gradient(#b6a884, #b6a884)");
+        update();
+        check(pal::record_ui_rml_frame(runtime, 640, 480).draws.size() == 3,
+              "Written gradient layers paint");
+        ui_set_style_property(engine, owner, "--bbl-background-image", "none");
+        ui_set_background(engine, owner, "#cdaa6b");
+        update();
+        const auto& colored = pal::record_ui_rml_frame(runtime, 640, 480);
+        check(colored.draws.size() == 2 && colored.draws.front().texture_id == 0,
+              "A written colour replaces the layers");
+        // A padding-box clip is the plain layer's own paint box; a content-box clip refuses.
+        ui_set_attribute(
+            engine, owner, "style",
+            "position:absolute;left:20px;top:30px;width:160px;height:60px;padding:10px;"
+            "--bbl-background-image:linear-gradient(red,blue);background-clip:padding-box;");
+        update();
+        const auto& padded = pal::record_ui_rml_frame(runtime, 640, 480);
+        const auto clipped = static_cast<std::size_t>(
+            std::find_if(padded.draws.begin(), padded.draws.end(),
+                         [](const auto& draw) { return draw.texture_id != 0; }) -
+            padded.draws.begin());
+        check(clipped < padded.draws.size(), "The clipped layer draws");
+        bounds(padded, clipped, 20, 30, 180, 80);
+        bool refused = false;
+        try {
+            ui_set_background(engine, owner,
+                              "linear-gradient(red,blue) center / 4px 4px no-repeat");
+        } catch (const std::runtime_error&) {
+            refused = true;
+        }
+        check(refused, "A written layer box refuses");
+        ui_set_style_property(engine, owner, "background-clip", "content-box");
+        refused = false;
+        try {
+            update();
+        } catch (const std::runtime_error&) {
+            refused = true;
+        }
+        check(refused, "A content-box clip of a plain layer refuses");
     }
     SDL_DestroyWindow(window);
     SDL_Quit();

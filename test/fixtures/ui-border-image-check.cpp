@@ -22,7 +22,7 @@ int main() {
         ui_set_attribute(
             engine, box, "style",
             "position:absolute;left:20px;top:30px;box-sizing:border-box;width:100px;height:80px;"
-            "border:4px red;background-color:blue;background-clip:padding-box;");
+            "border:4px solid red;background-color:blue;background-clip:padding-box;");
         ui_append_to_root(engine, box);
         pal::UiRmlRuntime runtime(engine, window, 640, 480);
         const auto frame_for = [&](const char* slices,
@@ -144,6 +144,50 @@ int main() {
         tiles = quads(pal::record_ui_rml_frame(runtime, 640, 480));
         assert(tiles.size() == 6);
         expect_near(tiles.front()[1].x - tiles.front()[0].x, 40);
+
+        // The longhands cascade under the shorthand: a later source keeps its slices and widths.
+        raw->SetProperty("border-image",
+                         "url(\"frame4px.png\") 3 3 3 3 / 3px 3px 3px 3px / 0 0 0 0 stretch");
+        runtime.context->Update();
+        tiles = quads(pal::record_ui_rml_frame(runtime, 640, 480));
+        expect_near(tiles.front()[1].x - tiles.front()[0].x, 3);
+        raw->SetProperty("border-image-source", "none");
+        runtime.context->Update();
+        assert(quads(pal::record_ui_rml_frame(runtime, 640, 480)).empty());
+        raw->SetProperty("border-image-source", "url(\"frame4px.png\")");
+        raw->SetProperty("border-image-width", "5px 5px 5px 5px");
+        runtime.context->Update();
+        tiles = quads(pal::record_ui_rml_frame(runtime, 640, 480));
+        expect_near(tiles.front()[1].x - tiles.front()[0].x, 5);
+        // The shorthand resets the longhands it omits: widths return to 1 x the 0px border.
+        raw->SetProperty("border-image", "url(\"frame4px.png\") 3 3 3 3");
+        runtime.context->Update();
+        assert(quads(pal::record_ui_rml_frame(runtime, 640, 480)).empty());
+        raw->SetProperty("border-image", "none");
+        runtime.context->Update();
+        assert(quads(pal::record_ui_rml_frame(runtime, 640, 480)).empty());
+
+        // An inline longhand overrides a rule's shorthand; removing it restores the rule's source.
+        const auto sheet = ui_create_element(engine, "style");
+        ui_add_class_style(engine, sheet, "framed",
+                           "border-image:url(\"frame4px.png\") 3 3 3 3 / 3px 3px 3px 3px / 0 0 0 0 "
+                           "stretch;");
+        ui_append_to_root(engine, sheet);
+        // Clear the inline writes above: the retained style record's and RmlUi's own.
+        static_cast<void>(ui_remove_style_property(engine, box, "border-image"));
+        for (const char* longhand :
+             {"border-image-source", "border-image-slice", "border-image-width",
+              "border-image-outset", "border-image-repeat"})
+            raw->RemoveProperty(longhand);
+        ui_set_attribute(engine, box, "class", "framed");
+        pal::update_ui_rml_runtime(runtime, 640, 480);
+        assert(!quads(pal::record_ui_rml_frame(runtime, 640, 480)).empty());
+        ui_set_style_property(engine, box, "border-image-source", "none");
+        pal::update_ui_rml_runtime(runtime, 640, 480);
+        assert(quads(pal::record_ui_rml_frame(runtime, 640, 480)).empty());
+        static_cast<void>(ui_remove_style_property(engine, box, "border-image-source"));
+        pal::update_ui_rml_runtime(runtime, 640, 480);
+        assert(!quads(pal::record_ui_rml_frame(runtime, 640, 480)).empty());
     }
     SDL_DestroyWindow(window);
     SDL_Quit();

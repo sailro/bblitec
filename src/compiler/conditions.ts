@@ -5,7 +5,13 @@
 import ts from "typescript";
 import { traceSourceNode } from "./source-trace.js";
 import { someAnalysisNode } from "./analysis-walk.js";
-import { isNullable, holdsOnly } from "./type-facts.js";
+import {
+    isNullable,
+    holdsOnly,
+    nullability,
+    undefinedOnly,
+    unionMembers,
+} from "./type-facts.js";
 import { unlessRefused } from "./compile-error.js";
 import {
     compileClassInstanceOf,
@@ -35,7 +41,7 @@ import {
     variableKind,
 } from "./syntax.js";
 import { recordAt } from "./record-access.js";
-import { declaredIn, resolvedSymbol } from "./symbols.js";
+import { declaredIn, libraryName, resolvedSymbol } from "./symbols.js";
 import { ApplicationRealmRequired } from "./worker-modules.js";
 import { retainTextValue } from "./text-surface.js";
 import { pinOperand } from "./evaluation-order.js";
@@ -100,6 +106,37 @@ const COLLECTION_CLASSES: ReadonlyMap<
     ["Set", { kind: "set", weak: false }],
     ["WeakSet", { kind: "set", weak: true }],
 ]);
+
+/**
+ * Opaque platform classes `instanceof` decides by the data kinds of their
+ * values, the class's own first: a File is a Blob.
+ */
+const PLATFORM_INSTANCE_KINDS: ReadonlyMap<
+    string,
+    readonly [DataType["kind"], ...DataType["kind"][]]
+> = new Map([
+    ["Blob", ["blob", "file"]],
+    ["File", ["file"]],
+]);
+
+/** `void | Promise<T>` (or `undefined | ...`) whose promise never settles to undefined. */
+function settlesDefinedOrVoid(checker: ts.TypeChecker, type: ts.Type): boolean {
+    const members = unionMembers(type);
+    const promises = members.filter(
+        (member) => libraryName(member) === "Promise",
+    );
+    const settled =
+        promises.length === 1
+            ? checker.getAwaitedType(promises[0]!)
+            : undefined;
+    return (
+        settled !== undefined &&
+        !nullability(settled).undefined &&
+        members.every(
+            (member) => promises.includes(member) || undefinedOnly(member),
+        )
+    );
+}
 
 export class ConditionLowerer {
     constructor(private readonly context: ConditionContext) {}
@@ -228,6 +265,29 @@ export class ConditionLowerer {
             return tests.length ? `(${tests.join(" || ")})` : "false";
         }
         return type && holds(type) ? "true" : "false";
+    }
+
+    /**
+     * `value instanceof Blob`: a value of one of the class's kinds is one,
+     * an optional one when present; a dynamic value asks its native box.
+     */
+    private platformInstanceOf(
+        operand: ts.Expression,
+        kinds: readonly [DataType["kind"], ...DataType["kind"][]],
+    ): string {
+        const value = this.context.bindings.pinValueToTemporary(
+            this.context.compileValue(operand),
+            "instance_operand",
+            operand,
+        );
+        if (isJsonValue(value))
+            return `(${value.cpp}).instance_of<${this.context.dataTypes.cppType({ kind: kinds[0] } as DataType)}>()`;
+        const type = value.dataType;
+        if (type?.kind === "optional")
+            return kinds.includes(type.inner.kind)
+                ? optionalPresentCpp(value.cpp)
+                : "false";
+        return type && kinds.includes(type.kind) ? "true" : "false";
     }
 
     /**
@@ -592,12 +652,45 @@ export class ConditionLowerer {
                     unwrapped.right,
                 );
                 if (classInstance !== undefined) return classInstance;
+                // A promise slot holds a promise while it holds a value
+                // (`void | Promise<T>` is an optional promise).
+                if (global === "Promise") {
+                    const value = this.context.compileValue(unwrapped.left);
+                    const type = value.dataType;
+                    if (value.kind === "promise" || type?.kind === "promise") {
+                        this.context.emitDiscardedValue(value);
+                        return "true";
+                    }
+                    // Outside an application realm a promise is its
+                    // settlement read in place: a `void | Promise<T>` slot
+                    // holds a value exactly when it held the promise, unless
+                    // the promise may settle to undefined.
+                    if (
+                        type?.kind === "optional" &&
+                        (type.inner.kind === "promise" ||
+                            settlesDefinedOrVoid(
+                                this.context.checker,
+                                this.context.checker.getTypeAtLocation(
+                                    unwrapped.left,
+                                ),
+                            ))
+                    )
+                        return optionalPresentCpp(
+                            this.context.bindings.pinValueToTemporary(
+                                value,
+                                "instance_candidate",
+                            ).cpp,
+                        );
+                }
                 const collection = COLLECTION_CLASSES.get(global);
                 if (collection)
                     return this.collectionInstanceOf(
                         unwrapped.left,
                         collection,
                     );
+                const platform = PLATFORM_INSTANCE_KINDS.get(global);
+                if (platform)
+                    return this.platformInstanceOf(unwrapped.left, platform);
                 // The two buffer views answer `instanceof` beside the
                 // typed arrays; neither table alone names every binary kind.
                 // A SharedArrayBuffer is a buffer branded shared; the brand

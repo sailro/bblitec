@@ -64,7 +64,10 @@ export function constructedFieldPresent(
         returnedRecords(factory).every((returned) =>
             setsPresentField(context, returned, read.name.text),
         ) &&
-        onlyReadsFields(context, declaration)
+        onlyReadsFields(
+            (node) => context.symbols.valueSymbol(node),
+            declaration,
+        )
     );
 }
 
@@ -102,13 +105,17 @@ function setsPresentField(
     return !isNullable(context.checker.getTypeAtLocation(writer.value));
 }
 
-/** Every use of the binding reads one of its fields or tests its presence. */
-function onlyReadsFields(
-    context: ConstructedFieldContext,
+/**
+ * Every use of the binding reads one of its fields or tests its presence:
+ * the object itself is never compared, handed on, enumerated, written or
+ * called through.
+ */
+export function onlyReadsFields(
+    symbolOf: (identifier: ts.Identifier) => ts.Symbol | undefined,
     declaration: ts.VariableDeclaration,
 ): boolean {
     const name = declaration.name as ts.Identifier;
-    const symbol = context.symbols.valueSymbol(name);
+    const symbol = symbolOf(name);
     const scope = ts.findAncestor(
         declaration,
         (node) => ts.isBlock(node) || ts.isSourceFile(node),
@@ -120,7 +127,8 @@ function onlyReadsFields(
         if (
             ts.isIdentifier(node) &&
             node !== name &&
-            context.symbols.valueSymbol(node) === symbol &&
+            node.text === name.text &&
+            symbolOf(node) === symbol &&
             !isFieldReadOrTest(node)
         ) {
             escapes = true;

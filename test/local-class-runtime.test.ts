@@ -403,11 +403,15 @@ test("mutates a nested object field in place instead of copying it", () => {
     `);
 
     // `const q = this._quat` aliases the stored object: the writes land on
-    // the instance, not on a detached copy.
-    assert.match(
-        result.cpp,
-        /bblscene::Quat& (v_\w+) = v_\w+->_quat;[\s\S]*\1->w = \1->x;/,
-    );
+    // the instance, not on a detached copy (a reference to a value struct,
+    // or a copy of a shared record's reference).
+    const alias =
+        /bblscene::Quat(&?) (v_\w+) = v_\w+->_quat;[\s\S]*\2->w = \2->x;/.exec(
+            result.cpp,
+        );
+    assert.ok(alias);
+    if (!alias[1])
+        assert.match(result.cpp, /using Quat = bbl::js::Ref<QuatData>;/);
     assert.match(result.cpp, /->_position->x = /);
 });
 

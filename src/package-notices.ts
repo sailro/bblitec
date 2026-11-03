@@ -120,6 +120,8 @@ export function linkedPortNotices(request: NoticeRequest): PortNotice[] {
         ports.push({ name: "zlib.txt", port: "zlib" });
     if (has("platform:meshopt"))
         ports.push({ name: "meshoptimizer.txt", port: "meshoptimizer" });
+    if (has("storage:indexeddb"))
+        ports.push({ name: "SQLite.txt", port: "sqlite3" });
     return ports;
 }
 

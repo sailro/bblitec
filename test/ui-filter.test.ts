@@ -35,6 +35,15 @@ test("ordinary retained filters survive projection and refuse unsupported forms"
         assert.ok(supportedUiFilter(value), value);
     assert.equal(supportedUiBoxShadow("0 0 var(--Color, 2px)"), false);
     assert.equal(supportedUiBoxShadow("0 0 currentColor"), false);
+    // Viewport lengths: the PAL resolves vmin/vmax, RmlUi vw/vh; other units refuse.
+    assert.ok(
+        supportedUiBoxShadow(
+            "0 0 0 160vmax rgba(19,29,14,.52), 0 0 18px 3px rgba(255,205,92,.5), inset 0 0 14px #fff",
+        ),
+    );
+    assert.ok(supportedUiBoxShadow("2vw 1vh 0 -1svmin red"));
+    assert.equal(supportedUiBoxShadow("0 0 2em red"), false);
+    assert.equal(supportedUiBoxShadow("0 0 -2vmin red"), false);
     const compile = (value: string) =>
         compileSource(`
         import { createEngine } from "@babylonjs/lite";

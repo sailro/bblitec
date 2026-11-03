@@ -226,7 +226,8 @@ load_sdl_gpu_compute_pipeline(SDL_GPUDevice* device, const std::string& artifact
         if (info.props)
             SDL_DestroyProperties(info.props);
     });
-    if (result->format == SDL_GPU_SHADERFORMAT_MSL && !metal_allocations->empty()) {
+    if (result->format == SDL_GPU_SHADERFORMAT_MSL && metal_allocations &&
+        !metal_allocations->empty()) {
         info.props = SDL_CreateProperties();
         if (!info.props ||
             !SDL_SetNumberProperty(

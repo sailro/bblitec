@@ -16,6 +16,19 @@ test("gradient background layers retain independent dimensions, positions and ne
         ),
         "linear-gradient(rgb(1,2,3),rgba(4,5,6,.5)) padding-box / 12px 25% / 100% 100%,radial-gradient(red,blue) padding-box / 100% 10px / 0% 0%",
     );
+    // Origin and clip boxes: the decorator paints in the clip box, placed in the origin box.
+    assert.equal(
+        uiGradientBackground(
+            "linear-gradient(red,red) -2px -2px / calc(100% + 4px) calc(100% + 4px) no-repeat padding-box border-box",
+        ),
+        "linear-gradient(red,red) border-box / calc(100% + 4px) calc(100% + 4px) / -2px -2px / padding-box",
+    );
+    assert.equal(
+        uiGradientBackground(
+            "linear-gradient(red,red) 0 0/4px 4px no-repeat content-box",
+        ),
+        "linear-gradient(red,red) content-box / 4px 4px / 0 0",
+    );
     for (const value of [
         "linear-gradient(red,blue) center/2px 22px repeat",
         "linear-gradient(red,blue) center/2px 22px",
@@ -35,6 +48,38 @@ test("gradient background layers retain independent dimensions, positions and ne
     }
 });
 
+test("a background shorthand resets an earlier background-clip of its rule", () => {
+    const compile = (style: string) =>
+        compileSource(
+            `import {createEngine} from "@babylonjs/lite"; await createEngine({}); const e=document.createElement("div"); e.style.cssText=${JSON.stringify(style)}; document.body.appendChild(e);`,
+        );
+    assert.doesNotThrow(() =>
+        compile(
+            "background-clip:padding-box;background:linear-gradient(red,red) 0 0/4px 4px no-repeat;",
+        ),
+    );
+    assert.throws(
+        () =>
+            compile(
+                "background:linear-gradient(red,red) 0 0/4px 4px no-repeat;background-clip:padding-box;",
+            ),
+        /box clipping currently applies to solid backgrounds/,
+    );
+    // Plain gradient layers paint in the clip box the cascade gives them.
+    assert.doesNotThrow(() =>
+        compile(
+            "background:linear-gradient(#9a6f3b,#82592e);background-clip:padding-box;",
+        ),
+    );
+    assert.throws(
+        () =>
+            compile(
+                "background:linear-gradient(#9a6f3b,#82592e);background-clip:content-box;",
+            ),
+        /box clipping currently applies to solid backgrounds/,
+    );
+});
+
 test("native sized layers preserve gradient coordinates, paint order, content and live layout", (t) => {
     const layers = uiGradientBackground(
         "linear-gradient(red,red) center/4px 32px no-repeat,linear-gradient(blue,blue) right bottom/40px 6px no-repeat",
@@ -45,7 +90,7 @@ test("native sized layers preserve gradient coordinates, paint order, content an
     mkdirSync("artifacts/ui-gradient-background", { recursive: true });
     writeFileSync(
         "artifacts/ui-gradient-background/styles.hpp",
-        `constexpr const char* layers = ${JSON.stringify(`decorator:${layers};`)};\nconstexpr const char* resized = ${JSON.stringify(`decorator:${resized};`)};\n`,
+        `constexpr const char* layers = ${JSON.stringify(`--bbl-background-image:${layers};`)};\nconstexpr const char* resized = ${JSON.stringify(`--bbl-background-image:${resized};`)};\n`,
     );
     runRmlUiFixture(t, "ui-gradient-background");
 });

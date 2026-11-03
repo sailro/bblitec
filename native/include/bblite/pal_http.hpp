@@ -8,6 +8,7 @@ struct HttpRequest {
     std::string method = "GET";
     std::vector<std::pair<std::string, std::string>> headers;
     std::optional<std::string> body;
+    bool keepalive = false;
 };
 
 /**
@@ -37,15 +38,24 @@ struct AbortRoute {
 } // namespace http_detail
 
 /**
- * `fetch(url, { method, headers, body, signal })` over native transport. The promise fulfills
- * with the head (status, URL, headers) while the body streams; transport failures reject with a
- * TypeError. An aborted `signal` rejects with its reason before any transfer; aborting later
+ * `fetch(url, { method, headers, body, keepalive, signal })` over native transport. The promise
+ * fulfills with the head (status, URL, headers) while the body streams; transport failures reject
+ * with a TypeError. An aborted `signal` rejects with its reason before any transfer; aborting later
  * rejects a pending fetch, or errors a readable body, with the reason, and cancels the transfer.
+ * A `keepalive` request runs to its end once its realm closes; one whose body would put the
+ * keepalive bytes in flight past their quota rejects with a TypeError before any transfer.
  */
 inline js::Promise<HttpResponse> fetch_http(std::string url, HttpRequest request,
                                             js::AbortSignal signal = {}) {
     if (signal && signal.aborted())
         return js::Promise<HttpResponse>::rejected(*signal.reason());
+    std::optional<KeepaliveLease> keepalive;
+    if (request.keepalive) {
+        keepalive = KeepaliveLease::acquire(request.body ? request.body->size() : 0);
+        if (!keepalive)
+            return js::Promise<HttpResponse>::rejected(http_detail::type_error(
+                "Failed to fetch: keepalive request bodies in flight exceed 64 KiB."));
+    }
     auto& loop = EventLoop::current();
     auto pending = std::make_shared<http_detail::PendingFetch>();
     const auto route = std::make_shared<http_detail::AbortRoute>();
@@ -53,6 +63,7 @@ inline js::Promise<HttpResponse> fetch_http(std::string url, HttpRequest request
     pending->head_method = request.method == "HEAD" || request.method == "head";
     pending->signal = signal;
     pending->transport = std::make_shared<HttpTransport>();
+    pending->transport->keepalive = request.keepalive;
     const auto finish_abort = [](http_detail::PendingFetch& fetch) {
         if (fetch.algorithm) {
             fetch.signal.remove_algorithm(fetch.algorithm);
@@ -94,10 +105,12 @@ inline js::Promise<HttpResponse> fetch_http(std::string url, HttpRequest request
             pending->result.resolve(std::move(response));
         },
         [pending] {
-            if (pending->transport && pending->transport->exchange)
-                pending->transport->exchange->cancel();
+            if (pending->transport)
+                pending->transport->abandon();
         });
     auto exchange = std::make_shared<HttpExchange>(loop.inbox(), head);
+    if (keepalive)
+        exchange->hold(std::move(*keepalive));
     pending->transport->exchange = exchange;
     if (signal)
         pending->algorithm = signal.add_algorithm([route, head, &loop](const js::Error& reason) {
@@ -105,6 +118,9 @@ inline js::Promise<HttpResponse> fetch_http(std::string url, HttpRequest request
                 fetch->settled = true;
                 fetch->algorithm = 0;
                 const auto transport = std::move(fetch->transport);
+                // An abort cancels a keepalive request too.
+                if (transport && transport->exchange)
+                    transport->exchange->cancel();
                 loop.cancel_completion(head);
                 fetch->result.reject(reason);
                 return;

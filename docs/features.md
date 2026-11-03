@@ -98,7 +98,7 @@ Rules:
 | JSON            | parse (reviver), stringify                                                                                                                     | Replacers, cycles, Map/Set values                                                                                  |
 | Date            | ISO parsing, getters, `setTime`, `Date.UTC`, UTC and local field setters, `new Date(y, m, ...)`                                                | Legacy formats                                                                                                     |
 | Functions       | `call`, `apply`, `Reflect.apply` (listed or array-literal arguments), `bind` with a receiver and bound arguments, tuple rest parameters        | `bind` of `unknown`/generic signatures, stored optional tuple rests, library prototype methods on other receivers  |
-| URL             | `URL`, `URLSearchParams` (get/has/set), `AbortController`, `DOMException`                                                                      | IDNA hosts (TypeError), `append`/`delete`/`sort`, `AbortSignal.timeout`/`any`                                      |
+| URL             | `URL`, `URLSearchParams` (get/has/set/delete), `AbortController`, `DOMException`                                                               | IDNA hosts (TypeError), `append`/`sort`, `AbortSignal.timeout`/`any`                                               |
 | Binary          | ArrayBuffer, SharedArrayBuffer, Atomics, DataView, all typed arrays incl. BigInt64, `crypto.getRandomValues` (integer arrays)                  | `from` over buffers/numbers/strings, element writes through a union, `Atomics.wait`                                |
 | Reflection      | Finite record Proxy get/set traps, `Reflect.get`, Symbols                                                                                      | Other traps, FinalizationRegistry                                                                                  |
 
@@ -113,13 +113,20 @@ Rules:
   registry scenes use the pinned `lab/public`. Runtime asset URLs require a finite inferred local candidate set;
   unknown keys and percent-encoded bodies refuse. Inference follows closed local Map registries, member and `push`
   writes and array callback parameters.
-- `fetch` (application realm): absolute HTTP(S), method, string headers, body, static cache mode, `signal`; streamed
+- `fetch` (application realm): absolute HTTP(S), method, string headers, body, static cache mode, `keepalive`, `signal`; streamed
   `body` reader. Known asset fetches use packaged responses. A `typeof fetch` wrapper forwards its runtime `RequestInit`
   (signal, headers). Request objects, teeing and Headers iteration refuse.
 - Byte streams (application realm): response bodies and `blob.stream()` pipe through `CompressionStream` or
   `DecompressionStream` (gzip, deflate, deflate-raw; zlib linked only where constructed); `new ReadableStream({ pull,
-  cancel })` is a program source; `new Response(stream, { status, statusText, headers })` reads them. Pipe options,
+cancel })` is a program source; `new Response(stream, { status, statusText, headers })` reads them. Pipe options,
   `pipeTo`, other transforms, writable sides, start/strategy sources and non-stream Response bodies refuse.
+- Web Storage: getItem/setItem/removeItem. `localStorage` lives in the host preference directory; `sessionStorage` in
+  process memory (kept across realm recreation, never on disk, no quota) and is absent in worker realms.
+- IndexedDB (application realm): `open` with `upgradeneeded`, `createObjectStore(name)`, readonly/readwrite
+  transactions, get/put(value, key)/delete, `openCursor()`/`continue()`, `objectStoreNames`, `close`, request and
+  transaction `on*` handlers (no event argument). One SQLite file per database beside `localStorage`; values read back
+  as dynamic values (records, arrays, primitives, Blobs); keys are numbers and strings. Key paths, generators, indexes,
+  key ranges, cursor directions, `versionchange`/`blocked` events and event listeners refuse.
 - `createImageBitmap(blob, options)`: static options through `pal::image_bitmap_options`; WebP via libwebp. Resize/crop
   refuse; orientation metadata is not applied.
 - `setDracoBaseUrl`/`setKtx2DecoderUrl` must be generation-known and precede compressed loads. KTX1 selects a
@@ -146,6 +153,7 @@ Rules:
 - `msaaSamples`: 1 for numeric 1, else 4; other constants refuse.
 - Native loops own extent refresh; `resizeEngine` runs the pin's `resizeSurface` on an application realm's DOM canvas.
 - `enableAsyncShaderPipelineCompilation` adds nothing: scene preparation compiles pipelines before the first frame.
+- `enableShaderMaterialPipelineSharing` and `enableKtx2WorkerDecoding` add nothing: frames and uploads are unchanged.
 - An application realm's DOM canvas backing store is sized only by the pin's `resizeSurface` (client box, device
   pixel ratio or a getter the program defines for it on the global object, `maxDevicePixelRatio` option or write) at
   `createEngine`, `resizeEngine` and each frame head, on every
@@ -153,9 +161,12 @@ Rules:
   static cap of 1 or more applies as below (desktop keeps devicePixelRatio 1); any other cap selects a realm.
 - A Window realm's global: `Object.defineProperty` getters redefine its host accessor `devicePixelRatio`; a `fetch`
   replacement is erased loading instrumentation. Writing or defining another host property refuses.
+- A global-object member only the program's types declare is the Window realm's state where program code writes it
+  (outside a branch the generation-time browser state rules out); otherwise no host page installs it and it reads absent.
 - Device recovery rebuilds GPU resources from CPU owners; GPU-only storage buffers lose contents. Only the scene
   strategy recovers; a loss with sprite, text, effect or frame-graph contexts refuses with the pin's message.
 - Recovery registers before `startEngine` in the entry, anywhere in an application realm.
+- `engine._renderFn` (the pin's frame function) can be wrapped; a wrapper that never calls it ends the native run.
 - GPU task timing refuses TAA, screen-space and pass-less copy tasks, and on SDL_GPU colour/post-process tasks in TAA builds.
 - `setGpuTimingEnabled` times each frame's commands on the task-timing device (application realm).
 - Compute: generation-known WGSL, f32/u32/i32 writers (no f16), uniform/storage buffers, textures and samplers. Six-layer

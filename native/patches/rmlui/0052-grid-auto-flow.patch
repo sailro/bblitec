@@ -1,0 +1,83 @@
+grid-auto-flow: row and column auto-placement. Column flow is CSS Grid's sparse row algorithm with the axes swapped
+(items fill each column's rows, then open implicit columns sized by grid-auto-columns); dense packing is not
+represented.
+CSS Grid 1: https://www.w3.org/TR/css-grid-1/#grid-auto-flow-property
+
+diff --git a/Include/RmlUi/Core/ID.h b/Include/RmlUi/Core/ID.h
+index 6e8ef94..d69b0b0 100644
+--- a/Include/RmlUi/Core/ID.h
++++ b/Include/RmlUi/Core/ID.h
+@@ -180,6 +180,7 @@ enum class PropertyId : uint8_t {
+ 	GridRow,
+ 	GridAutoColumns,
+ 	GridAutoRows,
++	GridAutoFlow,
+ 	GridTemplateAreas,
+ 	AspectRatio,
+ 	ClipPath,
+diff --git a/Source/Core/ElementStyle.cpp b/Source/Core/ElementStyle.cpp
+index c7b140d..e12aba6 100644
+--- a/Source/Core/ElementStyle.cpp
++++ b/Source/Core/ElementStyle.cpp
+@@ -1468,6 +1468,7 @@ void ElementStyle::ComputeValue(Style::ComputedValues& values, float dp_ratio, V
+ 	case PropertyId::GridRow:
+ 	case PropertyId::GridAutoColumns:
+ 	case PropertyId::GridAutoRows:
++	case PropertyId::GridAutoFlow:
+ 	case PropertyId::GridTemplateAreas:
+ 	case PropertyId::AspectRatio:
+ 	case PropertyId::ClipPath:
+diff --git a/Source/Core/Layout/FlexFormattingContext.cpp b/Source/Core/Layout/FlexFormattingContext.cpp
+index 4defb0c..1483d06 100644
+--- a/Source/Core/Layout/FlexFormattingContext.cpp
++++ b/Source/Core/Layout/FlexFormattingContext.cpp
+@@ -278,7 +278,10 @@ void FlexFormattingContext::Format(Vector2f& flex_resulting_content_size, Vector
+ 			grid_placements.push_back({ParseGridPlacement(child->GetProperty<String>("grid-column"), explicit_columns, areas.column_lines),
+ 				ParseGridPlacement(child->GetProperty<String>("grid-row"), explicit_rows, areas.row_lines)});
+         }
+-		const auto bounds = PlaceGridItems(grid_placements, explicit_columns, explicit_rows);
++		const String flow = StringUtilities::StripWhitespace(element_flex->GetProperty<String>("grid-auto-flow"));
++		if (flow != "row" && flow != "column")
++			throw std::runtime_error("UI grid-auto-flow requires row or column.");
++		const auto bounds = PlaceGridItems(grid_placements, explicit_columns, explicit_rows, flow == "column");
+ 		auto implicit_tracks = [&](Vector<GridTrack>& tracks, int origin, int count, const char* property) {
+ 			const auto pattern = GridTrackParser::Parse(element_flex->GetProperty<String>(property), *element_flex, -1.f, 0.f, false, false);
+ 			if (pattern.empty()) throw std::runtime_error("UI implicit grid tracks cannot be none.");
+diff --git a/Source/Core/Layout/GridPlacement.h b/Source/Core/Layout/GridPlacement.h
+index 103dd9d..94b2015 100644
+--- a/Source/Core/Layout/GridPlacement.h
++++ b/Source/Core/Layout/GridPlacement.h
+@@ -177,8 +177,20 @@ inline GridTemplateAreas ParseGridTemplateAreas(std::string_view source)
+ struct GridPlacement { GridAxisPlacement column, row; };
+ struct GridBounds { int columns = 1, rows = 1, column_origin = 0, row_origin = 0; };
+ 
+-inline GridBounds PlaceGridItems(Vector<GridPlacement>& items, int explicit_columns, int explicit_rows)
++inline GridBounds PlaceGridItems(Vector<GridPlacement>& items, int explicit_columns, int explicit_rows, bool column_flow = false)
+ {
++	// CSS Grid 8.5: column flow is row flow with the axes swapped.
++	if (column_flow)
++	{
++		for (auto& item : items)
++			std::swap(item.column, item.row);
++		GridBounds bounds = PlaceGridItems(items, explicit_rows, explicit_columns);
++		for (auto& item : items)
++			std::swap(item.column, item.row);
++		std::swap(bounds.columns, bounds.rows);
++		std::swap(bounds.column_origin, bounds.row_origin);
++		return bounds;
++	}
+ 	// CSS Grid 8.5, sparse row flow. Definite areas reserve cells before any
+ 	// auto-placement, including areas appearing later in document order.
+ 	GridBounds bounds;
+diff --git a/Source/Core/StyleSheetSpecification.cpp b/Source/Core/StyleSheetSpecification.cpp
+index eb998d8..fec742e 100644
+--- a/Source/Core/StyleSheetSpecification.cpp
++++ b/Source/Core/StyleSheetSpecification.cpp
+@@ -456,6 +456,7 @@ void StyleSheetSpecification::RegisterDefaultProperties()
+ 	RegisterProperty(PropertyId::GridRow, "grid-row", "auto", false, true).AddParser("string");
+ 	RegisterProperty(PropertyId::GridAutoColumns, "grid-auto-columns", "auto", false, true).AddParser("string");
+ 	RegisterProperty(PropertyId::GridAutoRows, "grid-auto-rows", "auto", false, true).AddParser("string");
++	RegisterProperty(PropertyId::GridAutoFlow, "grid-auto-flow", "row", false, true).AddParser("string");
+ 	RegisterProperty(PropertyId::GridTemplateAreas, "grid-template-areas", "none", false, true).AddParser("string");
+ 	RegisterShorthand(ShorthandId::GridArea, "grid-area", "grid-row, grid-column", ShorthandType::GridArea);
+ 	RegisterShorthand(ShorthandId::BorderImage, "border-image",

@@ -7,6 +7,7 @@
 #include <RmlUi/Core/Transform.h>
 #include <algorithm>
 #include <bblite/js_data.hpp>
+#include <cctype>
 #include <optional>
 #include <stdexcept>
 #include <string_view>
@@ -55,6 +56,55 @@ inline std::optional<std::string_view> ui_css_wide_keyword(std::string_view valu
             }))
             return keyword;
     return std::nullopt;
+}
+
+/** Whether an image function at `offset` is a gradient, ending at the returned index. */
+inline std::optional<std::size_t> ui_background_gradient_at(std::string_view value,
+                                                            std::size_t offset) {
+    std::string name;
+    std::size_t open = offset;
+    for (; open < value.size() && value[open] != '(' && value[open] != ' ' && value[open] != ',';
+         ++open)
+        name += static_cast<char>(std::tolower(static_cast<unsigned char>(value[open])));
+    if (open == value.size() || value[open] != '(')
+        return std::nullopt;
+    if (name.starts_with("repeating-"))
+        name.erase(0, 10);
+    if (name != "linear-gradient" && name != "radial-gradient" && name != "conic-gradient")
+        return std::nullopt;
+    int depth = 0;
+    for (std::size_t index = open; index < value.size(); ++index) {
+        if (value[index] == '(')
+            ++depth;
+        else if (value[index] == ')' && --depth == 0)
+            return index + 1;
+    }
+    return std::nullopt;
+}
+
+/** A cascaded image led by a gradient is RmlUi decorator text; a raster image is a quoted path. */
+inline bool ui_background_gradient(std::string_view image) {
+    const auto start = image.find_first_not_of(" \t\r\n");
+    return start != std::string_view::npos && ui_background_gradient_at(image, start).has_value();
+}
+
+/** A comma-separated list of plain gradient images, each one layer without box tokens. */
+inline bool ui_background_gradient_layers(std::string_view value) {
+    std::size_t index = 0;
+    for (;;) {
+        index = value.find_first_not_of(" \t\r\n", index);
+        if (index == std::string_view::npos)
+            return false;
+        const auto end = ui_background_gradient_at(value, index);
+        if (!end)
+            return false;
+        index = value.find_first_not_of(" \t\r\n", *end);
+        if (index == std::string_view::npos)
+            return true;
+        if (value[index] != ',')
+            return false;
+        ++index;
+    }
 }
 
 /**
@@ -164,7 +214,19 @@ public:
                     const auto repeat = ui_background_value(element, "bbl-background-repeat");
                     if (size == "0px 0px" || size == "0dp 0dp" || size == "0 0")
                         decorator = "none";
-                    else {
+                    // Gradient layers fill their box, as they do for the auto, contain and cover
+                    // sizes the surface admits: sized layers carry their own boxes, plain ones
+                    // paint in the decorator's padding box, exact for a padding-box clip (a
+                    // border-box clip's repetition under the border is not represented).
+                    else if (ui_background_gradient(image)) {
+                        if (ui_background_gradient_layers(image) &&
+                            (clip.empty() ? element.GetProperty(Rml::PropertyId::BackgroundClip)
+                                                    ->Get<int>() == 2
+                                          : clip == "content-box"))
+                            throw std::runtime_error("A content-box clip of padding-box gradient "
+                                                     "layers is not represented.");
+                        decorator = image;
+                    } else {
                         if (repeat == "repeat" && size != "auto")
                             throw std::runtime_error(
                                 "Repeating sized UI backgrounds are not represented.");

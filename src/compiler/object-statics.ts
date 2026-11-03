@@ -36,8 +36,13 @@ import {
     compileCollectionEntries,
     compileEntryCollection,
 } from "./collection-methods.js";
-import { callSignatures } from "./type-facts.js";
-import { absenceOfNull, jsonAbsenceCpp, staticKeyOf } from "./values/model.js";
+import { callSignatures, nullability, unionMembers } from "./type-facts.js";
+import {
+    absenceOfNull,
+    jsonAbsenceCpp,
+    ownKeysKnown,
+    staticKeyOf,
+} from "./values/model.js";
 
 type ObjectStaticContext = Pick<
     LoweringServices,
@@ -67,6 +72,8 @@ type ObjectStaticContext = Pick<
     | "bindings"
     | "dynamicBindings"
     | "parameterObjects"
+    | "program"
+    | "evaluationOrder"
     | "refuseBorrowedPlatformEventEscape"
     | "resolveRecordValue"
     | "unwrap"
@@ -83,7 +90,7 @@ type ObjectStaticContext = Pick<
 /** What the own-entry walks read. */
 type OwnEntryContext = Pick<
     ObjectStaticContext,
-    "dataTypes" | "dataLowerer" | "fail"
+    "checker" | "dataTypes" | "dataLowerer" | "fail"
 >;
 
 type OwnObjectContext = OwnEntryContext &
@@ -191,25 +198,63 @@ export function structOwnEntries(
     );
     if (accessor && context.dataTypes.holdsPrototypeAccessors(dataType.name))
         context.dataTypes.structField(dataType.name, accessor.sourceName, node);
-    return fields.map((field) => {
+    // The union arms the checker narrowed a spread operand to decide the
+    // keys the record's tags would: own where every arm declares the key
+    // present, absent where none declares it.
+    const arms =
+        ts.isSpreadAssignment(node) || ts.isSpreadElement(node)
+            ? unionMembers(context.checker.getTypeAtLocation(node.expression))
+            : undefined;
+    const armPresence = (
+        field: DataStructField,
+    ): "present" | "absent" | undefined => {
+        if (!arms || !context.dataTypes.presenceByTags(dataType.name, field))
+            return undefined;
+        const declared = arms.map((arm) =>
+            context.checker.getPropertyOfType(arm, field.sourceName),
+        );
+        if (declared.every((property) => property === undefined))
+            return "absent";
+        return declared.every(
+            (property) =>
+                property !== undefined &&
+                (property.flags & ts.SymbolFlags.Optional) === 0 &&
+                !nullability(
+                    context.checker.getTypeOfSymbolAtLocation(property, node),
+                ).undefined,
+        )
+            ? "present"
+            : undefined;
+    };
+    const armKeys = new Map(
+        fields.map((field) => [
+            field,
+            owner.recordOwnKeys ? undefined : armPresence(field),
+        ]),
+    );
+    const owned = fields.filter((field) => armKeys.get(field) !== "absent");
+    return owned.map((field) => {
         const key = field.sourceName;
+        const arm = armKeys.get(field);
         const slot = `${owner.cpp}${access}${field.name}`;
         const value = context.dataLowerer.leafValue(
             `${slot}${field.accessor ? ".get()" : ""}`,
             field.type,
         );
-        const presence = owner.recordOwnKeys
-            ? undefined
-            : context.dataTypes.ownPresence(
-                  dataType.name,
-                  field,
-                  owner.cpp,
-                  access,
-                  node,
-              );
+        const presence =
+            owner.recordOwnKeys || arm
+                ? undefined
+                : context.dataTypes.ownPresence(
+                      dataType.name,
+                      field,
+                      owner.cpp,
+                      access,
+                      node,
+                  );
         const original = owner.recordProperties?.[key];
         // A key own by tags alone may hold an empty slot while own.
         const definitelyPresent =
+            arm === "present" ||
             (presence !== undefined && presence.holdsValueCpp === undefined) ||
             (original &&
                 original.kind !== "json-null" &&
@@ -267,28 +312,6 @@ export function ownEntries(
             (entry) => !isSymbolPropertyKey(entry.key),
         );
     return undefined;
-}
-
-/**
- * Whether every own key of a compile-time record or a struct is known at
- * generation: no record member a conditional spread wrote, no struct
- * field whose storage or tags decide it, unless a record snapshot proved
- * the struct's keys.
- */
-export function ownKeysKnown(
-    context: Pick<OwnObjectContext, "dataTypes">,
-    owner: Value,
-    node: ts.Node,
-): boolean {
-    if (owner.kind === "record")
-        return !Object.values(owner.recordProperties ?? {}).some(
-            (member) => member.conditionalOwnKey,
-        );
-    return (
-        owner.dataType?.kind !== "struct" ||
-        owner.recordOwnKeys !== undefined ||
-        context.dataTypes.ownKeysDecided(owner.dataType.name, node)
-    );
 }
 
 /**

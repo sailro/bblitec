@@ -36,6 +36,7 @@ import {
     absenceOf,
     absenceOfNull,
     knownCondition,
+    ownKeysKnown,
     staticKeyOf,
     undefinedValue,
     valueDataType,
@@ -149,7 +150,6 @@ import {
     OBJECT_STATIC_HANDLERS,
     compileObjectPrototypeCall,
     ownArray,
-    ownKeysKnown,
     ownObjectEntries,
     recordPropertyKeys,
     structOwnEntries,
@@ -215,6 +215,9 @@ import {
     compileWebStorageCall,
     compileWebStorageValue,
 } from "./web-storage.js";
+import { compileIndexedDbCall, compileIndexedDbValue } from "./indexed-db.js";
+import { compileMaterialCopy } from "./material-copy.js";
+import { compileMaterialPluginsIncludes } from "./material-plugin.js";
 import {
     browserEnvironmentValue,
     constInitializer,
@@ -278,6 +281,9 @@ export interface ExpressionContext
         Pick<
             LoweringServices,
             | "noteImpureRead"
+            | "expectStaticArrayElements"
+            | "compileStaticString"
+            | "probeStaticArrayLiteral"
             | "dynamicBindings"
             | "parameterObjects"
             | "conditionOverrides"
@@ -407,13 +413,13 @@ function spreadsItsValue(expression: ts.Expression): boolean {
 /**
  * Whether a prepared conditional arm's value is read after its preparation
  * runs (`hoistedArmValue`): a record or tuple's members, or a data value's
- * found flag or identity beside its storage.
+ * found flag or identity beside its storage, or a handle's beside its own.
  */
 function hoistsPreparedArm(value: Value): boolean {
     return value.kind === "record" || value.kind === "tuple"
         ? value.optionalFoundCpp === undefined &&
               value.objectIdentityCpp === undefined
-        : value.kind === "data" &&
+        : (value.kind === "data" || isHandleKind(value.kind)) &&
               (value.optionalFoundCpp !== undefined ||
                   value.objectIdentityCpp !== undefined);
 }
@@ -662,6 +668,12 @@ export class ExpressionLowerer {
         if (assertedValue) return assertedValue;
         const assertedNonNull = hasNonNullAssertion(expression);
         const unwrapped = this.context.unwrap(expression);
+        // A material's plugin list is its signature, never absent: the
+        // list test reads it whole, its optional chain included.
+        const listTest = ts.isCallExpression(unwrapped)
+            ? compileMaterialPluginsIncludes(this.context, unwrapped)
+            : undefined;
+        if (listTest) return listTest;
         const stopped = this.optionalChainStop(unwrapped);
         if (stopped) return stopped;
 
@@ -677,7 +689,9 @@ export class ExpressionLowerer {
             );
             if (collator) return collator;
         }
-        const storage = compileWebStorageValue(this.context, unwrapped);
+        const storage =
+            compileWebStorageValue(this.context, unwrapped) ??
+            compileIndexedDbValue(this.context, unwrapped);
         if (storage) return storage;
         const idleFunction = idleFunctionValue(this.context, unwrapped);
         if (idleFunction) return idleFunction;
@@ -3779,7 +3793,9 @@ export class ExpressionLowerer {
         // modules, and both are recognized by the global the call reaches
         // rather than by anything a scene is named. They come first so
         // neither is mistaken for a user function of the same name.
-        const storage = compileWebStorageCall(this.context, call);
+        const storage =
+            compileWebStorageCall(this.context, call) ??
+            compileIndexedDbCall(this.context, call);
         if (storage) {
             return storage;
         }
@@ -6104,6 +6120,8 @@ export class ExpressionLowerer {
     private compileObjectValue(
         unwrapped: ts.ObjectLiteralExpression,
     ): Value | undefined {
+        const copy = compileMaterialCopy(this.context, unwrapped);
+        if (copy) return copy;
         const dynamicSpread = hasDynamicObjectSpread(this.context, unwrapped);
         // A struct whose `?` fields decide its keys at run time spreads into
         // a dictionary of dynamic values when the position names one.

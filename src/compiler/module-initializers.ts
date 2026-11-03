@@ -319,6 +319,21 @@ export function createsReceiverState(
     );
 }
 
+/** The imported modules an entry runs natively whatever its retained declarations. */
+interface ImportedModuleState {
+    readonly projectModules: readonly ts.SourceFile[];
+    readonly selected: ReadonlySet<ts.SourceFile>;
+}
+
+/**
+ * @unjournaled Derived from the program alone, on first plan: by entry file
+ * and whether engine calls read the engine's bodies.
+ */
+const importedModuleStates = new WeakMap<
+    ts.Program,
+    Map<string, ImportedModuleState>
+>();
+
 class ModuleInitializerPlanner implements ModuleConstantWrites {
     public constructor(
         public readonly program: ts.Program,
@@ -343,6 +358,30 @@ class ModuleInitializerPlanner implements ModuleConstantWrites {
                 )
                 .map((declaration) => declaration.getSourceFile()),
         );
+        const { projectModules, selected } = this.importedModuleState();
+        return projectModules.filter(
+            (file) => selected.has(file) || retainedModules.has(file),
+        );
+    }
+
+    /** The plan's program half, kept for the program's later compiles. */
+    private importedModuleState(): ImportedModuleState {
+        let byEntry = importedModuleStates.get(this.program);
+        if (!byEntry)
+            importedModuleStates.set(
+                this.program,
+                (byEntry = new Map<string, ImportedModuleState>()),
+            );
+        const key = `${this.evaluationOrder.readsEngineBodies ? "engine" : "program"}:${this.sourceFile.fileName}`;
+        let state = byEntry.get(key);
+        if (!state) {
+            state = this.planImportedModuleState();
+            byEntry.set(key, state);
+        }
+        return state;
+    }
+
+    private planImportedModuleState(): ImportedModuleState {
         const projectModules = this.runtimeModules().filter(
             (file) => file !== this.sourceFile,
         );
@@ -369,13 +408,6 @@ class ModuleInitializerPlanner implements ModuleConstantWrites {
                 this.moduleHasObservedMutableState(file, observedState),
             ),
         );
-        if (
-            mutatingModules.size === 0 &&
-            mutableStateModules.size === 0 &&
-            retainedModules.size === 0
-        ) {
-            return [];
-        }
 
         // A registrar module may populate storage declared by one of its
         // dependencies. Materialize both the work and the owner of every
@@ -386,15 +418,17 @@ class ModuleInitializerPlanner implements ModuleConstantWrites {
                 if (observedState.has(symbol)) mutatedState.add(symbol);
             }
         }
-        return projectModules.filter(
-            (file) =>
-                mutatingModules.has(file) ||
-                mutableStateModules.has(file) ||
-                retainedModules.has(file) ||
-                [...(stateByModule.get(file) ?? [])].some((symbol) =>
-                    mutatedState.has(symbol),
-                ),
+        const selected = new Set(
+            projectModules.filter(
+                (file) =>
+                    mutatingModules.has(file) ||
+                    mutableStateModules.has(file) ||
+                    [...(stateByModule.get(file) ?? [])].some((symbol) =>
+                        mutatedState.has(symbol),
+                    ),
+            ),
         );
+        return { projectModules, selected };
     }
 
     /** @unjournaled Derived from the program alone, on first use. */

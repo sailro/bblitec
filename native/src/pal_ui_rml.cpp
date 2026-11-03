@@ -1,6 +1,7 @@
 #include <bblite/features/has_browser_file.hpp>
 #include <bblite/features/has_dom_input.hpp>
 #include <bblite/features/has_image_decoder.hpp>
+#include <bblite/features/ui_inline_svg.hpp>
 #include <bblite/features/ui_svg_images.hpp>
 #include <bblite/features/workers.hpp>
 
@@ -64,6 +65,12 @@
 #include "pal_ui_background.hpp"
 #include "pal_ui_text.hpp"
 #include "pal_ui_svg.hpp"
+#if BBLITE_UI_INLINE_SVG
+#include "pal_freetype.hpp"
+#include FT_ADVANCES_H
+#include <RmlUi/SVG/ElementSVG.h>
+#include <lunasvg/lunasvg.h>
+#endif
 #include "pal_system_preferences.hpp"
 #include "pal_input_capabilities.hpp"
 
@@ -95,6 +102,8 @@ struct UiImageRequest {
     bool decoded = false;
     int width = 0;
     int height = 0;
+    // The premultiplied pixels a canvas drew, kept with the image as a browser keeps them.
+    std::shared_ptr<const UiElementRecord::CanvasBitmap> bitmap;
 };
 namespace pal {
 namespace {
@@ -106,6 +115,15 @@ namespace {
 char ascii_lower(char value) {
     return value >= 'A' && value <= 'Z' ? static_cast<char>(value + ('a' - 'A')) : value;
 }
+
+#if BBLITE_HAS_IMAGE_DECODER || BBLITE_UI_SVG_IMAGES
+/** A packaged URL's file: a static host serves its path whatever its query or fragment. */
+std::string packaged_url_path(std::string url) {
+    if (const auto end = url.find_first_of("?#"); end != std::string::npos)
+        url.erase(end);
+    return url;
+}
+#endif
 
 bool ascii_iequals(std::string_view left, std::string_view right) {
     return left.size() == right.size() &&
@@ -301,6 +319,56 @@ void for_each_css_declaration(std::string_view source, Callback&& callback,
     }
 }
 
+/**
+ * The projection rewrites custom property values for RmlUi (units, math, fonts, colours). A
+ * CSSOM read wants the specified text, so each authored custom property also declares this
+ * private twin holding it verbatim, its var() references naming the other twins.
+ */
+constexpr std::string_view specified_custom_prefix = "--bbl-specified";
+
+bool is_authored_custom_property(std::string_view name) {
+    return name.starts_with("--") && !name.starts_with("--bbl-");
+}
+
+std::string specified_custom_property(std::string_view name) {
+    return std::string(specified_custom_prefix) + std::string(name);
+}
+
+std::string specified_custom_value(std::string value) {
+    for (std::size_t at = value.find("var(--"); at != std::string::npos;
+         at = value.find("var(--", at + 4)) {
+        if (std::string_view(value).substr(at + 4).starts_with("--bbl-"))
+            continue;
+        value.insert(at + 4, specified_custom_prefix);
+    }
+    return value;
+}
+
+/** A declaration list or sheet in which every authored custom property declares its twin. */
+std::string with_specified_custom_properties(std::string_view source) {
+    std::string result;
+    std::size_t copied = 0;
+    for_each_css_declaration(
+        source,
+        [&](std::string_view declaration, std::size_t end) {
+            const std::size_t colon = declaration.find(':');
+            if (colon == std::string_view::npos)
+                return;
+            const auto name = trim_css_token(declaration.substr(0, colon));
+            if (!is_authored_custom_property(name))
+                return;
+            result += source.substr(copied, end - copied);
+            result += ';';
+            result += specified_custom_property(name);
+            result += ':';
+            result += specified_custom_value(std::string(declaration.substr(colon + 1)));
+            copied = end;
+        },
+        true);
+    result += source.substr(copied);
+    return result;
+}
+
 std::string normalized_css_keyword(std::string_view value) {
     return js::string_lower(std::string(trim_css_token(value)));
 }
@@ -334,7 +402,7 @@ std::string inline_svg_images(std::string markup) {
         const auto end = markup.find('"', begin);
         if (end == std::string::npos)
             throw std::runtime_error("Unterminated packaged SVG image reference.");
-        std::string path = markup.substr(begin, end - begin);
+        std::string path = packaged_url_path(markup.substr(begin, end - begin));
         while (!path.empty() && path.front() == '/')
             path.erase(path.begin());
         const std::string lower = js::string_lower(path);
@@ -568,7 +636,9 @@ ui_query_elements(Engine& engine, UiElementHandle root,
                        reads(UiSelectorTestKind::FocusWithin);
     const RetainedUiSelectorTree tree{engine, focus ? ui_active_element(engine)
                                                     : engine.ui_focused_element};
-    const pal::UiSelectorMatcher matcher{tree};
+    // An element's query, matches() and closest() scope :scope to that element.
+    const pal::UiSelectorMatcher matcher{
+        tree, root.value == invalid_handle ? std::nullopt : std::optional<UiElementHandle>{root}};
     js::Array<UiElementHandle> result;
     const auto accept = [&](UiElementHandle candidate) {
         if (!tree.element(candidate))
@@ -672,7 +742,8 @@ UiElementHandle ui_create_compiled_script(Engine& engine) {
 
 UiElementHandle ui_create_svg_element(Engine& engine, std::string_view tag) {
     if (tag != "svg" && tag != "path" && tag != "rect" && tag != "circle" && tag != "line" &&
-        tag != "ellipse" && tag != "polyline" && tag != "polygon")
+        tag != "ellipse" && tag != "polyline" && tag != "polygon" && tag != "text" &&
+        tag != "textPath")
         throw std::runtime_error("Unsupported retained SVG tag.");
     const auto handle = ui_create_element(engine, tag);
     ui_element(engine, handle).svg_namespace = true;
@@ -777,6 +848,16 @@ double ui_child_count(Engine& engine, UiElementHandle node, bool elements_only) 
     }));
 }
 
+js::Array<UiElementHandle> ui_element_children(Engine& engine, UiElementHandle node) {
+    js::Array<UiElementHandle> elements;
+    if (ui_element(engine, node).tag == "#text")
+        return elements;
+    for (const UiElementHandle child : ui_traversable(engine, node).children)
+        if (ui_element(engine, child).tag != "#text")
+            elements.push_back(child);
+    return elements;
+}
+
 bool ui_toggle_attribute(Engine& engine, UiElementHandle element, std::string name,
                          std::optional<bool> force) {
     if (name.empty())
@@ -854,9 +935,8 @@ UiElementHandle ui_get_element_by_id(Engine& engine, std::string_view id) {
 }
 
 UiClientRect ui_get_client_rect(Engine& engine, UiElementHandle element) {
-    if (pal::ui_svg_shape(ui_element(engine, element)))
-        throw std::runtime_error("SVG shape geometry reads require SVG DOM layout.");
-    if (engine.ui_measure_element)
+    // An SVG child's box is its drawn geometry's bounds, which the runtime measures.
+    if (engine.ui_measure_element && !pal::ui_svg_shape(ui_element(engine, element)))
         return engine.ui_measure_element(engine, element);
     UiElementRecord& record = ui_element(engine, element);
     record.client_rect_requested = true;
@@ -866,11 +946,11 @@ UiClientRect ui_get_client_rect(Engine& engine, UiElementHandle element) {
     const auto& rect = record.client_rect;
     return {rect.left * scale,        rect.top * scale,          rect.width * scale,
             rect.height * scale,      rect.offset_width * scale, rect.offset_height * scale,
-            rect.scroll_left * scale, rect.scroll_top * scale};
+            rect.scroll_left * scale, rect.scroll_top * scale,   rect.zoom};
 }
 
 double ui_scroll_offset(Engine& engine, UiElementHandle element, bool left) {
-    const auto rect = ui_get_client_rect(engine, element);
+    const auto rect = ui_get_client_rect(engine, element).unzoomed();
     return left ? rect.scroll_left : rect.scroll_top;
 }
 
@@ -884,8 +964,15 @@ void ui_set_scroll_offset(Engine& engine, UiElementHandle element, bool left, do
 std::string ui_computed_style(Engine& engine, UiElementHandle element, std::string_view property) {
     if (pal::ui_svg_shape(ui_element(engine, element)))
         throw std::runtime_error("SVG shape computed styles require SVG DOM layout.");
-    if (UiElementRecord& record = ui_element(engine, element); !record.computed_style_requested) {
+    UiElementRecord& record = ui_element(engine, element);
+    const bool custom = property.starts_with("--");
+    const bool named = !custom || std::find(record.computed_custom_properties.begin(),
+                                            record.computed_custom_properties.end(),
+                                            property) != record.computed_custom_properties.end();
+    if (!record.computed_style_requested || !named) {
         record.computed_style_requested = true;
+        if (!named)
+            record.computed_custom_properties.emplace_back(property);
         // A Window display learns of the request through the next document snapshot.
         if (engine.ui_measure_element)
             ++engine.ui_revision;
@@ -902,6 +989,12 @@ std::string ui_computed_style(Engine& engine, UiElementHandle element, std::stri
         return style.visibility;
     if (property == "z-index")
         return style.z_index;
+    if (custom) {
+        for (const auto& [name, value] : style.custom_properties)
+            if (name == property)
+                return value;
+        return {};
+    }
     throw std::runtime_error("Unsupported computed style property: " + std::string(property));
 }
 
@@ -1361,6 +1454,20 @@ void queue_image_event(Engine& engine, UiElementHandle element,
     });
 }
 
+#if BBLITE_HAS_IMAGE_DECODER
+/** A packaged image's asset path from its src; a path outside the package refuses. */
+std::string packaged_image_path(std::string path) {
+    path = packaged_url_path(std::move(path));
+    while (!path.empty() && path.front() == '/')
+        path.erase(path.begin());
+    if (path.find(':') != std::string::npos || path.find('\\') != std::string::npos ||
+        path == ".." || path.starts_with("../") || path.ends_with("/..") ||
+        path.find("/../") != std::string::npos)
+        throw std::runtime_error("Image source is outside packaged assets.");
+    return path;
+}
+#endif
+
 /** The img element's current request; a src write starts one that `notifies` load or error. */
 std::shared_ptr<UiImageRequest> image_request(Engine& engine, UiElementHandle element,
                                               bool notifies = false) {
@@ -1383,14 +1490,8 @@ std::shared_ptr<UiImageRequest> image_request(Engine& engine, UiElementHandle el
                 return;
             try {
 #if BBLITE_HAS_IMAGE_DECODER
-                std::string path = request->source;
-                while (!path.empty() && path.front() == '/')
-                    path.erase(path.begin());
-                if (path.find(':') != std::string::npos || path.find('\\') != std::string::npos ||
-                    path == ".." || path.starts_with("../") || path.ends_with("/..") ||
-                    path.find("/../") != std::string::npos)
-                    throw std::runtime_error("Image source is outside packaged assets.");
-                auto bytes = pal::read_binary_file(asset_path(path));
+                auto bytes =
+                    pal::read_binary_file(asset_path(packaged_image_path(request->source)));
                 const auto image = pal::decode_image(js::ArrayBuffer(std::move(bytes)));
                 request->width = image.width;
                 request->height = image.height;
@@ -1421,6 +1522,26 @@ double ui_image_natural_width(Engine& engine, UiElementHandle element) {
 double ui_image_natural_height(Engine& engine, UiElementHandle element) {
     const auto request = image_request(engine, element);
     return request->height;
+}
+namespace {
+double image_extent(Engine& engine, UiElementHandle element, const char* axis) {
+    // A rendered image reports its layout box, which this read does not flush.
+    if (ui_is_connected(engine, element))
+        throw std::runtime_error(
+            "The rendered size of a connected img element is not represented.");
+    const auto& attributes = ui_element(engine, element).attributes;
+    if (const auto found = attributes.find(axis); found != attributes.end())
+        if (const auto value = html_integer(found->second); value && *value >= 0)
+            return *value;
+    const auto request = image_request(engine, element);
+    return std::string_view(axis) == "width" ? request->width : request->height;
+}
+} // namespace
+double ui_image_width(Engine& engine, UiElementHandle element) {
+    return image_extent(engine, element, "width");
+}
+double ui_image_height(Engine& engine, UiElementHandle element) {
+    return image_extent(engine, element, "height");
 }
 js::Promise<js::PromiseVoid> ui_decode_image(Engine& engine, UiElementHandle element) {
     const auto request = image_request(engine, element);
@@ -1815,6 +1936,20 @@ std::string ui_background_longhand(std::string_view shorthand, std::string_view 
     return std::string(pal::ui_css_wide_keyword(shorthand).value_or(initial));
 }
 
+void ui_set_background(Engine& engine, UiElementHandle element, std::string value) {
+    // Gradient layers are the image the background cascade paints (pal_ui_background.hpp).
+    if (pal::ui_background_gradient_layers(value)) {
+        ui_set_style_property(engine, element, "--bbl-background-color", "transparent");
+        ui_set_style_property(engine, element, "--bbl-background-image", std::move(value));
+        return;
+    }
+    if (js::string_lower(value).find("gradient(") != std::string::npos)
+        throw std::runtime_error("Native UI background writes represent a colour or plain "
+                                 "gradient layers, not: " +
+                                 value);
+    ui_set_style_property(engine, element, "--bbl-background-color", std::move(value));
+}
+
 std::string ui_get_style_property(Engine& engine, UiElementHandle element, std::string_view name) {
     const UiElementRecord& record = ui_element(engine, element);
     const auto dynamic = record.style_properties.find(std::string(name));
@@ -1844,11 +1979,22 @@ std::string ui_remove_style_property(Engine& engine, UiElementHandle element,
 
 namespace {
 /** classList.toggle: `force` selects presence, else the class flips; returns presence. */
+/**
+ * DOMTokenList on the class attribute: `always` runs its update steps even when the token set
+ * keeps its tokens (add and remove do, toggle does not), which set the attribute to the set's
+ * serialization, a class attribute mutation, unless there is neither an attribute nor a token.
+ */
 bool toggle_ui_class(Engine& engine, UiElementHandle element, std::string name,
-                     std::optional<bool> force) {
-    if (name.empty()) {
-        throw std::runtime_error("Native UI class name cannot be empty.");
-    }
+                     std::optional<bool> force, bool always = false) {
+    // DOMTokenList: an empty token is a SyntaxError, one holding ASCII whitespace an
+    // InvalidCharacterError.
+    if (name.empty())
+        throw js::make_dom_exception("The token provided must not be empty.", "SyntaxError");
+    if (name.find_first_of(" \t\n\f\r") != std::string::npos)
+        throw js::make_dom_exception("The token provided ('" + name +
+                                         "') contains HTML space characters, which are not valid "
+                                         "in tokens.",
+                                     "InvalidCharacterError");
     UiElementRecord& record = ui_element(engine, element);
     const auto attribute = record.attributes.find("class");
     const std::string current =
@@ -1858,10 +2004,13 @@ bool toggle_ui_class(Engine& engine, UiElementHandle element, std::string name,
     bool present = false;
     for (std::string token; input >> token;) {
         present = present || token == name;
-        classes.push_back(std::move(token));
+        // The token set is an ordered set.
+        if (std::find(classes.begin(), classes.end(), token) == classes.end())
+            classes.push_back(std::move(token));
     }
     const bool enabled = force.value_or(!present);
-    if (present == enabled)
+    if (present == enabled &&
+        (!always || (attribute == record.attributes.end() && classes.empty())))
         return enabled;
     if (enabled) {
         classes.push_back(std::move(name));
@@ -1874,12 +2023,20 @@ bool toggle_ui_class(Engine& engine, UiElementHandle element, std::string name,
             joined += ' ';
         joined += token;
     }
-    record.attributes.insert_or_assign("class", std::move(joined));
-    note_attribute_order(record, "class");
-    mark_ui_changed(engine);
+    if (joined != current) {
+        record.attributes.insert_or_assign("class", std::move(joined));
+        note_attribute_order(record, "class");
+        mark_ui_changed(engine);
+    }
+    if (engine.ui_attribute_changed)
+        engine.ui_attribute_changed(element, "class");
     return enabled;
 }
 } // namespace
+
+void ui_set_class(Engine& engine, UiElementHandle element, std::string name, bool present) {
+    static_cast<void>(toggle_ui_class(engine, element, std::move(name), present, true));
+}
 
 void ui_toggle_class(Engine& engine, UiElementHandle element, std::string name, bool enabled) {
     static_cast<void>(toggle_ui_class(engine, element, std::move(name), enabled));
@@ -2650,7 +2807,7 @@ UiElementRecord::CanvasState& ui_canvas(Engine& engine, UiElementHandle element)
 
 UiElementRecord::CanvasPoint canvas_point(const UiElementRecord::CanvasState& canvas, double x,
                                           double y) {
-    return {x * canvas.scale_x, y * canvas.scale_y};
+    return pal::canvas_transformed(canvas.drawing.transform, x, y);
 }
 
 double cross(UiElementRecord::CanvasPoint a, UiElementRecord::CanvasPoint b) {
@@ -2709,43 +2866,88 @@ double ui_canvas_height(Engine& engine, UiElementHandle element) {
 }
 
 void ui_canvas_set_fill_style(Engine& engine, UiElementHandle element, std::string value) {
-    ui_canvas(engine, element).fill_style = std::move(value);
+    ui_canvas(engine, element).drawing.fill_style = std::move(value);
 }
 
 void ui_canvas_set_stroke_style(Engine& engine, UiElementHandle element, std::string value) {
-    ui_canvas(engine, element).stroke_style = std::move(value);
+    ui_canvas(engine, element).drawing.stroke_style = std::move(value);
 }
 
 void ui_canvas_set_line_width(Engine& engine, UiElementHandle element, double value) {
-    ui_canvas(engine, element).line_width = std::max(0.0, value);
+    ui_canvas(engine, element).drawing.line_width = std::max(0.0, value);
 }
 
 void ui_canvas_set_line_join(Engine& engine, UiElementHandle element, std::string value) {
-    ui_canvas(engine, element).line_join = std::move(value);
+    ui_canvas(engine, element).drawing.line_join = std::move(value);
 }
 
 void ui_canvas_set_line_cap(Engine& engine, UiElementHandle element, std::string value) {
-    ui_canvas(engine, element).line_cap = std::move(value);
+    ui_canvas(engine, element).drawing.line_cap = std::move(value);
+}
+
+void ui_canvas_save(Engine& engine, UiElementHandle element) {
+    auto& canvas = ui_canvas(engine, element);
+    canvas.saved.push_back(canvas.drawing);
+}
+
+void ui_canvas_restore(Engine& engine, UiElementHandle element) {
+    auto& canvas = ui_canvas(engine, element);
+    if (canvas.saved.empty())
+        return;
+    canvas.drawing = std::move(canvas.saved.back());
+    canvas.saved.pop_back();
+}
+
+void ui_canvas_transform(Engine& engine, UiElementHandle element, double a, double b, double c,
+                         double d, double e, double f) {
+    // Non-finite arguments leave the matrix unchanged.
+    for (const double value : {a, b, c, d, e, f})
+        if (!std::isfinite(value))
+            return;
+    auto& m = ui_canvas(engine, element).drawing.transform;
+    m = {m.a * a + m.c * b, m.b * a + m.d * b,       m.a * c + m.c * d,
+         m.b * c + m.d * d, m.a * e + m.c * f + m.e, m.b * e + m.d * f + m.f};
+}
+
+void ui_canvas_set_transform(Engine& engine, UiElementHandle element, double a, double b, double c,
+                             double d, double e, double f) {
+    for (const double value : {a, b, c, d, e, f})
+        if (!std::isfinite(value))
+            return;
+    ui_canvas(engine, element).drawing.transform = {a, b, c, d, e, f};
+}
+
+void ui_canvas_reset_transform(Engine& engine, UiElementHandle element) {
+    ui_canvas(engine, element).drawing.transform = {};
 }
 
 void ui_canvas_scale(Engine& engine, UiElementHandle element, double x, double y) {
-    auto& canvas = ui_canvas(engine, element);
-    canvas.scale_x *= x;
-    canvas.scale_y *= y;
+    ui_canvas_transform(engine, element, x, 0.0, 0.0, y, 0.0, 0.0);
 }
 
-void ui_canvas_clear_rect(Engine& engine, UiElementHandle element, double, double, double, double) {
-    // The reached overlays clear their full backing store once per update.
-    // Keep clearRect bounded to that retained-frame behavior for now.
+void ui_canvas_translate(Engine& engine, UiElementHandle element, double x, double y) {
+    ui_canvas_transform(engine, element, 1.0, 0.0, 0.0, 1.0, x, y);
+}
+
+void ui_canvas_rotate(Engine& engine, UiElementHandle element, double angle) {
+    if (!std::isfinite(angle))
+        return;
+    const double cosine = std::cos(angle);
+    const double sine = std::sin(angle);
+    ui_canvas_transform(engine, element, cosine, sine, -sine, cosine, 0.0, 0.0);
+}
+
+void ui_canvas_clear_rect(Engine& engine, UiElementHandle element, double x, double y, double width,
+                          double height) {
     auto& canvas = ui_canvas(engine, element);
-    canvas.draws.clear();
+    pal::retain_canvas_clear_rect(canvas, x, y, width, height);
     mark_canvas_changed(engine, canvas);
 }
 
 void ui_canvas_fill_rect(Engine& engine, UiElementHandle element, double x, double y, double width,
                          double height) {
     auto& canvas = ui_canvas(engine, element);
-    const auto color = pal::canvas_color(canvas.fill_style);
+    const auto color = pal::canvas_color(canvas.drawing.fill_style);
     if (color.alpha == 0)
         return;
     pal::retain_canvas_fill_rect(canvas, x, y, width, height, color.alpha == 255);
@@ -2780,8 +2982,7 @@ void ui_canvas_arc_to(Engine& engine, UiElementHandle element, double x1, double
     auto& canvas = ui_canvas(engine, element);
     const auto p1 = canvas_point(canvas, x1, y1);
     const auto p2 = canvas_point(canvas, x2, y2);
-    const double scaled_radius =
-        radius * (std::abs(canvas.scale_x) + std::abs(canvas.scale_y)) * 0.5;
+    const double scaled_radius = radius * pal::canvas_length_scale(canvas.drawing.transform);
     if (canvas.path.empty() || scaled_radius <= 0.0) {
         canvas.path.push_back(p1);
         return;
@@ -2857,7 +3058,7 @@ void ui_canvas_fill(Engine& engine, UiElementHandle element) {
     UiElementRecord::CanvasDrawCommand draw;
     draw.kind = UiElementRecord::CanvasDrawCommand::Kind::Fill;
     draw.points = canvas.path;
-    draw.color = canvas.fill_style;
+    draw.color = canvas.drawing.fill_style;
     draw.line_width = 0.0;
     draw.closed = true;
     canvas.draws.push_back(std::move(draw));
@@ -2871,12 +3072,12 @@ void stroke_canvas_path(Engine& engine, UiElementRecord::CanvasState& canvas,
     UiElementRecord::CanvasDrawCommand draw;
     draw.kind = UiElementRecord::CanvasDrawCommand::Kind::Stroke;
     draw.points = std::move(points);
-    draw.color = canvas.stroke_style;
+    draw.color = canvas.drawing.stroke_style;
     draw.line_width =
-        canvas.line_width * (std::abs(canvas.scale_x) + std::abs(canvas.scale_y)) * 0.5;
+        canvas.drawing.line_width * pal::canvas_length_scale(canvas.drawing.transform);
     draw.closed = closed;
-    draw.round_join = canvas.line_join == "round";
-    draw.round_cap = canvas.line_cap == "round";
+    draw.round_join = canvas.drawing.line_join == "round";
+    draw.round_cap = canvas.drawing.line_cap == "round";
     canvas.draws.push_back(std::move(draw));
     mark_canvas_changed(engine, canvas);
 }
@@ -2904,7 +3105,13 @@ void ui_canvas_stroke_rect(Engine& engine, UiElementHandle element, double x, do
 }
 
 void ui_canvas_set_image_smoothing(Engine& engine, UiElementHandle element, bool enabled) {
-    ui_canvas(engine, element).image_smoothing_enabled = enabled;
+    ui_canvas(engine, element).drawing.image_smoothing_enabled = enabled;
+}
+
+void ui_canvas_set_image_smoothing_quality(Engine& engine, UiElementHandle element,
+                                           std::string value) {
+    if (value == "low" || value == "medium" || value == "high")
+        ui_canvas(engine, element).drawing.image_smoothing_quality = std::move(value);
 }
 
 void ui_canvas_put_image_data(Engine& engine, UiElementHandle element, const js::U8Array& source,
@@ -2950,60 +3157,376 @@ void ui_canvas_put_image_data(Engine& engine, UiElementHandle element, const js:
     mark_canvas_changed(engine, canvas);
 }
 
-void ui_canvas_draw_image(Engine& engine, UiElementHandle destination, UiElementHandle source,
-                          double x, double y, double width, double height) {
-    // Validate both handles now so a stale/off-type source cannot escape into
-    // the backend-neutral frame recorder.
-    static_cast<void>(ui_canvas(engine, source));
+namespace {
+
+#if BBLITE_WORKERS
+/** A packaged image's premultiplied pixels, decoded once while an image or a draw keeps them. */
+std::shared_ptr<const UiElementRecord::CanvasBitmap>
+canvas_image_bitmap(Engine& engine, const std::string& source) {
+#if BBLITE_HAS_IMAGE_DECODER
+    const std::string path = packaged_image_path(source);
+    auto& cached = engine.ui_canvas_bitmaps[path];
+    if (auto bitmap = cached.lock())
+        return bitmap;
+    const auto image = pal::decode_image(js::ArrayBuffer(pal::read_binary_file(asset_path(path))));
+    auto bitmap = std::make_shared<UiElementRecord::CanvasBitmap>();
+    bitmap->width = image.width;
+    bitmap->height = image.height;
+    bitmap->pixels.resize(image.rgba.size());
+    for (std::size_t index = 0; index + 3 < image.rgba.size(); index += 4) {
+        const unsigned alpha = image.rgba[index + 3];
+        for (std::size_t channel = 0; channel < 3; ++channel) {
+            // Rounded, as Skia premultiplies decoded images.
+            const unsigned product = image.rgba[index + channel] * alpha + 128;
+            bitmap->pixels[index + channel] =
+                static_cast<std::uint8_t>((product + (product >> 8)) >> 8);
+        }
+        bitmap->pixels[index + 3] = static_cast<std::uint8_t>(alpha);
+    }
+    cached = bitmap;
+    return bitmap;
+#else
+    static_cast<void>(engine);
+    static_cast<void>(source);
+    throw std::runtime_error("Canvas2D image draws require the image decoder.");
+#endif
+}
+#endif
+
+/** A drawImage source: a canvas, or an image's pixels captured now. */
+struct CanvasImageSource {
+    UiElementHandle canvas{};
+    std::shared_ptr<const UiElementRecord::CanvasBitmap> bitmap;
+    double width = 0.0;
+    double height = 0.0;
+};
+
+/** Nothing while an image is still loading; a broken image throws InvalidStateError. */
+std::optional<CanvasImageSource> canvas_image_source(Engine& engine, UiElementHandle source) {
+    const auto& record = ui_element(engine, source);
+    if (record.canvas)
+        return CanvasImageSource{source, nullptr, record.canvas->width, record.canvas->height};
+    if (record.tag != "img")
+        throw std::runtime_error("Canvas2D drawImage requires an image or canvas source.");
+#if BBLITE_WORKERS
+    const auto request = image_request(engine, source);
+    if (!request->complete)
+        return std::nullopt;
+    if (!request->decoded)
+        std::rethrow_exception(js::dom_exception_error(
+            "Failed to execute 'drawImage' on 'CanvasRenderingContext2D': The image is broken.",
+            "InvalidStateError"));
+    if (!request->bitmap)
+        request->bitmap = canvas_image_bitmap(engine, request->source);
+    const double width = request->bitmap->width;
+    const double height = request->bitmap->height;
+    return CanvasImageSource{{}, request->bitmap, width, height};
+#else
+    throw std::runtime_error("Canvas2D image draws require an asynchronous realm.");
+#endif
+}
+
+void retain_canvas_image(Engine& engine, UiElementHandle destination,
+                         const CanvasImageSource& image, double sx, double sy, double sw, double sh,
+                         double dx, double dy, double dw, double dh) {
     auto& canvas = ui_canvas(engine, destination);
+    for (const double value : {sx, sy, sw, sh, dx, dy, dw, dh})
+        if (!std::isfinite(value))
+            return;
+    if (sw == 0.0 || sh == 0.0 || dw == 0.0 || dh == 0.0 || image.width <= 0.0 ||
+        image.height <= 0.0)
+        return;
+    // Both rectangles normalize, as in Chromium: a negative extent does not mirror.
+    const auto normalize = [](double& start, double& extent) {
+        if (extent < 0.0) {
+            start += extent;
+            extent = -extent;
+        }
+    };
+    normalize(sx, sw);
+    normalize(sy, sh);
+    normalize(dx, dw);
+    normalize(dy, dh);
+    // The source rectangle clips to the image, the destination in proportion.
+    const double left = std::max(sx, 0.0);
+    const double top = std::max(sy, 0.0);
+    const double right = std::min(sx + sw, image.width);
+    const double bottom = std::min(sy + sh, image.height);
+    if (right <= left || bottom <= top)
+        return;
+    const double x_scale = dw / sw;
+    const double y_scale = dh / sh;
+    dx += (left - sx) * x_scale;
+    dy += (top - sy) * y_scale;
+    dw = (right - left) * x_scale;
+    dh = (bottom - top) * y_scale;
     UiElementRecord::CanvasDrawCommand draw;
     draw.kind = UiElementRecord::CanvasDrawCommand::Kind::Blit;
-    draw.source = source;
-    const auto point = canvas_point(canvas, x, y);
-    draw.destination_x = point.x;
-    draw.destination_y = point.y;
-    draw.destination_width = width * canvas.scale_x;
-    draw.destination_height = height * canvas.scale_y;
-    draw.nearest_sampling = !canvas.image_smoothing_enabled;
+    draw.source = image.canvas;
+    draw.bitmap = image.bitmap;
+    draw.source_x = left;
+    draw.source_y = top;
+    draw.source_width = right - left;
+    draw.source_height = bottom - top;
+    // The destination rectangle under the current transform.
+    draw.points = {canvas_point(canvas, dx, dy), canvas_point(canvas, dx + dw, dy),
+                   canvas_point(canvas, dx + dw, dy + dh), canvas_point(canvas, dx, dy + dh)};
+    draw.nearest_sampling = !canvas.drawing.image_smoothing_enabled;
     canvas.draws.push_back(std::move(draw));
     mark_canvas_changed(engine, canvas);
 }
 
+} // namespace
+
+void ui_canvas_draw_image(Engine& engine, UiElementHandle destination, UiElementHandle source,
+                          double x, double y) {
+    if (const auto image = canvas_image_source(engine, source))
+        retain_canvas_image(engine, destination, *image, 0.0, 0.0, image->width, image->height, x,
+                            y, image->width, image->height);
+}
+
+void ui_canvas_draw_image(Engine& engine, UiElementHandle destination, UiElementHandle source,
+                          double x, double y, double width, double height) {
+    if (const auto image = canvas_image_source(engine, source))
+        retain_canvas_image(engine, destination, *image, 0.0, 0.0, image->width, image->height, x,
+                            y, width, height);
+}
+
+void ui_canvas_draw_image(Engine& engine, UiElementHandle destination, UiElementHandle source,
+                          double sx, double sy, double sw, double sh, double dx, double dy,
+                          double dw, double dh) {
+    if (const auto image = canvas_image_source(engine, source))
+        retain_canvas_image(engine, destination, *image, sx, sy, sw, sh, dx, dy, dw, dh);
+}
+
+UiCanvasImageData ui_canvas_get_image_data(Engine& engine, UiElementHandle element, double sx,
+                                           double sy, double sw, double sh) {
+    const auto& canvas = ui_canvas(engine, element);
+    // The arguments are WebIDL longs: a non-finite one throws, the rest truncate.
+    for (const double value : {sx, sy, sw, sh})
+        if (!std::isfinite(value))
+            throw js::NamedError("TypeError", "Failed to execute 'getImageData' on "
+                                              "'CanvasRenderingContext2D': The provided value is "
+                                              "non-finite.");
+    auto x = static_cast<long long>(std::trunc(sx));
+    auto y = static_cast<long long>(std::trunc(sy));
+    auto width = static_cast<long long>(std::trunc(sw));
+    auto height = static_cast<long long>(std::trunc(sh));
+    if (width == 0 || height == 0)
+        throw js::make_dom_exception(std::string("Failed to execute 'getImageData' on "
+                                                 "'CanvasRenderingContext2D': The source ") +
+                                         (width == 0 ? "width" : "height") + " is 0.",
+                                     "IndexSizeError");
+    if (width < 0) {
+        x += width;
+        width = -width;
+    }
+    if (height < 0) {
+        y += height;
+        height = -height;
+    }
+    const auto columns = static_cast<std::size_t>(width);
+    const auto rows = static_cast<std::size_t>(height);
+    const auto backing_width = static_cast<long long>(std::floor(canvas.width));
+    const auto backing_height = static_cast<long long>(std::floor(canvas.height));
+    // Premultiplied RGBA in [0, 1], stored as 8-bit after every draw as a canvas bitmap is.
+    std::vector<float> pixels(columns * rows * 4, 0.0f);
+    const auto at = [&](long long px, long long py) -> float* {
+        if (px < x || py < y || px >= x + width || py >= y + height || px < 0 || py < 0 ||
+            px >= backing_width || py >= backing_height)
+            return nullptr;
+        return &pixels[(static_cast<std::size_t>(py - y) * columns +
+                        static_cast<std::size_t>(px - x)) *
+                       4];
+    };
+    const auto blend = [&](long long px, long long py, const std::array<float, 4>& source) {
+        float* pixel = at(px, py);
+        if (!pixel)
+            return;
+        const float keep = 1.0f - source[3];
+        for (std::size_t channel = 0; channel < 4; ++channel)
+            pixel[channel] =
+                std::round(std::clamp(source[channel] + pixel[channel] * keep, 0.0f, 1.0f) *
+                           255.0f) /
+                255.0f;
+    };
+    if (!canvas.pixels.empty())
+        for (long long py = std::max(y, 0LL); py < std::min(y + height, backing_height); ++py)
+            for (long long px = std::max(x, 0LL); px < std::min(x + width, backing_width); ++px) {
+                const std::size_t offset =
+                    (static_cast<std::size_t>(py) * static_cast<std::size_t>(backing_width) +
+                     static_cast<std::size_t>(px)) *
+                    4;
+                if (offset + 3 >= canvas.pixels.size())
+                    continue;
+                float* pixel = at(px, py);
+                for (std::size_t channel = 0; channel < 4; ++channel)
+                    pixel[channel] = canvas.pixels[offset + channel] / 255.0f;
+            }
+    using Kind = UiElementRecord::CanvasDrawCommand::Kind;
+    for (const auto& draw : canvas.draws) {
+        if (draw.kind == Kind::FillRect) {
+            const auto color = pal::canvas_color(draw.color);
+            const std::array<float, 4> premultiplied{color.red / 255.0f, color.green / 255.0f,
+                                                     color.blue / 255.0f, color.alpha / 255.0f};
+            const auto xs = pal::canvas_coverage_bands(draw.destination_x,
+                                                       draw.destination_x + draw.destination_width);
+            const auto ys = pal::canvas_coverage_bands(
+                draw.destination_y, draw.destination_y + draw.destination_height);
+            for (const auto& band_y : ys)
+                for (const auto& band_x : xs) {
+                    const auto coverage = static_cast<float>(band_x.coverage * band_y.coverage);
+                    if (coverage <= 0.0f)
+                        continue;
+                    std::array<float, 4> source{};
+                    for (std::size_t channel = 0; channel < 4; ++channel)
+                        source[channel] = premultiplied[channel] * coverage;
+                    for (auto py = static_cast<long long>(band_y.start); py < band_y.end; ++py)
+                        for (auto px = static_cast<long long>(band_x.start); px < band_x.end; ++px)
+                            blend(px, py, source);
+                }
+            continue;
+        }
+        if (draw.kind != Kind::Blit || draw.points.size() != 4)
+            throw std::runtime_error(
+                "Reading back a Canvas2D path, stroke or text draw is not represented.");
+        // The source's premultiplied pixels: an image bitmap, or a pixel-only canvas.
+        int source_width = 0;
+        int source_height = 0;
+        const std::vector<std::uint8_t>* texels = nullptr;
+        if (draw.bitmap) {
+            source_width = draw.bitmap->width;
+            source_height = draw.bitmap->height;
+            texels = &draw.bitmap->pixels;
+        } else {
+            const auto& source = ui_canvas(engine, draw.source);
+            if (!source.draws.empty())
+                throw std::runtime_error(
+                    "Reading back a blit of a canvas with retained draws is not represented.");
+            source_width = static_cast<int>(std::floor(source.width));
+            source_height = static_cast<int>(std::floor(source.height));
+            texels = &source.pixels;
+        }
+        if (source_width <= 0 || source_height <= 0 ||
+            texels->size() < static_cast<std::size_t>(source_width) * source_height * 4)
+            continue;
+        const auto texel = [&](int tx, int ty) {
+            tx = std::clamp(tx, 0, source_width - 1);
+            ty = std::clamp(ty, 0, source_height - 1);
+            const std::size_t offset =
+                (static_cast<std::size_t>(ty) * source_width + static_cast<std::size_t>(tx)) * 4;
+            return std::array<float, 4>{(*texels)[offset] / 255.0f, (*texels)[offset + 1] / 255.0f,
+                                        (*texels)[offset + 2] / 255.0f,
+                                        (*texels)[offset + 3] / 255.0f};
+        };
+        // The destination quad maps the unit square: origin, u edge, v edge.
+        const auto origin = draw.points[0];
+        const double ux = draw.points[1].x - origin.x;
+        const double uy = draw.points[1].y - origin.y;
+        const double vx = draw.points[3].x - origin.x;
+        const double vy = draw.points[3].y - origin.y;
+        const double determinant = ux * vy - uy * vx;
+        if (std::abs(determinant) < 1e-12)
+            continue;
+        double left = origin.x;
+        double top = origin.y;
+        double right = origin.x;
+        double bottom = origin.y;
+        for (const auto& point : draw.points) {
+            left = std::min(left, point.x);
+            top = std::min(top, point.y);
+            right = std::max(right, point.x);
+            bottom = std::max(bottom, point.y);
+        }
+        // Pixels whose centres the quad covers, as the UI compositor rasterizes it.
+        for (auto py = static_cast<long long>(std::floor(top)); py < std::ceil(bottom); ++py)
+            for (auto px = static_cast<long long>(std::floor(left)); px < std::ceil(right); ++px) {
+                if (!at(px, py))
+                    continue;
+                const double dx = px + 0.5 - origin.x;
+                const double dy = py + 0.5 - origin.y;
+                const double u = (dx * vy - dy * vx) / determinant;
+                const double v = (ux * dy - uy * dx) / determinant;
+                if (u < 0.0 || u >= 1.0 || v < 0.0 || v >= 1.0)
+                    continue;
+                const double s = draw.source_x + u * draw.source_width;
+                const double t = draw.source_y + v * draw.source_height;
+                if (draw.nearest_sampling) {
+                    blend(px, py,
+                          texel(static_cast<int>(std::floor(s)), static_cast<int>(std::floor(t))));
+                    continue;
+                }
+                // Bilinear between texel centres, clamped at the texture edge.
+                const double fs = s - 0.5;
+                const double ft = t - 0.5;
+                const auto s0 = static_cast<int>(std::floor(fs));
+                const auto t0 = static_cast<int>(std::floor(ft));
+                const auto ws = static_cast<float>(fs - s0);
+                const auto wt = static_cast<float>(ft - t0);
+                const auto a = texel(s0, t0);
+                const auto b = texel(s0 + 1, t0);
+                const auto c = texel(s0, t0 + 1);
+                const auto d = texel(s0 + 1, t0 + 1);
+                std::array<float, 4> sample{};
+                for (std::size_t channel = 0; channel < 4; ++channel)
+                    sample[channel] = (a[channel] * (1 - ws) + b[channel] * ws) * (1 - wt) +
+                                      (c[channel] * (1 - ws) + d[channel] * ws) * wt;
+                blend(px, py, sample);
+            }
+    }
+    // ImageData holds unpremultiplied bytes.
+    std::vector<std::uint8_t> bytes(pixels.size(), 0);
+    for (std::size_t offset = 0; offset < pixels.size(); offset += 4) {
+        const float alpha = pixels[offset + 3];
+        if (alpha <= 0.0f)
+            continue;
+        for (std::size_t channel = 0; channel < 3; ++channel)
+            bytes[offset + channel] = static_cast<std::uint8_t>(
+                std::lround(std::clamp(pixels[offset + channel] / alpha, 0.0f, 1.0f) * 255.0f));
+        bytes[offset + 3] = static_cast<std::uint8_t>(std::lround(alpha * 255.0f));
+    }
+    return {static_cast<double>(width), static_cast<double>(height),
+            js::U8Array(js::ArrayBuffer(std::move(bytes)))};
+}
+
 void ui_canvas_set_font(Engine& engine, UiElementHandle element, std::string value) {
-    ui_canvas(engine, element).font = std::move(value);
+    ui_canvas(engine, element).drawing.font = std::move(value);
 }
 
 void ui_canvas_set_text_baseline(Engine& engine, UiElementHandle element, std::string value) {
-    ui_canvas(engine, element).text_baseline = std::move(value);
+    ui_canvas(engine, element).drawing.text_baseline = std::move(value);
 }
 
 void ui_canvas_set_shadow_color(Engine& engine, UiElementHandle element, std::string value) {
-    ui_canvas(engine, element).shadow_color = std::move(value);
+    ui_canvas(engine, element).drawing.shadow_color = std::move(value);
 }
 
 void ui_canvas_set_shadow_blur(Engine& engine, UiElementHandle element, double value) {
-    ui_canvas(engine, element).shadow_blur = std::max(0.0, value);
+    ui_canvas(engine, element).drawing.shadow_blur = std::max(0.0, value);
 }
 
 void ui_canvas_fill_text(Engine& engine, UiElementHandle element, std::string text, double x,
                          double y) {
     auto& canvas = ui_canvas(engine, element);
+    const auto& state = canvas.drawing;
+    if (!pal::canvas_axis_aligned(state.transform))
+        throw std::runtime_error("Rotated or skewed Canvas2D text is not represented.");
     char* end = nullptr;
-    const double parsed = std::strtod(canvas.font.c_str(), &end);
-    const double font_size = end != canvas.font.c_str() && parsed > 0.0 ? parsed : 10.0;
+    const double parsed = std::strtod(state.font.c_str(), &end);
+    const double font_size = end != state.font.c_str() && parsed > 0.0 ? parsed : 10.0;
+    const double scale = pal::canvas_length_scale(state.transform);
     UiElementRecord::CanvasDrawCommand draw;
     draw.kind = UiElementRecord::CanvasDrawCommand::Kind::Text;
-    draw.color = canvas.fill_style;
+    draw.color = state.fill_style;
     const auto point = canvas_point(canvas, x, y);
     draw.destination_x = point.x;
     draw.destination_y = point.y;
-    draw.font_size = font_size * (std::abs(canvas.scale_x) + std::abs(canvas.scale_y)) * 0.5;
-    draw.font_family = canvas.font;
-    draw.text_baseline = canvas.text_baseline;
+    draw.font_size = font_size * scale;
+    draw.font_family = state.font;
+    draw.text_baseline = state.text_baseline;
     draw.text = std::move(text);
-    draw.shadow_color = canvas.shadow_color;
-    draw.shadow_blur =
-        canvas.shadow_blur * (std::abs(canvas.scale_x) + std::abs(canvas.scale_y)) * 0.5;
+    draw.shadow_color = state.shadow_color;
+    draw.shadow_blur = state.shadow_blur * scale;
     canvas.draws.push_back(std::move(draw));
     mark_canvas_changed(engine, canvas);
 }
@@ -3131,7 +3654,8 @@ private:
  * element an open select's top layer raised reads its authored z-index.
  */
 UiComputedStyle ui_serialized_computed_style(Rml::Element& element,
-                                             const UiSelectTopLayer& top_layer) {
+                                             const UiSelectTopLayer& top_layer,
+                                             const std::vector<std::string>& custom_properties) {
     static constexpr std::array<std::string_view, 16> displays{"none",
                                                                "block",
                                                                "inline",
@@ -3160,6 +3684,12 @@ UiComputedStyle ui_serialized_computed_style(Rml::Element& element,
     style.z_index = z_index.type == Rml::Style::NumberAuto::Auto
                         ? "auto"
                         : std::to_string(static_cast<int>(z_index.value));
+    // An undefined custom property computes to nothing: an empty read.
+    for (const std::string& name : custom_properties) {
+        const Rml::Property* value = element.GetProperty(specified_custom_property(name));
+        style.custom_properties.emplace_back(
+            name, value ? std::string(trim_css_token(value->Get<Rml::String>())) : std::string{});
+    }
     return style;
 }
 
@@ -3860,10 +4390,10 @@ std::string project_css_outside_filters(const std::string& source, Project&& pro
             continue;
         if (token == ';' || token == '{' || token == '}')
             boundary = index + 1;
-        if (token != ':' ||
-            !css_property_name_equals(
-                trim_css_token(std::string_view(source).substr(boundary, index - boundary)),
-                "filter"))
+        const auto name =
+            trim_css_token(std::string_view(source).substr(boundary, index - boundary));
+        if (token != ':' || !(css_property_name_equals(name, "filter") ||
+                              name.starts_with(specified_custom_prefix)))
             continue;
         auto end = index + 1;
         int depth = 0;
@@ -3908,15 +4438,15 @@ std::string project_css_outside_filters(const std::string& source, Project&& pro
     return result;
 }
 
-std::string take_css_declaration(std::string& style, std::string_view requested_name) {
+/** Removes, in one pass, each declaration whose property name `taken` accepts; the last's value. */
+template <typename Taken> std::string take_css_declarations(std::string& style, Taken&& taken) {
     std::string retained;
     std::string result;
     const std::string_view source = style;
     for_each_css_declaration(source, [&](std::string_view declaration) {
         const std::size_t colon = declaration.find(':');
         if (colon != std::string_view::npos &&
-            css_property_name_equals(trim_css_token(declaration.substr(0, colon)),
-                                     requested_name)) {
+            taken(trim_css_token(declaration.substr(0, colon)))) {
             result = std::string(trim_css_token(declaration.substr(colon + 1)));
         } else if (!trim_css_token(declaration).empty()) {
             if (!retained.empty())
@@ -3926,6 +4456,12 @@ std::string take_css_declaration(std::string& style, std::string_view requested_
     });
     style = std::move(retained);
     return result;
+}
+
+std::string take_css_declaration(std::string& style, std::string_view requested_name) {
+    return take_css_declarations(style, [requested_name](std::string_view name) {
+        return css_property_name_equals(name, requested_name);
+    });
 }
 
 bool is_private_ui_declaration(std::string_view declaration) {
@@ -4294,20 +4830,20 @@ CanvasMesh canvas_mesh(const UiElementRecord::CanvasDrawCommand& draw, double sc
     return mesh;
 }
 
-CanvasMesh canvas_blit_mesh(const UiElementRecord::CanvasDrawCommand& draw, double scale_x,
-                            double scale_y) {
+CanvasMesh canvas_blit_mesh(const UiElementRecord::CanvasDrawCommand& draw, double source_width,
+                            double source_height, double scale_x, double scale_y) {
     CanvasMesh mesh;
-    const double left = draw.destination_x * scale_x;
-    const double top = draw.destination_y * scale_y;
-    const double right = left + draw.destination_width * scale_x;
-    const double bottom = top + draw.destination_height * scale_y;
-    if (right <= left || bottom <= top)
+    if (draw.points.size() != 4 || source_width <= 0.0 || source_height <= 0.0)
         return mesh;
+    const auto u0 = static_cast<float>(draw.source_x / source_width);
+    const auto v0 = static_cast<float>(draw.source_y / source_height);
+    const auto u1 = static_cast<float>((draw.source_x + draw.source_width) / source_width);
+    const auto v1 = static_cast<float>((draw.source_y + draw.source_height) / source_height);
+    const std::array<std::array<float, 2>, 4> corners{{{u0, v0}, {u1, v0}, {u1, v1}, {u0, v1}}};
     const Rml::ColourbPremultiplied white{255, 255, 255, 255};
-    append_canvas_vertex(mesh, left, top, white, 0.0f, 0.0f);
-    append_canvas_vertex(mesh, right, top, white, 1.0f, 0.0f);
-    append_canvas_vertex(mesh, right, bottom, white, 1.0f, 1.0f);
-    append_canvas_vertex(mesh, left, bottom, white, 0.0f, 1.0f);
+    for (std::size_t corner = 0; corner < 4; ++corner)
+        append_canvas_vertex(mesh, draw.points[corner].x * scale_x, draw.points[corner].y * scale_y,
+                             white, corners[corner][0], corners[corner][1]);
     mesh.indices = {0, 1, 2, 0, 2, 3};
     return mesh;
 }
@@ -4401,6 +4937,11 @@ struct ProjectedUiElement {
     std::string text;
     std::string inner_rml;
     std::string svg_markup;
+    // A created SVG root's drawn geometry and viewBox, and its pointer-events while only children
+    // take it.
+    std::vector<UiSvgHitShape> svg_hits;
+    std::optional<std::array<double, 4>> svg_view_box;
+    UiScopedStyleProperty svg_pointer_events;
     std::unordered_map<std::string, std::string> attributes;
     std::unordered_map<std::string, std::string> style_properties;
     std::vector<std::string> style_property_order;
@@ -4486,6 +5027,10 @@ public:
     UiCpuProfile cpu;
     ~UiRenderRecorder() override {
         for (const auto& [key, cached] : retained_canvas_textures) {
+            static_cast<void>(key);
+            ReleaseTexture(cached.handle);
+        }
+        for (const auto& [key, cached] : canvas_bitmap_textures) {
             static_cast<void>(key);
             ReleaseTexture(cached.handle);
         }
@@ -4929,6 +5474,27 @@ public:
         nearest_sampling = previous;
     }
 
+    Rml::TextureHandle
+    canvas_bitmap_texture(const std::shared_ptr<const UiElementRecord::CanvasBitmap>& bitmap) {
+        if (bitmap->width <= 0 || bitmap->height <= 0)
+            return {};
+        if (const auto found = canvas_bitmap_textures.find(bitmap.get());
+            found != canvas_bitmap_textures.end() && found->second.bitmap.lock() == bitmap)
+            return found->second.handle;
+        std::erase_if(canvas_bitmap_textures, [this](const auto& entry) {
+            if (!entry.second.bitmap.expired())
+                return false;
+            ReleaseTexture(entry.second.handle);
+            return true;
+        });
+        const Rml::TextureHandle texture =
+            GenerateTexture(bitmap->pixels, Rml::Vector2i{bitmap->width, bitmap->height});
+        if (texture)
+            canvas_bitmap_textures.insert_or_assign(bitmap.get(),
+                                                    CanvasBitmapTexture{bitmap, texture});
+        return texture;
+    }
+
     Rml::TextureHandle retained_canvas_texture(UiElementHandle handle,
                                                const UiElementRecord::CanvasState& canvas) {
         const std::uint32_t width =
@@ -4988,10 +5554,11 @@ public:
 #endif
 #if BBLITE_HAS_IMAGE_DECODER
         Rml::FileInterface* files = Rml::GetFileInterface();
-        Rml::FileHandle file = files->Open(source);
-        if (!file && !source.empty() && source.front() != '/' && source.front() != '\\' &&
-            source.find("..") == Rml::String::npos && source.find(":") == Rml::String::npos) {
-            file = files->Open(asset_path(source));
+        const std::string path = packaged_url_path(source);
+        Rml::FileHandle file = files->Open(path);
+        if (!file && !path.empty() && path.front() != '/' && path.front() != '\\' &&
+            path.find("..") == Rml::String::npos && path.find(":") == Rml::String::npos) {
+            file = files->Open(asset_path(path));
         }
         if (!file) {
             return {};
@@ -5254,6 +5821,10 @@ private:
         std::uint32_t width = 0;
         std::uint32_t height = 0;
     };
+    struct CanvasBitmapTexture {
+        std::weak_ptr<const UiElementRecord::CanvasBitmap> bitmap;
+        Rml::TextureHandle handle{};
+    };
 
     enum class GradientFunction {
         linear,
@@ -5345,6 +5916,8 @@ private:
     std::vector<UiBlurKernel> blur_kernels;
     bool clip_mask_enabled = false;
     std::unordered_map<std::uint32_t, RetainedCanvasTexture> retained_canvas_textures;
+    std::unordered_map<const UiElementRecord::CanvasBitmap*, CanvasBitmapTexture>
+        canvas_bitmap_textures;
     /** The engine canvases that have not painted yet. */
     std::vector<CanvasOccluder> canvas_occluders;
     /** Their rectangles, and the frame minus them, rebuilt when one paints. */
@@ -5377,6 +5950,30 @@ private:
             [&](const UiClipRect& rect) { return rect.overlaps(min_x, min_y, max_x, max_y); });
     }
 };
+
+#if BBLITE_UI_INLINE_SVG
+/**
+ * A created SVG root answers RmlUi's hit test for its children (SVG 1.1 §16.6): the topmost drawn
+ * child whose pointer-events take the pointer, else its own box when its own do.
+ */
+class UiSvgRootElement final : public Rml::ElementSVG {
+public:
+    using Rml::ElementSVG::ElementSVG;
+    std::function<std::optional<UiElementHandle>(Rml::Vector2f)> hit;
+    bool own_events = true;
+    // The child the last hit test found, which an event at that point targets.
+    std::optional<UiElementHandle> hit_child;
+
+    bool IsPointWithinElement(Rml::Vector2f point) override {
+        hit_child.reset();
+        if (!Rml::ElementSVG::IsPointWithinElement(point))
+            return false;
+        if (hit)
+            hit_child = hit(point);
+        return hit_child.has_value() || own_events;
+    }
+};
+#endif
 
 class UiCanvasElement final : public Rml::Element {
     UiRmlRuntime* runtime_ = nullptr;
@@ -5426,6 +6023,9 @@ struct UiRmlRuntime {
             Rml::Factory::RegisterElementInstancer("button", &button_instancer);
             Rml::Factory::RegisterElementInstancer("canvas", &canvas_instancer);
             Rml::Factory::RegisterElementInstancer("select", &select_instancer);
+#if BBLITE_UI_INLINE_SVG
+            Rml::Factory::RegisterElementInstancer("svg", &svg_instancer);
+#endif
             Rml::Factory::RegisterElementInstancer("input", &input_instancer);
             scrollbar_properties = register_ui_scrollbar_properties();
             control_scheme_properties = register_ui_control_scheme_properties();
@@ -5565,7 +6165,8 @@ struct UiRmlRuntime {
             document_body = document->AppendChild(
                 Rml::Factory::InstanceElement(document, "*", "body", Rml::XMLAttributes{}));
             context->Update();
-            root_font_size = document->GetComputedValues().font_size() / density_ratio;
+            root_font_size = document->GetComputedValues().font_size() /
+                             Rml::ElementUtilities::GetDensityIndependentPixelRatio(document);
             sync_style_sheet();
             sync_media_themes();
             document->Show(Rml::ModalFlag::None, Rml::FocusFlag::None, Rml::ScrollFlag::None);
@@ -5667,6 +6268,14 @@ struct UiRmlRuntime {
 
     std::vector<DomEventTarget> event_path(Rml::Element* element) const {
         std::vector<DomEventTarget> path;
+#if BBLITE_UI_INLINE_SVG
+        // An SVG child the hit test found, and its SVG ancestors below the root.
+        if (auto* svg = dynamic_cast<UiSvgRootElement*>(element); svg && svg->hit_child)
+            if (const auto root = event_targets.find(element); root != event_targets.end())
+                for (auto node = *svg->hit_child; node.value != root->second.element;
+                     node = ui_element(engine, node).parent)
+                    path.push_back(DomEventTarget::node(node.value));
+#endif
         for (auto* cursor = element; cursor; cursor = cursor->GetParentNode()) {
             if (const auto found = event_targets.find(cursor); found != event_targets.end())
                 path.push_back(found->second);
@@ -5756,12 +6365,20 @@ struct UiRmlRuntime {
     }
 
     std::string project_css(std::string value, std::string_view property = {}) const {
-        static_cast<void>(take_css_declaration(value, "resize"));
-        if (property == "filter")
+        // resize and the SVG presentation properties but opacity, which serialize into the SVG
+        // plugin's markup, are not RmlUi's.
+        static_cast<void>(take_css_declarations(value, [](std::string_view name) {
+            return css_property_name_equals(name, "resize") ||
+                   std::any_of(ui_svg_presentation_properties.begin(),
+                               ui_svg_presentation_properties.end(), [name](std::string_view svg) {
+                                   return svg != "opacity" && css_property_name_equals(name, svg);
+                               });
+        }));
+        if (property == "filter" || property.starts_with(specified_custom_prefix))
             return value;
         if (property.empty())
             return project_css_outside_filters(
-                rml_css_time_longhand_resets(value),
+                rml_css_time_longhand_resets(with_specified_custom_properties(value)),
                 [this](std::string part) { return project_css_fragment(std::move(part), {}); });
         return project_css_fragment(std::move(value), property);
     }
@@ -5819,6 +6436,10 @@ struct UiRmlRuntime {
             else
                 element.SetProperty(std::string(longhand), "auto");
         }
+        if (is_authored_custom_property(name))
+            element.SetInlineProperty(specified_custom_property(name),
+                                      value.empty() ? std::string{}
+                                                    : specified_custom_value(value));
         // Author writes: a property the element's transition list covers animates (RmlUi patch 0043).
         if (value.empty()) {
             element.SetInlineProperty(name, {});
@@ -5828,13 +6449,14 @@ struct UiRmlRuntime {
         }
         if (name == "display")
             element.SetProperty("--bbl-authored-display", "1");
-        const bool checked =
-            name == "float" || name == "clear" || name == "object-fit" || name == "filter" ||
-            name == "overflow-wrap" || name == "word-break" || name == "flex" ||
-            name.starts_with("flex-") || name == "align-self" || name == "align-content" ||
-            name == "row-gap" || name == "column-gap" || name.starts_with("padding-") ||
-            name == "margin-left" || name == "margin-right" || name == "box-shadow" ||
-            name == "accent-color" || name == "color-scheme" || name == "text-decoration";
+        const bool checked = name == "float" || name == "clear" || name == "object-fit" ||
+                             name == "filter" || name == "overflow-wrap" || name == "word-break" ||
+                             name == "flex" || name.starts_with("flex-") || name == "align-self" ||
+                             name == "align-content" || name == "row-gap" || name == "column-gap" ||
+                             name.starts_with("padding-") || name == "margin-left" ||
+                             name == "margin-right" || name == "box-shadow" ||
+                             name == "accent-color" || name == "color-scheme" ||
+                             name == "text-decoration" || name == "order";
         // Motion values keep their case (keyframes names) and refuse rather than drop.
         const bool motion = is_ui_motion_property(name);
         const bool accepted = element.SetInlineProperty(
@@ -5849,7 +6471,10 @@ struct UiRmlRuntime {
     bool sync_root_font_math() {
         bool changed = false;
         for (unsigned attempt = 0; attempt < 4; ++attempt) {
-            const double font_size = document->GetComputedValues().font_size() / density_ratio;
+            // rem is the root's font size without its zoom.
+            const double font_size =
+                document->GetComputedValues().font_size() /
+                Rml::ElementUtilities::GetDensityIndependentPixelRatio(document);
             if (font_size == root_font_size)
                 return changed;
             if (!std::isfinite(font_size) || font_size <= 0)
@@ -6111,9 +6736,40 @@ struct UiRmlRuntime {
      */
     std::string cascaded_declaration(UiElementHandle handle, const UiElementRecord& record,
                                      std::string_view property) const {
+        return cascade_declaration(record, property, [&](auto&& callback) {
+            return for_each_matching_style_rule(handle, callback);
+        });
+    }
+
+    /**
+     * The rules the retained matcher selects an SVG descendant with, which has no RmlUi element:
+     * no pointer, focus, scrollbar or generated part reaches one.
+     */
+    template <typename Matcher, typename Callback>
+    std::size_t for_each_matching_svg_rule(UiElementHandle handle, const Matcher& matcher,
+                                           Callback&& callback) const {
+        std::size_t source_order = 0;
+        for_each_active_style_rule([&](const UiStyleRule& rule) {
+            const std::size_t rule_order = source_order++;
+            if (rule.generated != UiGeneratedPart::None || rule.range != UiRangePart::None ||
+                rule.scrollbar != UiScrollbarPart::None || rule.hover || rule.focus_visible ||
+                rule.active || !style_rule_media_matches(rule))
+                return;
+            if (rule.selector == UiStyleSelectorKind::Sequence
+                    ? matcher.sequence(handle, rule.sequence)
+                    : matcher.sequence(handle, ui_svg_style_sequence(rule)))
+                callback(rule, rule_order);
+        });
+        return source_order;
+    }
+
+    /** One property's cascade over the rules `for_each_rule` matches, then the element's own styles. */
+    template <typename ForEachRule>
+    std::string cascade_declaration(const UiElementRecord& record, std::string_view property,
+                                    ForEachRule&& for_each_rule) const {
         CascadedUiDeclaration cascaded;
-        const std::size_t source_order = for_each_matching_style_rule(
-            handle, [&](const UiStyleRule& rule, std::size_t rule_order) {
+        const std::size_t source_order =
+            for_each_rule([&](const UiStyleRule& rule, std::size_t rule_order) {
                 std::string style = filter_private_ui_declarations(rule.style, false);
                 consider_cascaded_declaration(cascaded, take_css_declaration(style, property),
                                               ui_style_rule_specificity(rule), rule_order);
@@ -6885,22 +7541,127 @@ struct UiRmlRuntime {
         project_select_selection(raw, handle);
     }
 
+    /**
+     * A face for SVG text: the file of the face the UI font engine resolves the family list to,
+     * registered with the SVG plugin under a family name of its own, and its unhinted advances,
+     * read from the font as the plugin's rasterizer reads them.
+     */
+    std::optional<UiSvgFont> svg_font(const std::string& family, int weight, bool italic) const {
+#if BBLITE_UI_INLINE_SVG
+        if (!system_fonts)
+            return std::nullopt;
+        const auto source = system_fonts->face_source(
+            family, italic ? Rml::Style::FontStyle::Italic : Rml::Style::FontStyle::Normal,
+            static_cast<Rml::Style::FontWeight>(weight));
+        if (!source)
+            return std::nullopt;
+        // The plugin loads a file's first face only.
+        if (source->index != 0)
+            throw std::runtime_error("Retained SVG text cannot draw face " +
+                                     std::to_string(source->index) + " of " + source->path + ".");
+        // The library outlives the faces it opened.
+        FT_Library library = platform_font_library();
+        struct Face {
+            std::string family;
+            FontOwner<FT_Face, &FT_Done_Face> face{nullptr, FT_Done_Face};
+        };
+        static thread_local std::map<std::string, Face> faces;
+        auto found = faces.find(source->path);
+        if (found == faces.end()) {
+            // The plugin's font cache is process-wide: one name per file, registered again harmlessly.
+            const std::string alias =
+                "bbl-svg-face-" + std::to_string(std::hash<std::string>{}(source->path));
+            FT_Face face = nullptr;
+            if (!library || FT_New_Face(library, source->path.c_str(), 0, &face) ||
+                !lunasvg_add_font_face_from_file(alias.c_str(), false, false,
+                                                 source->path.c_str())) {
+                if (face)
+                    FT_Done_Face(face);
+                throw std::runtime_error("Retained SVG text could not load " + source->path + ".");
+            }
+            found = faces.emplace(source->path, Face{alias, {face, FT_Done_Face}}).first;
+        }
+        FT_Face face = found->second.face.get();
+        return UiSvgFont{found->second.family,
+                         [face](char32_t codepoint, double size) {
+                             FT_Fixed advance = 0;
+                             if (FT_Get_Advance(face, FT_Get_Char_Index(face, codepoint),
+                                                FT_LOAD_NO_SCALE, &advance))
+                                 return 0.0;
+                             return static_cast<double>(advance) * size / face->units_per_EM;
+                         },
+                         static_cast<double>(face->ascender) / face->units_per_EM,
+                         -static_cast<double>(face->descender) / face->units_per_EM};
+#else
+        static_cast<void>(family);
+        static_cast<void>(weight);
+        static_cast<void>(italic);
+        return std::nullopt;
+#endif
+    }
+
     void sync_svg_element(UiElementHandle handle, Rml::Element& raw, bool attributes_changed) {
         const auto& root = ui_element(engine, handle);
-        auto markup = ui_svg_markup(engine, root);
         const RetainedUiSelectorTree tree{engine};
         const UiSelectorMatcher matcher{tree};
-        for_each_active_style_rule([&](const UiStyleRule& rule) {
-            const auto legacy_sequence = rule.selector == UiStyleSelectorKind::Sequence
-                                             ? std::vector<UiSelectorStep>{}
-                                             : ui_svg_style_sequence(rule);
-            const auto& sequence =
-                rule.selector == UiStyleSelectorKind::Sequence ? rule.sequence : legacy_sequence;
-            for (const auto child : root.children)
-                if (matcher.sequence(child, sequence))
-                    throw std::runtime_error(
-                        "Stylesheet rules on SVG shapes require SVG DOM projection.");
-        });
+        // Rules on shapes and texts may set presentation and text properties, which the markup
+        // resolves, and authored variables; a private declaration carries another feature.
+        const auto check_rules = [&](UiElementHandle node) {
+            for_each_matching_svg_rule(node, matcher, [](const UiStyleRule& rule, std::size_t) {
+                for_each_css_declaration(rule.style, [](std::string_view declaration) {
+                    const auto colon = declaration.find(':');
+                    const auto name =
+                        js::string_lower(std::string(trim_css_token(declaration.substr(
+                            0, colon == std::string_view::npos ? declaration.size() : colon))));
+                    if (!name.empty() && !ui_svg_text_style_property(name) &&
+                        !(name.starts_with("--") && !name.starts_with("--bbl-")))
+                        throw std::runtime_error(
+                            "Stylesheet rules on SVG shapes require SVG DOM projection.");
+                });
+            });
+        };
+        for (const auto child : root.children) {
+            check_rules(child);
+            for (const auto grandchild : ui_element(engine, child).children)
+                check_rules(grandchild);
+        }
+        const auto& computed = raw.GetComputedValues();
+        const auto color = computed.color();
+        UiSvgContext context;
+        context.color = "rgba(" + std::to_string(color.red) + "," + std::to_string(color.green) +
+                        "," + std::to_string(color.blue) + "," +
+                        std::to_string(color.alpha / 255.0) + ")";
+        // The SVG's user units are CSS pixels: the computed size carries the density ratio.
+        context.font_family = computed.font_family();
+        context.font_size =
+            computed.font_size() / Rml::ElementUtilities::GetDensityIndependentPixelRatio(&raw);
+        context.font_weight = static_cast<int>(computed.font_weight());
+        context.italic = computed.font_style() == Rml::Style::FontStyle::Italic;
+        context.text_transform =
+            computed.text_transform() == Rml::Style::TextTransform::Uppercase    ? "uppercase"
+            : computed.text_transform() == Rml::Style::TextTransform::Lowercase  ? "lowercase"
+            : computed.text_transform() == Rml::Style::TextTransform::Capitalize ? "capitalize"
+                                                                                 : "none";
+        context.fonts = [this](const std::string& family, int weight, bool italic) {
+            return svg_font(family, weight, italic);
+        };
+        // pointer-events inherits: the root's parent gives the value the root does not declare.
+        if (const auto* parent = raw.GetParentNode())
+            context.pointer_events =
+                parent->GetComputedValues().pointer_events() == Rml::Style::PointerEvents::None
+                    ? "none"
+                    : "auto";
+        auto markup = ui_svg_markup(
+            engine, handle,
+            [&](UiElementHandle node, std::string_view property) {
+                const auto& record = ui_element(engine, node);
+                return node == handle
+                           ? cascaded_declaration(node, record, property)
+                           : cascade_declaration(record, property, [&](auto&& callback) {
+                                 return for_each_matching_svg_rule(node, matcher, callback);
+                             });
+            },
+            context);
         auto& projected = handle_at(projected_elements, handle);
         if (markup.current_color)
             raw.SetAttribute("data-bbl-current-color", "true");
@@ -6912,6 +7673,27 @@ struct UiRmlRuntime {
             raw.SetInnerRML(markup.source);
             projected.svg_markup = std::move(markup.source);
         }
+        // Children taking the pointer make RmlUi's hit test reach the root, which answers for
+        // them; its own box then takes the pointer only as its own pointer-events say.
+        const bool children_take_pointer =
+            std::any_of(markup.hits.begin(), markup.hits.end(),
+                        [](const pal::UiSvgHitShape& hit) { return hit.pointer; });
+        projected.svg_hits = std::move(markup.hits);
+        projected.svg_view_box = markup.view_box;
+#if BBLITE_UI_INLINE_SVG
+        if (auto* svg = dynamic_cast<UiSvgRootElement*>(&raw)) {
+            svg->own_events = markup.takes_pointer;
+            svg->hit =
+                children_take_pointer
+                    ? std::function<std::optional<UiElementHandle>(Rml::Vector2f)>(
+                          [this, handle](Rml::Vector2f point) { return svg_hit(handle, point); })
+                    : nullptr;
+        }
+#endif
+        projected.svg_pointer_events.set_string(raw, "pointer-events",
+                                                children_take_pointer && !markup.takes_pointer
+                                                    ? std::optional<Rml::String>{"auto"}
+                                                    : std::nullopt);
     }
 
     bool sync_text_updates() {
@@ -7236,9 +8018,9 @@ struct UiRmlRuntime {
             if (!element)
                 continue;
             if (const auto* offset = std::get_if<UiScrollOffset>(&request)) {
-                // RmlUi clamps to the scroll range in its own pixels.
-                const auto value =
-                    static_cast<float>(offset->value) * context->GetDensityIndependentPixelRatio();
+                // RmlUi clamps to the scroll range in its own pixels, which carry the zoom.
+                const auto value = static_cast<float>(offset->value) *
+                                   Rml::ElementUtilities::GetDensityIndependentPixelRatio(element);
                 if (offset->left)
                     element->SetScrollLeft(value);
                 else
@@ -7307,8 +8089,14 @@ struct UiRmlRuntime {
             }
             const double width = std::strtod(outline.c_str(), nullptr);
             const double offset = std::strtod(offset_text.c_str(), nullptr);
-            const auto solid = outline.find(" solid ");
-            if (width <= 0.0 || solid == std::string::npos)
+            // The ring's border draws the outline's line style: solid or dashed.
+            std::string_view line_style = "solid";
+            auto styled = outline.find(" solid ");
+            if (styled == std::string::npos) {
+                line_style = "dashed";
+                styled = outline.find(" dashed ");
+            }
+            if (width <= 0.0 || styled == std::string::npos)
                 continue;
             if (!ring) {
                 auto node = document->CreateElement("bbl-outline");
@@ -7321,27 +8109,34 @@ struct UiRmlRuntime {
                 projected.outline_positioned_parent = true;
             }
             const double extent = width + offset;
+            // The ring's CSS pixels carry its parent's zoom.
+            const float ring_ratio = Rml::ElementUtilities::GetDensityIndependentPixelRatio(parent);
             const auto inset = [&](const char* side, double border) {
-                return std::string(side) + ":" + std::to_string(-extent - border / density_ratio) +
+                return std::string(side) + ":" + std::to_string(-extent - border / ring_ratio) +
                        "dp;";
             };
-            ring->SetAttribute("style",
-                               "position:absolute;pointer-events:none;box-sizing:border-box;" +
-                                   inset("top", computed.border_top_width()) +
-                                   inset("right", computed.border_right_width()) +
-                                   inset("bottom", computed.border_bottom_width()) +
-                                   inset("left", computed.border_left_width()) + "border:" +
-                                   std::to_string(width) + "dp " + outline.substr(solid + 7) + ";");
+            ring->SetAttribute(
+                "style", "position:absolute;pointer-events:none;box-sizing:border-box;" +
+                             inset("top", computed.border_top_width()) +
+                             inset("right", computed.border_right_width()) +
+                             inset("bottom", computed.border_bottom_width()) +
+                             inset("left", computed.border_left_width()) +
+                             "border:" + std::to_string(width) + "dp " + std::string(line_style) +
+                             " " + outline.substr(styled + line_style.size() + 2) + ";");
             const auto radii = parent->GetRenderBox(Rml::BoxArea::Border).GetBorderRadius();
             constexpr std::array corner_properties{
                 Rml::PropertyId::BorderTopLeftRadius, Rml::PropertyId::BorderTopRightRadius,
                 Rml::PropertyId::BorderBottomRightRadius, Rml::PropertyId::BorderBottomLeftRadius};
+            // The outline's outer edge follows the border radius by its extent; an inset one
+            // (negative offset) cannot round below square.
             for (std::size_t corner = 0; corner < radii.size(); ++corner)
                 ring->SetProperty(
                     corner_properties[corner],
-                    Rml::Property(radii[corner] +
-                                      Rml::Vector2f(static_cast<float>(extent) * density_ratio),
-                                  Rml::Unit::PX));
+                    Rml::Property(
+                        Rml::Math::Max(radii[corner] +
+                                           Rml::Vector2f(static_cast<float>(extent) * ring_ratio),
+                                       Rml::Vector2f(0)),
+                        Rml::Unit::PX));
         }
     }
 
@@ -7567,14 +8362,21 @@ struct UiRmlRuntime {
             CanvasMesh mesh;
             Rml::TextureHandle texture{};
             if (draw.kind == UiElementRecord::CanvasDrawCommand::Kind::Blit) {
-                if (draw.source.value >= engine.ui_elements.size()) {
-                    continue;
+                if (draw.bitmap) {
+                    mesh = canvas_blit_mesh(draw, draw.bitmap->width, draw.bitmap->height, scale_x,
+                                            scale_y);
+                    texture = render_interface.canvas_bitmap_texture(draw.bitmap);
+                } else {
+                    if (draw.source.value >= engine.ui_elements.size()) {
+                        continue;
+                    }
+                    const UiElementRecord& source = handle_at(engine.ui_elements, draw.source);
+                    if (!source.canvas)
+                        continue;
+                    mesh = canvas_blit_mesh(draw, source.canvas->width, source.canvas->height,
+                                            scale_x, scale_y);
+                    texture = render_interface.retained_canvas_texture(draw.source, *source.canvas);
                 }
-                const UiElementRecord& source = handle_at(engine.ui_elements, draw.source);
-                if (!source.canvas)
-                    continue;
-                mesh = canvas_blit_mesh(draw, scale_x, scale_y);
-                texture = render_interface.retained_canvas_texture(draw.source, *source.canvas);
                 if (!texture)
                     continue;
             } else if (draw.kind == UiElementRecord::CanvasDrawCommand::Kind::Text) {
@@ -7816,13 +8618,16 @@ struct UiRmlRuntime {
             // Computed values change with animations, so a requested style follows every update.
             if (record.computed_style_requested)
                 record.computed_style =
-                    element ? ui_serialized_computed_style(*element, select_top_layer)
+                    element ? ui_serialized_computed_style(*element, select_top_layer,
+                                                           record.computed_custom_properties)
                             : UiComputedStyle{};
             if (!all_elements && !record.client_rect_requested)
                 continue;
             if (!element) {
                 record.client_rect = {};
                 record.content_box = {};
+                if (pal::ui_svg_shape(record))
+                    svg_client_rect(UiElementHandle{index}, record);
                 continue;
             }
             const Rml::Vector2f offset = element->GetAbsoluteOffset(Rml::BoxArea::Border);
@@ -7833,13 +8638,79 @@ struct UiRmlRuntime {
                                   static_cast<double>(element->GetOffsetWidth()),
                                   static_cast<double>(element->GetOffsetHeight()),
                                   static_cast<double>(element->GetScrollLeft()),
-                                  static_cast<double>(element->GetScrollTop())};
+                                  static_cast<double>(element->GetScrollTop()),
+                                  static_cast<double>(element->GetComputedValues().zoom())};
             const Rml::Vector2f content = element->GetAbsoluteOffset(Rml::BoxArea::Content);
             const Rml::Vector2f content_size = element->GetBox().GetSize(Rml::BoxArea::Content);
             record.content_box = {static_cast<double>(content.x), static_cast<double>(content.y),
                                   static_cast<double>(content_size.x),
                                   static_cast<double>(content_size.y)};
         }
+    }
+
+    /** The root a created SVG child draws in, when it is projected. */
+    std::optional<UiElementHandle> svg_root_of(UiElementHandle handle) const {
+        for (auto node = ui_element(engine, handle).parent; node.value != invalid_handle;
+             node = ui_element(engine, node).parent)
+            if (ui_element(engine, node).tag == "svg")
+                return handle_at(projected_elements, node).element ? std::optional{node}
+                                                                   : std::nullopt;
+        return std::nullopt;
+    }
+
+    /** A root's user space in its content box, in RmlUi pixels. */
+    pal::UiSvgViewport svg_viewport(UiElementHandle root, Rml::Vector2f& origin) const {
+        const auto& projected = handle_at(projected_elements, root);
+        auto* element = projected.element;
+        origin = element->GetAbsoluteOffset(Rml::BoxArea::Content);
+        const auto size = element->GetBox().GetSize(Rml::BoxArea::Content);
+        return pal::ui_svg_viewport(
+            projected.svg_view_box, size.x, size.y,
+            Rml::ElementUtilities::GetDensityIndependentPixelRatio(element));
+    }
+
+    /** The topmost drawn child of an SVG root under a window point that takes the pointer. */
+    std::optional<UiElementHandle> svg_hit(UiElementHandle root, Rml::Vector2f point) const {
+        Rml::Vector2f origin;
+        const auto viewport = svg_viewport(root, origin);
+        const auto user = viewport.to_user({point.x - origin.x, point.y - origin.y});
+        const auto& hits = handle_at(projected_elements, root).svg_hits;
+        for (auto hit = hits.rbegin(); hit != hits.rend(); ++hit)
+            if (pal::ui_svg_hits(*hit, user))
+                return hit->target;
+        return std::nullopt;
+    }
+
+    /**
+     * An SVG child's bounding box: its drawn geometry's bounds (a text's, its textPath's glyphs)
+     * in its root's content box. SVG graphics have no client box.
+     */
+    void svg_client_rect(UiElementHandle handle, UiElementRecord& record) const {
+        const auto root = svg_root_of(handle);
+        if (!root)
+            return;
+        Rml::Vector2f origin;
+        const auto viewport = svg_viewport(*root, origin);
+        double left = INFINITY, top = INFINITY, right = -INFINITY, bottom = -INFINITY;
+        for (const auto& hit : handle_at(projected_elements, *root).svg_hits) {
+            if (hit.target != handle && ui_element(engine, hit.target).parent != handle)
+                continue;
+            const auto& bounds = hit.bounds;
+            if (!bounds)
+                continue;
+            for (const auto corner :
+                 {pal::UiSvgPoint{(*bounds)[0], (*bounds)[1]},
+                  pal::UiSvgPoint{(*bounds)[0] + (*bounds)[2], (*bounds)[1] + (*bounds)[3]}}) {
+                const auto box = viewport.to_box(corner);
+                left = std::min(left, box.x + origin.x);
+                top = std::min(top, box.y + origin.y);
+                right = std::max(right, box.x + origin.x);
+                bottom = std::max(bottom, box.y + origin.y);
+            }
+        }
+        if (left > right)
+            return;
+        record.client_rect = {left, top, 0, 0, right - left, bottom - top, 0, 0, 1};
     }
 
     void refresh_current_color_svg_elements() {
@@ -7886,6 +8757,9 @@ struct UiRmlRuntime {
     Rml::ElementInstancerGeneric<UiButtonElement> button_instancer;
     Rml::ElementInstancerGeneric<UiCanvasElement> canvas_instancer;
     Rml::ElementInstancerGeneric<UiSelectElement> select_instancer;
+#if BBLITE_UI_INLINE_SVG
+    Rml::ElementInstancerGeneric<UiSvgRootElement> svg_instancer;
+#endif
     UiInputInstancer input_instancer;
     Rml::Context* context = nullptr;
     Rml::ElementDocument* document = nullptr;

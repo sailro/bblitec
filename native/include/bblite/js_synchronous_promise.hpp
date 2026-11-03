@@ -11,6 +11,7 @@
 #include <bblite/js_gc.hpp>
 #include <bblite/js_promise.hpp>
 
+#include <array>
 #include <exception>
 #include <memory>
 #include <stdexcept>
@@ -45,6 +46,8 @@ template <typename T> class SynchronousPromise {
     struct State {
         std::variant<std::monostate, T, Error> outcome;
         bool abandoned = false;
+        /** Its resolving functions' identities; zero until a listener registration asks. */
+        std::array<std::size_t, 2> resolving_identities{};
         void gc_trace(const TraceVisitor& visitor) const {
             if (const auto* value = std::get_if<1>(&outcome))
                 visitor(*value);
@@ -73,6 +76,14 @@ public:
         state_->abandoned = true;
         detail::activation_abandoned_flag() = true;
         throw PendingActivation{};
+    }
+
+    /** The identity of its resolve (false) or reject (true) function, minted when first asked. */
+    [[nodiscard]] std::size_t resolving_function_identity(bool reject) const {
+        auto& identity = state_->resolving_identities[reject ? 1 : 0];
+        if (identity == 0)
+            identity = next_callback_identity();
+        return identity;
     }
 
     void gc_trace(const TraceVisitor& visitor) const { visitor(state_); }

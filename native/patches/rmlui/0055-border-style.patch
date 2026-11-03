@@ -1,0 +1,687 @@
+border-*-style: the none, hidden, solid and dashed longhands, the border-style shorthand, and the style in each border-<side>
+shorthand (width, style, color). A side without a drawn style has no width; a drawn one without a declared width is medium (3px).
+Dashed sides follow Chromium (box_border_painter.cc, styled_stroke_data.cc): the dash and gap per width, the dash count fitted
+to the path, a square side dashed over its whole outer edge and mitred at the corners, a rounded border dashed along its
+centerline from the top edge after the top-left radius. A rounded side whose corners have no inner radius is dashed along the
+centerline too (Chromium strokes it straight).
+CSS Backgrounds 3: https://www.w3.org/TR/css-backgrounds-3/#border-style
+
+diff --git a/Include/RmlUi/Core/ComputedValues.h b/Include/RmlUi/Core/ComputedValues.h
+index 99feffa..9de1e74 100644
+--- a/Include/RmlUi/Core/ComputedValues.h
++++ b/Include/RmlUi/Core/ComputedValues.h
+@@ -22,7 +22,8 @@ namespace Style {
+ 			display(Display::Inline), position(Position::Static), float_(Float::None), clear(Clear::None), overflow_x(Overflow::Visible),
+ 			overflow_y(Overflow::Visible), visibility(Visibility::Visible),
+ 
+-			has_decorator(false), box_sizing(BoxSizing::ContentBox),
++			has_decorator(false), box_sizing(BoxSizing::ContentBox), border_top_style(BorderStyle::None), border_right_style(BorderStyle::None),
++			border_bottom_style(BorderStyle::None), border_left_style(BorderStyle::None),
+ 
+ 			width_type(LengthPercentageAuto::Auto), height_type(LengthPercentageAuto::Auto),
+ 
+@@ -47,6 +48,7 @@ namespace Style {
+ 
+ 		bool has_decorator : 1;
+ 		BoxSizing box_sizing : 1;
++		BorderStyle border_top_style : 2, border_right_style : 2, border_bottom_style : 2, border_left_style : 2;
+ 
+ 		LengthPercentageAuto::Type width_type : 2, height_type : 2;
+ 
+@@ -231,6 +233,10 @@ namespace Style {
+ 		Colourb              border_right_color()  const { return common.border_right_color; }
+ 		Colourb              border_bottom_color() const { return common.border_bottom_color; }
+ 		Colourb              border_left_color()   const { return common.border_left_color; }
++		BorderStyle          border_top_style()    const { return common.border_top_style; }
++		BorderStyle          border_right_style()  const { return common.border_right_style; }
++		BorderStyle          border_bottom_style() const { return common.border_bottom_style; }
++		BorderStyle          border_left_style()   const { return common.border_left_style; }
+ 		bool                 has_decorator()       const { return common.has_decorator; }
+ 
+ 		// -- Inherited --
+@@ -344,6 +350,10 @@ namespace Style {
+ 		void border_right_color (Colourb value)              { common.border_right_color  = value; }
+ 		void border_bottom_color(Colourb value)              { common.border_bottom_color = value; }
+ 		void border_left_color  (Colourb value)              { common.border_left_color   = value; }
++		void border_top_style   (BorderStyle value)          { common.border_top_style    = value; }
++		void border_right_style (BorderStyle value)          { common.border_right_style  = value; }
++		void border_bottom_style(BorderStyle value)          { common.border_bottom_style = value; }
++		void border_left_style  (BorderStyle value)          { common.border_left_style   = value; }
+ 		void has_decorator      (bool value)                 { common.has_decorator       = value; }
+ 		// Inherited
+ 		void font_face_handle  (FontFaceHandle value) { inherited.font_face_handle   = value; }
+diff --git a/Include/RmlUi/Core/ID.h b/Include/RmlUi/Core/ID.h
+index 70c85e8..3de2545 100644
+--- a/Include/RmlUi/Core/ID.h
++++ b/Include/RmlUi/Core/ID.h
+@@ -16,6 +16,7 @@ enum class ShorthandId : uint8_t {
+ 	Padding,
+ 	BorderWidth,
+ 	BorderColor,
++	BorderStyle,
+ 	BorderTop,
+ 	BorderRight,
+ 	BorderBottom,
+@@ -68,6 +69,10 @@ enum class PropertyId : uint8_t {
+ 	BorderRightColor,
+ 	BorderBottomColor,
+ 	BorderLeftColor,
++	BorderTopStyle,
++	BorderRightStyle,
++	BorderBottomStyle,
++	BorderLeftStyle,
+ 	BorderTopLeftRadius,
+ 	BorderTopRightRadius,
+ 	BorderBottomRightRadius,
+diff --git a/Include/RmlUi/Core/MeshUtilities.h b/Include/RmlUi/Core/MeshUtilities.h
+index 4785fd1..824de1a 100644
+--- a/Include/RmlUi/Core/MeshUtilities.h
++++ b/Include/RmlUi/Core/MeshUtilities.h
+@@ -2,6 +2,7 @@
+ 
+ #include "Header.h"
+ #include "RenderBox.h"
++#include "StyleTypes.h"
+ #include "Types.h"
+ 
+ namespace Rml {
+@@ -42,9 +43,10 @@ public:
+ 	/// @param[in] render_box The render box which determines the background and border geometry.
+ 	/// @param[in] background_color The color applied to the background, set alpha to zero to not generate the background.
+ 	/// @param[in] border_colors A four-element array of border colors in top-right-bottom-left order.
++	/// @param[in] border_styles The four border styles in the same order, or null for solid borders.
+ 	/// @note Vertex positions are relative to the border-box, vertex texture coordinates are default initialized.
+ 	static void GenerateBackgroundBorder(Mesh& mesh, const RenderBox& render_box, ColourbPremultiplied background_color,
+-		const ColourbPremultiplied border_colors[4]);
++		const ColourbPremultiplied border_colors[4], const Style::BorderStyle border_styles[4] = nullptr);
+ 
+ 	/// Generates the background geometry for an element's area, with support for border-radius.
+ 	/// @param[out] mesh A mesh to append the generated vertices and indices into.
+diff --git a/Include/RmlUi/Core/StyleTypes.h b/Include/RmlUi/Core/StyleTypes.h
+index fea804b..54b86d5 100644
+--- a/Include/RmlUi/Core/StyleTypes.h
++++ b/Include/RmlUi/Core/StyleTypes.h
+@@ -98,6 +98,9 @@ namespace Style {
+ 
+ 	enum class BoxSizing : uint8_t { ContentBox, BorderBox };
+ 
++	// A border side's line: none and hidden give it no width.
++	enum class BorderStyle : uint8_t { None, Hidden, Solid, Dashed };
++
+ 	using ZIndex = NumberAuto;
+ 
+ 	using Width = LengthPercentageAuto;
+diff --git a/Source/Core/BoxShadowHash.h b/Source/Core/BoxShadowHash.h
+index 8029478..b9e1da8 100644
+--- a/Source/Core/BoxShadowHash.h
++++ b/Source/Core/BoxShadowHash.h
+@@ -114,6 +114,10 @@ struct hash<::Rml::BoxShadowGeometryInfo> {
+ 		{
+ 			HashCombine(seed, v);
+ 		}
++		for (const auto& v : in.border_styles)
++		{
++			HashCombine(seed, int(v));
++		}
+ 
+ 		HashCombine(seed, in.texture_dimensions);
+ 		HashCombine(seed, in.element_offset_in_texture);
+diff --git a/Source/Core/Element.cpp b/Source/Core/Element.cpp
+index 62da79b..ae4263c 100644
+--- a/Source/Core/Element.cpp
++++ b/Source/Core/Element.cpp
+@@ -2001,6 +2001,10 @@ void Element::OnPropertyChange(const PropertyIdSet& changed_properties)
+ 		changed_properties.Contains(PropertyId::BorderRightColor) ||  //
+ 		changed_properties.Contains(PropertyId::BorderBottomColor) || //
+ 		changed_properties.Contains(PropertyId::BorderLeftColor) ||   //
++		changed_properties.Contains(PropertyId::BorderTopStyle) ||    //
++		changed_properties.Contains(PropertyId::BorderRightStyle) ||  //
++		changed_properties.Contains(PropertyId::BorderBottomStyle) || //
++		changed_properties.Contains(PropertyId::BorderLeftStyle) ||   //
+ 		changed_properties.Contains(PropertyId::Opacity))
+ 	{
+ 		meta->background_border.DirtyBorder();
+diff --git a/Source/Core/ElementBackgroundBorder.cpp b/Source/Core/ElementBackgroundBorder.cpp
+index 438dc32..67d986e 100644
+--- a/Source/Core/ElementBackgroundBorder.cpp
++++ b/Source/Core/ElementBackgroundBorder.cpp
+@@ -266,6 +266,12 @@ void ElementBackgroundBorder::GenerateGeometry(Element* element)
+ 	};
+ 
+ 	if (has_border_image) for (auto& color : border_colors) color = ColourbPremultiplied(0, 0, 0, 0);
++	const Array<Style::BorderStyle, 4> border_styles = {
++		computed.border_top_style(),
++		computed.border_right_style(),
++		computed.border_bottom_style(),
++		computed.border_left_style(),
++	};
+ 
+ 	Geometry& geometry = GetOrCreateBackground(BackgroundType::BackgroundBorder).geometry;
+ 	Mesh mesh = geometry.Release(Geometry::ReleaseMode::ClearMesh);
+@@ -277,7 +283,8 @@ void ElementBackgroundBorder::GenerateGeometry(Element* element)
+ 		const int clip = element->GetProperty(PropertyId::BackgroundClip)->Get<int>();
+ 		const BoxArea background_area = clip == 1 ? BoxArea::Padding : clip == 2 ? BoxArea::Content : BoxArea::Border;
+ 		MeshUtilities::GenerateBackground(mesh, element->GetRenderBox(background_area, i), background_color);
+-		MeshUtilities::GenerateBackgroundBorder(mesh, element->GetRenderBox(BoxArea::Padding, i), ColourbPremultiplied(0, 0, 0, 0), border_colors.data());
++		MeshUtilities::GenerateBackgroundBorder(mesh, element->GetRenderBox(BoxArea::Padding, i), ColourbPremultiplied(0, 0, 0, 0), border_colors.data(),
++			border_styles.data());
+ 	}
+ 
+ 	geometry = render_manager->MakeGeometry(std::move(mesh));
+diff --git a/Source/Core/ElementStyle.cpp b/Source/Core/ElementStyle.cpp
+index 54e7577..c70726a 100644
+--- a/Source/Core/ElementStyle.cpp
++++ b/Source/Core/ElementStyle.cpp
+@@ -1095,6 +1095,29 @@ PropertyIdSet ElementStyle::ComputeValues(Style::ComputedValues& values, const S
+ 		ComputeValue(values, dp_ratio, vp_dimensions, font_size, document_font_size, dirty_font_face_handle, id, property);
+ 	}
+ 
++	// A side's used width: none without a rendered style, 'medium' for a rendered style without a declared width.
++	{
++		using BorderWidthSetter = void (Style::ComputedValues::*)(int16_t);
++		struct BorderSide {
++			PropertyId width;
++			Style::BorderStyle style;
++			BorderWidthSetter set_width;
++		};
++		const BorderSide sides[] = {
++			{PropertyId::BorderTopWidth, values.border_top_style(), &Style::ComputedValues::border_top_width},
++			{PropertyId::BorderRightWidth, values.border_right_style(), &Style::ComputedValues::border_right_width},
++			{PropertyId::BorderBottomWidth, values.border_bottom_style(), &Style::ComputedValues::border_bottom_width},
++			{PropertyId::BorderLeftWidth, values.border_left_style(), &Style::ComputedValues::border_left_width},
++		};
++		for (const BorderSide& side : sides)
++		{
++			if (side.style == Style::BorderStyle::None || side.style == Style::BorderStyle::Hidden)
++				(values.*side.set_width)(0);
++			else if (!GetLocalProperty(side.width))
++				(values.*side.set_width)(ComputeBorderWidth(ComputeLength(NumericValue(3.f, Unit::PX), font_size, document_font_size, dp_ratio, vp_dimensions)));
++		}
++	}
++
+ 	// The font-face handle is nulled when local font properties are set. In that case we need to retrieve a new handle.
+ 	if (dirty_font_face_handle)
+ 	{
+@@ -1227,6 +1250,19 @@ void ElementStyle::ComputeValue(Style::ComputedValues& values, float dp_ratio, V
+ 		values.border_left_width(ComputeBorderWidth(ComputeLength(p->GetNumericValue(), font_size, document_font_size, dp_ratio, vp_dimensions)));
+ 		break;
+ 
++	case PropertyId::BorderTopStyle:
++		values.border_top_style((Style::BorderStyle)p->Get<int>());
++		break;
++	case PropertyId::BorderRightStyle:
++		values.border_right_style((Style::BorderStyle)p->Get<int>());
++		break;
++	case PropertyId::BorderBottomStyle:
++		values.border_bottom_style((Style::BorderStyle)p->Get<int>());
++		break;
++	case PropertyId::BorderLeftStyle:
++		values.border_left_style((Style::BorderStyle)p->Get<int>());
++		break;
++
+ 	case PropertyId::BorderTopColor:
+ 		values.border_top_color(p->Get<Colourb>());
+ 		break;
+diff --git a/Source/Core/GeometryBackgroundBorder.cpp b/Source/Core/GeometryBackgroundBorder.cpp
+index 28e7cae..e25b16e 100644
+--- a/Source/Core/GeometryBackgroundBorder.cpp
++++ b/Source/Core/GeometryBackgroundBorder.cpp
+@@ -2,6 +2,7 @@
+ #include "../../Include/RmlUi/Core/Box.h"
+ #include "../../Include/RmlUi/Core/Math.h"
+ #include <algorithm>
++#include <cmath>
+ #include <float.h>
+ 
+ namespace Rml {
+@@ -321,6 +322,247 @@ void GeometryBackgroundBorder::FillEdge(int index_next_corner)
+ 	indices[offset_indices + 5] = index_next_corner + 1;
+ }
+ 
++namespace {
++
++	// A dashed stroke's on and off lengths along its path, as Chromium's StyledStrokeData computes them; solid draws the whole path.
++	struct DashPattern {
++		bool solid = true;
++		float dash = 0, gap = 0;
++	};
++
++	// The gap that spaces whole dashes along the path closest to the preferred gap (StyledStrokeData::SelectBestDashGap).
++	float SelectBestDashGap(float stroke_length, float dash_length, float gap_length, bool closed_path)
++	{
++		const float available_length = closed_path ? stroke_length : stroke_length + gap_length;
++		const float min_num_dashes = std::floor(available_length / (dash_length + gap_length));
++		const float max_num_dashes = min_num_dashes + 1;
++		const float min_num_gaps = closed_path ? min_num_dashes : min_num_dashes - 1;
++		const float max_num_gaps = closed_path ? max_num_dashes : max_num_dashes - 1;
++		const float min_gap = (stroke_length - min_num_dashes * dash_length) / min_num_gaps;
++		const float max_gap = (stroke_length - max_num_dashes * dash_length) / max_num_gaps;
++		return (max_gap <= 0) || (std::fabs(min_gap - gap_length) < std::fabs(max_gap - gap_length)) ? min_gap : max_gap;
++	}
++
++	// A dash is two widths long from three pixels on (else three), a gap one (else two). A path too short for two dashes is solid; one
++	// too short for two dashes and a gap (two gaps when closed) scales both.
++	DashPattern DashedStroke(float width, int path_length, bool closed_path)
++	{
++		const float dash_length = width * (width >= 3 ? 2.f : 3.f);
++		const float gap_length = width * (width >= 3 ? 1.f : 2.f);
++		const float length = float(path_length);
++		if (length <= dash_length * 2)
++			return {};
++		const float two_dashes_with_gap_length = 2 * dash_length + gap_length + (closed_path ? gap_length : 0.f);
++		if (length <= two_dashes_with_gap_length)
++		{
++			const float multiplier = length / two_dashes_with_gap_length;
++			return {false, dash_length * multiplier, gap_length * multiplier};
++		}
++		return {false, dash_length, SelectBestDashGap(length, dash_length, gap_length, closed_path)};
++	}
++
++	// Calls emit(on0, on1) for each part of [begin, end) the pattern draws; its first dash starts at zero.
++	template <typename Emit>
++	void ForEachDash(const DashPattern& pattern, float begin, float end, Emit&& emit)
++	{
++		if (pattern.solid)
++		{
++			if (end > begin)
++				emit(begin, end);
++			return;
++		}
++		const float period = pattern.dash + pattern.gap;
++		for (int k = int(std::floor(begin / period)); float(k) * period < end; k++)
++		{
++			const float on0 = Math::Max(float(k) * period, begin);
++			const float on1 = Math::Min(float(k) * period + pattern.dash, end);
++			if (on1 > on0)
++				emit(on0, on1);
++		}
++	}
++
++	float Cross(Vector2f a, Vector2f b)
++	{
++		return a.x * b.y - a.y * b.x;
++	}
++
++	// The part of a convex polygon inside a convex region.
++	Vector<Vector2f> ClipConvex(Vector<Vector2f> polygon, const Vector<Vector2f>& region)
++	{
++		Vector2f centroid;
++		for (Vector2f point : region)
++			centroid += point / float(region.size());
++		for (size_t i = 0; i < region.size() && !polygon.empty(); i++)
++		{
++			const Vector2f a = region[i];
++			const Vector2f b = region[(i + 1) % region.size()];
++			const float inside_sign = Cross(b - a, centroid - a) < 0 ? -1.f : 1.f;
++			const auto distance = [&](Vector2f p) { return inside_sign * Cross(b - a, p - a); };
++			Vector<Vector2f> clipped;
++			for (size_t j = 0; j < polygon.size(); j++)
++			{
++				const Vector2f p = polygon[j];
++				const Vector2f q = polygon[(j + 1) % polygon.size()];
++				const float dp = distance(p), dq = distance(q);
++				if (dp >= 0)
++					clipped.push_back(p);
++				if ((dp >= 0) != (dq >= 0))
++					clipped.push_back(p + (q - p) * (dp / (dp - dq)));
++			}
++			polygon = std::move(clipped);
++		}
++		return polygon;
++	}
++
++} // namespace
++
++void GeometryBackgroundBorder::DrawStyledBorder(const BorderMetrics& metrics, EdgeSizes edge_sizes, const ColourbPremultiplied border_colors[4],
++	const Style::BorderStyle border_styles[4])
++{
++	const auto drawn = [&](int side) { return edge_sizes[side] > 0 && border_colors[side].alpha > 0; };
++	const auto pattern = [&](int side, int path_length, bool closed_path) {
++		return border_styles[side] == Style::BorderStyle::Dashed ? DashedStroke(edge_sizes[side], path_length, closed_path) : DashPattern{};
++	};
++	const bool rounded = std::any_of(metrics.outer_radii.begin(), metrics.outer_radii.end(), [](Vector2f R) { return R.x > 0 && R.y > 0; });
++
++	if (!rounded)
++	{
++		// Each side runs from its first corner to its second, left to right or top to bottom, over the whole outer edge; its region is
++		// the trapezoid the miters to the inner corners cut.
++		const Corner runs[4][2] = {{TOP_LEFT, TOP_RIGHT}, {TOP_RIGHT, BOTTOM_RIGHT}, {BOTTOM_LEFT, BOTTOM_RIGHT}, {TOP_LEFT, BOTTOM_LEFT}};
++		const Vector2f inward[4] = {{0, 1}, {-1, 0}, {0, -1}, {1, 0}};
++		for (int side = 0; side < 4; side++)
++		{
++			if (!drawn(side))
++				continue;
++			const Vector2f outer0 = metrics.positions_outer[runs[side][0]];
++			const Vector2f outer1 = metrics.positions_outer[runs[side][1]];
++			const Vector<Vector2f> region = {outer0, outer1, metrics.positions_inner[runs[side][1]], metrics.positions_inner[runs[side][0]]};
++			const float length = (outer1 - outer0).Magnitude();
++			if (length <= 0)
++				continue;
++			const Vector2f along = (outer1 - outer0) / length;
++			const Vector2f across = inward[side] * edge_sizes[side];
++			ForEachDash(pattern(side, Math::RoundToInteger(length), false), 0.f, length, [&](float on0, float on1) {
++				const Vector2f start = outer0 + along * on0;
++				const Vector2f end = outer0 + along * on1;
++				FillPolygon(ClipConvex({start, end, end + across, start + across}, region), border_colors[side]);
++			});
++		}
++		return;
++	}
++
++	// The border's spokes, each an (outer, inner) pair whose midpoints trace the centerline, clockwise from the top edge's start.
++	struct Spoke {
++		Vector2f outer, inner;
++		// The side of the segment that ends at this spoke.
++		int side = TOP;
++	};
++	Vector<Spoke> spokes;
++	const auto corner_spokes = [&](int corner) {
++		const int side0 = (corner + 3) % 4;
++		const int side1 = corner;
++		const Vector2f pos_outer = metrics.positions_outer[corner];
++		const Vector2f pos_inner = metrics.positions_inner[corner];
++		const Vector2f R = metrics.outer_radii[corner];
++		const Vector2f r = metrics.inner_radii[corner];
++		Vector<Spoke> result;
++		if (R.x <= 0 || R.y <= 0)
++		{
++			result.push_back({pos_outer, pos_inner, side0});
++			return result;
++		}
++		const Vector2f center = metrics.positions_circle_center[corner];
++		const float a0 = float(corner + 2) * 0.5f * Math::RMLUI_PI;
++		const float a1 = float(corner + 3) * 0.5f * Math::RMLUI_PI;
++		const int num_points = Math::Clamp(3 + Math::RoundToInteger(Math::Max(R.x, R.y)), 4, 128);
++		// The miter from the outer to the inner corner divides the corner between its two sides.
++		const auto miter = [&](const Spoke& spoke) { return Cross(pos_inner - pos_outer, (spoke.outer + spoke.inner) * 0.5f - pos_outer); };
++		float first_miter = 0;
++		bool past_miter = false;
++		for (int i = 0; i < num_points; i++)
++		{
++			const float a = Math::Lerp(float(i) / float(num_points - 1), a0, a1);
++			const Vector2f unit(Math::Cos(a), Math::Sin(a));
++			Spoke spoke{center + unit * R, r.x > 0 && r.y > 0 ? center + unit * r : pos_inner, past_miter ? side1 : side0};
++			const float m = miter(spoke);
++			if (i == 0)
++				first_miter = m;
++			else if (!past_miter && (m < 0) != (first_miter < 0))
++			{
++				// Split the segment where the spoke midpoints cross the miter.
++				const Spoke& previous = result.back();
++				const float previous_m = miter(previous);
++				const float t = previous_m / (previous_m - m);
++				result.push_back({Math::Lerp(t, previous.outer, spoke.outer), Math::Lerp(t, previous.inner, spoke.inner), side0});
++				past_miter = true;
++				spoke.side = side1;
++			}
++			result.push_back(spoke);
++		}
++		return result;
++	};
++	const Vector<Spoke> top_left = corner_spokes(TOP_LEFT);
++	spokes.push_back(top_left.back());
++	for (int corner : {TOP_RIGHT, BOTTOM_RIGHT, BOTTOM_LEFT})
++	{
++		const Vector<Spoke> next = corner_spokes(corner);
++		spokes.insert(spokes.end(), next.begin(), next.end());
++	}
++	spokes.insert(spokes.end(), top_left.begin(), top_left.end());
++
++	Vector<float> distances(spokes.size(), 0.f);
++	for (size_t i = 1; i < spokes.size(); i++)
++		distances[i] = distances[i - 1] +
++			((spokes[i].outer + spokes[i].inner) * 0.5f - (spokes[i - 1].outer + spokes[i - 1].inner) * 0.5f).Magnitude();
++	// Chromium dashes the centerline by its whole-pixel length.
++	const int path_length = int(distances.back());
++	DashPattern patterns[4];
++	for (int side = 0; side < 4; side++)
++		patterns[side] = pattern(side, path_length, true);
++
++	for (size_t i = 1; i < spokes.size(); i++)
++	{
++		const int side = spokes[i].side;
++		const float s0 = distances[i - 1], s1 = distances[i];
++		if (!drawn(side) || s1 <= s0)
++			continue;
++		const Spoke& a = spokes[i - 1];
++		const Spoke& b = spokes[i];
++		ForEachDash(patterns[side], s0, s1, [&](float on0, float on1) {
++			const float t0 = (on0 - s0) / (s1 - s0), t1 = (on1 - s0) / (s1 - s0);
++			FillSpokes(Math::Lerp(t0, a.outer, b.outer), Math::Lerp(t0, a.inner, b.inner), Math::Lerp(t1, a.outer, b.outer),
++				Math::Lerp(t1, a.inner, b.inner), border_colors[side]);
++		});
++	}
++}
++
++void GeometryBackgroundBorder::FillPolygon(const Vector<Vector2f>& polygon, ColourbPremultiplied color)
++{
++	if (polygon.size() < 3)
++		return;
++	const int offset_vertices = (int)vertices.size();
++	for (Vector2f point : polygon)
++		DrawPoint(point, color);
++	for (int i = 1; i + 1 < (int)polygon.size(); i++)
++	{
++		indices.push_back(offset_vertices);
++		indices.push_back(offset_vertices + i + 1);
++		indices.push_back(offset_vertices + i);
++	}
++}
++
++void GeometryBackgroundBorder::FillSpokes(Vector2f outer0, Vector2f inner0, Vector2f outer1, Vector2f inner1, ColourbPremultiplied color)
++{
++	const int offset_vertices = (int)vertices.size();
++	DrawPoint(inner0, color);
++	DrawPoint(outer0, color);
++	DrawPoint(inner1, color);
++	DrawPoint(outer1, color);
++	for (int index : {0, 2, 1, 1, 2, 3})
++		indices.push_back(offset_vertices + index);
++}
++
+ int GeometryBackgroundBorder::GetNumPoints(float R) const
+ {
+ 	return Math::Clamp(3 + Math::RoundToInteger(R / 6.f), 2, 100);
+diff --git a/Source/Core/GeometryBackgroundBorder.h b/Source/Core/GeometryBackgroundBorder.h
+index a63e5a5..d21231d 100644
+--- a/Source/Core/GeometryBackgroundBorder.h
++++ b/Source/Core/GeometryBackgroundBorder.h
+@@ -1,5 +1,6 @@
+ #pragma once
+ 
++#include "../../Include/RmlUi/Core/StyleTypes.h"
+ #include "../../Include/RmlUi/Core/Types.h"
+ #include "../../Include/RmlUi/Core/Vertex.h"
+ 
+@@ -51,6 +52,13 @@ public:
+ 	/// Generate geometry for the border, defined by the intersection of the outer and inner areas of the border metrics.
+ 	void DrawBorder(const BorderMetrics& metrics, EdgeSizes edge_sizes, const ColourbPremultiplied border_colors[4]);
+ 
++	/// Generate geometry for a border with dashed sides, as Chromium paints them (box_border_painter.cc, styled_stroke_data.cc). A
++	/// square border dashes each side along its whole outer edge, a dash at both ends, mitred at the corners. A rounded one dashes the
++	/// centerline of the whole border as one closed path from the top edge's start, past the top-left radius, each side in its own region.
++	/// Each side has one flat color; a solid side fills its region.
++	void DrawStyledBorder(const BorderMetrics& metrics, EdgeSizes edge_sizes, const ColourbPremultiplied border_colors[4],
++		const Style::BorderStyle border_styles[4]);
++
+ private:
+ 	enum Edge { TOP, RIGHT, BOTTOM, LEFT };
+ 	enum Corner { TOP_LEFT, TOP_RIGHT, BOTTOM_RIGHT, BOTTOM_LEFT };
+@@ -99,6 +107,11 @@ private:
+ 	// Add triangles between the previous corner to another one specified by the index (possibly yet-to-be-drawn).
+ 	void FillEdge(int index_next_corner);
+ 
++	// Add a convex polygon as a triangle fan.
++	void FillPolygon(const Vector<Vector2f>& polygon, ColourbPremultiplied color);
++	// Add the quad between two (outer, inner) border spokes.
++	void FillSpokes(Vector2f outer0, Vector2f inner0, Vector2f outer1, Vector2f inner1, ColourbPremultiplied color);
++
+ 	// -- Tools --
+ 	int GetNumPoints(float R) const;
+ 
+diff --git a/Source/Core/GeometryBoxShadow.cpp b/Source/Core/GeometryBoxShadow.cpp
+index e5b4cda..b6a8fe9 100644
+--- a/Source/Core/GeometryBoxShadow.cpp
++++ b/Source/Core/GeometryBoxShadow.cpp
+@@ -1,6 +1,7 @@
+ #include "GeometryBoxShadow.h"
+ #include "../../Include/RmlUi/Core/Box.h"
+ #include "../../Include/RmlUi/Core/CompiledFilterShader.h"
++#include "../../Include/RmlUi/Core/ComputedValues.h"
+ #include "../../Include/RmlUi/Core/DecorationTypes.h"
+ #include "../../Include/RmlUi/Core/Element.h"
+ #include "../../Include/RmlUi/Core/Geometry.h"
+@@ -9,6 +10,7 @@
+ #include "../../Include/RmlUi/Core/Profiling.h"
+ #include "../../Include/RmlUi/Core/RenderManager.h"
+ #include "ElementStyle.h"
++#include <algorithm>
+ 
+ namespace Rml {
+ 
+@@ -17,6 +19,12 @@ BoxShadowGeometryInfo GeometryBoxShadow::Resolve(Element* element, ColourbPremul
+ {
+ 	RMLUI_ZoneScoped;
+ 
++	const ComputedValues& computed = element->GetComputedValues();
++	const Array<Style::BorderStyle, 4> border_styles = {computed.border_top_style(), computed.border_right_style(), computed.border_bottom_style(),
++		computed.border_left_style()};
++	const bool dashed_border =
++		std::any_of(border_styles.begin(), border_styles.end(), [](Style::BorderStyle style) { return style == Style::BorderStyle::Dashed; });
++
+ 	// Find the box-shadow texture dimension and offset required to cover all box-shadows and element boxes combined.
+ 	Vector2f element_offset_in_texture;
+ 	Vector2i texture_dimensions;
+@@ -71,9 +79,9 @@ BoxShadowGeometryInfo GeometryBoxShadow::Resolve(Element* element, ColourbPremul
+ 
+ 		// Saved layers are clipped to the viewport. Away from its corners, borders and shadows a single box is constant
+ 		// along each axis, so an oversized texture renders that band shortened and its first texel is stretched back
+-		// over it when drawn, as Skia draws a large blurred rectangle as a nine-patch.
++		// over it when drawn, as Skia draws a large blurred rectangle as a nine-patch. A dashed border is not constant.
+ 		const Vector2i viewport = element->GetRenderManager()->GetViewport();
+-		if (element->GetNumBoxes() == 1)
++		if (element->GetNumBoxes() == 1 && !dashed_border)
+ 		{
+ 			const RenderBox box = element->GetRenderBox(BoxArea::Border, 0);
+ 			float margin = 0.f;
+@@ -115,6 +123,7 @@ BoxShadowGeometryInfo GeometryBoxShadow::Resolve(Element* element, ColourbPremul
+ 	BoxShadowGeometryInfo geometry_info;
+ 	geometry_info.background_color = background_color;
+ 	geometry_info.border_colors = border_colors;
++	geometry_info.border_styles = border_styles;
+ 	geometry_info.texture_dimensions = texture_dimensions;
+ 	geometry_info.element_offset_in_texture = element_offset_in_texture;
+ 	geometry_info.padding_render_boxes = std::move(padding_render_boxes);
+@@ -136,7 +145,8 @@ void GeometryBoxShadow::GenerateTexture(CallbackTexture& out_shadow_texture, Geo
+ 	{
+ 		// The background paints under the border, as in ElementBackgroundBorder.
+ 		MeshUtilities::GenerateBackground(mesh, info.border_render_boxes[i], info.background_color);
+-		MeshUtilities::GenerateBackgroundBorder(mesh, info.padding_render_boxes[i], ColourbPremultiplied(0, 0, 0, 0), info.border_colors.data());
++		MeshUtilities::GenerateBackgroundBorder(mesh, info.padding_render_boxes[i], ColourbPremultiplied(0, 0, 0, 0), info.border_colors.data(),
++			info.border_styles.data());
+ 	}
+ 	out_background_border_geometry = render_manager.MakeGeometry(std::move(mesh));
+ 
+diff --git a/Source/Core/GeometryBoxShadow.h b/Source/Core/GeometryBoxShadow.h
+index cfc3dcb..b3675d6 100644
+--- a/Source/Core/GeometryBoxShadow.h
++++ b/Source/Core/GeometryBoxShadow.h
+@@ -2,6 +2,7 @@
+ 
+ #include "../../Include/RmlUi/Core/DecorationTypes.h"
+ #include "../../Include/RmlUi/Core/RenderBox.h"
++#include "../../Include/RmlUi/Core/StyleTypes.h"
+ #include "../../Include/RmlUi/Core/Types.h"
+ 
+ namespace Rml {
+@@ -9,6 +10,7 @@ using RenderBoxList = Vector<RenderBox>;
+ struct BoxShadowGeometryInfo {
+ 	ColourbPremultiplied background_color;
+ 	Array<ColourbPremultiplied, 4> border_colors;
++	Array<Style::BorderStyle, 4> border_styles;
+ 	Vector2i texture_dimensions;
+ 	Vector2f element_offset_in_texture;
+ 	RenderBoxList padding_render_boxes;
+@@ -21,7 +23,7 @@ struct BoxShadowGeometryInfo {
+ };
+ inline bool operator==(const BoxShadowGeometryInfo& a, const BoxShadowGeometryInfo& b)
+ {
+-	return a.background_color == b.background_color && a.border_colors == b.border_colors &&
++	return a.background_color == b.background_color && a.border_colors == b.border_colors && a.border_styles == b.border_styles &&
+ 		a.texture_dimensions == b.texture_dimensions && a.element_offset_in_texture == b.element_offset_in_texture &&
+ 		a.padding_render_boxes == b.padding_render_boxes && a.border_render_boxes == b.border_render_boxes && a.shadow_list == b.shadow_list &&
+ 		a.opacity == b.opacity && a.stretch_offset == b.stretch_offset && a.stretch_size == b.stretch_size;
+diff --git a/Source/Core/MeshUtilities.cpp b/Source/Core/MeshUtilities.cpp
+index 3c4abb2..29bb1cd 100644
+--- a/Source/Core/MeshUtilities.cpp
++++ b/Source/Core/MeshUtilities.cpp
+@@ -4,6 +4,7 @@
+ #include "../../Include/RmlUi/Core/FontEngineInterface.h"
+ #include "../../Include/RmlUi/Core/Types.h"
+ #include "GeometryBackgroundBorder.h"
++#include <algorithm>
+ 
+ namespace Rml {
+ 
+@@ -55,7 +56,7 @@ void MeshUtilities::GenerateLine(Mesh& mesh, Vector2f position, Vector2f size, C
+ }
+ 
+ void MeshUtilities::GenerateBackgroundBorder(Mesh& out_mesh, const RenderBox& render_box, ColourbPremultiplied background_color,
+-	const ColourbPremultiplied border_colors[4])
++	const ColourbPremultiplied border_colors[4], const Style::BorderStyle border_styles[4])
+ {
+ 	RMLUI_ASSERT(border_colors);
+ 
+@@ -89,7 +90,10 @@ void MeshUtilities::GenerateBackgroundBorder(Mesh& out_mesh, const RenderBox& re
+ 	if (has_background)
+ 		geometry.DrawBackground(metrics, background_color);
+ 
+-	if (has_border)
++	const bool dashed = border_styles && std::any_of(border_styles, border_styles + 4, [](Style::BorderStyle style) { return style == Style::BorderStyle::Dashed; });
++	if (has_border && dashed)
++		geometry.DrawStyledBorder(metrics, border_widths, border_colors, border_styles);
++	else if (has_border)
+ 		geometry.DrawBorder(metrics, border_widths, border_colors);
+ 
+ #if 0
+diff --git a/Source/Core/StyleSheetSpecification.cpp b/Source/Core/StyleSheetSpecification.cpp
+index 207fd7d..779c7cc 100644
+--- a/Source/Core/StyleSheetSpecification.cpp
++++ b/Source/Core/StyleSheetSpecification.cpp
+@@ -296,10 +296,11 @@ void StyleSheetSpecification::RegisterDefaultProperties()
+ 	RegisterProperty(PropertyId::PaddingLeft, "padding-left", "0px", false, true).AddParser("length_percent").SetRelativeTarget(RelativeTarget::ContainingBlockWidth);
+ 	RegisterShorthand(ShorthandId::Padding, "padding", "padding-top, padding-right, padding-bottom, padding-left", ShorthandType::Box);
+ 
+-	RegisterProperty(PropertyId::BorderTopWidth, "border-top-width", "0px", false, true).AddParser("length");
+-	RegisterProperty(PropertyId::BorderRightWidth, "border-right-width", "0px", false, true).AddParser("length");
+-	RegisterProperty(PropertyId::BorderBottomWidth, "border-bottom-width", "0px", false, true).AddParser("length");
+-	RegisterProperty(PropertyId::BorderLeftWidth, "border-left-width", "0px", false, true).AddParser("length");
++	// The initial width is 'medium'; a side without a rendered style uses none (see ElementStyle::ComputeValues).
++	RegisterProperty(PropertyId::BorderTopWidth, "border-top-width", "3px", false, true).AddParser("length");
++	RegisterProperty(PropertyId::BorderRightWidth, "border-right-width", "3px", false, true).AddParser("length");
++	RegisterProperty(PropertyId::BorderBottomWidth, "border-bottom-width", "3px", false, true).AddParser("length");
++	RegisterProperty(PropertyId::BorderLeftWidth, "border-left-width", "3px", false, true).AddParser("length");
+ 	RegisterShorthand(ShorthandId::BorderWidth, "border-width", "border-top-width, border-right-width, border-bottom-width, border-left-width", ShorthandType::Box);
+ 
+ 	RegisterProperty(PropertyId::BorderTopColor, "border-top-color", "black", false, false).AddParser("color");
+@@ -308,10 +309,16 @@ void StyleSheetSpecification::RegisterDefaultProperties()
+ 	RegisterProperty(PropertyId::BorderLeftColor, "border-left-color", "black", false, false).AddParser("color");
+ 	RegisterShorthand(ShorthandId::BorderColor, "border-color", "border-top-color, border-right-color, border-bottom-color, border-left-color", ShorthandType::Box);
+ 
+-	RegisterShorthand(ShorthandId::BorderTop, "border-top", "border-top-width, border-top-color", ShorthandType::FallThrough);
+-	RegisterShorthand(ShorthandId::BorderRight, "border-right", "border-right-width, border-right-color", ShorthandType::FallThrough);
+-	RegisterShorthand(ShorthandId::BorderBottom, "border-bottom", "border-bottom-width, border-bottom-color", ShorthandType::FallThrough);
+-	RegisterShorthand(ShorthandId::BorderLeft, "border-left", "border-left-width, border-left-color", ShorthandType::FallThrough);
++	RegisterProperty(PropertyId::BorderTopStyle, "border-top-style", "none", false, true).AddParser("keyword", "none, hidden, solid, dashed");
++	RegisterProperty(PropertyId::BorderRightStyle, "border-right-style", "none", false, true).AddParser("keyword", "none, hidden, solid, dashed");
++	RegisterProperty(PropertyId::BorderBottomStyle, "border-bottom-style", "none", false, true).AddParser("keyword", "none, hidden, solid, dashed");
++	RegisterProperty(PropertyId::BorderLeftStyle, "border-left-style", "none", false, true).AddParser("keyword", "none, hidden, solid, dashed");
++	RegisterShorthand(ShorthandId::BorderStyle, "border-style", "border-top-style, border-right-style, border-bottom-style, border-left-style", ShorthandType::Box);
++
++	RegisterShorthand(ShorthandId::BorderTop, "border-top", "border-top-width, border-top-style, border-top-color", ShorthandType::FallThrough);
++	RegisterShorthand(ShorthandId::BorderRight, "border-right", "border-right-width, border-right-style, border-right-color", ShorthandType::FallThrough);
++	RegisterShorthand(ShorthandId::BorderBottom, "border-bottom", "border-bottom-width, border-bottom-style, border-bottom-color", ShorthandType::FallThrough);
++	RegisterShorthand(ShorthandId::BorderLeft, "border-left", "border-left-width, border-left-style, border-left-color", ShorthandType::FallThrough);
+ 	RegisterShorthand(ShorthandId::Border, "border", "border-top, border-right, border-bottom, border-left", ShorthandType::RecursiveRepeat);
+ 
+ 	RegisterProperty(PropertyId::BorderTopLeftRadius, "border-top-left-radius", "0px", false, false).AddParser("length_percent");

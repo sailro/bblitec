@@ -500,6 +500,7 @@ void pal::run_engine(Engine& engine) {
     static_cast<void>(engine);
     throw std::logic_error("A Worker-enabled application must use asynchronous engine startup.");
 #else
+    arm_engine_render_function(engine);
     auto frames = run_engine_iterations(engine);
 #if BBLITE_GPU_RETIREMENT
     if (engine.source_gpu_host_closed)
@@ -541,6 +542,7 @@ js::Promise<js::PromiseVoid> pal::start_realm_engine(std::shared_ptr<Engine> eng
         pal::EventLoop::current().use_fixed_animation_time(options.frame_delta_ms,
                                                            /*held=*/true);
     engine->stopped = false;
+    arm_engine_render_function(*engine);
     js::Promise<js::PromiseVoid> ready;
     run_realm_frames(std::move(engine), ready);
     return ready;

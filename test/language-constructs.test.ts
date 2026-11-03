@@ -1199,6 +1199,44 @@ check(
 );
 
 check(
+    "callback-results-of-void-or-a-value",
+    `
+    interface Act { run(): void | boolean; }
+    const acts: Act[] = [{ run: () => true }, { run: () => {} }, { run(): void | boolean { return false; } }];
+    let trace = "";
+    for (const act of acts) {
+        const result = act.run();
+        trace += result === undefined ? "u" : result ? "t" : "f";
+    }
+    if (trace !== "tuf") throw new Error("results " + trace);
+    // A stored closure reading a later binding of that callback type.
+    const handlers: (() => void)[] = [];
+    handlers.push(() => { trace += String(deps.act.run()); });
+    const deps: { act: Act } = { act: { run: () => true } };
+    for (const handler of handlers) handler();
+    if (trace !== "tuftrue") throw new Error("later binding " + trace);
+`,
+);
+
+check(
+    "coalesce-record-lacking-fields",
+    `
+    interface City { x: number; y: number; size: number; name: string }
+    const cities: City[] = [];
+    if (Date.now() < 0) cities.push({ x: 1, y: 2, size: 3, name: "a" });
+    const tiles: { x: number; y: number }[] = [];
+    for (let i = 1; i < 4; i++) tiles.push({ x: i, y: i * 2 });
+    // The checker types the result as City (its left is never nullish to
+    // it); the fallback is the tile itself, which has no size.
+    const start = cities[0] ?? tiles[1]!;
+    if (start.x !== 2 || start.y !== 4) throw new Error("selected tile");
+    if (start.size !== undefined || "size" in start) throw new Error("lacked field");
+    start.x = 7;
+    if (tiles[1]!.x !== 7) throw new Error("one object");
+`,
+);
+
+check(
     "scalar-union-strict-comparisons",
     `
     const values:(string|number|boolean)[] = ['head',2,false,NaN];
@@ -1644,6 +1682,84 @@ check(
     if (show(missing) !== "undefined" || show(empty) !== "null") throw new Error("nullish String");
     if ("value=" + missing !== "value=undefined" || "value=" + empty !== "value=null") throw new Error("nullish concatenation");
     if (\`value=\${missing}\` !== "value=undefined" || \`value=\${empty}\` !== "value=null") throw new Error("nullish interpolation");
+`,
+);
+
+check(
+    "a-void-callback-slot-stores-a-function-whose-unread-result-is-not-undefined",
+    `
+    const listeners = new Set<() => void>();
+    function subscribe(apply: () => void): () => void {
+        listeners.add(apply);
+        return () => listeners.delete(apply);
+    }
+    interface Coin { dispose(): void }
+    function createCoin(): Coin {
+        const dispose = subscribe(() => {});
+        return { dispose };
+    }
+    let release = (): void => {};
+    function open(): void {
+        release();
+        const coin = createCoin();
+        release = coin.dispose;
+    }
+    open();
+    open();
+    if (listeners.size !== 1) throw new Error("released " + listeners.size);
+    release();
+    if (listeners.size !== 0) throw new Error("final " + listeners.size);
+`,
+);
+
+test("a void callback slot holding a function that returns a value refuses a read of its result", () => {
+    assert.throws(
+        () =>
+            compileSource(`
+                const listeners = new Set<() => void>();
+                const subscribe = (apply: () => void): (() => void) => () => listeners.delete(apply);
+                interface Coin { dispose(): void }
+                const coin: Coin = { dispose: subscribe(() => {}) };
+                let release = (): void => {};
+                release = coin.dispose;
+                const result = release();
+                if (result !== undefined) throw new Error("read");
+            `),
+        /Expression assigned to 'result' does not produce a native value/,
+    );
+});
+
+check(
+    "an-early-returning-function-returns-records-whose-methods-take-unknown-members",
+    `
+    interface Input { kind: "error" | "boot"; error: unknown }
+    interface Handle { report(input: Input): string | null; dispose(): void }
+    interface State { disposed: boolean }
+    let state: State | null = null;
+    function describe(error: unknown): string {
+        if (typeof error === "string") return error;
+        if (error instanceof Error) return error.message;
+        return String(error);
+    }
+    function handleOf(s: State): Handle {
+        return {
+            report: (input) => (s.disposed ? null : input.kind + ":" + describe(input.error)),
+            dispose: () => { s.disposed = true; },
+        };
+    }
+    function install(): Handle {
+        if (state && !state.disposed) return handleOf(state);
+        const s: State = { disposed: false };
+        state = s;
+        return handleOf(s);
+    }
+    let out = install().report({ kind: "boot", error: "plain" }) ?? "";
+    try { throw new Error("thrown"); } catch (err) { out += install().report({ kind: "error", error: err }) ?? ""; }
+    out += install().report({ kind: "error", error: 3 }) ?? "";
+    const first = install();
+    first.dispose();
+    out += String(first.report({ kind: "boot", error: null })) + install().report({ kind: "boot", error: "again" });
+    if (out !== "boot:plainerror:thrownerror:3nullboot:again") throw new Error("handle " + out);
 `,
 );
 
@@ -3164,6 +3280,41 @@ check(
     if (applied.code !== "APPLIED" || applied.resultingVersion !== 2 || executeForLive(command, [], resultOf, run) !== applied) throw new Error("applied");
     if (retried.code !== "REJECTED_RETRY" || retried.targetId !== 7 || retried.villagerId !== 1) throw new Error("retried");
     if (Object.keys(retried).sort().join(",") !== "code,expectedEpoch,incarnation,kind,targetId,villagerId" || "quantity" in retried) throw new Error("spread keys");
+`,
+);
+
+check(
+    "object-fields-keep-the-identity-of-the-records-they-hold",
+    `
+    interface Config { left: string }
+    interface Ctx { scope: object; label: string }
+    interface Hint { show(config: Config): void; active(): boolean; context(): Ctx | null }
+    function createHint(): Hint {
+        let current: Config | null = null;
+        return {
+            show: (config: Config) => { current = config; },
+            active: () => current !== null,
+            context: () => (current ? { scope: current, label: current.left } : null),
+        };
+    }
+    let hint: Pick<Hint, "context" | "active"> | null = null;
+    let scope: object | null = null;
+    let changes = 0;
+    function poll(): void {
+        const context = hint?.context() ?? null;
+        if (context?.scope !== scope) { scope = context?.scope ?? null; changes++; }
+    }
+    const created = createHint();
+    hint = created;
+    const first: Config = { left: "x" };
+    created.show(first);
+    poll();
+    poll();
+    created.show({ left: "x" });
+    poll();
+    created.show(first);
+    poll();
+    if (changes !== 3 || scope !== first || hint.context()?.label !== "x") throw new Error("changes " + changes);
 `,
 );
 
@@ -5009,9 +5160,18 @@ check(
 test("a global-object member the program adds is window realm state", () => {
     const result = compileSource(
         `const g = globalThis as { __count?: number };
-        if (!(g.__count === undefined)) throw new Error("absent member");`,
+        if (!(g.__count === undefined)) throw new Error("absent member");
+        g.__count = 1;`,
     );
     assert.match(result.cpp, /bbl::dom_window_property</);
+});
+
+test("a global-object member only a host page could install reads absent", () => {
+    const result = compileSource(
+        `const g = globalThis as { bridge?: { send(text: string): void } };
+        if (g.bridge !== undefined) throw new Error("installed bridge");`,
+    );
+    assert.doesNotMatch(result.cpp, /bbl::dom_window_property</);
 });
 
 test("Object.create, defineProperty and getPrototypeOf refuse unrepresented forms", () => {

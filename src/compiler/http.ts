@@ -155,7 +155,16 @@ export function compileHttpCall(
         );
     const fields = options?.recordProperties ?? {};
     for (const name of Object.keys(fields))
-        if (!["method", "headers", "body", "cache", "signal"].includes(name))
+        if (
+            ![
+                "method",
+                "headers",
+                "body",
+                "cache",
+                "keepalive",
+                "signal",
+            ].includes(name)
+        )
             context.fail(
                 optionsNode!,
                 `fetch option '${name}' is not lowered.`,
@@ -184,11 +193,18 @@ export function compileHttpCall(
         !fields.body || fields.body.kind === "json-null"
             ? "std::nullopt"
             : snapshot(fields.body, optionsNode!, "http_body");
+    const keepalive = fields.keepalive
+        ? lowerer.compileKnownValueForSink(
+              fields.keepalive,
+              { kind: "boolean" },
+              optionsNode!,
+          )
+        : undefined;
     const signal = fields.signal
         ? requestSignal(lowerer, fields.signal, optionsNode!)
         : undefined;
     return lowerer.leafValue(
-        `bbl::pal::fetch_deployed(${url}, bbl::pal::HttpRequest{${method}, {${entries.join(", ")}}, ${body}}${signal ? `, ${signal}` : ""})`,
+        `bbl::pal::fetch_deployed(${url}, bbl::pal::HttpRequest{${method}, {${entries.join(", ")}}, ${body}${keepalive ? `, ${keepalive}` : ""}}${signal ? `, ${signal}` : ""})`,
         { kind: "promise", result: { kind: "http-response" } },
     );
 }

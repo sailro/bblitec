@@ -72,6 +72,7 @@ export interface SurveyReport {
 interface StatementContext {
     readonly checker: ts.TypeChecker;
     transaction(work: () => void): void;
+    refusedDemand(error: unknown): CompileError | undefined;
 }
 
 /** A refusal while it is being counted: the statements it rolled back, by node. */
@@ -144,8 +145,13 @@ export class SurveyCollector {
         try {
             context.transaction(lower);
         } catch (error) {
-            if (!(error instanceof CompileError)) throw error;
-            this.record(attempt, context.checker, statement, error);
+            // A demand its replay refused is the statement's refusal.
+            const refusal =
+                error instanceof CompileError
+                    ? error
+                    : context.refusedDemand(error);
+            if (!refusal) throw error;
+            this.record(attempt, context.checker, statement, refusal);
         }
     }
 

@@ -86,8 +86,8 @@ test("runtime selector text and interaction states lower natively in strict and 
             /Retained DOM query selectors must be literal, a template whose runtime text fills quoted attribute values, or a union of at most 32 literal selectors/,
         ],
         [
-            'root.querySelector(name ? ".a" : ":scope > .a")',
-            /Retained DOM query selector ':scope > \.a' is not lowered/,
+            'root.querySelector(name ? ".a" : ".a:lang(en)")',
+            /Retained DOM query selector '\.a:lang\(en\)' is not lowered/,
         ],
     ] as const)
         for (const options of [

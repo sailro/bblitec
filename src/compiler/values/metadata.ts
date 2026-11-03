@@ -23,7 +23,6 @@ const resourceMetadataFields = {
         "uiRoot",
         "uiCanvas",
         "uiPrimaryCanvas",
-        "uiCanvasId",
         "uiCanvasContext",
         "uiFileInput",
         "uiLinkHref",

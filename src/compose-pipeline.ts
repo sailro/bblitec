@@ -1,9 +1,13 @@
 import type {
+    PbrMaterialStateWrites,
     SceneMeshManifest,
     ScenePbrMaterialManifest,
     ShadowGeneratorManifest,
 } from "./compiler/types.js";
+import { PbrMaterialStates } from "./pinned-pbr-material-states.js";
+import type { PbrMaterialStateRow } from "./pinned-pbr-variant-cpp.js";
 import {
+    mergePbrStateWrites,
     pbrEsmShadowView,
     pbrNoColorView,
 } from "./compiler/scene-materials.js";
@@ -161,15 +165,18 @@ interface ComposedScenePipeline {
     /** The upstream loader/runtime tone-mapping states this scene can reach. */
     toneMappingStates: boolean[];
     gltfAssets: CompileAsset[];
-    materialIndexBase: number;
     /** Composition-table row for each source PBR creation profile. */
     scenePbrMaterialIndices: number[];
+    /** The rows the program's material writes select. */
+    pbrMaterialStateRows: readonly PbrMaterialStateRow[];
     /**
-     * How many caster material views `registerSceneWithShadowSupport` will
-     * append past the scene's own materials. The runtime's material-handle
-     * count includes them, because a PBR view's handle has to name a row.
+     * Every composed PBR row: one per runtime material handle (the assets'
+     * materials, the scene's creations of any family -- handles are
+     * creation-ordered across families -- then one caster view per shadow
+     * caster, which `registerSceneWithShadowSupport` appends and whose PBR
+     * handle has to name a row), then the rows the written states compose in.
      */
-    casterViewCount: number;
+    pinnedMaterialCount: number;
     /**
      * The pin's mesh bits per PBR renderable, in the runtime's own handle
      * order: the primitive's attributes, plus `MSH_RECEIVE_SHADOWS` where
@@ -692,6 +699,47 @@ export async function composeScenePipeline({
                   }),
         }),
     );
+    // Every caster takes a material handle past the scene's own.
+    const casterViewCount = generatorsByLight.reduce(
+        (count, generator) => count + generator.casters.length,
+        0,
+    );
+    const pluginsRegistered =
+        result.manifest.features.includes("material:plugins");
+    // The states writes give materials compose past every row a handle
+    // names, each source row's writes merged across the targets reaching it.
+    const stateWrites = new Map<number, PbrMaterialStateWrites>();
+    const reachStateRow = (row: number, writes: PbrMaterialStateWrites) => {
+        const known = stateWrites.get(row);
+        stateWrites.set(
+            row,
+            known ? mergePbrStateWrites(known, writes) : writes,
+        );
+    };
+    for (const writes of result.manifest.pbrMaterialStates ?? []) {
+        const { target } = writes;
+        if (target.kind === "scene") {
+            reachStateRow(
+                absoluteScenePbrMaterials[target.index]!.materialsBefore,
+                writes,
+            );
+            continue;
+        }
+        for (const [assetIndex, asset] of gltfAssets.entries()) {
+            if (target.kind === "asset" && asset.output !== target.output)
+                continue;
+            for (let at = 0; at < gltfMaterialCounts[assetIndex]!; at += 1)
+                reachStateRow(assetMaterialBases[assetIndex]! + at, writes);
+        }
+    }
+    const materialStates = new PbrMaterialStates(
+        totalAssetMaterials +
+            result.manifest.sceneMaterialCount +
+            casterViewCount,
+        stateWrites,
+        result.manifest.pbrPluginSignatures ?? [],
+        result.manifest.pbrPluginAppends ?? [],
+    );
     let assetMetallicReflectanceRegistered = false;
     for (const [assetIndex, asset] of gltfAssets.entries()) {
         const materialIndexBase = assetMaterialBases[assetIndex]!;
@@ -728,6 +776,8 @@ export async function composeScenePipeline({
             ...(asset.selectedVariant
                 ? { selectedVariant: asset.selectedVariant }
                 : {}),
+            materialStates,
+            pluginsRegistered,
         };
         let pendingComposition = gltfMaterialCompositionsByAsset.get(asset);
         if (!pendingComposition) {
@@ -826,7 +876,7 @@ export async function composeScenePipeline({
     // contributes nothing: that family keys on feature bits and reads
     // `no_color` off the record, so its view resolves with no row at all.
     const casterViews: ScenePbrMaterialManifest[] = [];
-    let casterViewCount = 0;
+    let casterSlot = 0;
     for (const generator of generatorsByLight) {
         for (const caster of generator.casters) {
             // EVERY caster takes a handle: `build_shadow_task` appends a
@@ -838,8 +888,8 @@ export async function composeScenePipeline({
             const materialsBefore =
                 totalAssetMaterials +
                 result.manifest.sceneMaterialCount +
-                casterViewCount;
-            casterViewCount += 1;
+                casterSlot;
+            casterSlot += 1;
             if (caster.pbrMaterial === null) continue;
             const source = absoluteScenePbrMaterials[caster.pbrMaterial];
             if (!source) {
@@ -941,8 +991,8 @@ export async function composeScenePipeline({
                     ...(clusteredLights ? { clusteredLights } : {}),
                     metallicReflectanceRegistered:
                         assetMetallicReflectanceRegistered,
-                    pluginsRegistered:
-                        result.manifest.features.includes("material:plugins"),
+                    pluginsRegistered,
+                    materialStates,
                     ...(shadowLights.length > 0
                         ? {
                               shadowLights,
@@ -1249,9 +1299,9 @@ export async function composeScenePipeline({
         lightKinds,
         toneMappingStates,
         gltfAssets,
-        materialIndexBase: totalAssetMaterials,
         scenePbrMaterialIndices,
-        casterViewCount,
+        pbrMaterialStateRows: materialStates.stateRows,
+        pinnedMaterialCount: materialStates.rowCount,
         renderableMeshFeatures,
         meshProfiles:
             runtimeProfileRows.size > 0 || profiledGltfLoads

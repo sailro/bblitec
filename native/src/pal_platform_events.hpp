@@ -169,13 +169,31 @@ inline PlatformModifierKeys dom_modifiers(SDL_Keymod modifiers) {
     };
 }
 
-/** The keyboard event a platform key reports. */
-inline PlatformKeyboardEvent platform_keyboard_event(std::string_view code, bool repeat,
-                                                     PlatformModifierKeys modifiers) {
+/**
+ * Tracks `Engine::text_composing` from every event a Window loop takes, ahead of the key events
+ * that read it: a keydown opening a composition precedes its first edit, and the commit's keyup
+ * follows its text, as browsers order `isComposing`.
+ */
+inline void observe_text_composition(Engine& engine, const SDL_Event& event) {
+    if (event.type == SDL_EVENT_TEXT_EDITING)
+        engine.text_composing = event.edit.text != nullptr && *event.edit.text != '\0';
+    else if (event.type == SDL_EVENT_TEXT_INPUT || event.type == SDL_EVENT_WINDOW_FOCUS_LOST)
+        engine.text_composing = false;
+    else if (engine.text_composing &&
+             (event.type == SDL_EVENT_KEY_DOWN || event.type == SDL_EVENT_KEY_UP)) {
+        auto* window = SDL_GetWindowFromID(event.key.windowID);
+        engine.text_composing = window != nullptr && SDL_TextInputActive(window);
+    }
+}
+
+/** The keyboard event a platform key reports, with the engine's composition state. */
+inline PlatformKeyboardEvent platform_keyboard_event(const Engine& engine, std::string_view code,
+                                                     bool repeat, PlatformModifierKeys modifiers) {
     PlatformKeyboardEvent event{
         .code = std::string(code),
         .key = keyboard_event_key(code),
         .repeat = repeat,
+        .is_composing = engine.text_composing,
     };
     static_cast<PlatformModifierKeys&>(event) = modifiers;
     return event;
@@ -185,7 +203,7 @@ inline bool dispatch_platform_keyboard_event(Engine& engine, std::string_view co
                                              bool repeat, PlatformModifierKeys modifiers = {},
                                              bool include_dom = true) {
     trace_keyboard_event(code, down, repeat);
-    const auto event = platform_keyboard_event(code, repeat, modifiers);
+    const auto event = platform_keyboard_event(engine, code, repeat, modifiers);
     bool prevented = false;
     if (include_dom && engine.dom_input) {
         const auto& input = *engine.dom_input;
@@ -1374,6 +1392,7 @@ inline void set_dom_pointer_context(const Engine& engine, PlatformMouseEvent& po
  * same dispatch contract without pulling in RmlUi. */
 inline std::shared_ptr<DomEventBatch> prepare_dom_platform_input(Engine& engine,
                                                                  const SDL_Event& event) {
+    observe_text_composition(engine, event);
 #if BBLITE_HAS_GAMEPAD
     // Every gamepad event reaches the Window's gamepads, listened to or not.
     if (event.type == SDL_EVENT_GAMEPAD_ADDED || event.type == SDL_EVENT_GAMEPAD_REMOVED ||
@@ -1505,7 +1524,7 @@ inline std::shared_ptr<DomEventBatch> prepare_dom_platform_input(Engine& engine,
     if (event.type == SDL_EVENT_KEY_DOWN || event.type == SDL_EVENT_KEY_UP) {
         const auto code = keyboard_event_code(event.key.scancode);
         const auto key =
-            platform_keyboard_event(code, event.key.repeat, dom_modifiers(event.key.mod));
+            platform_keyboard_event(engine, code, event.key.repeat, dom_modifiers(event.key.mod));
         auto path = input.focus_path ? input.focus_path() : dom_canvas_path();
         batch->add(
             dom_event(key, event.type == SDL_EVENT_KEY_DOWN ? "keydown" : "keyup", std::move(path)),

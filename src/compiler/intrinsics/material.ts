@@ -1,3 +1,4 @@
+import { isPbrMaterialValue } from "../values/model.js";
 import {
     compileCreateExternalTexture,
     compileIsExternalTextureReady,
@@ -617,9 +618,7 @@ function compileIsPbrMaterial(
     context.expectArgumentCount(call, 1, 1);
     const material = context.compileValue(argumentAt(call, 0));
     context.expectKind(material, "material", argumentAt(call, 0));
-    const isPbr =
-        material.scenePbrMaterialIndex !== undefined ||
-        material.assetPbrMaterial === true;
+    const isPbr = isPbrMaterialValue(material);
     if (!isPbr && !material.standardMaterial) {
         context.fail(
             argumentAt(call, 0),
@@ -854,6 +853,7 @@ function compileCreatePbrMaterial(
                 },
                 plugins,
                 folded,
+                context.sceneManifest.pbrPluginSignature(folded.manifests),
             );
         }
         return {

@@ -8,12 +8,72 @@ import {
     calledFunction,
     namedMember,
     accessedPropertySymbol,
+    resolvedSymbol,
 } from "./symbols.js";
 import {
     isOperandSelection,
     unwrapExpression,
     valueOperands,
+    variableKind,
 } from "./syntax.js";
+
+/**
+ * The object or array literal whose object `node` names through `const`
+ * aliases (`const x = { ... }`, also wrapped in `Object.freeze`, `seal` or
+ * `preventExtensions`, which return their argument), and whether it is
+ * frozen. A `const` names only objects its literal creates: a write through
+ * it reaches no object another literal creates.
+ */
+export function constObjectLiteral(
+    checker: ts.TypeChecker,
+    node: ts.Node,
+):
+    | {
+          readonly literal:
+              ts.ObjectLiteralExpression | ts.ArrayLiteralExpression;
+          readonly frozen: boolean;
+      }
+    | undefined {
+    const seen = new Set<ts.Declaration>();
+    let frozen = false;
+    for (
+        let current = ts.isExpression(node) ? unwrapExpression(node) : node;
+        ;
+    ) {
+        if (
+            ts.isObjectLiteralExpression(current) ||
+            ts.isArrayLiteralExpression(current)
+        )
+            return { literal: current, frozen };
+        if (ts.isCallExpression(current) && current.arguments.length === 1) {
+            const member = namedMember(
+                checker,
+                unwrapExpression(current.expression),
+            );
+            if (
+                !member ||
+                libraryGlobal(checker, member.expression) !== "Object" ||
+                !["freeze", "seal", "preventExtensions"].includes(member.name)
+            )
+                return undefined;
+            frozen ||= member.name === "freeze";
+            current = unwrapExpression(current.arguments[0]!);
+            continue;
+        }
+        if (!ts.isIdentifier(current)) return undefined;
+        const declaration = resolvedSymbol(checker, current)?.valueDeclaration;
+        if (
+            !declaration ||
+            !ts.isVariableDeclaration(declaration) ||
+            !declaration.initializer ||
+            seen.has(declaration) ||
+            variableKind(declaration) !== "const"
+        )
+            return undefined;
+        seen.add(declaration);
+        current = unwrapExpression(declaration.initializer);
+    }
+}
 
 /**
  * Whether evaluating an expression yields an object no other reference can
@@ -219,6 +279,16 @@ export function callsFreshArrayBuiltin(
                 (declaration.parent.name.text === "Array" ||
                     declaration.parent.name.text === "ReadonlyArray"),
         )
+    );
+}
+
+/** Whether every value `declaration` returns is an array {@link yieldsNewArray} proves new. */
+export function returnsOnlyNewArrays(
+    checker: ts.TypeChecker,
+    declaration: ts.FunctionLikeDeclaration,
+): boolean {
+    return returnsOnly(declaration, new Set(), (expression) =>
+        yieldsNewArray(checker, expression),
     );
 }
 

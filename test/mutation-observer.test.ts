@@ -63,6 +63,35 @@ test("Window attribute observers coalesce microtasks, filter targets, disconnect
             state.count++;
             state.value = element.dataset.progress ?? "missing";
         });
+        // A subtree observer sees its descendants' class writes, a classList one included.
+        function observeSubtree(): void {
+            const parent = document.createElement("div");
+            const child = document.createElement("span");
+            parent.appendChild(child);
+            const tree = {count: 0};
+            const own = {count: 0};
+            const deep = new MutationObserver(() => { tree.count++; });
+            const shallow = new MutationObserver(() => { own.count++; });
+            deep.observe(parent, {subtree: true, attributes: true, attributeFilter: ["class"]});
+            shallow.observe(parent, {attributes: true, attributeFilter: ["class"], subtree: false});
+            child.classList.add("open");
+            setTimeout(() => {
+                if (tree.count !== 1 || own.count !== 0) throw new Error("subtree class observation");
+                child.classList.toggle("open");
+                // Without a class attribute, removing an absent token changes nothing.
+                parent.classList.remove("absent");
+                setTimeout(() => {
+                    if (tree.count !== 2 || own.count !== 0) throw new Error("token update steps");
+                    parent.classList.add("x");
+                    setTimeout(() => {
+                        if (tree.count !== 3 || own.count !== 1) throw new Error("observed target");
+                        deep.disconnect();
+                        shallow.disconnect();
+                        globalThis.close();
+                    }, 0);
+                }, 0);
+            }, 0);
+        }
         observer.observe(element, {attributeFilter:["data-progress"]});
         element.dataset.unrelated = "ignored";
         other.dataset.progress = "ignored";
@@ -84,7 +113,7 @@ test("Window attribute observers coalesce microtasks, filter targets, disconnect
                     setTimeout(() => {
                         if (state.count !== 2 || state.value !== "missing") throw new Error("reobserve and removal");
                         observer.disconnect();
-                        globalThis.close();
+                        observeSubtree();
                     }, 0);
                 }, 0);
             }, 0);
@@ -188,10 +217,9 @@ test("an observer callback its own var initializer creates reads that var assign
     runObserverFixture(t, result.cpp);
 });
 
-test("Window attribute observers explicitly refuse records, subtree and old values", () => {
+test("Window attribute observers explicitly refuse records and old values", () => {
     for (const options of [
         "{childList:true}",
-        "{attributes:true,subtree:true}",
         "{attributes:true,attributeOldValue:true}",
         "{attributes:false}",
     ]) {

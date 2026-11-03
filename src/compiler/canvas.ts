@@ -393,6 +393,7 @@ export function compileCanvasValue(
                     "MutationObserver options must be an object literal.",
                 );
             let attributes = false;
+            let subtree = false;
             let filter: string[] | undefined;
             for (const property of options.properties) {
                 if (!ts.isPropertyAssignment(property))
@@ -406,6 +407,14 @@ export function compileCanvasValue(
                     property.initializer.kind === ts.SyntaxKind.TrueKeyword
                 )
                     attributes = true;
+                else if (
+                    name === "subtree" &&
+                    (property.initializer.kind === ts.SyntaxKind.TrueKeyword ||
+                        property.initializer.kind ===
+                            ts.SyntaxKind.FalseKeyword)
+                )
+                    subtree =
+                        property.initializer.kind === ts.SyntaxKind.TrueKeyword;
                 else if (
                     name === "attributeFilter" &&
                     ts.isArrayLiteralExpression(property.initializer)
@@ -421,7 +430,7 @@ export function compileCanvasValue(
                 } else
                     return context.fail(
                         property,
-                        "MutationObserver currently admits attribute notification callbacks without mutation records, old values or subtree observation.",
+                        "MutationObserver currently admits attribute notification callbacks without mutation records or old values.",
                     );
             }
             if (!attributes && filter === undefined)
@@ -431,7 +440,7 @@ export function compileCanvasValue(
                 );
             return {
                 kind: "void",
-                cpp: `${owner.cpp}->observe(${element.cpp}, ${filter === undefined ? "std::nullopt" : `std::vector<std::string>{${filter.join(",")}}`})`,
+                cpp: `${owner.cpp}->observe(${element.cpp}, ${filter === undefined ? "std::nullopt" : `std::vector<std::string>{${filter.join(",")}}`}, ${subtree})`,
             };
         };
         if (

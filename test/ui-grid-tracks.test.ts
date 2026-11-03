@@ -23,6 +23,9 @@ test("native grid track admission composes across selectors and responsive rules
         "20px repeat(auto-fill,30px minmax(20px,auto)) 10px",
         "2em minmax(1rem,1fr) 5vw 4vh",
         "repeat(auto-fit,minmax(2em,1fr))",
+        // A count and sizes substituted and folded natively.
+        "repeat(var(--cells, 4),48px)",
+        "repeat(var(--cells),calc(48px * var(--scale)))",
     ]) {
         const result = compile(
             `.grid{display:inline-grid}.grid{grid-template-columns:${tracks};grid-template-rows:repeat(2,30px)}@media(max-width:480px){.grid{grid-template-columns:1fr}}.grid > .cell{justify-self:end}`,
@@ -59,6 +62,7 @@ test("grid track admission rejects unsupported placement and malformed sizing", 
         "auto repeat(auto-fit,30px)",
         "repeat(auto-fit,30px) repeat(auto-fill,20px)",
         "repeat(0,20px)",
+        "repeat(var(--rows, 0),20px)",
         "repeat(2.5,20px)",
         "repeat(257,1fr)",
         "repeat(2,repeat(2,1fr))",
@@ -73,7 +77,7 @@ test("grid track admission rejects unsupported placement and malformed sizing", 
         );
     }
     for (const property of [
-        "grid-auto-flow:column",
+        "grid-auto-flow:dense",
         "grid-row:span header",
         "grid-auto-rows:repeat(2,20px)",
         "grid-auto-columns:none",

@@ -905,18 +905,24 @@ test("emits only reached native feature modules", () => {
         main().catch(console.error);
     `);
 
+    // A registered scene renders (its clear color at least), so the scene
+    // renderer and the camera modules it reads are reached.
     assert.deepEqual(result.manifest.features, [
         "core",
         "backend:sdl",
         "mesh:box",
+        "renderer:scene",
     ]);
     assert.deepEqual(result.manifest.generatedSources, [
         "upstream/src/engine.cpp",
         "upstream/src/scene_core.cpp",
         "upstream/src/variant_data.cpp",
+        "upstream/src/camera_arc_rotate.cpp",
+        "upstream/src/camera_controls.cpp",
+        "upstream/src/renderer_plan.cpp",
         "upstream/src/mesh_factories.cpp",
     ]);
-    assert.doesNotMatch(result.cmake, /material_standard|mesh_ground|camera_/);
+    assert.doesNotMatch(result.cmake, /material_standard|mesh_ground/);
 });
 
 test("supports aliased Babylon Lite imports", () => {
@@ -2820,8 +2826,9 @@ test("spreads a native partial struct into a wider struct", () => {
         ),
     );
 
-    // Reading a copied key's presence keeps an own undefined apart from a
-    // missing key, which only a document records.
+    // Reading a copied key's presence: with no own undefined ever written,
+    // the copied slot's presence is the key's; an own undefined makes the
+    // source a document, which records that the key is there.
     const observed = compileSource(`
         interface Options {
             label?: string;
@@ -2836,7 +2843,24 @@ test("spreads a native partial struct into a wider struct", () => {
         const item: Item = { id: 3, ...options };
         options.enabled = "label" in item;
     `);
-    assert.match(observed.cpp, /bbl::js::JsonValue v_item =/);
+    assert.ok(
+        observed.cpp.includes(
+            "v_options->enabled = bbl::js::Nullable<bool>{v_item->label.has_value()};",
+        ),
+    );
+    const ownUndefined = compileSource(`
+        interface Options { label?: string; enabled?: boolean }
+        interface Item { id: number; label?: string; enabled?: boolean }
+        const options: Options = { label: undefined };
+        const item: Item = { id: 3, ...options };
+        options.enabled = "label" in item;
+    `);
+    assert.match(ownUndefined.cpp, /bbl::js::JsonValue v_options =/);
+    assert.ok(
+        ownUndefined.cpp.includes(
+            'v_options.set("enabled", bbl::js::json_value(true));',
+        ),
+    );
 });
 
 test("lowers array callbacks through one native iteration protocol", () => {
@@ -9105,7 +9129,7 @@ test("lowers a tag.class sheet selector beside its tag-descendant base rule", ()
         result.cpp,
         /UiStyleSelectorKind::TagClass, \.primary = "disabled", \.tag = "button", \.style = "[^"]*"[,}]/,
     );
-    assert.match(result.cpp, /ui_toggle_class[^\n]*"disabled", true/);
+    assert.match(result.cpp, /ui_(?:set|toggle)_class[^\n]*"disabled", true/);
 });
 
 test("accepts a tag.class rule from the host page's sheet", () => {
@@ -10256,7 +10280,10 @@ test("lowers compound classes and add remove forced-toggle mutations", () => {
 
     assert.match(result.cpp, /UiStyleSelectorKind::CompoundClass/);
     assert.match(result.cpp, /\.primary = "tool", \.secondary = "active"/);
-    assert.equal([...result.cpp.matchAll(/ui_toggle_class/g)].length, 3);
+    assert.equal(
+        [...result.cpp.matchAll(/ui_(?:set|toggle)_class/g)].length,
+        3,
+    );
     assert.match(result.cpp, /"active", true/);
     assert.match(result.cpp, /"active", false/);
     const mapGets = [
@@ -10271,7 +10298,7 @@ test("lowers compound classes and add remove forced-toggle mutations", () => {
             new RegExp(
                 `if \\(${temporary}\\.has_value\\(\\)\\) \\{\\s+` +
                     `\\[\\[maybe_unused\\]\\] auto (\\w+) = ${temporary}\\.value_or\\(bbl::UiElementHandle\\{\\}\\);\\s+` +
-                    `bbl::ui_toggle_class\\([^,\\n]+, \\1, "active", (?:true|false)\\);\\s+\\}`,
+                    `bbl::ui_(?:set|toggle)_class\\([^,\\n]+, \\1, "active", (?:true|false)\\);\\s+\\}`,
             ),
         );
     }
@@ -10363,7 +10390,7 @@ test("preserves Map UI identity across dynamic grid geometry changes", () => {
         new RegExp(
             `if \\(${get[1]}\\.has_value\\(\\)\\) \\{\\s+` +
                 `\\[\\[maybe_unused\\]\\] auto (\\w+) = ${get[1]}\\.value_or\\(bbl::UiElementHandle\\{\\}\\);\\s+` +
-                `bbl::ui_toggle_class\\([^,\\n]+, \\1, "active", true\\);\\s+\\}`,
+                `bbl::ui_(?:set|toggle)_class\\([^,\\n]+, \\1, "active", true\\);\\s+\\}`,
         ),
     );
     assert.equal(
@@ -10607,13 +10634,16 @@ test("switches synthetic intrinsic width with active hover width rules", () => {
         projection.indexOf("void render_canvas("),
     );
     assert.match(intrinsic, /cascaded_declaration\(handle, record, "width"\)/);
+    // The element cascade reads the matching rules through the shared core.
     const cascade = cppFunction(
         projection,
         "std::string cascaded_declaration(",
     );
+    assert.match(cascade, /cascade_declaration\(record, property/);
     assert.match(cascade, /for_each_matching_style_rule/);
+    const core = cppFunction(projection, "std::string cascade_declaration(");
     assert.match(
-        cascade,
+        core,
         /consider_cascaded_declaration\(cascaded, take_css_declaration\(style, property\),\s*ui_style_rule_specificity\(rule\), rule_order\)/,
     );
     const matching = cppFunction(
@@ -10923,7 +10953,10 @@ test("preserves grid class toggles without projected child containers", () => {
         }
         void main();
     `);
-    assert.equal([...result.cpp.matchAll(/ui_toggle_class/g)].length, 2);
+    assert.equal(
+        [...result.cpp.matchAll(/ui_(?:set|toggle)_class/g)].length,
+        2,
+    );
 });
 
 test("retains mutable-class grid track lists", () => {
@@ -11015,7 +11048,7 @@ test("lowers scoped class queries to retained DOM-order iteration", () => {
         /ui_query_elements[^\n]*UiSelectorTestKind::Class, "swatch"/,
     );
     assert.match(result.cpp, /for \(std::size_t [^;]+;/);
-    assert.match(result.cpp, /ui_toggle_class[^\n]*"active"/);
+    assert.match(result.cpp, /ui_(?:set|toggle)_class[^\n]*"active"/);
 });
 
 test("lowers dynamic rgb background strings on retained elements", () => {
@@ -11035,7 +11068,7 @@ test("lowers dynamic rgb background strings on retained elements", () => {
     `);
 
     assert.match(result.cpp, /ui_set_style_property/);
-    assert.match(result.cpp, /"--bbl-background-color"/);
+    assert.match(result.cpp, /ui_set_background\(/);
     assert.match(result.cpp, /rgb\(/);
 });
 
@@ -11710,7 +11743,7 @@ test("lowers conditional retained UI gradients to RmlUi decorators", () => {
 
     assert.match(
         result.cpp,
-        /v_lit \? "[^"]*decorator:linear-gradient\(#ff8a5d,#ff4d4d\);"/,
+        /v_lit \? "[^"]*--bbl-background-color:transparent;--bbl-background-image:linear-gradient\(#ff8a5d,#ff4d4d\);"/,
     );
     assert.match(result.cpp, /background-color:rgba\(40,40,48,.7\)/);
 });
@@ -11736,9 +11769,9 @@ test("projects independently sized gradient layers into RmlUi decorators", () =>
 
     assert.match(
         result.cpp,
-        /decorator:linear-gradient\(#fff,#fff\) padding-box \/ 2px 22px \/ 50% 50%,linear-gradient\(#fff,#fff\) padding-box \/ 22px 2px \/ 50% 50%/,
+        /--bbl-background-image:linear-gradient\(#fff,#fff\) padding-box \/ 2px 22px \/ 50% 50%,linear-gradient\(#fff,#fff\) padding-box \/ 22px 2px \/ 50% 50%/,
     );
-    assert.doesNotMatch(result.cpp, /decorator:[^";]*no-repeat/);
+    assert.doesNotMatch(result.cpp, /--bbl-background-image:[^";]*no-repeat/);
     assert.doesNotMatch(result.cpp, /mix-blend-mode/);
 });
 
@@ -12102,18 +12135,18 @@ test("materializes a callback returned through its own closure cycle", () => {
         void main();
     `);
 
+    // `select` reads `update` from a closure its initializer creates, so the
+    // binding is a temporal-dead-zone cell, initialized once the call returns.
     assert.match(
         result.cpp,
-        /bbl::js::make_gc_shared<bbl::js::Callback<void\(double\)>>/,
+        /bbl::js::make_gc_shared<bbl::js::LexicalBinding<bbl::js::Callback<void\(double\)>>>/,
     );
     assert.match(result.cpp, /on_dom_pointer[^\n]*"click"/);
     assert.match(result.cpp, /ui_set_style_property/);
-    // The shared select body forwards its runtime index to the owner.
-    assert.match(result.cpp, /\(\*v_update_owner\)\(v_fn\d+_index\)/);
-    assert.match(
-        result.cpp,
-        /\(\*v_update_owner\) = bbl::js::make_closure\(bblscene::bbl_environment_\w+\{v_fn\d+_button, std::ref\(v_\w+engine\w*\)\}, bblscene::\w+/,
-    );
+    // The shared select body forwards its runtime index to the cell's callback.
+    assert.match(result.cpp, /bbl_recursive_fn\d+_group\)\(v_fn\d+_index\)/);
+    assert.match(result.cpp, /snapshot_callback\(v_update->get\(\)\)/);
+    assert.match(result.cpp, /v_update->initialize\(/);
     assert.doesNotMatch(result.cpp, /on_dom_pointer[^\n]*v_update\(1\.0\)/);
 });
 
@@ -12191,7 +12224,7 @@ test("lowers retained pointer state and class toggles", () => {
 
     assert.match(result.cpp, /on_dom_pointer[^\n]*"pointerdown"/);
     assert.match(result.cpp, /on_dom_pointer[^\n]*"pointerup"/);
-    assert.match(result.cpp, /ui_toggle_class/);
+    assert.match(result.cpp, /ui_(?:set|toggle)_class/);
     assert.doesNotMatch(result.cpp, /setPointerCapture|releasePointerCapture/);
 });
 
@@ -12221,13 +12254,13 @@ test("lowers retained layout reads and pointer motion coordinates", () => {
         /"pointermove", \d+u, bbl::js::make_closure\(bblscene::bbl_environment_\w+\{(?:std::ref\(v_bblite_inline_engine_\d+\), v_hit|v_hit, std::ref\(v_bblite_inline_engine_\d+\))\}, bblscene::\w+/,
     );
     assert.match(result.cpp, /\.client_x/);
-    const rect = /const auto (\w+) = bbl::ui_get_client_rect\(/.exec(
+    assert.match(
         result.cpp,
-    )?.[1];
-    assert.ok(rect);
-    assert.match(result.cpp, new RegExp(`${rect}\\.left`));
-    // DOMRect sizes are the border box.
-    assert.match(result.cpp, new RegExp(`${rect}\\.offset_width`));
+        /const auto \w+ = std::make_shared<const bbl::UiClientRect>\(bbl::ui_get_client_rect\(/,
+    );
+    // The getters read the one snapshot; DOMRect sizes are the border box.
+    assert.match(result.cpp, /\(\w+\)->left\b/);
+    assert.match(result.cpp, /\(\w+\)->offset_width\b/);
     assert.equal(result.cpp.match(/bbl::ui_get_client_rect\(/g)?.length, 1);
     assert.doesNotMatch(result.cpp, /hasPointerCapture|getBoundingClientRect/);
 });
@@ -12299,7 +12332,7 @@ test("retains dynamically indexed UI handles and camelCase style properties", ()
     `);
 
     assert.match(result.cpp, /bbl::js::Array<bbl::UiElementHandle>/);
-    assert.match(result.cpp, /ui_set_style_property[^\n]*background-color/);
+    assert.match(result.cpp, /ui_set_background\(/);
     assert.match(result.cpp, /ui_set_style_property[^\n]*font-weight/);
     assert.match(result.cpp, /ui_set_style_property[^\n]*box-shadow/);
     assert.doesNotMatch(result.cpp, /fontWeight|boxShadow/);
@@ -12381,64 +12414,17 @@ test("lowers the reached Canvas2D overlay subset beside retained DOM UI", () => 
     assert.match(result.cpp, /ui_canvas_put_image_data/);
     assert.match(result.cpp, /ui_canvas_set_image_smoothing[^;]*false/);
     assert.match(result.cpp, /ui_canvas_draw_image/);
-    assert.match(result.cpp, /ui_canvas_width[^;]*\* \(v_scale\)/);
+    assert.match(result.cpp, /ui_canvas_width\([^;]*\* v_scale/);
     assert.match(result.cpp, /ui_canvas_set_font/);
     assert.match(result.cpp, /ui_canvas_set_shadow_blur/);
     assert.match(result.cpp, /ui_canvas_fill_text/);
     assert.match(result.cpp, /ui_append_to_root/);
 });
 
-test("lowers the reached full-surface Canvas2D clear shapes", () => {
-    // The reached proofs: the canvas's own width/height reads, const
-    // aliases of those reads, a statically-sized rect that a reached
-    // scale() maps exactly onto the backing store, and a rect equal to a
-    // (width, height) pair statically assigned to that same canvas.
+test("lowers every Canvas2D clearRect shape; the PAL clears the draws exactly", () => {
+    // Full-surface, partial, offset and run-time extents: the retained draw
+    // list decides at run time what each clear covers (ui-canvas-rectangle).
     const result = compileSource(`
-        import { createEngine } from "@babylonjs/lite";
-
-        async function main(): Promise<void> {
-            await createEngine({});
-            const direct = document.createElement("canvas");
-            direct.width = window.innerWidth;
-            direct.height = window.innerHeight;
-            const directContext = direct.getContext("2d")!;
-            directContext.clearRect(0, 0, direct.width, direct.height);
-
-            const aliased = document.createElement("canvas");
-            aliased.width = window.innerWidth;
-            aliased.height = window.innerHeight;
-            const aliasedContext = aliased.getContext("2d")!;
-            const w = aliased.width;
-            const h = aliased.height;
-            aliasedContext.clearRect(0, 0, w, h);
-
-            const scaled = document.createElement("canvas");
-            scaled.width = window.innerWidth;
-            scaled.height = window.innerHeight;
-            const scaledContext = scaled.getContext("2d")!;
-            scaledContext.scale(scaled.width / 150, scaled.height / 150);
-            scaledContext.clearRect(0, 0, 150, 150);
-
-            const sized = document.createElement("canvas");
-            sized.width = 320;
-            sized.height = 180;
-            const sizedContext = sized.getContext("2d")!;
-            sizedContext.clearRect(0, 0, 320, 180);
-
-            document.body.appendChild(direct);
-            document.body.appendChild(aliased);
-            document.body.appendChild(scaled);
-            document.body.appendChild(sized);
-        }
-
-        void main();
-    `);
-
-    assert.equal((result.cpp.match(/ui_canvas_clear_rect/g) ?? []).length, 4);
-});
-
-test("refuses Canvas2D clearRect shapes that are not provably full-surface", () => {
-    const withClear = (statements: string): string => `
         import { createEngine } from "@babylonjs/lite";
 
         async function main(): Promise<void> {
@@ -12447,63 +12433,22 @@ test("refuses Canvas2D clearRect shapes that are not provably full-surface", () 
             canvas.width = window.innerWidth;
             canvas.height = window.innerHeight;
             const context = canvas.getContext("2d")!;
-            ${statements}
+            context.clearRect(0, 0, canvas.width, canvas.height);
+            context.scale(canvas.width / 150, canvas.height / 150);
+            context.clearRect(0, 0, 150, 150);
+            context.clearRect(4, 0, 32, 32);
+            let w = canvas.width;
+            w = 12;
+            context.clearRect(0, 0, w, canvas.height);
             document.body.appendChild(canvas);
         }
 
         void main();
-    `;
-
-    // A statically partial rect.
-    assert.throws(
-        () => compileSource(withClear("context.clearRect(0, 0, 32, 32);")),
-        /Retained Canvas2D clearRect is lowered only as a full-surface clear/,
-    );
-    // A non-zero origin.
-    assert.throws(
-        () =>
-            compileSource(
-                withClear(
-                    "context.clearRect(4, 0, canvas.width, canvas.height);",
-                ),
-            ),
-        /argument 1 is not statically 0/,
-    );
-    // Extents the compiler cannot tie to the surface.
-    assert.throws(
-        () =>
-            compileSource(
-                withClear(
-                    "let w = canvas.width; w = 12; context.clearRect(0, 0, w, canvas.height);",
-                ),
-            ),
-        /not reads of the canvas's own width and height/,
-    );
-    // Two canvases' static sizes must not cross: 300x200 and 400x100 are
-    // both recorded, but (300, 100) is a surface neither canvas ever had,
-    // so it proves nothing about the canvas being cleared.
-    assert.throws(
-        () =>
-            compileSource(`
-                import { createEngine } from "@babylonjs/lite";
-
-                async function main(): Promise<void> {
-                    await createEngine({});
-                    const first = document.createElement("canvas");
-                    first.width = 300;
-                    first.height = 200;
-                    const second = document.createElement("canvas");
-                    second.width = 400;
-                    second.height = 100;
-                    const context = first.getContext("2d")!;
-                    context.clearRect(0, 0, 300, 100);
-                    document.body.appendChild(first);
-                    document.body.appendChild(second);
-                }
-
-                void main();
-            `),
-        /backing size statically assigned to this canvas/,
+    `);
+    assert.equal((result.cpp.match(/ui_canvas_clear_rect/g) ?? []).length, 4);
+    assert.match(
+        result.cpp,
+        /ui_canvas_clear_rect\([^;]*, 4\.0, 0\.0, 32\.0, 32\.0\)/,
     );
 });
 
@@ -14361,14 +14306,43 @@ test("erases browser declarations rooted at globalThis", () => {
             globalThis.fetch = originalFetch;
             await createEngine({});
         }
+
+        function store(out: { [index: number]: number }, value: number): void {
+            out[0] = value;
+        }
     `);
 
-    assert.doesNotMatch(result.cpp, /globalThis|engineKB|originalFetch/);
+    // The fetch replacement is erased setup; a member only the program's
+    // types declare, which nothing installs natively, reads absent (an
+    // index write installs no named member).
+    assert.doesNotMatch(result.cpp, /globalThis|originalFetch/);
+    assert.match(result.cpp, /double v_engineKB = 0\.0;/);
     assert.ok(
         result.manifest.adaptations.some(
             ({ id }) => id === "browser-setup-erasure",
         ),
     );
+});
+
+test("a global member written through a receiver holding the global object stays present", () => {
+    // Each write reaches the global object through another value: a call's
+    // result, a parameter, `any`. None is spelled `window.queue`.
+    for (const install of [
+        "function host(): QueueHost { return window as QueueHost; } host().queue ??= [3];",
+        "function fill(options: { host: QueueHost }): void { options.host.queue = [3]; } fill({ host: window as QueueHost });",
+        "const any: any = window; any.queue = [3];",
+    ]) {
+        const result = compileSource(`
+            type QueueHost = Window & { queue?: number[] };
+            ${install}
+            if ((window as QueueHost).queue?.[0] !== 3) throw new Error("installed");
+        `);
+        assert.doesNotMatch(
+            result.cpp,
+            /static_cast<void>\(std::nullopt\);\s*static_cast<void>\(3\.0\);/,
+            install,
+        );
+    }
 });
 
 test("erases a write-only browser helper rooted at globalThis", () => {
@@ -15097,7 +15071,7 @@ test("lowers platform listeners through generic engine callbacks", () => {
             await createEngine({});
             let state = 0;
             window.addEventListener("keydown", (event) => {
-                if (event.repeat) return;
+                if (event.repeat || event.isComposing) return;
                 if (event.code.startsWith("Digit")) {
                     state += Number(event.code.slice(5));
                 }
@@ -15144,6 +15118,7 @@ test("lowers platform listeners through generic engine callbacks", () => {
     assert.match(result.cpp, /\.ctrl_key/);
     assert.match(result.cpp, /\.alt_key/);
     assert.match(result.cpp, /\.meta_key/);
+    assert.match(result.cpp, /\.is_composing/);
     assert.doesNotMatch(
         result.cpp,
         /addEventListener|preventDefault|document\.hidden/,
@@ -16190,7 +16165,7 @@ test("dispatches a pinned subpath import as the pinned package", () => {
     assert.match(result.cpp, /create_pbr_material/);
 });
 
-test("rejects unsupported dynamic engine and scene options", () => {
+test("dynamic engine and scene options lower as the pin reads them or refuse", () => {
     const pixelRatio = compileSource(`
         import { createEngine } from "@babylonjs/lite";
         const MAX_DPR = 1;
@@ -16255,18 +16230,31 @@ test("rejects unsupported dynamic engine and scene options", () => {
         }
     `);
     assert.match(staticSceneOption.cpp, /bbl::create_scene_context/);
-    assert.throws(
-        () =>
-            compileSource(`
-                import { createEngine, createSceneContext } from "@babylonjs/lite";
-                async function main() {
-                    const engine = await createEngine({});
-                    const enabled = performance.now() > 0;
-                    createSceneContext(engine, { defaultRenderTask: enabled });
-                }
-            `),
-        /defaultRenderTask must be a static boolean/,
+    assert.doesNotMatch(
+        staticSceneOption.cpp,
+        /bbl::configure_scene_render_defaults/,
     );
+    // A run-time choice reaches the native scene: the pin's
+    // `options?.defaultRenderTask !== false`, the member or the whole record
+    // decided as the program runs.
+    for (const options of [
+        "{ defaultRenderTask: performance.now() > 0 }",
+        "performance.now() > 0 ? { defaultRenderTask: false } : undefined",
+    ]) {
+        const runtime = compileSource(`
+            import { createEngine, createSceneContext } from "@babylonjs/lite";
+            async function main() {
+                const engine = await createEngine({});
+                const options = ${options};
+                createSceneContext(engine, options);
+            }
+        `);
+        assert.match(
+            runtime.cpp,
+            /bbl::configure_scene_render_defaults\(bbl::create_scene_context\(v_engine\), (?!true,|false,)[^;]+, 4u\)/,
+            options,
+        );
+    }
 });
 
 test("folds and propagates the pinned engine MSAA selections", () => {

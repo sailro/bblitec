@@ -59,20 +59,19 @@ test(
         const output = resolve("artifacts/primed-animation-frame-phases");
         mkdirSync(output, { recursive: true });
         const shared = sharedGpuSource();
-        const dispatch = ["run_animation_frame_callbacks", "finish_frame"].map(
-            (name) => {
-                const body = shared.match(
-                    new RegExp(
-                        `\\nvoid ${name}\\(Engine& engine\\) \\{[\\s\\S]*?\\n\\}`,
-                    ),
-                )?.[0];
-                assert.ok(
-                    body,
-                    `The actual PAL ${name} body must be exercised.`,
-                );
-                return body;
-            },
-        );
+        const dispatch = [
+            "run_animation_frame_callbacks",
+            "finish_animation_turn",
+            "finish_frame",
+        ].map((name) => {
+            const body = shared.match(
+                new RegExp(
+                    `\\nvoid ${name}\\(Engine& engine\\) \\{[\\s\\S]*?\\n\\}`,
+                ),
+            )?.[0];
+            assert.ok(body, `The actual PAL ${name} body must be exercised.`);
+            return body;
+        });
         writeFileSync(join(output, "dispatch.hpp"), dispatch.join("\n"));
         for (const postStart of [false, true]) {
             // Define before start in both cases. Callback creation time does not

@@ -383,16 +383,23 @@ test("nlohmann is linked only for loaders, environment parsing or the JSON bridg
 
 test("the Web Storage PAL keeps its file work behind an encoded key", () => {
     const source = readFileSync(resolve("native/src/pal_storage.cpp"), "utf8");
+    // The root and the name encoding Web Storage shares with IndexedDB.
+    const root = readFileSync(
+        resolve("native/src/pal_storage_root.hpp"),
+        "utf8",
+    );
+    assert.match(source, /detail::storage_root\(\)/);
+    assert.match(source, /detail::encode_storage_name\(/);
     // SDL owns "where may this program write"; nothing here names a path.
     assert.match(
-        source,
+        root,
         /SDL_GetPrefPath\(kPrefOrganisation, kPrefApplication\)/,
     );
-    assert.match(source, /SDL_free\(preferences\)/);
+    assert.match(root, /SDL_free\(preferences\)/);
     // A key becomes a file name through an injective encoding: every byte
     // outside [A-Za-z0-9-] is escaped, and the escape character too.
-    assert.match(source, /byte == '-'/);
-    assert.match(source, /encoded\.push_back\('_'\)/);
+    assert.match(root, /byte == '-'/);
+    assert.match(root, /encoded\.push_back\('_'\)/);
     // The shared PAL helper stages beside the destination and atomically
     // replaces it, so Web Storage and selected-file downloads cannot drift.
     assert.match(source, /detail::write_file_atomically/);
@@ -407,7 +414,7 @@ test("the Web Storage PAL keeps its file work behind an encoded key", () => {
     assert.match(source, /kMaximumEntryBytes/);
     assert.match(source, /try_read_binary_file_bounded/);
     // A test root keeps the user's own preferences out of a run.
-    assert.match(source, /BBLITE_LOCAL_STORAGE_ROOT/);
+    assert.match(root, /BBLITE_LOCAL_STORAGE_ROOT/);
     // No OS API outside PAL: the header the scene includes is a thin shim.
     const shim = readFileSync(
         resolve("native/include/bblite/js_storage.hpp"),

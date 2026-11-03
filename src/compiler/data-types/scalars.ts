@@ -63,10 +63,20 @@ export const scalarKinds: DataKindOperations<
     | "request-init"
     | "url"
     | "image-bitmap"
+    | "dom-rect"
     | "gpu"
     | "gpu-adapter"
     | "gpu-adapter-info"
     | "idle-deadline"
+    | "idb-factory"
+    | "idb-open-request"
+    | "idb-request"
+    | "idb-cursor-request"
+    | "idb-database"
+    | "idb-transaction"
+    | "idb-object-store"
+    | "idb-cursor"
+    | "dom-string-list"
     | "storage"
     | "date"
     | "regexp"
@@ -157,6 +167,15 @@ export const scalarKinds: DataKindOperations<
     ),
     url: opaqueLeaf("bbl::js::Url", "url"),
     "image-bitmap": opaqueLeaf("bbl::pal::ImageBitmap", "image-bitmap"),
+    // A snapshot one call measured: its own object, holding no own keys.
+    "dom-rect": {
+        ...reseatingLeaf(
+            "std::shared_ptr<const bbl::UiClientRect>",
+            "dom-rect",
+            true,
+        ),
+        opaqueReference: true,
+    },
     gpu: {
         ...reseatingLeaf("const void*", "gpu"),
         opaqueReference: true,
@@ -170,6 +189,18 @@ export const scalarKinds: DataKindOperations<
         "bbl::pal::IdleDeadlineHandle",
         "idle-deadline",
     ),
+    "idb-factory": opaqueLeaf("bbl::js::IdbFactory", "idb_factory"),
+    "idb-open-request": opaqueLeaf("bbl::js::IdbOpenRequest", "idb_open"),
+    "idb-request": opaqueLeaf("bbl::js::IdbRequest", "idb_request"),
+    "idb-cursor-request": opaqueLeaf(
+        "bbl::js::IdbCursorRequest",
+        "idb_cursor_request",
+    ),
+    "idb-database": opaqueLeaf("bbl::js::IdbDatabase", "idb_database"),
+    "idb-transaction": opaqueLeaf("bbl::js::IdbTransaction", "idb_transaction"),
+    "idb-object-store": opaqueLeaf("bbl::js::IdbObjectStore", "idb_store"),
+    "idb-cursor": opaqueLeaf("bbl::js::IdbCursor", "idb_cursor"),
+    "dom-string-list": opaqueLeaf("bbl::js::DomStringList", "string_list"),
     "search-params": opaqueLeaf("bbl::js::SearchParams", "search-params"),
     storage: opaqueLeaf("bbl::js::Storage", "storage"),
     date: opaqueLeaf("bbl::js::Date", "date"),

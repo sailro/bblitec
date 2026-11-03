@@ -136,7 +136,7 @@ public:
             std::string(ui_user_agent_css) +
             "html{position:absolute;left:50%;top:50%;width:300dp;height:238dp;"
             "margin-left:-150dp;margin-top:-119dp;padding:16dp;box-sizing:border-box;"
-            "background-color:#172331;color:#ffffff;border-width:1dp;border-color:#52647a;"
+            "background-color:#172331;color:#ffffff;border-width:1dp;border-style:solid;border-color:#52647a;"
             "border-radius:8dp;font-size:14dp;line-height:1.3;font-family:" +
             font_family +
             ";}"
@@ -144,9 +144,9 @@ public:
             "label{display:block;height:30dp;}label span{display:inline-block;width:24dp;}"
             "input[type=range]{width:222dp;vertical-align:middle;}"
             "input[type=text]{width:112dp;height:26dp;padding:3dp;box-sizing:border-box;"
-            "background-color:#ffffff;color:#111111;border-width:1dp;border-color:#7d8ca0;}"
+            "background-color:#ffffff;color:#111111;border-width:1dp;border-style:solid;border-color:#7d8ca0;}"
             "button{height:28dp;width:88dp;margin:10dp 8dp 0 0;background-color:#dce6f2;"
-            "color:#111111;border-width:1dp;border-color:#7d8ca0;pointer-events:auto;}")));
+            "color:#111111;border-width:1dp;border-style:solid;border-color:#7d8ca0;pointer-events:auto;}")));
         document->SetInnerRML(
             "<h3>Choose color</h3>"
             "<label><span>R</span><input id='red' type='range' min='0' max='255' step='1'/></label>"

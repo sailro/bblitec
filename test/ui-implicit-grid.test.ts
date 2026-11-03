@@ -31,7 +31,7 @@ test("implicit grid styles preserve native layout, alignment cascade and marker 
         "place-items:baseline",
         "justify-items:legacy",
         "justify-self:safe center",
-        "grid-auto-flow:column",
+        "grid-auto-flow:column dense",
         "grid-template-columns:subgrid",
     ])
         assert.throws(

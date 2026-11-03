@@ -1567,14 +1567,14 @@ std::shared_ptr<ResizeObserver> create_resize_observer(ResizeObserver::Callback 
     return observer;
 }
 void MutationObserver::observe(UiElementHandle element,
-                               std::optional<std::vector<std::string>> filter) {
+                               std::optional<std::vector<std::string>> filter, bool subtree) {
     if (observed_.empty()) {
         auto owner = self_.lock();
         if (!owner)
             throw std::logic_error("MutationObserver requires its Window realm factory.");
         current_document().mutation_observers.push_back(std::move(owner));
     }
-    observed_.insert_or_assign(element.value, std::move(filter));
+    observed_.insert_or_assign(element.value, Observation{std::move(filter), subtree});
 }
 void MutationObserver::disconnect() {
     observed_.clear();
@@ -1583,11 +1583,23 @@ void MutationObserver::disconnect() {
                   [this](const auto& observer) { return observer.get() == this; });
 }
 void MutationObserver::notify(UiElementHandle element, const std::string& attribute) {
-    const auto entry = observed_.find(element.value);
-    if (entry == observed_.end() ||
-        (entry->second && std::find(entry->second->begin(), entry->second->end(), attribute) ==
-                              entry->second->end()) ||
-        pending_)
+    if (pending_)
+        return;
+    // The changed element itself, or an ancestor observed with its subtree, as it is now.
+    const auto observes = [&](UiElementHandle node, bool descendant) {
+        const auto entry = observed_.find(node.value);
+        return entry != observed_.end() && (!descendant || entry->second.subtree) &&
+               (!entry->second.filter ||
+                std::find(entry->second.filter->begin(), entry->second.filter->end(), attribute) !=
+                    entry->second.filter->end());
+    };
+    Engine& engine = window_document_engine();
+    bool observed = observes(element, false);
+    for (UiElementHandle node = handle_at(engine.ui_elements, element).parent;
+         !observed && node.value != invalid_handle;
+         node = handle_at(engine.ui_elements, node).parent)
+        observed = observes(node, true);
+    if (!observed)
         return;
     pending_ = true;
     EventLoop::current().queue_microtask([weak = self_] {

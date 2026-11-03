@@ -35,6 +35,20 @@ int run() {
         pal::UiRmlRuntime runtime(engine, window, 320, 240);
         auto* raw = runtime.projected_elements.at(svg.value).element;
         assert(raw && raw->GetNumChildren() == 0);
+        {
+            // Each glyph sits on the arc in the face the UI resolves; the stroke is drawn first.
+            const auto labels = ui_get_element_by_id(engine, "labels");
+            const auto& markup = runtime.projected_elements.at(labels.value).svg_markup;
+            std::size_t texts = 0;
+            for (auto at = markup.find("<text x=\""); at != std::string::npos;
+                 at = markup.find("<text x=\"", at + 1))
+                ++texts;
+            if (texts != 2 || markup.find(">OAK</text>") == std::string::npos ||
+                markup.find("font-family=\"bbl-svg-face-") == std::string::npos ||
+                markup.find("rotate=\"") == std::string::npos ||
+                markup.find("fill=\"#f6e4bc\"") == std::string::npos)
+                throw std::runtime_error("SVG text on a path: " + markup);
+        }
         const auto pixels = [&] {
             const auto& frame = pal::record_ui_rml_frame(runtime, 320, 240);
             std::vector<std::uint8_t> result;
@@ -88,16 +102,18 @@ int run() {
         assert(pixels() != green);
         ui_remove_attribute(engine, svg, "viewbox");
         assert(ui_has_attribute(engine, svg, "viewBox"));
-        const auto refuses = [](auto action) {
+        int refusal = 0;
+        const auto refuses = [&refusal](auto action) {
+            ++refusal;
             bool failed = false;
             try {
                 action();
             } catch (const std::runtime_error&) {
                 failed = true;
             }
-            assert(failed);
+            if (!failed)
+                throw std::runtime_error("refusal " + std::to_string(refusal) + " did not refuse");
         };
-        refuses([&] { static_cast<void>(ui_get_client_rect(engine, rectangle)); });
         refuses([&] { static_cast<void>(ui_computed_style(engine, rectangle, "display")); });
         refuses([&] { ui_set_attribute(engine, rectangle, "href", "remote.svg"); });
         refuses([&] { ui_set_attribute(engine, rectangle, "fill", "url(#paint)"); });
@@ -108,17 +124,101 @@ int run() {
         refuses([&] { ui_set_attribute(engine, html, "HIDDEN", "until-found"); });
         const auto style = ui_create_element(engine, "style");
         ui_set_attribute(engine, rectangle, "class", "painted");
-        ui_add_class_style(engine, style, "painted", "opacity:0.5;");
+        // A rule may set presentation properties on a shape, nothing else.
+        ui_add_class_style(engine, style, "painted", "transform:scale(2);");
         ui_append_to_root(engine, style);
         refuses([&] { pal::update_ui_rml_runtime(runtime, 320, 240); });
         ui_remove(engine, style);
+        const auto paints = ui_create_element(engine, "style");
+        ui_add_class_style(engine, paints, "painted",
+                           "fill:#0000ff;stroke:currentColor;stroke-width:2px;paint-order:stroke;"
+                           "opacity:0.5;");
+        ui_append_to_root(engine, paints);
+        pal::update_ui_rml_runtime(runtime, 320, 240);
+        {
+            // The rule overrides the fill attribute; currentColor beside it is the root's color;
+            // a stroke painted first is its own copy under the fill.
+            const auto& markup = runtime.projected_elements.at(svg.value).svg_markup;
+            const auto count = [&](std::string_view needle) {
+                std::size_t found = 0;
+                for (auto at = markup.find(needle); at != std::string::npos;
+                     at = markup.find(needle, at + 1))
+                    ++found;
+                return found;
+            };
+            if (count("<rect") != 2 || count("fill=\"#0000ff\"") != 1 ||
+                count("stroke=\"rgba(0,0,255,1.000000)\"") != 1 || count("opacity=\"0.5\"") != 2 ||
+                raw->HasAttribute("data-bbl-current-color"))
+                throw std::runtime_error("SVG presentation cascade: " + markup);
+        }
+        ui_remove(engine, paints);
+        // currentColor beside a literal paint draws the root's color.
         ui_append_child(engine, svg, circle);
-        refuses([&] { pal::update_ui_rml_runtime(runtime, 320, 240); });
+        pal::update_ui_rml_runtime(runtime, 320, 240);
+        {
+            const auto& markup = runtime.projected_elements.at(svg.value).svg_markup;
+            if (markup.find("fill=\"rgba(0,0,255,1.000000)\"") == std::string::npos ||
+                markup.find("fill=\"#00ff00\"") == std::string::npos ||
+                raw->HasAttribute("data-bbl-current-color"))
+                throw std::runtime_error("SVG mixed currentColor: " + markup);
+        }
         ui_remove(engine, circle);
         on_dom_pointer(engine, DomEventTarget::node(circle.value), "click", 1,
                        [](const PlatformMouseEvent&) {});
         ui_append_child(engine, svg, circle);
-        refuses([&] { pal::update_ui_rml_runtime(runtime, 320, 240); });
+        pal::update_ui_rml_runtime(runtime, 320, 240);
+        {
+            // A shape takes the pointer over its painted area, the root's own box elsewhere.
+            const auto origin = raw->GetAbsoluteOffset(Rml::BoxArea::Content);
+            // The circle's centre in its root's user space; the root, without a listener of its
+            // own, passes the pointer through its box elsewhere.
+            Rml::Vector2f view_origin;
+            const auto view = runtime.svg_viewport(svg, view_origin);
+            const auto at = [&](double x, double y) {
+                const auto box = view.to_box({x, y});
+                return origin + Rml::Vector2f{static_cast<float>(box.x), static_cast<float>(box.y)};
+            };
+            auto* centre = runtime.context->GetElementAtPoint(at(12, 12));
+            const auto centre_path = runtime.event_path(centre);
+            auto* outside = runtime.context->GetElementAtPoint(at(1, 1));
+            if (centre != raw || centre_path.front() != DomEventTarget::node(circle.value) ||
+                centre_path.at(1) != DomEventTarget::node(svg.value) || outside == raw)
+                throw std::runtime_error("SVG shape hit testing");
+        }
+        {
+            // Glyph cells take the pointer under a root that does not; the arc's empty centre
+            // passes through it. The textPath is the target, inside its text.
+            const auto labels = ui_get_element_by_id(engine, "labels");
+            const auto label = ui_element(engine, labels).children.at(1);
+            const auto run = ui_element(engine, label).children.at(0);
+            ui_set_style_property(engine, labels, "pointer-events", "none");
+            ui_set_style_property(engine, label, "pointer-events", "auto");
+            on_dom_pointer(engine, DomEventTarget::node(label.value), "pointerenter", 2,
+                           [](const PlatformMouseEvent&) {});
+            static_cast<void>(ui_get_client_rect(engine, label));
+            pal::update_ui_rml_runtime(runtime, 320, 240);
+            auto* labels_raw = runtime.projected_elements.at(labels.value).element;
+            const auto origin = labels_raw->GetAbsoluteOffset(Rml::BoxArea::Content);
+            // The user origin is the box centre; the label's baseline crosses the arc's top.
+            auto* glyph = runtime.context->GetElementAtPoint(origin + Rml::Vector2f{50, 6});
+            const auto path = runtime.event_path(glyph);
+            if (glyph != labels_raw || path.size() < 3 ||
+                path[0] != DomEventTarget::node(run.value) ||
+                path[1] != DomEventTarget::node(label.value) ||
+                path[2] != DomEventTarget::node(labels.value))
+                throw std::runtime_error("SVG glyph hit testing");
+            if (runtime.context->GetElementAtPoint(origin + Rml::Vector2f{50, 50}) == labels_raw)
+                throw std::runtime_error("SVG root pointer-events none takes the pointer");
+            // Its bounding box is the glyphs' bounds: about the arc's top, no client box.
+            const auto& rect = ui_element(engine, label).client_rect;
+            if (!(rect.offset_width > 10 && rect.offset_width < 60 && rect.offset_height > 6 &&
+                  rect.left > origin.x + 15 && rect.left + rect.offset_width < origin.x + 85 &&
+                  rect.top < origin.y + 10 && rect.top + rect.offset_height > origin.y + 10 &&
+                  rect.width == 0))
+                throw std::runtime_error("SVG text bounds");
+            ui_set_style_property(engine, labels, "pointer-events", "");
+            ui_set_style_property(engine, label, "pointer-events", "");
+        }
         ui_remove(engine, circle);
         ui_remove(engine, svg);
         pal::update_ui_rml_runtime(runtime, 320, 240);

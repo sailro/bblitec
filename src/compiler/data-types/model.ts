@@ -141,11 +141,31 @@ interface DataKinds {
     url: { kind: "url" };
     /** A decoded ImageBitmap. */
     "image-bitmap": { kind: "image-bitmap" };
+    /** A DOMRect an element's `getBoundingClientRect` measured (`dom-rects.ts`). */
+    "dom-rect": { kind: "dom-rect" };
     gpu: { kind: "gpu" };
     "gpu-adapter": { kind: "gpu-adapter" };
     "gpu-adapter-info": { kind: "gpu-adapter-info" };
     /** A requestIdleCallback callback's IdleDeadline (`bblite/pal_idle_callbacks.hpp`). */
     "idle-deadline": { kind: "idle-deadline" };
+    /** `indexedDB` (`bblite/js_indexed_db.hpp`). */
+    "idb-factory": { kind: "idb-factory" };
+    /** An `IDBOpenDBRequest`. */
+    "idb-open-request": { kind: "idb-open-request" };
+    /** A get, put or delete `IDBRequest`: its result is a dynamic value. */
+    "idb-request": { kind: "idb-request" };
+    /** An openCursor `IDBRequest`: its result is a cursor or null. */
+    "idb-cursor-request": { kind: "idb-cursor-request" };
+    /** An `IDBDatabase` connection. */
+    "idb-database": { kind: "idb-database" };
+    /** An `IDBTransaction`. */
+    "idb-transaction": { kind: "idb-transaction" };
+    /** An `IDBObjectStore` of a transaction. */
+    "idb-object-store": { kind: "idb-object-store" };
+    /** An `IDBCursorWithValue`. */
+    "idb-cursor": { kind: "idb-cursor" };
+    /** A `DOMStringList` (`objectStoreNames`). */
+    "dom-string-list": { kind: "dom-string-list" };
     "search-params": { kind: "search-params" };
     promise: { kind: "promise"; result?: DataType };
     "weak-ref": { kind: "weak-ref"; target: DataType };
@@ -214,6 +234,8 @@ interface DataKinds {
         nonThenableCompletion?: true;
         /** The concrete body completes with undefined after awaiting its result. */
         awaitedUndefinedCompletion?: true;
+        /** Each call returns a new array no other reference holds (a claimed, proven slot). */
+        freshCompletion?: true;
         /**
          * The container this function is stored in observes its JavaScript
          * identity -- a Set membership, a Map key. Such a value carries the

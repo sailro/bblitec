@@ -1,3 +1,4 @@
+import type ts from "typescript";
 import { cppIdentifierPattern, stringLiteral } from "../../cpp-literals.js";
 import { isHandleKind } from "../data-types/handles.js";
 import type { DataType } from "../data-types/model.js";
@@ -232,6 +233,32 @@ export function snapshotReadCpp(value: Value): string {
         : value.cpp;
 }
 
+/**
+ * Whether every own key of a compile-time record or a struct is known at
+ * generation: no record member a conditional spread wrote, no struct
+ * field whose storage or tags decide it, unless a record snapshot proved
+ * the struct's keys.
+ */
+export function ownKeysKnown(
+    context: {
+        readonly dataTypes: {
+            ownKeysDecided(structName: string, node: ts.Node): boolean;
+        };
+    },
+    owner: Value,
+    node: ts.Node,
+): boolean {
+    if (owner.kind === "record")
+        return !Object.values(owner.recordProperties ?? {}).some(
+            (member) => member.conditionalOwnKey,
+        );
+    return (
+        owner.dataType?.kind !== "struct" ||
+        owner.recordOwnKeys !== undefined ||
+        context.dataTypes.ownKeysDecided(owner.dataType.name, node)
+    );
+}
+
 /** The backing value to store, before projecting a handle or other data leaf. */
 export function representedStorage(
     value: Value,
@@ -265,6 +292,16 @@ export function optionalValueCpp(cpp: string): string {
  */
 export function presenceFlagCpp(value: Value): string | undefined {
     return value.optionalFoundCpp;
+}
+
+/**
+ * The `T | undefined` test for a handle: a slot nothing filled and a
+ * search that matched nothing are one shape here, and both report it by
+ * carrying `invalid_handle`. Spelled once, because a second spelling
+ * composes differently under `??` and `!`.
+ */
+export function handleFoundCpp(cpp: string): string {
+    return `(${cpp}.value != bbl::invalid_handle)`;
 }
 
 /**
@@ -348,4 +385,15 @@ export function nativeDataMetadata(value: Value | undefined): ValueFields {
         ...metadata
     } = value;
     return metadata;
+}
+
+/** Whether a material value is a PBR material's: a scene creation or a loaded asset's. */
+export function isPbrMaterialValue(value: {
+    readonly scenePbrMaterialIndex?: number | undefined;
+    readonly assetPbrMaterial?: true | undefined;
+}): boolean {
+    return (
+        value.scenePbrMaterialIndex !== undefined ||
+        value.assetPbrMaterial === true
+    );
 }

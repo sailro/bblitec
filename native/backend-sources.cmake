@@ -21,7 +21,10 @@ endif()
 if(NOT BBLITE_BACKEND_SDL_GPU)
     list(FILTER BBLITE_RUNTIME_SOURCES EXCLUDE REGEX "${BBLITE_GPU_SOURCE_PATTERN}")
 endif()
-# Shared GPU concerns are needed by every renderer and the window presenter.
+# Shared GPU concerns are needed by every renderer and the window presenter;
+# the SDL application loop reads the frame options without either.
+set(BBLITE_SDL_APPLICATION_SOURCES ${BBLITE_RUNTIME_SOURCES})
+list(FILTER BBLITE_SDL_APPLICATION_SOURCES INCLUDE REGEX "/src/pal_sdl\\.cpp$")
 if(BBLITE_SDL_GPU_SOURCES)
     list(
         APPEND BBLITE_RUNTIME_SOURCES
@@ -29,4 +32,6 @@ if(BBLITE_SDL_GPU_SOURCES)
         "${BBLITE_NATIVE_ROOT}/src/pal_gpu_images.cpp"
         "${BBLITE_NATIVE_ROOT}/src/pal_gpu_shared.cpp"
     )
+elseif(BBLITE_SDL_APPLICATION_SOURCES)
+    list(APPEND BBLITE_RUNTIME_SOURCES "${BBLITE_NATIVE_ROOT}/src/pal_gpu_frame.cpp")
 endif()

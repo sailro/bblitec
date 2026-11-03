@@ -1468,9 +1468,9 @@ async function main(): Promise<void> {
         lightKinds,
         toneMappingStates,
         gltfAssets,
-        materialIndexBase,
         scenePbrMaterialIndices,
-        casterViewCount,
+        pbrMaterialStateRows,
+        pinnedMaterialCount,
         renderableMeshFeatures,
         meshProfiles,
         gltfContainerProfiles,
@@ -1838,15 +1838,9 @@ async function main(): Promise<void> {
                   ...(standardPluginBindings ? { standardPluginBindings } : {}),
               }
             : {}),
-        // Every handle the runtime will hold: the assets' materials, the
-        // scene's own creations of any family (handles are creation-ordered
-        // across families), then one caster material view per shadow caster,
-        // which `registerSceneWithShadowSupport` appends.
-        pinnedMaterialCount:
-            materialIndexBase +
-            result.manifest.sceneMaterialCount +
-            casterViewCount,
+        pinnedMaterialCount,
         scenePbrMaterialIndices,
+        pbrMaterialStateRows,
         renderableMeshFeatures,
         pinnedSkeletonPalette,
         ...(meshProfiles ? { meshProfiles } : {}),

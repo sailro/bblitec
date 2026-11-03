@@ -38,6 +38,12 @@ test("retained DOM queries observe authored tree changes and return ordered snap
         if (!second.matches("button.entry:nth-child(2):not(.missing)")) throw new Error("compound match");
         if (second.closest("#panel") !== root || second.closest("button") !== second) throw new Error("closest includes self");
         if (!root.matches("div:has(> button.last)")) throw new Error("relative match");
+        // :scope is the element a query runs on; the root for the document.
+        if (root.querySelector(":scope > .last") !== second || root.querySelectorAll(":scope > button").length !== 2)
+            throw new Error(":scope children");
+        if (root.querySelector(":scope") !== null || !root.matches(":scope") || second.closest(":scope") !== second)
+            throw new Error(":scope self");
+        if (document.querySelector(":scope > body") === null) throw new Error(":scope document root");
         function find(parent: HTMLElement): Element | null { return parent.querySelector(".entry"); }
         if (find(root) !== first) throw new Error("helper query");
         function documentQueries(doc: Document): void {
@@ -112,7 +118,7 @@ test("retained queries refuse unrepresented selector forms", () => {
         "",
         ".entry,",
         ".entry::before",
-        ":scope > .entry",
+        ":scope(.entry)",
     ]) {
         assert.throws(
             () =>

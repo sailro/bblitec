@@ -4,11 +4,13 @@ import ts from "typescript";
 import type { BindingScopes } from "./binding-scopes.js";
 import {
     oneObjectObservation,
+    recordCopyObservation,
     type RecordObservationContext,
 } from "./record-observations.js";
 import type { DataType, DataTypeRegistry } from "./data-types.js";
 import { declaredSymbol, resolvedSymbol } from "./symbols.js";
-import { unwrapExpression } from "./syntax.js";
+import { outermostWrapper, unwrapExpression, variableKind } from "./syntax.js";
+import { onlyReadsFields } from "./constructed-fields.js";
 import {
     nullability,
     arrayElementType,
@@ -35,6 +37,8 @@ export type DynamicBindingStorage =
      */
     | "unassigned"
     | { nativeHandle: DataType<"handle"> }
+    /** An array binding holding elements as an array assigned to it does. */
+    | { elements: DataType }
     | { callable: NativeRecordStorageDemand }
     | { nativeType: ts.Type; node: ts.Expression };
 
@@ -84,6 +88,7 @@ export interface DemandedStorageContext {
         | "markStoredObjectReferences"
         | "nullableType"
         | "withDynamicJsonTypes"
+        | "dynamicJsonType"
     >;
 }
 
@@ -168,6 +173,11 @@ export function demandedStorageType(
     if (typeof storage === "object") {
         if ("nativeHandle" in storage)
             return dataTypes.nullableType(storage.nativeHandle);
+        if ("elements" in storage)
+            return heldAsBinding(context, declaration, source, {
+                kind: "vector",
+                element: storage.elements,
+            });
         if ("callable" in storage)
             return dataTypes.fromCallableRecordDemand(storage.callable);
         const mapped = dataTypes.fromStoredTsType(
@@ -204,6 +214,10 @@ export function demandedStorageType(
             actualSource ?? source,
             actualSource ? initializer! : declaration,
         ) ??
+        // A dictionary of unknown values is a document.
+        (storage === "source"
+            ? dataTypes.dynamicJsonType(source)
+            : undefined) ??
         // A fresh `{}` has no members to type: a parsed document holds it
         // as one object with identity.
         (initializer &&
@@ -344,8 +358,123 @@ export interface OneObjectContext
     >;
 }
 
+/**
+ * The read of `parameter`'s record inside a store's source expression: the
+ * parameter, or the member path through it (`p`, `p.inner`), where the
+ * store copies it into a field, element or spread.
+ */
+function heldParameterRead(
+    checker: ts.TypeChecker,
+    expression: ts.Expression,
+    parameter: ts.ParameterDeclaration,
+): ts.Expression | undefined {
+    let read: ts.Expression | undefined;
+    const visit = (node: ts.Node): void => {
+        if (read) return;
+        if (
+            ts.isIdentifier(node) &&
+            resolvedSymbol(checker, node)?.valueDeclaration === parameter
+        ) {
+            let path: ts.Expression = node;
+            while (
+                ts.isPropertyAccessExpression(path.parent) &&
+                path.parent.expression === path
+            )
+                path = path.parent;
+            read = path;
+            return;
+        }
+        ts.forEachChild(node, visit);
+    };
+    visit(expression);
+    return read;
+}
+
+/**
+ * Why a store's native copy of `parameter`'s record could be told apart
+ * from the argument's object JavaScript stores: a copy kept as the type the
+ * store gives its read, or the record's own type where it gives none.
+ */
+function storedCopyObservation(
+    context: RecordObservationContext,
+    expression: ts.Expression | undefined,
+    parameter: ts.ParameterDeclaration,
+): string | undefined {
+    const { checker } = context;
+    const read =
+        expression && heldParameterRead(checker, expression, parameter);
+    if (!read) return "the store reads the record through another name";
+    const source = checker.getTypeAtLocation(read);
+    const shorthand = ts.isShorthandPropertyAssignment(read.parent)
+        ? read.parent
+        : undefined;
+    const literalType =
+        shorthand && checker.getContextualType(shorthand.parent);
+    const member =
+        shorthand &&
+        literalType &&
+        checker.getPropertyOfType(literalType, shorthand.name.text);
+    const target =
+        (shorthand
+            ? member && checker.getTypeOfSymbolAtLocation(member, shorthand)
+            : checker.getContextualType(read)) ?? source;
+    const fields = checker
+        .getPropertiesOfType(target)
+        .map((property) => property.name);
+    const carries = checker
+        .getPropertiesOfType(source)
+        .some((property) => !fields.includes(property.name));
+    // A copy lent to a callee that only reads it, or kept where only its
+    // fields are read, is never seen as an object.
+    return recordCopyObservation(
+        context,
+        source,
+        target,
+        fields,
+        carries,
+        expression,
+        expression && fieldReadOnlyHolder(checker, expression)
+            ? "sole"
+            : undefined,
+    );
+}
+
+/** @unjournaled A pure function of the checked program, kept across replays. */
+const fieldReadOnlyHolders = new WeakMap<ts.VariableDeclaration, boolean>();
+
+/**
+ * Whether `expression` initializes a function's `const` that the program
+ * only reads fields of (`onlyReadsFields`): a copy held there is its own
+ * object's only view, and only a write to the record it copies could tell
+ * it apart. A module binding can be read from another file.
+ */
+function fieldReadOnlyHolder(
+    checker: ts.TypeChecker,
+    expression: ts.Expression,
+): boolean {
+    const initializer = outermostWrapper(expression);
+    const declaration = initializer.parent;
+    if (
+        !ts.isVariableDeclaration(declaration) ||
+        declaration.initializer !== initializer ||
+        !ts.isIdentifier(declaration.name) ||
+        variableKind(declaration) !== "const" ||
+        !ts.findAncestor(declaration, ts.isFunctionLike)
+    )
+        return false;
+    let known = fieldReadOnlyHolders.get(declaration);
+    if (known === undefined) {
+        known = onlyReadsFields(
+            (node) => declaredSymbol(checker, node),
+            declaration,
+        );
+        fieldReadOnlyHolders.set(declaration, known);
+    }
+    return known;
+}
+
 /** What keeping a stored record's object reads of the compiler. */
-export interface HeldRecordContext {
+export interface HeldRecordContext extends RecordObservationContext {
     readonly bindings: Pick<BindingScopes, "recordHolder">;
     readonly dynamicBindings: ReadonlyMap<
         ts.VariableDeclaration,
@@ -375,9 +504,15 @@ export function requireHeldRecordStorage(
     if (value.kind !== "record") return;
     const declaration = context.bindings.recordHolder(value, expression);
     if (!declaration) return;
-    // A parameter's record held as field storage has no object yet.
+    // A parameter's record held as field storage has no object yet; the
+    // store copies its fields unless the program could tell that copy from
+    // the argument's object.
     if (ts.isParameter(declaration)) {
-        if (!context.parameterObjects.has(declaration))
+        if (
+            !context.parameterObjects.has(declaration) &&
+            storedCopyObservation(context, expression, declaration) !==
+                undefined
+        )
             throw new ParameterObjectStorageRequired(declaration);
         return;
     }

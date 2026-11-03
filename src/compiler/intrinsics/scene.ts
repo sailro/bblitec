@@ -32,6 +32,7 @@ export interface SceneIntrinsicContext
             | "compileStringLiteral"
             | "dataLowerer"
             | "emit"
+            | "allocateTemporaryCppName"
             | "asyncActivations"
             | "sceneManifest"
             | "requireEngine"
@@ -554,8 +555,21 @@ export function compileSceneIntrinsic(
 
         case "registerScene": {
             context.expectArgumentCount(call, 1, 1);
-            const scene = context.compileValue(argumentAt(call, 0));
+            let scene = context.compileValue(argumentAt(call, 0));
             context.expectKind(scene, "scene", argumentAt(call, 0));
+            // The native registration takes the scene by reference, so a
+            // scene the argument creates is held first.
+            if (ts.isCallExpression(context.unwrap(argumentAt(call, 0)))) {
+                const held =
+                    context.allocateTemporaryCppName("registered_scene");
+                context.emit({
+                    kind: "declaration",
+                    type: "auto",
+                    name: held,
+                    initializer: scene.cpp,
+                });
+                scene = { ...scene, cpp: held };
+            }
             context.admissions.noteTemporalRecordBoundary(
                 call,
                 importedName,

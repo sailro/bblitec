@@ -24,6 +24,7 @@ import {
     plainDataMembers,
     rootExpression,
     unwrapExpression,
+    variableKind,
     wrappedParent,
 } from "./syntax.js";
 import {
@@ -373,6 +374,11 @@ function writesThroughBinding(
                 )
                     return "skip";
                 if (!ts.isCallExpression(node)) return names(scan, node);
+                // An engine handle keeps its own native state: the data its
+                // factory read (`createShaderMaterial({ storageBuffers })`)
+                // is not held by the handle.
+                if (pinnedHandleKind(checker.getTypeAtLocation(node)))
+                    return "skip";
                 // A function's result is not the function; a method's can
                 // be its receiver or a member of it.
                 const retained =
@@ -391,6 +397,24 @@ function writesThroughBinding(
             },
             { functions: "skip" },
         );
+    // A `const` binding initialized from an expression carrying the constant
+    // is an alias the walk follows (`aliasingInitializer`).
+    const initializesAlias = (
+        node: ts.Node,
+        scan: AliasedMutationScan,
+    ): boolean => {
+        if (!ts.isExpression(node)) return false;
+        const declaration = wrappedParent(node);
+        return (
+            ts.isVariableDeclaration(declaration) &&
+            ts.isIdentifier(declaration.name) &&
+            declaration.initializer !== undefined &&
+            unwrapExpression(declaration.initializer) ===
+                unwrapExpression(node) &&
+            variableKind(declaration) === "const" &&
+            mentions(node, scan)
+        );
+    };
     // Stored or returned references can acquire aliases outside this walk:
     // a scalar-record certificate does not survive its identity escaping,
     // and cannot follow the result of a function other than a named helper.
@@ -497,15 +521,17 @@ function writesThroughBinding(
                 // The constant, or a member of it, kept past the call
                 // (a construction, a storing call) is written through
                 // its new owner; a kept function writes only what its own
-                // body, which the walk reads, writes.
-                keptArguments(checker, node).some(
-                    (argument) =>
-                        callSignatures(
-                            checker,
-                            checker.getTypeAtLocation(argument),
-                            "exact",
-                        ).length === 0 && mentions(argument, scan),
-                ),
+                // body, which the walk reads, writes. A binding the call
+                // initializes is that owner as an alias the walk follows.
+                (!initializesAlias(node, scan) &&
+                    keptArguments(checker, node).some(
+                        (argument) =>
+                            callSignatures(
+                                checker,
+                                checker.getTypeAtLocation(argument),
+                                "exact",
+                            ).length === 0 && mentions(argument, scan),
+                    )),
         },
     );
 }

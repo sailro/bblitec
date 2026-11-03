@@ -61,7 +61,7 @@ function lowerCondition(
  * arm already carries that absent cutoff: a lowered `??` over a bound read
  * is the binding.
  */
-function pbrAlphaBlendFeatures(context: LoweringContext): string {
+export function pbrAlphaBlendFeatures(context: LoweringContext): string {
     const { file, declaration } = context.functionDeclaration(
         PBR_FEATURES,
         "_computePbrMaterialFeatures",

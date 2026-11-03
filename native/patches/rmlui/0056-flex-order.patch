@@ -1,0 +1,97 @@
+order: a flex item's integer order lays it out and paints it in order-modified document order, stable among equal values
+(CSS Flexbox 5.4). Grid auto-placement keeps document order, so a grid item with a non-zero order refuses.
+CSS Flexbox 1: https://www.w3.org/TR/css-flexbox-1/#order-property
+
+diff --git a/Include/RmlUi/Core/ID.h b/Include/RmlUi/Core/ID.h
+index 3de2545..d404f85 100644
+--- a/Include/RmlUi/Core/ID.h
++++ b/Include/RmlUi/Core/ID.h
+@@ -194,6 +194,7 @@ enum class PropertyId : uint8_t {
+ 	ContainerType,
+ 	JustifyItems,
+ 	JustifySelf,
++	Order,
+ 
+ 	NumDefinedIds,
+ 	FirstCustomId = NumDefinedIds,
+diff --git a/Source/Core/Element.cpp b/Source/Core/Element.cpp
+index ae4263c..e784196 100644
+--- a/Source/Core/Element.cpp
++++ b/Source/Core/Element.cpp
+@@ -1975,6 +1975,10 @@ void Element::OnPropertyChange(const PropertyIdSet& changed_properties)
+ 		}
+ 	}
+ 
++	// A flex item's order re-indexes the stacking context it paints in.
++	if (changed_properties.Contains(PropertyId::Order) && parent)
++		parent->DirtyStackingContext();
++
+ 	// Dirty the background if it's changed.
+ 	if (border_radius_changed ||                                    //
+ 		changed_properties.Contains(PropertyId::BackgroundColor) || //
+@@ -2464,9 +2468,25 @@ void Element::AddChildrenToStackingContext(Vector<StackingContextChild>& stackin
+ {
+ 	bool is_flex_container = (GetDisplay() == Style::Display::Flex || GetDisplay() == Style::Display::Grid || GetDisplay() == Style::Display::InlineGrid);
+ 	const int num_children = (int)children.size();
++	const int num_dom_children = num_children - num_non_dom_children;
++	// A flex container's items paint in order-modified document order (CSS Flexbox 5.4).
++	const auto order = [](Element* element) { return element->GetProperty(PropertyId::Order)->Get<float>(); };
++	if (is_flex_container &&
++		std::any_of(children.begin(), children.begin() + num_dom_children, [&](const ElementPtr& child) { return order(child.get()) != 0.f; }))
++	{
++		Vector<Element*> items;
++		for (int i = 0; i < num_dom_children; ++i)
++			items.push_back(children[i].get());
++		std::stable_sort(items.begin(), items.end(), [&](Element* a, Element* b) { return order(a) < order(b); });
++		for (Element* item : items)
++			item->AddToStackingContext(stacking_children, true, false);
++		for (int i = num_dom_children; i < num_children; ++i)
++			children[i]->AddToStackingContext(stacking_children, true, true);
++		return;
++	}
+ 	for (int i = 0; i < num_children; ++i)
+ 	{
+-		const bool is_non_dom_element = (i >= num_children - num_non_dom_children);
++		const bool is_non_dom_element = (i >= num_dom_children);
+ 		children[i]->AddToStackingContext(stacking_children, is_flex_container, is_non_dom_element);
+ 	}
+ }
+diff --git a/Source/Core/Layout/FlexFormattingContext.cpp b/Source/Core/Layout/FlexFormattingContext.cpp
+index 1483d06..ea9c8a4 100644
+--- a/Source/Core/Layout/FlexFormattingContext.cpp
++++ b/Source/Core/Layout/FlexFormattingContext.cpp
+@@ -335,6 +335,9 @@ void FlexFormattingContext::Format(Vector2f& flex_resulting_content_size, Vector
+ 
+ 		if (is_grid) {
+ 			using namespace Style;
++			// Grid auto-placement walks document order; order-modified placement is not represented.
++			if (element->GetProperty(PropertyId::Order)->Get<float>() != 0.f)
++				throw std::runtime_error("UI grid item order is not represented.");
+ 			if (computed.height().type == LengthPercentageAuto::Percentage ||
+ 				computed.min_height().type == LengthPercentage::Percentage || computed.max_height().type == LengthPercentage::Percentage)
+ 				throw std::runtime_error("UI grid percentage-dependent item sizing is not represented.");
+@@ -500,6 +503,12 @@ void FlexFormattingContext::Format(Vector2f& flex_resulting_content_size, Vector
+ 		items.push_back(std::move(item));
+ 	}
+ 
++	// Flex items are laid out in order-modified document order (CSS Flexbox 5.4).
++	if (!is_grid)
++		std::stable_sort(items.begin(), items.end(), [](const FlexItem& a, const FlexItem& b) {
++			return a.element->GetProperty(PropertyId::Order)->Get<float>() < b.element->GetProperty(PropertyId::Order)->Get<float>();
++		});
++
+ 	if (items.empty() && !is_grid)
+ 	{
+ 		return;
+diff --git a/Source/Core/StyleSheetSpecification.cpp b/Source/Core/StyleSheetSpecification.cpp
+index 779c7cc..1d7c968 100644
+--- a/Source/Core/StyleSheetSpecification.cpp
++++ b/Source/Core/StyleSheetSpecification.cpp
+@@ -476,6 +476,7 @@ void StyleSheetSpecification::RegisterDefaultProperties()
+ 	RegisterProperty(PropertyId::ContainerType, "container-type", "normal", false, true).AddParser("keyword", "normal, inline-size");
+ 	RegisterProperty(PropertyId::JustifyItems, "justify-items", "stretch", false, true).AddParser("keyword", "flex-start, flex-end, center, baseline, stretch, start, end");
+ 	RegisterProperty(PropertyId::JustifySelf, "justify-self", "auto", false, true).AddParser("keyword", "auto, flex-start, flex-end, center, baseline, stretch, start, end");
++	RegisterProperty(PropertyId::Order, "order", "0", false, true).AddParser("number");
+ 	RegisterProperty(PropertyId::AlignItems, "align-items", "stretch", false, true).AddParser("keyword", "flex-start, flex-end, center, baseline, stretch, start, end");
+ 	RegisterShorthand(ShorthandId::PlaceItems, "place-items", "align-items, justify-items", ShorthandType::Replicate);
+ 	RegisterProperty(PropertyId::AlignSelf, "align-self", "auto", false, true).AddParser("keyword", "auto, flex-start, flex-end, center, baseline, stretch, start, end");

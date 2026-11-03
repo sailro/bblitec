@@ -47,10 +47,12 @@ int main() {
         Engine engine;
         const auto sheet = ui_create_element(engine, "style");
         ui_add_class_style(engine, sheet, "spinner",
-                           "width:48px;height:48px;border:4px rgba(210,239,255,0.2);"
+                           "width:48px;height:48px;border:4px solid rgba(210,239,255,0.2);"
                            "border-top-color:#c6efff;border-radius:50%;");
         ui_add_class_style(engine, sheet, "outlined",
                            "--bbl-outline:2px solid #fff;--bbl-outline-offset:1px;");
+        ui_add_class_style(engine, sheet, "inset-outlined",
+                           "--bbl-outline:2px solid #fff;--bbl-outline-offset:-6px;");
         ui_append_to_root(engine, sheet);
         const auto spinner = ui_create_element(engine, "div");
         ui_set_attribute(engine, spinner, "style", "position:absolute;left:20px;top:20px;");
@@ -94,6 +96,18 @@ int main() {
         for (const auto radius : outline_radii) {
             expect_near(radius.x, 51);
             expect_near(radius.y, 27);
+        }
+        // A negative offset draws the ring inside the border edge, its radii shrunk to match.
+        ui_set_attribute(engine, spinner, "class", "spinner inset-outlined");
+        update();
+        auto* inset_ring = raw->QuerySelector("bbl-outline");
+        assert(inset_ring);
+        const auto inset_size = inset_ring->GetBox().GetSize(Rml::BoxArea::Border);
+        expect_near(inset_size.x, 88);
+        expect_near(inset_size.y, 40);
+        for (const auto radius : inset_ring->GetRenderBox(Rml::BoxArea::Border).GetBorderRadius()) {
+            expect_near(radius.x, 44);
+            expect_near(radius.y, 20);
         }
         ui_set_attribute(engine, spinner, "class", "spinner");
         ui_set_style_property(engine, spinner, "box-shadow", "0 0 0 3px #fff");

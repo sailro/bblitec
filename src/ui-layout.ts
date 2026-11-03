@@ -1,6 +1,6 @@
 const magnitude = String.raw`(?:\d+(?:\.\d*)?|\.\d+)(?:e[+-]?\d+)?`;
 const number = String.raw`\+?${magnitude}`;
-const lengthUnit = "(?:px|em|rem|vw|vh|in|cm|mm|pt|pc|%)";
+const lengthUnit = "(?:px|em|rem|vw|vh|[sld]?vmin|[sld]?vmax|in|cm|mm|pt|pc|%)";
 const length = String.raw`(?:${number}${lengthUnit}|[+]?0)`;
 const signedLength = String.raw`(?:[+-]?${magnitude}${lengthUnit}|[+-]?0)`;
 const basis = `(?:auto|${length})`;
@@ -57,6 +57,7 @@ const layoutValues: ReadonlyMap<string, RegExp> = new Map([
     ["flex-grow", new RegExp(`^${number}$`)],
     ["flex-shrink", new RegExp(`^${number}$`)],
     ["flex-wrap", new RegExp(`^${wrap}$`)],
+    ["order", /^[+-]?[0-9]+$/],
     [
         "flex-flow",
         new RegExp(

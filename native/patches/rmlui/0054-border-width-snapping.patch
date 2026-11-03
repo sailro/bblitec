@@ -1,0 +1,19 @@
+Border widths snap as CSS snaps a border width: a width below one device pixel rounds up to one, a larger one rounds
+down to whole device pixels (RmlUi rounded to nearest, which widened 1.5-pixel borders at fractional densities and
+zooms).
+CSS Values 4: https://drafts.csswg.org/css-values-4/#snap-a-length-as-a-border-width
+
+diff --git a/Source/Core/ComputeProperty.cpp b/Source/Core/ComputeProperty.cpp
+index b1bce44..ff09b8e 100644
+--- a/Source/Core/ComputeProperty.cpp
++++ b/Source/Core/ComputeProperty.cpp
+@@ -276,7 +276,8 @@ uint16_t ComputeBorderWidth(float computed_length)
+ 	if (computed_length <= 1.f)
+ 		return 1;
+ 
+-	return uint16_t(computed_length + 0.5f);
++	// Snapped as a border width: down to whole device pixels.
++	return uint16_t(computed_length);
+ }
+ 
+ String GetFontFaceDescription(const String& font_family, Style::FontStyle style, Style::FontWeight weight)

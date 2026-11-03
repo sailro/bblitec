@@ -22,14 +22,22 @@ import {
     deferredUiStyleCapability,
     visitUiStyleSheetDeclarations,
 } from "../deferred-ui-style.js";
-import { parseUiBorderImage, renderUiBorderImage } from "../ui-border-image.js";
+import {
+    parseUiBorderImage,
+    renderUiBorderImage,
+    renderUiBorderImageLonghand,
+    UI_BORDER_IMAGE_LONGHANDS,
+} from "../ui-border-image.js";
 import {
     unrepresentedUiAnimation,
     unrepresentedUiDurations,
     unrepresentedUiEasing,
 } from "../ui-motion.js";
-import { uiGradientBackground } from "../ui-gradient-background.js";
-import { unresolvableUiVariableMathUnit } from "../ui-variable-math.js";
+import {
+    uiGradientBackground,
+    uiGradientImageList,
+} from "../ui-gradient-background.js";
+import { uiCssMathRefusal } from "../ui-css-math.js";
 import {
     parseHtmlFragment,
     parseHtmlFragments,
@@ -42,7 +50,18 @@ import {
     supportedUiGridTemplateAreas,
     supportedUiGridTracks,
 } from "../ui-grid.js";
+import {
+    UI_BORDER_LINE_PROPERTIES,
+    UI_BORDER_STYLES,
+    uiBorderLine,
+} from "../ui-borders.js";
 import { supportedUiBoxShadow, supportedUiFilter } from "../ui-filters.js";
+import {
+    UI_SVG_PRESENTATION_PROPERTIES,
+    supportedUiSvgKeyword,
+    supportedUiSvgPaint,
+    supportedUiSvgPresentation,
+} from "../ui-svg-presentation.js";
 import {
     cssWideKeyword,
     supportedUiImageBackground,
@@ -107,8 +126,12 @@ import {
     isDocumentReceiver,
     isDomReceiver,
 } from "./dom-targets.js";
-import { documentAssetSource, registerUiImageAsset } from "./assets.js";
-import { packagedUrlAssets } from "./static-fetch.js";
+import {
+    documentAssetSource,
+    registerUiImageAsset,
+    resolveBundledAsset,
+} from "./assets.js";
+import { packagedUrlAssets, readablePackagedAsset } from "./static-fetch.js";
 import {
     canvasContextIds,
     engineCanvasIds,
@@ -127,7 +150,7 @@ import {
     libraryName,
 } from "./symbols.js";
 import { observesDatasetFields } from "./canvas-instrumentation.js";
-import { uiMarkupValueShape, type UiMarkupShape } from "./ui-markup-values.js";
+import { uiMarkupValueShapes, type UiMarkupShape } from "./ui-markup-values.js";
 import {
     createsFormControls,
     parseAuthoredMarkup,
@@ -142,9 +165,9 @@ import {
     writeSites,
     writeSiteOf,
     accessKey,
-    variableKind,
 } from "./syntax.js";
 import { stringConcatPart } from "./expressions.js";
+import { isJsonValue } from "./json-bridge.js";
 import { stringDomain } from "./string-domain.js";
 import type { NativeHostUiNode, RefusalSite, Value } from "./types.js";
 import {
@@ -158,6 +181,7 @@ import {
     unionMembers,
 } from "./type-facts.js";
 import { knownCondition } from "./values/model.js";
+import { urlFilePath } from "../asset-source.js";
 
 /**
  * What a store into a retained element writes: an assignment's right side
@@ -192,8 +216,20 @@ interface UiStaticMarkupNode {
 type UiMarkupPart =
     | string
     | { kind: "text"; expression: ts.Expression }
-    | { kind: "stored"; expression: ts.Expression; shape: UiMarkupShape }
+    | UiStoredMarkup
     | UiMarkupBranching;
+
+/**
+ * A stored markup value: one of its authored shapes, chosen at run time by
+ * the fixed fragments the string holds. `value` is the snapshot a branch
+ * that settled the shape reads again.
+ */
+interface UiStoredMarkup {
+    kind: "stored";
+    expression: ts.Expression;
+    shapes: readonly UiMarkupShape[];
+    value?: string;
+}
 
 /** A condition's two continuations, or a runtime text equal to one of closed authored texts. */
 type UiMarkupBranching =
@@ -213,10 +249,27 @@ type UiMarkupBranching =
 type UiMarkupDomains = Map<ts.Node, readonly string[] | undefined>;
 
 /** The parts each branch of `part` continues with. */
-function uiMarkupBranches(part: UiMarkupBranching): UiMarkupPart[][] {
+function uiMarkupBranches(
+    part: UiMarkupBranching | UiStoredMarkup,
+): UiMarkupPart[][] {
+    if (part.kind === "stored")
+        return part.shapes.map((shape) => [{ ...part, shapes: [shape] }]);
     return part.kind === "choice"
         ? [part.yes, part.no]
         : part.alternatives.map((alternative) => [alternative]);
+}
+
+/**
+ * A stored value's shapes, the most fixed text first: a string several
+ * match reads as the one that parses the most of it as markup, as the
+ * browser parses all of it.
+ */
+function uiMarkupShapesBySpecificity(
+    shapes: readonly UiMarkupShape[],
+): UiMarkupShape[] {
+    const fixed = (shape: UiMarkupShape): number =>
+        shape.reduce((length, part) => length + (part?.length ?? 0), 0);
+    return [...shapes].sort((left, right) => fixed(right) - fixed(left));
 }
 
 /** The placeholder a runtime value takes in a markup source, by its order. */
@@ -241,14 +294,15 @@ function uiMarkupSources(
         const part = parts[index]!;
         if (typeof part === "string") source += part;
         else if (part.kind === "text") source += uiMarkupHole(next++);
-        else if (part.kind === "stored") {
-            const hole = part.shape.indexOf(null);
+        else if (part.kind === "stored" && part.shapes.length === 1) {
+            const shape = part.shapes[0]!;
+            const hole = shape.indexOf(null);
             source +=
                 hole < 0
-                    ? part.shape.join("")
-                    : part.shape.slice(0, hole).join("") +
+                    ? shape.join("")
+                    : shape.slice(0, hole).join("") +
                       uiMarkupHole(next++) +
-                      part.shape.slice(hole + 1).join("");
+                      shape.slice(hole + 1).join("");
         } else {
             const rest = parts.slice(index + 1);
             const sources: string[] = [];
@@ -291,18 +345,6 @@ interface UiElementMetadata {
 interface UiPendingClassQuery {
     root: Value;
     className: string;
-    site: ts.Node;
-}
-
-interface UiUnknownClassMutation {
-    className: string;
-    site: ts.Node;
-}
-
-interface UiUnknownAttributeMutation {
-    attribute: "class" | "id";
-    /** Known construction target; absent when a runtime lookup selected it. */
-    targetId?: number;
     site: ts.Node;
 }
 
@@ -552,8 +594,23 @@ export class UiProjection {
         };
     }
 
+    /**
+     * A generation-known img source packages its file; a source no file
+     * holds packages nothing and fails to load, as the browser's does.
+     */
     public registerImageSource(source: string): void {
-        if (source) registerUiImageAsset(this.context, source, source);
+        if (
+            source &&
+            readablePackagedAsset(
+                this.context,
+                resolveBundledAsset(
+                    documentAssetSource(this.context, urlFilePath(source)),
+                    this.context.options.fileName,
+                    this.context.options,
+                ),
+            )
+        )
+            registerUiImageAsset(this.context, source, source);
     }
 
     /**
@@ -568,10 +625,10 @@ export class UiProjection {
             this.context,
             expression,
             (_, logicalSource) => {
-                if (!/^\/?[^/:?#][^:?#]*$/.test(logicalSource))
+                if (!/^\/?[^/:?#][^:?#]*(?:[?#].*)?$/.test(logicalSource))
                     this.context.fail(
                         expression,
-                        `An img src candidate '${logicalSource}' must be a root-relative or relative URL without a query or fragment.`,
+                        `An img src candidate '${logicalSource}' must be a root-relative or relative URL.`,
                     );
                 return registerUiImageAsset(
                     this.context,
@@ -1142,13 +1199,12 @@ export class UiProjection {
             elementReceiver(owner.expression);
         if (
             !treeRead &&
-            (!(
-                ts.isCallExpression(owner) || ts.isConditionalExpression(owner)
-            ) ||
+            (!(ts.isCallExpression(owner) || isOperandSelection(owner)) ||
                 !holdsElement(expression))
         )
             return undefined;
-        // A conditional selects between its arms' handles, evaluated once.
+        // A selection (`a ? b : c`, `a ?? b`) yields one of its operands'
+        // handles, evaluated once.
         const value = this.context.dataLowerer.narrowOptional(
             this.context.compileValue(expression),
             expression,
@@ -1158,7 +1214,7 @@ export class UiProjection {
                 expression,
                 ts.isCallExpression(owner)
                     ? "A DOM helper must return a retained element."
-                    : "A conditional element receiver must select retained elements.",
+                    : "A selected element receiver must select retained elements.",
             );
         // Nullable receivers keep their safe storage until the admitted
         // operation enters its presence branch; pinning the payload here
@@ -1397,7 +1453,9 @@ export class UiProjection {
                 callee.name === "createTextNode") &&
             isDocumentReceiver(this.context, callee.expression) &&
             value.arguments[0] !== undefined &&
-            ts.isStringLiteralLike(value.arguments[0]);
+            // A generation-known string, as the creation lowering reads it
+            // (`createElementNS(SVG_NS, tag)` with a const namespace).
+            this.tryUiStaticString(value.arguments[0]) !== undefined;
         return createsElement || this.isNativeUiHelperCall(value);
     }
 
@@ -1424,6 +1482,17 @@ export class UiProjection {
         if (isStringValue(value)) {
             return value.cpp;
         }
+        // A parsed document the program reads as a string is stored as the
+        // string sink stores one.
+        if (
+            isJsonValue(value) &&
+            this.context.dataLowerer.dataTypeAt(expression)?.kind === "string"
+        )
+            return this.context.dataLowerer.compileKnownValueForSink(
+                value,
+                { kind: "string" },
+                expression,
+            );
         this.context.fail(
             expression,
             `${purpose} requires a string, received ${value.kind}.`,
@@ -1712,15 +1781,6 @@ export class UiProjection {
                 : knownValue === null
                   ? undefined
                   : [knownValue];
-        if (!element || !candidates) {
-            this.uiUnknownAttributeMutations.push({
-                attribute: name as "class" | "id",
-                ...(value.uiStaticId === undefined
-                    ? {}
-                    : { targetId: value.uiStaticId }),
-                site: expression,
-            });
-        }
         if (!element) return;
         if (name === "class") {
             if (!candidates) {
@@ -1793,6 +1853,27 @@ export class UiProjection {
             }
         }
         this.setUiClassAlternatives(element, alternatives);
+    }
+
+    /**
+     * A classList mutation by a run-time token: any of its candidate texts
+     * may be added or removed, and without candidates the element's classes
+     * are unknown. Either way only certainty is lost, which is what the
+     * class queries rely on.
+     */
+    public recordUiRuntimeClass(value: Value, expression: ts.Expression): void {
+        const element = this.uiStaticElement(value);
+        if (!element) return;
+        const candidates = this.uiStringCandidates(expression);
+        if (
+            !candidates ||
+            candidates.some((token) => !/^[A-Za-z_][A-Za-z0-9_-]*$/.test(token))
+        ) {
+            writable(element).classShapeKnown = false;
+            return;
+        }
+        for (const token of candidates)
+            this.recordUiStaticClass(value, token, "toggle", "");
     }
 
     /** A child joining `parent`; one that does not join last leaves the child order unknown. */
@@ -1932,6 +2013,7 @@ export class UiProjection {
     private static readonly PROJECTED_UI_STYLE_PROPERTIES =
         new EmissionSet<string>([
             ...uiLogicalSpacingProperties,
+            ...UI_SVG_PRESENTATION_PROPERTIES,
             "accent-color",
             "appearance",
             "-webkit-appearance",
@@ -1967,7 +2049,13 @@ export class UiProjection {
             "border-right-color",
             "border-bottom-color",
             "border-left-color",
+            "border-style",
+            "border-top-style",
+            "border-right-style",
+            "border-bottom-style",
+            "border-left-style",
             "border-image",
+            ...UI_BORDER_IMAGE_LONGHANDS,
             "border-radius",
             "box-sizing",
             "box-shadow",
@@ -1987,6 +2075,7 @@ export class UiProjection {
             "grid-row",
             "grid-auto-columns",
             "grid-auto-rows",
+            "grid-auto-flow",
             "isolation",
             "container-type",
             "grid-template-rows",
@@ -2024,6 +2113,7 @@ export class UiProjection {
             "min-width",
             "object-fit",
             "opacity",
+            "order",
             "overflow",
             "overflow-x",
             "overflow-y",
@@ -2056,6 +2146,7 @@ export class UiProjection {
             "transform-origin",
             "transition",
             "transition-delay",
+            "transition-duration",
             "vertical-align",
             "visibility",
             "white-space",
@@ -2063,6 +2154,7 @@ export class UiProjection {
             "word-wrap",
             "width",
             "z-index",
+            "zoom",
         ]);
 
     /**
@@ -2104,9 +2196,13 @@ export class UiProjection {
         ["appearance", ["auto", "none"]],
         ["-webkit-appearance", ["auto", "none"]],
         ["-webkit-user-drag", ["none"]],
+        // No native platform shows a long-press callout.
+        ["-webkit-touch-callout", ["none"]],
         ["list-style", ["none"]],
         ["list-style-type", ["none"]],
         ["justify-items", ["start", "end", "center", "stretch"]],
+        // Sparse auto-placement; `dense` packing is not represented.
+        ["grid-auto-flow", ["row", "column"]],
         ["justify-self", ["auto", "start", "end", "center", "stretch"]],
     ]);
 
@@ -2114,6 +2210,7 @@ export class UiProjection {
         [
             "-webkit-user-select",
             "-webkit-tap-highlight-color",
+            "-webkit-touch-callout",
             "-webkit-user-drag",
             "image-rendering",
             "list-style",
@@ -2165,6 +2262,17 @@ export class UiProjection {
         const channel = String.raw`\s*(?:25[0-5]|2[0-4]\d|1?\d?\d)\s*`;
         return new RegExp(
             String.raw`^(?:auto|#[0-9a-f]{3}|#[0-9a-f]{6}|rgb\(${channel},${channel},${channel}\)|rgba\(${channel},${channel},${channel},\s*1(?:\.0*)?\s*\)|var\(--[a-z0-9_-]+\)|black|silver|gr[ae]y|white|maroon|red|orange|purple|fuchsia|green|lime|olive|yellow|navy|blue|teal|aqua)$`,
+        );
+    })();
+
+    /**
+     * A zoom RmlUi folds into each element's density ratio: a nonnegative
+     * number or percentage, literal or through a custom property.
+     */
+    private static readonly UI_ZOOM = (() => {
+        const amount = String.raw`(?:\d+(?:\.\d*)?|\.\d+)(?:e[+-]?\d+)?%?`;
+        return new RegExp(
+            String.raw`^(?:(${amount})|var\(--[a-z0-9_-]+(?:\s*,\s*(${amount}))?\))$`,
         );
     })();
 
@@ -2300,60 +2408,12 @@ export class UiProjection {
     public readonly uiPendingClassQueries: UiPendingClassQuery[] =
         emissionArray([]);
 
-    public readonly uiUnknownClassMutations: UiUnknownClassMutation[] =
-        emissionArray([]);
-
-    private readonly uiUnknownAttributeMutations: UiUnknownAttributeMutation[] =
-        emissionArray([]);
-
     /** Final direct-document order for statically sequenced root mutations. */
     private readonly uiStaticRootOrder: number[] = emissionArray([]);
     private readonly uiDocumentRootIds = new EmissionMap<string, number>();
     private readonly uiConditionallyRemovedStyles = new EmissionSet<number>();
 
     @journaled private accessor uiElementIds = 0;
-
-    /**
-     * Logical sizes that reached `scale()` calls map exactly onto a retained
-     * canvas backing store (`scale(c.width / X, c.height / Y)`), which is
-     * what proves a later statically-sized `clearRect(0, 0, X, Y)` covers
-     * the full surface.
-     */
-    private readonly uiCanvasFullClearSizes = new EmissionSet<string>();
-
-    /**
-     * Statically-assigned retained-canvas backing sizes, keyed by the
-     * canvas's generation identity (`uiCanvasId` — the element and its
-     * 2D-context views spell different C++ locals but share the id): the
-     * other statically-provable full-surface `clearRect` shape. `pairs`
-     * holds every (width, height) state the static assignments provably
-     * put THAT canvas through, so a width recorded from one canvas never
-     * combines with a height from another into a surface no canvas ever
-     * had.
-     */
-    private readonly uiCanvasStaticSizes = new EmissionMap<
-        number,
-        {
-            readonly width?: number;
-            readonly height?: number;
-            readonly pairs: Set<string>;
-        }
-    >();
-
-    /** Mints `uiCanvasId` for each created retained canvas element. */
-    @journaled public accessor uiCanvasIds = 0;
-
-    /** Retained canvases by element id: the primary canvas and host canvases. */
-    private readonly retainedCanvasIds = new EmissionMap<string, number>();
-
-    private retainedCanvasId(id: string): number {
-        let canvasId = this.retainedCanvasIds.get(id);
-        if (canvasId === undefined) {
-            canvasId = this.uiCanvasIds++;
-            this.retainedCanvasIds.set(id, canvasId);
-        }
-        return canvasId;
-    }
 
     public refuseEngineCanvasContext(site: ts.Node): never {
         return this.context.fail(
@@ -2371,26 +2431,26 @@ export class UiProjection {
         id: string,
         tag: string | undefined,
         site: ts.Node,
-    ): Pick<Value, "uiCanvas" | "uiCanvasId"> {
+    ): Pick<Value, "uiCanvas"> {
         if (tag !== "canvas" || !canvasContextIds(this.context).has(id))
             return {};
         if (engineCanvasIds(this.context).has(id))
             this.refuseEngineCanvasContext(site);
-        return { uiCanvas: true, uiCanvasId: this.retainedCanvasId(id) };
+        return { uiCanvas: true };
     }
 
-    /** Math over var() resolves natively after substitution only in the units the PAL math reads. */
-    private refuseUnresolvableVariableMath(
+    /** CSS math, literal or over var(), resolves natively only in the shapes the PAL math folds. */
+    private refuseUnresolvableMath(
         property: string,
         value: string,
         site: ts.Node | undefined,
     ): void {
-        const unit = unresolvableUiVariableMathUnit(value);
-        if (unit !== undefined)
+        const reason = uiCssMathRefusal(property, value);
+        if (reason !== undefined)
             this.uiStyleRefusal(
                 site,
                 property,
-                `CSS math over var() resolves px/rem/viewport lengths, times and angles; '${unit}' is not represented`,
+                `CSS math resolves px/rem/viewport lengths, times, angles and percentages of a layout length within one min()/max()/clamp() level; ${reason} is not represented`,
             );
     }
 
@@ -2442,7 +2502,7 @@ export class UiProjection {
                 .trim()
                 .toLowerCase();
             if (property.length === 0) return;
-            this.refuseUnresolvableVariableMath(property, literalValue, site);
+            this.refuseUnresolvableMath(property, literalValue, site);
             if (UiProjection.isCustomStyleProperty(property)) return;
             if (
                 property === "place-items" &&
@@ -2473,7 +2533,7 @@ export class UiProjection {
                     this.uiStyleRefusal(
                         site,
                         property,
-                        "only a single raster image with auto, contain, cover or zero sizing and centered or default positioning is represented",
+                        "only a single raster image or a list of gradient images, with auto, contain, cover or zero sizing and centered or default positioning, is represented",
                     );
                 return;
             }
@@ -2532,16 +2592,28 @@ export class UiProjection {
             // A colour over var() is RmlUi's custom property substitution,
             // whose result the PAL checks as it projects it.
             if (
-                /^border-(?:top|right|bottom|left)$/.test(property) &&
-                !/^(?:none|0|(?:0|\d+(?:\.\d+)?(?:px|em|rem))\s+solid\s+(?:#[0-9a-f]{3,8}|rgba?\([^;]+\)|var\(--[a-z0-9_-]+\)|[a-z]+))$/.test(
-                    literalValue,
-                )
+                UI_BORDER_LINE_PROPERTIES.includes(property) &&
+                uiBorderLine(literalValue) === undefined
             ) {
                 this.uiStyleRefusal(
                     site,
                     property,
-                    "only none, zero or a literal solid width and color are represented",
+                    "only a literal width, the none, hidden, solid and dashed styles and a literal color are represented",
                 );
+            }
+            if (
+                /^border(?:-(?:top|right|bottom|left))?-style$/.test(property)
+            ) {
+                const styles = literalValue.toLowerCase().split(/\s+/);
+                if (
+                    styles.length > (property === "border-style" ? 4 : 1) ||
+                    !styles.every((style) => UI_BORDER_STYLES.includes(style))
+                )
+                    this.uiStyleRefusal(
+                        site,
+                        property,
+                        "only the none, hidden, solid and dashed border styles are represented",
+                    );
             }
             if (
                 /^border(?:-(?:top|right|bottom|left))?-width$/.test(
@@ -2579,6 +2651,29 @@ export class UiProjection {
                     property,
                     "only fill, contain, cover, none and scale-down are represented",
                 );
+            }
+            if (
+                UI_SVG_PRESENTATION_PROPERTIES.includes(property) &&
+                !supportedUiSvgPresentation(property, literalValue)
+            )
+                this.uiStyleRefusal(
+                    site,
+                    property,
+                    "only literal SVG paints, widths, opacities and keywords are represented",
+                );
+            if (property === "zoom") {
+                const zoom = UiProjection.UI_ZOOM.exec(literalValue);
+                const amount = zoom?.[1] ?? zoom?.[2];
+                if (
+                    !zoom ||
+                    (amount !== undefined &&
+                        !Number.isFinite(Math.fround(parseFloat(amount))))
+                )
+                    this.uiStyleRefusal(
+                        site,
+                        property,
+                        "only a nonnegative finite number or percentage, literal or through var() with an optional literal fallback, is represented",
+                    );
             }
             if (supportedUiLayoutValue(property, literalValue) === false) {
                 this.uiStyleRefusal(
@@ -2649,10 +2744,30 @@ export class UiProjection {
                 property === "background-clip" &&
                 /^(?:border-box|padding-box|content-box)$/.test(literalValue)
             ) {
-                if (
-                    /gradient\(/i.test(value) ||
-                    /(?:^|;)\s*background(?:-image)?\s*:[^;]*url\(/i.test(value)
-                ) {
+                // A later `background` shorthand in the same rule resets it,
+                // as the lowered shorthand does natively.
+                const after = value.slice(
+                    value.indexOf(declaration) + declaration.length,
+                );
+                // Plain gradient layers paint in the padding box, a border or
+                // padding clip's; sized ones and raster images keep their own
+                // boxes, and a content clip would crop a layer.
+                let boxedImage = literalValue === "content-box";
+                UiProjection.forEachUiStyleDeclaration(value, (other) => {
+                    const separator = other.indexOf(":");
+                    const name = other.slice(0, separator).trim().toLowerCase();
+                    const image = other.slice(separator + 1).trim();
+                    if (
+                        separator > 0 &&
+                        (name === "background" ||
+                            name === "background-image") &&
+                        (/url\(/i.test(image) ||
+                            (/gradient\(/i.test(image) &&
+                                !uiGradientImageList(image)))
+                    )
+                        boxedImage = true;
+                });
+                if (!/(?:^|;)\s*background\s*:/i.test(after) && boxedImage) {
                     this.uiStyleRefusal(
                         site,
                         property,
@@ -2723,7 +2838,7 @@ export class UiProjection {
             if (property === "outline") {
                 if (literalValue === "none") return;
                 if (
-                    /^(?:\d+(?:\.\d+)?px solid (?:#[0-9a-f]{3,8}|rgba?\([^;]+\)|[a-z]+)|(?:#[0-9a-f]{3,8}|rgba?\([^;]+\)|[a-z]+) solid \d+(?:\.\d+)?px)$/.test(
+                    /^(?:\d+(?:\.\d+)?px (?:solid|dashed) (?:#[0-9a-f]{3,8}|rgba?\([^;]+\)|[a-z]+)|(?:#[0-9a-f]{3,8}|rgba?\([^;]+\)|[a-z]+) (?:solid|dashed) \d+(?:\.\d+)?px)$/.test(
                         literalValue,
                     )
                 )
@@ -2731,12 +2846,13 @@ export class UiProjection {
                 this.uiStyleRefusal(
                     site,
                     property,
-                    "outline requires none or a solid pixel-width color",
+                    "outline requires none or a solid or dashed pixel-width color",
                 );
             }
+            // A negative offset draws the outline inside the border edge.
             if (
                 property === "outline-offset" &&
-                /^\d+(?:\.\d+)?px$/.test(literalValue)
+                /^-?\d+(?:\.\d+)?px$/.test(literalValue)
             )
                 return;
             if (UiProjection.INERT_UI_STYLE_PROPERTIES.has(property)) return;
@@ -2886,156 +3002,6 @@ export class UiProjection {
         );
     }
 
-    /**
-     * True when the expression reads a retained canvas's backing size on
-     * the given axis -- directly (`canvas.width`), or through one `const`
-     * alias of such a read (`const w = this._canvas.width`), which are the
-     * reached shapes. The proof is the compiled value itself: a retained
-     * canvas dimension always lowers to `bbl::ui_canvas_<axis>(...)`, so
-     * aliasing of the canvas handle cannot defeat it.
-     */
-    private isUiCanvasSizeRead(
-        expression: ts.Expression,
-        axis: "width" | "height",
-    ): boolean {
-        let target = this.context.unwrap(expression);
-        if (ts.isIdentifier(target)) {
-            // The alias the read's own scope declares: its initializer is
-            // compiled here, so an import's is not one to follow.
-            const declaration = declaredSymbol(
-                this.context.checker,
-                target,
-            )?.valueDeclaration;
-            if (
-                declaration &&
-                ts.isVariableDeclaration(declaration) &&
-                declaration.initializer &&
-                variableKind(declaration) === "const"
-            ) {
-                target = this.context.unwrap(declaration.initializer);
-            }
-        }
-        if (
-            !ts.isPropertyAccessExpression(target) ||
-            target.name.text !== axis
-        ) {
-            return false;
-        }
-        const value = this.context.compileValue(target);
-        return (
-            value.kind === "number" &&
-            value.cpp.startsWith(`bbl::ui_canvas_${axis}(`)
-        );
-    }
-
-    /**
-     * A reached `scale(c.width / X, c.height / Y)` maps the logical size
-     * (X, Y) exactly onto the canvas backing store; remember it so a later
-     * statically-sized `clearRect(0, 0, X, Y)` is provably a full-surface
-     * clear (the racer minimap's shape). The record is compilation-global
-     * rather than per-canvas because the retained clear is full-surface
-     * regardless; the check exists to catch an authored partial clear, not
-     * to re-derive canvas identity through aliases it cannot track.
-     */
-    public recordUiCanvasLogicalScale(call: ts.CallExpression): void {
-        if (call.arguments.length !== 2) return;
-        const logical = (
-            argument: ts.Expression,
-            axis: "width" | "height",
-        ): number | undefined => {
-            const expression = this.context.unwrap(argument);
-            if (
-                !ts.isBinaryExpression(expression) ||
-                expression.operatorToken.kind !== ts.SyntaxKind.SlashToken ||
-                !this.isUiCanvasSizeRead(expression.left, axis)
-            ) {
-                return undefined;
-            }
-            const divisor = this.context.compileValue(
-                expression.right,
-            ).staticNumber;
-            return divisor !== undefined && divisor > 0 ? divisor : undefined;
-        };
-        const width = logical(argumentAt(call, 0), "width");
-        const height = logical(argumentAt(call, 1), "height");
-        if (width !== undefined && height !== undefined) {
-            this.uiCanvasFullClearSizes.add(`${width}x${height}`);
-        }
-    }
-
-    /**
-     * The retained Canvas2D clear is full-surface: the PAL drops the whole
-     * draw list and ignores the rect (`docs/ui.md` Limits). Accept only
-     * calls provably equal to the full surface -- origin statically (0, 0)
-     * and extents that read the canvas's own width/height (directly or
-     * through a const alias), or a statically-sized rect a reached
-     * `scale()` maps exactly onto the backing store -- and refuse anything
-     * else at generation, so a partial clear can never silently become a
-     * full one (AP-2).
-     */
-    public expectUiCanvasFullSurfaceClear(
-        call: ts.CallExpression,
-        canvasId: number | undefined,
-    ): void {
-        if (call.arguments.length !== 4) return;
-        const refuse = (shape: string): never =>
-            this.context.fail(
-                call,
-                "Retained Canvas2D clearRect is lowered only as a " +
-                    `full-surface clear, and ${shape}. Clear (0, 0, ` +
-                    "canvas.width, canvas.height) -- or the logical size " +
-                    "a reached scale() maps onto the backing store.",
-            );
-        for (const index of [0, 1]) {
-            const origin = this.context.compileValue(
-                argumentAt(call, index),
-            ).staticNumber;
-            if (origin !== 0) {
-                refuse(
-                    `argument ${index + 1} is not statically 0, so the ` +
-                        "rect origin is not provably the surface origin",
-                );
-            }
-        }
-        if (
-            this.isUiCanvasSizeRead(argumentAt(call, 2), "width") &&
-            this.isUiCanvasSizeRead(argumentAt(call, 3), "height")
-        ) {
-            return;
-        }
-        const width = this.context.compileValue(
-            argumentAt(call, 2),
-        ).staticNumber;
-        const height = this.context.compileValue(
-            argumentAt(call, 3),
-        ).staticNumber;
-        if (width !== undefined && height !== undefined) {
-            if (this.uiCanvasFullClearSizes.has(`${width}x${height}`)) {
-                return;
-            }
-            // Only a (width, height) pair the static assignments put THIS
-            // canvas through proves the rect covers its surface; matching
-            // one canvas's width with another's height proves nothing.
-            if (
-                canvasId !== undefined &&
-                this.uiCanvasStaticSizes
-                    .get(canvasId)
-                    ?.pairs.has(`${width}x${height}`)
-            ) {
-                return;
-            }
-            refuse(
-                `the static rect ${width}x${height} is neither a ` +
-                    "backing size statically assigned to this canvas " +
-                    "nor a logical size a reached scale() maps onto one",
-            );
-        }
-        refuse(
-            "the extent arguments are not reads of the canvas's own " +
-                "width and height",
-        );
-    }
-
     /** CSSStyleDeclaration camelCase to the CSS spelling consumed by RmlUi. */
     public nativeUiStyleProperty(property: string): string {
         const cssName = UiProjection.cssStylePropertyName(property);
@@ -3104,6 +3070,8 @@ export class UiProjection {
     }
 
     private lowerUiTextShadow(value: string): string | undefined {
+        // `none` removes an inherited shadow, as RmlUi's empty effect list does.
+        if (value.trim().toLowerCase() === "none") return "none";
         const shadows: string[] = [];
         let start = 0;
         let depth = 0;
@@ -3144,6 +3112,8 @@ export class UiProjection {
     /** Properties whose values RmlUi reads in its own grammar. */
     private static readonly UI_LOWERED_STYLE_VALUES = new EmissionSet([
         "border-image",
+        ...UI_BORDER_IMAGE_LONGHANDS,
+        ...UI_BORDER_LINE_PROPERTIES,
         "transform-origin",
     ]);
 
@@ -3153,29 +3123,57 @@ export class UiProjection {
         value: string,
         site?: ts.Node,
     ): string {
-        return property === "border-image"
-            ? this.lowerUiBorderImage(value, site)
+        if (UI_BORDER_LINE_PROPERTIES.includes(property)) {
+            // RmlUi's border shorthands read width, style and color in that
+            // order and reset nothing they omit; spell every CSS value so.
+            const important = /\s*!important\s*$/i.exec(value);
+            const line = uiBorderLine(
+                important ? value.slice(0, important.index) : value,
+            );
+            return line === undefined
+                ? value
+                : line + (important ? " !important" : "");
+        }
+        return property === "border-image" ||
+            UI_BORDER_IMAGE_LONGHANDS.has(property)
+            ? this.lowerUiBorderImage(property, value, site)
             : UiProjection.canonicalUiTransformOrigin(value);
     }
 
-    private lowerUiBorderImage(value: string, site?: ts.Node): string {
-        const image = /__BBLITE_UI_STYLE_\d+__/.test(value)
-            ? undefined
-            : parseUiBorderImage(value);
-        if (image === undefined) {
-            return this.uiStyleRefusal(
-                site,
-                "border-image",
-                "only a static raster URL with non-negative slices and widths, zero outset, stretch and no center fill is represented",
-            );
-        }
-        if (image === "none") return image;
-        return renderUiBorderImage(
-            image,
+    /** `border-image` or one of its longhands, its raster source packaged. */
+    private lowerUiBorderImage(
+        property: string,
+        value: string,
+        site?: ts.Node,
+    ): string {
+        const packaged = (source: string): string =>
             this.context.assetRegistry.registerAsset(
-                documentAssetSource(this.context, image.source),
+                documentAssetSource(this.context, source),
                 "texture",
-            ).output,
+            ).output;
+        let lowered: string | undefined;
+        if (!/__BBLITE_UI_STYLE_\d+__/.test(value)) {
+            if (property !== "border-image")
+                lowered = renderUiBorderImageLonghand(
+                    property,
+                    value,
+                    packaged,
+                );
+            else {
+                const image = parseUiBorderImage(value);
+                lowered =
+                    image === undefined || image === "none"
+                        ? image
+                        : renderUiBorderImage(image, packaged(image.source));
+            }
+        }
+        return (
+            lowered ??
+            this.uiStyleRefusal(
+                site,
+                property,
+                "only a static raster URL with non-negative slices and widths, zero outset, stretch and no center fill is represented",
+            )
         );
     }
 
@@ -3240,7 +3238,7 @@ export class UiProjection {
         value = authoredDeclarations.join(";");
         for (const declaration of customDeclarations) {
             const colon = declaration.indexOf(":");
-            this.refuseUnresolvableVariableMath(
+            this.refuseUnresolvableMath(
                 declaration.slice(0, colon).trim(),
                 declaration.slice(colon + 1).toLowerCase(),
                 site,
@@ -3370,7 +3368,9 @@ export class UiProjection {
                             "background",
                             "gradient layers require supported positions, nonnegative length/percentage sizes and no-repeat",
                         );
-                    return `${UiProjection.uiShorthandResetStyle("background")}decorator:${decorators};`;
+                    // The layers are the background image the PAL's
+                    // background cascade paints, as a longhand's are.
+                    return `${UiProjection.uiShorthandResetStyle("background")}background-color:transparent;background-image:${decorators};`;
                 },
             )
             // A browser background can combine a fallback colour with a
@@ -3407,18 +3407,6 @@ export class UiProjection {
             )
             .replace(/\boutline\s*:\s*([^;]+)\s*;?/gi, "--bbl-outline:$1;")
             .replace(/\bmix-blend-mode\s*:[^;]*;?/gi, "")
-            // RmlUi's border shorthand is `width color`; it deliberately
-            // omits CSS border-style because every non-zero border is solid.
-            // Translate the ordinary browser spelling instead of letting the
-            // entire declaration be rejected by its shorthand parser.
-            .replace(
-                /\b(border(?:-(?:top|right|bottom|left))?)\s*:\s*([^;\s]+)\s+solid\s+([^;]+)\s*;?/gi,
-                "$1:$2 $3;",
-            )
-            .replace(
-                /\b(border(?:-(?:top|right|bottom|left))?)\s*:\s*none\s*;?/gi,
-                "$1:0 transparent;",
-            )
             .replace(
                 /\bborder\s*:/gi,
                 `${UiProjection.uiShorthandResetStyle("border")}border:`,
@@ -3560,8 +3548,8 @@ export class UiProjection {
                 literal = literal.replace(/\btransform\b/g, "bbl-transform");
             } else if (property === "--bbl-outline") {
                 literal = literal.replace(
-                    /^(.+)\s+solid\s+(\d+(?:\.\d+)?px)$/,
-                    "$2 solid $1",
+                    /^(.+)\s+(solid|dashed)\s+(\d+(?:\.\d+)?px)$/,
+                    "$3 $2 $1",
                 );
             }
             nativeDeclarations.push(`${nativeProperty}:${literal}`);
@@ -4474,8 +4462,6 @@ export class UiProjection {
         const escapeText = (text: string): string =>
             text.replaceAll("&", "&amp;").replaceAll("<", "&lt;");
         const numeric = /^[+-]?(?:\d+(?:\.\d*)?|\.\d+)$/;
-        const color =
-            /^(?:none|currentColor|#[0-9a-f]{3,8}|rgba?\([^)]*\)|[a-z][a-z0-9-]*)$/i;
         const pathData =
             /^(?:(?:[MmLlHhVvCcSsQqTtAaZz])|(?:[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?)|[\s,])*$/;
         const svgAttributeSchemas: Record<
@@ -4614,27 +4600,14 @@ export class UiProjection {
             ): string => {
                 if (
                     (lowerName === "fill" || lowerName === "stroke") &&
-                    !color.test(value)
+                    !supportedUiSvgPaint(value)
                 ) {
                     fail(
                         `attribute '${name}' on <${tag}> has an unsupported color.`,
                     );
                 }
-                if (
-                    lowerName === "stroke-linecap" &&
-                    !/^(?:butt|round|square)$/.test(value)
-                ) {
-                    fail(
-                        "attribute 'stroke-linecap' has an unsupported value.",
-                    );
-                }
-                if (
-                    lowerName === "stroke-linejoin" &&
-                    !/^(?:miter|round|bevel)$/.test(value)
-                ) {
-                    fail(
-                        "attribute 'stroke-linejoin' has an unsupported value.",
-                    );
+                if (supportedUiSvgKeyword(lowerName, value) === false) {
+                    fail(`attribute '${lowerName}' has an unsupported value.`);
                 }
                 return value.toLowerCase() === "currentcolor" ? "white" : value;
             };
@@ -4963,7 +4936,7 @@ export class UiProjection {
                 (part) =>
                     typeof part !== "string" &&
                     (ts.isConditionalExpression(this.context.unwrap(part)) ||
-                        this.uiStoredMarkupShape(part) ||
+                        this.uiStoredMarkupShapes(part) ||
                         this.uiMarkupAlternatives(part, domains)),
             )
         )
@@ -5113,21 +5086,50 @@ export class UiProjection {
         for (const node of nodes) build(receiver, node);
     }
 
-    private uiStoredMarkupShape(
+    /**
+     * The shapes of a value whose fixed fragments carry markup. Several whole
+     * closed values are selected by value instead (the string domain).
+     */
+    private uiStoredMarkupShapes(
         expression: ts.Expression,
-    ): UiMarkupShape | undefined {
-        const shape = uiMarkupValueShape(expression, {
+    ): readonly UiMarkupShape[] | undefined {
+        const shapes = uiMarkupValueShapes(expression, {
             checker: this.context.checker,
             immutable: (node) =>
                 this.context.bindings.isImmutableVariable(node),
             rebound: (node) =>
                 this.context.sharedClosures.identifierIsRebound(node),
         });
-        return shape.some(
-            (part) => typeof part === "string" && /[<>]/.test(part),
-        )
-            ? shape
+        const markup = shapes.some((shape) =>
+            shape.some((part) => typeof part === "string" && /[<>]/.test(part)),
+        );
+        return markup &&
+            (shapes.length === 1 ||
+                shapes.some((shape) => shape.includes(null)))
+            ? shapes
             : undefined;
+    }
+
+    /** Whether a stored string holds `shape`'s fixed fragments around its span. */
+    private uiMarkupShapeTest(value: string, shape: UiMarkupShape): string {
+        const hole = shape.indexOf(null);
+        if (hole < 0)
+            return `${value} == ${this.context.cppString(shape.join(""))}`;
+        const before = shape.slice(0, hole).join("");
+        const after = shape.slice(hole + 1).join("");
+        return [
+            `bbl::js::string_length(${value}) >= ${before.length + after.length}`,
+            ...(before
+                ? [
+                      `bbl::js::string_starts_with(${value}, ${this.context.cppString(before)})`,
+                  ]
+                : []),
+            ...(after
+                ? [
+                      `bbl::js::string_ends_with(${value}, ${this.context.cppString(after)})`,
+                  ]
+                : []),
+        ].join(" && ");
     }
 
     /** The closed authored markups a runtime text holds one of (its closed string domain). */
@@ -5182,14 +5184,18 @@ export class UiProjection {
                     no: this.uiMarkupParts(node.whenFalse, domains),
                 },
             ];
-        const shape = this.uiStoredMarkupShape(node);
-        if (shape) {
-            if (shape.filter((part) => part === null).length > 1)
+        const shapes = this.uiStoredMarkupShapes(node);
+        if (shapes) {
+            if (
+                shapes.some(
+                    (shape) => shape.filter((part) => part === null).length > 1,
+                )
+            )
                 this.context.fail(
                     source,
                     "Native UI stored markup requires one runtime text span within fixed authored fragments.",
                 );
-            return [{ kind: "stored", expression: source, shape }];
+            return [{ kind: "stored", expression: source, shapes }];
         }
         const alternatives = this.uiMarkupAlternatives(node, domains);
         if (alternatives)
@@ -5220,7 +5226,8 @@ export class UiProjection {
                     typeof part !== "string" &&
                     (part.kind === "choice" ||
                         (part.kind === "selected" &&
-                            part.alternatives.length > 1)),
+                            part.alternatives.length > 1) ||
+                        (part.kind === "stored" && part.shapes.length > 1)),
             );
         if (ownerId !== undefined && hasChoices(sourceParts))
             this.uiMarkupAlternativeOwners.add(ownerId);
@@ -5251,13 +5258,14 @@ export class UiProjection {
                 const part = pending[index]!;
                 if (typeof part === "string") source += part;
                 else if (part.kind === "text") text(snapshot(part.expression));
-                else if (part.kind === "stored") {
-                    const value = snapshot(part.expression);
-                    const hole = part.shape.indexOf(null);
-                    if (hole < 0) source += part.shape.join("");
+                else if (part.kind === "stored" && part.shapes.length === 1) {
+                    const value = part.value ?? snapshot(part.expression);
+                    const shape = part.shapes[0]!;
+                    const hole = shape.indexOf(null);
+                    if (hole < 0) source += shape.join("");
                     else {
-                        const before = part.shape.slice(0, hole).join("");
-                        const after = part.shape.slice(hole + 1).join("");
+                        const before = shape.slice(0, hole).join("");
+                        const after = shape.slice(hole + 1).join("");
                         source += before;
                         text(
                             `bbl::js::string_substring(${value}, ${before.length}, bbl::js::string_length(${value}) - ${after.length})`,
@@ -5283,6 +5291,24 @@ export class UiProjection {
                         });
                         return `${lines.join("\n")}\nreturn ${result};`;
                     };
+                    if (part.kind === "stored") {
+                        const value = snapshot(part.expression);
+                        const shapes = uiMarkupShapesBySpecificity(part.shapes);
+                        const stored = (
+                            shape: UiMarkupShape,
+                        ): UiMarkupPart[] => [
+                            { ...part, shapes: [shape], value },
+                        ];
+                        // The string holds one of the shapes: the last needs no test.
+                        const tests = shapes
+                            .slice(0, -1)
+                            .map(
+                                (shape) =>
+                                    `if (${this.uiMarkupShapeTest(value, shape)}) {\n${branch(stored(shape))}\n}\n`,
+                            )
+                            .join("");
+                        return `([&]() -> std::string { ${tests}{\n${branch(stored(shapes.at(-1)!))}\n} }())`;
+                    }
                     if (part.kind === "selected") {
                         const value = this.context.bindings.pinValueToTemporary(
                             this.context.compileValue(part.expression),
@@ -6050,24 +6076,6 @@ export class UiProjection {
             !element.uiCanvasContext &&
             (property === "width" || property === "height")
         ) {
-            // The probe and the emission still compile the RHS twice:
-            // collapsing them to one `castNumber(size, "double")` is
-            // semantically clean, but the duplicate resolution burns
-            // anonymous-record counter numbers, and removing it
-            // renumbers quake's record types (Record22 -> Record18).
-            // Byte identity of generated/ wins until a renumbering
-            // window is open.
-            const staticSize = this.assignedValue(assigned).staticNumber;
-            if (staticSize !== undefined && element.uiCanvasId !== undefined) {
-                const sizes = this.uiCanvasStaticSizes.get(
-                    element.uiCanvasId,
-                ) ?? { pairs: new EmissionSet<string>() };
-                writable(sizes)[property] = staticSize;
-                if (sizes.width !== undefined && sizes.height !== undefined) {
-                    sizes.pairs.add(`${sizes.width}x${sizes.height}`);
-                }
-                this.uiCanvasStaticSizes.set(element.uiCanvasId, sizes);
-            }
             this.context.emit({
                 kind: "expression",
                 code:
@@ -6118,14 +6126,17 @@ export class UiProjection {
             if (
                 property === "font" ||
                 property === "textBaseline" ||
-                property === "shadowColor"
+                property === "shadowColor" ||
+                property === "imageSmoothingQuality"
             ) {
                 const runtimeProperty =
                     property === "textBaseline"
                         ? "text_baseline"
                         : property === "shadowColor"
                           ? "shadow_color"
-                          : "font";
+                          : property === "imageSmoothingQuality"
+                            ? "image_smoothing_quality"
+                            : "font";
                 this.context.emit({
                     kind: "expression",
                     code:
@@ -6373,7 +6384,8 @@ export class UiProjection {
         // Border images lower only from static text; other lowered values
         // pass a runtime string through as written.
         const staticValue =
-            nativeProperty === "border-image"
+            nativeProperty === "border-image" ||
+            UI_BORDER_IMAGE_LONGHANDS.has(nativeProperty)
                 ? (knownString ??
                   this.context.fail(
                       site,
@@ -6405,28 +6417,43 @@ export class UiProjection {
             );
             return;
         }
-        this.context.emit({
-            kind: "expression",
-            code:
-                `bbl::ui_set_style_property(${engine}, ${styleElement.cpp}, ` +
-                `${this.context.cppString(nativeProperty)}, ` +
-                `${styleValue});`,
-        });
-        for (const [name, value] of UiProjection.UI_SHORTHAND_RESETS.get(
-            property,
-        ) ?? []) {
+        // A shorthand resets the longhands it omits, once its value is
+        // evaluated, before it sets the ones it names.
+        const resets = UiProjection.UI_SHORTHAND_RESETS.get(property) ?? [];
+        let written = styleValue;
+        if (
+            resets.length > 0 &&
+            staticValue === undefined &&
+            knownString === undefined
+        ) {
+            written = this.context.allocateTemporaryCppName("style_value");
+            this.context.emit({
+                kind: "declaration",
+                type: "std::string",
+                name: written,
+                initializer: styleValue,
+            });
+        }
+        for (const [name, value] of resets) {
             this.context.emit({
                 kind: "expression",
                 code: `bbl::ui_set_style_property(${engine}, ${styleElement.cpp}, ${this.context.cppString(this.nativeUiStyleProperty(name))}, ${this.context.cppString(value)});`,
             });
         }
+        this.context.emit({
+            kind: "expression",
+            code:
+                `bbl::ui_set_style_property(${engine}, ${styleElement.cpp}, ` +
+                `${this.context.cppString(nativeProperty)}, ${written});`,
+        });
     }
 
     /**
-     * A `background` write: the colour, RmlUi's clip reset, and each PAL
-     * longhand at the value's CSS-wide keyword (the PAL resolves it; a clip
-     * one overrides RmlUi's) or else its initial value (no clip override),
-     * chosen at generation for a `known` value and else at run time.
+     * A `background` write: RmlUi's clip reset and each PAL longhand at the
+     * value's CSS-wide keyword (the PAL resolves it; a clip one overrides
+     * RmlUi's) or else its initial value (no clip override), chosen at
+     * generation for a `known` value and else at run time; then the value,
+     * which the PAL tells apart as a colour or plain gradient layers.
      */
     private emitUiBackgroundShorthand(
         engine: string,
@@ -6443,7 +6470,6 @@ export class UiProjection {
                 ? `bbl::ui_background_longhand(${shorthand}, ${this.context.cppString(initial)})`
                 : this.context.cppString(cssWideKeyword(known) ?? initial);
         const declarations: (readonly [string, string])[] = [
-            ["--bbl-background-color", shorthand],
             ["background-clip", this.context.cppString("border-box")],
             ...UiProjection.UI_BACKGROUND_RESETS.map(
                 ([name, initial]) =>
@@ -6458,6 +6484,10 @@ export class UiProjection {
                 kind: "expression",
                 code: `bbl::ui_set_style_property(${engine}, ${element}, ${this.context.cppString(name)}, ${cpp});`,
             });
+        this.context.emit({
+            kind: "expression",
+            code: `bbl::ui_set_background(${engine}, ${element}, ${shorthand});`,
+        });
     }
 
     public removeUiStyleProperty(
@@ -6498,7 +6528,6 @@ export class UiProjection {
                 uiTag: "canvas",
                 uiCanvas: true,
                 uiPrimaryCanvas: true,
-                uiCanvasId: this.retainedCanvasId(ids[0]!),
                 truthinessCpp: "true",
             };
         }

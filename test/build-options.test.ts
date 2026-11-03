@@ -86,6 +86,7 @@ test("the repository manifest automatically feeds the full dev set", () => {
         [
             "compression",
             "http",
+            "indexeddb",
             "jpeg",
             "locale",
             "meshopt",
@@ -225,12 +226,12 @@ test("normalizes retained CSS cascade keywords and measures width resets", () =>
     );
     assert.match(intrinsic, /cascaded_declaration\(handle, record, "width"\)/);
     assert.match(intrinsic, /is_concrete_authored_width\(width\)/);
-    const cascade = cppFunction(
-        projection,
-        "std::string cascaded_declaration(",
+    assert.match(
+        cppFunction(projection, "std::string cascaded_declaration("),
+        /cascade_declaration\(record, property,[\s\S]*for_each_matching_style_rule\(handle, callback\)/,
     );
+    const cascade = cppFunction(projection, "std::string cascade_declaration(");
     assert.match(cascade, /CascadedUiDeclaration cascaded/);
-    assert.match(cascade, /for_each_matching_style_rule/);
     assert.match(
         cascade,
         /consider_cascaded_declaration\(cascaded, take_css_declaration\(style, property\),\s*ui_style_rule_specificity\(rule\), rule_order\)/,

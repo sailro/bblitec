@@ -1240,7 +1240,8 @@ test("material record fields refuse the wrong family through aliases and helpers
         ["uvScale", "[1, 1]"],
         ["specularPower", "8"],
         ["lightmapLevel", "1"],
-        ["alphaCutOff", "0.2"],
+        // alphaCutOff is inert on PBR, whose pin reads `_alphaCutOff`
+        // (pbr-material-copy.test.ts).
         ["disableLighting", "true"],
         ["backFaceCulling", "false"],
     ]) {

@@ -11,6 +11,7 @@ import {
     recordIdentity,
 } from "../src/compiler/record-components.js";
 import { ReplayStorage } from "../src/compiler/replay-storage.js";
+import { CompileError } from "../src/compiler/compile-error.js";
 import {
     optionalNativeFixtureTools,
     runGeneratedProgram,
@@ -244,6 +245,42 @@ test("record components and replay keep source instantiations separate", () => {
     );
     assert.equal(storage.joinsAlreadyHeld(numericRequest), true);
     assert.equal(storage.joinsAlreadyHeld(stringRequest), true);
+});
+
+test("a record demand no native object can hold stands refused across replays", () => {
+    const { checker, sourceFile } = createCompilerProgram(
+        "interface Plain{value:number}",
+        resolve("refused-record-demand.ts"),
+    );
+    const declaration = sourceFile.statements.find(ts.isInterfaceDeclaration)!;
+    const demand = {
+        identity: "plain-record",
+        type: checker.getTypeAtLocation(declaration.name),
+        node: declaration,
+        frames: [],
+    };
+    const refusal = new CompileError(
+        "refused-record-demand.ts",
+        1,
+        1,
+        "Demanded record no longer has a native object representation.",
+    );
+    const storage = new ReplayStorage(checker);
+    assert.equal(storage.add({ kind: "record", demand }), true);
+    // The refusal replaces the demand: the replay holds no record for it.
+    assert.equal(
+        storage.add({ kind: "refused-record", demand, refusal }),
+        true,
+    );
+    assert.equal(storage.records.size, 0);
+    assert.equal(storage.refusedRecord(demand), refusal);
+    // Demanding it again neither replays nor holds it.
+    assert.equal(storage.add({ kind: "record", demand }), false);
+    assert.equal(
+        storage.add({ kind: "refused-record", demand, refusal }),
+        false,
+    );
+    assert.equal(storage.records.size, 0);
 });
 
 check(

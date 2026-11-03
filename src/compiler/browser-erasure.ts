@@ -37,6 +37,8 @@ import {
     functionKind,
     variableKind,
     isMemberAccess,
+    ANY_KEY,
+    writeSites,
 } from "./syntax.js";
 import { promiseExecutor } from "./promise-executor.js";
 import { isNativeBrowserFileExpression } from "./browser-file.js";
@@ -58,8 +60,10 @@ import {
     libraryStaticMember,
     isLibraryStatic,
     accessedPropertySymbol,
+    declarationOrigin,
     GLOBAL_OBJECT_NAMES,
 } from "./symbols.js";
+import { searchParamsMutators } from "./search-params.js";
 import { foldMathCall, mathMemberCall } from "./math-intrinsics.js";
 import type { Value } from "./types.js";
 import { staticStringValue } from "./types.js";
@@ -80,6 +84,7 @@ import {
     presentMembers,
     isVoid,
     callSignatures,
+    holdsOnly,
 } from "./type-facts.js";
 
 /**
@@ -150,6 +155,7 @@ const NATIVE_PLATFORM_CLASSES: ReadonlySet<string> = new Set([
     "AbortSignal",
     "DOMException",
     "URL",
+    "Blob",
 ]);
 
 /** A browser value the fold spells as a literal: a number, string, boolean, null or undefined. */
@@ -172,6 +178,25 @@ const ABSENT_GLOBAL_MEMBERS: ReadonlySet<string> = new Set([
     "showDirectoryPicker",
     "showOpenFilePicker",
     "showSaveFilePicker",
+]);
+
+/** The durable storage globals the PAL owns: Web Storage and IndexedDB. */
+const STORAGE_GLOBALS: ReadonlySet<string> = new Set([
+    "localStorage",
+    "sessionStorage",
+    "indexedDB",
+]);
+
+/** The object model of those globals (`web-storage.ts`, `indexed-db.ts`). */
+const STORAGE_TYPES: ReadonlySet<string> = new Set([
+    "Storage",
+    "IDBFactory",
+    "IDBOpenDBRequest",
+    "IDBRequest",
+    "IDBDatabase",
+    "IDBTransaction",
+    "IDBObjectStore",
+    "IDBCursorWithValue",
 ]);
 
 export function isAbsentWindowMember(name: string): boolean {
@@ -1179,28 +1204,28 @@ export class BrowserErasure {
     }
 
     /**
-     * The `localStorage` or `sessionStorage` global, or a read or call on
-     * it. Spelled through the same global recognizer as every other host
+     * A durable storage global -- `localStorage`, `sessionStorage` or
+     * `indexedDB` -- or a value of its object model, or a read or call on
+     * one. Spelled through the same global recognizer as every other host
      * object, so `window.localStorage` and a lexical shadow answer correctly.
      */
-    private isWebStorageExpression(expression: ts.Expression): boolean {
+    private isStorageExpression(expression: ts.Expression): boolean {
         const unwrapped = this.context.unwrap(expression);
         const global = this.context.libraryGlobal(unwrapped);
-        if (global === "localStorage" || global === "sessionStorage") {
-            return true;
-        }
+        if (global && STORAGE_GLOBALS.has(global)) return true;
         const type = this.context.checker.getNonNullableType(
             this.context.checker.getTypeAtLocation(unwrapped),
         );
-        if (libraryName(type) === "Storage") return true;
+        const name = libraryName(type);
+        if (name && STORAGE_TYPES.has(name)) return true;
         if (
             ts.isPropertyAccessExpression(unwrapped) ||
             ts.isElementAccessExpression(unwrapped)
         ) {
-            return this.isWebStorageExpression(unwrapped.expression);
+            return this.isStorageExpression(unwrapped.expression);
         }
         if (ts.isCallExpression(unwrapped)) {
-            return this.isWebStorageExpression(unwrapped.expression);
+            return this.isStorageExpression(unwrapped.expression);
         }
         return false;
     }
@@ -1319,7 +1344,8 @@ export class BrowserErasure {
             : undefined;
         if (
             calledMember &&
-            ["set", "toString"].includes(calledMember.name) &&
+            (calledMember.name === "toString" ||
+                searchParamsMutators.has(calledMember.name)) &&
             this.browserValueOf(calledMember.expression)?.kind ===
                 "search-params"
         )
@@ -1362,12 +1388,12 @@ export class BrowserErasure {
         if (this.isPlatformPointerLockCall(unwrapped)) {
             return false;
         }
-        // Web Storage is the third: `localStorage` is durable per-user
-        // data, which the PAL owns outright, so a read of it is a platform
-        // value rather than browser state with nothing behind it. Erasing
-        // it would turn every load into "no save" and every save into a
-        // silent no-op.
-        if (this.isWebStorageExpression(unwrapped)) {
+        // Durable storage is the third: Web Storage and IndexedDB hold
+        // per-user data, which the PAL owns outright, so a read of it is a
+        // platform value rather than browser state with nothing behind it.
+        // Erasing it would turn every load into "no save" and every save
+        // into a silent no-op.
+        if (this.isStorageExpression(unwrapped)) {
             return false;
         }
         if (
@@ -1849,6 +1875,7 @@ export class BrowserErasure {
                     "globalThis",
                     "document",
                     "localStorage",
+                    "indexedDB",
                     "navigator",
                 ].includes(global)
             ) {
@@ -2392,9 +2419,186 @@ export class BrowserErasure {
         const unwrapped = this.context.unwrap(expression);
         return (
             ts.isPropertyAccessExpression(unwrapped) &&
-            ABSENT_GLOBAL_MEMBERS.has(unwrapped.name.text) &&
-            this.isGlobalObject(unwrapped.expression)
+            this.isGlobalObject(unwrapped.expression) &&
+            (ABSENT_GLOBAL_MEMBERS.has(unwrapped.name.text) ||
+                this.isUninstalledProgramGlobal(unwrapped))
         );
+    }
+
+    /**
+     * A member of the global object only the program's own types declare
+     * (`(globalThis as { bridge?: Bridge }).bridge`): a host page or shell
+     * installs it, and none does natively, so it is absent unless the
+     * program writes it onto the global object itself.
+     */
+    private isUninstalledProgramGlobal(
+        access: ts.PropertyAccessExpression,
+    ): boolean {
+        const declarations =
+            accessedPropertySymbol(this.context.checker, access)
+                ?.declarations ?? [];
+        if (
+            declarations.length === 0 ||
+            !declarations.every(
+                (declaration) => declarationOrigin(declaration) === "program",
+            )
+        )
+            return false;
+        const written = this.programGlobalWrites();
+        return !written.has(access.name.text) && !written.has(ANY_KEY);
+    }
+
+    /** @unjournaled A fact of the parsed program, kept across replays. */
+    private globalWrites: ReadonlySet<string> | undefined;
+
+    /**
+     * The global object's members some program write sets, by name;
+     * {@link ANY_KEY} for a computed key or a reflective writer
+     * (`Object.assign(window, ...)`, `Object.defineProperty(globalThis, ...)`).
+     */
+    private programGlobalWrites(): ReadonlySet<string> {
+        if (this.globalWrites) return this.globalWrites;
+        const sites = this.globalWriteSites();
+        // Every write first: deciding a branch below may itself ask which
+        // members the program writes, and then reads this superset.
+        this.globalWrites = new Set(sites.map(({ name }) => name));
+        // Out of any helper's frame: a condition is decided for every call.
+        const frames = this.helperBodies.splice(0);
+        try {
+            this.globalWrites = new Set(
+                sites
+                    .filter(({ node }) => !this.inRuledOutBranch(node))
+                    .map(({ name }) => name),
+            );
+        } finally {
+            this.helperBodies.push(...frames);
+        }
+        return this.globalWrites;
+    }
+
+    /** @unjournaled A fact of the checked program, kept across replays. */
+    private globalObjectTypes: readonly ts.Type[] | undefined;
+
+    /**
+     * Whether a write receiver may be the global object: the global object
+     * as written, or any value its type admits it into (an alias, a
+     * parameter, a call's result, `any`), except a fresh literal.
+     */
+    private mayHoldGlobalObject(expression: ts.Expression): boolean {
+        if (this.isGlobalObject(expression)) return true;
+        const unwrapped = this.context.unwrap(expression);
+        if (
+            ts.isObjectLiteralExpression(unwrapped) ||
+            ts.isArrayLiteralExpression(unwrapped) ||
+            ts.isNewExpression(unwrapped) ||
+            ts.isFunctionLike(unwrapped)
+        )
+            return false;
+        const checker = this.context.checker;
+        const receiver = checker.getTypeAtLocation(unwrapped);
+        if (
+            (receiver.flags &
+                (ts.TypeFlags.Any |
+                    ts.TypeFlags.Unknown |
+                    ts.TypeFlags.TypeParameter)) !==
+            0
+        )
+            return true;
+        this.globalObjectTypes ??= (
+            [
+                ["Window", ts.SymbolFlags.Type],
+                ["globalThis", ts.SymbolFlags.Value],
+            ] as const
+        ).flatMap(([name, meaning]) => {
+            const symbol = checker.resolveName(name, undefined, meaning, false);
+            if (!symbol) return [];
+            return [
+                meaning === ts.SymbolFlags.Type
+                    ? checker.getDeclaredTypeOfSymbol(symbol)
+                    : checker.getTypeOfSymbol(symbol),
+            ];
+        });
+        return this.globalObjectTypes.some((global) =>
+            checker.isTypeAssignableTo(global, receiver),
+        );
+    }
+
+    /**
+     * The member a write names: a property, a string literal key, none for
+     * a numeric key (no program global is an index), else {@link ANY_KEY}.
+     */
+    private writtenMemberName(
+        access: ts.PropertyAccessExpression | ts.ElementAccessExpression,
+    ): string | undefined {
+        if (ts.isPropertyAccessExpression(access)) return access.name.text;
+        const key = this.context.unwrap(access.argumentExpression);
+        if (ts.isStringLiteralLike(key)) return key.text;
+        return holdsOnly(this.context.checker.getTypeAtLocation(key), [
+            "number",
+        ])
+            ? undefined
+            : ANY_KEY;
+    }
+
+    /**
+     * Each program write of a global object member: its name and its node.
+     * A write through any receiver that may hold the global object counts.
+     */
+    private globalWriteSites(): { name: string; node: ts.Node }[] {
+        const sites: { name: string; node: ts.Node }[] = [];
+        for (const source of this.context.sourceFiles())
+            forEachAnalysisNode(source, (node) => {
+                for (const { target } of writeSites(node)) {
+                    const access = this.context.unwrap(target);
+                    if (!isMemberAccess(access)) continue;
+                    const name = this.writtenMemberName(access);
+                    if (
+                        name !== undefined &&
+                        this.mayHoldGlobalObject(access.expression)
+                    )
+                        sites.push({ name, node });
+                }
+                const callee = ts.isCallExpression(node)
+                    ? this.context.unwrap(node.expression)
+                    : undefined;
+                if (
+                    ts.isCallExpression(node) &&
+                    callee &&
+                    isMemberAccess(callee) &&
+                    ["Object", "Reflect"].includes(
+                        this.context.libraryGlobal(callee.expression) ?? "",
+                    ) &&
+                    node.arguments[0] !== undefined &&
+                    this.mayHoldGlobalObject(node.arguments[0])
+                )
+                    sites.push({ name: ANY_KEY, node });
+            });
+        return sites;
+    }
+
+    /**
+     * Whether `node` sits in an if-branch the browser state rules out at
+     * generation (`if (params.has("debug")) window.cc = ...`): it never runs
+     * natively. Only the conditions around a site are decided.
+     */
+    private inRuledOutBranch(node: ts.Node): boolean {
+        for (
+            let child: ts.Node = node, parent = node.parent;
+            parent !== undefined;
+            child = parent, parent = parent.parent
+        ) {
+            if (!ts.isIfStatement(parent) || child === parent.expression)
+                continue;
+            const taken = this.browserTruthy(
+                this.browserValueOf(parent.expression),
+            );
+            if (
+                (taken === false && child === parent.thenStatement) ||
+                (taken === true && child === parent.elseStatement)
+            )
+                return true;
+        }
+        return false;
     }
 
     /**

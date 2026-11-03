@@ -162,10 +162,174 @@ test("application images retain both logical and hashed outputs for one source",
     for (const asset of assets) assert.ok(result.cpp.includes(asset.output));
 });
 
+test("runtime img src reads a member a conditional spread copies", () => {
+    const result = compileEntry(`
+        interface BadgeDetails { picture?: string; pinned?: boolean }
+        function addBadge(name: string, details: BadgeDetails = {}): void {
+            const badge = {
+                name,
+                ...(details.picture ? { picture: details.picture } : {}),
+                ...(details.pinned ? { pinned: true } : {}),
+            };
+            const img = document.createElement("img");
+            img.id = badge.name;
+            img.src = appUrl(badge.picture ?? "/assets/ui/red.png");
+            document.body.append(img);
+        }
+        addBadge("a", { picture: "/assets/ui/green.png" });
+        addBadge("b", { pinned: true });
+    `);
+    const outputs = result.manifest.assets.map((asset) => asset.output);
+    for (const name of ["red", "green"])
+        assert.ok(outputs.includes(`assets/ui/${name}.png`), name);
+    assert.ok(!outputs.includes("assets/ui/blue.png"));
+});
+
+test("runtime img src reads sorted, flat-mapped and named-callback records whose spreads lack the member", () => {
+    const result = compileEntry(`
+        interface Tool { name: string; image: string; wide?: boolean }
+        const shelves: Tool[][] = [
+            [{ name: "a", image: "/assets/ui/red.png" }],
+            [{ name: "b", image: "/assets/ui/green.png", wide: true }],
+        ];
+        const toButton = (tool: Tool) => ({
+            name: tool.name,
+            image: appUrl(tool.image),
+            ...(tool.wide ? { wide: true } : {}),
+        });
+        const buttons = shelves.flatMap((shelf) => shelf).map(toButton);
+        buttons.sort((left, right) => left.name.localeCompare(right.name));
+        for (const button of buttons) {
+            const img = document.createElement("img");
+            img.src = button.image;
+            document.body.append(img);
+        }
+    `);
+    const outputs = result.manifest.assets.map((asset) => asset.output);
+    for (const name of ["red", "green"])
+        assert.ok(outputs.includes(`assets/ui/${name}.png`), name);
+    assert.ok(!outputs.includes("assets/ui/blue.png"));
+});
+
+test("runtime img src reads requests a class queue holds in private fields", () => {
+    const result = compileEntry(`
+        interface Card { name: string; picture?: string }
+        class Deck<T> {
+            readonly #waiting: T[] = [];
+            #shown: T | null = null;
+            deal(card: T, onTop = false): T | null {
+                if (this.#shown) {
+                    if (onTop) this.#waiting.splice(0, 0, card);
+                    else this.#waiting.push(card);
+                    return null;
+                }
+                this.#shown = card;
+                return card;
+            }
+            turn(): T | null {
+                this.#shown = this.#waiting.shift() ?? null;
+                return this.#shown;
+            }
+            // Surviving cards go back in: a copy cycle through the field.
+            discard(keep: (card: T) => boolean): void {
+                const survivors: T[] = [];
+                for (let at = 0; at < this.#waiting.length; at++)
+                    if (keep(this.#waiting[at]!)) survivors.push(this.#waiting[at]!);
+                this.#waiting.length = 0;
+                this.#waiting.push(...survivors);
+            }
+        }
+        const deck = new Deck<Card>();
+        function reveal(card: Card): void {
+            const img = document.createElement("img");
+            img.id = card.name;
+            img.src = appUrl(card.picture ?? "/assets/ui/red.png");
+            document.body.append(img);
+        }
+        const dealt = deck.deal({ name: "a", picture: "/assets/ui/green.png" });
+        if (dealt) reveal(dealt);
+        deck.deal({ name: "b" }, true);
+        deck.discard((card) => card.name !== "c");
+        const turned = deck.turn();
+        if (turned) reveal(turned);
+    `);
+    const outputs = result.manifest.assets.map((asset) => asset.output);
+    for (const name of ["red", "green"])
+        assert.ok(outputs.includes(`assets/ui/${name}.png`), name);
+    assert.ok(!outputs.includes("assets/ui/blue.png"));
+});
+
+test("runtime img src reads the parameters a spread tuple fills", () => {
+    const result = compileEntry(`
+        type Shade = "red" | "green";
+        interface Painter { paint(shade: Shade, picture?: string): void }
+        function createPainter(): Painter {
+            return {
+                paint(shade: Shade, picture?: string): void {
+                    const img = document.createElement("img");
+                    img.src = picture ?? appUrl(\`/assets/ui/\${shade}.png\`);
+                    document.body.append(img);
+                },
+            };
+        }
+        // A lazily created singleton: one shared body serves every call.
+        let painter: Painter | null = null;
+        const sharedPainter = (): Painter => (painter ??= createPainter());
+        function schedule(job: { stroke?: Parameters<Painter["paint"]> }): void {
+            if (job.stroke) sharedPainter().paint(...job.stroke);
+        }
+        schedule({ stroke: ["red"] });
+        schedule({ stroke: ["green", appUrl("/assets/ui/blue.png")] });
+        // No tuple: the spread is never reached.
+        schedule({});
+    `);
+    const outputs = result.manifest.assets.map((asset) => asset.output);
+    for (const name of ["red", "green", "blue"])
+        assert.ok(outputs.includes(`assets/ui/${name}.png`), name);
+});
+
+test("runtime img src reads the calls a function stored in a typed slot receives", () => {
+    const show = `
+        function show(icon: string): void {
+            const img = document.createElement("img");
+            img.src = appUrl(icon);
+            document.body.append(img);
+        }
+        show("/assets/ui/red.png");`;
+    for (const body of [
+        // A frozen record its binding's type declares the member of.
+        `interface Api { show(icon: string): void }
+        const api: Api = Object.freeze({ show });
+        api.show("/assets/ui/blue.png");`,
+        // A const its function type annotates.
+        `const stored: (icon: string) => void = show;
+        stored("/assets/ui/blue.png");`,
+    ]) {
+        const outputs = compileEntry(`${show}${body}`).manifest.assets.map(
+            (asset) => asset.output,
+        );
+        for (const name of ["red", "blue"])
+            assert.ok(outputs.includes(`assets/ui/${name}.png`), name);
+    }
+    // A member no type declares can be called through any type: its calls are unseen.
+    assert.throws(
+        () =>
+            compileEntry(
+                `${show} const api = { show }; api.show("/assets/ui/blue.png");`,
+            ),
+        /An img src write requires sources generation can package/,
+    );
+});
+
 test("runtime img src strings generation cannot bound refuse", () => {
     for (const [body, pattern] of [
         [
             `const img = document.createElement("img"); img.src = localStorage.getItem("icon") ?? "";`,
+            /An img src write requires sources generation can package/,
+        ],
+        [
+            // A cycle through a string operation has no closed domain.
+            `const img = document.createElement("img"); let path = "/assets/ui/red"; while (performance.now() < 0) path = path + "d"; img.src = appUrl(path + ".png");`,
             /An img src write requires sources generation can package/,
         ],
         [

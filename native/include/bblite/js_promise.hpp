@@ -5,6 +5,7 @@
 #include <bblite/js_module_namespace.hpp>
 #include <bblite/pal_event_loop.hpp>
 
+#include <array>
 #include <optional>
 #include <variant>
 
@@ -57,6 +58,8 @@ template <typename T> struct State {
     std::vector<Reaction> reactions;
     bool resolving = false;
     bool handled = false;
+    /** Its resolving functions' identities; zero until a listener registration asks. */
+    std::array<std::size_t, 2> resolving_identities{};
     void require_owner() const {
         if (owner != std::this_thread::get_id())
             throw std::logic_error("A Promise crossed realm ownership.");
@@ -128,6 +131,13 @@ public:
     Promise() : state_(make_gc_shared<State>()) {}
     const void* get() const noexcept { return view_ ? view_->get() : state_.get(); }
     const void* identity() const noexcept { return get(); }
+    /** The identity of its resolve (false) or reject (true) function, minted when first asked. */
+    [[nodiscard]] std::size_t resolving_function_identity(bool reject) const {
+        auto& identity = state_->resolving_identities[reject ? 1 : 0];
+        if (identity == 0)
+            identity = next_callback_identity();
+        return identity;
+    }
     template <typename U> bool operator==(const Promise<U>& other) const noexcept {
         return get() == other.get();
     }

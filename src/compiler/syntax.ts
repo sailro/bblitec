@@ -673,11 +673,13 @@ export function hasNonNullAssertion(expression: ts.Expression): boolean {
 export function rootExpression(
     expression: ts.Expression,
     unwrap: (expression: ts.Expression) => ts.Expression = unwrapExpression,
+    isRoot?: (access: MemberAccess) => boolean,
 ): ts.Expression {
     let current = unwrap(expression);
     while (
-        ts.isPropertyAccessExpression(current) ||
-        ts.isElementAccessExpression(current)
+        (ts.isPropertyAccessExpression(current) ||
+            ts.isElementAccessExpression(current)) &&
+        !isRoot?.(current)
     ) {
         current = unwrap(current.expression);
     }
@@ -688,16 +690,18 @@ export function rootExpression(
  * The expressions whose objects `expression` evaluates to or into: the root
  * of its access chain, and through a selection the root of each operand it
  * may yield (`(c ? a : b).n` is in `a` or in `b`). A root that is no name
- * -- a call, a literal -- is its caller's to follow.
+ * -- a call, a literal -- is its caller's to follow; `isRoot` names an access
+ * that is a root itself (a binding the caller models, a private field).
  */
 export function referenceBases(
     expression: ts.Expression,
     unwrap: (expression: ts.Expression) => ts.Expression = unwrapExpression,
+    isRoot?: (access: MemberAccess) => boolean,
 ): readonly ts.Expression[] {
-    const root = rootExpression(expression, unwrap);
+    const root = rootExpression(expression, unwrap, isRoot);
     if (!isOperandSelection(root)) return [root];
     return valueOperands(root, unwrap).flatMap((operand) =>
-        operand === root ? [root] : referenceBases(operand, unwrap),
+        operand === root ? [root] : referenceBases(operand, unwrap, isRoot),
     );
 }
 
@@ -932,6 +936,15 @@ export type ParameterInput =
     | { readonly kind: "rest"; readonly arguments: readonly ts.Expression[] }
     /** No argument: its default, or undefined. */
     | { readonly kind: "default"; readonly initializer?: ts.Expression }
+    /**
+     * An element of a spread bounded tuple at its position (`f(...pair)`,
+     * `pair: [Kind, string?]`): the checker's `parameterInput` decides it.
+     */
+    | {
+          readonly kind: "element";
+          readonly spread: ts.Expression;
+          readonly index: number;
+      }
     /** A spread at or before its position leaves it to the run time. */
     | { readonly kind: "unknown" };
 
@@ -1686,16 +1699,15 @@ export type DataMember = Extract<
 export function plainDataMembers(
     literal: ts.ObjectLiteralExpression,
 ): readonly DataMember[] | undefined {
-    const members: DataMember[] = [];
-    for (const member of objectLiteralMembers(literal)) {
-        if (
-            (member.kind !== "property" && member.kind !== "shorthand") ||
-            member.key === undefined
-        )
-            return undefined;
-        members.push({ ...member, key: member.key });
-    }
-    return members;
+    const members = objectLiteralMembers(literal);
+    return members.every(isDataMember) ? members : undefined;
+}
+
+function isDataMember(member: ObjectMember): member is DataMember {
+    return (
+        (member.kind === "property" || member.kind === "shorthand") &&
+        member.key !== undefined
+    );
 }
 
 /**
@@ -1735,6 +1747,103 @@ export function objectProperty(
 ): ts.Expression | undefined {
     const writer = lastWriter(objectLiteralMembers(object), name);
     return writer === "unknown" ? undefined : writer?.value;
+}
+
+/**
+ * Whether an operand is absent: syntax alone knows `null`; a caller with a
+ * checker also knows `undefined` and `void 0` (`isNullishLiteral`).
+ */
+export type AbsentOperand = (operand: ts.Expression) => boolean;
+
+const nullOperand: AbsentOperand = (operand) =>
+    operand.kind === ts.SyntaxKind.NullKeyword;
+
+/**
+ * The object literals a spread operand spreads, whichever operand it yields
+ * ({@link yieldedOperands}): an operand yielding no truthy value, or an
+ * absent one, adds nothing (`undefined` in the list); undefined when one may
+ * spread anything else.
+ */
+function spreadLiterals(
+    operand: ts.Expression,
+    absent: AbsentOperand,
+): (ts.ObjectLiteralExpression | undefined)[] | undefined {
+    const arms: (ts.ObjectLiteralExpression | undefined)[] = [];
+    for (const { operand: value, classes } of yieldedOperands(operand)) {
+        if (ts.isObjectLiteralExpression(value)) arms.push(value);
+        else if (!classes.has("truthy") || absent(value)) arms.push(undefined);
+        else return undefined;
+    }
+    return arms;
+}
+
+/**
+ * The keys an object literal can hold when it only stores named data,
+ * through spreads of literals ({@link spreadLiterals}) too; undefined when
+ * a method, accessor, `__proto__` setter, run-time key or other spread may
+ * add one.
+ */
+export function literalDataKeys(
+    literal: ts.ObjectLiteralExpression,
+    absent: AbsentOperand = nullOperand,
+): readonly string[] | undefined {
+    const keys = new Set<string>();
+    for (const member of objectLiteralMembers(literal)) {
+        if (member.kind === "spread") {
+            const arms = spreadLiterals(member.node.expression, absent);
+            if (!arms) return undefined;
+            for (const arm of arms) {
+                if (!arm) continue;
+                const inner = literalDataKeys(arm, absent);
+                if (!inner) return undefined;
+                inner.forEach((key) => keys.add(key));
+            }
+        } else if (isDataMember(member)) keys.add(member.key);
+        else return undefined;
+    }
+    return [...keys];
+}
+
+/**
+ * Every value `key` can take in a literal storing only named data, through
+ * spreads of literals ({@link spreadLiterals}) too, whichever arm supplies
+ * it, and whether one is always written; undefined for any other literal.
+ */
+export function literalPropertyValues(
+    literal: ts.ObjectLiteralExpression,
+    key: string,
+    absent: AbsentOperand = nullOperand,
+):
+    | { readonly values: readonly ts.Expression[]; readonly definite: boolean }
+    | undefined {
+    let values: ts.Expression[] = [];
+    let definite = false;
+    for (const member of objectLiteralMembers(literal)) {
+        if (member.kind === "spread") {
+            const arms = spreadLiterals(member.node.expression, absent);
+            if (!arms) return undefined;
+            const written: {
+                values: readonly ts.Expression[];
+                definite: boolean;
+            }[] = [];
+            for (const arm of arms) {
+                const inner = arm
+                    ? literalPropertyValues(arm, key, absent)
+                    : { values: [], definite: false };
+                if (!inner) return undefined;
+                written.push(inner);
+            }
+            const always = written.every((arm) => arm.definite);
+            const added = written.flatMap((arm) => arm.values);
+            values = always ? added : [...values, ...added];
+            definite ||= always;
+        } else if (!isDataMember(member)) return undefined;
+        else if (member.key === key) {
+            values = [member.value];
+            definite = true;
+        }
+    }
+    return { values, definite };
 }
 
 /** An array literal element and the index it lands at. */

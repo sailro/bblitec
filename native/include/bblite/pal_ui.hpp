@@ -3,6 +3,7 @@
 #include <bblite/features/has_browser_file.hpp>
 #include <bblite/features/workers.hpp>
 
+#include <bblite/js_data.hpp>
 #include <bblite/runtime.hpp>
 #if BBLITE_WORKERS
 #include <bblite/js_promise.hpp>
@@ -34,6 +35,9 @@ UiElementHandle ui_create_svg_element(Engine& engine, std::string_view tag);
 bool ui_image_complete(Engine&, UiElementHandle);
 double ui_image_natural_width(Engine&, UiElementHandle);
 double ui_image_natural_height(Engine&, UiElementHandle);
+/** An unrendered img's width/height: its dimension attribute, else its natural size, else 0. */
+double ui_image_width(Engine&, UiElementHandle);
+double ui_image_height(Engine&, UiElementHandle);
 js::Promise<js::PromiseVoid> ui_decode_image(Engine&, UiElementHandle);
 #endif
 UiElementHandle ui_create_text_node(Engine& engine, std::string text);
@@ -74,6 +78,8 @@ enum class UiTreeRead {
     NextNode
 };
 double ui_child_count(Engine& engine, UiElementHandle node, bool elements_only);
+/** `element.children` now: its element children in order, a fresh array. */
+js::Array<UiElementHandle> ui_element_children(Engine& engine, UiElementHandle node);
 js::Nullable<UiElementHandle> ui_tree_element(Engine& engine, UiElementHandle node,
                                               UiTreeRead read);
 std::string ui_text_content(Engine& engine, UiElementHandle node);
@@ -149,9 +155,14 @@ void ui_set_style_property(Engine& engine, UiElementHandle element, std::string 
                            std::string value);
 /** What a run-time `background` shorthand gives a longhand: its CSS-wide keyword, else `initial`. */
 std::string ui_background_longhand(std::string_view shorthand, std::string_view initial);
+/** The background shorthand's value, after its reset longhands: a colour or plain gradient layers. */
+void ui_set_background(Engine& engine, UiElementHandle element, std::string value);
 std::string ui_get_style_property(Engine& engine, UiElementHandle element, std::string_view name);
 std::string ui_remove_style_property(Engine& engine, UiElementHandle element,
                                      std::string_view name);
+/** classList.add (present) or remove: the token list's update steps run even when it keeps its tokens. */
+void ui_set_class(Engine& engine, UiElementHandle element, std::string name, bool present);
+/** classList.toggle(name, force): the class list changes only when the class's presence does. */
 void ui_toggle_class(Engine& engine, UiElementHandle element, std::string name, bool enabled);
 /** classList.toggle(name): flips the class and returns whether it is now present. */
 bool ui_toggle_class(Engine& engine, UiElementHandle element, std::string name);
@@ -233,7 +244,17 @@ void ui_canvas_set_stroke_style(Engine&, UiElementHandle, std::string);
 void ui_canvas_set_line_width(Engine&, UiElementHandle, double);
 void ui_canvas_set_line_join(Engine&, UiElementHandle, std::string);
 void ui_canvas_set_line_cap(Engine&, UiElementHandle, std::string);
+/** `save()`/`restore()`: push or pop the drawing state (transform and styles, not the path). */
+void ui_canvas_save(Engine&, UiElementHandle);
+void ui_canvas_restore(Engine&, UiElementHandle);
+/** The transform methods, in Canvas2D's (a, b, c, d, e, f) order; non-finite arguments do nothing. */
+void ui_canvas_transform(Engine&, UiElementHandle, double, double, double, double, double, double);
+void ui_canvas_set_transform(Engine&, UiElementHandle, double, double, double, double, double,
+                             double);
+void ui_canvas_reset_transform(Engine&, UiElementHandle);
 void ui_canvas_scale(Engine&, UiElementHandle, double, double);
+void ui_canvas_translate(Engine&, UiElementHandle, double, double);
+void ui_canvas_rotate(Engine&, UiElementHandle, double);
 void ui_canvas_clear_rect(Engine&, UiElementHandle, double, double, double, double);
 void ui_canvas_fill_rect(Engine&, UiElementHandle, double, double, double, double);
 void ui_canvas_begin_path(Engine&, UiElementHandle);
@@ -246,10 +267,31 @@ void ui_canvas_fill(Engine&, UiElementHandle);
 void ui_canvas_stroke(Engine&, UiElementHandle);
 void ui_canvas_stroke_rect(Engine&, UiElementHandle, double, double, double, double);
 void ui_canvas_set_image_smoothing(Engine&, UiElementHandle, bool);
+/** An ImageSmoothingQuality enum value; any other string is ignored. */
+void ui_canvas_set_image_smoothing_quality(Engine&, UiElementHandle, std::string);
 void ui_canvas_put_image_data(Engine&, UiElementHandle, const js::U8Array&, double, double, double,
                               double);
+/**
+ * `drawImage(source, dx, dy[, dw, dh])` and `drawImage(source, sx, sy, sw, sh, dx, dy, dw, dh)`
+ * from a canvas or img source: an image still loading draws nothing, a broken one throws.
+ */
+void ui_canvas_draw_image(Engine&, UiElementHandle, UiElementHandle, double, double);
 void ui_canvas_draw_image(Engine&, UiElementHandle, UiElementHandle, double, double, double,
                           double);
+void ui_canvas_draw_image(Engine&, UiElementHandle, UiElementHandle, double, double, double, double,
+                          double, double, double, double);
+/** `getImageData`'s result: the rectangle's unpremultiplied RGBA rows. */
+struct UiCanvasImageData {
+    double width = 0.0;
+    double height = 0.0;
+    js::U8Array data;
+};
+/**
+ * `getImageData(sx, sy, sw, sh)` rasterized from what the canvas holds: putImageData pixels,
+ * filled rectangles and image blits. A path, stroke or text draw refuses.
+ */
+UiCanvasImageData ui_canvas_get_image_data(Engine&, UiElementHandle, double, double, double,
+                                           double);
 void ui_canvas_set_font(Engine&, UiElementHandle, std::string);
 void ui_canvas_set_text_baseline(Engine&, UiElementHandle, std::string);
 void ui_canvas_set_shadow_color(Engine&, UiElementHandle, std::string);

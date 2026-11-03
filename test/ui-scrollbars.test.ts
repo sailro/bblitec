@@ -74,7 +74,7 @@ test("unrepresented scrollbar states and values refuse explicitly", () => {
     assert.throws(
         () =>
             compileStyle(
-                ".history { background: linear-gradient(red, blue); background-clip: padding-box; }",
+                ".history { background: linear-gradient(red, blue); background-clip: content-box; }",
             ),
         /box clipping currently applies to solid backgrounds/,
     );
@@ -101,6 +101,6 @@ test("assigning the background shorthand resets a previous solid clipping box", 
     `);
     assert.match(
         result.cpp,
-        /ui_set_style_property\([^\n]+"--bbl-background-color", "blue"\);\s*bbl::ui_set_style_property\([^\n]+"background-clip", "border-box"\);/,
+        /ui_set_style_property\([^\n]+"background-clip", "border-box"\);[\s\S]*?bbl::ui_set_background\([^\n]+"blue"\);/,
     );
 });

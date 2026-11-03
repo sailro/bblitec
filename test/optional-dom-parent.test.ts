@@ -146,14 +146,12 @@ test("optional DOM tree receivers preserve conjunction values and lazy effects n
     });
 });
 
-test("optional DOM class receivers keep unsupported member arguments explicit", () => {
-    assert.throws(
-        () =>
-            compileSource(`
-            const element = document.createElement("span");
-            const name = document.body.textContent;
-            element.parentElement?.classList.contains(name!);
-        `),
-        /Expected a string literal/,
-    );
+test("optional DOM class receivers read a run-time token once, before the call", () => {
+    const { cpp } = compileSource(`
+        const element = document.createElement("span");
+        const name = document.body.textContent;
+        element.parentElement?.classList.contains(name!);
+    `);
+    assert.match(cpp, /const std::string v_bblite_class_name_\d+ = /);
+    assert.match(cpp, /bbl::ui_has_class\([^;]*v_bblite_class_name_\d+\)/);
 });

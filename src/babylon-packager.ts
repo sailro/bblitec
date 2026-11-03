@@ -5,6 +5,7 @@ import { basename, dirname, extname, resolve } from "node:path";
 import { asObject, asRecords } from "./json-fields.js";
 import { packageBabylonMeshWalks } from "./babylon-mesh-walks.js";
 import type { CompiledMeshWalk } from "./gltf-mesh-walks.js";
+import { urlFilePath } from "./asset-source.js";
 
 const textureFields = [
     "diffuseTexture",
@@ -26,7 +27,7 @@ function hash(value: string): string {
 }
 
 function safeTextureName(source: string): string {
-    const sourceName = basename(source.split(/[?#]/, 1)[0] ?? source);
+    const sourceName = basename(urlFilePath(source));
     const extension = extname(sourceName);
     const stem =
         basename(sourceName, extension)

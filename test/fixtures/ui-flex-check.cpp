@@ -98,6 +98,60 @@ int main() {
         ui_set_style_property(engine, children[0], "flex", "initial");
         update();
         assert(element(children[0])->GetComputedValues().flex_shrink() == 1.f);
+
+        // order lays items out and paints them in order-modified document order.
+        ui_remove(engine, panel);
+        const auto row = ui_create_element(engine, "div");
+        ui_set_attribute(engine, row, "style",
+                         "display:flex;width:330px;height:40px;align-items:start;column-gap:10px;");
+        children.clear();
+        for (const char* color : {"#ff0000", "#00ff00", "#0000ff"}) {
+            const auto child = ui_create_element(engine, "div");
+            ui_set_attribute(engine, child, "style",
+                             std::string("flex:0 0 100px;height:20px;background-color:") + color);
+            ui_append_child(engine, row, child);
+            children.push_back(child);
+        }
+        ui_append_to_root(engine, row);
+        const auto placed = [&](size_t index, float x) {
+            update();
+            const auto offset =
+                element(children.at(index))->GetAbsoluteOffset(Rml::BoxArea::Border) -
+                element(row)->GetAbsoluteOffset(Rml::BoxArea::Content);
+            if (std::abs(offset.x - x) >= .1f)
+                std::fprintf(stderr, "Ordered child %zu: actual %.2f; expected %.2f\n", index,
+                             offset.x, x);
+            assert(std::abs(offset.x - x) < .1f);
+        };
+        // Each child paints its own channel: red, green, blue.
+        const auto painted = [&](std::initializer_list<int> order) {
+            update();
+            const auto& frame = pal::record_ui_rml_frame(runtime, 640, 480);
+            assert(frame.draws.size() == order.size());
+            auto expected = order.begin();
+            for (const auto& draw : frame.draws) {
+                const auto& vertex = frame.vertices.at(frame.indices.at(draw.first_index));
+                const int channels[] = {vertex.red, vertex.green, vertex.blue};
+                for (int channel = 0; channel < 3; ++channel)
+                    assert(channels[channel] == (channel == *expected ? 255 : 0));
+                ++expected;
+            }
+        };
+        ui_set_style_property(engine, children[2], "order", "-1");
+        placed(2, 0);
+        placed(0, 110);
+        placed(1, 220);
+        painted({2, 0, 1});
+        // Equal orders keep document order; a positive order moves an item last.
+        ui_set_style_property(engine, children[0], "order", "1");
+        placed(2, 0);
+        placed(1, 110);
+        placed(0, 220);
+        ui_set_style_property(engine, children[2], "order", "");
+        ui_set_style_property(engine, children[0], "order", "");
+        placed(0, 0);
+        placed(2, 220);
+        painted({0, 1, 2});
     }
     SDL_DestroyWindow(window);
     SDL_Quit();

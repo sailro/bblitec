@@ -6,6 +6,7 @@ import {
     libraryGlobal,
     calledDeclaration,
     libraryStaticMember,
+    namedMember,
 } from "./symbols.js";
 import {
     unwrapExpression,
@@ -16,7 +17,7 @@ import {
 import type { Value } from "./types.js";
 import type { DataType } from "./data-types.js";
 import { undefinedOnly, holdsOnly, PRIMITIVE_KINDS } from "./type-facts.js";
-import { undefinedValue } from "./values/model.js";
+import { ownKeysKnown, undefinedValue } from "./values/model.js";
 import type { ClassHierarchy } from "./class-members.js";
 import { engineBodies, isEngineDeclaration } from "./engine-bodies.js";
 
@@ -101,6 +102,33 @@ export function hasUndefinedCompletion(
     );
 }
 
+/**
+ * Whether a concrete body completes only with `undefined`, each returned
+ * expression (or an arrow's expression body) proven by following immutable
+ * results ({@link provenUndefinedValue}, whose options it passes on).
+ */
+export function hasProvenUndefinedCompletion(
+    context: UndefinedContext,
+    declaration: ts.SignatureDeclaration | undefined,
+    options: ProvenUndefinedOptions = {},
+): boolean {
+    return everyCompletion(
+        declaration,
+        options.awaited ?? false,
+        (expression) => provenUndefinedValue(context, expression, options),
+    );
+}
+
+interface ProvenUndefinedOptions {
+    /** The value is awaited: a settled promise of `undefined` counts. */
+    readonly awaited?: boolean;
+    /**
+     * Hears each struct function field a completion calls through whose
+     * storage does not yet require the proof.
+     */
+    readonly unproven?: (field: DataType<"function">) => void;
+}
+
 /** A source-specialized callback retains the body behind an immutable alias. */
 export function hasUndefinedCallbackCompletion(
     checker: ts.TypeChecker,
@@ -128,18 +156,26 @@ interface UndefinedContext {
     bindings: {
         lookupOptional(identifier: ts.Identifier): Value | undefined;
         isImmutableVariable(node: ts.Node | undefined): boolean;
+        recordPropertiesAreCurrent(value: Value): boolean;
     };
     sharedClosures: { identifierIsRebound(identifier: ts.Identifier): boolean };
     dataTypes: {
         resolveTypeParameter(type: ts.Type): ts.Type;
         classHierarchy: Pick<ClassHierarchy, "dispatchBodies">;
+        ownKeysDecided(name: string, node: ts.Node): boolean;
+        structFields(
+            name: string,
+            node: ts.Node,
+            accessors?: "accessors",
+        ): readonly { readonly sourceName: string; readonly type: DataType }[];
     };
 }
 
 /** Follow immutable results to a concrete completion, never an erased void type. */
-export function provenUndefinedValue(
+function provenUndefinedValue(
     context: UndefinedContext,
     node: ts.Node,
+    { awaited: awaitedNode = false, unproven }: ProvenUndefinedOptions = {},
 ): boolean {
     const seen = new Set<ts.Node>();
     const visit = (source: ts.Node, awaited = false): boolean => {
@@ -174,6 +210,7 @@ export function provenUndefinedValue(
         }
         if (!ts.isCallExpression(expression)) return false;
         const callee = unwrapExpression(expression.expression);
+        const accessed = namedMember(context.checker, callee);
         const declaration = calledDeclaration(context.checker, expression);
         if (undefinedLibraryCall(context.checker, expression)) return true;
         // A Babylon Lite function runs its pinned body, proven as a source
@@ -228,6 +265,65 @@ export function provenUndefinedValue(
                     literal,
                     awaited,
                 );
+        } else if (accessed && ts.isIdentifier(accessed.expression)) {
+            // A member of a record known at generation calls the function it
+            // holds; an absent one called optionally yields `undefined`.
+            const receiver = accessed.expression;
+            const name = accessed.name;
+            const owner = context.bindings.lookupOptional(receiver);
+            // A struct's function field stores only functions proven to
+            // complete as its type requires.
+            if (owner?.kind === "data" && owner.dataType?.kind === "struct") {
+                const field = context.dataTypes
+                    .structFields(owner.dataType.name, callee, "accessors")
+                    .find((candidate) => candidate.sourceName === name)?.type;
+                if (field?.kind !== "function") return false;
+                if (
+                    field.undefinedCompletion === true ||
+                    (awaited && field.awaitedUndefinedCompletion === true)
+                )
+                    return true;
+                unproven?.(field);
+                return false;
+            }
+            if (
+                owner?.kind !== "record" ||
+                !owner.recordProperties ||
+                !context.bindings.recordPropertiesAreCurrent(owner) ||
+                context.sharedClosures.identifierIsRebound(receiver)
+            )
+                return false;
+            const member = owner.recordProperties[name];
+            const method = owner.recordMethods?.[name];
+            // A method the record was written with runs its own body, or
+            // the function literal the immutable name it holds is bound to.
+            if (member === undefined && method) {
+                const named = ts.isIdentifier(method)
+                    ? declaredSymbol(context.checker, method)?.valueDeclaration
+                    : method;
+                const body =
+                    named &&
+                    ts.isVariableDeclaration(named) &&
+                    context.bindings.isImmutableVariable(named)
+                        ? functionOfDeclaration(named)
+                        : named;
+                return (
+                    !!body &&
+                    ts.isFunctionLike(body) &&
+                    hasUndefinedCompletion(context.checker, body, awaited)
+                );
+            }
+            if (member === undefined)
+                return (
+                    expression.questionDotToken !== undefined &&
+                    owner.recordGetters?.[name] === undefined &&
+                    ownKeysKnown(context, owner, callee)
+                );
+            return hasUndefinedCallbackCompletion(
+                context.checker,
+                member,
+                awaited,
+            );
         } else if (
             declaration &&
             ts.isMethodDeclaration(declaration) &&
@@ -249,7 +345,7 @@ export function provenUndefinedValue(
             return false;
         return hasUndefinedCompletion(context.checker, declaration, awaited);
     };
-    return visit(node);
+    return visit(node, awaitedNode);
 }
 
 /**

@@ -44,8 +44,9 @@ export class EngineLowerer {
         // the frame the start scheduled and clears the render function, so
         // no further frame submits. There is no `requestAnimationFrame`
         // here -- the frame conductor IS the loop -- so what is emitted is
-        // a flag it checks, and the pin's own two writes are what say the
-        // flag means the right thing.
+        // a flag it checks and the cleared `_renderFn` slot it arms from,
+        // and the pin's own two writes are what say they mean the right
+        // thing.
         const stop = this.context.functionDeclaration(
             modulePath,
             "stopEngine",
@@ -102,6 +103,7 @@ ${
 
 void stop_engine(Engine& engine) {
     engine.stopped = true;
+    engine.render_function = nullptr;
     if (engine.flush_gpu_retirements) engine.flush_gpu_retirements();
 }
 ${this.lowerFrameRetirementFlush()}

@@ -83,7 +83,8 @@ export function unaliasedValue(
                 yieldsFreshObject(checker, initializer),
             )) ||
         ((own?.kind === "vector" || own?.kind === "span") &&
-            yieldsNewArray(checker, expression)) ||
+            (yieldsNewArray(checker, expression) ||
+                freshStoredCall(lowerer, expression))) ||
         // A call creating its tuple owns it; a selection (`??`, `?:`)
         // marked fresh may still yield a stored one.
         (own?.kind === "tuple" &&
@@ -91,6 +92,19 @@ export function unaliasedValue(
             ts.isCallExpression(expression))
         ? "object"
         : undefined;
+}
+
+/** A call through a stored callback slot whose producers all return new arrays (`claimFreshCompletion`). */
+function freshStoredCall(
+    lowerer: DataSinkHost,
+    expression: ts.Expression,
+): boolean {
+    if (!ts.isCallExpression(expression)) return false;
+    const callee = lowerer.dataTypeAt(expression.expression);
+    return (
+        callee?.kind === "function" &&
+        lowerer.context.dataTypes.claimFreshCompletion(callee)
+    );
 }
 
 /** A directly returned fresh literal has data slots, even where a spread read getters. */

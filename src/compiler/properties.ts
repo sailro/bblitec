@@ -14,6 +14,8 @@
 // compile-time metadata rather than from a native field, and
 // `camera.target` synthesizes a three-component record. Those differ in
 // what they *do*, not in which field they name.
+import { readEngineRenderFunction } from "./engine-render-function.js";
+import { elementChildrenSnapshot, readByOneWalk } from "./element-children.js";
 import {
     presentMembers,
     holdsOnly,
@@ -24,6 +26,7 @@ import {
 import ts from "typescript";
 import {
     absenceOfNull,
+    handleFoundCpp,
     knownCondition,
     undefinedValue,
 } from "./values/model.js";
@@ -42,6 +45,7 @@ import { sceneNodeTransformDescriptor } from "../scene-node-transform-descriptor
 import { readPngDimensionsSync } from "./asset-bytes-sync.js";
 import {
     accessedPropertySymbol,
+    declarationOrigin,
     declaredInDomLibrary,
     libraryName,
 } from "./symbols.js";
@@ -109,6 +113,7 @@ import {
     outermostWrapper,
     valueUse,
     wrappersAround,
+    writeSiteOf,
 } from "./syntax.js";
 import { readTextProperty, type TextSurfaceContext } from "./text-surface.js";
 import { ApplicationRealmRequired } from "./worker-modules.js";
@@ -377,16 +382,6 @@ const handleCollections: readonly HandleCollectionRead[] = [
         temporaryLabel: "asset_gaussian_splat",
     },
 ];
-
-/**
- * The `T | undefined` test for a handle: a slot nothing filled and a
- * search that matched nothing are one shape here, and both report it by
- * carrying `invalid_handle`. Spelled once, because a second spelling
- * composes differently under `??` and `!`.
- */
-export function handleFoundCpp(cpp: string): string {
-    return `(${cpp}.value != bbl::invalid_handle)`;
-}
 
 /** Whether any handle owner can expose a collection with this source name. */
 export function isHandleCollectionProperty(property: string): boolean {
@@ -2177,6 +2172,7 @@ const MODIFIER_FIELDS = new EmissionMap<string, string>([
 const KEY_EVENT_FIELDS = new EmissionMap<string, string>([
     ["repeat", "repeat"],
     ...MODIFIER_FIELDS,
+    ["isComposing", "is_composing"],
 ]);
 /** TouchEvent's lists and their `bbl::DomTouchListKind`. */
 const TOUCH_EVENT_LISTS: ReadonlyMap<string, string> = new Map([
@@ -2241,6 +2237,31 @@ const UI_COMPUTED_STYLES: ReadonlyMap<string, string> = new Map([
     ["visibility", "visibility"],
     ["zIndex", "z-index"],
 ]);
+/**
+ * A computed style read of a CSS property name: one of the represented
+ * properties, or a custom property, whose computed value is its specified
+ * text with var() substituted.
+ */
+export function uiComputedStyleRead(
+    engine: string,
+    element: string,
+    name: string,
+    cppString: (text: string) => string,
+): Value | undefined {
+    if (
+        !name.startsWith("--") &&
+        ![...UI_COMPUTED_STYLES.values()].includes(name)
+    )
+        return undefined;
+    return {
+        kind: "string",
+        cpp: `bbl::ui_computed_style(${engine}, ${element}, ${cppString(name)})`,
+        dataType: { kind: "string" },
+        freshData: true,
+        impure: true,
+    };
+}
+
 /** Whether a member names a retained element's tree read (`ui_tree_element`). */
 export function isUiTreeRead(name: string): boolean {
     return UI_TREE_READS.has(name);
@@ -2479,6 +2500,15 @@ export class PropertyAccessLowerer {
         expression: ts.PropertyAccessExpression,
     ): Value | undefined {
         if (owner.kind === "ui-element" && !owner.uiDataset) {
+            if (
+                property === "children" &&
+                readByOneWalk(this.context.checker, expression)
+            )
+                return elementChildrenSnapshot(
+                    this.context.dataLowerer,
+                    owner,
+                    this.context.requireEngine(owner, expression),
+                );
             if (property === "childElementCount")
                 return {
                     kind: "number",
@@ -2530,6 +2560,16 @@ export class PropertyAccessLowerer {
                     { kind: property === "complete" ? "boolean" : "number" },
                 );
             }
+            if (
+                this.context.options.workers &&
+                (property === "width" || property === "height") &&
+                this.context.ui.declaredUiTag(owner, ownerExpression) === "img"
+            )
+                // An unrendered image's size; a rendered one refuses natively.
+                return this.context.dataLowerer.leafValue(
+                    `bbl::ui_image_${property}(${this.context.requireEngine(owner, expression)}, ${owner.cpp})`,
+                    { kind: "number" },
+                );
             if (this.context.options.workers && property === "decode") {
                 if (owner.uiTag && owner.uiTag !== "img")
                     this.context.fail(
@@ -2635,11 +2675,12 @@ export class PropertyAccessLowerer {
             }
             const layoutExtent = UI_LAYOUT_EXTENTS.get(property);
             if (layoutExtent)
-                // Whole CSS pixels of the element's box, read as a client
-                // rectangle is: a layout read, so never discarded.
+                // Whole CSS pixels of the element's box without its zoom,
+                // read as a client rectangle is: a layout read, so never
+                // discarded.
                 return {
                     kind: "number",
-                    cpp: `std::round(bbl::ui_get_client_rect(${this.context.requireEngine(owner, expression)}, ${owner.cpp}).${layoutExtent})`,
+                    cpp: `std::round(bbl::ui_get_client_rect(${this.context.requireEngine(owner, expression)}, ${owner.cpp}).unzoomed().${layoutExtent})`,
                     dataType: { kind: "number" },
                     impure: true,
                 };
@@ -2722,7 +2763,8 @@ export class PropertyAccessLowerer {
     private platformEventProperty(
         owner: Value,
         property: string,
-        expression: ts.PropertyAccessExpression,
+        site: ts.Node,
+        nameSite: ts.Node,
     ): Value {
         if (owner.kind === "platform-keyboard-event") {
             const field = KEY_EVENT_FIELDS.get(property);
@@ -2749,7 +2791,7 @@ export class PropertyAccessLowerer {
                 };
             }
             this.context.fail(
-                expression.name,
+                nameSite,
                 `Platform keyboard events do not expose '${property}'.`,
             );
         }
@@ -2759,7 +2801,7 @@ export class PropertyAccessLowerer {
                 property === "inputType" ||
                 property === "isComposing"
             ) {
-                this.context.reachFeature("data:json", expression);
+                this.context.reachFeature("data:json", site);
                 return this.context.dataLowerer.leafValue(
                     property === "data"
                         ? `bbl::input_event_data(${owner.cpp})`
@@ -2805,12 +2847,12 @@ export class PropertyAccessLowerer {
                 };
             }
             this.context.fail(
-                expression.name,
+                nameSite,
                 `Platform mouse events do not expose '${property}'.`,
             );
         }
         this.context.fail(
-            expression.name,
+            nameSite,
             `Platform events do not expose '${property}'.`,
         );
     }
@@ -2828,6 +2870,213 @@ export class PropertyAccessLowerer {
             path = path.parent;
         }
         return path.getText();
+    }
+
+    /**
+     * A member of a DOM event value: a borrowed base Event (asserted to its
+     * interface where the source names one), a typed keyboard or mouse
+     * event, or a custom event. A property access and a destructuring
+     * element read the same members; `site` reports reached features,
+     * `nameSite` refusals naming the member. Undefined for another owner.
+     */
+    public eventMember(
+        owner: Value,
+        ownerExpression: ts.Expression,
+        property: string,
+        site: ts.Node,
+        nameSite: ts.Node,
+    ): Value | undefined {
+        if (owner.platformEventBase) {
+            const eventInterface = this.declaredEventInterface(ownerExpression);
+            if (eventInterface === "DataTransfer") {
+                if (property !== "files")
+                    this.context.fail(
+                        nameSite,
+                        `Native DataTransfer exposes only files, not '${property}'.`,
+                    );
+                this.context.reachFeature("browser:file", site);
+                const engine = `bbl::dom_event_owner(${owner.cpp})`;
+                return {
+                    kind: "data",
+                    dataType: { kind: "file-list" },
+                    cpp: `bbl::js::drag_files(${engine}, ${owner.cpp}.as<bbl::PlatformDragEvent>())`,
+                    engineCpp: engine,
+                    truthinessCpp: "true",
+                    impure: true,
+                };
+            }
+            const touch =
+                eventInterface === "TouchEvent"
+                    ? touchEventMember(this.context, owner, property)
+                    : undefined;
+            if (touch) return touch;
+            if (eventInterface === "GamepadEvent" && property === "gamepad") {
+                this.context.reachFeature("input:gamepad", site);
+                return this.context.dataLowerer.leafValue(
+                    `${owner.cpp}.as<bbl::PlatformGamepadEvent>().gamepad`,
+                    { kind: "handle", handle: "gamepad" },
+                );
+            }
+            if (eventInterface === "DragEvent") {
+                if (property === "dataTransfer")
+                    return valueForKind("platform-mouse-event", {
+                        cpp: owner.cpp,
+                        platformEventBase: true,
+                        readOnly: true,
+                        truthinessCpp: "true",
+                        ...(owner.engineCpp
+                            ? { engineCpp: owner.engineCpp }
+                            : {}),
+                    });
+                if (property === "clientX" || property === "clientY")
+                    return {
+                        kind: "number",
+                        cpp: `${owner.cpp}.as<bbl::PlatformDragEvent>().client_${property === "clientX" ? "x" : "y"}`,
+                    };
+            }
+        }
+        if (
+            owner.kind === "platform-mouse-event" ||
+            owner.kind === "platform-keyboard-event" ||
+            owner.kind === "custom-event"
+        ) {
+            if (
+                property === "detail" &&
+                (owner.kind === "custom-event" || owner.platformEventBase)
+            ) {
+                this.context.reachFeature("input:dom", site);
+                this.context.reachFeature("data:json", site);
+                const event = owner.platformEventBase
+                    ? `${owner.cpp}.as<bbl::PlatformCustomEvent>()`
+                    : owner.cpp;
+                return {
+                    kind: "data",
+                    dataType: { kind: "json" },
+                    cpp: `${event}.detail()`,
+                };
+            }
+            if (
+                property === "target" ||
+                property === "currentTarget" ||
+                property === "relatedTarget"
+            ) {
+                if (
+                    property === "relatedTarget" &&
+                    (owner.kind !== "platform-mouse-event" ||
+                        owner.platformEventBase)
+                )
+                    this.context.fail(
+                        site,
+                        "This event view does not expose relatedTarget.",
+                    );
+                this.context.reachFeature("input:dom", site);
+                this.context.reachJsData();
+                if (owner.kind === "custom-event")
+                    return this.context.dataLowerer.leafValue(
+                        `bbl::custom_event_target(${owner.cpp}, ${property === "currentTarget" ? "true" : "false"})`,
+                        { kind: "optional", inner: { kind: "event-target" } },
+                    );
+                const field =
+                    property === "target"
+                        ? "exposed_target()"
+                        : property === "currentTarget"
+                          ? "current_target"
+                          : "related_target";
+                const value = this.context.dataLowerer.leafValue(
+                    `bbl::dom_target_value(bbl::dom_event_owner(${owner.cpp}), bbl::dom_event_state(${owner.cpp}).${field})`,
+                    property === "target"
+                        ? { kind: "event-target" }
+                        : { kind: "optional", inner: { kind: "event-target" } },
+                );
+                return value;
+            }
+            if (property === "defaultPrevented")
+                return {
+                    kind: "boolean",
+                    cpp: `${owner.cpp}.is_default_prevented()`,
+                };
+            const declared = readProperty(this.context, owner, property, site);
+            if (declared) return declared;
+            if (property === "type")
+                return {
+                    kind: "string",
+                    cpp: `bbl::dom_event_state(${owner.cpp}).type`,
+                };
+            if (property === "eventPhase")
+                return {
+                    kind: "number",
+                    cpp: `bbl::dom_event_state(${owner.cpp}).phase`,
+                };
+            const booleanField = DOM_EVENT_FLAGS.get(property);
+            if (booleanField)
+                return {
+                    kind: "boolean",
+                    cpp: `bbl::dom_event_state(${owner.cpp}).${booleanField}`,
+                };
+        }
+        if (owner.platformEventBase) {
+            if (
+                ["key", "oldValue", "newValue", "url", "storageArea"].includes(
+                    property,
+                ) &&
+                this.declaredEventInterface(ownerExpression) !== "KeyboardEvent"
+            ) {
+                const payload = `${owner.cpp}.as<bbl::PlatformStorageEvent>()`;
+                if (property === "storageArea") {
+                    // A storage event's area is `localStorage`: one window
+                    // shares no session.
+                    this.context.reachFeature("storage:local", site);
+                    return this.context.dataLowerer.leafValue(
+                        `(${payload}.has_storage_area ? bbl::js::Nullable<bbl::js::Storage>{bbl::js::local_storage_object()} : bbl::js::Nullable<bbl::js::Storage>{})`,
+                        { kind: "optional", inner: { kind: "storage" } },
+                    );
+                }
+                if (property === "url")
+                    return this.context.dataLowerer.leafValue(
+                        `${payload}.url`,
+                        { kind: "string" },
+                    );
+                const field =
+                    property === "key"
+                        ? "key"
+                        : property === "oldValue"
+                          ? "old_value"
+                          : "new_value";
+                return this.context.dataLowerer.leafValue(
+                    `(${payload}.${field} ? bbl::js::Nullable<std::string>{*${payload}.${field}} : bbl::js::Nullable<std::string>{})`,
+                    { kind: "optional", inner: { kind: "string" } },
+                );
+            }
+            if (
+                property === "propertyName" &&
+                this.declaredEventInterface(ownerExpression) ===
+                    "TransitionEvent"
+            )
+                return {
+                    kind: "data",
+                    cpp: `${owner.cpp}.as<bbl::PlatformTransitionEvent>().property_name`,
+                    dataType: { kind: "string" },
+                    readOnly: true,
+                };
+            const asserted = this.assertedPlatformEvent(owner, ownerExpression);
+            if (!asserted)
+                this.context.fail(
+                    nameSite,
+                    `Borrowed DOM Event values do not expose '${property}'; only preventDefault is supported on the base Event view.`,
+                );
+            return this.platformEventProperty(
+                asserted,
+                property,
+                site,
+                nameSite,
+            );
+        }
+        if (
+            owner.kind === "platform-keyboard-event" ||
+            owner.kind === "platform-mouse-event"
+        )
+            return this.platformEventProperty(owner, property, site, nameSite);
+        return undefined;
     }
 
     public compilePropertyAccess(
@@ -3139,22 +3388,25 @@ export class PropertyAccessLowerer {
                 { kind: "platform-mouse-event", cpp: `${owner.cpp}.event()` },
                 property,
                 expression,
+                expression.name,
             );
         }
         if (owner.kind === "ui-element" && owner.uiComputedStyle) {
             const name = UI_COMPUTED_STYLES.get(property);
-            if (!name)
+            const read =
+                name &&
+                uiComputedStyleRead(
+                    this.context.requireEngine(owner, expression),
+                    owner.cpp,
+                    name,
+                    (text) => this.context.cppString(text),
+                );
+            if (!read)
                 this.context.fail(
                     expression.name,
-                    `Computed style '${property}' is not represented; display, opacity, visibility and zIndex are.`,
+                    `Computed style '${property}' is not represented; display, opacity, visibility, zIndex and custom properties are.`,
                 );
-            return {
-                kind: "string",
-                cpp: `bbl::ui_computed_style(${this.context.requireEngine(owner, expression)}, ${owner.cpp}, ${this.context.cppString(name)})`,
-                dataType: { kind: "string" },
-                freshData: true,
-                impure: true,
-            };
+            return read;
         }
         const drawn = property === "canvas" ? contextCanvas(owner) : undefined;
         if (drawn) return drawn;
@@ -3233,6 +3485,9 @@ export class PropertyAccessLowerer {
                 impure: true,
             };
         }
+        // The pin's frame function, which an application reads to wrap it.
+        if (owner.kind === "engine" && property === "_renderFn")
+            return readEngineRenderFunction(this.context, owner, expression);
         if (owner.kind === "engine" && property === "maxDevicePixelRatio") {
             return {
                 kind: "number",
@@ -3347,199 +3602,15 @@ export class PropertyAccessLowerer {
             // source's optional chain and fallback lower unchanged.
             return undefinedValue();
         }
-        if (owner.platformEventBase) {
-            const eventInterface = this.declaredEventInterface(ownerExpression);
-            if (eventInterface === "DataTransfer") {
-                if (property !== "files")
-                    this.context.fail(
-                        expression.name,
-                        `Native DataTransfer exposes only files, not '${property}'.`,
-                    );
-                this.context.reachFeature("browser:file", expression);
-                const engine = `bbl::dom_event_owner(${owner.cpp})`;
-                return {
-                    kind: "data",
-                    dataType: { kind: "file-list" },
-                    cpp: `bbl::js::drag_files(${engine}, ${owner.cpp}.as<bbl::PlatformDragEvent>())`,
-                    engineCpp: engine,
-                    truthinessCpp: "true",
-                    impure: true,
-                };
-            }
-            const touch =
-                eventInterface === "TouchEvent"
-                    ? touchEventMember(this.context, owner, property)
-                    : undefined;
-            if (touch) return touch;
-            if (eventInterface === "GamepadEvent" && property === "gamepad") {
-                this.context.reachFeature("input:gamepad", expression);
-                return this.context.dataLowerer.leafValue(
-                    `${owner.cpp}.as<bbl::PlatformGamepadEvent>().gamepad`,
-                    { kind: "handle", handle: "gamepad" },
-                );
-            }
-            if (eventInterface === "DragEvent") {
-                if (property === "dataTransfer")
-                    return valueForKind("platform-mouse-event", {
-                        cpp: owner.cpp,
-                        platformEventBase: true,
-                        readOnly: true,
-                        truthinessCpp: "true",
-                        ...(owner.engineCpp
-                            ? { engineCpp: owner.engineCpp }
-                            : {}),
-                    });
-                if (property === "clientX" || property === "clientY")
-                    return {
-                        kind: "number",
-                        cpp: `${owner.cpp}.as<bbl::PlatformDragEvent>().client_${property === "clientX" ? "x" : "y"}`,
-                    };
-            }
-        }
-        if (
-            owner.kind === "platform-mouse-event" ||
-            owner.kind === "platform-keyboard-event" ||
-            owner.kind === "custom-event"
-        ) {
-            if (
-                property === "detail" &&
-                (owner.kind === "custom-event" || owner.platformEventBase)
-            ) {
-                this.context.reachFeature("input:dom", expression);
-                this.context.reachFeature("data:json", expression);
-                const event = owner.platformEventBase
-                    ? `${owner.cpp}.as<bbl::PlatformCustomEvent>()`
-                    : owner.cpp;
-                return {
-                    kind: "data",
-                    dataType: { kind: "json" },
-                    cpp: `${event}.detail()`,
-                };
-            }
-            if (
-                property === "target" ||
-                property === "currentTarget" ||
-                property === "relatedTarget"
-            ) {
-                if (
-                    property === "relatedTarget" &&
-                    (owner.kind !== "platform-mouse-event" ||
-                        owner.platformEventBase)
-                )
-                    this.context.fail(
-                        expression,
-                        "This event view does not expose relatedTarget.",
-                    );
-                this.context.reachFeature("input:dom", expression);
-                this.context.reachJsData();
-                if (owner.kind === "custom-event")
-                    return this.context.dataLowerer.leafValue(
-                        `bbl::custom_event_target(${owner.cpp}, ${property === "currentTarget" ? "true" : "false"})`,
-                        { kind: "optional", inner: { kind: "event-target" } },
-                    );
-                const field =
-                    property === "target"
-                        ? "exposed_target()"
-                        : property === "currentTarget"
-                          ? "current_target"
-                          : "related_target";
-                const value = this.context.dataLowerer.leafValue(
-                    `bbl::dom_target_value(bbl::dom_event_owner(${owner.cpp}), bbl::dom_event_state(${owner.cpp}).${field})`,
-                    property === "target"
-                        ? { kind: "event-target" }
-                        : { kind: "optional", inner: { kind: "event-target" } },
-                );
-                return value;
-            }
-            if (property === "defaultPrevented")
-                return {
-                    kind: "boolean",
-                    cpp: `${owner.cpp}.is_default_prevented()`,
-                };
-            const declared = readProperty(
-                this.context,
-                owner,
-                property,
-                expression,
-            );
-            if (declared) return declared;
-            if (property === "type")
-                return {
-                    kind: "string",
-                    cpp: `bbl::dom_event_state(${owner.cpp}).type`,
-                };
-            if (property === "eventPhase")
-                return {
-                    kind: "number",
-                    cpp: `bbl::dom_event_state(${owner.cpp}).phase`,
-                };
-            const booleanField = DOM_EVENT_FLAGS.get(property);
-            if (booleanField)
-                return {
-                    kind: "boolean",
-                    cpp: `bbl::dom_event_state(${owner.cpp}).${booleanField}`,
-                };
-        }
-        if (owner.platformEventBase) {
-            if (
-                ["key", "oldValue", "newValue", "url", "storageArea"].includes(
-                    property,
-                ) &&
-                this.declaredEventInterface(ownerExpression) !== "KeyboardEvent"
-            ) {
-                const payload = `${owner.cpp}.as<bbl::PlatformStorageEvent>()`;
-                if (property === "storageArea") {
-                    // A storage event's area is `localStorage`: one window
-                    // shares no session.
-                    this.context.reachFeature("storage:local", expression);
-                    return this.context.dataLowerer.leafValue(
-                        `(${payload}.has_storage_area ? bbl::js::Nullable<bbl::js::Storage>{bbl::js::local_storage_object()} : bbl::js::Nullable<bbl::js::Storage>{})`,
-                        { kind: "optional", inner: { kind: "storage" } },
-                    );
-                }
-                if (property === "url")
-                    return this.context.dataLowerer.leafValue(
-                        `${payload}.url`,
-                        { kind: "string" },
-                    );
-                const field =
-                    property === "key"
-                        ? "key"
-                        : property === "oldValue"
-                          ? "old_value"
-                          : "new_value";
-                return this.context.dataLowerer.leafValue(
-                    `(${payload}.${field} ? bbl::js::Nullable<std::string>{*${payload}.${field}} : bbl::js::Nullable<std::string>{})`,
-                    { kind: "optional", inner: { kind: "string" } },
-                );
-            }
-            if (
-                property === "propertyName" &&
-                this.declaredEventInterface(ownerExpression) ===
-                    "TransitionEvent"
-            )
-                return {
-                    kind: "data",
-                    cpp: `${owner.cpp}.as<bbl::PlatformTransitionEvent>().property_name`,
-                    dataType: { kind: "string" },
-                    readOnly: true,
-                };
-            const asserted = this.assertedPlatformEvent(
-                owner,
-                expression.expression,
-            );
-            if (!asserted)
-                this.context.fail(
-                    expression.name,
-                    `Borrowed DOM Event values do not expose '${property}'; only preventDefault is supported on the base Event view.`,
-                );
-            return this.platformEventProperty(asserted, property, expression);
-        }
-        if (
-            owner.kind === "platform-keyboard-event" ||
-            owner.kind === "platform-mouse-event"
-        )
-            return this.platformEventProperty(owner, property, expression);
+        // The receiver as written: an assertion names the event's interface.
+        const event = this.eventMember(
+            owner,
+            expression.expression,
+            property,
+            expression,
+            expression.name,
+        );
+        if (event) return event;
         if (
             owner.kind === "browser" &&
             owner.browserValue?.kind === "dom-rect" &&
@@ -3978,6 +4049,49 @@ export class PropertyAccessLowerer {
      * data lowerer to try next. The general path handles records itself,
      * where a missing property is an error with a message.
      */
+    /**
+     * A member a function object never received, read as `undefined`: the
+     * function is made by an arrow or function expression and carries no
+     * installed properties, and a program type declares the member optional
+     * (`(() => T) & { onResize?: ... }`). Properties are installed only on a
+     * fresh function (`Object.assign`) or through a binding whose declaration
+     * then stores a callable record, and the function's own and prototype
+     * members are library declarations.
+     */
+    private isUninstalledFunctionMember(
+        owner: Value,
+        expression: ts.PropertyAccessExpression,
+    ): boolean {
+        const declaration = owner.callbackDeclaration;
+        if (
+            owner.kind !== "callback" ||
+            owner.dataType !== undefined ||
+            owner.recordProperties !== undefined ||
+            owner.intrinsicName !== undefined ||
+            owner.hostFunction !== undefined ||
+            !declaration ||
+            !(
+                ts.isArrowFunction(declaration) ||
+                ts.isFunctionExpression(declaration)
+            ) ||
+            writeSiteOf(expression) !== undefined
+        )
+            return false;
+        const members =
+            accessedPropertySymbol(this.context.checker, expression)
+                ?.declarations ?? [];
+        return (
+            members.length > 0 &&
+            members.every(
+                (member) =>
+                    (ts.isPropertySignature(member) ||
+                        ts.isMethodSignature(member)) &&
+                    member.questionToken !== undefined &&
+                    declarationOrigin(member) === "program",
+            )
+        );
+    }
+
     private readOwnerProperty(
         owner: Value,
         expression: ts.PropertyAccessExpression,
@@ -3988,16 +4102,17 @@ export class PropertyAccessLowerer {
             expression,
         );
         if (exported) return exported;
-        if (
-            owner.kind === "ui-element" &&
-            UI_TREE_READS.has(expression.name.text)
-        )
-            return this.elementProperty(
-                owner,
-                expression.name.text,
-                expression.expression,
-                expression,
-            );
+        // A retained element's own reads, an optional chain's link included.
+        const element =
+            owner.kind === "ui-element"
+                ? this.elementProperty(
+                      owner,
+                      expression.name.text,
+                      expression.expression,
+                      expression,
+                  )
+                : undefined;
+        if (element) return element;
         const media = readMediaQueryProperty(this.context, owner, expression);
         if (media) return media;
         const character = readCharacterProperty(
@@ -4040,6 +4155,8 @@ export class PropertyAccessLowerer {
             }
             return undefined;
         }
+        if (this.isUninstalledFunctionMember(owner, expression))
+            return undefinedValue();
         // A handle collection's size. The concept's other operations are
         // its loop and its searches; this is the same native vector read
         // through its one remaining JavaScript member, which is how both
