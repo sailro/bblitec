@@ -87,3 +87,7 @@ endif()
 if("platform:meshopt" IN_LIST BBLITE_RUNTIME_FEATURES AND NOT "meshopt" IN_LIST VCPKG_MANIFEST_FEATURES)
     list(APPEND VCPKG_MANIFEST_FEATURES "meshopt")
 endif()
+
+if("storage:indexeddb" IN_LIST BBLITE_RUNTIME_FEATURES AND NOT "indexeddb" IN_LIST VCPKG_MANIFEST_FEATURES)
+    list(APPEND VCPKG_MANIFEST_FEATURES "indexeddb")
+endif()

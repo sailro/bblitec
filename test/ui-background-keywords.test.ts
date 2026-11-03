@@ -66,10 +66,9 @@ test("a run-time background write gives every longhand the same keyword", () => 
                 `ui_set_style_property\\([^\\n]+"--bbl-background-${longhand}", "initial"\\);`,
             ),
         );
-    assert.match(
-        cpp,
-        /ui_set_style_property\([^\n]+"--bbl-background-color", "initial"\);/,
-    );
+    // The value itself goes last: the PAL tells a colour from gradient layers.
+    assert.match(cpp, /ui_set_background\([^\n]+, "initial"\);/);
+    assert.match(cpp, /ui_set_background\([^\n]+, \w+\);/);
     assert.match(
         cpp,
         /ui_set_style_property\([^\n]+"--bbl-background-image", bbl::ui_background_longhand\((\w+), "none"\)\);/,

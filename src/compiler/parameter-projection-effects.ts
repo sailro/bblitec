@@ -16,6 +16,7 @@ import { EmissionMap, EmissionWeakMap } from "./emission-transaction.js";
 import { engineBodies, isEngineDeclaration } from "./engine-bodies.js";
 import {
     declarationInDefaultLibrary,
+    isNullishLiteral,
     declaredSymbol,
     calledDeclaration,
     memberAccessors,
@@ -24,7 +25,8 @@ import {
 import {
     isAssignmentExpression,
     isOperandSelection,
-    objectProperty,
+    literalDataKeys,
+    literalPropertyValues,
     propertyKey,
     unwrapExpression,
     valueOperands,
@@ -226,27 +228,11 @@ export function parameterProjectionIsReadOnly(
     capturedScalarFacts = false,
 ): boolean {
     const literal = argument && unwrapExpression(argument);
-    // A fresh wrapper may still contain a caller-owned child. Captured
-    // scalar facts require a literal owner at every enclosing projection.
-    let freshOwner = literal;
-    for (const key of path.slice(0, -1)) {
-        if (
-            !freshOwner ||
-            !ts.isObjectLiteralExpression(freshOwner) ||
-            plainDataMembers(freshOwner) === undefined
-        ) {
-            freshOwner = undefined;
-            break;
-        }
-        const child = objectProperty(freshOwner, key);
-        freshOwner = child && unwrapExpression(child);
-    }
+    const absent = (operand: ts.Expression): boolean =>
+        isNullishLiteral(checker, operand);
     const keys =
-        independentFields &&
-        literal &&
-        ts.isObjectLiteralExpression(literal) &&
-        plainDataMembers(literal) !== undefined
-            ? literal.properties.map((property) => propertyKey(property.name!)!)
+        independentFields && literal && ts.isObjectLiteralExpression(literal)
+            ? literalDataKeys(literal, absent)
             : undefined;
     return parameterProjection(
         checker,
@@ -259,8 +245,37 @@ export function parameterProjectionIsReadOnly(
         keys,
         capturedScalarFacts &&
             independentFields &&
-            freshOwner !== undefined &&
-            ts.isObjectLiteralExpression(freshOwner),
+            literal !== undefined &&
+            freshOwners(literal, path.slice(0, -1), absent),
+    );
+}
+
+/**
+ * Whether every object a path's projection can reach in a literal argument
+ * is itself a literal, whichever spread arm supplies it: a fresh wrapper may
+ * still hold a caller-owned child, so captured scalar facts need a literal
+ * owner at every enclosing projection.
+ */
+function freshOwners(
+    literal: ts.Expression,
+    keys: KeyPath,
+    absent: (operand: ts.Expression) => boolean,
+): boolean {
+    let owners = [literal];
+    for (const key of keys) {
+        const next: ts.Expression[] = [];
+        for (const owner of owners) {
+            const values = ts.isObjectLiteralExpression(owner)
+                ? literalPropertyValues(owner, key, absent)
+                : undefined;
+            if (!values) return false;
+            next.push(...values.values.map((value) => unwrapExpression(value)));
+        }
+        owners = next;
+    }
+    return (
+        owners.length > 0 &&
+        owners.every((owner) => ts.isObjectLiteralExpression(owner))
     );
 }
 

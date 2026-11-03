@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { compileSource } from "../src/compiler.js";
+import { POSITION_VERTEX_WGSL } from "./program-snippets.js";
 
 function refusal(source: string, fileName: string): string {
     try {
@@ -57,14 +58,7 @@ return \${TINT};
                 await createEngine({});
                 createShaderMaterial({
                     name: "tagged",
-                    vertexSource: \`struct VertexOutput {
-@builtin(position) position: vec4<f32>,
-};
-@vertex fn mainVertex(input: VertexInput) -> VertexOutput {
-var out: VertexOutput;
-out.position = shaderSystem.worldViewProjection * vec4<f32>(input.position, 1.0);
-return out;
-}\`,
+                    vertexSource: \`${POSITION_VERTEX_WGSL}\`,
                     fragmentSource: fragmentSource(),
                     attributes: ["position"],
                     uniforms: ["worldViewProjection"],

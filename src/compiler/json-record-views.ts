@@ -115,7 +115,14 @@ export function compileJsonRecordView(
     node: ts.Node,
 ): string | undefined {
     const properties = record.recordProperties;
-    if (!isPlainJsonRecord(record) || !properties) return undefined;
+    // A view lists its keys once; a key a conditional spread wrote is own
+    // only while its value is present.
+    if (
+        !isPlainJsonRecord(record) ||
+        !properties ||
+        Object.values(properties).some((member) => member.conditionalOwnKey)
+    )
+        return undefined;
     const context = lowerer.context;
     const expression = lowerer.convertedExpression(node);
     const declaration =

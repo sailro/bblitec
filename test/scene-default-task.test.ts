@@ -140,3 +140,27 @@ for (const { name, source } of cases) {
         },
     );
 }
+
+test("a scene created inside registerScene registers natively", (t) => {
+    const result = compileSource(`
+        import { createEngine, createSceneContext, registerScene } from "@babylonjs/lite";
+        async function main(): Promise<void> {
+            const engine = await createEngine({});
+            registerScene(createSceneContext(engine));
+        }
+    `);
+    // The native registration takes the scene by reference: it is held first.
+    assert.match(
+        result.cpp,
+        /auto (v_bblite_registered_scene_\d+) = bbl::create_scene_context\([^;]+;\s+bblscene::bbl_register_scene\(\1\)/,
+    );
+    if (!tools) {
+        t.skip("Native compiler unavailable.");
+        return;
+    }
+    const output = resolve("artifacts", "scene-default-task-check");
+    mkdirSync(output, { recursive: true });
+    const cpp = join(output, "inline-registration.cpp");
+    writeFileSync(cpp, result.cpp);
+    runNativeFixtureCompiler(tools, ["/Zs", cpp]);
+});

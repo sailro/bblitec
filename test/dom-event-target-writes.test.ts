@@ -62,7 +62,7 @@ test("an event target narrowed to an element writes like the retained element it
     writeFileSync(join(directory, "program.hpp"), cpp);
     for (const write of [
         /bbl::ui_set_style_property\(bbl::dom_target_owner\([^;]+"transition-delay", "0ms"\)/,
-        /bbl::ui_toggle_class\(bbl::dom_target_owner\([^;]+"settled", true\)/,
+        /bbl::ui_(?:set|toggle)_class\(bbl::dom_target_owner\([^;]+"settled", true\)/,
         /bbl::ui_set_attribute\(bbl::dom_target_owner\([^;]+"data-settled"/,
         /bbl::ui_set_attribute\(bbl::dom_target_owner\([^;]+"aria-pressed", "true"\)/,
         /bbl::ui_set_attribute\(bbl::dom_target_owner\([^;]+"data-last"/,

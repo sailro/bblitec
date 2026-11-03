@@ -78,6 +78,33 @@ test("element tree, text, editability, selection and narrowed event reads run na
         const down = document.createElement("button");
         function blocked(direction: number): boolean { return (direction > 0 ? up : down).disabled; }
         if (!blocked(1) || blocked(-1)) throw new Error("conditional owner");
+        // A maybe-absent element a nested callback re-points reads its presence from its slot.
+        const picks: HTMLButtonElement[] = [];
+        let picked = picks[0] as HTMLButtonElement;
+        const pick = (button: HTMLButtonElement): void => { picked = button; };
+        if (picked || picked === up) throw new Error("absent pick");
+        pick(up);
+        if (!picked || picked !== up || picked === down) throw new Error("re-pointed pick");
+        // classList tokens read at run time, validated as DOMTokenList validates them.
+        const tokens = ["warm", "cold"];
+        const box = document.createElement("div");
+        for (const token of tokens) box.classList.add(token);
+        box.classList.toggle(tokens[0]!, false);
+        if (box.getAttribute("class") !== "cold" || !box.classList.contains(tokens[1]!))
+            throw new Error("run-time class tokens");
+        let refused = "";
+        try { box.classList.add(String(Date.now() < 0 ? "x" : "")); } catch (error) { refused += (error as DOMException).name; }
+        try { box.classList.toggle("a" + (Date.now() < 0 ? "" : " b")); } catch (error) { refused += (error as DOMException).name; }
+        if (refused !== "SyntaxErrorInvalidCharacterError") throw new Error("class token errors " + refused);
+        // An array binding a callback assigns an array of stored elements holds that one array.
+        const owners = [{ button: up }, { button: down }];
+        const stored = owners.map((owner) => owner.button);
+        let shown: HTMLButtonElement[] = [];
+        const show = (): void => { shown = stored; };
+        show();
+        if (shown !== stored || shown.length !== 2 || shown[1] !== down) throw new Error("one array");
+        stored.pop();
+        if (shown.length !== 1 || shown[0] !== up) throw new Error("shared array");
         const editor = document.createElement("div");
         editor.setAttribute("contenteditable", "");
         editor.style.cssText = "position:absolute;left:0;top:100px;width:200px;height:60px";

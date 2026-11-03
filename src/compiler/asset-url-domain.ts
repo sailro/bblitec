@@ -5,6 +5,7 @@ import { resolveBundledAsset } from "./assets.js";
 import { deploymentUrl } from "./deployment.js";
 import type { LoweringServices } from "./lowering-services.js";
 import { stringDomain, type StringDomainContext } from "./string-domain.js";
+import { urlFilePath } from "../asset-source.js";
 
 type Context = StringDomainContext & Pick<LoweringServices, "options">;
 
@@ -31,7 +32,7 @@ export function assetUrlDomain(
     const base = deploymentUrl(context.options);
     const safe = domain?.every((source) => {
         if (/%2f|%5c|\\/i.test(source)) return false;
-        const path = source.split(/[?#]/, 1)[0]!;
+        const path = urlFilePath(source);
         let decoded: string;
         try {
             decoded = decodeURIComponent(path);

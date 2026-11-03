@@ -77,7 +77,11 @@ import { isNativeOwnerRecord } from "./native-owner-carrier.js";
 import { parameterProjectionIsReadOnly } from "./parameter-projection-effects.js";
 import { loopBoundMayChange, walkReachedLoopNodes } from "./resource-loops.js";
 import { calledFunction } from "./symbols.js";
-import { knownCondition, rebaseSpelling } from "./values/model.js";
+import {
+    handleFoundCpp,
+    knownCondition,
+    rebaseSpelling,
+} from "./values/model.js";
 
 /** What the bindings ask of the compiler: symbols, values and native storage. */
 interface BindingScopesContext extends Pick<
@@ -609,14 +613,15 @@ export class BindingScopes {
      * The names no scope binds yet that a callback's code reads when it
      * runs: its own reads (`direct`), then those of the functions it calls
      * or names and of the callbacks a bound value it reads carries
-     * (`options.onClose()`). Each maps to its first read.
+     * (`options.onClose()`). Each maps to its read in every piece of code
+     * that reads it, first read first.
      */
     public unboundClosureReads(
         root: ts.Node,
-    ): Map<ts.Symbol, { read: ts.Identifier; direct: boolean }> {
+    ): Map<ts.Symbol, { reads: ts.Identifier[]; direct: boolean }> {
         const unbound = new Map<
             ts.Symbol,
-            { read: ts.Identifier; direct: boolean }
+            { reads: ts.Identifier[]; direct: boolean }
         >();
         const visited = new Set<ts.Node>();
         const visitedValues = new Set<Value>();
@@ -641,9 +646,11 @@ export class BindingScopes {
                     followValue(binding.value);
                     continue;
                 }
-                if (!unbound.has(symbol))
+                const known = unbound.get(symbol);
+                if (known) known.reads.push(identifier);
+                else
                     unbound.set(symbol, {
-                        read: identifier,
+                        reads: [identifier],
                         direct: code === root,
                     });
                 const declaration = symbol.valueDeclaration;
@@ -966,14 +973,21 @@ export class BindingScopes {
         // the outer name keeps only the facts both handles share.
         if (
             value.kind === "ui-element" &&
-            binding.value.kind === "ui-element" &&
-            presenceFlagCpp(binding.value) === undefined &&
-            presenceFlagCpp(value) === undefined
+            binding.value.kind === "ui-element"
         ) {
             const shared: Value = { ...binding.value };
             for (const field of metadataFieldsForKind("ui-element"))
                 if (shared[field] !== value[field])
                     delete writable(shared)[field];
+            // A flag computed where one of them was read cannot follow the
+            // write: an element's slot says itself whether it holds one.
+            if (
+                presenceFlagCpp(binding.value) !== undefined ||
+                presenceFlagCpp(value) !== undefined
+            )
+                writable(shared).optionalFoundCpp = handleFoundCpp(
+                    binding.value.cpp,
+                );
             this.context.describeNativeValue(shared);
             owner.set(symbol, { ...binding, value: shared });
             return;
@@ -1374,7 +1388,7 @@ export class BindingScopes {
                         this.context.dataLowerer.compileKnownValueForSink(
                             narrowed,
                             represented,
-                            identifier,
+                            argument ?? identifier,
                         ),
                         represented,
                     ),

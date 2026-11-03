@@ -161,13 +161,38 @@ function pinnedPlugin(manifest: MaterialPluginManifest): PinnedPlugin {
 export function materialPluginListKey(
     plugins: readonly MaterialPluginManifest[],
 ): string {
-    const signature = pinnedModuleFunction(
+    pinnedPluginSignature ??= pinnedModuleFunction(
         "src/material/plugin/plugin-bridge-shared.ts",
         "pluginSignature",
-    )(pinnedPlugins(plugins));
+    );
+    const signature = pinnedPluginSignature(pinnedPlugins(plugins));
     if (typeof signature !== "string")
         throw new Error("Pinned pluginSignature did not return a string.");
     return signature;
+}
+
+/** The pin's `pluginSignature`, resolved once. */
+let pinnedPluginSignature: ((...parameters: unknown[]) => unknown) | undefined;
+
+/** @unjournaled Each plugin's own key: a pure function of its manifest. */
+const pluginKeys = new WeakMap<MaterialPluginManifest, string>();
+
+function pluginKey(plugin: MaterialPluginManifest): string {
+    let key = pluginKeys.get(plugin);
+    if (key === undefined) {
+        key = materialPluginListKey([plugin]);
+        pluginKeys.set(plugin, key);
+    }
+    return key;
+}
+
+/** Whether `list` already holds `plugin`, under the same identity. */
+export function materialPluginListHolds(
+    list: readonly MaterialPluginManifest[],
+    plugin: MaterialPluginManifest,
+): boolean {
+    const key = pluginKey(plugin);
+    return list.some((held) => pluginKey(held) === key);
 }
 
 /** Binding callbacks follow the same priority order as the pin's composed fields. */

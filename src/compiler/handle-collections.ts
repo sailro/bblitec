@@ -841,6 +841,13 @@ export class HandleCollections {
                     ? value.handleCollection
                     : undefined;
             }
+            // A retained element's children are a data range (the data
+            // lowerer's walk over them), not a scene handle collection.
+            if (
+                ownerType?.kind === "handle" &&
+                ownerType.handle === "ui-element"
+            )
+                return undefined;
         }
         if (
             ts.isCallExpression(unwrapped) &&

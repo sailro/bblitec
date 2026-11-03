@@ -7,6 +7,7 @@ import { importPinnedModule } from "../src/pinned-shader-composer.js";
 import { LoweringContext } from "../src/lowering/context.js";
 import { materialShadowReceiverCpp } from "../src/lowering/material-shadow-receiver.js";
 import { lowerMeshFeatures } from "../src/lowering/mesh-attribute-features.js";
+import { pbrMaterialBlendsCpp } from "../src/pinned-pbr-variant-cpp.js";
 import {
     cppFunction,
     cppRecord,
@@ -54,8 +55,13 @@ struct RenderDrawCommand { struct Item {
     RenderMaterialKind material_kind = RenderMaterialKind::pbr;
     MaterialHandle material{0}; MeshHandle mesh{0}; std::uint32_t geometry = invalid_handle;
 } item; };
-constexpr unsigned pbr_variant_material_count = 1;
+constexpr unsigned pbr_variant_material_count = 3;
 constexpr std::array<std::uint32_t, 1> pbr_scene_material_indices{0};
+struct PbrMaterialStateRow { std::uint32_t source_row; bool blend; std::uint8_t plugin_signature; bool base_color_factor_written; std::uint32_t row; };
+// Row 0's own state, its blending state, and its state holding plugin list 1.
+constexpr std::array<PbrMaterialStateRow, 3> pbr_material_state_rows{{
+    {0u, false, 0u, false, 0u}, {0u, true, 0u, false, 1u}, {0u, false, 1u, false, 2u}}};
+${pbrMaterialBlendsCpp(new LoweringContext())}
 constexpr std::size_t pinned_msh_receive_shadows = ${bits.MSH_RECEIVE_SHADOWS};
 constexpr std::size_t pinned_msh_has_skeleton = ${bits.MSH_HAS_SKELETON};
 constexpr std::size_t pinned_msh_vat = ${bits.MSH_VAT};
@@ -141,10 +147,41 @@ int main() {
         assert(key.resolved && key.material_index == 0);
         assert(key.material_view == (physical == 5u ? 1u : 0u));
     }
+    // A record keeps the row its first draw resolved, as the pin keeps
+    // \`_renderFeatures\`, so each refusal below draws a record of its own.
     engine.materials[4].pbr_composition_profile = 2;
-    assert(!pal::pinned_variant_key(scene, engine, draw).resolved);
-    engine.materials[5].source_material = {7};
-    assert(!pal::pinned_variant_key(scene, engine, draw).resolved);
+    assert(pal::pinned_variant_key(scene, engine, draw).resolved);
+    engine.materials.resize(13);
+    engine.materials[6].pbr_composition_profile = 2;
+    engine.materials[7].source_material = {13};
+    for (unsigned physical : {6u, 7u}) {
+        draw.item.material = {physical};
+        assert(!pal::pinned_variant_key(scene, engine, draw).resolved);
+    }
+    // A written row selects the row composed for the drawn record's state. A
+    // copy composes as its original and holds its own state; a view draws the
+    // row its source's state selects.
+    engine.materials[8].composition_source = {0};
+    engine.materials[8].alpha_mode = MaterialAlphaMode::blend;
+    engine.materials[9].composition_source = {0};
+    engine.materials[9].plugin_signature_index = 1;
+    engine.materials[10].source_material = {8};
+    engine.materials[10].no_color = true;
+    engine.materials[11].composition_source = {0};
+    engine.materials[11].alpha = 0.5f;
+    engine.materials[12].composition_source = {0};
+    engine.materials[12].base_color_factor_written = true;
+    const auto row_of = [&](unsigned physical) {
+        draw.item.material = {physical};
+        return pal::pinned_variant_key(scene, engine, draw);
+    };
+    assert(row_of(8).material_index == 1 && row_of(9).material_index == 2);
+    const auto view = row_of(10);
+    assert(view.resolved && view.material_index == 1 && view.material_view == 1);
+    assert(row_of(11).material_index == 1);
+    assert(!row_of(12).resolved);
+    engine.materials[8].alpha_mode = MaterialAlphaMode::opaque;
+    assert(row_of(8).material_index == 1);
 }
 `,
         );

@@ -66,6 +66,10 @@
       "description": "meshoptimizer's decoder for platform:meshopt, at the version the pinned meshopt_decoder.js is built from (the override below), so a decoded stream matches the browser's bytes. MIT-licensed, linked only where a program decodes meshopt streams at run time.",
       "dependencies": ["meshoptimizer"]
     },
+    "indexeddb": {
+      "description": "SQLite for storage:indexeddb: one database file per IndexedDB database, as Firefox, WebKit and Chromium's SQLite backing store keep theirs. Public domain, linked only where a program opens an IndexedDB database.",
+      "dependencies": ["sqlite3"]
+    },
     "navigation": {
       "description": "Recast/Detour navigation for scenes reaching navigation:recast — the overlay port pins isaac-mason's fork at the commit the pinned @recast-navigation/wasm builds, so navmesh, query and crowd behaviour matches the browser reference. Zlib-licensed, linked only where the scene's own source creates a navigation plugin.",
       "dependencies": [

@@ -34,7 +34,7 @@ import {
     type PositiveIntegerContext,
     type StaticBooleanContext,
 } from "../option-helpers.js";
-import { knownCondition } from "../values/model.js";
+import { absenceOf, knownCondition } from "../values/model.js";
 import {
     staticTableEntry,
     staticTableOption,
@@ -109,6 +109,7 @@ export interface EngineOptionContext
             | "expectKind"
             | "expectSameEngine"
             | "expectObjectLiteral"
+            | "dataLowerer"
             | "objectProperty"
             | "compileNumber"
             | "compileBoolean"
@@ -764,23 +765,65 @@ export function compileRenderTextureValue(
     return value.cpp;
 }
 
+/**
+ * Whether `createSceneContext` adds its default render task: the pin's
+ * `options?.defaultRenderTask !== false`, `known` when generation decides it.
+ */
+export interface SceneDefaultRenderTask {
+    cpp: string;
+    known?: boolean;
+}
+
+const DEFAULT_RENDER_TASK: SceneDefaultRenderTask = {
+    cpp: "true",
+    known: true,
+};
+
 export function compileSceneDefaultRenderTask(
     context: EngineOptionContext,
     expression: ts.Expression | undefined,
-): boolean {
-    if (!expression) {
-        return true;
+): SceneDefaultRenderTask {
+    if (!expression) return DEFAULT_RENDER_TASK;
+    const options = context.unwrap(expression);
+    if (ts.isObjectLiteralExpression(options)) {
+        const value = context.objectProperty(options, "defaultRenderTask");
+        return value
+            ? notFalse(context, context.compileValue(value), value)
+            : DEFAULT_RENDER_TASK;
     }
-    const options = context.expectObjectLiteral(expression);
-    const value = context.objectProperty(options, "defaultRenderTask");
-    if (!value) {
-        return true;
-    }
-    const compiled = context.compileBoolean(value);
-    if (knownCondition(compiled) === undefined) {
-        context.fail(value, "defaultRenderTask must be a static boolean.");
-    }
-    return knownCondition(compiled) === true;
+    // A record a binding holds or a run-time choice selects (or leaves out).
+    const owner = context.compileValue(expression);
+    if (absenceOf(owner) === "undefined") return DEFAULT_RENDER_TASK;
+    const read = context.dataLowerer.compilePropertyFromValue(
+        owner,
+        ts.factory.createPropertyAccessChain(
+            expression,
+            ts.factory.createToken(ts.SyntaxKind.QuestionDotToken),
+            "defaultRenderTask",
+        ),
+    );
+    return read
+        ? notFalse(context, read, expression)
+        : context.fail(
+              expression,
+              "createSceneContext options must be a represented record.",
+          );
+}
+
+function notFalse(
+    context: EngineOptionContext,
+    value: Value,
+    node: ts.Node,
+): SceneDefaultRenderTask {
+    if (absenceOf(value) === "undefined") return DEFAULT_RENDER_TASK;
+    const known = value.staticBoolean ?? knownCondition(value.cpp);
+    if (known !== undefined) return { cpp: String(known), known };
+    const stored = context.dataLowerer.compileKnownValueForSink(
+        value,
+        { kind: "optional", inner: { kind: "boolean" } },
+        node,
+    );
+    return { cpp: `(${stored} != false)` };
 }
 
 /**

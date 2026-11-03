@@ -1,0 +1,647 @@
+CSS math over a percentage of a layout length: calc() of one percentage and lengths, and min()/max()/clamp() of
+two or three terms of that form (`width:calc(100% - 20px)`, `max-width:min(260px, 100%)`). The host folds such math
+to the canonical `bbl-calc(<percent> <px>[ lower <percent> <px>][ upper <percent> <px>])`, which the number parser
+reads for properties taking both lengths and percentages (Unit::LENGTH_CALC); a computed Percentage carries the
+lengths and bounds (Style::LengthCalc, held apart in ComputedValues for the few values that have them),
+ResolveValueOr resolves them against the percentage's base; sized decorator boxes (patch 0025) carry them per
+axis, and transitions mix unbounded terms (bounded ones swap).
+CSS Values: https://www.w3.org/TR/css-values-4/#calc-notation
+
+diff --git a/Include/RmlUi/Core/ComputedValues.h b/Include/RmlUi/Core/ComputedValues.h
+index 756db1b..588f6e7 100644
+--- a/Include/RmlUi/Core/ComputedValues.h
++++ b/Include/RmlUi/Core/ComputedValues.h
+@@ -5,6 +5,7 @@
+ #include "RenderBox.h"
+ #include "StyleTypes.h"
+ #include "Types.h"
++#include <algorithm>
+ #include <cfloat>
+ 
+ namespace Rml {
+@@ -184,6 +185,9 @@ namespace Style {
+ 		float scrollbar_margin = 0.f;
+ 		// The element's own opacity, which composites it and its contents as one layer.
+ 		float group_opacity = 1.f;
++
++		// The CSS math terms of the length-percentage values that have them.
++		Vector<Pair<PropertyId, LengthCalc>> length_calcs;
+ 	};
+ 
+ 	class ComputedValues : NonCopyMoveable {
+@@ -193,20 +197,20 @@ namespace Style {
+ 		// clang-format off
+ 
+ 		// -- Common --
+-		LengthPercentageAuto width()               const { return LengthPercentageAuto(common.width_type, common.width_value); }
+-		LengthPercentageAuto height()              const { return LengthPercentageAuto(common.height_type, common.height_value); }
+-		LengthPercentageAuto margin_top()          const { return LengthPercentageAuto(common.margin_top_type, common.margin_top_value); }
+-		LengthPercentageAuto margin_right()        const { return LengthPercentageAuto(common.margin_right_type, common.margin_right_value); }
+-		LengthPercentageAuto margin_bottom()       const { return LengthPercentageAuto(common.margin_bottom_type, common.margin_bottom_value); }
+-		LengthPercentageAuto margin_left()         const { return LengthPercentageAuto(common.margin_left_type, common.margin_left_value); }
+-		LengthPercentage     padding_top()         const { return LengthPercentage(common.padding_top_type, common.padding_top_value); }
+-		LengthPercentage     padding_right()       const { return LengthPercentage(common.padding_right_type, common.padding_right_value); }
+-		LengthPercentage     padding_bottom()      const { return LengthPercentage(common.padding_bottom_type, common.padding_bottom_value); }
+-		LengthPercentage     padding_left()        const { return LengthPercentage(common.padding_left_type, common.padding_left_value); }
+-		LengthPercentageAuto top()                 const { return LengthPercentageAuto(common.top_type, common.top_value); }
+-		LengthPercentageAuto right()               const { return LengthPercentageAuto(common.right_type, common.right_value); }
+-		LengthPercentageAuto bottom()              const { return LengthPercentageAuto(common.bottom_type, common.bottom_value); }
+-		LengthPercentageAuto left()                const { return LengthPercentageAuto(common.left_type, common.left_value); }
++		LengthPercentageAuto width()               const { return WithCalc(PropertyId::Width, LengthPercentageAuto(common.width_type, common.width_value)); }
++		LengthPercentageAuto height()              const { return WithCalc(PropertyId::Height, LengthPercentageAuto(common.height_type, common.height_value)); }
++		LengthPercentageAuto margin_top()          const { return WithCalc(PropertyId::MarginTop, LengthPercentageAuto(common.margin_top_type, common.margin_top_value)); }
++		LengthPercentageAuto margin_right()        const { return WithCalc(PropertyId::MarginRight, LengthPercentageAuto(common.margin_right_type, common.margin_right_value)); }
++		LengthPercentageAuto margin_bottom()       const { return WithCalc(PropertyId::MarginBottom, LengthPercentageAuto(common.margin_bottom_type, common.margin_bottom_value)); }
++		LengthPercentageAuto margin_left()         const { return WithCalc(PropertyId::MarginLeft, LengthPercentageAuto(common.margin_left_type, common.margin_left_value)); }
++		LengthPercentage     padding_top()         const { return WithCalc(PropertyId::PaddingTop, LengthPercentage(common.padding_top_type, common.padding_top_value)); }
++		LengthPercentage     padding_right()       const { return WithCalc(PropertyId::PaddingRight, LengthPercentage(common.padding_right_type, common.padding_right_value)); }
++		LengthPercentage     padding_bottom()      const { return WithCalc(PropertyId::PaddingBottom, LengthPercentage(common.padding_bottom_type, common.padding_bottom_value)); }
++		LengthPercentage     padding_left()        const { return WithCalc(PropertyId::PaddingLeft, LengthPercentage(common.padding_left_type, common.padding_left_value)); }
++		LengthPercentageAuto top()                 const { return WithCalc(PropertyId::Top, LengthPercentageAuto(common.top_type, common.top_value)); }
++		LengthPercentageAuto right()               const { return WithCalc(PropertyId::Right, LengthPercentageAuto(common.right_type, common.right_value)); }
++		LengthPercentageAuto bottom()              const { return WithCalc(PropertyId::Bottom, LengthPercentageAuto(common.bottom_type, common.bottom_value)); }
++		LengthPercentageAuto left()                const { return WithCalc(PropertyId::Left, LengthPercentageAuto(common.left_type, common.left_value)); }
+ 		NumberAuto           z_index()             const { return NumberAuto(common.z_index_type, common.z_index_value); }
+ 		float                border_top_width()    const { return (float)common.border_top_width; }
+ 		float                border_right_width()  const { return (float)common.border_right_width; }
+@@ -252,10 +256,10 @@ namespace Style {
+ 		Direction      direction()        const { return inherited.direction; }
+ 
+ 		// -- Rare --
+-		MinWidth          min_width()                  const { return LengthPercentage(rare.min_width_type, rare.min_width); }
+-		MaxWidth          max_width()                  const { return LengthPercentage(rare.max_width_type, rare.max_width); }
+-		MinHeight         min_height()                 const { return LengthPercentage(rare.min_height_type, rare.min_height); }
+-		MaxHeight         max_height()                 const { return LengthPercentage(rare.max_height_type, rare.max_height); }
++		MinWidth          min_width()                  const { return WithCalc(PropertyId::MinWidth, LengthPercentage(rare.min_width_type, rare.min_width)); }
++		MaxWidth          max_width()                  const { return WithCalc(PropertyId::MaxWidth, LengthPercentage(rare.max_width_type, rare.max_width)); }
++		MinHeight         min_height()                 const { return WithCalc(PropertyId::MinHeight, LengthPercentage(rare.min_height_type, rare.min_height)); }
++		MaxHeight         max_height()                 const { return WithCalc(PropertyId::MaxHeight, LengthPercentage(rare.max_height_type, rare.max_height)); }
+ 		VerticalAlign     vertical_align()             const { return VerticalAlign(rare.vertical_align_type, rare.vertical_align_length); }
+ 		const             AnimationList* animation()   const;
+ 		const             TransitionList* transition() const;
+@@ -279,7 +283,7 @@ namespace Style {
+ 		JustifyContent    justify_content()            const { return GetLocalPropertyKeyword(PropertyId::JustifyContent, JustifyContent::FlexStart); }
+ 		float             flex_grow()                  const { return GetLocalProperty(PropertyId::FlexGrow, 0.f); }
+ 		float             flex_shrink()                const { return GetLocalProperty(PropertyId::FlexShrink, 1.f); }
+-		FlexBasis         flex_basis()                 const { return LengthPercentageAuto(rare.flex_basis_type, rare.flex_basis); }
++		FlexBasis         flex_basis()                 const { return WithCalc(PropertyId::FlexBasis, LengthPercentageAuto(rare.flex_basis_type, rare.flex_basis)); }
+ 		BorderRadius             border_top_left_radius()     const { return rare.border_top_left_radius; }
+ 		BorderRadius             border_top_right_radius()    const { return rare.border_top_right_radius; }
+ 		BorderRadius             border_bottom_right_radius() const { return rare.border_bottom_right_radius; }
+@@ -292,8 +296,8 @@ namespace Style {
+ 		Drag              drag()                       const { return rare.drag; }
+ 		TabIndex          tab_index()                  const { return rare.tab_index; }
+ 		Colourb           image_color()                const { return rare.image_color; }
+-		LengthPercentage  row_gap()                    const { return LengthPercentage(rare.row_gap_type, rare.row_gap); }
+-		LengthPercentage  column_gap()                 const { return LengthPercentage(rare.column_gap_type, rare.column_gap); }
++		LengthPercentage  row_gap()                    const { return WithCalc(PropertyId::RowGap, LengthPercentage(rare.row_gap_type, rare.row_gap)); }
++		LengthPercentage  column_gap()                 const { return WithCalc(PropertyId::ColumnGap, LengthPercentage(rare.column_gap_type, rare.column_gap)); }
+ 		OverscrollBehavior overscroll_behavior_x()     const { return rare.overscroll_behavior_x; }
+ 		OverscrollBehavior overscroll_behavior_y()     const { return rare.overscroll_behavior_y; }
+ 		float             scrollbar_margin()           const { return rare.scrollbar_margin; }
+@@ -305,20 +309,20 @@ namespace Style {
+ 
+ 		// -- Assignment --
+ 		// Common
+-		void width              (LengthPercentageAuto value) { common.width_type          = value.type; common.width_value          = value.value; }
+-		void height             (LengthPercentageAuto value) { common.height_type         = value.type; common.height_value         = value.value; }
+-		void margin_top         (LengthPercentageAuto value) { common.margin_top_type     = value.type; common.margin_top_value     = value.value; }
+-		void margin_right       (LengthPercentageAuto value) { common.margin_right_type   = value.type; common.margin_right_value   = value.value; }
+-		void margin_bottom      (LengthPercentageAuto value) { common.margin_bottom_type  = value.type; common.margin_bottom_value  = value.value; }
+-		void margin_left        (LengthPercentageAuto value) { common.margin_left_type    = value.type; common.margin_left_value    = value.value; }
+-		void padding_top        (LengthPercentage value)     { common.padding_top_type    = value.type; common.padding_top_value    = value.value; }
+-		void padding_right      (LengthPercentage value)     { common.padding_right_type  = value.type; common.padding_right_value  = value.value; }
+-		void padding_bottom     (LengthPercentage value)     { common.padding_bottom_type = value.type; common.padding_bottom_value = value.value; }
+-		void padding_left       (LengthPercentage value)     { common.padding_left_type   = value.type; common.padding_left_value   = value.value; }
+-		void top                (LengthPercentageAuto value) { common.top_type            = value.type; common.top_value            = value.value; }
+-		void right              (LengthPercentageAuto value) { common.right_type          = value.type; common.right_value          = value.value; }
+-		void bottom             (LengthPercentageAuto value) { common.bottom_type         = value.type; common.bottom_value         = value.value; }
+-		void left               (LengthPercentageAuto value) { common.left_type           = value.type; common.left_value           = value.value; }
++		void width              (LengthPercentageAuto value) { common.width_type          = value.type; common.width_value          = value.value; SetCalc(PropertyId::Width, value); }
++		void height             (LengthPercentageAuto value) { common.height_type         = value.type; common.height_value         = value.value; SetCalc(PropertyId::Height, value); }
++		void margin_top         (LengthPercentageAuto value) { common.margin_top_type     = value.type; common.margin_top_value     = value.value; SetCalc(PropertyId::MarginTop, value); }
++		void margin_right       (LengthPercentageAuto value) { common.margin_right_type   = value.type; common.margin_right_value   = value.value; SetCalc(PropertyId::MarginRight, value); }
++		void margin_bottom      (LengthPercentageAuto value) { common.margin_bottom_type  = value.type; common.margin_bottom_value  = value.value; SetCalc(PropertyId::MarginBottom, value); }
++		void margin_left        (LengthPercentageAuto value) { common.margin_left_type    = value.type; common.margin_left_value    = value.value; SetCalc(PropertyId::MarginLeft, value); }
++		void padding_top        (LengthPercentage value)     { common.padding_top_type    = value.type; common.padding_top_value    = value.value; SetCalc(PropertyId::PaddingTop, value); }
++		void padding_right      (LengthPercentage value)     { common.padding_right_type  = value.type; common.padding_right_value  = value.value; SetCalc(PropertyId::PaddingRight, value); }
++		void padding_bottom     (LengthPercentage value)     { common.padding_bottom_type = value.type; common.padding_bottom_value = value.value; SetCalc(PropertyId::PaddingBottom, value); }
++		void padding_left       (LengthPercentage value)     { common.padding_left_type   = value.type; common.padding_left_value   = value.value; SetCalc(PropertyId::PaddingLeft, value); }
++		void top                (LengthPercentageAuto value) { common.top_type            = value.type; common.top_value            = value.value; SetCalc(PropertyId::Top, value); }
++		void right              (LengthPercentageAuto value) { common.right_type          = value.type; common.right_value          = value.value; SetCalc(PropertyId::Right, value); }
++		void bottom             (LengthPercentageAuto value) { common.bottom_type         = value.type; common.bottom_value         = value.value; SetCalc(PropertyId::Bottom, value); }
++		void left               (LengthPercentageAuto value) { common.left_type           = value.type; common.left_value           = value.value; SetCalc(PropertyId::Left, value); }
+ 		void z_index            (NumberAuto value)           { common.z_index_type        = value.type; common.z_index_value        = value.value; }
+ 		void border_top_width   (int16_t value)              { common.border_top_width    = value; }
+ 		void border_right_width (int16_t value)              { common.border_right_width  = value; }
+@@ -359,18 +363,18 @@ namespace Style {
+ 		void language          (const String& value)  { inherited.language           = value; }
+ 		void direction         (Direction value)      { inherited.direction          = value; }
+ 		// Rare
+-		void min_width                 (MinWidth value)          { rare.min_width_type             = value.type; rare.min_width                  = value.value; }
+-		void max_width                 (MaxWidth value)          { rare.max_width_type             = value.type; rare.max_width                  = value.value; }
+-		void min_height                (MinHeight value)         { rare.min_height_type            = value.type; rare.min_height                 = value.value; }
+-		void max_height                (MaxHeight value)         { rare.max_height_type            = value.type; rare.max_height                 = value.value; }
++		void min_width                 (MinWidth value)          { rare.min_width_type             = value.type; rare.min_width                  = value.value; SetCalc(PropertyId::MinWidth, value); }
++		void max_width                 (MaxWidth value)          { rare.max_width_type             = value.type; rare.max_width                  = value.value; SetCalc(PropertyId::MaxWidth, value); }
++		void min_height                (MinHeight value)         { rare.min_height_type            = value.type; rare.min_height                 = value.value; SetCalc(PropertyId::MinHeight, value); }
++		void max_height                (MaxHeight value)         { rare.max_height_type            = value.type; rare.max_height                 = value.value; SetCalc(PropertyId::MaxHeight, value); }
+ 		void vertical_align            (VerticalAlign value)     { rare.vertical_align_type        = value.type; rare.vertical_align_length      = value.value; }
+ 		void perspective_origin_x      (PerspectiveOrigin value) { rare.perspective_origin_x_type  = value.type; rare.perspective_origin_x       = value.value; }
+ 		void perspective_origin_y      (PerspectiveOrigin value) { rare.perspective_origin_y_type  = value.type; rare.perspective_origin_y       = value.value; }
+ 		void transform_origin_x        (TransformOrigin value)   { rare.transform_origin_x_type    = value.type; rare.transform_origin_x         = value.value; }
+ 		void transform_origin_y        (TransformOrigin value)   { rare.transform_origin_y_type    = value.type; rare.transform_origin_y         = value.value; }
+-		void row_gap                   (LengthPercentage value)  { rare.row_gap_type               = value.type; rare.row_gap                    = value.value; }
+-		void column_gap                (LengthPercentage value)  { rare.column_gap_type            = value.type; rare.column_gap                 = value.value; }
+-		void flex_basis                (FlexBasis value)         { rare.flex_basis_type            = value.type; rare.flex_basis                 = value.value; }
++		void row_gap                   (LengthPercentage value)  { rare.row_gap_type               = value.type; rare.row_gap                    = value.value; SetCalc(PropertyId::RowGap, value); }
++		void column_gap                (LengthPercentage value)  { rare.column_gap_type            = value.type; rare.column_gap                 = value.value; SetCalc(PropertyId::ColumnGap, value); }
++		void flex_basis                (FlexBasis value)         { rare.flex_basis_type            = value.type; rare.flex_basis                 = value.value; SetCalc(PropertyId::FlexBasis, value); }
+ 		void transform_origin_z        (float value)             { rare.transform_origin_z         = value; }
+ 		void perspective               (float value)             { rare.perspective                = value; }
+ 		void has_local_perspective     (bool value)              { rare.has_local_perspective      = value; }
+@@ -404,6 +408,33 @@ namespace Style {
+ 		void CopyInherited(const ComputedValues& parent) { inherited = parent.inherited; }
+ 
+ 	private:
++		// A percentage's CSS math terms, held apart for the few lengths that have them.
++		template <typename T>
++		T WithCalc(PropertyId id, T value) const
++		{
++			if (value.type == T::Percentage)
++				for (const auto& entry : rare.length_calcs)
++					if (entry.first == id)
++						value.calc = entry.second;
++			return value;
++		}
++		template <typename T>
++		void SetCalc(PropertyId id, const T& value)
++		{
++			auto& calcs = rare.length_calcs;
++			const auto it = std::find_if(calcs.begin(), calcs.end(), [id](const Pair<PropertyId, LengthCalc>& entry) { return entry.first == id; });
++			const bool has_calc = value.type == T::Percentage && value.calc.Any();
++			if (it != calcs.end())
++			{
++				if (has_calc)
++					it->second = value.calc;
++				else
++					calcs.erase(it);
++			}
++			else if (has_calc)
++				calcs.emplace_back(id, value.calc);
++		}
++
+ 		template <typename T>
+ 		inline T GetLocalPropertyKeyword(PropertyId id, T default_value) const
+ 		{
+diff --git a/Include/RmlUi/Core/StyleSheetTypes.h b/Include/RmlUi/Core/StyleSheetTypes.h
+index 0fe30c9..d91f2a0 100644
+--- a/Include/RmlUi/Core/StyleSheetTypes.h
++++ b/Include/RmlUi/Core/StyleSheetTypes.h
+@@ -2,6 +2,7 @@
+ 
+ #include "Factory.h"
+ #include "PropertyDictionary.h"
++#include "StyleTypes.h"
+ #include "Types.h"
+ #include "Utilities.h"
+ 
+@@ -34,6 +35,8 @@ using NamedDecoratorMap = UnorderedMap<String, NamedDecorator>;
+ struct DecoratorBox {
+     bool sized = false;
+     Vector2<NumericValue> size, position;
++    // A percentage's CSS math terms per size and position axis, in px scaled like dp.
++    Style::LengthCalc size_calc[2], position_calc[2];
+ };
+ struct DecoratorDeclaration {
+ 	String type;
+diff --git a/Include/RmlUi/Core/StyleTypes.h b/Include/RmlUi/Core/StyleTypes.h
+index 88a01e5..fea804b 100644
+--- a/Include/RmlUi/Core/StyleTypes.h
++++ b/Include/RmlUi/Core/StyleTypes.h
+@@ -1,21 +1,54 @@
+ #pragma once
+ 
++#include "Math.h"
+ #include "Types.h"
+ 
+ namespace Rml {
+ namespace Style {
+ 
++	/// The lengths CSS math adds to a percentage (`calc(100% - 20px)`) and the min()/max()/clamp() terms of the
++	/// same form bounding it (`min(260px, 100%)`), every length in px. The percentage resolves against its base.
++	struct LengthCalc {
++		float offset = 0;
++		bool lower = false, upper = false;
++		float lower_percent = 0, lower_offset = 0;
++		float upper_percent = 0, upper_offset = 0;
++
++		bool Any() const { return offset != 0 || lower || upper; }
++		float Resolve(float percent, float base_value) const
++		{
++			float result = percent * 0.01f * base_value + offset;
++			if (upper)
++				result = Math::Min(result, upper_percent * 0.01f * base_value + upper_offset);
++			if (lower)
++				result = Math::Max(result, lower_percent * 0.01f * base_value + lower_offset);
++			return result;
++		}
++		bool operator==(const LengthCalc& other) const
++		{
++			return offset == other.offset && lower == other.lower && upper == other.upper && lower_percent == other.lower_percent &&
++				lower_offset == other.lower_offset && upper_percent == other.upper_percent && upper_offset == other.upper_offset;
++		}
++		bool operator!=(const LengthCalc& other) const { return !(*this == other); }
++	};
++
+ 	struct LengthPercentageAuto {
+ 		enum Type : uint8_t { Auto, Length, Percentage } type = Length;
+ 		float value = 0;
++		// A Percentage's CSS math terms.
++		LengthCalc calc;
+ 		LengthPercentageAuto() {}
+ 		LengthPercentageAuto(Type type, float value = 0) : type(type), value(value) {}
++		LengthPercentageAuto(Type type, float value, LengthCalc calc) : type(type), value(value), calc(calc) {}
+ 	};
+ 	struct LengthPercentage {
+ 		enum Type : uint8_t { Length, Percentage } type = Length;
+ 		float value = 0;
++		// A Percentage's CSS math terms.
++		LengthCalc calc;
+ 		LengthPercentage() {}
+ 		LengthPercentage(Type type, float value = 0) : type(type), value(value) {}
++		LengthPercentage(Type type, float value, LengthCalc calc) : type(type), value(value), calc(calc) {}
+ 	};
+ 
+ 	// Percentages resolve separately against the border box's width and height.
+diff --git a/Include/RmlUi/Core/Unit.h b/Include/RmlUi/Core/Unit.h
+index 715d976..2fa3b66 100644
+--- a/Include/RmlUi/Core/Unit.h
++++ b/Include/RmlUi/Core/Unit.h
+@@ -55,6 +55,10 @@ enum class Unit {
+ 	VAR_EXPRESSION = 1 << 28,        // substituted and resolved at compute time; fetch as <String>
+ 	SHORTHAND_PLACEHOLDER = 1 << 29, // dependent on a shorthand that must be substituted and resolved at compute time; always empty
+ 
++	// CSS math of one percentage and lengths, optionally bounded by min()/max()/clamp() terms of that form, in the
++	// canonical `bbl-calc(...)` form (see PropertyParserNumber::ParseLengthCalc); fetch as <String>.
++	LENGTH_CALC = 1 << 30,
++
+ 	LENGTH = PX | DP | VW | VH | EM | REM | PPI_UNIT,
+ 	LENGTH_PERCENT = LENGTH | PERCENT,
+ 	NUMBER_PERCENT = NUMBER | PERCENT,
+diff --git a/Source/Core/ComputeProperty.cpp b/Source/Core/ComputeProperty.cpp
+index 8e52336..0c0e8ff 100644
+--- a/Source/Core/ComputeProperty.cpp
++++ b/Source/Core/ComputeProperty.cpp
+@@ -3,6 +3,7 @@
+ #include "../../Include/RmlUi/Core/Property.h"
+ #include "../../Include/RmlUi/Core/StringUtilities.h"
+ #include "ControlledLifetimeResource.h"
++#include "PropertyParserNumber.h"
+ 
+ namespace Rml {
+ 
+@@ -174,10 +175,32 @@ Style::VerticalAlign ComputeVerticalAlign(const Property* property, float line_h
+ 	return Style::VerticalAlign((Style::VerticalAlign::Type)property->Get<int>());
+ }
+ 
++// Folded CSS math over a percentage: the percentage, and its lengths in px scaled like dp (CSS px).
++static Style::LengthCalc ComputeLengthCalc(const Property* property, float dp_ratio, float& percent)
++{
++	Style::LengthCalc calc;
++	if (!PropertyParserNumber::ParseLengthCalc(property->Get<String>(), percent, calc))
++	{
++		RMLUI_ERRORMSG("Invalid CSS math length");
++		percent = 0;
++		return {};
++	}
++	calc.offset *= dp_ratio;
++	calc.lower_offset *= dp_ratio;
++	calc.upper_offset *= dp_ratio;
++	return calc;
++}
++
+ Style::LengthPercentage ComputeLengthPercentage(const Property* property, float font_size, float document_font_size, float dp_ratio,
+ 	Vector2f vp_dimensions)
+ {
+ 	using namespace Style;
++	if (property->unit == Unit::LENGTH_CALC)
++	{
++		float percent = 0;
++		const LengthCalc calc = ComputeLengthCalc(property, dp_ratio, percent);
++		return LengthPercentage(LengthPercentage::Percentage, percent, calc);
++	}
+ 	if (property->unit == Unit::PERCENT)
+ 		return LengthPercentage(LengthPercentage::Percentage, property->Get<float>());
+ 
+@@ -189,6 +212,12 @@ Style::LengthPercentageAuto ComputeLengthPercentageAuto(const Property* property
+ 	Vector2f vp_dimensions)
+ {
+ 	using namespace Style;
++	if (property->unit == Unit::LENGTH_CALC)
++	{
++		float percent = 0;
++		const LengthCalc calc = ComputeLengthCalc(property, dp_ratio, percent);
++		return LengthPercentageAuto(LengthPercentageAuto::Percentage, percent, calc);
++	}
+ 	if (property->unit == Unit::PERCENT)
+ 		return LengthPercentageAuto(LengthPercentageAuto::Percentage, property->Get<float>());
+ 	else if (property->unit == Unit::KEYWORD)
+@@ -226,6 +255,8 @@ Style::LengthPercentage ComputeOrigin(const Property* property, float font_size,
+ Style::LengthPercentage ComputeMaxSize(const Property* property, float font_size, float document_font_size, float dp_ratio, Vector2f vp_dimensions)
+ {
+ 	using namespace Style;
++	if (property->unit == Unit::LENGTH_CALC)
++		return ComputeLengthPercentage(property, font_size, document_font_size, dp_ratio, vp_dimensions);
+ 	if (Any(property->unit & Unit::KEYWORD))
+ 		return LengthPercentage(LengthPercentage::Length, FLT_MAX);
+ 	else if (Any(property->unit & Unit::PERCENT))
+diff --git a/Source/Core/ComputedValues.cpp b/Source/Core/ComputedValues.cpp
+index 3a4892b..6928742 100644
+--- a/Source/Core/ComputedValues.cpp
++++ b/Source/Core/ComputedValues.cpp
+@@ -61,7 +61,7 @@ float ResolveValueOr(Style::LengthPercentageAuto length, float base_value, float
+ 	if (length.type == Style::LengthPercentageAuto::Length)
+ 		return length.value;
+ 	else if (length.type == Style::LengthPercentageAuto::Percentage && base_value >= 0.f)
+-		return length.value * 0.01f * base_value;
++		return length.calc.Resolve(length.value, base_value);
+ 	return default_value;
+ }
+ 
+@@ -70,7 +70,7 @@ float ResolveValueOr(Style::LengthPercentage length, float base_value, float def
+ 	if (length.type == Style::LengthPercentage::Length)
+ 		return length.value;
+ 	else if (length.type == Style::LengthPercentage::Percentage && base_value >= 0.f)
+-		return length.value * 0.01f * base_value;
++		return length.calc.Resolve(length.value, base_value);
+ 	return default_value;
+ }
+ 
+diff --git a/Source/Core/ElementAnimation.cpp b/Source/Core/ElementAnimation.cpp
+index 8db96ff..2e805ba 100644
+--- a/Source/Core/ElementAnimation.cpp
++++ b/Source/Core/ElementAnimation.cpp
+@@ -1,4 +1,5 @@
+ #include "ElementAnimation.h"
++#include "../../Include/RmlUi/Core/Context.h"
+ #include "../../Include/RmlUi/Core/DecorationTypes.h"
+ #include "../../Include/RmlUi/Core/Decorator.h"
+ #include "../../Include/RmlUi/Core/Element.h"
+@@ -13,6 +14,7 @@
+ #include "ClipPath.h"
+ #include "ComputeProperty.h"
+ #include "ElementStyle.h"
++#include "PropertyParserNumber.h"
+ #include "TransformUtilities.h"
+ #include <cmath>
+ 
+@@ -198,10 +200,49 @@ static NumericValue InterpolateNumericValue(NumericValue v0, NumericValue v1, fl
+ 	return alpha < 0.5f ? v0 : v1;
+ }
+ 
++// A length as CSS math terms, a percentage and px (CSS px, RmlUi dp), where one is unbounded.
++static bool LinearLengthTerms(const Property& property, Element& element, float& percent, float& offset)
++{
++	percent = 0;
++	offset = 0;
++	switch (property.unit)
++	{
++	case Unit::LENGTH_CALC:
++	{
++		Style::LengthCalc calc;
++		if (!PropertyParserNumber::ParseLengthCalc(property.Get<String>(), percent, calc) || calc.lower || calc.upper)
++			return false;
++		offset = calc.offset;
++		return true;
++	}
++	case Unit::PERCENT: percent = property.Get<float>(); return true;
++	case Unit::DP: offset = property.Get<float>(); return true;
++	case Unit::PX:
++	{
++		const Context* context = element.GetContext();
++		const float ratio = context ? context->GetDensityIndependentPixelRatio() : 0.f;
++		offset = ratio > 0.f ? property.Get<float>() / ratio : 0.f;
++		return ratio > 0.f;
++	}
++	case Unit::NUMBER: return property.Get<float>() == 0.f;
++	default: return false;
++	}
++}
++
+ static Property InterpolateProperties(const Property& p0, const Property& p1, float alpha, Element& element, const PropertyDefinition* definition)
+ {
+ 	const Property& p_discrete = (alpha < 0.5f ? p0 : p1);
+ 
++	// CSS math over a percentage mixes its terms (CSS Values 4 §10.1); one bounded by min()/max()/clamp() swaps
++	// discretely.
++	if (p0.unit == Unit::LENGTH_CALC || p1.unit == Unit::LENGTH_CALC)
++	{
++		float percent0 = 0, offset0 = 0, percent1 = 0, offset1 = 0;
++		if (!LinearLengthTerms(p0, element, percent0, offset0) || !LinearLengthTerms(p1, element, percent1, offset1))
++			return p_discrete;
++		return Property{CreateString("bbl-calc(%.9g %.9g)", Mix(percent0, percent1, alpha), Mix(offset0, offset1, alpha)), Unit::LENGTH_CALC};
++	}
++
+ 	// Basic shapes of one function interpolate per value (CSS Shapes 1 §6); others swap discretely.
+ 	if (definition && definition->GetId() == PropertyId::ClipPath && p0.unit == Unit::STRING && p1.unit == Unit::STRING)
+ 	{
+@@ -649,7 +690,8 @@ ElementAnimation::ElementAnimation(PropertyId property_id, ElementAnimationOrigi
+ bool ElementAnimation::InternalAddKey(float time, const Property& in_property, Element& element, Tween tween)
+ {
+ 	const Units valid_units =
+-		(Unit::NUMBER_LENGTH_PERCENT | Unit::ANGLE | Unit::COLOUR | Unit::TRANSFORM | Unit::KEYWORD | Unit::DECORATOR | Unit::FILTER);
++		(Unit::NUMBER_LENGTH_PERCENT | Unit::LENGTH_CALC | Unit::ANGLE | Unit::COLOUR | Unit::TRANSFORM | Unit::KEYWORD | Unit::DECORATOR |
++			Unit::FILTER);
+ 
+ 	// clip-path keeps its basic shapes as authored strings.
+ 	if (!Any(in_property.unit & valid_units) && !(property_id == PropertyId::ClipPath && in_property.unit == Unit::STRING))
+diff --git a/Source/Core/ElementEffects.cpp b/Source/Core/ElementEffects.cpp
+index 9170669..66d7273 100644
+--- a/Source/Core/ElementEffects.cpp
++++ b/Source/Core/ElementEffects.cpp
+@@ -1,5 +1,6 @@
+ #include "ElementEffects.h"
+ #include "../../Include/RmlUi/Core/ComputedValues.h"
++#include "../../Include/RmlUi/Core/Context.h"
+ #include "../../Include/RmlUi/Core/Decorator.h"
+ #include "../../Include/RmlUi/Core/Element.h"
+ #include "../../Include/RmlUi/Core/ElementDocument.h"
+@@ -148,9 +149,19 @@ void ElementEffects::ReloadEffectsData()
+                     RenderBox paint_box = element->GetRenderBox(decorator.paint_area);
+                     const Vector2f bounds = paint_box.GetFillSize();
+                     Vector2f size, position;
++                    const Context* context = element->GetContext();
++                    const float dp_ratio = context ? context->GetDensityIndependentPixelRatio() : 1.f;
++                    const auto resolve = [&](NumericValue value, Style::LengthCalc calc, float base) {
++                        if (value.unit != Unit::PERCENT || !calc.Any())
++                            return element->ResolveNumericValue(value, base);
++                        calc.offset *= dp_ratio;
++                        calc.lower_offset *= dp_ratio;
++                        calc.upper_offset *= dp_ratio;
++                        return calc.Resolve(value.number, base);
++                    };
+                     for (int axis = 0; axis < 2; ++axis) {
+-                        size[axis] = element->ResolveNumericValue(decorator.box.size[axis], bounds[axis]);
+-                        position[axis] = element->ResolveNumericValue(decorator.box.position[axis], bounds[axis] - size[axis]);
++                        size[axis] = resolve(decorator.box.size[axis], decorator.box.size_calc[axis], bounds[axis]);
++                        position[axis] = resolve(decorator.box.position[axis], decorator.box.position_calc[axis], bounds[axis] - size[axis]);
+                     }
+                     paints = size.x > 0 && size.y > 0 && bounds.x > 0 && bounds.y > 0;
+                     if (!paints) return DecoratorDataHandle(0);
+diff --git a/Source/Core/PropertyParserDecorator.cpp b/Source/Core/PropertyParserDecorator.cpp
+index 286e8c5..fdc8af5 100644
+--- a/Source/Core/PropertyParserDecorator.cpp
++++ b/Source/Core/PropertyParserDecorator.cpp
+@@ -1,4 +1,5 @@
+ #include "PropertyParserDecorator.h"
++#include "PropertyParserNumber.h"
+ #include "../../Include/RmlUi/Core/StyleSheetSpecification.h"
+ #include "../../Include/RmlUi/Core/PropertyParser.h"
+ #include "../../Include/RmlUi/Core/Decorator.h"
+@@ -72,14 +73,22 @@ bool PropertyParserDecorator::ParseValue(Property& property, const String& decor
+             box.sized = true;
+             for (int pair = 0; pair < 2; ++pair) {
+                 StringList values;
+-                StringUtilities::ExpandString(values, parts[pair + 1], ' ');
++                StringUtilities::ExpandString(values, parts[pair + 1], ' ', '(', ')');
+                 if (values.size() != 2) return false;
+                 for (int axis = 0; axis < 2; ++axis) {
+                     Property value;
+                     if (!StyleSheetSpecification::GetParser("length_percent")->ParseValue(value, values[axis], {})) return false;
+-                    const NumericValue numeric = value.GetNumericValue();
+-                    if (pair == 0 && numeric.number < 0) return false;
++                    NumericValue numeric = value.GetNumericValue();
++                    Style::LengthCalc calc;
++                    if (value.unit == Unit::LENGTH_CALC) {
++                        float percent = 0;
++                        if (!PropertyParserNumber::ParseLengthCalc(value.Get<String>(), percent, calc)) return false;
++                        numeric = NumericValue{percent, Unit::PERCENT};
++                    }
++                    // A math size's sign is the layout's: a non-positive one paints nothing.
++                    if (pair == 0 && numeric.number < 0 && !calc.Any()) return false;
+                     (pair == 0 ? box.size : box.position)[axis] = numeric;
++                    (pair == 0 ? box.size_calc : box.position_calc)[axis] = calc;
+                 }
+             }
+         }
+diff --git a/Source/Core/PropertyParserNumber.cpp b/Source/Core/PropertyParserNumber.cpp
+index 1983d79..15c01a3 100644
+--- a/Source/Core/PropertyParserNumber.cpp
++++ b/Source/Core/PropertyParserNumber.cpp
+@@ -1,5 +1,9 @@
+ #include "PropertyParserNumber.h"
++#include "NumberParsing.h"
++#include <cmath>
+ #include <stdlib.h>
++#include <string_view>
++#include <system_error>
+ 
+ namespace Rml {
+ 
+@@ -40,8 +44,67 @@ PropertyParserNumber::PropertyParserNumber(Units units, Unit zero_unit) : units(
+ 
+ PropertyParserNumber::~PropertyParserNumber() {}
+ 
++bool PropertyParserNumber::ParseLengthCalc(const String& source, float& percent, Style::LengthCalc& calc)
++{
++	const std::string_view value = source;
++	constexpr std::string_view prefix = "bbl-calc(";
++	if (value.size() <= prefix.size() || value.substr(0, prefix.size()) != prefix || value.back() != ')')
++		return false;
++	std::string_view rest = value.substr(prefix.size(), value.size() - prefix.size() - 1);
++	const auto token = [&rest]() {
++		while (!rest.empty() && StringUtilities::IsWhitespace(rest.front()))
++			rest.remove_prefix(1);
++		size_t end = 0;
++		while (end < rest.size() && !StringUtilities::IsWhitespace(rest[end]))
++			++end;
++		const std::string_view result = rest.substr(0, end);
++		rest.remove_prefix(end);
++		return result;
++	};
++	const auto number = [&token](float& out) {
++		const std::string_view text = token();
++		const auto parsed = number_parsing::from_chars(text.data(), text.data() + text.size(), out);
++		return !text.empty() && parsed.ec == std::errc() && parsed.ptr == text.data() + text.size() && std::isfinite(out);
++	};
++	Style::LengthCalc result;
++	if (!number(percent) || !number(result.offset))
++		return false;
++	std::string_view word = token();
++	if (word == "lower")
++	{
++		result.lower = true;
++		if (!number(result.lower_percent) || !number(result.lower_offset))
++			return false;
++		word = token();
++	}
++	if (word == "upper")
++	{
++		result.upper = true;
++		if (!number(result.upper_percent) || !number(result.upper_offset))
++			return false;
++		word = token();
++	}
++	if (!word.empty())
++		return false;
++	calc = result;
++	return true;
++}
++
+ bool PropertyParserNumber::ParseValue(Property& property, const String& value, const ParameterMap& /*parameters*/) const
+ {
++	// Folded CSS math over a percentage, where this property takes both percentages and lengths.
++	if (Any(units & Unit::PERCENT) && Any(units & Unit::LENGTH))
++	{
++		float percent = 0;
++		Style::LengthCalc calc;
++		if (ParseLengthCalc(value, percent, calc))
++		{
++			property.value = value;
++			property.unit = Unit::LENGTH_CALC;
++			return true;
++		}
++	}
++
+ 	// Find the beginning of the unit string in 'value'.
+ 	size_t unit_pos = 0;
+ 	for (size_t i = value.size(); i--;)
+diff --git a/Source/Core/PropertyParserNumber.h b/Source/Core/PropertyParserNumber.h
+index 8ba3d7b..0485eca 100644
+--- a/Source/Core/PropertyParserNumber.h
++++ b/Source/Core/PropertyParserNumber.h
+@@ -1,6 +1,7 @@
+ #pragma once
+ 
+ #include "../../Include/RmlUi/Core/PropertyParser.h"
++#include "../../Include/RmlUi/Core/StyleTypes.h"
+ #include "ControlledLifetimeResource.h"
+ 
+ namespace Rml {
+@@ -21,6 +22,11 @@ public:
+ 	/// @return True if the value was validated successfully, false otherwise.
+ 	bool ParseValue(Property& property, const String& value, const ParameterMap& parameters) const override;
+ 
++	/// Reads the canonical form of CSS math over one percentage and lengths, which the host folds such math to:
++	/// `bbl-calc(<percent> <px>[ lower <percent> <px>][ upper <percent> <px>])`, every length in px.
++	/// @return True when the value is that form.
++	static bool ParseLengthCalc(const String& value, float& percent, Style::LengthCalc& calc);
++
+ 	static void Initialize();
+ 	static void Shutdown();
+ 
+diff --git a/Source/Core/TypeConverter.cpp b/Source/Core/TypeConverter.cpp
+index dc981d7..1cda64c 100644
+--- a/Source/Core/TypeConverter.cpp
++++ b/Source/Core/TypeConverter.cpp
+@@ -39,6 +39,9 @@ bool TypeConverter<Unit, String>::Convert(const Unit& src, String& dest)
+ 
+ 	case Unit::DEG:     dest = "deg"; return true;
+ 	case Unit::RAD:     dest = "rad"; return true;
++
++	// The canonical text is the whole value.
++	case Unit::LENGTH_CALC: dest = ""; return true;
+ 	// clang-format on
+ 	default: break;
+ 	}

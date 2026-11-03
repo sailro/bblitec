@@ -5,6 +5,7 @@ import ts from "typescript";
 import {
     absenceOf,
     knownCondition,
+    ownKeysKnown,
     rebaseSpelling,
     undefinedValue,
 } from "./values/model.js";
@@ -14,6 +15,7 @@ import {
     forEachAnalysisNode,
     findAnalysisNodeWithState,
     someAnalysisNode,
+    sourceFileNodes,
 } from "./analysis-walk.js";
 import {
     browserDeploymentValue,
@@ -70,13 +72,11 @@ import {
     readsErasedVoid,
 } from "./undefined-values.js";
 import { localClassOfSymbol } from "./class-members.js";
-import { ownKeysKnown } from "./object-statics.js";
 import {
     staticNumberValue,
     type PositiveIntegerContext,
 } from "./option-helpers.js";
 import { readProperty, type PropertyContext } from "./properties.js";
-import { isPlainRecord, isRecordUnion } from "./record-components.js";
 import { walkReachedLoopNodes } from "./resource-loops.js";
 import {
     type CompilerSymbols,
@@ -103,6 +103,7 @@ import {
     isFunctionWithBody,
     variableKind,
     isBlockScopedVariable,
+    functionOfDeclaration,
     keysMayMatch,
 } from "./syntax.js";
 import {
@@ -201,6 +202,7 @@ interface DeclarationContext
             | "asyncActivations"
             | "withRecordScopes"
             | "withCallbackScopes"
+            | "propertyAccess"
         > {
     /** The engine the entry created, once it has. */
     readonly defaultEngineCpp: string | undefined;
@@ -243,6 +245,59 @@ export type ForwardDeclaration = ts.VariableDeclaration & {
     name: ts.Identifier;
     initializer: ts.Expression;
 };
+
+/** @unjournaled Parsed syntax is immutable: each file's identifier positions by name. */
+const fileIdentifierPositions = new WeakMap<
+    ts.SourceFile,
+    ReadonlyMap<string, readonly number[]>
+>();
+
+function identifierPositions(
+    file: ts.SourceFile,
+): ReadonlyMap<string, readonly number[]> {
+    let positions = fileIdentifierPositions.get(file);
+    if (positions) return positions;
+    const found = new Map<string, number[]>();
+    for (const node of sourceFileNodes(file)) {
+        if (!ts.isIdentifier(node)) continue;
+        const list = found.get(node.text);
+        if (list) list.push(node.pos);
+        else found.set(node.text, [node.pos]);
+    }
+    positions = found;
+    fileIdentifierPositions.set(file, positions);
+    return positions;
+}
+
+/**
+ * Whether a declaration's scope spells its name outside the declaration,
+ * where any read its initializer reaches outside itself must be: written
+ * earlier, or in a later function a closure it creates calls. A cheap test
+ * before following those closures.
+ */
+function spelledOutside(
+    declaration: ts.VariableDeclaration,
+    name: ts.Identifier,
+): boolean {
+    const scope = declaration.parent.parent.parent;
+    return (
+        identifierPositions(declaration.getSourceFile())
+            .get(name.text)
+            ?.some(
+                (position) =>
+                    position >= scope.pos &&
+                    position < scope.end &&
+                    outsideDeclaration(declaration, position),
+            ) ?? false
+    );
+}
+
+function outsideDeclaration(
+    declaration: ts.VariableDeclaration,
+    position: number,
+): boolean {
+    return position < declaration.pos || position >= declaration.end;
+}
 
 /**
  * Whether an initializer names the binding it initializes, directly or
@@ -410,7 +465,7 @@ export class DeclarationLowerer {
         const held =
             ts.isVariableDeclaration(name.parent) &&
             heldClassInstanceType(this.context.checker, name.parent);
-        return (
+        const type =
             (held
                 ? this.context.dataTypes.fromStoredTsType(held, initializer)
                 : this.context.dataLowerer.dataTypeAt(name)) ??
@@ -425,9 +480,15 @@ export class DeclarationLowerer {
             (typeof deployed === "string"
                 ? { kind: "string" }
                 : typeof deployed === "boolean"
-                  ? { kind: "boolean" }
-                  : undefined)
-        );
+                  ? ({ kind: "boolean" } as const)
+                  : undefined);
+        // The storage its declaration would take: a rebound name reseats.
+        return type && this.context.sharedClosures.identifierIsRebound(name)
+            ? this.reboundBindingStorage(
+                  type,
+                  this.context.checker.getTypeAtLocation(name),
+              )
+            : type;
     }
 
     /** Storage for a binding read before its initializer runs, as JavaScript's temporal dead zone. */
@@ -477,6 +538,20 @@ export class DeclarationLowerer {
         ) {
             const stored = this.context.bindings.lookup(declaration.name);
             writable(stored).lexicalStaticString = value.staticString;
+        }
+        // A const resource's cell holds it from here on: later reads are the
+        // resource itself (its own members), read from the cell.
+        if (
+            isHandleKind(value.kind) &&
+            ts.isIdentifier(declaration.name) &&
+            variableKind(declaration) === "const"
+        ) {
+            const stored = this.context.bindings.lookup(declaration.name);
+            Object.assign(writable(stored), {
+                ...value,
+                cpp: stored.cpp,
+                nativeCaptures: stored.nativeCaptures,
+            });
         }
     }
 
@@ -740,6 +815,59 @@ export class DeclarationLowerer {
         });
     }
 
+    /** Whether code creates a closure or names a bound one (`{ cancel: close }`). */
+    private createsOrNamesClosure(code: ts.Node): boolean {
+        return someAnalysisNode(
+            code,
+            (node) =>
+                ts.isFunctionLike(node) ||
+                (ts.isIdentifier(node) &&
+                    this.context.bindings.lookupOptional(node)
+                        ?.callbackDeclaration !== undefined),
+        );
+    }
+
+    /**
+     * A `let`/`const` whose own initializer reaches a closure reading it
+     * (`const r = make({ cancel: close })`, `close` reading `r`): the
+     * binding is temporal-dead-zone storage before the initializer runs,
+     * then filled with its value, so the closure holds the binding rather
+     * than a name nothing defined yet. False when no closure reads it
+     * outside the initializer (a record's own methods keep the record
+     * binding's handling) or its type has no owned data representation.
+     */
+    private emitSelfReadingDeclaration(
+        declaration: ts.VariableDeclaration,
+        name: ts.Identifier,
+        symbol: ts.Symbol,
+    ): boolean {
+        const initializer = declaration.initializer;
+        // A function's own reads of its name are its recursion, which the
+        // function binding owns (self-scheduling callbacks included).
+        if (
+            !initializer ||
+            !isBlockScopedVariable(declaration) ||
+            functionOfDeclaration(declaration) !== undefined ||
+            !spelledOutside(declaration, name) ||
+            !this.createsOrNamesClosure(initializer) ||
+            !this.context.bindings
+                .unboundClosureReads(initializer)
+                .get(symbol)
+                ?.reads.some((read) =>
+                    outsideDeclaration(declaration, read.pos),
+                )
+        )
+            return false;
+        const type = this.lexicalBindingType(name, initializer);
+        if (!type) return false;
+        this.initializeLexicalBinding(
+            declaration,
+            this.declareLexicalBinding(name, symbol, type),
+            type,
+        );
+        return true;
+    }
+
     public emitVariableDeclaration(declaration: ts.VariableDeclaration): void {
         if (
             (ts.getCombinedModifierFlags(declaration) &
@@ -826,6 +954,29 @@ export class DeclarationLowerer {
                 );
             return;
         }
+        // A closure its initializer creates (a record's accessor, a stored
+        // function it names) may reach later bindings of this block before
+        // they run: they exist first, here, where emission stands at the
+        // block's level, rather than inside the closure's own body, each as
+        // a callback's hoist makes it. A function binding's body lowers
+        // where it is used, which hoists what it reaches then.
+        if (
+            declaration.initializer &&
+            functionOfDeclaration(declaration) === undefined &&
+            this.createsOrNamesClosure(declaration.initializer)
+        )
+            this.context.callbacks.hoistForwardCallbackBindings(
+                declaration.initializer,
+            );
+        if (
+            declarationSymbol &&
+            this.emitSelfReadingDeclaration(
+                declaration,
+                declaration.name,
+                declarationSymbol,
+            )
+        )
+            return;
         const sourceName = declaration.name.text;
         const cppName = this.context.bindings.cppIdentifier(sourceName);
         if (
@@ -1148,14 +1299,13 @@ export class DeclarationLowerer {
             value.kind === "number" &&
             value.staticNumber === undefined &&
             ts.isVariableDeclarationList(declaration.parent) &&
-            ts.isVariableStatement(declaration.parent.parent) &&
-            ts.isSourceFile(declaration.parent.parent.parent) &&
             variableKind(declaration.parent) === "const"
         ) {
-            // Materialized modules cannot revisit their initializers. Keep a
-            // proven numeric snapshot on the immutable binding itself. Local
-            // loop facts remain owned by the existing specialization analysis.
-            const numeric = this.context.evaluator.staticNumberValue(
+            // A const holds what its initializer folds to where it runs, from
+            // the facts its operands' reads carry there: a materialized
+            // module cannot revisit its initializer, and a later read of a
+            // local one must not re-read operands written since.
+            const numeric = this.context.evaluator.staticSelectedNumber(
                 declaration.initializer,
             );
             if (numeric !== undefined)
@@ -1561,10 +1711,20 @@ export class DeclarationLowerer {
                 narrowedFound,
                 referenceStruct ? undefined : optionalFoundCpp,
             );
+            // Existing storage is bound in place only where a copy would lose
+            // the object JavaScript shares; a primitive the local reads is a
+            // value, so a later write to its slot must not reach the local.
+            const borrowsStorage =
+                narrowed.borrowedData === true &&
+                (narrowed.nativeVectorData === true ||
+                    passesByReference(
+                        this.context.dataTypes,
+                        narrowed.dataType,
+                    ));
             const reference =
                 stableOwnerAlias ||
                 (aliases && !wrapperCopiesIdentity) ||
-                narrowed.borrowedData;
+                borrowsStorage;
             // An alias of a read-only reference parameter is a const handle,
             // through which the shared record stays writable.
             const constant =
@@ -1729,7 +1889,7 @@ export class DeclarationLowerer {
                                       : {}),
                               }
                             : {}),
-                        ...(narrowed.borrowedData
+                        ...(borrowsStorage
                             ? { borrowedData: true as const }
                             : {}),
                         ...(narrowed.packagedBodySource
@@ -3202,22 +3362,11 @@ export class DeclarationLowerer {
         let annotated = rebound
             ? this.context.dataTypes.fromStoredTsType(declaredType, typeSite)
             : this.context.dataTypes.fromTsType(declaredType, typeSite);
-        if (!annotated && rebound) {
-            const record =
-                this.context.checker.getNonNullableType(declaredType);
-            if (
-                isPlainRecord(this.context.checker, record) ||
-                isRecordUnion(this.context.checker, record)
-            )
-                annotated = this.context.dataTypes.withDynamicJsonTypes(
-                    true,
-                    () =>
-                        this.context.dataTypes.fromStoredTsType(
-                            declaredType,
-                            typeSite,
-                        ),
-                );
-        }
+        if (!annotated && rebound)
+            annotated = this.context.dataTypes.storedDynamicRecordType(
+                declaredType,
+                typeSite,
+            );
         if (
             !annotated &&
             ((this.context.checker.getNonNullableType(declaredType).flags &
@@ -5249,6 +5398,23 @@ export class DeclarationLowerer {
             });
             return;
         }
+        // An iterator or a Set destructures through iteration: the elements
+        // it yields in order, as a fresh array would hold them.
+        if (
+            value.kind === "data" &&
+            (value.dataType?.kind === "iterator" ||
+                value.dataType?.kind === "set")
+        ) {
+            const collected = this.context.dataLowerer.collectedElements(value);
+            if (collected)
+                return this.bindArrayPattern(
+                    pattern,
+                    collected,
+                    source,
+                    initializerBoundary,
+                    held,
+                );
+        }
         this.context.fail(
             source,
             "Array destructuring requires a tuple-producing initializer.",
@@ -5472,6 +5638,24 @@ export class DeclarationLowerer {
             this.bindDocumentPattern(pattern, value);
             return;
         }
+        // A dictionary of documents is read as the document viewing its map.
+        if (
+            value.kind === "data" &&
+            value.dataType?.kind === "map" &&
+            value.dataType.dictionary &&
+            value.dataType.key.kind === "string" &&
+            value.dataType.value.kind === "json"
+        ) {
+            this.context.reachJson();
+            this.bindDocumentPattern(
+                pattern,
+                this.context.dataLowerer.leafValue(
+                    `bbl::js::json_value(${value.cpp})`,
+                    { kind: "json" },
+                ),
+            );
+            return;
+        }
         if (value.kind === "data" && value.dataType?.kind === "struct") {
             // Retain the selected object before a binding's default can replace
             // its source slot. Value-layout records still read their live fields.
@@ -5660,6 +5844,62 @@ export class DeclarationLowerer {
                 } else {
                     this.context.dataLowerer.registerLocal(cppName, "copy");
                 }
+            }
+            return;
+        }
+        // A DOM event's bindings read its members as its property accesses
+        // do, through the interface the source names (`e as KeyboardEvent`).
+        if (
+            (value.kind === "platform-mouse-event" ||
+                value.kind === "platform-keyboard-event" ||
+                value.kind === "custom-event") &&
+            ts.isExpression(source)
+        ) {
+            const event = {
+                ...value,
+                cpp: this.patternSource(
+                    pattern,
+                    value,
+                    held || cppIdentifierPattern.test(value.cpp),
+                    "destructure_event",
+                ),
+            };
+            for (const element of pattern.elements) {
+                const { name, property } = this.bindingProperty(element);
+                if (
+                    element.dotDotDotToken ||
+                    element.initializer ||
+                    !ts.isIdentifier(name)
+                )
+                    this.context.fail(
+                        element,
+                        "DOM event destructuring binds plain members to names.",
+                    );
+                const member =
+                    this.context.propertyAccess.eventMember(
+                        event,
+                        source,
+                        property,
+                        element,
+                        element,
+                    ) ??
+                    this.context.fail(
+                        element,
+                        `Unsupported ${value.kind} property '${property}'.`,
+                    );
+                const cppName = this.context.allocateTemporaryCppName(
+                    `event_${name.text}`,
+                );
+                this.context.emit({
+                    kind: "declaration",
+                    type: "const auto",
+                    name: cppName,
+                    initializer: member.cpp,
+                });
+                this.context.bindings.defineVariable(name, {
+                    ...member,
+                    cpp: cppName,
+                });
             }
             return;
         }

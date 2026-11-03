@@ -399,6 +399,8 @@ export const featureSources: Record<Feature, string[]> = {
     "storage:local": ["src/pal_storage.cpp"],
     // Session storage is process memory: header-only.
     "storage:session": [],
+    // IndexedDB's platform half: SQLite, linked only where it is reached.
+    "storage:indexeddb": ["src/pal_indexed_db.cpp"],
 };
 
 export const featureOrder = Object.keys(featureSources) as Feature[];
@@ -718,6 +720,8 @@ interface MainCppProjection {
     postProcessCompositeCount: number;
     screenSpaceTaskCount: number;
     renderDataPreamble: () => DataPreamble;
+    /** The PBR plugin list algebra, over the signatures the whole program reaches. */
+    renderPbrPluginFunctions?: () => string;
     nativeFunctions: readonly NativeFunctionDefinition[];
     staticNativeDeclarations: readonly string[];
     /** The emitted entry-body lines; the render marks unused locals in place. */
@@ -932,6 +936,9 @@ export function renderMainCpp(projection: MainCppProjection): ApplicationCpp {
         features.includes("storage:session")
             ? "#include <bblite/js_storage.hpp>\n"
             : "") +
+        (features.includes("storage:indexeddb")
+            ? "#include <bblite/js_indexed_db.hpp>\n"
+            : "") +
         (features.includes("browser:file")
             ? "#include <bblite/js_file.hpp>\n"
             : "") +
@@ -967,6 +974,9 @@ inline void begin_scene_mesh_profile(Engine&, std::uint32_t) {}
     if (dataPreamble.standalone.length > 0) {
         preambleSections.push(dataPreamble.standalone);
     }
+    const pbrPluginFunctions = projection.renderPbrPluginFunctions?.() ?? "";
+    if (pbrPluginFunctions.length > 0)
+        preambleSections.push(pbrPluginFunctions);
     if (
         nativeFunctionPrototypes.length > 0 ||
         nativeFunctionDefinitions.length > 0

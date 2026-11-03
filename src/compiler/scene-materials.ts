@@ -14,8 +14,12 @@ import type {
     ScenePbrMetallicReflectanceManifest,
     ScenePbrSheenManifest,
     ScenePbrSubsurfaceManifest,
+    PbrMaterialStateWrites,
+    PbrPluginAppend,
+    PbrStateTarget,
 } from "./types.js";
 import {
+    materialPluginListHolds,
     materialPluginListKey,
     type MaterialPluginManifest,
 } from "../pinned-material-plugins.js";
@@ -78,6 +82,28 @@ function pbrMaterialView(
         : { ...derived, esmShadowView: true };
 }
 
+/** Every write either entry records, once. */
+export function mergePbrStateWrites(
+    known: PbrMaterialStateWrites,
+    added: PbrMaterialStateWrites,
+): PbrMaterialStateWrites {
+    const merged = <T>(left: readonly T[], right: readonly T[]) => [
+        ...left,
+        ...right.filter((value) => !left.includes(value)),
+    ];
+    return {
+        target: known.target,
+        alphaBlend: merged(known.alphaBlend, added.alphaBlend),
+        alphaBelowOne: merged(known.alphaBelowOne, added.alphaBelowOne),
+        baseColorFactor: known.baseColorFactor || added.baseColorFactor,
+        pluginSignatures: merged(
+            known.pluginSignatures,
+            added.pluginSignatures,
+        ),
+        pluginAppends: merged(known.pluginAppends, added.pluginAppends),
+    };
+}
+
 /**
  * The scene-material manifest recorders: the creation-ordered slot
  * counter every material family bumps, and the PBR entries the setter
@@ -93,6 +119,164 @@ export class SceneMaterialRecorder {
     public readonly standardMaterialPluginInputs: PinnedStandardMaterialInput[][] =
         emissionArray([]);
     private readonly pluginIndexByKey = new EmissionMap<string, number>();
+    /** The PBR plugin lists material records hold, by signature from one. */
+    public readonly pbrPluginSignatures: MaterialPluginManifest[][] =
+        emissionArray([]);
+    private readonly pbrPluginIndexByKey = new EmissionMap<string, number>();
+    /** The distinct PBR plugins a list test or append names, by id from zero. */
+    public readonly pbrPlugins: MaterialPluginManifest[] = emissionArray([]);
+    private readonly pbrPluginIdByKey = new EmissionMap<string, number>();
+    /** Composition-relevant PBR writes, one entry per target. */
+    private readonly pbrStateWrites = new EmissionMap<
+        string,
+        PbrMaterialStateWrites
+    >();
+
+    /** The written state entries, in first-written order. */
+    public get pbrMaterialStates(): PbrMaterialStateWrites[] {
+        return [...this.pbrStateWrites.values()];
+    }
+
+    /** The PBR signature (from one) of a plugin list; zero is no plugin. */
+    public pbrPluginSignature(
+        plugins: readonly MaterialPluginManifest[],
+    ): number {
+        if (plugins.length === 0) return 0;
+        const key = materialPluginListKey(plugins);
+        const existing = this.pbrPluginIndexByKey.get(key);
+        if (existing !== undefined) return existing;
+        this.pbrPluginSignatures.push([...plugins]);
+        const index = this.pbrPluginSignatures.length;
+        this.pbrPluginIndexByKey.set(key, index);
+        return index;
+    }
+
+    /** The id of one plugin a list test or append names. */
+    public pbrPluginId(plugin: MaterialPluginManifest): number {
+        const key = materialPluginListKey([plugin]);
+        const existing = this.pbrPluginIdByKey.get(key);
+        if (existing !== undefined) return existing;
+        this.pbrPlugins.push(plugin);
+        this.pbrPluginIdByKey.set(key, this.pbrPlugins.length - 1);
+        return this.pbrPlugins.length - 1;
+    }
+
+    /**
+     * Every signature appends can reach from the ones written, numbered
+     * after them, and each list's growth by each appended plugin it does not
+     * hold (a second copy of one refuses at run time). A record's signature
+     * is a byte, and the pin's index has seven bits.
+     */
+    public closePbrPluginSignatures(): PbrPluginAppend[] {
+        const appended = new Set(
+            [...this.pbrStateWrites.values()].flatMap(
+                (writes) => writes.pluginAppends,
+            ),
+        );
+        const growth: PbrPluginAppend[] = [];
+        for (
+            let signature = 0;
+            signature <= this.pbrPluginSignatures.length;
+            ++signature
+        ) {
+            const list =
+                signature === 0 ? [] : this.pbrPluginSignatures[signature - 1]!;
+            for (const plugin of appended) {
+                const manifest = this.pbrPlugins[plugin]!;
+                if (materialPluginListHolds(list, manifest)) continue;
+                const grown = this.pbrPluginSignature([...list, manifest]);
+                if (grown > 127)
+                    throw new Error(
+                        "Appended PBR plugin lists exceed the pin's 127 plugin signatures.",
+                    );
+                growth.push({ signature, plugin, grown });
+            }
+        }
+        return growth;
+    }
+
+    /**
+     * The program's plugin list algebra over the closed signatures: which
+     * plugins a signature holds (`plugins.includes`) and the signature a list
+     * takes with one more plugin (`plugins = [...plugins, plugin]`).
+     */
+    public pbrPluginFunctionsCpp(): string {
+        if (this.pbrPlugins.length === 0) return "";
+        const growth = this.closePbrPluginSignatures();
+        const lists = [[], ...this.pbrPluginSignatures];
+        const contains = lists.flatMap((list, signature) =>
+            this.pbrPlugins.flatMap((plugin, id) =>
+                materialPluginListHolds(list, plugin)
+                    ? [`        case ${signature * 256 + id}u: return true;`]
+                    : [],
+            ),
+        );
+        const appends = growth.map(
+            ({ signature, plugin, grown }) =>
+                `        case ${signature * 256 + plugin}u: return ${grown};`,
+        );
+        return [
+            "namespace bblscene {",
+            "",
+            "// Whether the PBR plugin list `signature` holds plugin `plugin`.",
+            "[[maybe_unused]] inline bool pbr_plugin_signature_contains(std::uint32_t signature, std::uint32_t plugin) {",
+            "    switch (signature * 256u + plugin) {",
+            ...contains,
+            "        default: return false;",
+            "    }",
+            "}",
+            "",
+            "// The signature of list `signature` with plugin `plugin` appended.",
+            "[[maybe_unused]] inline std::uint8_t pbr_plugin_signature_append(std::uint32_t signature, std::uint32_t plugin) {",
+            "    switch (signature * 256u + plugin) {",
+            ...appends,
+            '        default: throw std::runtime_error("A PBR plugin list grew past the signatures generation composed.");',
+            "    }",
+            "}",
+            "",
+            "}  // namespace bblscene",
+        ].join("\n");
+    }
+
+    /**
+     * Adds what one composition-relevant write gives the materials of
+     * `target`. Each entry is replaced whole, so a write a rolled-back
+     * emission made leaves nothing behind.
+     */
+    public recordPbrStateWrite(
+        target: PbrStateTarget,
+        write: {
+            alphaBlend?: readonly boolean[];
+            alphaBelowOne?: readonly boolean[];
+            baseColorFactor?: true;
+            pluginSignature?: number;
+            pluginAppend?: number;
+        },
+    ): void {
+        const key =
+            target.kind === "scene"
+                ? `scene:${target.index}`
+                : target.kind === "asset"
+                  ? `asset:${target.output}`
+                  : "assets";
+        const added: PbrMaterialStateWrites = {
+            target,
+            alphaBlend: write.alphaBlend ?? [],
+            alphaBelowOne: write.alphaBelowOne ?? [],
+            baseColorFactor: write.baseColorFactor === true,
+            pluginSignatures:
+                write.pluginSignature === undefined
+                    ? []
+                    : [write.pluginSignature],
+            pluginAppends:
+                write.pluginAppend === undefined ? [] : [write.pluginAppend],
+        };
+        const known = this.pbrStateWrites.get(key);
+        this.pbrStateWrites.set(
+            key,
+            known ? mergePbrStateWrites(known, added) : added,
+        );
+    }
     @journaled private accessor sceneMaterialCount = 0;
 
     /** The final creation count across families, for the manifest. */

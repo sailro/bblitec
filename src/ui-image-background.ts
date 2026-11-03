@@ -1,3 +1,5 @@
+import { uiGradientImageList } from "./ui-gradient-background.js";
+
 /**
  * The CSS-wide keyword `value` is, lowercased. The PAL resolves it on every
  * background longhand (`pal_ui_background.hpp` `ui_css_wide_keyword`).
@@ -9,7 +11,7 @@ export function cssWideKeyword(value: string): string | undefined {
         : undefined;
 }
 
-/** The bounded raster-background surface represented by the RmlUi PAL. */
+/** The bounded image-background surface represented by the RmlUi PAL. */
 export function supportedUiImageBackground(
     property: string,
     value: string,
@@ -21,7 +23,8 @@ export function supportedUiImageBackground(
             wide ||
             /^(?:none|url\(\s*(?:"[^"\r\n]+"|'[^'\r\n]+'|[^\s()]+)\s*\))$/i.test(
                 value.trim(),
-            )
+            ) ||
+            uiGradientImageList(value)
         );
     if (property === "background-size")
         return (

@@ -8,7 +8,9 @@
 
 #include <bblite/js_data.hpp>
 #include <bblite/js_encoding.hpp>
+#include <bblite/js_json.hpp>
 #include <bblite/js_promise.hpp>
+#include <bblite/js_structured_clone.hpp>
 #include <bblite/pal.hpp>
 #include <bblite/pal_dom_events.hpp>
 #include <bblite/runtime.hpp>
@@ -91,6 +93,16 @@ public:
         return blob;
     }
 
+    /** A Blob holding `bytes` as they are, as a structured clone receives one. */
+    [[nodiscard]] static Blob from_bytes(std::vector<std::uint8_t> bytes, std::string type) {
+        if (bytes.size() > maximum_blob_bytes)
+            throw std::runtime_error("Blob exceeds the native 64 MiB payload bound.");
+        Blob blob;
+        blob.bytes_ = std::make_shared<const std::vector<std::uint8_t>>(std::move(bytes));
+        blob.mime_type_ = normalize_type(std::move(type));
+        return blob;
+    }
+
     [[nodiscard]] std::size_t size() const noexcept { return bytes_->size(); }
     [[nodiscard]] const std::string& type() const noexcept { return mime_type_; }
     [[nodiscard]] const std::vector<std::uint8_t>& bytes() const noexcept { return *bytes_; }
@@ -138,6 +150,27 @@ private:
 
     std::shared_ptr<const std::vector<std::uint8_t>> bytes_;
     std::string mime_type_;
+};
+
+/** A Blob held in a dynamic value, viewed dynamically: `size` and `type`, no own keys. */
+[[nodiscard]] inline JsonValue json_value_property(const Blob& blob, std::string_view key) {
+    if (key == "size")
+        return JsonValue::from_number(static_cast<double>(blob.size()));
+    if (key == "type")
+        return JsonValue::from_string(blob.type());
+    return {};
+}
+[[nodiscard]] inline bbl::js::Array<std::string> json_value_keys(const Blob&) { return {}; }
+
+/** A Blob clones as its type and bytes, and is received as a new Blob holding them. */
+template <> struct CloneCodec<Blob> {
+    static pal::CloneId write(pal::CloneWriter& writer, const Blob& value) {
+        return writer.add(pal::CloneBlob{value.type(), value.bytes()});
+    }
+    static Blob read(pal::CloneReader& reader, pal::CloneId id) {
+        const auto& blob = reader.get<pal::CloneBlob>(id);
+        return Blob::from_bytes(blob.bytes, blob.type);
+    }
 };
 
 [[nodiscard]] inline ObjectUrlRecord& object_url_record(Engine& engine, ObjectUrlHandle handle) {

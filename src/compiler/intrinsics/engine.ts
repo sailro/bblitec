@@ -68,6 +68,50 @@ function assertPinnedUniformCaching(): void {
     uniformCachingAnchored = true;
 }
 /**
+ * `enableShaderMaterialPipelineSharing` only installs the shared pipeline
+ * cache: materials whose WGSL, layout and pipeline state are equal compile
+ * once, and every frame draws the same.
+ */
+let pipelineSharingAnchored = false;
+function assertPinnedPipelineSharing(): void {
+    if (pipelineSharingAnchored) return;
+    const context = sharedPinnedContext();
+    const { declaration } = context.functionDeclaration(
+        "src/material/shader/enable-shader-material-pipeline-sharing.ts",
+        "enableShaderMaterialPipelineSharing",
+    );
+    context.assertStatementShapes(
+        declaration,
+        declaration.body!.statements,
+        "_setShaderVertexBuffersKey(vertexBuffersKey); _setSharedShaderPipelineCache((device, material) => { const current = _getShaderDeviceCache(device); if (material._shaderPipelineCache !== current) { material._shaderPipelineCache = current; } });",
+        "ShaderMaterial pipeline sharing",
+    );
+    pipelineSharingAnchored = true;
+}
+
+/**
+ * `enableKtx2WorkerDecoding` moves KTX2 transcoding into a page's Web Worker
+ * pool, with uploads and formats unchanged; without `Worker` it returns at
+ * once. A native realm has no page worker pool to transcode in.
+ */
+let ktx2WorkerDecodingAnchored = false;
+function assertPinnedKtx2WorkerDecoding(): void {
+    if (ktx2WorkerDecodingAnchored) return;
+    const context = sharedPinnedContext();
+    const { declaration } = context.functionDeclaration(
+        "src/texture/ktx2-worker-decoder.ts",
+        "enableKtx2WorkerDecoding",
+    );
+    context.assertStatementShapes(
+        declaration,
+        declaration.body!.statements.slice(0, 1),
+        'if (_enabled || typeof Worker === "undefined") { return; }',
+        "KTX2 worker decoding opt-in",
+    );
+    ktx2WorkerDecodingAnchored = true;
+}
+
+/**
  * `enableAsyncShaderPipelineCompilation` installs, once per engine, the
  * preparation `registerScene` awaits before building its frame graph. Native
  * scene preparation compiles every reached pipeline before the scene's first
@@ -387,6 +431,21 @@ export function compileEngineIntrinsic(
             return { kind: "void", cpp: "" };
         }
 
+        case "enableShaderMaterialPipelineSharing": {
+            assertPinnedPipelineSharing();
+            context.expectArgumentCount(call, 0, 0);
+            return { kind: "void", cpp: "" };
+        }
+
+        case "enableKtx2WorkerDecoding": {
+            assertPinnedKtx2WorkerDecoding();
+            context.expectArgumentCount(call, 0, 1);
+            const options = call.arguments[0];
+            if (options)
+                context.emitDiscardedValue(context.compileValue(options));
+            return { kind: "void", cpp: "" };
+        }
+
         case "enableShaderMaterialUniformCaching": {
             assertPinnedUniformCaching();
             context.expectArgumentCount(call, 0, 0);
@@ -406,12 +465,13 @@ export function compileEngineIntrinsic(
                 context.intrinsicOptions.compileSceneDefaultRenderTask(
                     call.arguments[1],
                 );
-            if (!defaultRenderTask)
+            // A run-time choice may go either way.
+            if (defaultRenderTask.known !== true)
                 context.admissions.noteTextSceneLifecycle(
                     call,
                     "Text requires the default scene render task; empty and custom text task execution is not represented.",
                 );
-            if (defaultRenderTask)
+            if (defaultRenderTask.known !== false)
                 context.admissions.noteTemporalRecordBoundary(
                     call,
                     "implicit default scene passes",
@@ -428,9 +488,9 @@ export function compileEngineIntrinsic(
                     ? { surfaceCanvas: true as const }
                     : {}),
                 cpp:
-                    defaultRenderTask && samples === 4
+                    defaultRenderTask.known === true && samples === 4
                         ? create
-                        : `bbl::configure_scene_render_defaults(${create}, ${defaultRenderTask}, ${engineSampleCountCpp(engine)})`,
+                        : `bbl::configure_scene_render_defaults(${create}, ${defaultRenderTask.cpp}, ${engineSampleCountCpp(engine)})`,
                 sceneEnvironmentState: {
                     rotationSet: false,
                     hasTexturedSkybox: false,

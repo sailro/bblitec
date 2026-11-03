@@ -240,11 +240,14 @@ template <typename Data> struct Context {
     explicit Context(Engine& engine) : data_(engine) { frame_.emplace(); }
     bool keep_running() const { return true; }
     FramePreparation prepare() { return FramePreparation::ready; }
+    // These frames never replace `engine._renderFn` (render-function-conductor-check does).
+    bool begin_animation_turn() { return true; }
     void synchronize() { events.push_back("upload"); }
     void encode() { events.push_back("encode"); }
     void present() { events.push_back("present"); }
     void complete() { events.push_back("complete"); }
 };
+void finish_animation_turn(Engine&) { assert(false); }
 struct SdlScene : Context<SdlData> {
     static constexpr auto acquire_phase = FrameAcquirePhase::before_update;
     using Context::Context;
@@ -287,7 +290,7 @@ void surface_boundaries() {
     reset();
     {
         SdlScene renderer(engine);
-        assert(conduct_frame(renderer) == FrameOutcome::rendered);
+        assert(conduct_frame(renderer, engine) == FrameOutcome::rendered);
         assert((events == std::vector<std::string>{"acquire", "advance", "upload", "encode",
                                                    "present", "complete"}));
         assert(renderer.frame_->width == 320 && renderer.frame_->height == 180);
@@ -298,7 +301,7 @@ void surface_boundaries() {
     {
         texture_available = false;
         SdlScene renderer(engine);
-        assert(conduct_frame(renderer) == FrameOutcome::skipped);
+        assert(conduct_frame(renderer, engine) == FrameOutcome::skipped);
         assert((events == std::vector<std::string>{"acquire"}));
         assert(advances == 0 && cancellations == 1 && submissions == 0);
     }
@@ -308,7 +311,7 @@ void surface_boundaries() {
         command_available = !failure_before_command;
         {
             SdlScene renderer(engine);
-            expect_failure([&] { conduct_frame(renderer); });
+            expect_failure([&] { conduct_frame(renderer, engine); });
         }
         assert(advances == 0 && submissions == 0 &&
                cancellations == (failure_before_command ? 0u : 1u));
@@ -328,7 +331,7 @@ void surface_boundaries() {
     reset();
     {
         DawnScene renderer(engine);
-        assert(conduct_frame(renderer) == FrameOutcome::rendered);
+        assert(conduct_frame(renderer, engine) == FrameOutcome::rendered);
         assert((events == std::vector<std::string>{"advance", "upload", "acquire", "encode",
                                                    "present", "complete"}));
         assert(renderer.frame_->delta_ms == 16.5 && dawn_texture.references == 1 &&
@@ -342,7 +345,7 @@ void surface_boundaries() {
             view_available = false;
         {
             DawnScene renderer(engine);
-            expect_failure([&] { conduct_frame(renderer); });
+            expect_failure([&] { conduct_frame(renderer, engine); });
             assert((events == std::vector<std::string>{"advance", "upload", "acquire"}));
         }
         assert(dawn_texture.references == 0 && dawn_view.references == 0);
@@ -353,7 +356,7 @@ void surface_boundaries() {
         dawn_status = status;
         {
             DawnScene renderer(engine);
-            assert(conduct_frame(renderer) == FrameOutcome::skipped);
+            assert(conduct_frame(renderer, engine) == FrameOutcome::skipped);
             assert((events == std::vector<std::string>{"advance", "upload", "acquire"}));
         }
         assert(dawn_texture.references == 0 && dawn_view.references == 0);
@@ -393,7 +396,7 @@ template <typename Renderer> void scene_replacement(bool sdl) {
         };
         {
             Renderer renderer(engine);
-            assert(conduct_frame(renderer) == FrameOutcome::restart);
+            assert(conduct_frame(renderer, engine) == FrameOutcome::restart);
             assert(engine.renderer_restart_requested == (mutation != Mutation::remove));
             assert((events == (sdl ? std::vector<std::string>{"acquire", "advance"}
                                    : std::vector<std::string>{"advance"})));
@@ -411,7 +414,7 @@ template <typename Renderer> void scene_replacement(bool sdl) {
     };
     {
         Renderer renderer(engine);
-        assert(conduct_frame(renderer) == FrameOutcome::rendered);
+        assert(conduct_frame(renderer, engine) == FrameOutcome::rendered);
         assert(!engine.renderer_restart_requested);
     }
 }

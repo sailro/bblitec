@@ -19,7 +19,12 @@ import {
     type MemberAccess,
 } from "./syntax.js";
 import { someAnalysisNode } from "./analysis-walk.js";
-import { admitsUndefined, callSignatures, nullability } from "./type-facts.js";
+import {
+    admitsUndefined,
+    boundedTupleElements,
+    callSignatures,
+    nullability,
+} from "./type-facts.js";
 import { numberFormatOf } from "./number-intrinsics.js";
 
 /** The two names a scene spells the pinned package with. */
@@ -1048,7 +1053,8 @@ export function nullishLiteral(
 /**
  * {@link argumentForParameter}, with an argument the checker knows is
  * `undefined` (`f(undefined)`, `f(void 0)`) taking the parameter's default
- * as JavaScript does.
+ * as JavaScript does, and a parameter a spread bounded tuple fills read as
+ * that tuple's element.
  */
 export function parameterInput(
     checker: ts.TypeChecker,
@@ -1058,11 +1064,61 @@ export function parameterInput(
 ): ParameterInput {
     const input = argumentForParameter(call, declaration, parameterIndex);
     const initializer = declaration.parameters[parameterIndex]?.initializer;
+    if (input.kind === "unknown")
+        return (
+            spreadTupleInput(checker, call, declaration, parameterIndex) ??
+            input
+        );
     return input.kind === "argument" &&
         initializer &&
         nullishLiteral(checker, input.argument) === "undefined"
         ? { kind: "default", initializer }
         : input;
+}
+
+/**
+ * The argument or spread tuple element a parameter receives where spreads
+ * of bounded tuples precede it: each spreads its elements in order, so a
+ * later position is known only past tuples whose elements are all required.
+ * Undefined when a position stays the run time's, the parameter is a rest
+ * one, or an optional element might leave a defaulted parameter unfilled.
+ */
+function spreadTupleInput(
+    checker: ts.TypeChecker,
+    call: ts.CallExpression | ts.NewExpression,
+    declaration: Pick<ts.SignatureDeclarationBase, "parameters">,
+    parameterIndex: number,
+): ParameterInput | undefined {
+    const parameter = declaration.parameters[parameterIndex];
+    if (!parameter || parameter.dotDotDotToken) return undefined;
+    let position = 0;
+    for (const argument of call.arguments ?? []) {
+        if (!ts.isSpreadElement(argument)) {
+            if (position === parameterIndex)
+                return { kind: "argument", argument };
+            position++;
+            continue;
+        }
+        const elements = boundedTupleElements(
+            checker,
+            checker.getTypeAtLocation(argument.expression),
+        );
+        if (!elements) return undefined;
+        const index = parameterIndex - position;
+        if (index < elements.length)
+            return (elements[index]!.flags & ts.ElementFlags.Required) === 0 &&
+                parameter.initializer
+                ? undefined
+                : { kind: "element", spread: argument.expression, index };
+        if (
+            elements.some(
+                ({ flags }) => (flags & ts.ElementFlags.Required) === 0,
+            )
+        )
+            return undefined;
+        position += elements.length;
+    }
+    return undefined;
 }
 
 /**

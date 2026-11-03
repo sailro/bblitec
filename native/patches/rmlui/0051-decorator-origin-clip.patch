@@ -1,0 +1,130 @@
+Sized decorator layers (patch 0025) with an origin box apart from their paint box, and rounded clipping: a layer is
+sized and placed in its origin box (CSS background-origin, an optional fourth `/ <box>` part) and painted in its paint
+box (background-clip), which may extend past it; a rounded paint box clips the layer under that box's clip mask.
+CSS Backgrounds 3: https://www.w3.org/TR/css-backgrounds-3/#background-origin
+
+diff --git a/Include/RmlUi/Core/StyleSheetTypes.h b/Include/RmlUi/Core/StyleSheetTypes.h
+index d91f2a0..f1b2fd2 100644
+--- a/Include/RmlUi/Core/StyleSheetTypes.h
++++ b/Include/RmlUi/Core/StyleSheetTypes.h
+@@ -37,6 +37,8 @@ struct DecoratorBox {
+     Vector2<NumericValue> size, position;
+     // A percentage's CSS math terms per size and position axis, in px scaled like dp.
+     Style::LengthCalc size_calc[2], position_calc[2];
++    // The box the layer is sized and placed in (CSS background-origin); Auto: its paint (clip) box.
++    BoxArea origin = BoxArea::Auto;
+ };
+ struct DecoratorDeclaration {
+ 	String type;
+diff --git a/Source/Core/ElementEffects.cpp b/Source/Core/ElementEffects.cpp
+index 66d7273..e858b1c 100644
+--- a/Source/Core/ElementEffects.cpp
++++ b/Source/Core/ElementEffects.cpp
+@@ -9,8 +9,10 @@
+ #include "../../Include/RmlUi/Core/Profiling.h"
+ #include "../../Include/RmlUi/Core/RenderManager.h"
+ #include "../../Include/RmlUi/Core/StyleSheet.h"
++#include "ElementBackgroundBorder.h"
+ #include "ElementMeta.h"
+ #include "ElementStyle.h"
++#include "TransformState.h"
+ #include <stdexcept>
+ 
+ namespace Rml {
+@@ -147,7 +149,10 @@ void ElementEffects::ReloadEffectsData()
+                     if (!decorator.box.sized)
+                         return decorator.decorator->GenerateElementData(element, decorator.paint_area);
+                     RenderBox paint_box = element->GetRenderBox(decorator.paint_area);
+-                    const Vector2f bounds = paint_box.GetFillSize();
++                    // Sized and placed in the origin box, painted inside the paint (clip) box.
++                    const RenderBox origin_box = decorator.box.origin == BoxArea::Auto ? paint_box : element->GetRenderBox(decorator.box.origin);
++                    const Vector2f bounds = origin_box.GetFillSize();
++                    const Vector2f paint_bounds = paint_box.GetFillSize();
+                     Vector2f size, position;
+                     const Context* context = element->GetContext();
+                     const float dp_ratio = context ? context->GetDensityIndependentPixelRatio() : 1.f;
+@@ -165,13 +170,14 @@ void ElementEffects::ReloadEffectsData()
+                     }
+                     paints = size.x > 0 && size.y > 0 && bounds.x > 0 && bounds.y > 0;
+                     if (!paints) return DecoratorDataHandle(0);
++                    const Vector2f placed = origin_box.GetFillOffset() - paint_box.GetFillOffset() + position;
+                     for (int axis = 0; axis < 2; ++axis)
+-                        if (position[axis] < -0.01f || position[axis] + size[axis] > bounds[axis] + 0.01f)
++                        if (placed[axis] < -0.01f || placed[axis] + size[axis] > paint_bounds[axis] + 0.01f)
+                             throw std::runtime_error("Sized UI background layers must fit inside their paint box.");
++                    decorator.rounded_clip = false;
+                     for (const auto radius : paint_box.GetBorderRadius())
+-                        if (radius.x > 0 || radius.y > 0)
+-                            throw std::runtime_error("Sized UI background layers with rounded clipping are not represented.");
+-                    const Vector2f offset = paint_box.GetFillOffset() + position;
++                        decorator.rounded_clip = decorator.rounded_clip || radius.x > 0 || radius.y > 0;
++                    const Vector2f offset = paint_box.GetFillOffset() + placed;
+                     paint_box = RenderBox(size, paint_box.GetBorderOffset(), {offset.y, 0, 0, offset.x}, {});
+                     // Restore even if a renderer refuses a shader or allocation.
+                     struct RestoreBox {
+@@ -252,8 +258,27 @@ void ElementEffects::RenderEffects(RenderStage render_stage)
+ 			for (int i = (int)decorators.size() - 1; i >= 0; i--)
+ 			{
+ 				DecoratorEntry& decorator = decorators[i];
+-				if (decorator.decorator_data)
++				if (!decorator.decorator_data)
++					continue;
++				if (!decorator.rounded_clip)
++				{
+ 					decorator.decorator->RenderElement(element, decorator.decorator_data);
++					continue;
++				}
++				// CSS background-clip with border-radius: the layer stays inside its rounded paint box.
++				RenderManager* render_manager = element->GetRenderManager();
++				const RenderState saved = render_manager->GetState();
++				ClipMaskGeometryList clip = saved.clip_mask_list;
++				Geometry* geometry = element->GetElementBackgroundBorder()->GetClipGeometry(element, decorator.paint_area);
++				if (geometry && *geometry)
++				{
++					const TransformState* transform_state = element->GetTransformState();
++					clip.push_back(ClipMaskGeometry{clip.empty() ? ClipMaskOperation::Set : ClipMaskOperation::Intersect, geometry,
++						element->GetAbsoluteOffset(BoxArea::Border).Round(), transform_state ? transform_state->GetTransform() : nullptr});
++					render_manager->SetClipMask(std::move(clip));
++				}
++				decorator.decorator->RenderElement(element, decorator.decorator_data);
++				render_manager->SetState(saved);
+ 			}
+ 		}
+ 	}
+diff --git a/Source/Core/ElementEffects.h b/Source/Core/ElementEffects.h
+index 5571835..383c942 100644
+--- a/Source/Core/ElementEffects.h
++++ b/Source/Core/ElementEffects.h
+@@ -59,6 +59,8 @@ private:
+ 		DecoratorDataHandle decorator_data;
+ 		BoxArea paint_area;
+ 		DecoratorBox box;
++		// A sized layer in a rounded paint box renders under that box's clip mask.
++		bool rounded_clip = false;
+ 	};
+ 	using DecoratorEntryList = Vector<DecoratorEntry>;
+ 
+diff --git a/Source/Core/PropertyParserDecorator.cpp b/Source/Core/PropertyParserDecorator.cpp
+index fdc8af5..5321f4f 100644
+--- a/Source/Core/PropertyParserDecorator.cpp
++++ b/Source/Core/PropertyParserDecorator.cpp
+@@ -66,10 +66,17 @@ bool PropertyParserDecorator::ParseValue(Property& property, const String& decor
+     {
+         StringList parts;
+         StringUtilities::ExpandString(parts, layer, '/', '(', ')');
+-        if (parts.size() != 1 && parts.size() != 3) return false;
++        if (parts.size() != 1 && parts.size() != 3 && parts.size() != 4) return false;
+         const String& decorator_string = parts.front();
+         DecoratorBox box;
+-        if (parts.size() == 3) {
++        if (parts.size() == 4) {
++            const String origin = StringUtilities::StripWhitespace(parts[3]);
++            if (origin == "border-box") box.origin = BoxArea::Border;
++            else if (origin == "padding-box") box.origin = BoxArea::Padding;
++            else if (origin == "content-box") box.origin = BoxArea::Content;
++            else return false;
++        }
++        if (parts.size() >= 3) {
+             box.sized = true;
+             for (int pair = 0; pair < 2; ++pair) {
+                 StringList values;

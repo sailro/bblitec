@@ -40,6 +40,31 @@ test("retained SVG construction preserves namespace, shape mutation and inherite
         if (!(svg instanceof Element)) throw new Error("SVG is an element");
         if (!(stored.child instanceof SVGElement)) throw new Error("SVG interface");
         document.body.append(svg);
+        // A label on an arc: the text follows the path, styled by a class rule.
+        const labels = make("svg");
+        labels.setAttribute("id", "labels");
+        labels.setAttribute("viewBox", "-50 -50 100 100");
+        labels.setAttribute("width", "100");
+        labels.setAttribute("height", "100");
+        const arc = make("path");
+        arc.setAttribute("id", "label-arc");
+        arc.setAttribute("d", "M-40,0 A40,40 0 0 1 40,0");
+        arc.setAttribute("fill", "none");
+        const label = make("text");
+        label.setAttribute("class", "arc-name");
+        label.setAttribute("font-size", "12");
+        label.setAttribute("letter-spacing", "1");
+        const run = make("textPath");
+        run.setAttribute("href", "#label-arc");
+        run.setAttribute("startOffset", "50%");
+        run.setAttribute("text-anchor", "middle");
+        run.textContent = "Oak";
+        label.append(run);
+        labels.append(arc, label);
+        const sheet = document.createElement("style");
+        sheet.textContent = ".arc-name { fill: #f6e4bc; stroke: rgba(40, 24, 8, 0.85); stroke-width: 3.5px; paint-order: stroke; text-transform: uppercase; }";
+        document.head.append(sheet);
+        document.body.append(labels);
         globalThis.close();
     `,
         { fileName: join(directory, "entry.ts") },
@@ -48,7 +73,11 @@ test("retained SVG construction preserves namespace, shape mutation and inherite
     assert.match(result.cpp, /ui_create_svg_element/);
     writeFileSync(join(directory, "program.hpp"), result.cpp);
     runRmlUiFixture(t, "ui-svg", {
-        macros: { BBLITE_WORKERS: 1, BBLITE_OFFSCREEN_SURFACES: 1 },
+        macros: {
+            BBLITE_WORKERS: 1,
+            BBLITE_OFFSCREEN_SURFACES: 1,
+            BBLITE_UI_INLINE_SVG: 1,
+        },
     });
 });
 
@@ -65,6 +94,13 @@ test("SVG construction refuses foreign namespaces and unsupported SVG elements",
                 ),
             message,
         );
+    // A namespace held in a const is the same generation-known string, and a
+    // created element's dataset member by a literal key is its data attribute.
+    const named = compileSource(
+        `import {createEngine} from "@babylonjs/lite"; await createEngine({}); const SVG_NS = "http://www.w3.org/2000/svg"; const svg = document.createElementNS(SVG_NS, "svg"); const text = document.createElementNS(SVG_NS, "text"); svg.appendChild(text); text.classList.add("is-cut"); text.dataset["groupKey"] = "walls"; document.body.appendChild(svg); text.addEventListener("pointerenter", () => {});`,
+    );
+    assert.match(named.cpp, /ui_create_svg_element\([^;]*"text"/);
+    assert.match(named.cpp, /"data-group-key", "walls"/);
 });
 
 test("image markup accepts void tags and refuses dynamic sources or unrepresented attributes", () => {

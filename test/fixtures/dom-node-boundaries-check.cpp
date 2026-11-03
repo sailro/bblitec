@@ -29,7 +29,9 @@ int main() {
     {
         auto& engine = pal::window_document_engine();
         const auto svg = ui_get_element_by_id(engine, "shapes");
-        const auto markup = pal::ui_svg_markup(engine, ui_element(engine, svg));
+        const auto markup = pal::ui_svg_markup(
+            engine, svg, [](UiElementHandle, std::string_view) { return std::string{}; },
+            pal::UiSvgContext{});
         assert(markup.source.find("<line") != std::string::npos);
         assert(markup.source.find("<ellipse") != std::string::npos);
         assert(markup.source.find("<polyline") != std::string::npos);

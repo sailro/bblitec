@@ -51,13 +51,14 @@ int main() {
     UiElementRecord element;
     auto& canvas = element.canvas.emplace();
     assert(canvas.width == 300 && canvas.height == 150);
-    assert(canvas.scale_x == 1 && canvas.scale_y == 1 && canvas.fill_style == "#000000");
+    assert(canvas.drawing.transform.a == 1 && canvas.drawing.transform.d == 1 &&
+           canvas.drawing.fill_style == "#000000");
     canvas.width = 20;
     canvas.height = 10;
-    canvas.fill_style = "#abc";
+    canvas.drawing.fill_style = "#abc";
     canvas.path = {{2, 3}, {6, 7}};
     canvas.path_closed = true;
-    canvas.line_width = 3.0;
+    canvas.drawing.line_width = 3.0;
     retain_canvas_fill_rect(canvas, 8, 7, -10, -4, true);
     assert(canvas.draws.size() == 1);
     const auto first = canvas.draws.front();
@@ -66,7 +67,7 @@ int main() {
     assert(first.destination_width == 8 && first.destination_height == 4);
     assert(first.color == "#abc");
     assert(canvas.path.size() == 2 && canvas.path[0].x == 2 && canvas.path[1].y == 7);
-    assert(canvas.path_closed && canvas.line_width == 3.0);
+    assert(canvas.path_closed && canvas.drawing.line_width == 3.0);
     retain_canvas_fill_rect(canvas, 0, 0, 20, 10, false);
     assert(canvas.draws.size() == 2); // Translucent full fills preserve prior content.
     retain_canvas_fill_rect(canvas, 0, 0, 19.9, 10, true);
@@ -76,9 +77,9 @@ int main() {
         retain_canvas_fill_rect(canvas, 5, 3, 2, 2, true);
         assert(canvas.draws.size() == 2);
     }
-    assert(canvas.path.size() == 2 && canvas.path_closed && canvas.line_width == 3.0);
-    canvas.scale_x = -2;
-    canvas.scale_y = 2;
+    assert(canvas.path.size() == 2 && canvas.path_closed && canvas.drawing.line_width == 3.0);
+    canvas.drawing.transform.a = -2;
+    canvas.drawing.transform.d = 2;
     retain_canvas_fill_rect(canvas, -4, 1, 2, 2, true);
     const auto& scaled = canvas.draws.back();
     assert(scaled.destination_x == 4 && scaled.destination_y == 2);
@@ -88,5 +89,76 @@ int main() {
     retain_canvas_fill_rect(canvas, 0, 0, std::numeric_limits<double>::infinity(), 5, true);
     retain_canvas_fill_rect(canvas, std::numeric_limits<double>::quiet_NaN(), 0, 5, 5, true);
     assert(canvas.draws.size() == count);
+    // A translation keeps the rectangle axis-aligned; a rotation turns it into a convex quad.
+    canvas.drawing.transform = {1, 0, 0, 1, 3, 2};
+    retain_canvas_fill_rect(canvas, 1, 1, 4, 2, true);
+    const auto& moved = canvas.draws.back();
+    assert(moved.kind == UiElementRecord::CanvasDrawCommand::Kind::FillRect);
+    assert(moved.destination_x == 4 && moved.destination_y == 3);
+    assert(moved.destination_width == 4 && moved.destination_height == 2);
+    canvas.drawing.transform = {0, 1, -1, 0, 10, 0};
+    retain_canvas_fill_rect(canvas, 1, 2, 4, 3, true);
+    const auto& turned = canvas.draws.back();
+    assert(turned.kind == UiElementRecord::CanvasDrawCommand::Kind::Fill && turned.closed);
+    assert(turned.points.size() == 4 && turned.color == "#abc");
+    assert(turned.points[0].x == 8 && turned.points[0].y == 1);
+    assert(turned.points[2].x == 5 && turned.points[2].y == 5);
+    assert(canvas_length_scale({2, 0, 0, 4, 0, 0}) == 3);
+
+    // clearRect drops what it covers, keeps what it misses and cuts filled rectangles exactly.
+    canvas.drawing.transform = {};
+    retain_canvas_clear_rect(canvas, 0, 0, 20, 10);
+    assert(canvas.draws.empty());
+    retain_canvas_fill_rect(canvas, 0, 0, 20, 10, false);
+    retain_canvas_fill_rect(canvas, 1, 1, 2, 2, false);
+    retain_canvas_fill_rect(canvas, 16, 6, 2, 2, false);
+    retain_canvas_clear_rect(canvas, 0, 0, 4, 4);
+    assert(canvas.draws.size() == 3);
+    double area = 0.0;
+    for (const auto& draw : canvas.draws)
+        area += draw.destination_width * draw.destination_height;
+    assert(area == 200 - 16 + 4);
+    retain_canvas_clear_rect(canvas, 5, 2, 4, 4);
+    area = 0.0;
+    for (const auto& draw : canvas.draws)
+        area += draw.destination_width * draw.destination_height;
+    assert(canvas.draws.size() == 7 && area == 200 - 16 - 16 + 4);
+    canvas.path = {{12, 1}, {14, 1}, {13, 3}};
+    UiElementRecord::CanvasDrawCommand triangle;
+    triangle.kind = UiElementRecord::CanvasDrawCommand::Kind::Fill;
+    triangle.points = canvas.path;
+    canvas.draws.push_back(triangle);
+    bool refused = false;
+    try {
+        retain_canvas_clear_rect(canvas, 13, 0, 4, 4);
+    } catch (const std::runtime_error&) {
+        refused = true;
+    }
+    assert(refused);
+    retain_canvas_clear_rect(canvas, 11, 0, 4, 4);
+    assert(canvas.draws.size() == 9); // The triangle went with its cover; two pieces were cut.
+    canvas.drawing.transform = {0, 1, -1, 0, 10, 0};
+    retain_canvas_clear_rect(canvas, -1, -11, 12, 22);
+    assert(canvas.draws.empty());
+
+    // putImageData pixels clear when the clear covers their centre.
+    const double clears[][4] = {
+        {0.6, 0.4, 2.0, 1.2}, {-3, 1.5, 4.5, 9}, {2.5, 0, 0.5, 3}, {3.4, 2.6, 0.2, 0.2}};
+    for (const auto& clear : clears) {
+        UiElementRecord image;
+        auto& surface = image.canvas.emplace();
+        surface.width = 4;
+        surface.height = 3;
+        surface.pixels.assign(4 * 3 * 4, 255);
+        retain_canvas_clear_rect(surface, clear[0], clear[1], clear[2], clear[3]);
+        for (int row = 0; row < 3; ++row)
+            for (int column = 0; column < 4; ++column) {
+                const double cx = column + 0.5, cy = row + 0.5;
+                const bool cleared = cx >= clear[0] && cx < clear[0] + clear[2] && cy >= clear[1] &&
+                                     cy < clear[1] + clear[3];
+                for (int channel = 0; channel < 4; ++channel)
+                    assert(surface.pixels[(row * 4 + column) * 4 + channel] == (cleared ? 0 : 255));
+            }
+    }
     std::cout << "ui-canvas-rectangle-check: ok\n";
 }

@@ -6,6 +6,7 @@
 #include <RmlUi/Core/StringUtilities.h>
 #include <cmath>
 #include <map>
+#include <optional>
 #include <set>
 #include <stdexcept>
 #include <string>
@@ -22,6 +23,16 @@ class SystemUiFontEngine final : public Rml::FontEngineInterface {
     std::map<FaceKey, Rml::Style::FontWeight> processed_;
     std::map<std::string, std::vector<std::string>> families_;
     std::set<std::string> reported_;
+
+public:
+    /** A loaded face's file, so SVG text can draw and measure the face this engine resolved. */
+    struct FaceSource {
+        std::string path;
+        int index = 0;
+    };
+
+private:
+    std::map<FaceKey, FaceSource> sources_;
 
     const std::vector<std::string>& families(const std::string& value) {
         if (const auto found = families_.find(value); found != families_.end())
@@ -100,10 +111,46 @@ public:
                       Rml::Style::FontStyle style, Rml::Style::FontWeight weight,
                       bool fallback) override {
         const bool loaded = renderer_.LoadFontFace(path, index, family, style, weight, fallback);
-        if (loaded)
-            processed_.insert_or_assign(
-                FaceKey{Rml::StringUtilities::ToLower(family), style, weight}, weight);
+        if (loaded) {
+            const FaceKey key{Rml::StringUtilities::ToLower(family), style, weight};
+            processed_.insert_or_assign(key, weight);
+            sources_.insert_or_assign(key, FaceSource{path, index});
+        }
         return loaded;
+    }
+    /**
+     * The file of the face GetFontFaceHandle resolves a family list, style and weight to: the
+     * first family that loads, at its nearest loaded weight (a tie the heavier), else the default
+     * family's; nullopt when that face came from memory.
+     */
+    std::optional<FaceSource> face_source(const std::string& family, Rml::Style::FontStyle style,
+                                          Rml::Style::FontWeight weight) {
+        std::vector<std::string> names = families(family);
+        names.push_back(default_family_);
+        for (const auto& name : names) {
+            if (name.empty())
+                continue;
+            const auto resolved = static_cast<int>(ensure_face(name, style, weight));
+            const FaceSource* best = nullptr;
+            int distance = 0;
+            // Keys order by family, style, then weight: the family's faces in this style are
+            // one run from its lowest weight.
+            for (auto entry = sources_.lower_bound(FaceKey{name, style, Rml::Style::FontWeight{}});
+                 entry != sources_.end() && std::get<0>(entry->first) == name &&
+                 std::get<1>(entry->first) == style;
+                 ++entry) {
+                const auto& [key, source] = *entry;
+                const int loaded = static_cast<int>(std::get<2>(key));
+                const int gap = std::abs(loaded - resolved) * 2 - (loaded > resolved ? 1 : 0);
+                if (!best || gap < distance) {
+                    best = &source;
+                    distance = gap;
+                }
+            }
+            if (best)
+                return *best;
+        }
+        return std::nullopt;
     }
     bool LoadFontFace(Rml::Span<const Rml::byte> bytes, int index, const Rml::String& family,
                       Rml::Style::FontStyle style, Rml::Style::FontWeight weight,

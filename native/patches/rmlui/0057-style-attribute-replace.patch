@@ -1,0 +1,90 @@
+style attribute: the element's inline declaration block (CSSOM). A replaced or removed value drops the properties, custom
+properties and var() shorthands it no longer declares, inside the same transition-aware inline change; RmlUi only added.
+CSSOM: https://drafts.csswg.org/cssom/#the-elementcssinlinestyle-mixin
+
+diff --git a/Source/Core/Element.cpp b/Source/Core/Element.cpp
+index e784196..38171cb 100644
+--- a/Source/Core/Element.cpp
++++ b/Source/Core/Element.cpp
+@@ -1803,28 +1803,52 @@ void Element::OnAttributeChange(const ElementAttributes& changed_attributes)
+ 		}
+ 		else if (attribute == "style")
+ 		{
++			PropertyDictionary properties;
+ 			if (value.GetType() == Variant::STRING)
+ 			{
+-				PropertyDictionary properties;
+ 				StyleSheetParser parser;
+ 				parser.ParseProperties(properties, value.GetReference<String>());
++			}
++			else if (value.GetType() != Variant::NONE)
++				Log::Message(Log::LT_WARNING, "Invalid 'style' attribute, string type required. In element: %s", GetAddress().c_str());
+ 
+-				PropertyIdSet changed;
++			// The attribute is the element's inline declaration block (CSSOM): a replaced or removed value drops the
++			// declarations it no longer makes.
++			PropertyIdSet declared;
++			for (const auto& name_value : properties.GetProperties())
++				declared.Insert(name_value.first);
++			PropertyIdSet dropped = meta->style_attribute_properties;
++			for (const PropertyId id : declared)
++				dropped.Erase(id);
++			meta->style.ApplyInlineChange(declared | dropped, [&] {
++				for (const PropertyId id : dropped)
++					meta->style.RemoveProperty(id);
+ 				for (const auto& name_value : properties.GetProperties())
+-					changed.Insert(name_value.first);
+-				meta->style.ApplyInlineChange(changed, [&] {
+-					for (const auto& name_value : properties.GetProperties())
+-						meta->style.SetProperty(name_value.first, name_value.second);
+-				});
+-
+-				for (const auto& name_value : properties.GetCustomProperties())
+-					meta->style.SetCustomProperty(name_value.first, name_value.second);
++					meta->style.SetProperty(name_value.first, name_value.second);
++			});
++			meta->style_attribute_properties = declared;
++
++			const auto& custom_properties = properties.GetCustomProperties();
++			for (const String& name : meta->style_attribute_custom_properties)
++				if (custom_properties.find(name) == custom_properties.end())
++					meta->style.RemoveCustomProperty(name);
++			meta->style_attribute_custom_properties.clear();
++			for (const auto& name_value : custom_properties)
++			{
++				meta->style.SetCustomProperty(name_value.first, name_value.second);
++				meta->style_attribute_custom_properties.push_back(name_value.first);
++			}
+ 
+-				for (const auto& [shorthand_id, property] : properties.GetVarShorthands())
+-					meta->style.SetVarShorthand(shorthand_id, property);
++			const auto& var_shorthands = properties.GetVarShorthands();
++			for (const ShorthandId id : meta->style_attribute_var_shorthands)
++				if (var_shorthands.find(id) == var_shorthands.end())
++					meta->style.RemoveVarShorthand(id);
++			meta->style_attribute_var_shorthands.clear();
++			for (const auto& [shorthand_id, property] : var_shorthands)
++			{
++				meta->style.SetVarShorthand(shorthand_id, property);
++				meta->style_attribute_var_shorthands.push_back(shorthand_id);
+ 			}
+-			else if (value.GetType() != Variant::NONE)
+-				Log::Message(Log::LT_WARNING, "Invalid 'style' attribute, string type required. In element: %s", GetAddress().c_str());
+ 		}
+ 		else if (attribute == "lang")
+ 		{
+diff --git a/Source/Core/ElementMeta.h b/Source/Core/ElementMeta.h
+index 112b6dd..06cad1e 100644
+--- a/Source/Core/ElementMeta.h
++++ b/Source/Core/ElementMeta.h
+@@ -24,6 +24,10 @@ struct ElementMeta {
+ 	ElementEffects effects;
+ 	ElementScroll scroll;
+ 	Style::ComputedValues computed_values;
++	// What the style attribute declares: its inline declaration block, which a replaced or removed value drops.
++	PropertyIdSet style_attribute_properties;
++	Vector<String> style_attribute_custom_properties;
++	Vector<ShorthandId> style_attribute_var_shorthands;
+ };
+ 
+ struct ElementMetaPool {

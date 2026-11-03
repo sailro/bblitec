@@ -1,3 +1,4 @@
+import { domRectProperty } from "./dom-rects.js";
 import { requestInitProperty } from "./http.js";
 import ts from "typescript";
 import {
@@ -24,6 +25,12 @@ import {
     compileIdleDeadlineMethod,
     idleDeadlineProperty,
 } from "./idle-callbacks.js";
+import {
+    compileIndexedDbAssignment,
+    compileIndexedDbMethod,
+    indexedDbProperty,
+    INDEXED_DB_KINDS,
+} from "./indexed-db.js";
 import {
     compileMediaStreamNew,
     compileUninhabitedMethod,
@@ -60,6 +67,7 @@ const METHOD_OWNERS: ReadonlyMap<DataType["kind"], MethodLowerer> = new Map([
     ["image-bitmap", compileImageBitmapMethod],
     ["idle-deadline", compileIdleDeadlineMethod],
     ["uninhabited-object", compileUninhabitedMethod],
+    ...INDEXED_DB_KINDS.map((kind) => [kind, compileIndexedDbMethod] as const),
     // Blob reads and its stream; other Blob members keep the browser file bridge.
     [
         "blob",
@@ -87,7 +95,10 @@ export function compileWebPlatformAssignment(
     lowerer: DataLowerer,
     expression: ts.BinaryExpression,
 ): Value | undefined {
-    return compileUrlAssignment(lowerer, expression);
+    return (
+        compileUrlAssignment(lowerer, expression) ??
+        compileIndexedDbAssignment(lowerer, expression)
+    );
 }
 
 /** A property of a web platform value; `access` is the read's site, when known. */
@@ -102,8 +113,10 @@ export function webPlatformProperty(
         requestInitProperty(lowerer, owner, property) ??
         urlProperty(lowerer, owner, property) ??
         imageBitmapProperty(lowerer, owner, property) ??
+        domRectProperty(lowerer, owner, property) ??
         idleDeadlineProperty(lowerer, owner, property) ??
         uninhabitedProperty(lowerer, owner, property, access) ??
+        indexedDbProperty(lowerer, owner, property, access) ??
         bodyStreamProperty(lowerer, owner, property, access)
     );
 }

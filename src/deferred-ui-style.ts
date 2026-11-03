@@ -7,7 +7,6 @@ import { supportedUiGridTracks } from "./ui-grid.js";
 
 /** Missing projection contracts, admitted only at an explicit throwing operation. */
 const properties = new Set([
-    "zoom",
     "columns",
     "column-count",
     "column-width",

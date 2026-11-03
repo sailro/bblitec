@@ -515,8 +515,10 @@ export interface StaticBooleanContext extends Pick<
     "resolveStaticExpression" | "compileBoolean" | "fail"
 > {}
 
-interface StaticNumberSelectionContext
-    extends PositiveIntegerContext, Pick<LoweringServices, "conditions"> {}
+interface StaticNumberSelectionContext extends StaticFoldContext {
+    /** The condition compiler the fold asks; a caller may probe it. */
+    readonly conditions: Pick<ConditionLowerer, "compileCondition">;
+}
 
 /**
  * A static number after following any statically settled conditional arms.

@@ -533,6 +533,12 @@ function convertedElementsCopy(
                     lowerer.context.absenceTags,
                     array,
                 );
+            // A binding takes the elements an assigned array keeps.
+            lowerer.requireArrayBindingElements(
+                element,
+                dataType.element,
+                node,
+            );
             lowerer.context.fail(
                 node,
                 `An array stored as an array of another element type is a copy, and ${observed}; JavaScript keeps one array.`,

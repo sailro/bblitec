@@ -10,6 +10,8 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <utility>
+#include <vector>
 
 namespace bbl::pal {
 namespace detail {
@@ -55,6 +57,63 @@ inline std::optional<double> css_decimal(std::string_view source, std::size_t& o
         return std::nullopt;
     offset = end;
     return number;
+}
+
+/**
+ * A bare viewport extreme starting a token at `offset` (`160vmax`, `-2svmin`): its length and
+ * its value in CSS pixels. RmlUi has no vmin/vmax, so they resolve here as math terms do.
+ */
+inline std::optional<std::pair<std::size_t, double>>
+css_viewport_extreme(std::string_view source, std::size_t offset, double width, double height) {
+    const auto word = [](char character) {
+        return std::isalnum(static_cast<unsigned char>(character)) || character == '.' ||
+               character == '-' || character == '+' || character == '_' || character == '#';
+    };
+    if (offset && word(source[offset - 1]))
+        return std::nullopt;
+    std::size_t at = offset;
+    double sign = 1;
+    if (at < source.size() && (source[at] == '-' || source[at] == '+')) {
+        sign = source[at] == '-' ? -1 : 1;
+        ++at;
+    }
+    auto end = at;
+    const auto number = css_decimal(source, end);
+    if (!number)
+        return std::nullopt;
+    auto unit_end = end;
+    while (unit_end < source.size() && std::isalpha(static_cast<unsigned char>(source[unit_end])))
+        ++unit_end;
+    std::string unit(source.substr(end, unit_end - end));
+    for (char& character : unit)
+        character = static_cast<char>(std::tolower(static_cast<unsigned char>(character)));
+    // Without browser toolbars the small, large and dynamic viewports are the viewport.
+    if (unit.size() == 5 && (unit[0] == 's' || unit[0] == 'l' || unit[0] == 'd'))
+        unit.erase(0, 1);
+    if (unit != "vmin" && unit != "vmax")
+        return std::nullopt;
+    const double extreme = unit == "vmin" ? std::min(width, height) : std::max(width, height);
+    return std::pair{unit_end - offset, sign * *number * extreme / 100};
+}
+
+/**
+ * The properties whose percentages RmlUi resolves at layout from a computed length-percentage, where
+ * CSS math over a percentage folds to `bbl-calc(...)` (RmlUi patch css-percentage-math).
+ */
+inline bool css_layout_percentage_property(std::string_view property) {
+    static constexpr std::string_view properties[] = {
+        "width",        "height",     "min-width",   "max-width",     "min-height",
+        "max-height",   "margin",     "margin-top",  "margin-right",  "margin-bottom",
+        "margin-left",  "padding",    "padding-top", "padding-right", "padding-bottom",
+        "padding-left", "top",        "right",       "bottom",        "left",
+        "flex",         "flex-basis", "gap",         "row-gap",       "column-gap"};
+    return std::find(std::begin(properties), std::end(properties), property) !=
+           std::end(properties);
+}
+
+/** RmlUi decorator text: the decorator itself, or the background image the PAL paints as one. */
+inline bool css_decorator_property(std::string_view property) {
+    return property == "decorator" || property == "--bbl-background-image";
 }
 
 /** The index of the `)` closing the parenthesis at `open`, or the size when it is unclosed. */
@@ -112,24 +171,40 @@ template <typename Visit> void scan_css_value(std::string& value, Visit&& visit)
 } // namespace detail
 
 // Root-relative lengths reproject when the document's computed font changes.
-// Containing-block and element-relative units still require a later layout stage.
+// A percentage of the layout's base stays a term the layout resolves (`percentages`), with lengths added and
+// min()/max()/clamp() bounds of the same form, written as RmlUi's canonical `bbl-calc(...)`; element-relative
+// units still require a later layout stage.
 // Lengths resolve to CSS px (dp, the projected CSS px, included), times to s, angles to deg.
 class UiLengthMath {
     enum class Dimension { Number, Length, Time, Angle };
+    // A length of px and a percentage of the layout's base.
+    struct Linear {
+        double number = 0;
+        double percent = 0;
+    };
     struct Value {
         double number;
         Dimension dimension;
+        // A length holding a percentage of the layout's base, and the bounds min()/max()/clamp() put on it.
+        bool percentage = false;
+        double percent = 0;
+        std::optional<Linear> lower{}, upper{};
+
+        bool bounded() const { return lower.has_value() || upper.has_value(); }
+        Linear linear() const { return {number, percent}; }
     };
     std::string_view source;
     std::size_t offset = 0;
     double width, height;
     std::optional<double> root_font_size;
+    bool percentages;
     bool root_relative = false;
 
     [[noreturn]] void refuse() const {
         throw std::runtime_error(
-            "UI CSS math requires finite px/rem/viewport lengths, s/ms times, deg/rad/turn angles and "
-            "scalar arithmetic: " +
+            "UI CSS math requires finite px/rem/viewport lengths, s/ms times, deg/rad/turn angles, "
+            "percentages of a layout length within one min()/max()/clamp() level, and scalar "
+            "arithmetic: " +
             std::string(source));
     }
     void space() {
@@ -145,6 +220,68 @@ class UiLengthMath {
         return true;
     }
     static bool letter(char value) { return value >= 'a' && value <= 'z'; }
+    static Linear scaled(Linear term, double factor) {
+        return {term.number * factor, term.percent * factor};
+    }
+    /** `value` times a scalar: a negative factor turns lower bounds into upper ones. */
+    static Value scaled(Value value, double factor) {
+        value.number *= factor;
+        value.percent *= factor;
+        std::optional<Linear> lower, upper;
+        if (value.lower)
+            lower = scaled(*value.lower, factor);
+        if (value.upper)
+            upper = scaled(*value.upper, factor);
+        value.lower = factor < 0 ? upper : lower;
+        value.upper = factor < 0 ? lower : upper;
+        return value;
+    }
+    /** `left + right`: a bounded term shifts, with its bounds, by an unbounded one. */
+    Value added(Value left, const Value& right) const {
+        if (left.dimension != right.dimension || (left.bounded() && right.bounded()))
+            refuse();
+        Value result = left.bounded() ? left : right;
+        const Linear shift = left.bounded() ? right.linear() : left.linear();
+        result.number += shift.number;
+        result.percent += shift.percent;
+        for (auto* bound : {&result.lower, &result.upper})
+            if (*bound) {
+                (*bound)->number += shift.number;
+                (*bound)->percent += shift.percent;
+            }
+        result.percentage = left.percentage || right.percentage;
+        return result;
+    }
+    /** min() or max() of unbounded terms: at most a percentage term and one bound of the same form. */
+    Value extremum(bool minimum, const std::vector<Value>& terms) const {
+        for (const auto& term : terms)
+            if (term.dimension != terms.front().dimension || term.bounded())
+                refuse();
+        const auto pick = [minimum](double a, double b) {
+            return minimum ? std::min(a, b) : std::max(a, b);
+        };
+        std::optional<Value> fixed;
+        std::vector<Value> relative;
+        for (const auto& term : terms) {
+            if (term.percentage)
+                relative.push_back(term);
+            else if (fixed)
+                fixed->number = pick(fixed->number, term.number);
+            else
+                fixed = term;
+        }
+        if (relative.empty())
+            return *fixed;
+        if (relative.size() + (fixed ? 1 : 0) > 2)
+            refuse();
+        Value result = relative.front();
+        if (relative.size() == 1 && !fixed)
+            return result;
+        // Two relative terms leave no room for a fixed one.
+        const Linear bound = fixed ? fixed->linear() : relative.back().linear();
+        (minimum ? result.upper : result.lower) = bound;
+        return result;
+    }
     Value atom() {
         space();
         if (take('(')) {
@@ -155,11 +292,8 @@ class UiLengthMath {
         }
         if (take('+'))
             return atom();
-        if (take('-')) {
-            auto value = atom();
-            value.number = -value.number;
-            return value;
-        }
+        if (take('-'))
+            return scaled(atom(), -1);
         const auto start = offset;
         while (offset < source.size() && letter(source[offset]))
             ++offset;
@@ -183,26 +317,38 @@ class UiLengthMath {
                     refuse();
                 const auto maximum = sum();
                 if (!take(')') || value.dimension != preferred.dimension ||
-                    value.dimension != maximum.dimension)
+                    value.dimension != maximum.dimension || value.bounded() ||
+                    preferred.bounded() || maximum.bounded())
                     refuse();
-                value.number = std::max(value.number, std::min(preferred.number, maximum.number));
-                return value;
+                if (!value.percentage && !preferred.percentage && !maximum.percentage) {
+                    value.number =
+                        std::max(value.number, std::min(preferred.number, maximum.number));
+                    return value;
+                }
+                // clamp(MIN, VAL, MAX) is max(MIN, min(VAL, MAX)), as LengthCalc resolves it.
+                Value result = preferred;
+                result.percentage = true;
+                result.lower = value.linear();
+                result.upper = maximum.linear();
+                return result;
             }
-            while (take(',')) {
-                const auto other = sum();
-                if (value.dimension != other.dimension)
-                    refuse();
-                value.number = name == "min" ? std::min(value.number, other.number)
-                                             : std::max(value.number, other.number);
-            }
+            std::vector<Value> terms{value};
+            while (take(','))
+                terms.push_back(sum());
             if (!take(')'))
                 refuse();
-            return value;
+            return extremum(name == "min", terms);
         }
         const auto parsed = detail::css_decimal(source, offset);
         if (!parsed)
             refuse();
         const double number = *parsed;
+        if (offset < source.size() && source[offset] == '%') {
+            ++offset;
+            if (!percentages)
+                refuse();
+            return {0, Dimension::Length, true, number};
+        }
         const auto unit_start = offset;
         while (offset < source.size() && letter(source[offset]))
             ++offset;
@@ -253,9 +399,9 @@ class UiLengthMath {
                  other.dimension != Dimension::Number) ||
                 (!multiply && (other.dimension != Dimension::Number || other.number == 0)))
                 refuse();
-            value.number = multiply ? value.number * other.number : value.number / other.number;
-            if (value.dimension == Dimension::Number)
-                value.dimension = other.dimension;
+            value = !multiply                              ? scaled(value, 1 / other.number)
+                    : value.dimension == Dimension::Number ? scaled(other, value.number)
+                                                           : scaled(value, other.number);
         }
     }
     Value sum() {
@@ -265,22 +411,35 @@ class UiLengthMath {
             if (!add && !take('-'))
                 return value;
             const auto other = product();
-            if (value.dimension != other.dimension)
-                refuse();
-            value.number += add ? other.number : -other.number;
+            value = added(value, add ? other : scaled(other, -1));
         }
+    }
+    static std::string term(const Linear& linear) {
+        return std::to_string(linear.percent) + " " + std::to_string(linear.number);
     }
 
 public:
     UiLengthMath(std::string_view expression, double viewport_width, double viewport_height,
-                 std::optional<double> root_font = std::nullopt)
+                 std::optional<double> root_font = std::nullopt, bool layout_percentages = false)
         : source(expression), width(viewport_width), height(viewport_height),
-          root_font_size(root_font) {}
+          root_font_size(root_font), percentages(layout_percentages) {}
     bool uses_root_font() const { return root_relative; }
     std::pair<std::string, std::size_t> resolve() {
         const auto value = atom();
-        if (!std::isfinite(value.number))
+        const auto finite = [](const Linear& linear) {
+            return std::isfinite(linear.number) && std::isfinite(linear.percent);
+        };
+        if (!finite(value.linear()) || (value.lower && !finite(*value.lower)) ||
+            (value.upper && !finite(*value.upper)))
             refuse();
+        if (value.percentage) {
+            std::string text = "bbl-calc(" + term(value.linear());
+            if (value.lower)
+                text += " lower " + term(*value.lower);
+            if (value.upper)
+                text += " upper " + term(*value.upper);
+            return {text + ")", offset};
+        }
         const char* unit = value.dimension == Dimension::Length  ? "px"
                            : value.dimension == Dimension::Time  ? "s"
                            : value.dimension == Dimension::Angle ? "deg"
@@ -294,16 +453,28 @@ inline std::string rml_css_length_math(std::string value, double width, double h
                                        std::string_view property_name = {}) {
     std::string property(property_name);
     std::size_t declaration_start = 0;
+    // How many functions other than math enclose the current index within its declaration.
+    int depth = 0;
     detail::scan_css_value(value, [&](std::size_t index) {
         const char token = value[index];
+        if (token == '(')
+            ++depth;
+        else if (token == ')')
+            depth = std::max(depth - 1, 0);
         if (token == ';' || token == '{' || token == '}') {
             declaration_start = index + 1;
             property = property_name;
+            depth = 0;
         } else if (token == ':') {
             property = value.substr(declaration_start, index - declaration_start);
             const auto first = property.find_first_not_of(" \t\r\n");
             const auto last = property.find_last_not_of(" \t\r\n");
             property = first == std::string::npos ? "" : property.substr(first, last - first + 1);
+        }
+        if (const auto extreme = detail::css_viewport_extreme(value, index, width, height)) {
+            const std::string replacement = std::to_string(extreme->second) + "px";
+            value.replace(index, extreme->first, replacement);
+            return index + replacement.size() - 1;
         }
         const auto tail = std::string_view(value).substr(index);
         if (!detail::css_function_at(value, index, "calc(") &&
@@ -312,15 +483,22 @@ inline std::string rml_css_length_math(std::string value, double width, double h
             !detail::css_function_at(value, index, "clamp("))
             return index;
         const std::size_t end = detail::css_function_end(value, value.find('(', index));
+        const auto function = std::string_view(value).substr(index, end - index);
         // Math over var() resolves once the style engine substitutes the variables; clip-path math keeps its
-        // percentages for the shape to resolve against its reference box.
-        if (property == "clip-path" ||
-            std::string_view(value).substr(index, end - index).find("var(") != std::string::npos)
+        // percentages for the shape to resolve against its reference box; a custom property's percentage
+        // is one of the length its substitution lands in.
+        const bool decorator = detail::css_decorator_property(property);
+        if (property == "clip-path" || function.find("var(") != std::string::npos ||
+            (property.starts_with("--") && !decorator && function.find('%') != std::string::npos))
             return end;
-        UiLengthMath math(tail, width, height, root_font);
+        // A decorator's own math sizes and places its layer box (RmlUi patch 0025); math inside its
+        // image function is the image's.
+        UiLengthMath math(tail, width, height, root_font,
+                          detail::css_layout_percentage_property(property) ||
+                              (decorator && depth == 0));
         const auto [replacement, consumed] = math.resolve();
-        if (math.uses_root_font() &&
-            (property == "font" || property == "font-size" || property.starts_with("--")))
+        if (math.uses_root_font() && (property == "font" || property == "font-size" ||
+                                      (property.starts_with("--") && !decorator)))
             throw std::runtime_error(
                 "Root-relative CSS math in font sizing or custom properties is not represented.");
         value.replace(index, consumed, replacement);

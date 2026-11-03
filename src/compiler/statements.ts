@@ -116,13 +116,13 @@ import {
     type HandleCollectionTarget,
 } from "./handle-collections.js";
 import { recordAt } from "./record-access.js";
-import { ownEntries, ownKeysKnown } from "./object-statics.js";
+import { ownEntries } from "./object-statics.js";
 import { ASSIGNMENT_OPERATORS } from "../lowering/pinned-operators.js";
 import { renderNativeEmission } from "./native-statements.js";
 import { isNativeInertCall } from "./native-inert-calls.js";
 import { counterWrite } from "./counted-loops.js";
 
-import { knownCondition } from "./values/model.js";
+import { knownCondition, ownKeysKnown } from "./values/model.js";
 
 interface StatementLoweringContext extends Pick<
     LoweringServices,
@@ -137,6 +137,7 @@ interface StatementLoweringContext extends Pick<
     | "options"
     | "speculating"
     | "transaction"
+    | "refusedDemand"
     | "checker"
     | "symbols"
     | "dataTypes"

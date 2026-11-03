@@ -1,7 +1,10 @@
 #pragma once
 
+#include "pal_gpu_frame.hpp"
+
 #include <optional>
 #include <type_traits>
+#include <utility>
 
 namespace bbl::pal {
 
@@ -23,15 +26,8 @@ constexpr std::optional<FrameOutcome> frame_interruption(FramePreparation prepar
     return std::nullopt;
 }
 
-/** Order a renderer's frame phases while preserving its surface/update boundary. */
-template <typename Renderer> FrameOutcome conduct_frame(Renderer& renderer) {
-    if (!renderer.keep_running())
-        return FrameOutcome::stopped;
-    if (const auto outcome = frame_interruption(renderer.prepare()))
-        return *outcome;
-    if constexpr (Renderer::acquire_phase == FrameAcquirePhase::before_update)
-        if (!renderer.acquire())
-            return FrameOutcome::skipped;
+/** The frame from its update on: what the engine's animation-frame function renders. */
+template <typename Renderer> FrameOutcome conduct_frame_render(Renderer& renderer) {
     if (const auto outcome = frame_interruption(renderer.update()))
         return *outcome;
     if constexpr (Renderer::acquire_phase == FrameAcquirePhase::before_uploads)
@@ -50,6 +46,52 @@ template <typename Renderer> FrameOutcome conduct_frame(Renderer& renderer) {
     }
     renderer.complete();
     return FrameOutcome::rendered;
+}
+
+/**
+ * A frame once the application wrote `engine._renderFn`: the browser turn
+ * runs the RAF callbacks registered before `startEngine`, then the function
+ * the previous frame armed (a wrapper whose inner function is the render
+ * above), then the ones registered after. A frame that armed nothing (the
+ * wrapper never ran the render, or `_renderFn` was cleared) schedules no
+ * further frame, so the loop ends.
+ */
+template <typename Renderer> FrameOutcome conduct_armed_frame(Renderer& renderer, Engine& engine) {
+    auto armed = std::exchange(engine.armed_render_function, {});
+    if (!armed || !renderer.begin_animation_turn())
+        return FrameOutcome::stopped;
+    struct Turn {
+        Engine& engine;
+        ~Turn() {
+            engine.animation_turn_conducted = false;
+            engine.conducted_render = nullptr;
+        }
+    } turn{engine};
+    engine.animation_turn_conducted = true;
+    std::optional<FrameOutcome> outcome;
+    engine.conducted_render = [&renderer, &outcome] {
+        if (!outcome)
+            outcome = conduct_frame_render(renderer);
+    };
+    armed(engine.animation_frame_timestamp_ms);
+    if (!outcome)
+        return FrameOutcome::stopped;
+    if (*outcome == FrameOutcome::rendered)
+        finish_animation_turn(engine);
+    return *outcome;
+}
+
+/** Order a renderer's frame phases while preserving its surface/update boundary. */
+template <typename Renderer> FrameOutcome conduct_frame(Renderer& renderer, Engine& engine) {
+    if (!renderer.keep_running())
+        return FrameOutcome::stopped;
+    if (const auto outcome = frame_interruption(renderer.prepare()))
+        return *outcome;
+    if constexpr (Renderer::acquire_phase == FrameAcquirePhase::before_update)
+        if (!renderer.acquire())
+            return FrameOutcome::skipped;
+    return engine.render_function_written ? conduct_armed_frame(renderer, engine)
+                                          : conduct_frame_render(renderer);
 }
 
 } // namespace bbl::pal

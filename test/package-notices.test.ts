@@ -67,6 +67,7 @@ const everyFeature = [
     "platform:http",
     "platform:compression",
     "platform:meshopt",
+    "storage:indexeddb",
     "audio:engine",
 ];
 

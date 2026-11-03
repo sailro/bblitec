@@ -1044,6 +1044,8 @@ inline void json_flatten_into(bbl::js::Array<JsonValue>& output, const JsonValue
         std::rethrow_exception(exception);
     } catch (const ThrownString& value) {
         return JsonValue::from_string(value.value);
+    } catch (const UnrepresentedThrownValue& value) {
+        refuse_thrown_value_read(value);
     } catch (const std::exception&) {
         return JsonValue::from_native(Error(exception));
     }
@@ -1072,6 +1074,8 @@ inline void json_flatten_into(bbl::js::Array<JsonValue>& output, const JsonValue
     } catch (const AggregateError&) {
         throw std::runtime_error(
             "AggregateError reflection requires represented property descriptors.");
+    } catch (const UnrepresentedThrownValue& value) {
+        refuse_thrown_value_read(value);
     } catch (const std::exception&) {
         // Any other builtin Error serializes through its native view.
         return JsonValue::from_native(value);

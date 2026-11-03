@@ -149,6 +149,76 @@ test("strict runtime HTTP preserves requests, responses and rejection", (t) =>
 test("runtime response headers and bodies stay native in deferred capability mode", (t) =>
     checkRuntimeHttp(t, true));
 
+test("keepalive requests share a 64 KiB quota and outlive the realm", async (t) => {
+    const native = optionalNativeFixtureTools();
+    if (!native) {
+        t.skip("Native fixture compiler unavailable.");
+        return;
+    }
+    const received: { path: string; bytes: number }[] = [];
+    const base = await serveHttpFixture(t, (request, response) => {
+        let bytes = 0;
+        request.on("data", (chunk: Buffer) => (bytes += chunk.length));
+        request.on("end", () => {
+            received.push({ path: request.url!, bytes });
+            // The held and reported requests answer after the program moved on.
+            setTimeout(
+                () => response.end("ok"),
+                request.url === "/hold" || request.url === "/report" ? 400 : 0,
+            );
+        });
+    });
+    const directory = resolve("artifacts/runtime-http-keepalive");
+    mkdirSync(directory, { recursive: true });
+    const source = `
+        async function rejects(url:string, size:number):Promise<boolean> {
+            try { await fetch(url, {method:"POST", body:"x".repeat(size), keepalive:true}); return false; }
+            catch (error) { return error instanceof TypeError; }
+        }
+        async function run():Promise<void> {
+            if (!(await rejects("${base}/over", 70000))) throw new Error("keepalive quota");
+            const held = fetch("${base}/hold", {method:"POST", body:"y".repeat(40000), keepalive:true});
+            if (!(await rejects("${base}/shared", 30000))) throw new Error("keepalive bytes in flight");
+            const heldResponse = await held;
+            if ((await heldResponse.text()) !== "ok") throw new Error("held response");
+            const after = await fetch("${base}/after", {method:"POST", body:"z".repeat(30000), keepalive:true});
+            if ((await after.text()) !== "ok") throw new Error("lease returned");
+            void fetch("${base}/report", {method:"POST", body:"report", keepalive:true});
+            globalThis.close();
+        }
+        run();
+    `;
+    const entry = resolve(directory, "entry.ts");
+    writeFileSync(entry, source);
+    const compiled = compileSource(source, { fileName: entry });
+    const cpp = resolve(directory, "main.cpp"),
+        executable = resolve(directory, "check.exe");
+    writeFileSync(cpp, compiled.cpp);
+    runNativeFixtureCompiler(native, [
+        "/DBBLITE_WORKERS=1",
+        cpp,
+        "native/src/pal_http.cpp",
+        `/Fo${directory}/`,
+        `/Fe${executable}`,
+        "/link",
+        "winhttp.lib",
+    ]);
+    const output = await promisify(execFile)(executable, [], {
+        timeout: 15000,
+    });
+    assert.equal(output.stdout + output.stderr, "");
+    // Over-quota requests never reach the server; the unawaited report is
+    // delivered whole although the realm closed before its response.
+    assert.deepEqual(
+        received.map(({ path, bytes }) => [path, bytes]),
+        [
+            ["/hold", 40000],
+            ["/after", 30000],
+            ["/report", 6],
+        ],
+    );
+});
+
 test("fetch refuses a cache mode a native response cannot honour", () => {
     for (const options of [
         `{cache:"only-if-cached"}`,

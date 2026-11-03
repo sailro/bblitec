@@ -383,6 +383,56 @@ template <typename Driver> void exercise(int index) {
         assert(driver.prepare() == FramePreparation::ready && !state.running);
     }
 }
+void queue_text(Uint32 type, const char* text) {
+    SDL_Event event{};
+    event.type = type;
+    if (type == SDL_EVENT_TEXT_EDITING) {
+        event.edit.windowID = SDL_GetWindowID(window);
+        event.edit.text = text;
+    } else {
+        event.text.windowID = SDL_GetWindowID(window);
+        event.text.text = text;
+    }
+    assert(SDL_PushEvent(&event));
+}
+// Keys inside an input method composition report isComposing: the keydown opening it precedes
+// its first edit, and a commit, focus loss or stopped text input closes it.
+template <typename Driver> void compose() {
+    replay_source.clear();
+    Driver driver(window);
+    auto& engine = driver.fixture().engine;
+    SDL_FlushEvents(SDL_EVENT_FIRST, SDL_EVENT_LAST);
+    consume_ui = false;
+    std::vector<bool> composing;
+    const auto record = [&](const PlatformKeyboardEvent& event) {
+        composing.push_back(event.is_composing);
+    };
+    engine.key_down_callbacks.add(2, record);
+    engine.key_up_callbacks.add(2, record);
+    assert(SDL_StartTextInput(window));
+    queue_key(SDL_SCANCODE_K, true);
+    queue_text(SDL_EVENT_TEXT_EDITING, "k");
+    queue_key(SDL_SCANCODE_K, false);
+    queue_key(SDL_SCANCODE_A, true);
+    queue_text(SDL_EVENT_TEXT_EDITING, "ka");
+    queue_key(SDL_SCANCODE_RETURN, true);
+    queue_text(SDL_EVENT_TEXT_INPUT, "ka");
+    queue_key(SDL_SCANCODE_RETURN, false);
+    queue_text(SDL_EVENT_TEXT_EDITING, "x");
+    SDL_Event blur{};
+    blur.type = SDL_EVENT_WINDOW_FOCUS_LOST;
+    blur.window.windowID = SDL_GetWindowID(window);
+    assert(SDL_PushEvent(&blur));
+    queue_key(SDL_SCANCODE_B, true);
+    assert(driver.prepare() == FramePreparation::ready);
+    assert((composing == std::vector<bool>{false, true, true, true, false, false}));
+    composing.clear();
+    queue_text(SDL_EVENT_TEXT_EDITING, "y");
+    queue_key(SDL_SCANCODE_C, true);
+    assert(SDL_StopTextInput(window));
+    assert(driver.prepare() == FramePreparation::ready);
+    assert((composing == std::vector<bool>{false}));
+}
 } // namespace
 int main() {
     SDL_SetAssertionHandler(
@@ -395,6 +445,8 @@ int main() {
     window = SDL_CreateWindow("Input fixture", 640, 480, SDL_WINDOW_HIDDEN);
     assert(window);
 #include "exercise.hpp"
+    compose<Driver0>();
+    compose<Driver2>();
     SDL_DestroyWindow(window);
     SDL_Quit();
 }

@@ -47,6 +47,37 @@ for (const placement of ["before", "after", "callback"] as const) {
     });
 }
 
+test("timing intrinsics stored in a record return their pinned snapshots", (t) => {
+    const result =
+        compileSource(`import {createEngine,createSceneContext,registerScene,getRenderTaskGpuTimings,setRenderTaskGpuTimingEnabled} from "@babylonjs/lite";
+        type Snapshot = ReturnType<typeof getRenderTaskGpuTimings>;
+        type Api = { get: (engine: Parameters<typeof getRenderTaskGpuTimings>[0]) => Snapshot; set: (engine: Parameters<typeof getRenderTaskGpuTimings>[0], on: boolean) => Promise<Snapshot> };
+        let api: Api | null = null;
+        const engine=await createEngine(document.createElement("canvas"));
+        registerScene(createSceneContext(engine));
+        api ??= { get: getRenderTaskGpuTimings, set: setRenderTaskGpuTimingEnabled };
+        const status = api.get(engine).status;
+        void api.set(engine, status !== "unsupported");`);
+    assert.match(result.cpp, /bbl::get_render_task_gpu_timings\(/);
+    assert.match(result.cpp, /bbl::set_render_task_gpu_timing_enabled\(/);
+    const tools = optionalNativeFixtureTools(false);
+    if (!tools) {
+        t.skip("Native compiler unavailable.");
+        return;
+    }
+    const directory = resolve("artifacts/gpu-task-timing-scene");
+    mkdirSync(directory, { recursive: true });
+    const cpp = join(directory, "stored.cpp");
+    writeFileSync(cpp, result.cpp);
+    runNativeFixtureCompiler(tools, [
+        "/Zs",
+        "/DBBLITE_WORKERS=1",
+        "/DBBLITE_OFFSCREEN_SURFACES=1",
+        "/DBBLITE_HAS_UI=1",
+        cpp,
+    ]);
+});
+
 test("timing respects disabled default tasks and remains isolated when unreached", () => {
     const timed = compileSource(`${imports}
         const scene=createSceneContext(engine,{defaultRenderTask:false});

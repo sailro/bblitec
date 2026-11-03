@@ -41,7 +41,10 @@ test("math over var() with unresolvable units refuses at generation", () => {
     const prefix = `const panel = document.createElement("div");`;
     for (const [declaration, unit] of [
         ["width: calc(var(--x) * 2em)", /'em'/],
-        ["width: calc(100% - var(--x))", /'%'/],
+        [
+            "transform-origin: calc(100% - var(--x)) 0",
+            /a percentage outside a layout length/,
+        ],
         ["--size: min(4ch, var(--x))", /'ch'/],
     ] as const)
         assert.throws(
@@ -53,7 +56,7 @@ test("math over var() with unresolvable units refuses at generation", () => {
         );
     assert.doesNotThrow(() =>
         compileSource(
-            `${prefix}panel.style.cssText = "width: calc(94 * var(--dvh)); height: calc(var(--b2b) * 1dvh)";`,
+            `${prefix}panel.style.cssText = "width: calc(94 * var(--dvh)); height: calc(var(--b2b) * 1dvh); max-width: calc(100% - var(--x))";`,
         ),
     );
 });

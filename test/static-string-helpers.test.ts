@@ -32,11 +32,11 @@ test("closed string helpers retain literal results through stylesheet installati
     `);
     assert.match(
         result.cpp,
-        /ui_add_class_style[^\n]*"history"[^\n]*border:5px #123456/,
+        /ui_add_class_style[^\n]*"history"[^\n]*border:5px solid #123456/,
     );
     assert.match(
         result.cpp,
-        /ui_add_class_style[^\n]*"plain"[^\n]*border:3px #123456/,
+        /ui_add_class_style[^\n]*"plain"[^\n]*border:3px solid #123456/,
     );
 });
 

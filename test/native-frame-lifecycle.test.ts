@@ -33,6 +33,7 @@ test("native frame clocks, continuation drains and capture budgets preserve fram
             cppFunction(shared, "void run_animation_frame_callbacks("),
             // Source profiling is outside this fixture's frame contract.
             "static void begin_profiled_frame() {}",
+            cppFunction(shared, "std::optional<double> begin_animation_turn("),
             cppFunction(
                 shared,
                 "double advance_frame(Engine& engine, FrameClock&",
@@ -41,6 +42,7 @@ test("native frame clocks, continuation drains and capture budgets preserve fram
                 shared,
                 "double advance_frame(Engine& engine, FrameGraphContext&",
             ),
+            cppFunction(shared, "void finish_animation_turn("),
             cppFunction(shared, "void finish_frame("),
         ].join("\n"),
     );

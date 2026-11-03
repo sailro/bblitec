@@ -27,6 +27,8 @@ const UI_SELECTOR_TESTS = {
     "only-of-type": "OnlyOfType",
     empty: "Empty",
     root: "Root",
+    // The element a query runs on; in a stylesheet, the root.
+    scope: "Scope",
     not: "Not",
     is: "Is",
     where: "Where",
@@ -127,6 +129,7 @@ export function parseUiSelectorSequence(
                 } else if (
                     name === "empty" ||
                     name === "root" ||
+                    name === "scope" ||
                     name === "only-child" ||
                     name === "only-of-type"
                 ) {
@@ -418,6 +421,9 @@ export function uiSelectorSequenceCss(
                         case "nth-of-type":
                         case "nth-last-of-type":
                             return `:${test.kind}(${test.a === 0 ? test.b : `${test.a}n${test.b! < 0 ? test.b : `+${test.b}`}`})`;
+                        // A stylesheet has no scoping element: `:scope` is the root.
+                        case "scope":
+                            return ":root";
                         default:
                             return `:${test.kind}`;
                     }

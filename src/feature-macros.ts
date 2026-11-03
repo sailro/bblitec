@@ -72,6 +72,8 @@ export const featureMacros: readonly FeatureMacro[] = [
     { macro: "BBLITE_HAS_BROWSER_FILE", anyOf: ["browser:file"] },
     { macro: "BBLITE_HAS_UI", anyOf: ["ui:rml"] },
     { macro: "BBLITE_UI_SVG_IMAGES", anyOf: ["ui:svg-image"] },
+    // SVG text draws and measures faces through the plugin's LunaSVG/plutovg.
+    { macro: "BBLITE_UI_INLINE_SVG", anyOf: ["ui:inline-svg"] },
     { macro: "BBLITE_HAS_PBR_RENDERER", anyOf: ["renderer:scene"] },
     { macro: "BBLITE_HAS_SPRITE_RENDERER", anyOf: ["renderer:sprite"] },
     {

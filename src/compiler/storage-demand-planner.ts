@@ -24,6 +24,7 @@ import { StorageDemand } from "./storage-demand.js";
 import { ReplayStorage, type StorageRequest } from "./replay-storage.js";
 import type { LoweringServices } from "./lowering-services.js";
 import { callSignatures } from "./type-facts.js";
+import { holderTest } from "./record-observations.js";
 
 type StatementContext = Pick<
     LoweringServices,
@@ -203,6 +204,12 @@ export class StorageDemandPlanner {
     private statements = 0;
     /** @unjournaled Source declarations removed by a planning rollback. */
     private readonly lostDeclarations = new Set<ts.Symbol>();
+    /** @unjournaled Record types whose storage a survey's plan changed, one array per change. */
+    private lostTypes: readonly ts.Type[] = [];
+    /** @unjournaled Whether a holder type can be one of them, reset with each new one. */
+    private readonly lostTypeReads = new Map<ts.Type, boolean>();
+    /** @unjournaled The record-holder rule (`holderTest`), for this plan's checker. */
+    private holds?: (holder: ts.Type, records: readonly ts.Type[]) => boolean;
     /** @unjournaled Successful dependency checks are valid until another declaration is lost. */
     private readonly dependencyChecks = new WeakMap<ts.Node, number>();
     /** @unjournaled Lost declaration sets grow across statement rollback. */
@@ -264,7 +271,7 @@ export class StorageDemandPlanner {
         )
             throw new PlanningLimit();
         if (
-            this.lostDeclarations.size > 0 &&
+            (this.lostDeclarations.size > 0 || this.lostTypes.length > 0) &&
             this.dependencyChecks.get(statement) !== this.lostGeneration
         ) {
             const checked: ts.Statement[] = [];
@@ -282,13 +289,21 @@ export class StorageDemandPlanner {
                     if (!ts.isIdentifier(node)) return false;
                     const symbol = declaredSymbol(context.checker, node);
                     return (
-                        symbol !== undefined &&
-                        this.lostDeclarations.has(symbol)
+                        (symbol !== undefined &&
+                            this.lostDeclarations.has(symbol)) ||
+                        this.readsLostType(context.checker, node)
                     );
                 },
                 { types: "skip", names: "references" },
             );
-            if (dependent) throw new PlanningDependency();
+            if (dependent) {
+                if (!this.survey) throw new PlanningDependency();
+                // A survey's plan leaves the statement to the next attempt
+                // and goes on with what does not read it.
+                statistics.dependent++;
+                this.lose(context.checker, statement);
+                return;
+            }
             for (const node of checked)
                 this.dependencyChecks.set(node, this.lostGeneration);
         }
@@ -305,22 +320,91 @@ export class StorageDemandPlanner {
             if (!(error instanceof StorageDemand)) throw error;
             if (this.copied) throw new PlanningWrite();
             this.collect(error.request);
-            if (!independentDemand(context, statement, error))
+            // An ownership change can reach what later statements read. A
+            // survey's plan loses what it changes and goes on; another
+            // plan ends.
+            if (
+                !independentDemand(context, statement, error) &&
+                !(this.survey && this.loseDemanded(context, error.request))
+            )
                 throw new PlanningWrite();
             this.lose(context.checker, statement);
         }
+    }
+
+    /**
+     * Loses what a dependent demand changes the storage of: a binding,
+     * parameter or class (and the function that declares it, which its
+     * callers lower), or a record type. False for another request.
+     */
+    private loseDemanded(
+        context: StatementContext,
+        request: StorageRequest,
+    ): boolean {
+        if (request.kind === "record") {
+            if (!this.lostTypes.includes(request.demand.type)) {
+                this.lostTypes = [...this.lostTypes, request.demand.type];
+                this.lostTypeReads.clear();
+                this.lostGeneration++;
+            }
+            return true;
+        }
+        if (
+            request.kind !== "dynamic" &&
+            request.kind !== "parameter-object" &&
+            request.kind !== "shared-class"
+        )
+            return false;
+        const names = request.declaration.name
+            ? bindingNameIdentifiers(request.declaration.name)
+            : [];
+        const owner = ts.findAncestor(
+            request.declaration.parent,
+            ts.isFunctionLike,
+        );
+        const ownerName =
+            owner &&
+            (ts.isFunctionDeclaration(owner) || ts.isMethodDeclaration(owner))
+                ? owner.name
+                : owner && ts.isVariableDeclaration(owner.parent)
+                  ? owner.parent.name
+                  : undefined;
+        if (ownerName && ts.isIdentifier(ownerName)) names.push(ownerName);
+        for (const name of names) this.loseName(context.checker, name);
+        return true;
+    }
+
+    /** Whether a reference's value can be a record of a type a survey's plan lost. */
+    private readsLostType(
+        checker: ts.TypeChecker,
+        reference: ts.Identifier,
+    ): boolean {
+        if (this.lostTypes.length === 0) return false;
+        const type = checker.getTypeAtLocation(reference);
+        // An untyped value reads as anything; counting it would lose all.
+        if ((type.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) !== 0)
+            return false;
+        let reads = this.lostTypeReads.get(type);
+        if (reads === undefined) {
+            this.holds ??= holderTest(checker);
+            reads = this.holds(type, this.lostTypes);
+            this.lostTypeReads.set(type, reads);
+        }
+        return reads;
     }
 
     /** Loses the names a rolled-back statement would have written. */
     private lose(checker: ts.TypeChecker, statement: ts.Statement): void {
         const written = rolledBackWrites(statement);
         if (!written) throw new PlanningWrite();
-        for (const name of written) {
-            const symbol = declaredSymbol(checker, name);
-            if (symbol && !this.lostDeclarations.has(symbol)) {
-                this.lostDeclarations.add(symbol);
-                this.lostGeneration++;
-            }
+        for (const name of written) this.loseName(checker, name);
+    }
+
+    private loseName(checker: ts.TypeChecker, name: ts.Identifier): void {
+        const symbol = declaredSymbol(checker, name);
+        if (symbol && !this.lostDeclarations.has(symbol)) {
+            this.lostDeclarations.add(symbol);
+            this.lostGeneration++;
         }
     }
 

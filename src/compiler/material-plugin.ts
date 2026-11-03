@@ -1,6 +1,12 @@
+import { isPbrMaterialValue } from "./values/model.js";
 import { EmissionSet, EmissionMap } from "./emission-transaction.js";
 import type { LoweringServices } from "./lowering-services.js";
-import { declaredSymbol, resolvedSymbol, namedMember } from "./symbols.js";
+import {
+    declaredSymbol,
+    resolvedSymbol,
+    namedMember,
+    sameReference,
+} from "./symbols.js";
 /** Fold source plugin declarations and retain their live textures and UBO callbacks.
  * Shader injection, binding layout and enabled-plugin ordering execute the pin's
  * composers. The fold proves that bindTextures/getActiveTextures refer to the
@@ -8,7 +14,7 @@ import { declaredSymbol, resolvedSymbol, namedMember } from "./symbols.js";
  * Standard retains its existing fragment texture contract.
  */
 import ts from "typescript";
-import { argumentAt, isSuspensionPoint } from "./syntax.js";
+import { argumentAt, isSuspensionPoint, yieldedOperands } from "./syntax.js";
 import { LoweringContext, sharedPinnedContext } from "../lowering/context.js";
 import { tryResolveFunctionDeclaration } from "./user-functions.js";
 import type {
@@ -68,13 +74,17 @@ export function emitMaterialPluginResources(
     target: Value,
     source: ts.Node,
     plugins: FoldedMaterialPlugins,
-    signatureIndex = 0,
+    /** The list's signature, or the C++ of the one a list `plugins` grows takes. */
+    signature: number | { readonly appendCpp: string } = 0,
 ): void {
     const engine = context.requireEngine(target, source);
     context.reachFeature("material:plugin-index", source);
     context.emit({
         kind: "expression",
-        code: `bbl::set_material_plugins(${engine}, ${target.cpp}, static_cast<std::uint8_t>(${signatureIndex}));`,
+        code:
+            typeof signature === "number"
+                ? `bbl::set_material_plugins(${engine}, ${target.cpp}, static_cast<std::uint8_t>(${signature}));`
+                : `bbl::set_material_plugin_signature(${engine}, ${target.cpp}, ${signature.appendCpp});`,
     });
     const samplers = materialPluginOrder(plugins.manifests).flatMap(
         (index) => plugins.manifests[index]!.samplers ?? [],
@@ -366,6 +376,108 @@ export function foldMaterialPluginList(
         uniformWriters: ordered.flatMap((plugin) =>
             plugin.uniformWriter ? [plugin.uniformWriter] : [],
         ),
+    };
+}
+
+/** One plugin a list test or append names, folded as a list element is. */
+export function foldMaterialPluginElement(
+    context: MaterialPluginContext,
+    expression: ts.Expression,
+    family: MaterialPluginFamily,
+): FoldedMaterialPlugins {
+    const plugin = foldMaterialPlugin(
+        context,
+        expression,
+        family,
+        new EmissionMap<string, string>(),
+    );
+    return {
+        manifests: [plugin.manifest],
+        textures: plugin.textures,
+        uniformWriters: plugin.uniformWriter ? [plugin.uniformWriter] : [],
+    };
+}
+
+/**
+ * The plugins `[...(material.plugins ?? []), ...plugins]` appends to the
+ * list the assigned material holds, or undefined for another list: the
+ * spread must read the target's own `plugins`.
+ */
+export function appendedMaterialPlugins(
+    context: Pick<MaterialPluginContext, "unwrap" | "checker">,
+    list: ts.Expression,
+    target: ts.Expression,
+): readonly ts.Expression[] | undefined {
+    const array = context.unwrap(list);
+    if (!ts.isArrayLiteralExpression(array)) return undefined;
+    const [first, ...rest] = array.elements;
+    if (!first || !ts.isSpreadElement(first)) return undefined;
+    // The list spread is the material's own, or nothing in its place.
+    const spread = yieldedOperands(first.expression, context.unwrap).map(
+        ({ operand }) => operand,
+    );
+    const holds = (operand: ts.Expression): boolean => {
+        const member = namedMember(context.checker, operand);
+        return (
+            member?.name === "plugins" &&
+            sameReference(context.checker, member.expression, target)
+        );
+    };
+    const empty = (operand: ts.Expression): boolean =>
+        ts.isArrayLiteralExpression(operand) && operand.elements.length === 0;
+    return spread.some(holds) &&
+        spread.every((operand) => holds(operand) || empty(operand)) &&
+        !rest.some(ts.isSpreadElement)
+        ? rest
+        : undefined;
+}
+
+/**
+ * `material.plugins?.includes(plugin)` on a PBR material: whether the list
+ * it holds has that plugin, read from the list's signature.
+ */
+export function compileMaterialPluginsIncludes(
+    context: MaterialPluginContext &
+        Pick<
+            LoweringServices,
+            | "probeEmission"
+            | "requireEngine"
+            | "expectArgumentCount"
+            | "sceneManifest"
+        >,
+    call: ts.CallExpression,
+): Value | undefined {
+    const callee = namedMember(
+        context.checker,
+        context.unwrap(call.expression),
+    );
+    if (callee?.name !== "includes") return undefined;
+    const list = namedMember(
+        context.checker,
+        context.unwrap(callee.expression),
+    );
+    if (list?.name !== "plugins") return undefined;
+    const isMaterial = context.probeEmission(
+        () => context.compileValue(list.expression).kind === "material",
+    );
+    if (!isMaterial) return undefined;
+    const material = context.compileValue(list.expression);
+    if (!isPbrMaterialValue(material))
+        return context.fail(
+            call,
+            "A plugin list test reads a PBR material's list; a Standard material's numbering is its own.",
+        );
+    context.expectArgumentCount(call, 1, 1);
+    const plugin = foldMaterialPluginElement(
+        context,
+        argumentAt(call, 0),
+        "pbr",
+    );
+    const id = context.sceneManifest.pbrPluginId(plugin.manifests[0]!);
+    return {
+        kind: "boolean",
+        cpp: `bblscene::pbr_plugin_signature_contains(bbl::material_plugin_signature(${context.requireEngine(material, call)}, ${material.cpp}), ${id}u)`,
+        impure: true,
     };
 }
 

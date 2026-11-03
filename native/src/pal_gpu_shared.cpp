@@ -55,6 +55,7 @@
 
 #include <bblite/byte_hash.hpp>
 
+#include <algorithm>
 #include <cstring>
 #include <iterator>
 #include <sstream>
@@ -982,20 +983,32 @@ struct PinnedPbrMaterialRow {
 
 // Imported materials retain generation-known loader slots. Source-created
 // materials carry their creation profile, including when loops allocate a
-// runtime number of handles. Caster views select their source's profile.
+// runtime number of handles. A `{ ...material }` copy composes as its original,
+// and a caster view references its source: it draws the row its source's state
+// selects, in its own view.
 PinnedPbrMaterialRow pinned_pbr_material_row(const Engine& engine, MaterialHandle material) {
     PinnedPbrMaterialRow row;
     if (material.value >= engine.materials.size()) {
         row.refusal = "the draw material handle is invalid";
         return row;
     }
-    const MaterialRecord& record = handle_at(engine.materials, material);
-    row.index = record.source_material.value == invalid_handle ? material.value
-                                                               : record.source_material.value;
-    if (row.index >= engine.materials.size()) {
-        row.refusal = "the source material handle is invalid";
+    const MaterialRecord& drawn = handle_at(engine.materials, material);
+    if (drawn.composed_pbr_row != invalid_handle) {
+        row.index = drawn.composed_pbr_row;
         return row;
     }
+    if (drawn.source_material.value != invalid_handle) {
+        if (drawn.source_material.value >= engine.materials.size()) {
+            row.refusal = "the source material handle is invalid";
+            return row;
+        }
+        row = pinned_pbr_material_row(engine, drawn.source_material);
+        if (row.refusal.empty())
+            drawn.composed_pbr_row = row.index;
+        return row;
+    }
+    row.index = drawn.composition_source.value == invalid_handle ? material.value
+                                                                 : drawn.composition_source.value;
     const auto profile = engine.materials[row.index].pbr_composition_profile;
     if (profile != invalid_handle) {
         if (profile >= upstream::pbr_scene_material_indices.size()) {
@@ -1004,11 +1017,34 @@ PinnedPbrMaterialRow pinned_pbr_material_row(const Engine& engine, MaterialHandl
         }
         row.index = upstream::pbr_scene_material_indices[profile];
     }
+    // A row whose materials the program can change before drawing names the row composed for
+    // each state it can reach, its own included; the drawn record's state picks one.
+    const auto& states = upstream::pbr_material_state_rows;
+    const auto of_row = [&](const upstream::PbrMaterialStateRow& state) {
+        return state.source_row == row.index;
+    };
+    if (std::any_of(states.begin(), states.end(), of_row)) {
+        const bool blends = upstream::pbr_material_blends(drawn);
+        const auto composed = std::find_if(states.begin(), states.end(), [&](const auto& state) {
+            return of_row(state) && state.blend == blends &&
+                   state.plugin_signature == drawn.plugin_signature_index &&
+                   state.base_color_factor_written == drawn.base_color_factor_written;
+        });
+        if (composed == states.end()) {
+            row.refusal =
+                "material " + std::to_string(row.index) +
+                " is drawn in a blend, plugin or base-colour state generation did not compose";
+            return row;
+        }
+        row.index = composed->row;
+    }
     if (row.index >= upstream::pbr_variant_material_count) {
         row.refusal = "material " + std::to_string(row.index) + " is past the " +
                       std::to_string(upstream::pbr_variant_material_count) +
                       " the composed table names";
+        return row;
     }
+    drawn.composed_pbr_row = row.index;
     return row;
 }
 } // namespace

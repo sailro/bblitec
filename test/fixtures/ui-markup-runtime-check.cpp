@@ -154,7 +154,7 @@ int main() {
         const auto box = ui_create_element(engine, "div");
         ui_set_attribute(engine, box, "style",
                          "position:absolute;left:250px;top:10px;width:40px;height:40px;"
-                         "border:6px transparent;padding:4px;background-color:#f01234;");
+                         "border:6px solid transparent;padding:4px;background-color:#f01234;");
         ui_append_to_root(engine, box);
         pal::UiRmlRuntime runtime(engine, window, 640, 480);
         auto* element = runtime.projected_elements.at(box.value).element;

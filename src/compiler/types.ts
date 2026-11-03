@@ -287,6 +287,17 @@ export interface CompileManifest {
      * resolves its variant by material index, so no index travels.
      */
     standardMaterialPlugins: MaterialPluginManifest[][];
+    /**
+     * Composition-relevant PBR writes, per material set they reach. The pin
+     * composes a material's variant from its props at its first draw, so a
+     * write before then moves it to another composed row; composition
+     * composes one per state these writes can reach (`pbr_material_state_rows`).
+     */
+    pbrMaterialStates?: PbrMaterialStateWrites[];
+    /** The PBR plugin lists records hold, by signature from one, closed under appends. */
+    pbrPluginSignatures?: MaterialPluginManifest[][];
+    /** Each list's growth by each plugin an append names that it does not hold. */
+    pbrPluginAppends?: PbrPluginAppend[];
     /** Actual Standard material states observed for each plugin signature. */
     standardMaterialPluginInputs: PinnedStandardMaterialInput[][];
     /** A Standard assignment targets a mesh without a scene composition profile. */
@@ -708,6 +719,38 @@ export interface ScenePbrMetallicReflectanceManifest {
     hasMetallicTexture: boolean;
     hasReflectanceTexture: boolean;
     useOnlyMetallicFromTexture?: boolean;
+}
+
+/**
+ * The materials a composition-relevant write reaches: one scene-code PBR
+ * material, one loaded document's, or -- when the write's material came
+ * from a mesh no walk ties to a document -- every loaded document's.
+ */
+export type PbrStateTarget =
+    | { readonly kind: "scene"; readonly index: number }
+    | { readonly kind: "asset"; readonly output: string }
+    | { readonly kind: "assets" };
+
+/** The composition-relevant values writes give the materials of one target. */
+/** `plugins = [...plugins, plugin]` on a list of signature `signature` gives signature `grown`. */
+export interface PbrPluginAppend {
+    readonly signature: number;
+    readonly plugin: number;
+    readonly grown: number;
+}
+
+export interface PbrMaterialStateWrites {
+    readonly target: PbrStateTarget;
+    /** `alphaBlend` values written. */
+    readonly alphaBlend: readonly boolean[];
+    /** Which side of 1 the `alpha` values written fall on (`alpha < 1` composes blending). */
+    readonly alphaBelowOne: readonly boolean[];
+    /** Whether a `baseColorFactor` is written (its presence composes). */
+    readonly baseColorFactor: boolean;
+    /** The plugin lists written, by PBR plugin signature (from one). */
+    readonly pluginSignatures: readonly number[];
+    /** The plugins appended to the list a material holds, by PBR plugin id. */
+    readonly pluginAppends: readonly number[];
 }
 
 export interface ScenePbrMaterialManifest {
@@ -2431,13 +2474,6 @@ export interface ValueFields {
     uiCanvas?: true;
     /** The native presentation host's primary browser canvas. */
     uiPrimaryCanvas?: true;
-    /**
-     * Generation identity of one created canvas element, carried unchanged
-     * into its 2D-context views and const bindings (whose `cpp` spellings
-     * differ): the key that ties statically-assigned backing sizes to the
-     * one canvas a `clearRect` must cover.
-     */
-    uiCanvasId?: number;
     /** The 2D drawing-context view of the canvas handle in `cpp`. */
     uiCanvasContext?: true;
     /** A retained input whose source assigned the static type "file". */
@@ -3551,6 +3587,8 @@ export type Feature =
     | "storage:local"
     /** Web Storage: the session key/value store behind `sessionStorage`, in process memory. */
     | "storage:session"
+    /** IndexedDB: object stores in the PAL's per-user SQLite files. */
+    | "storage:indexeddb"
     | "platform:workers"
     | "platform:window";
 

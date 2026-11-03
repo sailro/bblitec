@@ -32,12 +32,11 @@ before implementing: a source refusal does not mean RmlUi lacks the feature.
 - RAF runs on the owner repaint clock; no engine needed.
 - matchMedia: `resolution` alone, or an `and` of the device features a sheet's `@media` admits (reduced-motion, hover,
   pointer), with change listeners. Other queries and payloads refuse.
-- MutationObserver: attribute notifications, static filters, disconnect. Records, child lists, subtree refuse.
+- MutationObserver: attribute notifications (classList writes included), static filters, subtree, disconnect. Records
+  and child lists refuse.
   ResizeObserver entries are unavailable.
 - Location: deployment query reads fold to constants. Reload, `location.search` writes and same-document
   `assign`/`href` recreate realms, keeping durable storage; another document throws NotSupportedError.
-- Web Storage: getItem/setItem/removeItem. `localStorage` lives in the host preference directory; `sessionStorage` in
-  process memory (kept across realm recreation, never on disk, no quota) and is absent in worker realms.
 - Clipboard: text writes only. `visibilitychange` follows window hide/show.
 - `beforeunload` then `pagehide` (persisted=false, no prompt) run before realm cleanup; worker realms refuse them.
 - Error/unhandledrejection listeners are supported; `rejectionhandled` is not.
@@ -88,6 +87,7 @@ before implementing: a source refusal does not mean RmlUi lacks the feature.
   after it connects, never `load`); inline text refuses, or throws NotSupportedError when a connected script gets it.
 - `inputmode`, input `type` and inherited `spellcheck` choose the platform keyboard and autocorrection; labels activate
   their `for` or nested control.
+- Key events read `isComposing` inside an input method composition (SDL text editing until a commit or focus loss).
 - Pointer capture (element, engine canvas or stored element) retargets the pointer's events, compatibility mouse
   events and hover until release, pointerup or pointercancel; touch presses capture implicitly. SDL holds a captured
   mouse beyond the window.
@@ -122,13 +122,19 @@ before implementing: a source refusal does not mean RmlUi lacks the feature.
   role/aria-*/data-*; runtime text is escaped. Scripts, event attributes and runtime tag or attribute names refuse.
 - A runtime string with a closed string domain (`src/compiler/string-domain.ts`: constants, `for...of` elements,
   records read by a run-time key, call-site arguments, aliases) is markup: generation lowers each text it can hold and
-  the string selects one.
+  the string selects one. Past 256 texts it refuses, unless runtime text beside them makes it runtime text.
+- A stored string of fixed fragments (closed choices among them included) around one runtime text reads as the shape
+  whose fragments it holds, the most specific first.
 - Static innerHTML with input/select/option/textarea builds retained elements, so its controls own state as created
   ones do: div/span/p/h1/h2/b/strong/label/button and reviewed control attributes. Comments, other tags, textarea
   content and dynamic markup with controls refuse; whitespace between options is not kept.
 - ARIA has no native accessibility bridge.
-- `createElementNS`: SVG svg/path/rect/circle/line/ellipse/polyline/polygon, rasterized at CSS size by RmlUi's SVG
-  plugin. Shape styles, listeners, nested SVG and paint servers refuse.
+- `createElementNS`: SVG svg/path/rect/circle/line/ellipse/polyline/polygon and text (its text or one textPath),
+  rasterized at CSS size by RmlUi's SVG plugin. Presentation properties (fill, stroke and its width, caps, joins,
+  opacities, paint order) cascade from stylesheets over attributes; currentColor is the root's color. A textPath's
+  glyphs are placed along its path in the face the UI font resolves. Pointer listeners hit painted geometry (fill,
+  stroke band, glyph cells; `pointer-events` auto/none, a listener opting in as on HTML elements) and
+  getBoundingClientRect reads its bounds. Listeners without DOM input, nested SVG, tspan and paint servers refuse.
 
 ## Canvas2D
 
@@ -141,13 +147,13 @@ source-rect blits, general transforms/clipping and non-convex tessellation refus
 
 | Area | Admitted | Refuses |
 | --- | --- | --- |
-| Box | fixed/inset, px/rem/viewport calc/min/max/clamp (also over `var()`, with times and angles), `env()` safe-area insets (the window's under `viewport-fit=cover`, else 0), box sizing, physical and horizontal-LTR logical edges, float/clear, `aspect-ratio` | Vertical/RTL logical mapping, element-font-relative math, other units in math over `var()`, other `env()` variables without a fallback; `aspect-ratio` on replaced elements, grid items and flex items with both sizes auto in a stretched definite row |
-| Flex | Wrap, direction, grow/shrink/basis, alignment, gaps | Intrinsic basis keywords |
+| Box | fixed/inset, px/rem/viewport calc/min/max/clamp (also over `var()`, with times and angles), percentages in that math for sizes, margins, padding, insets, flex basis and gaps (one min/max/clamp level over them), `env()` safe-area insets (the window's under `viewport-fit=cover`, else 0), box sizing, physical and horizontal-LTR logical edges, float/clear, `aspect-ratio`, `zoom` numbers/percentages (also over `var()`; offset, client and scroll reads unzoomed) | Vertical/RTL logical mapping, element-font-relative math, other units in math, percentages in math elsewhere or nested past one min/max/clamp level, other `env()` variables without a fallback; `aspect-ratio` on replaced elements, grid items and flex items with both sizes auto in a stretched definite row; `zoom` math and keywords |
+| Flex | Wrap, direction, grow/shrink/basis, alignment, gaps, `order` (layout and paint order) | Intrinsic basis keywords, `order` on grid items |
 | Grid | Line placement, spans, named areas (`grid-template-areas`, `grid-area`), auto/fr/minmax with px/em/rem/vw/vh lengths, repeat/auto-fit/auto-fill (≤256 tracks/axis) | Named lines, subgrid, percentage tracks |
 | Containers/media | inline-size containment, unnamed max-width queries; `and` of max-width, orientation, reduced-motion, hover and pointer media (hover/pointer: the device's primary pointer, read at run time; `prefers-reduced-motion` and `hover` also bare) | Named/height/style queries; `any-hover`/`any-pointer`, `or`/`not`/lists |
 | Text | Wrapping, italic, casing, ellipsis, vertical-align keywords, decoration lines | Oblique, decoration colors/styles, vertical-align lengths |
-| Borders/backgrounds | Solid borders, radii, gradients, one packaged image, raster border-image slices | Elliptical radius syntax, multiple image layers, sized repetition |
-| Shadows/filters | Box shadows, filters, drop-shadow chains, backdrop blur; `opacity` below 1 composites the element and its descendants as a group | Non-pixel shadow lengths, other backdrop functions (may degrade) |
+| Borders/backgrounds | Solid and dashed borders and outlines (Chromium's dashes; `none`/`hidden` sides have no width), radii, gradients (`background`, `background-image` and run-time `style.background`), one packaged image, raster border-image slices | Dotted, double, groove, ridge, inset and outset lines; elliptical radius syntax, multiple raster layers, sized repetition, a gradient repeated under its border (`border-box` clip), `background-clip` beside sized gradients or as `content-box` beside any |
+| Shadows/filters | Box shadows (px and viewport lengths, `vmin`/`vmax` included), filters, drop-shadow chains, backdrop blur; `opacity` below 1 composites the element and its descendants as a group | Other shadow length units, other backdrop functions (may degrade) |
 | Transforms/clipping | Uniform nonnegative scale; `clip-path` inset()/polygon() over px/%/calc() (aliased edges) | Nonuniform scale, nonempty clip rectangles, other basic shapes, `round`, reference boxes |
 | Motion | `transition`/`animation` shorthands (s/ms; easing keywords, `cubic-bezier()`, `steps()`; animation directions and fill modes), `transition-delay`/`animation-delay` lists (negative delays start part-way), nonnegative `transition-duration` and positive `animation-duration` lists; inline style, cssText and removal writes transition like rule changes | `linear()` easing, `paused`, fractional or zero iteration counts, zero-duration animations, other transition/animation longhands |
 | Selectors | Tags/IDs/classes, attribute presence/equality, combinators, state pseudo-classes, An+B, `not/is/where/has`, `::before/::after` | Nested `:has`, wider attribute operators, counters |
@@ -182,12 +188,15 @@ the write; host-page sheets still need admission.
 ## Limits
 
 - General mask-image and unsupported blend modes refuse.
-- will-change, touch-action, user-select and image-rendering are hints; only `-webkit-user-drag: none` is admitted.
+- will-change, touch-action, user-select and image-rendering are hints; only `-webkit-user-drag: none` and
+  `-webkit-touch-callout: none` are admitted.
 - `element.animate` is a no-op.
 - Retained UI is unavailable under standalone effect/frame-graph drivers.
 - Only backdrop-filter, filter, mask and opacity elements are backdrop roots (none for clip-path, mix-blend-mode).
 - Backdrop blur samples beyond the border box where Chromium mirrors.
 - The page UI renders at 4x MSAA whatever the engine's `msaaSamples`; Chromium antialiases analytically.
+- A rounded dashed border thicker than its radii dashes along its centerline where Chromium strokes those sides
+  straight; with unequal side widths its dash ends at the corners follow the radii, not the centerline's normal.
 - Only box-shadow writes are checked against the CSS grammar; other invalid values refuse or are stored as written.
 - A scene canvas hides page paint beneath it even when it clears translucent.
 - Text/sprite renderers present an authored engine canvas only while it fills the page viewport.

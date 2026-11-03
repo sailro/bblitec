@@ -96,9 +96,9 @@ test("Object.assign styles reuse property adaptation and capability admission", 
         "flex",
         "filter",
         "pointer-events",
-        "--bbl-background-color",
     ])
         assert.ok(result.cpp.includes(`"${property}"`), property);
+    assert.match(result.cpp, /ui_set_background\([^;]*"#dcc18b"\)/);
     const source = `const panel=document.createElement('div');Object.assign(panel.style,{emptyCells:'hide'});globalThis.close();`;
     assert.throws(() => compileSource(source), /Retained UI style/);
     assert.deepEqual(

@@ -57,6 +57,16 @@ int run() {
                                          "] cancel=[" + contents(*cancel) + "]");
         }
         assert(contents(*runtime.document->GetElementById("ordered")) == "ACE");
+        auto* tones = runtime.document->GetElementById("tones");
+        assert(tones && tones->GetNumChildren() == 1 && tones->GetChild(0)->GetNumChildren() == 2);
+        auto* firm = tones->GetChild(0)->GetChild(0);
+        auto* calm = tones->GetChild(0)->GetChild(1);
+        if (!firm->IsClassSet("tone") || firm->IsClassSet("neutral") || contents(*firm) != "4" ||
+            !calm->IsClassSet("tone") || !calm->IsClassSet("neutral") || contents(*calm) != "calm")
+            throw std::runtime_error("tones firm=[" + firm->GetAttribute<std::string>("class", "") +
+                                     "|" + contents(*firm) + "] calm=[" +
+                                     calm->GetAttribute<std::string>("class", "") + "|" +
+                                     contents(*calm) + "]");
         assert(contents(*runtime.document->GetElementById("later-span")) ==
                "changed after captureafter span");
         assert(contents(*runtime.document->GetElementById("later-condition")) ==

@@ -237,12 +237,36 @@ export function absentValueKind(
  * - an unchecked lookup (`Value.preserveUncheckedLookup`) misses as
  *   `undefined`, unless its values may be `null` too ("either");
  * - a type that admits only `undefined` is `undefined`, only `null` is
- *   `null`, both is "either";
+ *   `null`, both is "either"; an optional chain that can short-circuit (a `?.`
+ *   receiver that may be nullish) admits `undefined`;
  * - a type that names neither leaves the representation to say: a
  *   presence flag marks a slot that is not there (`undefined`); otherwise
  *   "unconstrained" -- a comparison keeps its absence test, text spells
  *   what the optional holds, `typeof` answers "undefined".
  */
+/** Whether a `?.` link of an optional chain has a receiver that may be nullish. */
+function shortCircuits(
+    checker: ts.TypeChecker,
+    chain: ts.OptionalChain,
+): boolean {
+    for (
+        let link: ts.Expression = chain;
+        ts.isOptionalChain(link);
+        link = link.expression
+    ) {
+        if (ts.isNonNullChain(link) || !link.questionDotToken) continue;
+        const receiver = checker.getTypeAtLocation(link.expression);
+        const { null: isNull, undefined: isUndefined } = nullability(receiver);
+        if (
+            isNull ||
+            isUndefined ||
+            (receiver.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) !== 0
+        )
+            return true;
+    }
+    return false;
+}
+
 export function absenceKind(
     checker: ts.TypeChecker,
     value: Value,
@@ -250,6 +274,11 @@ export function absenceKind(
 ): Absence {
     if (value.slotFoundCpp) return { slotFoundCpp: value.slotFoundCpp };
     let absent = nullability(checker.getTypeAtLocation(node));
+    // An optional chain that can short-circuit is undefined, whatever its
+    // type names; one whose `?.` receivers are all present cannot.
+    const unwrapped = ts.isExpression(node) ? unwrapExpression(node) : node;
+    if (ts.isOptionalChain(unwrapped) && shortCircuits(checker, unwrapped))
+        absent = { ...absent, undefined: true };
     if (
         !absent.null &&
         !absent.undefined &&

@@ -80,6 +80,27 @@ test("refuses a module constant whose run would not describe the program's", () 
     }
 });
 
+// An enum-typed builder argument reaches the enum's own object, which the
+// run creates as its module does (a const enum's included); the record read
+// beside it keeps the template from folding without the run.
+const enumBuilder = (modifier: string) => `
+    ${modifier}enum Lane { Base = "base", Tip = "tip" }
+    const SCALES: Record<Lane, number> = { [Lane.Base]: 39, [Lane.Tip]: 7 };
+    function laneWgsl(lane: Lane = Lane.Base): string {
+        return \`fn laneBase() -> f32 { return \${SCALES[lane]}.0; } // \${lane}\`;
+    }
+    const FILL: Readonly<Record<"good" | "watch", string>> = { good: "g", watch: "w" };
+    const BLOCK = \`\${laneWgsl()} \${FILL.watch}\`;
+`;
+
+test("runs a module constant that reaches a module-scope enum", () => {
+    for (const modifier of ["", "const "])
+        assert.match(
+            fragment(enumBuilder(modifier)),
+            /fn laneBase\(\) -> f32 \{ return 39\.0; \} \/\/ base w/,
+        );
+});
+
 // A module without run-time state folds its constants from their
 // initializers, and a computed one is no array literal.
 function deckModule(after: string): string {

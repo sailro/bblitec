@@ -35,7 +35,7 @@ int main() {
         const auto log = ui_get_element_by_id(engine, "log");
         const auto button = ui_get_element_by_id(engine, "button");
         // Connection, containment, attribute and class reads and blur ran at evaluation.
-        assert(ui_element(engine, log).text == "12345b67");
+        assert(ui_element(engine, log).text == "12345b678");
         assert(ui_active_element(engine).value == invalid_handle);
         pal::UiRmlRuntime runtime(engine, window, 640, 480);
         static_cast<void>(ui_get_client_rect(engine, button));
@@ -75,22 +75,22 @@ int main() {
         // The handler keeps its first listener position when replaced, a null
         // handler removes it, and a later handler joins after B.
         click(40, 20);
-        assert(ui_element(engine, log).text == "12345b67MPAHB");
+        assert(ui_element(engine, log).text == "12345b678MPAHB");
         click(40, 20);
-        assert(ui_element(engine, log).text == "12345b67MPAHBAIB");
+        assert(ui_element(engine, log).text == "12345b678MPAHBAIB");
         click(40, 20);
-        assert(ui_element(engine, log).text == "12345b67MPAHBAIBAB");
+        assert(ui_element(engine, log).text == "12345b678MPAHBAIBAB");
         click(40, 20);
-        assert(ui_element(engine, log).text == "12345b67MPAHBAIBABABJ");
+        assert(ui_element(engine, log).text == "12345b678MPAHBAIBABABJ");
         // Only the replacing change handler runs.
         click(215, 15);
-        assert(ui_element(engine, log).text == "12345b67MPAHBAIBABABJD");
+        assert(ui_element(engine, log).text == "12345b678MPAHBAIBABABJD");
         // A click handler returning false cancels the checkbox activation;
         // the press still moves focus off the first checkbox.
         const auto guard = ui_get_element_by_id(engine, "guard");
         click(315, 15);
         assert(!ui_get_checked(engine, guard));
-        assert(ui_element(engine, log).text == "12345b67MPAHBAIBABABJDbg");
+        assert(ui_element(engine, log).text == "12345b678MPAHBAIBABABJDbg");
         const auto body = ui_element(engine, button).parent;
         assert(ui_contains(engine, body, button) && !ui_contains(engine, button, body));
         assert(ui_is_connected(engine, body) && ui_contains(engine, button, button));

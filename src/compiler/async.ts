@@ -13,10 +13,9 @@ import {
 } from "./values/model.js";
 import { schedulerOf } from "./schedulers.js";
 import {
-    hasUndefinedCompletion,
     hasNonThenableCompletion,
+    hasProvenUndefinedCompletion,
     hasUndefinedCallbackCompletion,
-    provenUndefinedValue,
     undefinedFromVoid,
 } from "./undefined-values.js";
 import {
@@ -87,6 +86,7 @@ import {
     unionMembers,
 } from "./type-facts.js";
 import { cppIdentifierPattern } from "../cpp-literals.js";
+import { callTypeArguments, mentionsTypeParameter } from "./type-arguments.js";
 import {
     compiledUnlessUnobserved,
     propertyNeverObserved,
@@ -717,7 +717,29 @@ export class AsyncLowerer {
         return this.resultAt(value, temporary, binding);
     }
 
+    /** A generic callee's body runs with the type arguments its call binds, as a synchronous call's does. */
     private activate(
+        callback: ts.Identifier | SupportedFunction,
+        declaration: SupportedFunction,
+        values: readonly Value[],
+        node: ts.Node,
+    ): Value {
+        const context = this.context;
+        const substitution =
+            ts.isCallExpression(node) || ts.isNewExpression(node)
+                ? callTypeArguments(
+                      context.checker,
+                      node,
+                      declaration,
+                      (at, message) => context.fail(at, message),
+                  )
+                : undefined;
+        return context.dataTypes.withTypeArguments(substitution, () =>
+            this.activateBody(callback, declaration, values, node),
+        );
+    }
+
+    private activateBody(
         callback: ts.Identifier | SupportedFunction,
         declaration: SupportedFunction,
         values: readonly Value[],
@@ -946,7 +968,17 @@ export class AsyncLowerer {
         node: ts.NewExpression,
     ): DataType | undefined {
         const checker = this.context.checker;
-        const awaited = checker.getAwaitedType(checker.getTypeAtLocation(node));
+        const promise = checker.getTypeAtLocation(node);
+        // A generic function's `Promise<T>` resolves to its own argument: the
+        // awaited type would wrap T in `Awaited<T>`, which no call's type
+        // arguments substitute.
+        const [argument] = isTypeReference(promise)
+            ? checker.getTypeArguments(promise)
+            : [];
+        const awaited =
+            argument && mentionsTypeParameter(checker, argument)
+                ? argument
+                : checker.getAwaitedType(promise);
         if (!awaited) return undefined;
         if (undefinedOnly(awaited)) return { kind: "promise" };
         const result = this.context.dataTypes.fromTsType(awaited, node);
@@ -1016,6 +1048,8 @@ export class AsyncLowerer {
             nativeCaptures: [binding],
             truthinessCpp: "true",
             callbackEvaluationIdentity: {},
+            // A listener registration compares resolving functions by identity.
+            runtimeCallbackIdentityCpp: `${name}.resolving_function_identity(${nativePromiseSettlement === "reject"})`,
         });
         // The executor runs synchronously; only resolving functions and the
         // callbacks it registers escape. Its writes address the calling scope.
@@ -1608,11 +1642,7 @@ export class AsyncLowerer {
                 ? tryResolveFunctionDeclaration(context.checker, inline)
                 : inline);
         const undefinedCompletion =
-            hasUndefinedCompletion(context.checker, declaration) ||
-            (declaration &&
-                ts.isArrowFunction(declaration) &&
-                !ts.isBlock(declaration.body) &&
-                provenUndefinedValue(context, declaration.body)) ||
+            hasProvenUndefinedCompletion(context, declaration) ||
             hasUndefinedCallbackCompletion(
                 context.checker,
                 evaluated ??

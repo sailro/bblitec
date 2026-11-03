@@ -113,10 +113,10 @@ test("record receiver retention leaves browser instrumentation dispatch unchange
 });
 
 test("retained host canvas keeps unobserved asset instrumentation outside native UI lowering", () => {
-    const source = `
+    const program = (size: string): string => `
         import { createEngine } from "@babylonjs/lite";
         function installProgress(canvas: HTMLElement) {
-            const size = Math.max(0, (globalThis as { engineSize?: number }).engineSize ?? 0);
+            const size = Math.max(0, ${size});
             const original = globalThis.fetch.bind(globalThis);
             if (size > 0) canvas.dataset.loadingSize = String(size);
             return { done(): void { globalThis.fetch = original; } };
@@ -130,33 +130,45 @@ test("retained host canvas keeps unobserved asset instrumentation outside native
         void main();
     `;
     const canvas = { tag: "canvas", attributes: { id: "renderCanvas" } };
-    const result = compileSource(
-        source,
-        hostUiOptions({ elements: [canvas] }, hostPage),
+    const compile = (source: string, observed: boolean) =>
+        compileSource(
+            source,
+            hostUiOptions(
+                {
+                    elements: [
+                        observed
+                            ? {
+                                  ...canvas,
+                                  attributes: {
+                                      ...canvas.attributes,
+                                      "data-loading-size": "pending",
+                                  },
+                              }
+                            : canvas,
+                    ],
+                },
+                hostPage,
+            ),
+        );
+    // A size a host page installs: no native host does, so it reads absent.
+    const installed = program(
+        "(globalThis as { engineSize?: number }).engineSize ?? 0",
     );
+    const result = compile(installed, false);
     assert.match(result.cpp, /ui_create_element\([^\n]+"canvas"/);
     assert.doesNotMatch(result.cpp, /engineSize|loadingSize|original/);
+    // Observed metadata the program never writes natively leaves the helper
+    // nothing to keep: it is erased with its fetch patch.
+    assert.doesNotMatch(
+        compile(installed, true).cpp,
+        /engineSize|loadingSize|original/,
+    );
+    // A size known only at run time keeps the observed write, so the helper
+    // stays, and the program refuses what it cannot run natively.
     assert.throws(
-        () =>
-            compileSource(
-                source,
-                hostUiOptions(
-                    {
-                        elements: [
-                            {
-                                ...canvas,
-                                attributes: {
-                                    ...canvas.attributes,
-                                    "data-loading-size": "pending",
-                                },
-                            },
-                        ],
-                    },
-                    hostPage,
-                ),
-            ),
-        /Browser-dependent condition cannot be determined/,
-        "Observed metadata must retain its helper and refuse an unanswered browser value",
+        () => compile(program("Date.now() % 7"), true),
+        /The realm engine requires a native canvas context/,
+        "Observed metadata must retain its helper and refuse what it cannot run",
     );
 });
 

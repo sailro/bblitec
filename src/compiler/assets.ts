@@ -33,6 +33,7 @@ import {
     type StaticJsonContext,
 } from "./option-helpers.js";
 import type { CompileAsset, Feature } from "./types.js";
+import { urlFilePath } from "../asset-source.js";
 
 export interface AssetRegistryContext extends Pick<
     LoweringServices,
@@ -222,8 +223,9 @@ export function registerUiImageAsset(
     source: string,
     logicalPath: string,
 ): CompileAsset {
-    // The native document sits at the asset root, which `./` also names.
-    const output = logicalPath
+    // A static host serves the path, whatever the URL's query or fragment; the
+    // native document sits at the asset root, which `./` also names.
+    const output = urlFilePath(logicalPath)
         .replace(/\\/g, "/")
         .replace(/^\/+/, "")
         .split("/")
@@ -238,7 +240,7 @@ export function registerUiImageAsset(
         );
     }
     source = resolveBundledAsset(
-        documentAssetSource(context, source),
+        documentAssetSource(context, urlFilePath(source)),
         context.options.fileName,
         context.options,
     );
@@ -550,7 +552,7 @@ export function resolveBundledAsset(
     ) {
         const local = pinnedLabPublicAsset(
             findRepositoryRoot(dirname(resolve(entryFileName))),
-            source.split(/[?#]/, 1)[0]!,
+            urlFilePath(source),
         );
         if (local) return local;
     }

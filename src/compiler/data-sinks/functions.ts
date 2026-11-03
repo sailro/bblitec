@@ -210,7 +210,8 @@ function completionProofWidens(
             !from.nonThenableCompletion &&
             !from.undefinedCompletion &&
             !isNonThenableDataType(from.result)) ||
-        (to.awaitedUndefinedCompletion && !from.awaitedUndefinedCompletion)
+        (to.awaitedUndefinedCompletion && !from.awaitedUndefinedCompletion) ||
+        (to.freshCompletion && !from.freshCompletion)
     )
         return false;
     return dataTypesEqual(
@@ -220,6 +221,7 @@ function completionProofWidens(
             undefinedCompletion: true,
             awaitedUndefinedCompletion: true,
             nonThenableCompletion: true,
+            freshCompletion: true,
         },
         {
             ...to,
@@ -227,6 +229,7 @@ function completionProofWidens(
             undefinedCompletion: true,
             awaitedUndefinedCompletion: true,
             nonThenableCompletion: true,
+            freshCompletion: true,
         },
     );
 }
@@ -439,11 +442,13 @@ function valueFunction(
     const stored = storedSignature(lowerer, value);
     if (stored) {
         lowerer.connectFunctionStorage(stored, dataType, node);
-        if (dataType.undefinedCompletion && !stored.undefinedCompletion)
+        if (dataType.undefinedCompletion && !stored.undefinedCompletion) {
+            lowerer.context.dataTypes.withdrawCompletion(dataType);
             lowerer.context.fail(
                 node,
                 "A stored callback requires a proven undefined completion.",
             );
+        }
         if (
             dataType.awaitedUndefinedCompletion &&
             !stored.awaitedUndefinedCompletion
@@ -457,11 +462,20 @@ function valueFunction(
             !stored.nonThenableCompletion &&
             !stored.undefinedCompletion &&
             !isNonThenableDataType(stored.result)
-        )
+        ) {
+            lowerer.context.dataTypes.withdrawCompletion(dataType);
             lowerer.context.fail(
                 node,
                 "A stored callback requires a proven nonthenable completion.",
             );
+        }
+        if (dataType.freshCompletion && !stored.freshCompletion) {
+            lowerer.context.dataTypes.withdrawFreshCompletion(dataType);
+            lowerer.context.fail(
+                node,
+                "A stored callback requires a proven fresh result.",
+            );
+        }
         if (
             dataTypesEqual(
                 { ...stored, identity: true },

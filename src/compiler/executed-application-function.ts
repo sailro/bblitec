@@ -17,7 +17,8 @@
  * fresh ECMAScript realm holding the language's own globals and nothing of
  * the host, so a function reaching a browser or engine API throws, and so
  * does any other reach this closure does not carry: every refusal names the
- * node that made it.
+ * node that made it. The deployment constants generation folds (the page
+ * URL's parts, `import.meta.env`) run as their literals.
  *
  * The result must be plain data, compared through a JSON round trip, for
  * the reason the in-process module passes give: anything else is a value two
@@ -76,6 +77,13 @@ interface ExecutedFunctionContext {
      * module constant run at generation); unchecked when absent.
      */
     writtenThrough?(name: ts.Identifier): boolean;
+    /**
+     * The deployment constant an expression folds to (`location.origin`,
+     * `import.meta.env.BASE_URL`), which the run reads as that literal.
+     */
+    deploymentValue?(
+        expression: ts.Expression,
+    ): string | boolean | null | undefined;
 }
 
 /** The pinned imports an executed closure may reach, by imported name. */
@@ -249,6 +257,11 @@ class ExecutedClosure {
     >();
     /** @unjournaled Scratch of one execution's analysis, discarded with it. */
     private readonly queue: Array<{ root: ts.Node; file: ts.SourceFile }> = [];
+    /**
+     * @unjournaled Scratch of one execution's analysis, discarded with it:
+     * the deployment constants it reads, which run as their literals.
+     */
+    private readonly deployed = new Map<ts.Node, string | boolean | null>();
 
     public constructor(
         private readonly context: ExecutedFunctionContext,
@@ -382,13 +395,13 @@ return __bblScope(${this.parts.get(targetFile)!.index})[${root}];
     private include(statement: ts.Statement): void {
         const part = this.part(statement.getSourceFile());
         if (part.statements.has(statement)) return;
-        if (
-            ts.isClassDeclaration(statement) ||
-            ts.isEnumDeclaration(statement)
-        ) {
+        // An enum is an object of read-only members its statement creates
+        // (a const enum's too, as the closure's transpile preserves it), so
+        // the closure runs that statement as the module does.
+        if (ts.isClassDeclaration(statement)) {
             this.context.fail(
                 statement,
-                `${this.label} reaches a module-scope ${ts.isClassDeclaration(statement) ? "class" : "enum"}, which a generation closure does not carry.`,
+                `${this.label} reaches a module-scope class, which a generation closure does not carry.`,
             );
         }
         if (
@@ -437,6 +450,13 @@ return __bblScope(${this.parts.get(targetFile)!.index})[${root}];
         forEachAnalysisNode(
             root,
             (node) => {
+                const deployed = ts.isExpression(node)
+                    ? this.context.deploymentValue?.(node)
+                    : undefined;
+                if (deployed !== undefined) {
+                    this.deployed.set(node, deployed);
+                    return "skip";
+                }
                 if (
                     node.kind === ts.SyntaxKind.ThisKeyword ||
                     node.kind === ts.SyntaxKind.SuperKeyword
@@ -689,17 +709,42 @@ return __bblScope(${this.parts.get(targetFile)!.index})[${root}];
                     modifier.kind === ts.SyntaxKind.DefaultKeyword,
             )
             .at(-1);
-        return file.text.slice(
+        return this.sourceText(
+            file,
             exported ? exported.end : statement.getStart(file),
             statement.end,
         );
+    }
+
+    /** A range of `file` as it runs: each deployment constant as its literal. */
+    private sourceText(
+        file: ts.SourceFile,
+        start: number,
+        end: number,
+    ): string {
+        const folds = [...this.deployed]
+            .filter(
+                ([node]) =>
+                    node.getSourceFile() === file &&
+                    node.getStart(file) >= start &&
+                    node.end <= end,
+            )
+            .sort(([left], [right]) => left.pos - right.pos);
+        let text = "";
+        let at = start;
+        for (const [node, value] of folds) {
+            const from = node.getStart(file);
+            text += `${file.text.slice(at, from)}(${JSON.stringify(value)})`;
+            at = node.end;
+        }
+        return text + file.text.slice(at, end);
     }
 
     /** The target as an expression of its own file's scope. */
     private targetExpression(): string {
         const target = this.target;
         const file = target.getSourceFile();
-        const text = file.text.slice(target.getStart(file), target.end);
+        const text = this.sourceText(file, target.getStart(file), target.end);
         if (
             ts.isArrowFunction(target) ||
             ts.isFunctionExpression(target) ||

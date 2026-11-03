@@ -2,6 +2,7 @@
 
 #include <bblite/runtime.hpp>
 #include <algorithm>
+#include <optional>
 
 namespace bbl::pal {
 
@@ -11,6 +12,7 @@ namespace bbl::pal {
 template <class Tree> class UiSelectorMatcher {
     using Node = typename Tree::Node;
     const Tree& tree;
+    std::optional<Node> scope;
 
     bool position(Node element, const UiSelectorTest& test) const {
         const auto parent = tree.parent(element);
@@ -47,7 +49,8 @@ template <class Tree> class UiSelectorMatcher {
     }
 
 public:
-    explicit UiSelectorMatcher(const Tree& source) : tree(source) {}
+    explicit UiSelectorMatcher(const Tree& source, std::optional<Node> scoping = std::nullopt)
+        : tree(source), scope(scoping) {}
 
     bool matches(Node element, const UiSelectorTest& test) const {
         switch (test.kind) {
@@ -66,6 +69,8 @@ public:
             return tree.empty(element);
         case UiSelectorTestKind::Root:
             return tree.root(element);
+        case UiSelectorTestKind::Scope:
+            return scope ? element == *scope : tree.root(element);
         case UiSelectorTestKind::NthChild:
         case UiSelectorTestKind::NthLastChild:
         case UiSelectorTestKind::NthOfType:

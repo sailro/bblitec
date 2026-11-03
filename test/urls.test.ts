@@ -87,6 +87,16 @@ test("runtime URL parses, resolves and serializes as the URL Standard does", () 
         `check(live.searchParams.get("b") ?? "", "2", "searchParams follow search");`,
         `if (live.searchParams.get("quality") !== null) throw new Error("stale query list");`,
     );
+    for (const [name, value] of [["b", "3"], ["a", "1"], ["b"]] as const) {
+        const call = `live.searchParams.delete(${[name, value]
+            .filter((argument) => argument !== undefined)
+            .map((argument) => JSON.stringify(argument))
+            .join(", ")});`;
+        if (value === undefined) live.searchParams.delete(name);
+        else live.searchParams.delete(name, value);
+        steps.push(call);
+        record(call);
+    }
     live.hash = "frag ment";
     steps.push(`live.hash = "frag ment";`);
     record("hash set");

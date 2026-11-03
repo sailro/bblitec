@@ -50,14 +50,40 @@ test("retained border images package through the shared asset and codec registry
             `border-image:url(\\"${inline.manifest.assets[0]!.output}\\") 2 25% 2 25% / 3px 2 auto 2 / 0 0 0 0 stretch`,
         ),
     );
-    assert.match(inline.cpp, /border-image:none;border:3px red/);
+    assert.match(inline.cpp, /border-image:none;border:3px solid red/);
+    // The shorthand write resets its omitted longhands, then sets its own.
     assert.match(
         inline.cpp,
-        /"border", "0"\);\s*bbl::ui_set_style_property\([^\n]+"border-image", "none"/,
+        /"border-image", "none"\);\s*bbl::ui_set_style_property\([^\n]+"border", "0 none"/,
     );
     const direct = compileStyle(style, true);
     assert.deepEqual(direct.manifest.assets, inline.manifest.assets);
     assert.match(direct.cpp, /ui_set_style_property[^\n]+"border-image", "url/);
+});
+
+test("border image longhands lower to the native longhands and package their sources", () => {
+    const result = compileStyle(
+        "border: 6px solid red; border-image: url('/frames/panel.png') 6 / 6px; border-image-source: url('/frames/panel.png'); border-image-width: 4px 2; border-image-slice: 25%; border-image-outset: 0; border-image-repeat: stretch;",
+    );
+    assert.equal(result.manifest.assets.length, 1);
+    const output = result.manifest.assets[0]!.output;
+    assert.ok(result.cpp.includes(`border-image-source:url(\\"${output}\\")`));
+    assert.match(result.cpp, /border-image-width:4px 2 4px 2/);
+    assert.match(result.cpp, /border-image-slice:25% 25% 25% 25%/);
+    assert.match(result.cpp, /border-image-outset:0 0 0 0/);
+    assert.match(result.cpp, /border-image-repeat:stretch/);
+    for (const declaration of [
+        "border-image-source: url(/frames/panel.svg)",
+        "border-image-slice: 25% fill",
+        "border-image-outset: 2px",
+        "border-image-repeat: round",
+        "border-image-width: -1px",
+    ])
+        assert.throws(
+            () => compileStyle(`${declaration};`),
+            /border-image-\w+.*static raster URL/,
+            declaration,
+        );
 });
 
 test("border image shorthand expansion preserves widths and explicit unsupported boundaries", () => {

@@ -1,9 +1,11 @@
+import { isPbrMaterialValue } from "./values/model.js";
 import { EmissionMap, writable } from "./emission-transaction.js";
 import { storeClassField } from "./classes.js";
 import { resolvedBuiltinConstructor } from "./builtin-constructors.js";
 import { setRecordProperty } from "./object-statics.js";
 import { refuseRealmHostWrite } from "./host-globals.js";
 import { shadowCasterMaterialWrite } from "./shadow-caster-material.js";
+import { emitEngineRenderFunctionWrite } from "./engine-render-function.js";
 import {
     compositeScalarAccessors,
     compositeScalarFunction,
@@ -42,7 +44,14 @@ type RecordFieldAssignment = (
     collection: "materials" | "cameras" | "meshes";
     /** The record field, or the pair a two-element source writes. */
     field: string | readonly [string, string];
-    value: "color3" | "number" | "boolean" | "optional-boolean" | "number2";
+    /** `color4` is written whole through its array setter ({@link MATERIAL_COLOR_ARRAYS}). */
+    value:
+        | "color3"
+        | "color4"
+        | "number"
+        | "boolean"
+        | "optional-boolean"
+        | "number2";
     scalarPrecision?: "float" | "double";
     simpleOnly?: boolean;
     /** Stored as the logical inverse of what the source assigns. */
@@ -62,6 +71,45 @@ type RecordFieldAssignment = (
  * not `loadTexture2D`'s upload flip.
  */
 const textureRecordFields = TEXTURE_UV_PROPERTIES;
+
+/**
+ * Material colours a program assigns as a whole number array. The record
+ * keeps the array by identity, so `markMaterialUboDirty` re-reads its
+ * current components, and the setter checks the channel count.
+ */
+const MATERIAL_COLOR_ARRAYS: ReadonlyMap<
+    string,
+    {
+        property: "diffuseColor" | "baseColorFactor";
+        channels: 3 | 4;
+        setter: string;
+    }
+> = new Map(
+    (
+        [
+            ["diffuseColor", 3, "set_material_diffuse_color"],
+            ["baseColorFactor", 4, "set_material_base_color_factor"],
+        ] as const
+    ).map(([property, channels, setter]) => [
+        property,
+        { property, channels, setter },
+    ]),
+);
+
+/** The refusal of a colour written as anything but a whole numeric array. */
+function colorChannelsRequired(property: string, channels: 3 | 4): string {
+    return `Material ${property} requires a ${channels === 3 ? "three" : "four"}-channel numeric array.`;
+}
+
+/**
+ * Members one family's pinned code reads and the other's never does. A PBR
+ * material's alpha test reads `_alphaCutOff` (`setPbrAlphaCutoff`); the
+ * public `alphaCutOff` is the Standard family's.
+ */
+const INERT_MATERIAL_MEMBERS: ReadonlyMap<
+    "pbr" | "standard",
+    ReadonlySet<string>
+> = new Map([["pbr", new Set(["alphaCutOff"])]]);
 
 const recordFieldAssignments: readonly RecordFieldAssignment[] = [
     {
@@ -111,6 +159,17 @@ const recordFieldAssignments: readonly RecordFieldAssignment[] = [
         collection: "materials",
         field: "diffuse_color",
         value: "color3",
+        simpleOnly: true,
+    },
+    {
+        // The pin's `baseColorFactor: number[]`, a uniform the composed
+        // fragment always declares: replacing it composes nothing.
+        kind: "material",
+        materialFamily: "pbr",
+        property: "baseColorFactor",
+        collection: "materials",
+        field: "base_color_factor",
+        value: "color4",
         simpleOnly: true,
     },
     {
@@ -1221,6 +1280,9 @@ export function emitPropertyAssignment(
         }
     }
     if (!ts.isPropertyAccessExpression(expression.left)) {
+        // A retained element's member by a static key (`el.dataset["k"]`)
+        // is the UI owner's, as its property spelling is.
+        if (context.emitUiPropertyAssignment(expression)) return;
         context.fail(
             expression.left,
             "Only property assignments are supported.",
@@ -2524,7 +2586,9 @@ import {
 } from "../pinned-screen-space.js";
 import { toneMappingExportNames } from "../pinned-tone-mapping.js";
 import {
+    appendedMaterialPlugins,
     emitMaterialPluginResources,
+    foldMaterialPluginElement,
     foldMaterialPluginList,
 } from "./material-plugin.js";
 import {
@@ -2779,6 +2843,11 @@ function emitTargetPropertyAssignment(
         });
         return true;
     }
+    if (target.kind === "engine" && property === "_renderFn") {
+        requireSimpleAssignment(context, expression, "engine._renderFn");
+        emitEngineRenderFunctionWrite(context, target, expression);
+        return true;
+    }
     if (target.kind === "compute-dispatch" && property === "enabled") {
         requireSimpleAssignment(context, expression, "ComputeDispatch.enabled");
         context.emit({
@@ -2940,8 +3009,20 @@ function emitTargetPropertyAssignment(
             candidate.kind === target.kind && candidate.property === property,
     );
     if (recordField) {
+        const family =
+            recordField.kind === "material"
+                ? materialFamily(context, target, left.expression)
+                : undefined;
         if (recordField.kind === "material") {
-            const family = materialFamily(context, target, left.expression);
+            // A member the pin reads on one family only is a plain own
+            // property on the other: the write evaluates and stores nothing
+            // a draw reads (a read of it refuses rather than answering).
+            if (family && INERT_MATERIAL_MEMBERS.get(family)?.has(property)) {
+                context.emitDiscardedValue(
+                    context.compileValue(expression.right),
+                );
+                return true;
+            }
             if (
                 !family ||
                 (recordField.materialFamily !== "standard-or-pbr" &&
@@ -3012,10 +3093,16 @@ function emitTargetPropertyAssignment(
                     "names a field pair with a scalar value.",
             );
         }
-        if (
-            recordField.kind === "material" &&
-            recordField.property === "diffuseColor"
-        ) {
+        const colorArray =
+            recordField.kind === "material"
+                ? MATERIAL_COLOR_ARRAYS.get(recordField.property)
+                : undefined;
+        if (colorArray) {
+            const { property } = colorArray;
+            const channelsRequired = colorChannelsRequired(
+                property,
+                colorArray.channels,
+            );
             context.admissions.noteMaterialColorRenderBoundary(
                 expression,
                 "whole color replacement after registration",
@@ -3034,6 +3121,8 @@ function emitTargetPropertyAssignment(
             // A `{ r, g, b }` object falls through to `compileColor3`,
             // which refuses it: the pin's `diffuseColor` is a number tuple.
             if (legacyTuple) {
+                if (property !== "diffuseColor")
+                    context.fail(expression.right, channelsRequired);
                 context.admissions.noteLegacyDiffuseColorWrite(
                     expression.right,
                 );
@@ -3045,7 +3134,7 @@ function emitTargetPropertyAssignment(
                         context.unwrap(expression.right),
                     )
                 ) {
-                    context.admissions.noteMaterialColorRead("diffuseColor");
+                    context.admissions.noteMaterialColorRead(property);
                 }
                 const owner = context.allocateTemporaryCppName(
                     "material_color_owner",
@@ -3070,7 +3159,7 @@ function emitTargetPropertyAssignment(
                                 "color_lane",
                                 element,
                             ),
-                        "Material diffuseColor requires a three-channel numeric array.",
+                        channelsRequired,
                         (lane, spread) =>
                             context.bindings.pinValueToTemporary(
                                 lane,
@@ -3078,11 +3167,8 @@ function emitTargetPropertyAssignment(
                                 spread,
                             ),
                     );
-                    if (lanes.length !== 3)
-                        context.fail(
-                            expression.right,
-                            "Material diffuseColor requires a three-channel numeric array.",
-                        );
+                    if (lanes.length !== colorArray.channels)
+                        context.fail(expression.right, channelsRequired);
                     values = context.dataLowerer.compileKnownValueForSink(
                         {
                             kind: "tuple",
@@ -3095,12 +3181,9 @@ function emitTargetPropertyAssignment(
                 } else {
                     if (
                         ts.isArrayLiteralExpression(shape) &&
-                        shape.elements.length !== 3
+                        shape.elements.length !== colorArray.channels
                     )
-                        context.fail(
-                            expression.right,
-                            "Material diffuseColor requires a three-channel numeric array.",
-                        );
+                        context.fail(expression.right, channelsRequired);
                     values = context.compileForDataSink(expression.right, {
                         kind: "vector",
                         element: { kind: "number" },
@@ -3108,11 +3191,21 @@ function emitTargetPropertyAssignment(
                 }
                 context.emit({
                     kind: "expression",
-                    code: `bbl::set_material_diffuse_color(${context.requireEngine(target, expression)}, ${owner}, ${values});`,
+                    code: `bbl::${colorArray.setter}(${context.requireEngine(target, expression)}, ${owner}, ${values});`,
                 });
+                // The pin composes a PBR factor's presence.
+                if (property === "baseColorFactor")
+                    context.sceneManifest.recordPbrStateWrite(target, {
+                        baseColorFactor: true,
+                    });
                 return true;
             }
         }
+        if (recordField.value === "color4")
+            context.fail(
+                expression.right,
+                colorChannelsRequired(recordField.property, 4),
+            );
         const fieldOperator = recordField.simpleOnly ? "=" : operator;
         const fieldWidth =
             recordField.collection === "cameras" ? "double" : "float";
@@ -3180,6 +3273,21 @@ function emitTargetPropertyAssignment(
             context.emit({
                 kind: "expression",
                 code: `${record}.source_diffuse_color.reset();`,
+            });
+        }
+        // A PBR `alpha` below 1 composes blending where no cutoff tests.
+        if (
+            recordField.kind === "material" &&
+            recordField.property === "alpha" &&
+            family === "pbr"
+        ) {
+            const written =
+                operator === "="
+                    ? staticNumberValue(context, expression.right)
+                    : undefined;
+            context.sceneManifest.recordPbrStateWrite(target, {
+                alphaBelowOne:
+                    written === undefined ? [true, false] : [written < 1],
             });
         }
         return true;
@@ -3640,10 +3748,8 @@ function emitPluginsAssignment(
     const { expression, left, target, property } = state;
     if (target.kind === "material" && property === "plugins") {
         requireSimpleAssignment(context, expression, "material plugins");
-        if (
-            target.scenePbrMaterialIndex === undefined &&
-            !target.standardMaterial
-        ) {
+        const pbr = isPbrMaterialValue(target);
+        if (!pbr && !target.standardMaterial) {
             context.fail(
                 left.expression,
                 "Material plugins attach to a PBR or a Standard " +
@@ -3653,21 +3759,75 @@ function emitPluginsAssignment(
                     "other family composes nothing upstream either.",
             );
         }
-        const family =
-            target.scenePbrMaterialIndex !== undefined ? "pbr" : "standard";
+        if (pbr) {
+            // `[...(material.plugins ?? []), plugin]` grows the list the
+            // material holds, whichever it is: its signature moves to the
+            // grown list's, and the new plugin's resources follow the ones
+            // the list already bound.
+            const appended = appendedMaterialPlugins(
+                context,
+                expression.right,
+                left.expression,
+            );
+            if (appended) {
+                const engine = context.requireEngine(target, expression);
+                for (const element of appended) {
+                    const plugin = foldMaterialPluginElement(
+                        context,
+                        element,
+                        "pbr",
+                    );
+                    const id = context.sceneManifest.pbrPluginId(
+                        plugin.manifests[0]!,
+                    );
+                    context.sceneManifest.recordPbrStateWrite(target, {
+                        pluginAppend: id,
+                    });
+                    emitMaterialPluginResources(
+                        context,
+                        target,
+                        expression,
+                        plugin,
+                        {
+                            appendCpp: `bblscene::pbr_plugin_signature_append(bbl::material_plugin_signature(${engine}, ${target.cpp}), ${id}u)`,
+                        },
+                    );
+                }
+                return true;
+            }
+            const plugins = foldMaterialPluginList(
+                context,
+                expression.right,
+                "pbr",
+            );
+            const signature = context.sceneManifest.pbrPluginSignature(
+                plugins.manifests,
+            );
+            // A scene material's list composes into its own row; another
+            // material's moves it to the row composed for that list.
+            if (target.scenePbrMaterialIndex !== undefined)
+                context.sceneManifest.recordScenePbrPlugins(
+                    plugins.manifests,
+                    target.scenePbrMaterialIndex,
+                );
+            else
+                context.sceneManifest.recordPbrStateWrite(target, {
+                    pluginSignature: signature,
+                });
+            emitMaterialPluginResources(
+                context,
+                target,
+                expression,
+                plugins,
+                signature,
+            );
+            return true;
+        }
         const plugins = foldMaterialPluginList(
             context,
             expression.right,
-            family,
+            "standard",
         );
-        if (target.scenePbrMaterialIndex !== undefined) {
-            context.sceneManifest.recordScenePbrPlugins(
-                plugins.manifests,
-                target.scenePbrMaterialIndex,
-            );
-            emitMaterialPluginResources(context, target, expression, plugins);
-            return true;
-        }
         // The record lane is its own reach, separate from the
         // opt-in: upstream a `plugins` array on a material is always
         // legal and is simply inert until `enableMaterialPlugins`
@@ -4048,14 +4208,43 @@ function materialFamily(
     expression: ts.Expression,
 ): "pbr" | "standard" | undefined {
     if (target.standardMaterial) return "standard";
-    if (target.scenePbrMaterialIndex !== undefined || target.assetPbrMaterial)
-        return "pbr";
+    if (isPbrMaterialValue(target)) return "pbr";
     // Only the PBR view: its writes land in record slots a Standard draw
     // never reads, while a Standard view over a PBR record would not.
     const type = context.checker.getNonNullableType(
         context.checker.getTypeAtLocation(expression),
     );
     return isPinnedType(type, ["PbrMaterialProps"]) ? "pbr" : undefined;
+}
+
+/**
+ * `pbr.alphaBlend = value`: the authored alpha mode the renderer buckets by,
+ * and the blend bit the pin composes from at the material's first draw. Each
+ * value the write can give reaches composition as a state of the materials
+ * it can reach.
+ */
+function emitPbrAlphaBlendAssignment(
+    context: AssignmentContext,
+    state: TargetPropertyAssignment,
+): boolean {
+    const { expression, left, target, property } = state;
+    if (target.kind !== "material" || property !== "alphaBlend") return false;
+    requireSimpleAssignment(context, expression, "PBR alphaBlend");
+    if (materialFamily(context, target, left.expression) !== "pbr")
+        context.fail(
+            left,
+            "alphaBlend is a PBR material's; a Standard material blends by its alpha.",
+        );
+    const value = context.compileValue(expression.right);
+    const known = staticBooleanOf(value);
+    context.sceneManifest.recordPbrStateWrite(target, {
+        alphaBlend: known === undefined ? [true, false] : [known],
+    });
+    context.emit({
+        kind: "expression",
+        code: `bbl::set_pbr_alpha_blend(${context.requireEngine(target, expression)}, ${target.cpp}, ${context.dataLowerer.compileKnownValueForSink(value, { kind: "boolean" }, expression.right)});`,
+    });
+    return true;
 }
 
 /**
@@ -4107,7 +4296,7 @@ function emitBaseColorTextureAssignment(
                       `PBR baseColorTexture replacement takes a loaded or solid texture; received ${texture.textureStorage ?? "an unknown"} storage.`,
                   );
     const engine = context.requireEngine(target, expression);
-    if (target.scenePbrMaterialIndex !== undefined || target.assetPbrMaterial) {
+    if (isPbrMaterialValue(target)) {
         context.emit({
             kind: "expression",
             code: `bbl::set_material_base_color_file(${engine}, ${target.cpp}, ${file});`,
@@ -4146,10 +4335,7 @@ function emitOrmTextureAssignment(
                 "PBR ormTexture replacement requires static setup before scene registration; live texture rebinding is not represented.",
             );
         }
-        if (
-            target.scenePbrMaterialIndex === undefined &&
-            !target.assetPbrMaterial
-        ) {
+        if (!isPbrMaterialValue(target)) {
             context.fail(left, "ormTexture requires a known PBR material.");
         }
         const texture = context.compileValue(expression.right);
@@ -4554,6 +4740,7 @@ const targetPropertyHandlers2 = new EmissionMap<
     (context: AssignmentContext, state: TargetPropertyAssignment) => boolean
 >([
     ["ormTexture", emitOrmTextureAssignment],
+    ["alphaBlend", emitPbrAlphaBlendAssignment],
     ["baseColorTexture", emitBaseColorTextureAssignment],
     ["occlusionTexture", emitOcclusionTextureAssignment],
     ["diffuseTexture", emitDiffuseTextureAssignment],

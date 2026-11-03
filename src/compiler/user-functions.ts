@@ -32,6 +32,7 @@ import {
 } from "./values/model.js";
 import { ApplicationRealmRequired } from "./worker-modules.js";
 import { pinOperand } from "./evaluation-order.js";
+import { returnsOnlyNewArrays } from "./fresh-records.js";
 import { CompileError } from "./compile-error.js";
 import {
     nullability,
@@ -95,7 +96,7 @@ import { programObservations } from "./program-observations.js";
 import { sourceTypeHasObservedIdentity } from "./storage-demand-index.js";
 import { parameterProjectionIsReadOnly } from "./parameter-projection-effects.js";
 import {
-    hasUndefinedCompletion,
+    hasProvenUndefinedCompletion,
     hasNonThenableCompletion,
     readsErasedVoid,
 } from "./undefined-values.js";
@@ -675,6 +676,83 @@ export function aliasSites(node: ts.Node): readonly AliasSite[] {
     return sites;
 }
 
+/** One parsed file's alias sites, by node and in walk order. */
+interface FileAliasSites {
+    readonly byNode: ReadonlyMap<ts.Node, readonly AliasSite[]>;
+    readonly ordered: readonly (readonly [ts.Node, readonly AliasSite[]])[];
+}
+
+/** @unjournaled Parsed syntax is immutable: each file's alias sites, kept. */
+const fileAliasSites = new WeakMap<ts.SourceFile, FileAliasSites>();
+
+/** The nodes of `file` (`sourceFileNodes`) that bind names, with their alias sites. */
+function aliasSitesOf(file: ts.SourceFile): FileAliasSites {
+    let sites = fileAliasSites.get(file);
+    if (!sites) {
+        const ordered: [ts.Node, readonly AliasSite[]][] = [];
+        for (const node of sourceFileNodes(file)) {
+            const found = aliasSites(node);
+            if (found.length > 0) ordered.push([node, found]);
+        }
+        sites = { byNode: new Map(ordered), ordered };
+        fileAliasSites.set(file, sites);
+    }
+    return sites;
+}
+
+/** The aliases one reached-node walk settled, and the files it read. */
+interface SettledAliases {
+    readonly aliases: Set<ts.Symbol>;
+    readonly walked: ReadonlySet<ts.SourceFile>;
+}
+
+/**
+ * @unjournaled Settled from the program alone (`programAliases`): by the
+ * tracked symbol, then by the walk's clauses and starting files.
+ */
+const settledAliases = new WeakMap<ts.Symbol, Map<string, SettledAliases>>();
+
+/** @unjournaled Parsed syntax is immutable: each file's node set, kept. */
+const fileNodeSets = new WeakMap<ts.SourceFile, ReadonlySet<ts.Node>>();
+
+function sourceFileNodeSet(file: ts.SourceFile): ReadonlySet<ts.Node> {
+    let nodes = fileNodeSets.get(file);
+    if (!nodes) {
+        nodes = new Set(sourceFileNodes(file));
+        fileNodeSets.set(file, nodes);
+    }
+    return nodes;
+}
+
+/** A reached set's analysis nodes (`sourceFileNodes`) grouped by file. */
+interface ReachedByFile {
+    readonly size: number;
+    readonly nodes: ReadonlyMap<ts.SourceFile, readonly ts.Node[]>;
+}
+
+/**
+ * @unjournaled One question's reached set, asked about each binding in
+ * scope: grouped once, regrouped if it grew.
+ */
+const reachedGroups = new WeakMap<ReadonlySet<ts.Node>, ReachedByFile>();
+
+function reachedByFile(
+    reached: ReadonlySet<ts.Node>,
+): ReadonlyMap<ts.SourceFile, readonly ts.Node[]> {
+    const known = reachedGroups.get(reached);
+    if (known?.size === reached.size) return known.nodes;
+    const nodes = new Map<ts.SourceFile, ts.Node[]>();
+    for (const node of reached) {
+        const file = node.getSourceFile();
+        if (!sourceFileNodeSet(file).has(node)) continue;
+        let inFile = nodes.get(file);
+        if (!inFile) nodes.set(file, (inFile = []));
+        inFile.push(node);
+    }
+    reachedGroups.set(reached, { size: reached.size, nodes });
+    return nodes;
+}
+
 /**
  * The alias-set + fixed-point skeleton every inferred-mutation walk shares.
  *
@@ -691,6 +769,11 @@ export function aliasSites(node: ts.Node): readonly AliasSite[] {
  * `[, s] = values`) holds one. A cross-file walk names its `files` and the
  * files each new alias adds; `aliasingReturn` makes a named function whose
  * `return` carries an alias one more alias (its calls hold the identity).
+ * A walk whose `mutates` accepts only `reached` nodes and adds no alias
+ * settles the aliases from the alias sites alone, then tests just those
+ * nodes: mutation is monotone in the alias set, so the answer is the same.
+ * When its aliasing clauses read only the program, `programAliases` names
+ * them and the settled aliases are kept for the program's later scans.
  */
 export function aliasedMutationScan(
     identifier: ts.Identifier,
@@ -726,16 +809,21 @@ export function aliasedMutationScan(
             leaf: ts.Identifier,
             scan: AliasedMutationScan,
         ) => boolean;
+        /** The only nodes `mutates` accepts; it then adds no alias. */
+        readonly reached?: ReadonlySet<ts.Node>;
+        /** Names aliasing clauses that read only the program (`reached` walks). */
+        readonly programAliases?: string;
     },
 ): boolean {
     const initial = valueSymbol(identifier);
     if (!initial) return false;
-    const aliases = new EmissionSet<ts.Symbol>([initial]);
+    let aliases: Set<ts.Symbol> = new EmissionSet<ts.Symbol>([initial]);
     const source = identifier.getSourceFile();
     // The files the next pass reads: every one at first, then those that
     // reference an alias the last pass added.
     let pending = new Set(walk.files?.initial ?? [source]);
     let next = new Set<ts.SourceFile>();
+    let settled = false;
     const scan: AliasedMutationScan = {
         namesAlias: (node) =>
             ts.isIdentifier(node) && aliases.has(valueSymbol(node)!),
@@ -743,15 +831,18 @@ export function aliasedMutationScan(
         holds: (symbol) => aliases.has(symbol),
         addAlias: (symbol) => {
             if (symbol && !aliases.has(symbol)) {
+                if (settled)
+                    throw new Error(
+                        "A reached-node mutation walk added an alias after its aliases settled.",
+                    );
                 aliases.add(symbol);
                 for (const file of walk.files?.referencing(symbol) ?? [source])
                     next.add(file);
             }
         },
     };
-    const visit = (node: ts.Node): boolean => {
-        if (walk.mutates(node, scan)) return true;
-        for (const { name, source, holds } of aliasSites(node)) {
+    const extend = (sites: readonly AliasSite[]): void => {
+        for (const { name, source, holds } of sites) {
             const aliasing =
                 holds === "value"
                     ? walk.aliasingInitializer(source, scan)
@@ -762,11 +853,62 @@ export function aliasedMutationScan(
                         : walk.aliasingReturn?.(source, scan);
             if (aliasing) scan.addAlias(valueSymbol(name));
         }
-        return false;
     };
+    const reached = walk.reached;
+    if (reached) {
+        const key =
+            walk.programAliases === undefined
+                ? undefined
+                : [
+                      walk.programAliases,
+                      ...[...pending].map((file) => file.fileName),
+                  ].join("\0");
+        const known =
+            key === undefined
+                ? undefined
+                : settledAliases.get(initial)?.get(key);
+        let walked: ReadonlySet<ts.SourceFile>;
+        if (known) {
+            aliases = known.aliases;
+            walked = known.walked;
+        } else {
+            const files = new Set<ts.SourceFile>();
+            while (pending.size > 0) {
+                for (const file of pending) {
+                    files.add(file);
+                    for (const [, sites] of aliasSitesOf(file).ordered)
+                        extend(sites);
+                }
+                pending = next;
+                next = new Set();
+            }
+            walked = files;
+            if (key !== undefined) {
+                let byWalk = settledAliases.get(initial);
+                if (!byWalk)
+                    settledAliases.set(
+                        initial,
+                        (byWalk = new Map<string, SettledAliases>()),
+                    );
+                byWalk.set(key, { aliases: new Set(aliases), walked });
+            }
+        }
+        settled = true;
+        const byFile = reachedByFile(reached);
+        for (const file of walked)
+            for (const node of byFile.get(file) ?? [])
+                if (walk.mutates(node, scan)) return true;
+        return false;
+    }
     while (pending.size > 0) {
-        for (const file of pending)
-            if (sourceFileNodes(file).some(visit)) return true;
+        for (const file of pending) {
+            const { byNode } = aliasSitesOf(file);
+            for (const node of sourceFileNodes(file)) {
+                if (walk.mutates(node, scan)) return true;
+                const sites = byNode.get(node);
+                if (sites) extend(sites);
+            }
+        }
         pending = next;
         next = new Set();
     }
@@ -1125,7 +1267,10 @@ function refusalName(ir: UserFunctionIr): string {
     return sourceFunctionName(ir.declaration) ?? ir.name;
 }
 
-/** A value record cannot represent an alias into a retained native object. */
+/**
+ * A shared native body cannot represent this call, so its caller lowers it
+ * inline. The message names why, for a caller that has no inline form.
+ */
 class SharedCallRequiresInline extends Error {}
 
 const reflectingObjectMethods = new EmissionSet([
@@ -1813,7 +1958,10 @@ export class UserFunctionLowerer {
                 ),
             );
             if (asynchronous) return asynchronous;
-            const recursiveGroup = this.recursiveGroup(ir.declaration);
+            const recursiveGroup = this.reachedRecursiveGroup(
+                context,
+                ir.declaration,
+            );
             if (recursiveGroup) {
                 const group = (): Value =>
                     this.lowerRecursiveGroup(
@@ -2016,7 +2164,7 @@ export class UserFunctionLowerer {
             !returned ||
             (returnType && !context.dataTypes.carriesFunction(returnType))
         ) {
-            const group = this.recursiveGroup(ir.declaration);
+            const group = this.reachedRecursiveGroup(context, ir.declaration);
             let result = this.lowerRecursiveGroup(
                 context,
                 ir,
@@ -2904,7 +3052,9 @@ export class UserFunctionLowerer {
                     value.staticString !== undefined ||
                     value.staticBoolean !== undefined)
             )
-                throw new SharedCallRequiresInline();
+                throw new SharedCallRequiresInline(
+                    `A shared body could change field '${key}', whose value this call knows.`,
+                );
             const field = fields.find((field) => field.sourceName === key);
             // An accessor-backed slot stores no value a refreshed fact
             // could read; the record keeps no facts across the call.
@@ -3080,6 +3230,39 @@ export class UserFunctionLowerer {
                 left.objectIdentityCpp === right.objectIdentityCpp &&
                 left.recordProperties === right.recordProperties)
         );
+    }
+
+    /**
+     * The recursive group a call reaches. Calls through an existing sibling's
+     * storage no longer need a shared group: the cycle is recomputed without
+     * crossing those bindings, keeping their captures and the identities of
+     * nonrecursive siblings. A cycle that dissolves leaves an ordinary call.
+     */
+    private reachedRecursiveGroup(
+        context: UserFunctionContext,
+        root: SupportedFunction,
+    ): readonly SupportedFunction[] | undefined {
+        const represented = (declaration: SupportedFunction): boolean => {
+            if (declaration === root) return false;
+            const symbol = declaredSymbol(
+                this.checker,
+                this.declarationIdentifier(declaration),
+            );
+            const bound = symbol
+                ? context.bindings.peekBinding(symbol)?.value
+                : undefined;
+            return !!(
+                bound?.cpp &&
+                ((bound.kind === "callback" &&
+                    bound.nativeCallbackParameterTypes) ||
+                    (bound.kind === "data" &&
+                        bound.dataType?.kind === "function"))
+            );
+        };
+        const group = this.recursiveGroup(root);
+        return group?.some(represented)
+            ? this.recursiveGroup(root, represented)
+            : group;
     }
 
     /** Finds the strongly connected call-graph component containing root. */
@@ -3308,31 +3491,36 @@ export class UserFunctionLowerer {
         pinArguments = true,
         reuseCallSite = false,
     ): Value {
-        // Calls through an existing sibling's storage no longer need a shared
-        // recursive group. Recompute the cycle without crossing those bindings,
-        // keeping their captures and the identities of nonrecursive siblings.
-        const represented = (declaration: SupportedFunction): boolean => {
-            if (declaration === root.declaration) return false;
-            const symbol = declaredSymbol(
-                this.checker,
-                this.declarationIdentifier(declaration),
+        try {
+            return this.lowerGroup(
+                context,
+                root,
+                call,
+                rootArguments,
+                declarations,
+                recursive,
+                pinArguments,
+                reuseCallSite,
             );
-            const bound = symbol
-                ? context.bindings.peekBinding(symbol)?.value
-                : undefined;
-            return !!(
-                bound?.cpp &&
-                ((bound.kind === "callback" &&
-                    bound.nativeCallbackParameterTypes) ||
-                    (bound.kind === "data" &&
-                        bound.dataType?.kind === "function"))
-            );
-        };
-        if (recursive && declarations.some(represented)) {
-            const group = this.recursiveGroup(root.declaration, represented);
-            declarations = group ?? [root.declaration];
-            recursive = group !== undefined;
+        } catch (error) {
+            // A recursive group has no inline form: a body it cannot share
+            // refuses here.
+            if (recursive && error instanceof SharedCallRequiresInline)
+                context.fail(call, error.message);
+            throw error;
         }
+    }
+
+    private lowerGroup(
+        context: UserFunctionContext,
+        root: UserFunctionIr,
+        call: ts.Node,
+        rootArguments: readonly Value[],
+        declarations: readonly SupportedFunction[],
+        recursive: boolean,
+        pinArguments: boolean,
+        reuseCallSite: boolean,
+    ): Value {
         if (
             recursive &&
             context.options.workers &&
@@ -3429,7 +3617,9 @@ export class UserFunctionLowerer {
             callSiteEffects &&
             context.reachesOpaqueCallee(root.declaration.body!)
         )
-            throw new SharedCallRequiresInline();
+            throw new SharedCallRequiresInline(
+                "A shared body reaches its constructions through a callback.",
+            );
         rootArguments = rootArguments.map((value, index) => {
             const expression = argumentExpressions[index];
             return isHandleKind(value.kind) &&
@@ -3772,7 +3962,9 @@ export class UserFunctionLowerer {
                 parameterType?.kind === "map" &&
                 parameterType.dictionary
             )
-                throw new SharedCallRequiresInline();
+                throw new SharedCallRequiresInline(
+                    "A record argument would bind a dictionary parameter of a shared body.",
+                );
             // A structural projection allocates a new record. Both shared
             // methods and functions must retain the caller's object identity;
             // borrowed events additionally keep their dispatch lifetime.
@@ -3785,7 +3977,9 @@ export class UserFunctionLowerer {
                         context.bindings.containsPlatformEvent(argument))) &&
                 (!argumentType || !dataTypesEqual(argumentType, parameterType))
             )
-                throw new SharedCallRequiresInline();
+                throw new SharedCallRequiresInline(
+                    "A shared body parameter would copy a record of another type.",
+                );
             if (
                 rootEntry.returnType?.kind === "json" &&
                 argument?.kind === "record" &&
@@ -3905,7 +4099,9 @@ export class UserFunctionLowerer {
                     context.bindings.containsPlatformEvent(value),
             )
         )
-            throw new SharedCallRequiresInline();
+            throw new SharedCallRequiresInline(
+                "A shared body would capture a borrowed platform event.",
+            );
         const escapes = this.groupStorageEscapes(declarations);
         const sharedBody = !recursive;
         const scope = sharedBody
@@ -3966,7 +4162,9 @@ export class UserFunctionLowerer {
             declineKey !== undefined &&
             this.declinedSharedBodies.get(root.declaration)?.has(declineKey)
         )
-            throw new SharedCallRequiresInline();
+            throw new SharedCallRequiresInline(
+                "This specialization declined a shared body.",
+            );
         try {
             context.reachJsData();
             const localGroup =
@@ -4188,7 +4386,9 @@ export class UserFunctionLowerer {
                         (field) => field.sourceName === key,
                     );
                     if (!field || field.accessor)
-                        throw new SharedCallRequiresInline();
+                        throw new SharedCallRequiresInline(
+                            `The returned record's property '${key}' has no stored field.`,
+                        );
                     const property = context.dataValue(
                         `(${result.cpp})${member}${field.name}`,
                         field.type,
@@ -4379,7 +4579,9 @@ export class UserFunctionLowerer {
                               value.kind !== resourceType.handle &&
                               value.kind !== "json-null"
                           ) {
-                              throw new SharedCallRequiresInline();
+                              throw new SharedCallRequiresInline(
+                                  "A shared body would return a handle of another engine kind.",
+                              );
                           }
                           if (
                               value.retainedNativeRecord ||
@@ -4394,7 +4596,9 @@ export class UserFunctionLowerer {
                                   expression,
                               )
                           ) {
-                              throw new SharedCallRequiresInline();
+                              throw new SharedCallRequiresInline(
+                                  "A shared body would return storage it does not own.",
+                              );
                           }
                           if (
                               !dataTypesEqual(
@@ -4406,7 +4610,9 @@ export class UserFunctionLowerer {
                                   type,
                               )
                           )
-                              throw new SharedCallRequiresInline();
+                              throw new SharedCallRequiresInline(
+                                  "A shared body would return a value of another retained type.",
+                              );
                           returnedValues.push(value);
                           return context.dataLowerer.compileKnownValueForSink(
                               value,
@@ -4996,7 +5202,7 @@ export class UserFunctionLowerer {
         // self-scheduling source edge is not an immediate recursive call.
         const group = body?.frameDriven
             ? undefined
-            : this.recursiveGroup(ir.declaration);
+            : this.reachedRecursiveGroup(context, ir.declaration);
         const shared =
             bound?.nativeCallbackParameterTypes && bound.cpp
                 ? this.compileSpecializedCallbackCall(
@@ -5079,9 +5285,13 @@ export class UserFunctionLowerer {
                 `Stored function '${sourceFunctionName(declaration) ?? "(anonymous)"}' re-enters its own lowering; its storage cannot serve this use's signature.`,
             );
         }
+        // A struct function field it completes through takes the proof its
+        // stores then check (a replay), rather than refusing here.
+        const unproven = (field: DataType<"function">): void =>
+            context.dataTypes.requireFunctionCompletion(field, "undefined");
         if (
             dataType.undefinedCompletion &&
-            !hasUndefinedCompletion(this.checker, declaration)
+            !hasProvenUndefinedCompletion(context, declaration, { unproven })
         )
             context.fail(
                 expression,
@@ -5089,14 +5299,31 @@ export class UserFunctionLowerer {
             );
         if (
             dataType.awaitedUndefinedCompletion &&
-            !hasUndefinedCompletion(this.checker, declaration, true)
+            !hasProvenUndefinedCompletion(context, declaration, {
+                awaited: true,
+                unproven,
+            })
         )
             context.fail(
                 expression,
                 "A stored callback requires a proven undefined completion after awaiting.",
             );
+        // A slot claiming fresh results takes only functions returning new arrays.
+        if (
+            dataType.freshCompletion &&
+            !returnsOnlyNewArrays(this.checker, declaration)
+        ) {
+            context.dataTypes.withdrawFreshCompletion(dataType);
+            context.fail(
+                expression,
+                "A stored callback requires a proven fresh result.",
+            );
+        }
+        // An undefined completion or a new array, proven above, is never thenable.
         if (
             dataType.nonThenableCompletion &&
+            !dataType.undefinedCompletion &&
+            !dataType.freshCompletion &&
             !hasNonThenableCompletion(this.checker, declaration)
         )
             context.fail(
@@ -5274,6 +5501,7 @@ export class UserFunctionLowerer {
         const cppType = context.dataTypes.cppType(dataType);
         const selfOwnerCpp = selfIdentifier ? `${cppName}_owner` : undefined;
         const selfWeakCpp = selfIdentifier ? `${cppName}_weak` : undefined;
+        let selfBinding: Value | undefined;
         if (selfIdentifier) {
             emitSharedCell(context, selfOwnerCpp!, { type: cppType });
             if (!asynchronous)
@@ -5296,23 +5524,18 @@ export class UserFunctionLowerer {
                 ],
                 ...(asynchronous ? { sharedStorageCpp: selfOwnerCpp! } : {}),
             };
-            if (context.bindings.lookupOptional(selfIdentifier)) {
-                context.bindings.rebindCompileTimeValue(
-                    selfIdentifier,
-                    selfValue,
-                );
-            } else {
-                context.bindings.bindCompileTimeValue(
-                    selfIdentifier,
-                    selfValue,
-                );
-            }
             this.activeStoredDataFunctions.set(declaration, {
                 cpp: selfValue.cpp,
                 dataType,
             });
+            selfBinding = selfValue;
         }
         context.bindings.pushScope(prefix);
+        // The body names itself through its weak owner; that binding ends
+        // with the body, whose scope declared it, so a later use outside it
+        // reads the binding the function had before.
+        if (selfIdentifier && selfBinding)
+            context.bindings.bindCompileTimeValue(selfIdentifier, selfBinding);
         context.beginNativeFunctionBody(
             bodyResult,
             asynchronous && !promiseType,
@@ -7095,6 +7318,13 @@ export class UserFunctionLowerer {
             if (!incompatible) type = inferred;
         }
         type ??= expectedResult;
+        // Every return writes the one result: a record type reaching
+        // `unknown` members stores them as dynamic values.
+        if (!type && signature)
+            type = context.dataTypes.storedDynamicRecordType(
+                this.checker.getReturnTypeOfSignature(signature),
+                ir.declaration,
+            );
         if (!type) {
             context.fail(
                 callNode,

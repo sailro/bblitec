@@ -38,6 +38,14 @@ test("closed markup values preserve snapshots, conditional order, queries and la
         label = 'old <span>&"data-bbl-node=0"</span>';
         build(!dynamic, "horizontal");
         if (reads !== 4) throw new Error("markup reevaluated its initializer");
+        // A closed choice inside a stored value's fixed fragment: each string is read as the shape it holds.
+        function toned(neutral: boolean, text: string): string { return \`<button class="tone\${neutral ? " neutral" : ""}">\${text}</button>\`; }
+        const firm = toned(!dynamic, String(reads));
+        const calm = toned(dynamic, "calm");
+        const tones = document.createElement("div");
+        tones.id = "tones";
+        tones.innerHTML = '<div>' + firm + calm + '</div>';
+        document.body.append(tones);
         let order = "";
         function mark(value: string): string { order += value; return value; }
         const ordered = document.createElement("div");
@@ -171,6 +179,27 @@ test("the closed string domain selects the markup a parameter holds through a ru
                 ),
             ),
         /Native UI innerHTML requires closed authored markup provenance/,
+    );
+});
+
+test("a markup hole whose closed part exceeds the candidate limit beside run-time text is run-time text", () => {
+    const entries = Array.from(
+        { length: 5000 },
+        (_, index) => `"k${index}": "label ${index}"`,
+    ).join(", ");
+    const source = (fallback: string) => `
+        const TABLE: Record<string, string> = { ${entries} };
+        const root = document.createElement("div");
+        root.innerHTML = '<h2 class="title">' + (TABLE[String(performance.now())] ?? ${fallback}) + '</h2>';
+        document.body.append(root);
+    `;
+    // The run-time fallback leaves the hole open whatever the table holds.
+    const open = compileSource(source("String(performance.now())"));
+    assert.match(open.cpp, /ui_escape_rml\(/);
+    // A closed domain past the limit still refuses.
+    assert.throws(
+        () => compileSource(source('"none"')),
+        /Native UI innerHTML markup domain exceeds 256 candidates/,
     );
 });
 

@@ -966,6 +966,11 @@ export class EvaluationOrder {
         private readonly engine?: () => EngineBodies,
     ) {}
 
+    /** Whether a call into the engine reads its pinned bodies: an answer kept by program depends on it. */
+    public get readsEngineBodies(): boolean {
+        return this.engine !== undefined;
+    }
+
     /**
      * For operands evaluated in order, the flag per operand that says it
      * must be read into a temporary before the rest lower: some later

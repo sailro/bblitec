@@ -26,6 +26,34 @@ public:
     std::string value;
 };
 
+/**
+ * A thrown value or rejection reason with no native representation (a DOM event). A program
+ * that never reads it runs as JavaScript does; reading it refuses.
+ */
+class UnrepresentedThrownValue final {
+public:
+    explicit UnrepresentedThrownValue(std::string kind) : kind(std::move(kind)) {}
+    std::string kind;
+};
+
+[[noreturn]] inline void refuse_thrown_value_read(const UnrepresentedThrownValue& value) {
+    throw std::runtime_error("Reading a thrown " + value.kind + " is not represented natively.");
+}
+
+/** Refuses a read of a thrown value native code cannot represent. */
+inline void require_represented_thrown_value(const std::exception_ptr& error) {
+    if (!error)
+        return;
+    try {
+        std::rethrow_exception(error);
+    } catch (const UnrepresentedThrownValue& value) {
+        refuse_thrown_value_read(value);
+    } catch (...) {
+        // Every other thrown value has a native representation.
+        return;
+    }
+}
+
 inline bool is_throw_completion(const std::exception_ptr& value) {
     if (!value)
         return false;
@@ -214,6 +242,8 @@ inline bool error_has_own(const Error& error, std::string_view key) {
         return (key == "message" && value.message_present) || (key == "cause" && value.cause);
     } catch (const AggregateError& value) {
         return key == "message" || key == "errors" || (key == "cause" && value.cause);
+    } catch (const UnrepresentedThrownValue& value) {
+        refuse_thrown_value_read(value);
     } catch (const std::exception&) {
         return key == "message";
     }
@@ -226,6 +256,8 @@ inline Error error_cause(const Error& error) {
         return value.cause;
     } catch (const AggregateError& value) {
         return value.cause;
+    } catch (const UnrepresentedThrownValue& value) {
+        refuse_thrown_value_read(value);
     } catch (const std::exception&) {
         return {};
     }
@@ -235,6 +267,8 @@ inline std::string error_message(const std::exception_ptr& error) {
         throw std::runtime_error("Cannot read a missing error.");
     try {
         std::rethrow_exception(error);
+    } catch (const UnrepresentedThrownValue& value) {
+        refuse_thrown_value_read(value);
     } catch (const std::exception& value) {
         return value.what();
     }
@@ -250,11 +284,14 @@ inline std::string error_name(const std::exception_ptr& error) {
         return value.name;
     } catch (const AggregateError&) {
         return "AggregateError";
+    } catch (const UnrepresentedThrownValue& value) {
+        refuse_thrown_value_read(value);
     } catch (const std::exception&) {
         return "Error";
     }
 }
 inline bool error_is(const Error& error, std::string_view name) {
+    require_represented_thrown_value(error);
     if (error.object())
         return name == "Error" || error.object()->base == name;
     // A DOMException named like an ECMAScript error (SyntaxError) is not that error's instance.

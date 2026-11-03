@@ -1,0 +1,303 @@
+zoom: the CSS zoom property. Its computed value here is the effective zoom (the product of the element's own zoom and
+its ancestors'), so it is registered as inherited; each element's density-independent pixel ratio carries it, which
+scales every dp, viewport and rem length, inherited absolute font sizes and line heights, decorators, effects and
+replaced-element natural sizes. A zero zoom is no zoom.
+CSS Viewport 1: https://drafts.csswg.org/css-viewport/#zoom-property
+
+diff --git a/Include/RmlUi/Core/ComputedValues.h b/Include/RmlUi/Core/ComputedValues.h
+index 588f6e7..99feffa 100644
+--- a/Include/RmlUi/Core/ComputedValues.h
++++ b/Include/RmlUi/Core/ComputedValues.h
+@@ -99,6 +99,8 @@ namespace Style {
+ 		float font_size = 12.f;
+ 
+ 		float opacity = 1;
++		// The effective zoom: the product of the element's own zoom and its ancestors'.
++		float zoom = 1;
+ 		Colourb color = Colourb(255, 255, 255);
+ 
+ 		FontWeight font_weight : 10;
+@@ -251,6 +253,7 @@ namespace Style {
+ 		Colourb        color()            const { return inherited.color; }
+ 		// The alpha geometry is generated at: 1, since 'group_opacity' composites the painted layer.
+ 		float          opacity()          const { return inherited.opacity; }
++		float          zoom()             const { return inherited.zoom; }
+ 		LineHeight     line_height()      const { return LineHeight(inherited.line_height, inherited.line_height_inherit_type, inherited.line_height_inherit); }
+ 		const String&  language()         const { return inherited.language; }
+ 		Direction      direction()        const { return inherited.direction; }
+@@ -359,6 +362,7 @@ namespace Style {
+ 		void word_break        (WordBreak value)      { inherited.word_break         = value; }
+ 		void color             (Colourb value)        { inherited.color              = value; }
+ 		void opacity           (float value)          { inherited.opacity            = value; }
++		void zoom              (float value)          { inherited.zoom               = value; }
+ 		void line_height       (LineHeight value)     { inherited.line_height = value.value; inherited.line_height_inherit_type = value.inherit_type; inherited.line_height_inherit = value.inherit_value;  }
+ 		void language          (const String& value)  { inherited.language           = value; }
+ 		void direction         (Direction value)      { inherited.direction          = value; }
+diff --git a/Include/RmlUi/Core/ElementUtilities.h b/Include/RmlUi/Core/ElementUtilities.h
+index dda95a8..445e10c 100644
+--- a/Include/RmlUi/Core/ElementUtilities.h
++++ b/Include/RmlUi/Core/ElementUtilities.h
+@@ -46,9 +46,9 @@ public:
+ 	/// @param[in] class_name Class name to search for.
+ 	static void GetElementsByClassName(ElementList& elements, Element* root_element, const String& class_name);
+ 
+-	/// Returns an element's density-independent pixel ratio, defined by its context.
++	/// Returns an element's density-independent pixel ratio, defined by its context and scaled by its effective zoom.
+ 	/// @param[in] element The element to determine the density-independent pixel ratio for.
+-	/// @return The density-independent pixel ratio of the context, or 1.0 if no context assigned.
++	/// @return The density-independent pixel ratio of the context, or 1.0 if no context assigned, times the element's zoom.
+ 	static float GetDensityIndependentPixelRatio(Element* element);
+ 	/// Returns the width of a string rendered within the context of the given element.
+ 	/// @param[in] element The element to measure the string from.
+diff --git a/Include/RmlUi/Core/ID.h b/Include/RmlUi/Core/ID.h
+index d69b0b0..70c85e8 100644
+--- a/Include/RmlUi/Core/ID.h
++++ b/Include/RmlUi/Core/ID.h
+@@ -181,6 +181,7 @@ enum class PropertyId : uint8_t {
+ 	GridAutoColumns,
+ 	GridAutoRows,
+ 	GridAutoFlow,
++	Zoom,
+ 	GridTemplateAreas,
+ 	AspectRatio,
+ 	ClipPath,
+diff --git a/Source/Core/ComputeProperty.cpp b/Source/Core/ComputeProperty.cpp
+index 0c0e8ff..b1bce44 100644
+--- a/Source/Core/ComputeProperty.cpp
++++ b/Source/Core/ComputeProperty.cpp
+@@ -90,7 +90,8 @@ float ComputeFontsize(NumericValue value, const Style::ComputedValues& values, c
+ {
+ 	if (Any(value.unit & (Unit::PERCENT | Unit::EM | Unit::REM)))
+ 	{
+-		// Relative values are based on the parent's or document's font size instead of our own.
++		// Relative values are based on the parent's or document's font size instead of our own. Those are already
++		// zoomed by their own effective zoom, so only the zoom between them and this element applies.
+ 		float multiplier = 1.0f;
+ 
+ 		switch (value.unit)
+@@ -101,20 +102,21 @@ float ComputeFontsize(NumericValue value, const Style::ComputedValues& values, c
+ 		case Unit::EM:
+ 			if (!parent_values)
+ 				return 0;
+-			return value.number * multiplier * parent_values->font_size();
++			return value.number * multiplier * parent_values->font_size() * (values.zoom() / parent_values->zoom());
+ 
+ 		case Unit::REM:
+ 			// If the current element is a document, the rem unit is relative to the default size.
+ 			if (!document_values || &values == document_values)
+-				return value.number * DefaultComputedValues().font_size();
++				return value.number * DefaultComputedValues().font_size() * values.zoom();
+ 
+ 			// Otherwise it is relative to the document font size.
+-			return value.number * document_values->font_size();
++			return value.number * document_values->font_size() * (values.zoom() / document_values->zoom());
+ 		default: break;
+ 		}
+ 	}
+ 
+-	// Font-relative lengths handled above, other lengths should be handled as normal.
++	// Font-relative lengths handled above, other lengths should be handled as normal. The density ratio already
++	// carries the element's effective zoom.
+ 	return ComputeLength(value, 0.f, 0.f, dp_ratio, vp_dimensions);
+ }
+ 
+diff --git a/Source/Core/Element.cpp b/Source/Core/Element.cpp
+index e16be2e..62da79b 100644
+--- a/Source/Core/Element.cpp
++++ b/Source/Core/Element.cpp
+@@ -1733,7 +1733,9 @@ bool Element::MatchesContainerSize(float max_width, bool include_self) const
+     for (auto* ancestor = include_self ? this : GetParentNode(); ancestor; ancestor = ancestor->GetParentNode()) {
+         if (ancestor->GetComputedValues().display() == Style::Display::None) return false;
+         if (!ancestor->IsInlineSizeContainer()) continue;
+-        const float density = ancestor->GetContext() ? ancestor->GetContext()->GetDensityIndependentPixelRatio() : 1.f;
++        // The container's size compares in its own zoomed pixels.
++        const float density = (ancestor->GetContext() ? ancestor->GetContext()->GetDensityIndependentPixelRatio() : 1.f) *
++            ancestor->GetComputedValues().zoom();
+         const float content_width = ancestor->main_box.GetSize().x - ancestor->GetElementScroll()->GetScrollbarSize(ElementScroll::VERTICAL);
+         return content_width <= max_width * density;
+     }
+@@ -2024,6 +2026,14 @@ void Element::OnPropertyChange(const PropertyIdSet& changed_properties)
+ 		meta->effects.DirtyEffectsData();
+ 	}
+ 
++	// A zoom change dirties every local property; what painting resolves on its own follows it as a dp ratio change does.
++	if (changed_properties.Contains(PropertyId::Zoom))
++	{
++		meta->effects.DirtyEffects();
++		meta->background_border.DirtyBackground();
++		OnDpRatioChange();
++	}
++
+ 	if (perspective_changed)
+ 		DirtyTransformState(true, false);
+ 
+diff --git a/Source/Core/ElementAnimation.cpp b/Source/Core/ElementAnimation.cpp
+index 2e805ba..d74bd9c 100644
+--- a/Source/Core/ElementAnimation.cpp
++++ b/Source/Core/ElementAnimation.cpp
+@@ -220,7 +220,7 @@ static bool LinearLengthTerms(const Property& property, Element& element, float&
+ 	case Unit::PX:
+ 	{
+ 		const Context* context = element.GetContext();
+-		const float ratio = context ? context->GetDensityIndependentPixelRatio() : 0.f;
++		const float ratio = context ? context->GetDensityIndependentPixelRatio() * element.GetComputedValues().zoom() : 0.f;
+ 		offset = ratio > 0.f ? property.Get<float>() / ratio : 0.f;
+ 		return ratio > 0.f;
+ 	}
+diff --git a/Source/Core/ElementEffects.cpp b/Source/Core/ElementEffects.cpp
+index e858b1c..8c428dc 100644
+--- a/Source/Core/ElementEffects.cpp
++++ b/Source/Core/ElementEffects.cpp
+@@ -154,8 +154,7 @@ void ElementEffects::ReloadEffectsData()
+                     const Vector2f bounds = origin_box.GetFillSize();
+                     const Vector2f paint_bounds = paint_box.GetFillSize();
+                     Vector2f size, position;
+-                    const Context* context = element->GetContext();
+-                    const float dp_ratio = context ? context->GetDensityIndependentPixelRatio() : 1.f;
++                    const float dp_ratio = ElementUtilities::GetDensityIndependentPixelRatio(element);
+                     const auto resolve = [&](NumericValue value, Style::LengthCalc calc, float base) {
+                         if (value.unit != Unit::PERCENT || !calc.Any())
+                             return element->ResolveNumericValue(value, base);
+diff --git a/Source/Core/ElementStyle.cpp b/Source/Core/ElementStyle.cpp
+index e12aba6..54e7577 100644
+--- a/Source/Core/ElementStyle.cpp
++++ b/Source/Core/ElementStyle.cpp
+@@ -789,25 +789,24 @@ static float ComputeLength(NumericValue value, Element* element)
+ 	float dp_ratio = 1.0f;
+ 	Vector2f vp_dimensions(1.0f);
+ 
++	// Absolute lengths follow the element's effective zoom, as its computed values do.
++	const float zoom = element->GetComputedValues().zoom();
+ 	if (Any(value.unit & Unit::DP_SCALABLE_LENGTH))
+-	{
+-		if (Context* context = element->GetContext())
+-			dp_ratio = context->GetDensityIndependentPixelRatio();
+-	}
++		dp_ratio = ElementUtilities::GetDensityIndependentPixelRatio(element);
+ 
+ 	switch (value.unit)
+ 	{
+ 	case Unit::EM: font_size = element->GetComputedValues().font_size(); break;
+ 	case Unit::REM:
+ 		if (ElementDocument* document = element->GetOwnerDocument())
+-			doc_font_size = document->GetComputedValues().font_size();
++			doc_font_size = document->GetComputedValues().font_size() * (zoom / document->GetComputedValues().zoom());
+ 		else
+-			doc_font_size = DefaultComputedValues().font_size();
++			doc_font_size = DefaultComputedValues().font_size() * zoom;
+ 		break;
+ 	case Unit::VW:
+ 	case Unit::VH:
+ 		if (Context* context = element->GetContext())
+-			vp_dimensions = Vector2f(context->GetDimensions());
++			vp_dimensions = Vector2f(context->GetDimensions()) * zoom;
+ 		break;
+ 	default: break;
+ 	}
+@@ -968,6 +967,7 @@ PropertyIdSet ElementStyle::ComputeValues(Style::ComputedValues& values, const S
+ 
+ 	Property property_storage;
+ 	const float font_size_before = values.font_size();
++	const float zoom_before = values.zoom();
+ 	const Style::LineHeight line_height_before = values.line_height();
+ 
+ 	// The next flag is just a small optimization, if the element was just created we don't need to copy all the default values.
+@@ -989,6 +989,29 @@ PropertyIdSet ElementStyle::ComputeValues(Style::ComputedValues& values, const S
+ 	SmallUnorderedSet<String> variable_dependencies;
+ 	bool dirty_em_properties = false;
+ 
++	// Zoom comes before everything else: the effective zoom scales every absolute length through the density ratio.
++	if (const Property* property = GetLocalProperty(PropertyId::Zoom))
++	{
++		variable_dependencies.clear();
++		property = ResolveVariables(PropertyId::Zoom, property, variable_dependencies, property_storage);
++		const float zoom = property ? property->Get<float>() * (property->unit == Unit::PERCENT ? 0.01f : 1.f) : 1.f;
++		// A zero zoom is no zoom; a negative or non-finite one substituted through a variable is invalid.
++		if (zoom > 0.f && zoom < FLT_MAX)
++			values.zoom(values.zoom() * zoom);
++	}
++	const float zoom_ratio = parent_values ? values.zoom() / parent_values->zoom() : values.zoom();
++	if (values.zoom() != zoom_before)
++	{
++		// Like a density ratio change, a zoom change rescales every length the element resolves.
++		dirty_properties.Insert(PropertyId::Zoom);
++		dirty_properties.Insert(PropertyId::FontSize);
++		dirty_properties.Insert(PropertyId::LineHeight);
++		for (auto it = Iterate(); !it.AtEnd(); ++it)
++			dirty_properties.Insert((*it).first);
++	}
++	dp_ratio *= values.zoom();
++	vp_dimensions *= values.zoom();
++
+ 	// Always do font-size first if dirty, because of em-relative values
+ 	if (dirty_properties.Contains(PropertyId::FontSize))
+ 	{
+@@ -1000,7 +1023,7 @@ PropertyIdSet ElementStyle::ComputeValues(Style::ComputedValues& values, const S
+ 				values.font_size(ComputeFontsize(property->GetNumericValue(), values, parent_values, document_values, dp_ratio, vp_dimensions));
+ 		}
+ 		else if (parent_values)
+-			values.font_size(parent_values->font_size());
++			values.font_size(parent_values->font_size() * zoom_ratio);
+ 
+ 		if (font_size_before != values.font_size())
+ 		{
+@@ -1014,7 +1037,8 @@ PropertyIdSet ElementStyle::ComputeValues(Style::ComputedValues& values, const S
+ 	}
+ 
+ 	const float font_size = values.font_size();
+-	const float document_font_size = (document_values ? document_values->font_size() : DefaultComputedValues().font_size());
++	const float document_font_size = (document_values ? document_values->font_size() * (values.zoom() / document_values->zoom())
++														: DefaultComputedValues().font_size() * values.zoom());
+ 
+ 	// Since vertical-align depends on line-height we compute this before iteration
+ 	if (dirty_properties.Contains(PropertyId::LineHeight))
+@@ -1033,6 +1057,9 @@ PropertyIdSet ElementStyle::ComputeValues(Style::ComputedValues& values, const S
+ 			if (parent_values->line_height().inherit_type == Style::LineHeight::Number)
+ 				values.line_height(Style::LineHeight(font_size * parent_values->line_height().inherit_value, Style::LineHeight::Number,
+ 					parent_values->line_height().inherit_value));
++			else if (parent_values->line_height().inherit_type == Style::LineHeight::Length)
++				values.line_height(Style::LineHeight(parent_values->line_height().value * zoom_ratio, Style::LineHeight::Length,
++					parent_values->line_height().inherit_value * zoom_ratio));
+ 			else
+ 				values.line_height(parent_values->line_height());
+ 		}
+@@ -1317,6 +1344,8 @@ void ElementStyle::ComputeValue(Style::ComputedValues& values, float dp_ratio, V
+ 	case PropertyId::Opacity:
+ 		values.group_opacity(p->Get<float>());
+ 		break;
++	case PropertyId::Zoom:
++		break; // Computed before any length.
+ 
+ 	case PropertyId::FontFamily:
+ 		// Fetched from element's properties.
+diff --git a/Source/Core/ElementUtilities.cpp b/Source/Core/ElementUtilities.cpp
+index 701aa51..965ba21 100644
+--- a/Source/Core/ElementUtilities.cpp
++++ b/Source/Core/ElementUtilities.cpp
+@@ -101,10 +101,11 @@ void ElementUtilities::GetElementsByClassName(ElementList& elements, Element* ro
+ float ElementUtilities::GetDensityIndependentPixelRatio(Element* element)
+ {
+ 	Context* context = element->GetContext();
++	const float zoom = element->GetComputedValues().zoom();
+ 	if (context == nullptr)
+-		return 1.0f;
++		return zoom;
+ 
+-	return context->GetDensityIndependentPixelRatio();
++	return context->GetDensityIndependentPixelRatio() * zoom;
+ }
+ 
+ float ElementUtilities::GetStringWidth(Element* element, StringView string, Character prior_character)
+diff --git a/Source/Core/StyleSheetSpecification.cpp b/Source/Core/StyleSheetSpecification.cpp
+index fec742e..207fd7d 100644
+--- a/Source/Core/StyleSheetSpecification.cpp
++++ b/Source/Core/StyleSheetSpecification.cpp
+@@ -377,6 +377,8 @@ void StyleSheetSpecification::RegisterDefaultProperties()
+ 	RegisterProperty(PropertyId::ImageColor, "image-color", "white", false, false).AddParser("color");
+ 	RegisterProperty(PropertyId::ObjectFit, "object-fit", "fill", false, false).AddParser("keyword", "fill, contain, cover, none, scale-down");
+ 	RegisterProperty(PropertyId::Opacity, "opacity", "1", false, false).AddParser("number");
++	// Registered as inherited: the computed value is the effective zoom, which each element multiplies its own zoom into.
++	RegisterProperty(PropertyId::Zoom, "zoom", "1", true, true).AddParser("number_percent");
+ 
+ 	RegisterProperty(PropertyId::FontFamily, "font-family", "", true, true).AddParser("string");
+ 	RegisterProperty(PropertyId::FontStyle, "font-style", "normal", true, true).AddParser("keyword", "normal, italic");

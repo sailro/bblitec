@@ -86,17 +86,16 @@ test("host queues retain Arguments identities across concrete stored callback sp
     );
 });
 
-test("unknown host arrays without a source layout remain unsupported", () => {
-    assert.throws(
-        () =>
-            compileSource(`
+test("unknown host arrays nothing installs read absent", () => {
+    // A global member only the program's types declare, which the program
+    // never writes, has no host page to install it natively.
+    const { cpp } = compileSource(`
         setTimeout(() => globalThis.close(), 0);
         type Host = { queue?: unknown[] };
         const host = window as Window & Host;
         const entries = host.queue;
         if (entries) console.log(entries[0]);
         globalThis.close();
-    `),
-        /Unsupported data property 'queue' on event-target/,
-    );
+    `);
+    assert.doesNotMatch(cpp, /queue|console/);
 });

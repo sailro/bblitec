@@ -1,6 +1,6 @@
 import ts from "typescript";
 import { forEachAnalysisNode } from "./analysis-walk.js";
-import { pinnedSourceHandleKind } from "./data-types.js";
+import { isOpaqueEngineObject, pinnedSourceHandleKind } from "./data-types.js";
 import type { EvaluationOrder } from "./evaluation-order.js";
 import { callOnlyReadsArgument } from "./parameter-effects.js";
 import {
@@ -170,13 +170,16 @@ export function recordCopyObservation(
  * `source` type: one through a holder that can hold such a record, or through
  * a more specific type whose records the program can also view as `source`.
  * Asking only whether the field stays present, a plain assignment of a value
- * that is neither null nor undefined cannot remove it.
+ * that is neither null nor undefined cannot remove it. A record whose object
+ * an `origin` literal creates is reached by no write through a `const` holding
+ * another literal's object (`ObservedWrite.freshObject`).
  */
 export function recordFieldIsWritten(
     context: RecordObservationContext,
     source: ts.Type,
     property: string,
     keepsPresent = false,
+    origin?: ts.Node,
 ): boolean {
     const { checker } = context;
     const observations = programObservations(context.program);
@@ -220,7 +223,10 @@ export function recordFieldIsWritten(
         return absent.null || absent.undefined;
     };
     const relevant = (write: ObservedWrite): boolean =>
-        !keepsPresent || mayRemove(write);
+        (!keepsPresent || mayRemove(write)) &&
+        (origin === undefined ||
+            write.freshObject === undefined ||
+            write.freshObject === origin);
     return (
         writesWhere(
             observations,
@@ -884,7 +890,7 @@ function writesWhere(
  * Whether a value of type `holder` can be a record of one of `records`, one
  * answer per holder and record list.
  */
-function holderTest(
+export function holderTest(
     checker: ts.TypeChecker,
 ): (holder: ts.Type, records: readonly ts.Type[]) => boolean {
     const known = new Map<readonly ts.Type[], Map<ts.Type, boolean>>();
@@ -941,6 +947,7 @@ function holdsRecord(
     )
         return false;
     const holderHandle = pinnedSourceHandleKind(holder);
+    const holderOpaque = isOpaqueEngineObject(checker, holder);
     // A record union's value is a record of one of its members.
     return records.some((record) =>
         unionMembers(record).some((member) => {
@@ -948,6 +955,7 @@ function holdsRecord(
             if (holderHandle !== undefined || memberHandle !== undefined) {
                 return holderHandle === memberHandle;
             }
+            if (holderOpaque) return member.symbol === holder.symbol;
             return checker.isTypeAssignableTo(member, holder);
         }),
     );

@@ -421,6 +421,22 @@ const opaqueSink = {
             : undefined,
 };
 
+/**
+ * An opaque kind a dynamic value can also hold boxed (a Blob a store read
+ * back): its instance, asserted as `instanceof` narrowed it.
+ */
+const boxedOpaqueSink = {
+    expression: opaqueSink.expression,
+    value: (
+        type: DataType,
+        lowerer: DataSinkHost,
+        value: Value,
+    ): string | undefined =>
+        isJsonValue(value)
+            ? `${value.cpp}.asserted_instance<${lowerer.context.dataTypes.cppType(type)}>()`
+            : opaqueSink.value(type, lowerer, value),
+};
+
 /** A leaf only a value of its own kind converts to. */
 function sameKindSink<
     K extends "symbol" | "bigint" | "i64array" | "u64array" | "gpu",
@@ -461,10 +477,20 @@ export const scalarsSinks: DataSinkOperations<
     | "request-init"
     | "url"
     | "image-bitmap"
+    | "dom-rect"
     | "gpu-adapter"
     | "gpu"
     | "gpu-adapter-info"
     | "idle-deadline"
+    | "idb-factory"
+    | "idb-open-request"
+    | "idb-request"
+    | "idb-cursor-request"
+    | "idb-database"
+    | "idb-transaction"
+    | "idb-object-store"
+    | "idb-cursor"
+    | "dom-string-list"
     | "promise"
     | "storage"
     | "date"
@@ -598,13 +624,23 @@ export const scalarsSinks: DataSinkOperations<
     "request-init": opaqueSink,
     url: opaqueSink,
     "image-bitmap": opaqueSink,
+    "dom-rect": opaqueSink,
     gpu: sameKindSink("gpu"),
     file: opaqueSink,
-    blob: opaqueSink,
+    blob: boxedOpaqueSink,
     "file-list": opaqueSink,
     "uninhabited-object": opaqueSink,
     "gpu-adapter-info": opaqueSink,
     "idle-deadline": opaqueSink,
+    "idb-factory": opaqueSink,
+    "idb-open-request": opaqueSink,
+    "idb-request": opaqueSink,
+    "idb-cursor-request": opaqueSink,
+    "idb-database": opaqueSink,
+    "idb-transaction": opaqueSink,
+    "idb-object-store": opaqueSink,
+    "idb-cursor": opaqueSink,
+    "dom-string-list": opaqueSink,
     error: {
         expression: (type, lowerer, expression) =>
             lowerer.compileKnownValueForSink(

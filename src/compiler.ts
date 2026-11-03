@@ -99,6 +99,10 @@ import {
 } from "./compiler/storage-demand-planner.js";
 import { StorageDemand } from "./compiler/storage-demand.js";
 import { ReplayStorage } from "./compiler/replay-storage.js";
+import {
+    NativeRecordDemandRefused,
+    NativeRecordStorageRequired,
+} from "./compiler/native-record-storage.js";
 import { resolve } from "node:path";
 import { integerCounterOf } from "./compiler/integer-loops.js";
 import {
@@ -155,6 +159,7 @@ import {
 } from "./compiler/static-fetch.js";
 import {
     BrowserErasure,
+    browserDeploymentValue,
     browserEnvironmentValue,
     constInitializer,
 } from "./compiler/browser-erasure.js";
@@ -201,6 +206,7 @@ import {
     domAudioHandleKind,
     handleCppType,
     isHandleKind,
+    isUiElementHandleType,
     isPinnedType,
     typeImpliedFacts,
     opaqueEngineValue,
@@ -539,6 +545,19 @@ export { CompileError };
 const commitAlways = (): boolean => true;
 
 /**
+ * @unjournaled A fact of the parsed program, kept across replays: by
+ * parameter, `alwaysUsedParameterDefault`'s answer and the awaits its walk
+ * unwrapped, which each later asking compile records again.
+ */
+const parameterDefaultAnswers = new WeakMap<
+    ts.ParameterDeclaration,
+    {
+        readonly initializer: ts.Expression | undefined;
+        readonly awaits: readonly ts.AwaitExpression[];
+    }
+>();
+
+/**
  * Executed module constants: numbers are JavaScript doubles, and every value
  * keeps full static metadata for the static positions that read it.
  */
@@ -673,8 +692,16 @@ function compileSourceApplication(
                 lazyModules.add(error.file);
                 return true;
             }
-            if (error instanceof StorageDemand)
+            if (error instanceof StorageDemand) {
+                // Outside a recovered statement a refused demand is the
+                // compile's refusal.
+                const refusal =
+                    error instanceof NativeRecordStorageRequired
+                        ? storage.refusedRecord(error.demand)
+                        : undefined;
+                if (refusal) throw refusal;
                 return storage.add(error.request);
+            }
             if (
                 error instanceof RuntimeSearchParamsRequired &&
                 (!resolved.runtimeSearchParams ||
@@ -1058,6 +1085,7 @@ class Compiler implements LoweringServices {
         DynamicBindingStorage | undefined
     >;
     private readonly ownedRecords: Readonly<ReplayStorage["records"]>;
+    private readonly replayStorage: ReplayStorage;
     public readonly absenceTags: ReadonlySet<ts.Declaration>;
     public readonly thrownValueKinds: ReadonlySet<"string">;
     public readonly tupleArraySlots: ReadonlySet<ts.Declaration>;
@@ -1073,6 +1101,7 @@ class Compiler implements LoweringServices {
         /** The discarded planning attempt this compiler lowers for, if any. */
         planner?: StorageDemandPlanner,
     ) {
+        this.replayStorage = storage;
         this.dynamicBindings = storage.dynamicBindings;
         this.ownedRecords = storage.records;
         this.absenceTags = storage.absenceTags;
@@ -1138,7 +1167,7 @@ class Compiler implements LoweringServices {
             (identifier) => this.bindings.lookup(identifier),
             (identifier) => this.bindings.lookupOptional(identifier),
             (node, message, reason) => this.fail(node, message, reason),
-            (expression) => this.unwrappedAwaitExpressions.add(expression.pos),
+            (expression) => this.recordUnwrappedAwait(expression),
             () => this.reachJsData(),
             (value, arity) => this.bindings.bindDataTuple(value, arity),
             (expression) => this.symbols.pinnedWgslTemplate(expression),
@@ -1224,6 +1253,8 @@ class Compiler implements LoweringServices {
             this.reachFeature("data:bigint");
         if (this.dataTypes.usesSymbolStorage())
             this.reachFeature("data:symbol");
+        if (this.dataTypes.usesLocaleStorage())
+            this.reachFeature("data:locale");
         if (this.dataTypes.usesFileStorage())
             this.reachFeature("browser:file", this.sourceFile);
 
@@ -1355,8 +1386,18 @@ class Compiler implements LoweringServices {
             ),
             this.ownedRecords.values(),
         );
-        for (const demand of this.ownedRecords.values())
-            if (!demand.document) this.dataTypes.predeclareOwnedRecord(demand);
+        // A demand no native object can hold stands refused: the replay
+        // drops it, and a statement demanding it again refuses instead of
+        // the whole compile.
+        for (const demand of this.ownedRecords.values()) {
+            if (demand.document) continue;
+            try {
+                this.dataTypes.predeclareOwnedRecord(demand);
+            } catch (error) {
+                if (!(error instanceof CompileError)) throw error;
+                throw new NativeRecordDemandRefused(demand, error);
+            }
+        }
         for (const [declaration, storage] of this.dynamicBindings) {
             const source = this.checker.getTypeAtLocation(declaration.name);
             // A record of methods has a type only as the storage it takes:
@@ -2112,8 +2153,24 @@ class Compiler implements LoweringServices {
     ): NullableResourceType | undefined {
         const type = this.checker.getTypeAtLocation(node);
         const present = presentMembers(type);
-        if (present.length !== 1 || (!allowDirect && !isNullable(type)))
-            return undefined;
+        if (!allowDirect && !isNullable(type)) return undefined;
+        // DOM interfaces (`HTMLElement | SVGElement`) are one retained
+        // element handle, as the data model maps their union.
+        if (
+            present.length > 1 &&
+            present.every(
+                (member) =>
+                    member.symbol !== undefined &&
+                    isUiElementHandleType(member.symbol),
+            )
+        ) {
+            const element: DataType = { kind: "handle", handle: "ui-element" };
+            return {
+                kind: "ui-element",
+                cppType: this.dataTypes.cppType(element),
+            };
+        }
+        if (present.length !== 1) return undefined;
         const member = present[0]!;
         if (isPinnedType(member, ["EngineContext"])) {
             if (!this.options.workers && !isNullable(type)) return undefined;
@@ -3672,9 +3729,12 @@ class Compiler implements LoweringServices {
     /** The value symbol an expression names once unwrapped, or undefined. */
     public unwrappedValueSymbol(
         expression: ts.Expression,
+        onAwait?: (awaited: ts.AwaitExpression) => void,
     ): ts.Symbol | undefined {
         const identifier = unwrappedIdentifier(expression, (wrapped) =>
-            this.unwrap(wrapped),
+            onAwait
+                ? this.evaluator.unwrap(wrapped, { onAwait })
+                : this.unwrap(wrapped),
         );
         return identifier && this.symbols.valueSymbol(identifier);
     }
@@ -4088,6 +4148,11 @@ class Compiler implements LoweringServices {
         return this.staticAssetUrlCandidateCache;
     }
 
+    /** An `await` the evaluator's unwrap passed: the adaptation report counts it. */
+    private recordUnwrappedAwait(expression: ts.AwaitExpression): void {
+        this.unwrappedAwaitExpressions.add(expression.pos);
+    }
+
     /**
      * The initializer of a parameter which every source call omits.
      *
@@ -4110,9 +4175,20 @@ class Compiler implements LoweringServices {
         if (!parameter?.initializer || !ts.isFunctionLike(parameter.parent)) {
             return undefined;
         }
+        const known = parameterDefaultAnswers.get(parameter);
+        if (known) {
+            // The walk's unwraps record the awaits they pass in every compile.
+            for (const awaited of known.awaits)
+                this.recordUnwrappedAwait(awaited);
+            return known.initializer;
+        }
         const owner = parameter.parent;
         const index = owner.parameters.indexOf(parameter);
         if (index < 0) return undefined;
+        const awaits: ts.AwaitExpression[] = [];
+        const onAwait = (awaited: ts.AwaitExpression): void => {
+            awaits.push(awaited);
+        };
         let reachedCall = false;
         let passedExplicitly = false;
         const ownerName = ts.isFunctionDeclaration(owner)
@@ -4134,8 +4210,10 @@ class Compiler implements LoweringServices {
                     ts.isCallExpression(candidate) &&
                     (calledDeclaration(this.checker, candidate) === owner ||
                         (ownerSymbol !== undefined &&
-                            this.unwrappedValueSymbol(candidate.expression) ===
-                                ownerSymbol))
+                            this.unwrappedValueSymbol(
+                                candidate.expression,
+                                onAwait,
+                            ) === ownerSymbol))
                 ) {
                     reachedCall = true;
                     if (candidate.arguments.length > index) {
@@ -4145,9 +4223,12 @@ class Compiler implements LoweringServices {
                 }
             });
         for (const source of this.sourceFiles()) visit(source);
-        return reachedCall && !passedExplicitly
-            ? parameter.initializer
-            : undefined;
+        const initializer =
+            reachedCall && !passedExplicitly
+                ? parameter.initializer
+                : undefined;
+        parameterDefaultAnswers.set(parameter, { initializer, awaits });
+        return initializer;
     }
 
     /**
@@ -5253,6 +5334,8 @@ class Compiler implements LoweringServices {
                     closed = false;
                     return this.staticScalar(identifier);
                 },
+                deploymentValue: (expression) =>
+                    browserDeploymentValue(this, expression),
                 ...(ts.isVariableDeclaration(declaration) ||
                 ts.isCallExpression(declaration)
                     ? {
@@ -6885,6 +6968,12 @@ class Compiler implements LoweringServices {
 
     public transaction(work: () => void): void {
         this.emissionTransaction(work, commitAlways);
+    }
+
+    public refusedDemand(error: unknown): CompileError | undefined {
+        return error instanceof NativeRecordStorageRequired
+            ? this.replayStorage.refusedRecord(error.demand)
+            : undefined;
     }
 
     private emissionTransaction<T>(
@@ -9810,6 +9899,9 @@ class Compiler implements LoweringServices {
             // unambiguous engine context (one engine per entry point).
             if (value.engineCarriersDisagree)
                 return this.requireDefaultEngine(node);
+            // A UI element no carrier names belongs to the Window document.
+            if (value.kind === "ui-element")
+                return this.ui.documentEngine(node);
             this.fail(
                 node,
                 `A ${value.kind} value is not associated with an engine.`,
@@ -10121,6 +10213,8 @@ class Compiler implements LoweringServices {
     }
 
     public compileSceneRegistration(scene: Value, node: ts.Node): string {
+        // A registered scene renders, its clear color at least, with no mesh.
+        this.reachFeature("renderer:scene", node);
         if (scene.surfaceCanvas) {
             const task = this.ensureDefaultRenderTask(scene, node);
             return `${task.setup};\n        bbl::register_scene(${task.sceneCpp})`;
@@ -10496,8 +10590,14 @@ class Compiler implements LoweringServices {
             postProcessCompositeCount:
                 this.sceneManifest.postProcessComposites.length,
             screenSpaceTaskCount: this.sceneManifest.screenSpaceTasks.length,
+            renderPbrPluginFunctions: () =>
+                this.sceneManifest.pbrPluginFunctionsCpp(),
+            // Worker messages and IndexedDB values clone records field by field.
             renderDataPreamble: () =>
-                this.dataTypes.renderPreamble(!!this.options.workers),
+                this.dataTypes.renderPreamble(
+                    !!this.options.workers ||
+                        features.includes("storage:indexeddb"),
+                ),
             nativeFunctions: this.nativeEmission.nativeDefinitions,
             nativeDeclarations: this.nativeDeclarations,
             staticNativeDeclarations:

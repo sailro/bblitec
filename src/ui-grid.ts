@@ -113,8 +113,11 @@ export function supportedUiGridTracks(
     const finite = (token: string): boolean =>
         Number.isFinite(parseFloat(token)) &&
         parseFloat(token) <= 3.4028234663852886e38;
+    // CSS math and custom properties resolve to px natively before the
+    // track parser reads them (the PAL folds math after substitution).
+    const computed = /^(?:calc|min|max|clamp|var)\(.*\)$/;
     const fixed = (token: string): boolean =>
-        length.test(token) && finite(token);
+        (length.test(token) && finite(token)) || computed.test(token);
     const flexible = (token: string): boolean =>
         fraction.test(token) && finite(token);
     let automaticRepeat = false;
@@ -151,10 +154,25 @@ export function supportedUiGridTracks(
                 if (parts.length !== 2) return undefined;
                 const automatic =
                     parts[0] === "auto-fit" || parts[0] === "auto-fill";
-                if (automatic ? automaticRepeat : !/^[1-9]\d*$/.test(parts[0]!))
+                // A count a custom property substitutes (its fallback, if
+                // any, a count too) is read natively once substituted; an
+                // invalid substituted count refuses there.
+                const substituted =
+                    /^var\(\s*--[\w-]+\s*(?:,\s*([1-9]\d*)\s*)?\)$/.exec(
+                        parts[0]!,
+                    );
+                if (
+                    automatic
+                        ? automaticRepeat
+                        : !substituted && !/^[1-9]\d*$/.test(parts[0]!)
+                )
                     return undefined;
                 if (automatic) automaticRepeat = true;
-                const count = automatic ? 1 : Number(parts[0]);
+                const count = automatic
+                    ? 1
+                    : substituted
+                      ? Number(substituted[1] ?? 1)
+                      : Number(parts[0]);
                 if (count > 256) return undefined;
                 const pattern = tracks(parts[1]!, true);
                 if (!pattern || result.length + pattern.length * count > 256)

@@ -111,7 +111,10 @@ function filterMathShape(
     return result;
 }
 
-/** Literal pixel shadows share filter colors and keep each layer's source order. */
+/**
+ * Literal pixel or viewport-length shadows share filter colors and keep each
+ * layer's source order; the PAL resolves vmin/vmax, RmlUi vw/vh.
+ */
 export function supportedUiBoxShadow(value: string): boolean {
     const text = value.trim().toLowerCase();
     if (text === "none") return true;
@@ -137,7 +140,11 @@ export function supportedUiBoxShadow(value: string): boolean {
             color = false,
             endedLengths = false;
         for (const token of tokens) {
-            if (/^[+-]?(?:\d+(?:\.\d*)?|\.\d+)px$|^[+-]?0$/.test(token)) {
+            if (
+                /^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:px|vw|vh|[sld]?vmin|[sld]?vmax)$|^[+-]?0$/.test(
+                    token,
+                )
+            ) {
                 if (endedLengths) return false;
                 const number = Number.parseFloat(token);
                 if (!Number.isFinite(Math.fround(number))) return false;

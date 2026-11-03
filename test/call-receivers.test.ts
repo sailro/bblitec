@@ -89,9 +89,9 @@ test("methods on a call-produced data receiver run once, as in Node", () => {
 test("member calls on a call-produced element keep the call and its effect", () => {
     const cpp = compileSource(program).cpp;
     assert.match(cpp, /ui_set_style_property\([^;]+"--n", "3"\)/);
-    assert.match(cpp, /ui_toggle_class\([^;]+"x", true\)/);
-    assert.match(cpp, /ui_toggle_class\([^;]+"y", v_flag\)/);
-    assert.match(cpp, /ui_toggle_class\([^;]+"z", true\)/);
+    assert.match(cpp, /ui_(?:set|toggle)_class\([^;]+"x", true\)/);
+    assert.match(cpp, /ui_(?:set|toggle)_class\([^;]+"y", v_flag\)/);
+    assert.match(cpp, /ui_(?:set|toggle)_class\([^;]+"z", true\)/);
     // A shape the projection cannot represent refuses rather than dropping.
     for (const [statement, diagnostic] of [
         [`make("a").setAttribute("role", "x");`, /Unsupported call target/],

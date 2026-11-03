@@ -38,6 +38,7 @@ export type DataSinkHost = Pick<
     | "noteArgumentsPastSignature"
     | "connectFunctionStorage"
     | "requireNumericSlot"
+    | "requireArrayBindingElements"
 >;
 
 /** Every data kind declares expression and already-evaluated value conversion. */

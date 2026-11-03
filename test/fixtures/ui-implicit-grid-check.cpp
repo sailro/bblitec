@@ -63,6 +63,16 @@ int main() try {
             "width:60px;height:40px;margin-top:-40px;background-color:#0000ff;pointer-events:auto;");
         ui_append_to_root(engine, static_grid);
         ui_append_to_root(engine, later_block);
+        // Column flow fills each column's rows, then opens implicit columns (CSS Grid 8.5).
+        const auto columns =
+            make("div", "position:absolute;left:10px;top:300px;display:grid;grid-auto-flow:column;"
+                        "grid-template-rows:repeat(2,10px);grid-auto-columns:20px;");
+        std::vector<UiElementHandle> cells;
+        for (int i = 0; i < 3; ++i) {
+            cells.push_back(make("div", "width:20px;height:10px;"));
+            ui_append_child(engine, columns, cells.back());
+        }
+        ui_append_to_root(engine, columns);
         pal::UiRmlRuntime runtime(engine, window, 640, 480);
         const auto update = [&] { pal::update_ui_rml_runtime(runtime, 640, 480); };
         update();
@@ -78,6 +88,12 @@ int main() try {
         check(runtime.context->GetElementAtPoint(later_position + Rml::Vector2f(2, 2)) ==
                   raw(later_block),
               "static grid uses block stacking order");
+        expectNear(offset(cells[0], columns).x, 0.f, "column flow first cell x");
+        expectNear(offset(cells[0], columns).y, 0.f, "column flow first cell y");
+        expectNear(offset(cells[1], columns).x, 0.f, "column flow fills its column first");
+        expectNear(offset(cells[1], columns).y, 10.f, "column flow second row");
+        expectNear(offset(cells[2], columns).x, 20.f, "column flow opens an implicit column");
+        expectNear(offset(cells[2], columns).y, 0.f, "column flow restarts at the first row");
         expectNear(offset(first, grid).x, 50.f, "first centered x");
         expectNear(offset(first, grid).y, 12.5f, "first auto row y");
         expectNear(offset(second, grid).x, 40.f, "second centered x");

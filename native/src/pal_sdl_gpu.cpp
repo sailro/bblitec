@@ -685,7 +685,7 @@ public:
     /** One frame, its storage-buffer writes staged with its uploads (`SdlStagedWrites`). */
     FrameOutcome conduct_staged_frame() {
         const SdlStagedStorageWrites staged{*data_.frame_buffer_uploads};
-        const FrameOutcome outcome = conduct_frame(*this);
+        const FrameOutcome outcome = conduct_frame(*this, data_.engine);
         SdlStagedWrites::submit_active();
         return outcome;
     }
@@ -1641,6 +1641,13 @@ public:
         // read the frame's own delta.
 
         return true;
+    }
+
+    /** The animation turn's start, when the conductor runs it ahead of the engine's function. */
+    bool begin_animation_turn() {
+        return pal::begin_animation_turn(data_.engine, data_.frame_clock,
+                                         data_.frame_options.frame_delta_ms)
+            .has_value();
     }
 
     FramePreparation update() {

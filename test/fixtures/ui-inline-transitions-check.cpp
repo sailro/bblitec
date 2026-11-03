@@ -97,11 +97,23 @@ int main() try {
                            "position:absolute;top:160px;width:10px;height:10px;left:0;"
                            "transition:left 100ms linear;");
         ui_add_class_style(engine, sheet, "moved", "left:60px;");
+        ui_add_class_style(engine, sheet, "span",
+                           "position:absolute;top:200px;left:0;height:10px;"
+                           "transition:width 100ms linear;");
         const auto knob = make("", "knob");
         const auto fill = make("clip-path:inset(0 50% 0 0);", "fill");
         const auto fade = make("", "fade");
         const auto grow = make("width:50px;", "grow");
         const auto pinned = make("left:30px;", "pinned");
+        const auto span = make("width:50%;", "span");
+        // A later rule's transition-duration replaces the list's; a later shorthand resets it.
+        ui_add_class_style(engine, sheet, "slow",
+                           "position:absolute;top:240px;left:0;width:10px;height:10px;"
+                           "transition:opacity 1000ms linear;");
+        ui_add_class_style(engine, sheet, "brief", "transition-duration:100ms;");
+        ui_add_class_style(engine, sheet, "late", "transition:opacity 1000ms linear;");
+        const auto brief = make("", "slow brief");
+        const auto reset = make("", "slow brief late");
 
         pal::UiRmlRuntime runtime(engine, window, 640, 480);
         const auto raw = [&](auto h) { return runtime.projected_elements.at(h.value).element; };
@@ -198,6 +210,36 @@ int main() try {
               "an inline declaration wins over a changed rule without a transition");
         at(2500);
         check(close_to(left(pinned), 30, "pinned end"), "the inline declaration still holds");
+
+        // CSS math over a percentage mixes its terms: 50% to calc(100% - 40px) of the 640px
+        // viewport passes 75% - 20px; one bounded by min() swaps at the midpoint.
+        const auto span_width = [&] { return raw(span)->GetBox().GetSize().x; };
+        ui_set_style_property(engine, span, "width", "calc(100% - 40px)");
+        at(2500);
+        at(2550);
+        check(close_to(span_width(), 460, "span midpoint"), "percentage math transitions linearly");
+        at(2700);
+        check(close_to(span_width(), 600, "span end"), "the math declaration holds");
+        ui_set_style_property(engine, span, "width", "min(200px,100%)");
+        at(2700);
+        at(2749);
+        check(close_to(span_width(), 600, "bounded before midpoint"),
+              "bounded math keeps the start value before the midpoint");
+        at(2751);
+        check(close_to(span_width(), 200, "bounded after midpoint"),
+              "bounded math swaps at the midpoint");
+
+        ui_set_style_property(engine, brief, "opacity", "0");
+        ui_set_style_property(engine, reset, "opacity", "0");
+        at(2800);
+        at(2850);
+        check(close_to(raw(brief)->GetComputedValues().group_opacity() * 100, 50, "brief midpoint"),
+              "transition-duration replaces the shorthand's duration");
+        check(close_to(raw(reset)->GetComputedValues().group_opacity() * 100, 95, "reset midpoint"),
+              "a later shorthand resets transition-duration");
+        at(2900);
+        check(close_to(raw(brief)->GetComputedValues().group_opacity() * 100, 0, "brief end"),
+              "the brief transition ends");
     }
     SDL_DestroyWindow(window);
     SDL_Quit();

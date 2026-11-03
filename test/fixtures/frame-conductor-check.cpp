@@ -7,6 +7,14 @@
 
 using namespace bbl::pal;
 
+// The turn's end the conductor runs once an application replaced `engine._renderFn`
+// (render-function-conductor-check drives that path); these frames never reach it.
+void bbl::pal::finish_animation_turn(bbl::Engine&) { assert(false); }
+
+namespace {
+bbl::Engine engine;
+} // namespace
+
 template <FrameAcquirePhase Acquire> struct Renderer {
     static constexpr FrameAcquirePhase acquire_phase = Acquire;
     std::vector<std::string> events;
@@ -30,6 +38,10 @@ template <FrameAcquirePhase Acquire> struct Renderer {
         event("prepare");
         return preparation;
     }
+    bool begin_animation_turn() {
+        event("turn");
+        return true;
+    }
     FramePreparation update() {
         event("update");
         return update_result;
@@ -52,7 +64,7 @@ template <FrameAcquirePhase Acquire> struct Renderer {
 
 template <FrameAcquirePhase Acquire> void check() {
     Renderer<Acquire> renderer;
-    assert(conduct_frame(renderer) == FrameOutcome::rendered);
+    assert(conduct_frame(renderer, engine) == FrameOutcome::rendered);
     std::vector<std::string> expected{"gate",   "prepare", "update",  "sync",
                                       "encode", "present", "complete"};
     const auto position = Acquire == FrameAcquirePhase::before_update    ? 2
@@ -66,55 +78,56 @@ template <FrameAcquirePhase Acquire> void check() {
           std::pair{FramePreparation::skip, FrameOutcome::skipped}}) {
         Renderer<Acquire> preparing;
         preparing.preparation = preparation;
-        assert(conduct_frame(preparing) == outcome);
+        assert(conduct_frame(preparing, engine) == outcome);
         assert(preparing.events == std::vector<std::string>({"gate", "prepare"}));
         Renderer<Acquire> updating;
         updating.update_result = preparation;
-        assert(conduct_frame(updating) == outcome);
+        assert(conduct_frame(updating, engine) == outcome);
         assert(updating.events ==
                std::vector<std::string>(expected.begin(),
                                         std::find(expected.begin(), expected.end(), "update") + 1));
         Renderer<Acquire> presenting;
         presenting.present_result = preparation;
-        assert(conduct_frame(presenting) == outcome && presenting.completed == 0);
+        assert(conduct_frame(presenting, engine) == outcome && presenting.completed == 0);
         assert(presenting.events == std::vector<std::string>(expected.begin(), expected.end() - 1));
     }
     struct VoidPresent : Renderer<Acquire> {
         void present() { this->event("present"); }
     };
     VoidPresent ordinary;
-    assert(conduct_frame(ordinary) == FrameOutcome::rendered && ordinary.events == expected);
+    assert(conduct_frame(ordinary, engine) == FrameOutcome::rendered &&
+           ordinary.events == expected);
     renderer.events.clear();
     renderer.update_result = FramePreparation::restart;
-    assert(conduct_frame(renderer) == FrameOutcome::restart);
+    assert(conduct_frame(renderer, engine) == FrameOutcome::restart);
     assert(renderer.events ==
            std::vector<std::string>(expected.begin(),
                                     std::find(expected.begin(), expected.end(), "update") + 1));
     renderer.update_result = FramePreparation::ready;
     renderer.events.clear();
     renderer.surface_available = false;
-    assert(conduct_frame(renderer) == FrameOutcome::skipped);
+    assert(conduct_frame(renderer, engine) == FrameOutcome::skipped);
     assert(renderer.events ==
            std::vector<std::string>(expected.begin(), expected.begin() + position + 1));
     assert(renderer.completed == 1);
     renderer.events.clear();
     renderer.preparation = FramePreparation::restart;
-    assert(conduct_frame(renderer) == FrameOutcome::restart);
+    assert(conduct_frame(renderer, engine) == FrameOutcome::restart);
     assert(renderer.events == std::vector<std::string>({"gate", "prepare"}));
     renderer.events.clear();
     renderer.preparation = FramePreparation::stop;
-    assert(conduct_frame(renderer) == FrameOutcome::stopped);
+    assert(conduct_frame(renderer, engine) == FrameOutcome::stopped);
     assert(renderer.events == std::vector<std::string>({"gate", "prepare"}));
     renderer.events.clear();
     renderer.running = false;
-    assert(conduct_frame(renderer) == FrameOutcome::stopped);
+    assert(conduct_frame(renderer, engine) == FrameOutcome::stopped);
     assert(renderer.events == std::vector<std::string>({"gate"}));
     for (const auto& stage : expected) {
         Renderer<Acquire> failing;
         failing.fail_at = stage;
         bool threw = false;
         try {
-            conduct_frame(failing);
+            conduct_frame(failing, engine);
         } catch (const std::runtime_error&) {
             threw = true;
         }

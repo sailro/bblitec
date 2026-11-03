@@ -56,6 +56,11 @@ struct CloneSet {
 struct CloneDate {
     double time;
 };
+/** A Blob: its type and its bytes (HTML's serializable Blob). */
+struct CloneBlob {
+    std::string type;
+    std::vector<std::uint8_t> bytes;
+};
 /** The class a buffer view is received as; a DataView has no element type. */
 enum class CloneViewKind : std::uint8_t {
     int8,
@@ -78,7 +83,7 @@ struct CloneView {
 };
 using CloneNode =
     std::variant<CloneUndefined, CloneNull, bool, double, std::string, CloneArray, CloneObject,
-                 CloneBuffer, CloneTransfer, CloneMap, CloneSet, CloneDate, CloneView>;
+                 CloneBuffer, CloneTransfer, CloneMap, CloneSet, CloneDate, CloneView, CloneBlob>;
 
 /**
  * JavaScript objects of different classes never share an identity, although an

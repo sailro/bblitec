@@ -22,7 +22,7 @@ int main() try {
         const auto panel = ui_create_element(engine, "div");
         ui_set_attribute(
             engine, panel, "style",
-            "width:100px;height:30px;border-top:2px #ff0000;border-right:3px #0000ff;border-bottom:4px #00ff00;border-left:5px #112233;font-style:italic;text-transform:uppercase;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;transform-origin:left bottom;");
+            "width:100px;height:30px;border-top:2px solid #ff0000;border-right:3px solid #0000ff;border-bottom:4px solid #00ff00;border-left:5px solid #112233;font-style:italic;text-transform:uppercase;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;transform-origin:left bottom;");
         ui_set_text(engine, panel, "A long caption for an intentionally narrow text container");
         ui_append_to_root(engine, panel);
         pal::UiRmlRuntime runtime(engine, window, 640, 480);
@@ -66,8 +66,24 @@ int main() try {
               "normal and italic faces retain distinct font selection");
         ui_set_style_property(engine, panel, "border-width", "");
         update();
-        check(raw->GetBox().GetEdge(Rml::BoxArea::Border, Rml::BoxEdge::Right) == 0.f,
+        // The side keeps its solid style, so its width returns to the initial medium.
+        check(raw->GetBox().GetEdge(Rml::BoxArea::Border, Rml::BoxEdge::Right) == 3.f,
               "border shorthand removal clears its width longhands");
+
+        // A replaced style attribute is the whole inline block: what it no longer declares goes.
+        ui_set_attribute(engine, panel, "style", "width:100px;height:30px;--edge:1;");
+        update();
+        check(raw->GetBox().GetEdge(Rml::BoxArea::Border, Rml::BoxEdge::Top) == 0.f &&
+                  raw->GetComputedValues().font_style() == Rml::Style::FontStyle::Normal &&
+                  !raw->GetLocalProperty("border-top-style") && raw->GetLocalProperty("--edge"),
+              "a replaced style attribute drops its old declarations");
+        ui_set_attribute(engine, panel, "style", "height:30px;");
+        update();
+        check(!raw->GetLocalProperty("width") && !raw->GetLocalProperty("--edge"),
+              "a replaced style attribute drops its old custom properties");
+        ui_remove_attribute(engine, panel, "style");
+        update();
+        check(!raw->GetLocalProperty("height"), "a removed style attribute drops its declarations");
     }
     SDL_DestroyWindow(window);
     SDL_Quit();

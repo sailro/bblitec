@@ -304,8 +304,13 @@ public:
                                          [&](const auto& item) { return item.first == name; }),
                           entries.end());
         }
-        if (entries_->update)
-            entries_->update(to_string());
+        updated();
+    }
+    /** `delete(key)`: drops every entry named `key`. */
+    void remove(const std::string& key) const { remove_entries(usv_string(key), std::nullopt); }
+    /** `delete(key, value)`: drops the entries named `key` holding `value`. */
+    void remove(const std::string& key, const std::string& value) const {
+        remove_entries(usv_string(key), usv_string(value));
     }
     std::string to_string() const {
         if (!entries_)
@@ -319,6 +324,25 @@ public:
             result += search_params_detail::encode(value);
         }
         return result;
+    }
+
+private:
+    void remove_entries(const std::string& name, const std::optional<std::string>& value) const {
+        if (!entries_)
+            throw std::runtime_error("URLSearchParams receiver is absent.");
+        auto& entries = entries_->entries;
+        entries.erase(std::remove_if(entries.begin(), entries.end(),
+                                     [&](const auto& item) {
+                                         return item.first == name &&
+                                                (!value || item.second == *value);
+                                     }),
+                      entries.end());
+        updated();
+    }
+    /** The owning URL's update steps run after every change. */
+    void updated() const {
+        if (entries_->update)
+            entries_->update(to_string());
     }
 };
 } // namespace bbl::js

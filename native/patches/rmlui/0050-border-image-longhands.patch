@@ -1,0 +1,200 @@
+border-image as a shorthand over its five longhands (source, slice, width, outset, repeat), so a rule that sets one
+longhand (a pressed button's border-image-source) cascades over another rule's shorthand as CSS requires. The
+shorthand reads the source and slices, widths and outsets after slashes, then the repeat, resetting omitted ones;
+the longhands hold the canonical four-value boxes generation writes, composed back into one border-image text.
+CSS Backgrounds 3: https://www.w3.org/TR/css-backgrounds-3/#border-image
+
+diff --git a/Include/RmlUi/Core/ID.h b/Include/RmlUi/Core/ID.h
+index 3204d3a..6e8ef94 100644
+--- a/Include/RmlUi/Core/ID.h
++++ b/Include/RmlUi/Core/ID.h
+@@ -35,6 +35,7 @@ enum class ShorthandId : uint8_t {
+ 	Nav,
+ 	PlaceItems,
+ 	GridArea,
++	BorderImage,
+ 
+ 	NumDefinedIds,
+ 	FirstCustomId = NumDefinedIds,
+@@ -168,7 +169,11 @@ enum class PropertyId : uint8_t {
+ 	RmlUi_Language,
+ 	RmlUi_Direction,
+ 	BackgroundClip,
+-	BorderImage,
++	BorderImageSource,
++	BorderImageSlice,
++	BorderImageWidth,
++	BorderImageOutset,
++	BorderImageRepeat,
+ 	GridTemplateColumns,
+ 	GridTemplateRows,
+ 	GridColumn,
+diff --git a/Include/RmlUi/Core/PropertySpecification.h b/Include/RmlUi/Core/PropertySpecification.h
+index 0abe694..c544ac3 100644
+--- a/Include/RmlUi/Core/PropertySpecification.h
++++ b/Include/RmlUi/Core/PropertySpecification.h
+@@ -31,7 +31,9 @@ enum class ShorthandType {
+ 	// Unordered longhands, resetting omitted components to their defaults.
+ 	Unordered,
+ 	// 'grid-area': up to four slash-separated grid lines onto the row and column placements.
+-	GridArea
++	GridArea,
++	// 'border-image': source and slices / widths / outsets and repeat onto its longhands, omitted ones initial.
++	BorderImage
+ };
+ 
+ /**
+diff --git a/Source/Core/Element.cpp b/Source/Core/Element.cpp
+index 80131ad..e16be2e 100644
+--- a/Source/Core/Element.cpp
++++ b/Source/Core/Element.cpp
+@@ -1976,7 +1976,11 @@ void Element::OnPropertyChange(const PropertyIdSet& changed_properties)
+ 	// Dirty the background if it's changed.
+ 	if (border_radius_changed ||                                    //
+ 		changed_properties.Contains(PropertyId::BackgroundColor) || //
+-		changed_properties.Contains(PropertyId::BorderImage) ||
++		changed_properties.Contains(PropertyId::BorderImageSource) ||
++		changed_properties.Contains(PropertyId::BorderImageSlice) ||
++		changed_properties.Contains(PropertyId::BorderImageWidth) ||
++		changed_properties.Contains(PropertyId::BorderImageOutset) ||
++		changed_properties.Contains(PropertyId::BorderImageRepeat) ||
+ 		changed_properties.Contains(PropertyId::BackgroundClip) ||  //
+ 		changed_properties.Contains(PropertyId::Opacity) ||         //
+ 		changed_properties.Contains(PropertyId::ImageColor) ||      //
+diff --git a/Source/Core/ElementBackgroundBorder.cpp b/Source/Core/ElementBackgroundBorder.cpp
+index ad44c2e..438dc32 100644
+--- a/Source/Core/ElementBackgroundBorder.cpp
++++ b/Source/Core/ElementBackgroundBorder.cpp
+@@ -232,7 +232,13 @@ void ElementBackgroundBorder::GenerateGeometry(Element* element)
+ 	if (Background* image = GetBackground(BackgroundType::BorderImage))
+ 		image_mesh = image->geometry.Release(Geometry::ReleaseMode::ClearMesh);
+ 	Texture image_texture;
+-	const bool has_border_image = GenerateBorderImage(element, element->GetProperty(PropertyId::BorderImage)->Get<String>(), image_mesh, image_texture);
++	const auto longhand = [element](PropertyId id) { return element->GetProperty(id)->Get<String>(); };
++	const String source = longhand(PropertyId::BorderImageSource);
++	const bool has_border_image = source != "none" &&
++		GenerateBorderImage(element,
++			source + " " + longhand(PropertyId::BorderImageSlice) + " / " + longhand(PropertyId::BorderImageWidth) + " / " +
++				longhand(PropertyId::BorderImageOutset) + " " + longhand(PropertyId::BorderImageRepeat),
++			image_mesh, image_texture);
+ 	if (has_border_image) {
+ 		Background& image = GetOrCreateBackground(BackgroundType::BorderImage);
+ 		image.geometry = render_manager->MakeGeometry(std::move(image_mesh));
+diff --git a/Source/Core/ElementStyle.cpp b/Source/Core/ElementStyle.cpp
+index 9c0ec02..c7b140d 100644
+--- a/Source/Core/ElementStyle.cpp
++++ b/Source/Core/ElementStyle.cpp
+@@ -1485,7 +1485,11 @@ void ElementStyle::ComputeValue(Style::ComputedValues& values, float dp_ratio, V
+ 	// Unhandled properties. Must be manually retrieved with 'GetProperty()'.
+ 	case PropertyId::FillImage:
+ 	case PropertyId::CaretColor:
+-	case PropertyId::BorderImage:
++	case PropertyId::BorderImageSource:
++	case PropertyId::BorderImageSlice:
++	case PropertyId::BorderImageWidth:
++	case PropertyId::BorderImageOutset:
++	case PropertyId::BorderImageRepeat:
+ 	case PropertyId::BackgroundClip:
+ 		break;
+ 	// Invalid properties
+diff --git a/Source/Core/PropertySpecification.cpp b/Source/Core/PropertySpecification.cpp
+index 2500f76..0004789 100644
+--- a/Source/Core/PropertySpecification.cpp
++++ b/Source/Core/PropertySpecification.cpp
+@@ -8,6 +8,7 @@
+ #include "Layout/GridPlacement.h"
+ #include "PropertyShorthandDefinition.h"
+ #include <algorithm>
++#include <cctype>
+ #include <limits.h>
+ #include <stdint.h>
+ 
+@@ -346,6 +347,61 @@ bool PropertySpecification::ParseShorthandDeclaration(PropertyDictionary& dictio
+ 		return true;
+ 	}
+ 
++	if (shorthand_definition->type == ShorthandType::BorderImage)
++	{
++		// CSS Backgrounds 3 §6.8: the source and slices, then widths and outsets after slashes, then the repeat.
++		const auto& items = shorthand_definition->items;
++		RMLUI_ASSERT(items.size() == 5);
++		String values[5];
++		for (size_t i = 0; i < 5; i++)
++			values[i] = items[i].property_definition->GetDefaultValue()->Get<String>();
++		if (StringUtilities::ToLower(StringUtilities::StripWhitespace(property_value)) != "none")
++		{
++			StringList groups;
++			StringUtilities::ExpandString(groups, property_value, '/', '(', ')', false);
++			if (groups.empty() || groups.size() > 3)
++				return false;
++			const auto tokens = [](const String& group) {
++				StringList list;
++				StringUtilities::ExpandString(list, group, ' ', '(', ')', true);
++				return list;
++			};
++			const auto join = [](StringList::const_iterator begin, StringList::const_iterator end) {
++				String joined;
++				for (auto it = begin; it != end; ++it)
++					joined += (joined.empty() ? "" : " ") + *it;
++				return joined;
++			};
++			const StringList first = tokens(groups[0]);
++			if (first.empty())
++				return false;
++			values[0] = first[0];
++			if (first.size() > 1)
++				values[1] = join(first.begin() + 1, first.end());
++			if (groups.size() > 1)
++				values[2] = StringUtilities::StripWhitespace(groups[1]);
++			if (groups.size() > 2)
++			{
++				StringList last = tokens(groups[2]);
++				if (!last.empty() && std::isalpha((unsigned char)last.back().front()))
++				{
++					values[4] = last.back();
++					last.pop_back();
++				}
++				if (!last.empty())
++					values[3] = join(last.begin(), last.end());
++			}
++		}
++		for (size_t i = 0; i < 5; i++)
++		{
++			Property longhand;
++			if (!items[i].property_definition->ParseValue(longhand, values[i]))
++				return false;
++			dictionary.SetProperty(items[i].property_id, longhand);
++		}
++		return true;
++	}
++
+ 	if (shorthand_definition->type == ShorthandType::Unordered)
+ 	{
+ 		const auto& items = shorthand_definition->items;
+diff --git a/Source/Core/StyleSheetSpecification.cpp b/Source/Core/StyleSheetSpecification.cpp
+index 3146bad..eb998d8 100644
+--- a/Source/Core/StyleSheetSpecification.cpp
++++ b/Source/Core/StyleSheetSpecification.cpp
+@@ -357,7 +357,12 @@ void StyleSheetSpecification::RegisterDefaultProperties()
+ 	RegisterProperty(PropertyId::Visibility, "visibility", "visible", true, false).AddParser("keyword", "visible, hidden");
+ 	RegisterProperty(PropertyId::TextOverflow, "text-overflow", "clip", false, false).AddParser("keyword", "clip, ellipsis").AddParser("string");
+ 
+-	RegisterProperty(PropertyId::BorderImage, "border-image", "none", false, false).AddParser("string");
++	// Canonical four-value boxes, as generation writes them; the composed text reads as one border-image.
++	RegisterProperty(PropertyId::BorderImageSource, "border-image-source", "none", false, false).AddParser("string");
++	RegisterProperty(PropertyId::BorderImageSlice, "border-image-slice", "100% 100% 100% 100%", false, false).AddParser("string");
++	RegisterProperty(PropertyId::BorderImageWidth, "border-image-width", "1 1 1 1", false, false).AddParser("string");
++	RegisterProperty(PropertyId::BorderImageOutset, "border-image-outset", "0 0 0 0", false, false).AddParser("string");
++	RegisterProperty(PropertyId::BorderImageRepeat, "border-image-repeat", "stretch", false, false).AddParser("string");
+ 
+ 	// Need some work on this if we are to include images.
+ 	RegisterProperty(PropertyId::BackgroundColor, "background-color", "transparent", false, false).AddParser("color");
+@@ -453,6 +458,8 @@ void StyleSheetSpecification::RegisterDefaultProperties()
+ 	RegisterProperty(PropertyId::GridAutoRows, "grid-auto-rows", "auto", false, true).AddParser("string");
+ 	RegisterProperty(PropertyId::GridTemplateAreas, "grid-template-areas", "none", false, true).AddParser("string");
+ 	RegisterShorthand(ShorthandId::GridArea, "grid-area", "grid-row, grid-column", ShorthandType::GridArea);
++	RegisterShorthand(ShorthandId::BorderImage, "border-image",
++		"border-image-source, border-image-slice, border-image-width, border-image-outset, border-image-repeat", ShorthandType::BorderImage);
+ 	RegisterProperty(PropertyId::AspectRatio, "aspect-ratio", "auto", false, true).AddParser("string");
+ 	RegisterProperty(PropertyId::ClipPath, "clip-path", "none", false, false).AddParser("string");
+ 	RegisterProperty(PropertyId::Isolation, "isolation", "auto", false, false).AddParser("keyword", "auto, isolate");

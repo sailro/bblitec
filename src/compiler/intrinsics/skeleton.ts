@@ -3,7 +3,7 @@ import ts from "typescript";
 import { argumentAt } from "../syntax.js";
 import { handleCppType } from "../data-types.js";
 import type { Value } from "../types.js";
-import { handleFoundCpp } from "../properties.js";
+import { handleFoundCpp } from "../values/model.js";
 import type { IntrinsicCallContext } from "./context.js";
 
 export interface SkeletonIntrinsicContext

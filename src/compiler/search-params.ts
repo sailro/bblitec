@@ -10,6 +10,21 @@ export class RuntimeSearchParamsRequired extends Error {
     }
 }
 
+/** The URLSearchParams methods that change the query (and its URL's). */
+export const searchParamsMutators: ReadonlySet<string> = new Set([
+    "set",
+    "delete",
+]);
+
+/** Lowered URLSearchParams methods: the native method each calls. */
+const NATIVE_METHODS: ReadonlyMap<string, string> = new Map([
+    ["get", "get"],
+    ["has", "has"],
+    ["set", "set"],
+    ["delete", "remove"],
+    ["toString", "to_string"],
+]);
+
 /** The runtime query bag over `input`: the one spelling every URLSearchParams value shares. */
 function searchParamsValue(lowerer: DataLowerer, input: string): Value {
     const type = { kind: "search-params" } as const;
@@ -71,15 +86,23 @@ export function compileSearchParamsMethod(
     method: string,
 ): Value {
     const context = lowerer.context;
-    if (method === "set" && !context.options.runtimeSearchParams)
+    if (
+        searchParamsMutators.has(method) &&
+        !context.options.runtimeSearchParams
+    )
         throw new RuntimeSearchParamsRequired();
-    if (!["get", "has", "set", "toString"].includes(method))
+    const native = NATIVE_METHODS.get(method);
+    if (!native)
         return context.fail(
             call,
             `Runtime URLSearchParams.${method} is not lowered.`,
         );
     const minimum = method === "toString" ? 0 : method === "set" ? 2 : 1;
-    context.expectArgumentCount(call, minimum, method === "has" ? 2 : minimum);
+    context.expectArgumentCount(
+        call,
+        minimum,
+        method === "has" || method === "delete" ? 2 : minimum,
+    );
     const callee = context.unwrap(call.expression);
     const pins = context.evaluationOrder.operandsToPin([
         isMemberAccess(callee) ? callee.expression : callee,
@@ -99,8 +122,8 @@ export function compileSearchParamsMethod(
             argument,
         );
     });
-    const cpp = `(${receiver.cpp}).${method === "toString" ? "to_string" : method}(${arguments_.join(", ")})`;
-    if (method === "set") return { kind: "void", cpp };
+    const cpp = `(${receiver.cpp}).${native}(${arguments_.join(", ")})`;
+    if (searchParamsMutators.has(method)) return { kind: "void", cpp };
     return lowerer.leafValue(
         cpp,
         method === "has"

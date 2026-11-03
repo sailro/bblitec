@@ -261,6 +261,10 @@ export class SceneManifestRecorder {
     public manifestRecords(
         adaptations: CompileAdaptation[],
     ): SceneManifestRecords {
+        const pbrPluginAppends =
+            this.sceneMaterials.pbrMaterialStates.length > 0
+                ? this.sceneMaterials.closePbrPluginSignatures()
+                : undefined;
         return {
             ...(this.reachedComputePrograms.length
                 ? { computePrograms: this.reachedComputePrograms }
@@ -305,6 +309,14 @@ export class SceneManifestRecorder {
             ),
             standardMaterialPlugins:
                 this.sceneMaterials.standardMaterialPlugins,
+            ...(pbrPluginAppends
+                ? {
+                      pbrMaterialStates: this.sceneMaterials.pbrMaterialStates,
+                      pbrPluginSignatures:
+                          this.sceneMaterials.pbrPluginSignatures,
+                      pbrPluginAppends,
+                  }
+                : {}),
             standardMaterialPluginInputs:
                 this.sceneMaterials.standardMaterialPluginInputs,
             ...(this.standardMaterialUnknownMesh ||
@@ -762,6 +774,45 @@ export class SceneManifestRecorder {
         index: number | undefined,
     ): void {
         this.sceneMaterials.recordScenePbrPlugins(plugins, index);
+    }
+
+    /**
+     * A composition-relevant write on a PBR material: the materials it can
+     * reach (from the value's identity) and what it gives them.
+     */
+    public recordPbrStateWrite(
+        material: Pick<
+            Value,
+            "scenePbrMaterialIndex" | "assetPbrMaterial" | "assetWholeMeshList"
+        >,
+        write: Parameters<SceneMaterialRecorder["recordPbrStateWrite"]>[1],
+    ): void {
+        this.sceneMaterials.recordPbrStateWrite(
+            material.scenePbrMaterialIndex !== undefined
+                ? { kind: "scene", index: material.scenePbrMaterialIndex }
+                : material.assetWholeMeshList
+                  ? {
+                        kind: "asset",
+                        output: material.assetWholeMeshList.output,
+                    }
+                  : { kind: "assets" },
+            write,
+        );
+    }
+
+    public pbrPluginSignature(
+        plugins: readonly MaterialPluginManifest[],
+    ): number {
+        return this.sceneMaterials.pbrPluginSignature(plugins);
+    }
+
+    public pbrPluginId(plugin: MaterialPluginManifest): number {
+        return this.sceneMaterials.pbrPluginId(plugin);
+    }
+
+    /** The plugin list algebra a program's list tests and appends call. */
+    public pbrPluginFunctionsCpp(): string {
+        return this.sceneMaterials.pbrPluginFunctionsCpp();
     }
 
     public recordStandardMaterialPlugins(

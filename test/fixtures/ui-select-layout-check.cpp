@@ -17,7 +17,7 @@ int main() try {
         const auto select = ui_create_element(engine, "select");
         ui_set_attribute(
             engine, select, "style",
-            "position:absolute;left:20px;top:20px;padding:6px 9px;border:1px #ffffff;border-radius:7px;color:#ffffff;background-color:#14344e;");
+            "position:absolute;left:20px;top:20px;padding:6px 9px;border:1px solid #ffffff;border-radius:7px;color:#ffffff;background-color:#14344e;");
         std::vector<UiElementHandle> options;
         for (const char* value : {"256", "128", "64", "32"}) {
             auto option = ui_create_element(engine, "option");

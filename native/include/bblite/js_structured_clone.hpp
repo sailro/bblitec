@@ -143,6 +143,13 @@ template <> struct CloneCodec<Undefined> {
     }
 };
 
+template <> struct CloneCodec<Null> {
+    static pal::CloneNode encode(pal::CloneWriter&, Null) { return pal::CloneNull{}; }
+    static void read_into(pal::CloneReader& reader, pal::CloneId id, Null&) {
+        reader.get<pal::CloneNull>(id);
+    }
+};
+
 /** A function cannot be cloned; an absent one (an empty callback) clones as undefined. */
 template <typename R, typename... Args> struct CloneCodec<Callback<R(Args...)>> {
     static pal::CloneNode encode(pal::CloneWriter&, const Callback<R(Args...)>& value) {

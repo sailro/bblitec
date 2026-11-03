@@ -1,7 +1,7 @@
 import ts from "typescript";
 import { forEachAnalysisNode } from "./analysis-walk.js";
 import { engineArgumentWritten } from "./parameter-effects.js";
-import { yieldsNewArray } from "./fresh-records.js";
+import { constObjectLiteral, yieldsNewArray } from "./fresh-records.js";
 import {
     declarationOrigin,
     declaredSymbol,
@@ -16,6 +16,7 @@ import {
     unwrapExpression,
     wrappedParent,
     isTypeAssertion,
+    unwrapTypePreserving,
     writeSites,
     writeSiteOf,
     accessKey,
@@ -30,6 +31,8 @@ export interface ObservedWrite {
     readonly property?: string;
     /** Its place in program order. */
     readonly order: number;
+    /** The literal creating every object a write through a `const` reaches (`constObjectLiteral`). */
+    readonly freshObject?: ts.Node;
 }
 
 /** One read of a property's value. */
@@ -132,19 +135,33 @@ const MUTATING_ARRAY_METHODS = new Set([
     "fill",
     "copyWithin",
 ]);
-/** Library functions that read every own property of an argument. */
-const WHOLESALE_READERS: ReadonlyMap<string, ReadonlySet<string>> = new Map([
+/**
+ * Library functions that read every own property of their arguments, or of
+ * the one argument named: a receiver is the `this` a getter runs with, read
+ * where that getter reads it.
+ */
+const WHOLESALE_READERS: ReadonlyMap<
+    string,
+    ReadonlyMap<string, "all" | number>
+> = new Map([
     [
         "Object",
-        new Set([
-            "assign",
-            "entries",
-            "values",
-            "getOwnPropertyDescriptor",
-            "getOwnPropertyDescriptors",
+        new Map<string, "all" | number>([
+            ["assign", "all"],
+            ["entries", "all"],
+            ["values", "all"],
+            ["getOwnPropertyDescriptor", "all"],
+            ["getOwnPropertyDescriptors", "all"],
         ]),
     ],
-    ["Reflect", new Set(["get", "getOwnPropertyDescriptor", "apply"])],
+    [
+        "Reflect",
+        new Map<string, "all" | number>([
+            ["get", 0],
+            ["getOwnPropertyDescriptor", 0],
+            ["apply", "all"],
+        ]),
+    ],
 ]);
 
 /** Whether a member read is a call's callee, a write target or a `typeof`/`delete` operand. */
@@ -312,15 +329,25 @@ function observe(program: ts.Program): ProgramObservations {
         )
             return;
         if (
-            (ts.isPropertyAccessExpression(unwrapped) ||
-                ts.isElementAccessExpression(unwrapped)) &&
-            arrayLike(unwrapped.expression)
+            !ts.isPropertyAccessExpression(unwrapped) &&
+            !ts.isElementAccessExpression(unwrapped)
         )
-            add(arrayWrites, typeOf(unwrapped.expression), { node: unwrapped });
+            return;
+        const literal = constObjectLiteral(
+            checker,
+            unwrapped.expression,
+        )?.literal;
+        const freshObject = literal ? { freshObject: literal } : {};
+        if (arrayLike(unwrapped.expression))
+            add(arrayWrites, typeOf(unwrapped.expression), {
+                node: unwrapped,
+                ...freshObject,
+            });
         if (ts.isPropertyAccessExpression(unwrapped))
             add(writes, typeOf(unwrapped.expression), {
                 node: unwrapped,
                 property: unwrapped.name.text,
+                ...freshObject,
             });
         else if (ts.isElementAccessExpression(unwrapped)) {
             // A number-typed key indexes; it names no record property.
@@ -334,6 +361,7 @@ function observe(program: ts.Program): ProgramObservations {
             add(writes, typeOf(unwrapped.expression), {
                 node: unwrapped,
                 ...(property === undefined ? {} : { property }),
+                ...freshObject,
             });
         }
     };
@@ -372,18 +400,21 @@ function observe(program: ts.Program): ProgramObservations {
                 }
         }
         if (isTypeAssertion(node)) {
+            const untyped = (type: ts.Type): boolean =>
+                (type.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) !== 0;
             const asserted = typeOf(node);
+            // `x as unknown as T` retypes the value `x` holds: it is open
+            // only where that operand itself is untyped.
+            let operand = unwrapTypePreserving(node.expression);
+            while (isTypeAssertion(operand) && untyped(typeOf(operand)))
+                operand = unwrapTypePreserving(operand.expression);
+            // No value has type `never` (an exhaustiveness check's
+            // `x satisfies never`): such an assertion retypes nothing.
             if (
-                (asserted.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) ===
-                0
+                !untyped(asserted) &&
+                (asserted.flags & ts.TypeFlags.Never) === 0
             )
-                assertions.push({
-                    asserted,
-                    open:
-                        (typeOf(node.expression).flags &
-                            (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) !==
-                        0,
-                });
+                assertions.push({ asserted, open: untyped(typeOf(operand)) });
         }
         // A function whose body the program does not hold may write any
         // object it is handed: an ambient declaration's, or the engine's
@@ -453,11 +484,27 @@ function observe(program: ts.Program): ProgramObservations {
         else if (ts.isNewExpression(node)) {
             const name = libraryGlobal(checker, node.expression);
             if (name && KEYED_COLLECTIONS.has(name)) {
-                const keys = typeOf(node);
-                const key =
-                    (keys.flags & ts.TypeFlags.Object) !== 0
-                        ? checker.getTypeArguments(keys as ts.TypeReference)[0]
+                const keyOf = (keys: ts.Type): ts.Type | undefined => {
+                    const key =
+                        (keys.flags & ts.TypeFlags.Object) !== 0
+                            ? checker.getTypeArguments(
+                                  keys as ts.TypeReference,
+                              )[0]
+                            : undefined;
+                    return key && (key.flags & ts.TypeFlags.Any) === 0
+                        ? key
                         : undefined;
+                };
+                // `new Map()` is `Map<any, any>` by its own overload; the
+                // collection it stores into fixes the keys it can take.
+                const contextual = checker.getContextualType(node);
+                const key =
+                    keyOf(typeOf(node)) ??
+                    (contextual
+                        ? unionMembers(contextual)
+                              .map(keyOf)
+                              .find((member) => member !== undefined)
+                        : undefined);
                 addIdentity(key ?? checker.getAnyType(), node);
             }
         } else if (ts.isCallExpression(node)) call(node);
@@ -475,10 +522,16 @@ function observe(program: ts.Program): ProgramObservations {
         if (!callee) return;
         const method = callee.name;
         const owner = libraryGlobal(checker, callee.expression);
-        if (owner !== undefined && WHOLESALE_READERS.get(owner)?.has(method))
+        const read =
+            owner !== undefined
+                ? WHOLESALE_READERS.get(owner)?.get(method)
+                : undefined;
+        if (read !== undefined)
             wholesaleReads.push(
                 ...node.arguments.filter(
-                    (argument) => !ts.isSpreadElement(argument),
+                    (argument, index) =>
+                        !ts.isSpreadElement(argument) &&
+                        (read === "all" || index === read),
                 ),
             );
         if (owner === "Object") {

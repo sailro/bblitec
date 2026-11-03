@@ -109,7 +109,7 @@ public:
         Derived renderer(engine);
         renderer.setup();
         for (;;) {
-            const FrameOutcome outcome = conduct_frame(renderer);
+            const FrameOutcome outcome = conduct_frame(renderer, engine);
             if (outcome == FrameOutcome::stopped)
                 break;
             co_yield outcome == FrameOutcome::rendered;
@@ -127,6 +127,12 @@ public:
         sync_engine_canvas_size(derived().sdl_window(), engine);
         return derived().prepare_surface();
     }
+    /** The animation turn's start, when the conductor runs it ahead of the engine's function. */
+    bool begin_animation_turn() {
+        return pal::begin_animation_turn(engine, frame_clock, frame_options.frame_delta_ms)
+            .has_value();
+    }
+
     FramePreparation update() {
         static_cast<void>(advance_frame(engine, frame_clock, frame_options.frame_delta_ms));
         begin_measurement();

@@ -13,7 +13,10 @@ import {
     libraryName,
     namedMember,
 } from "./symbols.js";
+import type { KeyPath } from "./projections.js";
 import {
+    ANY_KEY,
+    aliasKey,
     objectLiteralMembers,
     referenceBases,
     unwrapExpression,
@@ -37,19 +40,42 @@ import { someAnalysisNode } from "./analysis-walk.js";
 export function literalHeldValues(
     expression: ts.Expression,
 ): readonly ts.Expression[] {
+    return literalHeldValuesAt(expression).map(({ value }) => value);
+}
+
+/**
+ * {@link literalHeldValues} with the key path each sits at below the
+ * literal: a property under its key, an element under {@link ANY_KEY}.
+ */
+export function literalHeldValuesAt(
+    expression: ts.Expression,
+    at: KeyPath = [],
+): readonly { readonly value: ts.Expression; readonly path: KeyPath }[] {
     const literal = unwrapExpression(expression);
     const values = ts.isObjectLiteralExpression(literal)
         ? objectLiteralMembers(literal).flatMap((member) =>
-              member.value === undefined ? [] : [member.value],
+              member.value === undefined
+                  ? []
+                  : [
+                        {
+                            value: member.value,
+                            path: [...at, aliasKey(member.key)],
+                        },
+                    ],
           )
         : ts.isArrayLiteralExpression(literal)
-          ? literal.elements.filter(
-                (element) =>
-                    !ts.isSpreadElement(element) &&
-                    !ts.isOmittedExpression(element),
-            )
+          ? literal.elements
+                .filter(
+                    (element) =>
+                        !ts.isSpreadElement(element) &&
+                        !ts.isOmittedExpression(element),
+                )
+                .map((value) => ({ value, path: [...at, ANY_KEY] }))
           : [];
-    return values.flatMap((value) => [value, ...literalHeldValues(value)]);
+    return values.flatMap((held) => [
+        held,
+        ...literalHeldValuesAt(held.value, held.path),
+    ]);
 }
 
 /**

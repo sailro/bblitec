@@ -11,7 +11,9 @@ import {
 import { joinAssetFeatures } from "../src/asset-feature-join.js";
 import { GeneratedTree } from "../src/generated-tree.js";
 import { importPinnedModule } from "../src/pinned-shader-composer.js";
+import type { PinnedVariantManifestEntry } from "../src/pinned-pbr-variant-output.js";
 import { writeGlbFixture } from "./glb-fixture.js";
+import { TINT_PLUGIN } from "./program-snippets.js";
 import { packageGltfLoadPlan } from "../src/gltf-load-plan.js";
 import {
     dynamicCasterFeatureSets,
@@ -139,6 +141,151 @@ test("PBR profiles retain composed indices across imported and runtime materials
     );
     assert.ok(selectors.has(3) && selectors.has(4));
     assert.match(result.cpp, /\.roughness_factor =.*\?/);
+});
+
+/** The composed variants a row keys. */
+function variantsOfRow(
+    composed: Awaited<ReturnType<typeof composeImportedMesh>>["composed"],
+    row: number,
+) {
+    return composed.pinnedVariants.filter((variant) =>
+        variant.selectors.some((selector) => selector.materialIndex === row),
+    );
+}
+
+/** Each composed row's selectors, by the row they key. */
+function selectorsByRow(
+    composed: Awaited<ReturnType<typeof composeImportedMesh>>["composed"],
+) {
+    const rows = new Map<
+        number,
+        PinnedVariantManifestEntry["selectors"][number][]
+    >();
+    for (const variant of composed.pinnedVariants)
+        for (const selector of variant.selectors)
+            rows.set(selector.materialIndex, [
+                ...(rows.get(selector.materialIndex) ?? []),
+                selector,
+            ]);
+    return rows;
+}
+
+test("a copied loaded PBR material composes the blend state its write reaches", async () => {
+    const outputPath = resolve("artifacts/pbr-material-copy-states");
+    writeImportedMeshFixture(outputPath);
+    const { result, composed } = await composeImportedMesh(
+        outputPath,
+        `
+        import {createEngine, loadGltf, getContainerMeshes} from "@babylonjs/lite";
+        import type {PbrMaterialProps} from "@babylonjs/lite";
+        const engine = await createEngine({});
+        const asset = await loadGltf(engine, "level.glb");
+        for (const mesh of getContainerMeshes(asset)) {
+            const material = mesh.material;
+            if (!material) continue;
+            const copy = {...(material as PbrMaterialProps)};
+            copy.alphaBlend = true;
+            mesh.material = copy;
+        }
+    `,
+    );
+    assert.match(result.cpp, /bbl::clone_material\(/);
+    assert.match(result.cpp, /bbl::set_pbr_alpha_blend\([^\n]+, true\)/);
+    const { PBR_HAS_ALPHA_BLEND } = await importPinnedModule<{
+        PBR_HAS_ALPHA_BLEND: number;
+    }>("material/pbr/pbr-flag-bits.js");
+    // The document's one material keeps its own row, and its blending
+    // state composes the first row past every handle's.
+    assert.deepEqual(composed.pbrMaterialStateRows, [
+        {
+            sourceRow: 0,
+            blend: false,
+            pluginSignature: 0,
+            baseColorFactorWritten: false,
+            row: 0,
+        },
+        {
+            sourceRow: 0,
+            blend: true,
+            pluginSignature: 0,
+            baseColorFactorWritten: false,
+            row: 1,
+        },
+    ]);
+    // One handle, then the blending state.
+    assert.equal(composed.pinnedMaterialCount, 2);
+    const rows = selectorsByRow(composed);
+    assert.ok(
+        rows
+            .get(0)!
+            .every(
+                (selector) =>
+                    (selector.materialFeatures & PBR_HAS_ALPHA_BLEND) === 0,
+            ),
+    );
+    assert.ok(
+        rows
+            .get(1)!
+            .every(
+                (selector) =>
+                    (selector.materialFeatures & PBR_HAS_ALPHA_BLEND) !== 0,
+            ),
+    );
+});
+
+test("a PBR material's grown plugin list and alpha compose every state they reach", async () => {
+    const outputPath = resolve("artifacts/pbr-material-plugin-states");
+    writeImportedMeshFixture(outputPath);
+    const { result, composed } = await composeImportedMesh(
+        outputPath,
+        `
+        import {addToScene, createBox, createEngine, createPbrMaterial, createSceneContext, enableMaterialPlugins, loadGltf, registerScene} from "@babylonjs/lite";
+        import type {MaterialPlugin} from "@babylonjs/lite";
+        ${TINT_PLUGIN}
+        const engine = await createEngine({});
+        const scene = createSceneContext(engine);
+        await loadGltf(engine, "level.glb");
+        const material = createPbrMaterial({});
+        const box = createBox(engine);
+        box.material = material;
+        addToScene(scene, box);
+        if (!material.plugins?.includes(tint)) material.plugins = [...(material.plugins ?? []), tint];
+        material.alpha = 0.5;
+        enableMaterialPlugins(scene);
+        await registerScene(scene);
+    `,
+    );
+    assert.match(result.cpp, /bblscene::pbr_plugin_signature_append\(/);
+    // The scene material is row 1, after the document's; its three other
+    // states follow the two handles.
+    assert.deepEqual(composed.scenePbrMaterialIndices, [1]);
+    assert.deepEqual(
+        composed.pbrMaterialStateRows.map((state) => [
+            state.sourceRow,
+            state.blend,
+            state.pluginSignature,
+            state.row,
+        ]),
+        [
+            [1, false, 0, 1],
+            [1, true, 0, 2],
+            [1, false, 1, 3],
+            [1, true, 1, 4],
+        ],
+    );
+    // Two handles, then the three other states.
+    assert.equal(composed.pinnedMaterialCount, 5);
+    const tinted = variantsOfRow(composed, 3);
+    assert.ok(tinted.length > 0);
+    for (const variant of tinted) {
+        assert.match(variant.fragmentWgsl, /baseColor \* 0\.5/);
+        assert.ok(variant.meshBindingLayout);
+    }
+    assert.ok(
+        variantsOfRow(composed, 1).every(
+            (variant) => !/baseColor \* 0\.5/.test(variant.fragmentWgsl),
+        ),
+    );
 });
 
 test("runtime shadow caster lists compose node material caster views", async () => {

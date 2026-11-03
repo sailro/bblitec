@@ -364,6 +364,21 @@ export function compileAdaptations(
             ],
         });
     }
+    if (features.includes("storage:indexeddb")) {
+        adaptations.push({
+            id: "native-indexed-db",
+            category: "browser-erasure",
+            sourceSemantics:
+                "indexedDB is per-origin browser storage: open upgrades a database through versionchange transactions, requests and transactions settle as later events, a value is stored as its structured clone, and an upgrade waits for other connections to close.",
+            nativeSemantics:
+                "One SQLite file per database under the Web Storage root. Requests settle in later tasks with a microtask checkpoint after each handler; a transaction commits once its last request settled, as one SQLite transaction, so an abort or failed write keeps the stored records. A value is its structured clone, read back as a dynamic value; keys are numbers and strings in IndexedDB's order. An upgrade does not wait for other connections: no versionchange or blocked event fires.",
+            risk: "medium",
+            validation: [
+                "IndexedDB compiler tests",
+                "native IndexedDB program run against a temporary root",
+            ],
+        });
+    }
     if (features.includes("platform:compression"))
         adaptations.push({
             id: "native-compression-streams",

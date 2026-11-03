@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { urlFilePath } from "./asset-source.js";
 
 export interface AssetDecoderConfiguration {
     ktx2?: {
@@ -60,8 +61,7 @@ export function prepareAssetDecoders(
                 let path = sources.get(source);
                 if (!path) {
                     const name =
-                        source
-                            .split(/[?#]/)[0]!
+                        urlFilePath(source)
                             .split(/[/\\]/)
                             .filter(Boolean)
                             .at(-1) ?? "decoder.bin";

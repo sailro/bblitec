@@ -1,3 +1,4 @@
+import assert from "node:assert/strict";
 import test from "node:test";
 import { compileSource } from "../src/compiler.js";
 import {
@@ -105,4 +106,54 @@ test("dynamic array writes preserve owned aliases and refuse unsupported storage
         }
     `,
     );
+});
+
+test("conditional record arms with differently shaped dictionary members store into one shared record", () => {
+    // The saved arms' `fields` are a union of two record types; the shared
+    // notice record's string dictionary member stores that union as the
+    // dictionary its demand asks for (it once repeated the demand forever).
+    const result = compileSource(`
+        type NoticeTone = "info" | "warning" | "done";
+        interface Notice { label: string; fields?: Record<string, string>; tone: NoticeTone; }
+        function format(label: string, fields?: Record<string, string>): string {
+            let text = label;
+            for (const [name, value] of Object.entries(fields ?? {})) text += " " + name + ":" + value;
+            return text;
+        }
+        function show(target: HTMLElement, notice: Notice): void {
+            target.textContent = format(notice.label, notice.fields);
+            target.classList.toggle("warn", notice.tone === "warning");
+        }
+        interface Panel { element: HTMLElement; finish: (saved: boolean, replaced: boolean) => void; clear: () => void; }
+        function createPanel(): Panel {
+            const banner = document.createElement("p");
+            const actions = { clear: (): void => restart() };
+            let current: Notice = { label: "idle", tone: "info" };
+            const draw = (): void => { show(banner, current); };
+            const restart = (): void => { current = { label: "idle", tone: "info" }; draw(); };
+            const post = (notice: Notice): void => { current = notice; draw(); };
+            const finish = (saved: boolean, replaced: boolean): void => {
+                if (!saved) {
+                    post(replaced
+                        ? { label: "conflict", fields: { file: format("draft"), other: format("copy"), slot: "2" }, tone: "warning" }
+                        : { label: "failed", tone: "warning" });
+                    return;
+                }
+                post(replaced
+                    ? { label: "replaced", fields: { file: format("draft"), slot: "2", other: format("copy"), previous: "1" }, tone: "done" }
+                    : { label: "saved", fields: { file: format("draft"), slot: "2" }, tone: "done" });
+            };
+            banner.addEventListener("click", () => { post({ label: "retry", fields: { file: "draft" }, tone: "info" }); });
+            draw();
+            return { element: banner, finish, clear: actions.clear };
+        }
+        const panel = createPanel();
+        document.body.appendChild(panel.element);
+        const late = performance.now() < 0;
+        panel.finish(late, true);
+        panel.finish(!late, late);
+        panel.finish(!late, !late);
+        if (late) panel.clear();
+    `);
+    assert.match(result.cpp, /bbl::js::Map<std::string, std::string>/);
 });
