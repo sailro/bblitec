@@ -33,6 +33,7 @@ export type HandleKind =
     | "offscreen-canvas"
     | "mesh"
     | "animation-group"
+    | "vat-bake"
     | "flow-graph"
     | "flow-graph-runtime"
     | "audio-buffer"

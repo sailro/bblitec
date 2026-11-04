@@ -97,6 +97,7 @@ export function compileVatIntrinsic(
                 kind: "vat-bake",
                 cpp: baked,
                 engineCpp: engine.cpp,
+                dataType: { kind: "handle", handle: "vat-bake" },
             };
         }
 

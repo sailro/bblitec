@@ -300,3 +300,39 @@ int main() {
         },
     );
 });
+
+test("a baked VAT is an engine handle a program stores and attaches later", () => {
+    const program = (body: string): string => `
+        import { addToScene, attachVat, bakeVat, createEngine, createSceneContext, loadGltf, registerScene, startEngine, type Mesh, type TransformNode, type VatBakeResult } from "@babylonjs/lite";
+        function findSkinned(node: TransformNode): Mesh | null {
+            const m = node as unknown as Mesh;
+            if (m.skeleton) return m;
+            for (const c of (node.children ?? []) as TransformNode[]) { const hit = findSkinned(c); if (hit) return hit; }
+            return null;
+        }
+        const canvas = document.getElementById("renderCanvas") as HTMLCanvasElement;
+        const engine = await createEngine(canvas);
+        const scene = createSceneContext(engine);
+        const shark = await loadGltf(engine, "https://models.babylonjs.com/shark.glb");
+        addToScene(scene, shark);
+        const mesh = findSkinned(shark.entities[0] as TransformNode);
+        if (!mesh) throw new Error("skinned");
+        ${body}
+        await registerScene(scene);
+        await startEngine(engine);
+    `;
+    const stored = compileSource(
+        program(`const bakes: VatBakeResult[] = [];
+        bakes.push(bakeVat(engine, mesh, shark.animationGroups ?? []));
+        attachVat(engine, mesh, bakes[0]!, "swimming");`),
+    );
+    assert.match(stored.cpp, /bbl::js::Array<bbl::VatBake>/);
+    const mapped = compileSource(
+        program(`const byKey = new Map<string, VatBakeResult>();
+        byKey.set("shark", bakeVat(engine, mesh, shark.animationGroups ?? []));
+        const kept = byKey.get("shark");
+        if (kept) attachVat(engine, mesh, kept, "swimming");`),
+    );
+    assert.match(mapped.cpp, /bbl::VatBake/);
+    assert.match(mapped.cpp, /bbl::attach_vat\(/);
+});

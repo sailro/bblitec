@@ -288,6 +288,7 @@ const pinnedHandleTypes: Record<string, HandleKind> = {
     PickingInfo: "picking-info",
     Mesh: "mesh",
     AnimationGroup: "animation-group",
+    VatBakeResult: "vat-bake",
     // A container's declared KHR_interactivity graphs and the runtimes
     // addToScene attaches for them.
     LoadedFlowGraph: "flow-graph",
