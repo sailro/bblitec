@@ -6565,6 +6565,21 @@ export class DataTypeRegistry {
                         !mapped &&
                         candidates.every(
                             (candidate) => candidate?.kind === "struct",
+                        ) &&
+                        declaring.every((index, at) =>
+                            declaring.every(
+                                (other, otherAt) =>
+                                    dataTypesEqual(
+                                        candidates[at]!,
+                                        candidates[otherAt]!,
+                                    ) ||
+                                    (root(index) !== root(other) &&
+                                        distinguish(
+                                            index,
+                                            [other],
+                                            propertyName,
+                                        ) !== undefined),
+                            ),
                         )
                     ) {
                         const members = candidates.filter(
