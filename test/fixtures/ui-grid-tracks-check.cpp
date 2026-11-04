@@ -90,6 +90,23 @@ int main() try {
         ui_append_to_root(engine, override_sheet);
         ui_add_id_style(engine, override_sheet, "responsive-grid",
                         "grid-template-columns:2fr 1fr;");
+        // An automatic repetition in a grid item that intrinsic sizing measures, three grid items
+        // below a grid with no width: an indefinite size repeats the tracks once (CSS Grid 7.2.3.2).
+        const auto outer = make("position:absolute;left:10px;top:300px;display:grid;gap:9px;");
+        const auto middle = make("display:grid;grid-template-columns:minmax(0,1fr);");
+        const auto inner = make("display:grid;grid-template-columns:minmax(0,1fr);");
+        const auto actions = make(
+            "display:grid;grid-template-columns:repeat(auto-fit,minmax(132px,1fr));gap:7px;"
+            "min-width:0;");
+        std::vector<UiElementHandle> buttons;
+        for (int i = 0; i < 3; ++i) {
+            buttons.push_back(make("height:20px;"));
+            ui_append_child(engine, actions, buttons.back());
+        }
+        ui_append_child(engine, inner, actions);
+        ui_append_child(engine, middle, inner);
+        ui_append_child(engine, outer, middle);
+        ui_append_to_root(engine, outer);
         pal::UiRmlRuntime runtime(engine, window, 640, 480);
         const auto update = [&](int width = 640) {
             pal::update_ui_rml_runtime(runtime, width, 480);
@@ -102,6 +119,8 @@ int main() try {
                    raw(parent)->GetAbsoluteOffset(Rml::BoxArea::Content);
         };
         update();
+        expectNear(raw(actions)->GetBox().GetSize().x, 132.f, "an indefinite automatic repetition repeats once");
+        expectNear(offset(buttons[1], actions).y, 27.f, "its items stack in the one track");
         expectNear(raw(cells[0])->GetBox().GetSize().x, 95.f, "equal flexible columns");
         expectNear(offset(cells[1], grid).x, 105.f, "second column includes gap");
         expectNear(offset(cells[2], grid).y, 30.f, "row-major placement");
