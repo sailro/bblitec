@@ -80,6 +80,29 @@ export function moduleRelativeUrl(
 }
 
 /**
+ * A URL as a packaged document names its file: an absolute URL on the
+ * deployment's origin is its root-relative path, as the browser loads the
+ * same file for both; any other URL is itself.
+ */
+export function deploymentDocumentUrl(
+    url: string,
+    options: DeploymentOptions,
+): string {
+    let parsed: URL;
+    try {
+        parsed = new URL(url);
+    } catch {
+        // A relative URL is already the document's own.
+        return url;
+    }
+    return parsed.origin === deploymentUrl(options).origin &&
+        !parsed.username &&
+        !parsed.password
+        ? `${parsed.pathname}${parsed.search}${parsed.hash}`
+        : url;
+}
+
+/**
  * The absolute URL a fetch of `source` from the deployment requests:
  * resolved against it, fragment removed (a fetch never sends one). A
  * packaged response answers as, and is found by, this URL.

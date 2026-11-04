@@ -1406,6 +1406,18 @@ js::Nullable<std::string> ui_dataset_value(Engine& engine, UiElementHandle eleme
                                      : js::Nullable<std::string>{found->second};
 }
 
+std::string ui_document_url(std::string url, std::string_view deployment) {
+    try {
+        const js::Url absolute(url);
+        if (absolute.origin() == js::Url(deployment).origin() && absolute.username().empty() &&
+            absolute.password().empty())
+            return absolute.pathname() + absolute.search() + absolute.hash();
+    } catch (const js::NamedError&) {
+        // A relative URL is already the document's own.
+    }
+    return url;
+}
+
 std::string ui_escape_rml(std::string_view text) {
     std::string escaped;
     escaped.reserve(text.size());

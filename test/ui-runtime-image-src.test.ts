@@ -121,7 +121,8 @@ test("runtime img src selects packaged images the URL inference finds, with load
         const preload = new Image();
         preload.onload = () => record(preload.naturalHeight === 4 ? "P" : "x");
         preload.onerror = () => record("x");
-        preload.src = appUrl("/assets/ui/green.png");
+        // An absolute URL on the deployment's origin loads its path.
+        preload.src = location.origin + appUrl(night ? "/assets/ui/red.png" : "/assets/ui/green.png");
     `);
     writeFileSync(join(directory, "program.hpp"), result.cpp);
     const outputs = result.manifest.assets.map((asset) => asset.output).sort();
@@ -130,6 +131,7 @@ test("runtime img src selects packaged images the URL inference finds, with load
     assert.ok(!outputs.some((output) => output.includes("missing")));
     assert.match(result.cpp, /bbl::set_dom_pointer_handler\([^;]+"error"/);
     assert.match(result.cpp, /bbl::ui_create_element\([^;]+"img"\)/);
+    assert.match(result.cpp, /bbl::ui_document_url\(/);
     runRmlUiFixture(t, "ui-runtime-image-src", {
         imageDecoder: true,
         macros: {

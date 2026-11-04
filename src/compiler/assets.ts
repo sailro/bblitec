@@ -12,6 +12,7 @@ import type { BindingLookup } from "./binding-scopes.js";
 import ts from "typescript";
 import {
     deploymentAssetSource,
+    deploymentDocumentUrl,
     deploymentPublicAsset,
     type DeploymentOptions,
 } from "./deployment.js";
@@ -223,6 +224,8 @@ export function registerUiImageAsset(
     source: string,
     logicalPath: string,
 ): CompileAsset {
+    source = deploymentDocumentUrl(source, context.options);
+    logicalPath = deploymentDocumentUrl(logicalPath, context.options);
     // A static host serves the path, whatever the URL's query or fragment; the
     // native document sits at the asset root, which `./` also names.
     const output = urlFilePath(logicalPath)

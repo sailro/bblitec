@@ -7,7 +7,7 @@ import {
     valueForKind,
 } from "./types.js";
 import { ApplicationRealmRequired } from "./worker-modules.js";
-import { deploymentUrl } from "./deployment.js";
+import { deploymentDocumentUrl, deploymentUrl } from "./deployment.js";
 import {
     emissionArray,
     EmissionSet,
@@ -629,37 +629,43 @@ export class UiProjection {
      * computes outside the candidates fails to load like a missing file.
      */
     private runtimeUiImageSource(expression: ts.Expression): string {
+        const options = this.context.options;
+        // An absolute candidate on the deployment's origin loads its path.
+        let absolute = false;
         const packaged = packagedUrlAssets(
             this.context,
             expression,
             (_, logicalSource) => {
-                if (!/^\/?[^/:?#][^:?#]*(?:[?#].*)?$/.test(logicalSource))
+                const path = deploymentDocumentUrl(logicalSource, options);
+                absolute ||= path !== logicalSource;
+                if (!/^\/?[^/:?#][^:?#]*(?:[?#].*)?$/.test(path))
                     this.context.fail(
                         expression,
-                        `An img src candidate '${logicalSource}' must be a root-relative or relative URL.`,
+                        `An img src candidate '${logicalSource}' must be a root-relative or relative URL, or one on the deployment's origin.`,
                     );
-                return registerUiImageAsset(
-                    this.context,
-                    logicalSource,
-                    logicalSource,
-                ).output;
+                return registerUiImageAsset(this.context, path, path).output;
             },
             (source) => /\.(?:png|jpe?g|webp|gif|bmp)$/i.test(source),
             (url) => url === "",
         );
         // A generation-known source with no packaged file fails to load.
         if (packaged?.selected.staticString !== undefined)
-            return this.context.cppString(packaged.selected.staticString);
+            return this.context.cppString(
+                deploymentDocumentUrl(packaged.selected.staticString, options),
+            );
         if (!packaged || packaged.assets.length === 0)
             return this.context.fail(
                 expression,
                 "An img src write requires sources generation can package: string literals, conditionals of them, host data attributes the program never writes, or a runtime string whose packaged image candidates generation can find.",
             );
-        return this.context.dataLowerer.compileKnownValueForSink(
+        const selected = this.context.dataLowerer.compileKnownValueForSink(
             packaged.selected,
             { kind: "string" },
             expression,
         );
+        return absolute
+            ? `bbl::ui_document_url(${selected}, ${this.context.cppString(deploymentUrl(options).href)})`
+            : selected;
     }
 
     public documentEngine(node: ts.Node): string {
