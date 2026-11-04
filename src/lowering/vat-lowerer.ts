@@ -153,7 +153,8 @@ export class VatLowerer {
             )}
 #include <bblite/runtime.hpp>
 #include <bblite/js_data.hpp>
-${options.prepared ? "#include <bblite/js_json.hpp>\n" : ""}
+#include <bblite/js_json.hpp>
+
 #include <algorithm>
 #include <cmath>
 ${options.prepared ? "#include <cstring>\n" : ""}#include <stdexcept>
@@ -304,7 +305,7 @@ VatHandle attach_vat(
     Engine& engine,
     MeshHandle mesh,
     VatBake baked,
-    const std::string& clip) {
+    const js::Nullable<std::string>& clip) {
     if (baked.value >= engine.vat_bakes.size()) {
         throw std::runtime_error("attachVat names no such bake.");
     }
@@ -322,9 +323,15 @@ VatHandle attach_vat(
     record.bone_matrices.clear();
     const VatHandle handle{mesh};
     const VatBakeRecord& bake = ${recordAt("engine.vat_bakes", "baked")};
-    const std::string selected = clip.empty() && !bake.clips.empty()
-        ? bake.clips[0].name
-        : clip;
+    // \`clip ?? Object.keys(baked.clips)[0] ?? ""\`: the first name in
+    // property order, an array index before the other names.
+    const auto first = std::min_element(bake.clips.begin(), bake.clips.end(),
+        [](const VatClipRow& left, const VatClipRow& right) {
+            return bbl::js::json_property_key_less(left.name, right.name);
+        });
+    const std::string selected = clip
+        ? *clip
+        : first != bake.clips.end() ? first->name : std::string{};
     vat_play(engine, handle, selected, std::optional<double>{},
         std::optional<double>{});
     return handle;

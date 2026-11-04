@@ -8065,7 +8065,7 @@ void stop_animation(Engine& engine, AnimationGroupHandle group);
 VatBake bake_vat(Engine& engine, MeshHandle mesh, const std::vector<AnimationGroupHandle>& groups);
 // `createVatBakeResults`: validated offline-prepared payloads, one bake each.
 js::Array<VatBake> create_vat_bakes(Engine& engine, const std::vector<PreparedVatPayload>& prepared);
-VatHandle attach_vat(Engine& engine, MeshHandle mesh, VatBake baked, const std::string& clip);
+VatHandle attach_vat(Engine& engine, MeshHandle mesh, VatBake baked, const js::Nullable<std::string>& clip);
 void vat_play(Engine& engine, VatHandle handle, const std::string& clip,
               std::optional<double> offset, std::optional<double> fps);
 void vat_update(Engine& engine, VatHandle handle, double delta_seconds);

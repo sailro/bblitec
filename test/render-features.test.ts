@@ -65,7 +65,7 @@ test("setVatTime writes the block's clock lane until the handle writes its own, 
         _storageBuffers: new Set<object>(),
     };
     const destroy = (): void => {};
-    const mesh = {
+    const skinned = () => ({
         skeleton: {
             jointsBuffer: { destroy },
             weightsBuffer: { destroy },
@@ -74,7 +74,8 @@ test("setVatTime writes the block's clock lane until the handle writes its own, 
             boneTexture: { destroy },
             _skinBuffers: {},
         },
-    };
+    });
+    const mesh = skinned();
     const baked = {
         boneCount: 1,
         texture: {},
@@ -113,7 +114,19 @@ test("setVatTime writes the block's clock lane until the handle writes its own, 
             }),
         ),
     ];
-    const expected = `${lanes.map((lane) => lane.toFixed(6)).join(",")}|${refusals.join(",")}`;
+    // An attach without a clip plays the first name in property order (an
+    // array index first); an empty name plays none.
+    const attachedRow = (clip?: string): string => {
+        block.fill(-1);
+        const clips = {
+            walk: { fromRow: 1, frameCount: 2, fps: 30 },
+            7: { fromRow: 4, frameCount: 3, fps: 12 },
+        };
+        vat.attachVat(engine, skinned(), { ...baked, clips }, clip);
+        return block[0] === -1 ? "none" : String(block[0]);
+    };
+    const defaults = [attachedRow(), attachedRow("")];
+    const expected = `${lanes.map((lane) => lane.toFixed(6)).join(",")}|${refusals.join(",")}|${defaults.join(",")}`;
 
     // Strict mode lowers both calls where a VAT is reached.
     const result =
@@ -161,7 +174,7 @@ int main() {
     engine.vat_bakes.push_back(VatBakeRecord{});
     engine.vat_bakes[0].clips.push_back(VatClipRow{"swim", 2.0, 5.0, 30.0});
     engine.meshes[0].skinned = true;
-    const VatHandle handle = attach_vat(engine, MeshHandle{0}, VatBake{0}, "swim");
+    const VatHandle handle = attach_vat(engine, MeshHandle{0}, VatBake{0}, std::string("swim"));
     const auto& block = engine.meshes[0].vat.settings;
     std::string lanes;
     const auto lane = [&] {
@@ -180,6 +193,18 @@ int main() {
     std::cout << lanes << "|" << refusal([&] { set_vat_time(engine, MeshHandle{1}, 1.0); }) << ","
               << refusal([&] { set_vat_instance_storage(engine, MeshHandle{1}, std::nullopt); }) << ","
               << refusal([&] { set_vat_instance_storage(engine, MeshHandle{0}, StorageBufferHandle{1}); });
+    const auto attached_row = [&](const js::Nullable<std::string>& clip) {
+        engine.meshes.resize(engine.meshes.size() + 1);
+        engine.meshes.back().skinned = true;
+        VatBakeRecord bake;
+        bake.clips = {VatClipRow{"walk", 1.0, 2.0, 30.0}, VatClipRow{"7", 4.0, 3.0, 12.0}};
+        engine.vat_bakes.push_back(bake);
+        attach_vat(engine, MeshHandle{static_cast<std::uint32_t>(engine.meshes.size() - 1)},
+                   VatBake{static_cast<std::uint32_t>(engine.vat_bakes.size() - 1)}, clip);
+        const VatData& vat = engine.meshes.back().vat;
+        return vat.settings_version == 1 ? std::string("none") : js::number_to_string(vat.settings[0]);
+    };
+    std::cout << "|" << attached_row(std::nullopt) << "," << attached_row(std::string());
 }
 `,
         {
@@ -513,7 +538,7 @@ test("a program's prepared VAT records lower to the native upload and attach", (
         const last = clip ? clip.fromRow + clip.frameCount - 1 : -1;
         const origins = bakes[0]!.boneOrigins;
         mesh.position.x = bakes[0]!.boneCount * bakes[0]!.frameCount + last + (origins ? Object.keys(origins).length : 0);
-        attachVat(engine, mesh, bakes[0]!, "swim");
+        attachVat(engine, mesh, bakes[0]!, pick);
         await registerScene(scene);
         await startEngine(engine);
     `);
@@ -534,5 +559,5 @@ test("a program's prepared VAT records lower to the native upload and attach", (
         result.cpp,
         /bbl::handle_at\(v_engine\.vat_bakes, .+?\)\.bone_origins/,
     );
-    assert.match(result.cpp, /bbl::attach_vat\(/);
+    assert.match(result.cpp, /bbl::attach_vat\([^;]*v_pick/);
 });

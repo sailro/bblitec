@@ -36,6 +36,7 @@ export interface VatIntrinsicContext
             | "dataTypes"
             | "reachJsData"
             | "reachJson"
+            | "compileForDataSink"
         > {}
 
 /**
@@ -128,11 +129,14 @@ export function compileVatIntrinsic(
             context.expectSameEngine(engine, mesh, call);
             const baked = context.compileValue(argumentAt(call, 2));
             context.expectKind(baked, "vat-bake", argumentAt(call, 2));
+            // `clip ?? Object.keys(baked.clips)[0]`: an absent clip, or an
+            // optional one at run time, takes the first natively.
             const clip = call.arguments[3]
-                ? context.cppString(
-                      context.compileStringLiteral(call.arguments[3]),
-                  )
-                : "std::string{}";
+                ? context.compileForDataSink(call.arguments[3], {
+                      kind: "optional",
+                      inner: { kind: "string" },
+                  })
+                : "std::nullopt";
             context.reachFeature("mesh:vat", call);
             const handle = context.allocateTemporaryCppName("vat_handle");
             context.emit({
