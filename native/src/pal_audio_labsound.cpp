@@ -2540,7 +2540,7 @@ void begin_element_load(const AudioElement& element) {
     playback.loading = true;
     const auto generation = playback.generation;
     auto packaged = packaged_response(*element_resource(playback));
-    if (!packaged) {
+    if (!packaged || packaged->path.empty()) {
         EventLoop::current().post([element, generation] {
             if (generation == element->playback->generation)
                 next_element_resource(element);

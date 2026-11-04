@@ -106,6 +106,43 @@ test("packaged fetch owns responses, snapshots selections and rejects missing or
     runPackagedProgram(t, directory, result.cpp);
 });
 
+test("a fetch of a URL the deployment holds no file at answers 404", (t) => {
+    const directory = resolve("artifacts/packaged-fetch-not-served");
+    const publicDir = join(directory, "public");
+    mkdirSync(publicDir, { recursive: true });
+    const result = compileSource(
+        `
+        async function catalog(): Promise<string> {
+            try {
+                const response = await fetch("/files/absent.json");
+                if (response.url !== "https://assets.example/files/absent.json") throw new Error("url");
+                if (!response.ok) throw new Error(\`HTTP \${response.status}\`);
+                return ((await response.json()) as { name: string }).name;
+            } catch (error) {
+                return "fallback:" + (error as Error).message;
+            }
+        }
+        void (async () => {
+            const name = await catalog();
+            if (name !== "fallback:HTTP 404") throw new Error("not served " + name);
+            globalThis.close();
+        })();
+    `,
+        {
+            fileName: join(directory, "entry.ts"),
+            publicDir,
+            siteUrl: "https://assets.example/",
+        },
+    );
+    assert.ok(result.manifest.features.includes("platform:packaged-fetch"));
+    assert.ok(
+        !result.manifest.assets.some((asset) =>
+            asset.source.endsWith("absent.json"),
+        ),
+    );
+    runPackagedProgram(t, directory, result.cpp);
+});
+
 function runPackagedProgram(
     t: test.TestContext,
     directory: string,

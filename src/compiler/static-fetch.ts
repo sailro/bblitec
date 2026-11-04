@@ -98,6 +98,21 @@ export function compileStaticFetch(
         context.options.fileName,
         context.options,
     );
+    // A local URL the deployment holds no file at answers 404, as its static
+    // server does. Only an owned response carries that status; a
+    // generation-known one reads the file.
+    if (
+        localAssetPath(source, context.options.fileName) !== undefined &&
+        !readablePackagedAsset(context, source)
+    ) {
+        if (!response) throw new ApplicationRealmRequired();
+        return ownedPackagedResponse(
+            context,
+            url,
+            [{ key: logicalSource, logicalSource, output: "" }],
+            { kind: "string", cpp: context.cppString(logicalSource) },
+        );
+    }
     if (response) {
         const asset = context.assetRegistry.registerAsset(source, "binary");
         return ownedPackagedResponse(
@@ -721,7 +736,8 @@ function ownedPackagedResponse(
     if (response.kind !== "promise" || !response.promiseResult) return response;
     return {
         ...response,
-        ...(assets.length === 1
+        // A served file's body is known at generation.
+        ...(assets.length === 1 && assets[0]!.output
             ? {
                   promiseResult: {
                       ...response.promiseResult,

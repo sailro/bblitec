@@ -27,7 +27,9 @@ namespace bbl::pal {
 
 /**
  * One packaged candidate: the key a site selects it by, the absolute URL a
- * fetch of it answers as (fragment removed), and the asset output it reads.
+ * fetch of it answers as (fragment removed), and the asset output it reads;
+ * an empty output is a URL the deployment serves no file at, which answers
+ * 404 as a static file server does.
  */
 struct PackagedFetchEntry {
     std::string_view key;
@@ -111,6 +113,11 @@ inline js::Promise<HttpResponse> fetch_packaged(std::string url, std::string pat
         });
 }
 
+/** The 404 a static file server answers for a URL it holds no file at. */
+[[nodiscard]] inline js::Promise<HttpResponse> fetch_not_served(std::string url) {
+    return js::Promise<HttpResponse>::resolved(make_buffered_response(404, std::move(url), {}));
+}
+
 /** The program's asset path of an entry's output (`bbl::asset_path`). */
 using PackagedAssetPath = std::string (*)(const std::string& output);
 
@@ -159,7 +166,7 @@ inline bool register_packaged_responses(std::string_view base, PackagedAssetPath
     return href;
 }
 
-/** A packaged response: the absolute URL it answers as, and the file it reads. */
+/** A packaged response: the absolute URL it answers as, and the file it reads (none: 404). */
 struct PackagedResponse {
     std::string url;
     std::string path;
@@ -181,7 +188,9 @@ struct PackagedResponse {
         for (const auto& entry : table)
             if (entry.url == key)
                 return PackagedResponse{std::move(key),
-                                        realm.asset_path(std::string(entry.output))};
+                                        entry.output.empty()
+                                            ? std::string()
+                                            : realm.asset_path(std::string(entry.output))};
     return std::nullopt;
 }
 
@@ -194,6 +203,8 @@ fetch_registered_packaged(const std::string& url, std::string range) {
     auto packaged = packaged_response(url);
     if (!packaged)
         return std::nullopt;
+    if (packaged->path.empty())
+        return fetch_not_served(std::move(packaged->url));
     return fetch_packaged(std::move(packaged->url), std::move(packaged->path), std::move(range));
 }
 
