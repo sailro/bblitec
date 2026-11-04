@@ -2,8 +2,9 @@ import ts from "typescript";
 import { someAnalysisNode } from "./analysis-walk.js";
 import {
     declarationInDefaultLibrary,
-    declaredSymbol,
+    resolvedSymbol,
     libraryGlobal,
+    libraryName,
     calledDeclaration,
     libraryStaticMember,
     namedMember,
@@ -139,7 +140,7 @@ export function hasUndefinedCallbackCompletion(
     const declaration = value.callbackDeclaration;
     if (!declaration) return false;
     const source = ts.isIdentifier(declaration)
-        ? declaredSymbol(checker, declaration)?.valueDeclaration
+        ? resolvedSymbol(checker, declaration)?.valueDeclaration
         : declaration;
     return (
         !!source &&
@@ -153,6 +154,7 @@ export function hasUndefinedCallbackCompletion(
 
 interface UndefinedContext {
     checker: ts.TypeChecker;
+    options: { readonly workers?: unknown };
     bindings: {
         lookupOptional(identifier: ts.Identifier): Value | undefined;
         isImmutableVariable(node: ts.Node | undefined): boolean;
@@ -196,7 +198,7 @@ function provenUndefinedValue(
         if (ts.isAwaitExpression(expression))
             return visit(expression.expression, true);
         if (ts.isIdentifier(expression)) {
-            const declaration = declaredSymbol(
+            const declaration = resolvedSymbol(
                 context.checker,
                 expression,
             )?.valueDeclaration;
@@ -242,7 +244,7 @@ function provenUndefinedValue(
             // declaration (a specialized callback parameter) calls it.
             if (hasUndefinedCallbackCompletion(context.checker, bound, awaited))
                 return true;
-            const binding = declaredSymbol(
+            const binding = resolvedSymbol(
                 context.checker,
                 callee,
             )?.valueDeclaration;
@@ -299,7 +301,7 @@ function provenUndefinedValue(
             // the function literal the immutable name it holds is bound to.
             if (member === undefined && method) {
                 const named = ts.isIdentifier(method)
-                    ? declaredSymbol(context.checker, method)?.valueDeclaration
+                    ? resolvedSymbol(context.checker, method)?.valueDeclaration
                     : method;
                 const body =
                     named &&
@@ -388,18 +390,24 @@ export function undefinedFromVoid(
 /**
  * The `undefined` a void result reads as, its call run first; none when its
  * completion is not proven, it never completes normally, or it is a
- * coroutine's.
+ * coroutine's. Outside an application realm a promise reads as its
+ * settlement (reading its identity requires the realm), so a promise proven
+ * to settle with `undefined` reads as `undefined`.
  */
 export function provenVoidAsUndefined(
     context: UndefinedContext & { emitDiscardedValue(value: Value): void },
     value: Value,
     node: ts.Node,
 ): Value | undefined {
+    const awaited =
+        !context.options.workers &&
+        libraryName(context.checker.getTypeAtLocation(node)) === "Promise";
     if (
         value.kind !== "void" ||
         value.abruptCompletion ||
         value.coroutineResult ||
-        readsErasedVoid(context, value, node)
+        value.erasedVoidCompletion ||
+        !provenUndefinedValue(context, node, { awaited })
     )
         return undefined;
     context.emitDiscardedValue(value);

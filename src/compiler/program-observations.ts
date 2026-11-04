@@ -22,6 +22,8 @@ import {
     accessKey,
     patternSlots,
     equalityOperator,
+    operandYield,
+    testsTruthinessOnly,
 } from "./syntax.js";
 import { valueKindOf, arrayShape, unionMembers } from "./type-facts.js";
 
@@ -80,7 +82,7 @@ export interface ProgramObservations {
     readonly writes: ReadonlyMap<ts.Type, readonly ObservedWrite[]>;
     readonly arrayWrites: ReadonlyMap<ts.Type, readonly ObservedWrite[]>;
     readonly identities: ReadonlySet<ts.Type>;
-    /** Operand/key types at identity or typeof uses, consulted only when reached. */
+    /** Operand/key types at identity, typeof or truthiness uses, consulted only when reached. */
     readonly identityConsumers: ReadonlyMap<ts.Node, ReadonlySet<ts.Type>>;
     readonly enumerations: ReadonlySet<ts.Type>;
     readonly assertions: readonly {
@@ -452,6 +454,18 @@ function observe(program: ts.Program): ProgramObservations {
                 if (slot.kind === "member" && slot.key !== undefined)
                     read(slot.key, element, node);
                 else wholesaleReads.push(node);
+        }
+        // A truthiness test reads the object itself, never what it holds or
+        // settles to: `!x`, a condition, an operand yielded only when truthy
+        // (`||`) or only when falsy (`&&`).
+        if (ts.isExpression(node)) {
+            const yielded = operandYield(node.parent, node);
+            if (
+                testsTruthinessOnly(node) ||
+                (yielded !== undefined &&
+                    yielded.has("truthy") !== yielded.has("falsy"))
+            )
+                observesObject(node, node);
         }
         for (const { target } of writeSites(node)) written(target);
         if (isAssignmentExpression(node)) {

@@ -3,6 +3,7 @@
 // and folds from `comparisons.ts`; a value's own truthiness is the data
 // lowerer's `truthinessCondition`.
 import ts from "typescript";
+import { requireObservedPromise } from "./promise-observations.js";
 import { traceSourceNode } from "./source-trace.js";
 import { someAnalysisNode } from "./analysis-walk.js";
 import {
@@ -84,6 +85,7 @@ interface ConditionContext
             | "leaveRuntimeControlFlow"
             | "libraryGlobal"
             | "options"
+            | "program"
             | "reachFeature"
             | "reachJsData"
             | "registerNativeBinding"
@@ -315,6 +317,7 @@ export class ConditionLowerer {
         );
         if (assigned !== undefined) return assigned;
         traceSourceNode(expression);
+        requireObservedPromise(this.context, expression);
         const unwrapped = this.context.unwrapValue(expression);
         if (this.context.symbols.isNullishLiteral(unwrapped)) return "false";
         // A BigInt is truthy unless it is zero.

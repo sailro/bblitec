@@ -115,6 +115,41 @@ test("stored pending promises compile in the application realm", (t) => {
     runNative(result, directory, t);
 });
 
+test("a stored promise of a call that settles in place binds its settlement", (t) => {
+    const directory = resolve("artifacts/async-stored-settled");
+    mkdirSync(directory, { recursive: true });
+    writeFileSync(
+        join(directory, "load.ts"),
+        "export const state={loads:0};export async function load():Promise<void>{state.loads++;}",
+    );
+    const result = compileSource(
+        `
+        import {load,state} from './load';
+        function kickoff():Promise<void>{const pending=load();if(state.loads!==1)throw new Error('eager');return pending;}
+        void(async()=>{await kickoff();if(state.loads!==1)throw new Error('settled');})();
+    `,
+        { fileName: join(directory, "entry.ts") },
+    );
+    assert.doesNotMatch(result.cpp, /co_await/);
+    runNative(result, directory, t);
+});
+
+test("a stored promise's truthiness compiles in the application realm", (t) => {
+    const directory = resolve("artifacts/async-stored-truthiness");
+    mkdirSync(directory, { recursive: true });
+    const result = compileSource(
+        `
+        let loads=0;
+        async function load():Promise<number>{loads++;return 0;}
+        function kickoff():Promise<number>{const pending=load();if(!pending)throw new Error('absent');return pending;}
+        void(async()=>{if((await kickoff())!==0||loads!==1)throw new Error('settled');globalThis.close();})();
+    `,
+        { fileName: join(directory, "entry.ts") },
+    );
+    assert.match(result.cpp, /co_await/);
+    runNative(result, directory, t);
+});
+
 test("Promise.resolve preserves existing promise identity and settlement", (t) => {
     const directory = resolve("artifacts/async-promise-resolve-adoption");
     mkdirSync(directory, { recursive: true });
