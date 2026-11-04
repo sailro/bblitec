@@ -188,6 +188,23 @@ test("render targets retain explicit color formats and double precision scales",
     );
 });
 
+test("a surface size built before the call reads its surface and scale", () => {
+    const result = compileSource(`${setup}
+        const postScale = 0.5;
+        const scaledSize = postScale < 1 ? { surface: engine, scale: postScale } : engine;
+        createSurfaceRenderTargetTexture(engine, {format: "rgba8unorm", samples: 1, size: scaledSize});
+        } void main();`);
+    // The record keeps its scale in field storage, read where the target is made.
+    assert.match(
+        result.cpp,
+        /const double scale = \(\*v_bblite_scaledSize_fields_scale_\d+\);/,
+    );
+    assert.match(
+        result.cpp,
+        /options\.scale_source = bbl::swapchain_render_target\(/,
+    );
+});
+
 test("surface extent arithmetic matches the pin and sampled facades retain distinct aspects", async (t) => {
     const tools = optionalNativeFixtureTools(false);
     if (!tools) {

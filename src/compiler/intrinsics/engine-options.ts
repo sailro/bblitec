@@ -237,8 +237,35 @@ export function compileRenderTargetOptions(
                 );
             }
         } else {
-            surface = context.compileValue(unwrappedSize);
-            context.expectKind(surface, "engine", unwrappedSize);
+            // A surface size the program built before the call reads the
+            // surface and scale it was written with.
+            const value = context.compileValue(unwrappedSize);
+            const built =
+                value.kind === "record" && !value.cpp
+                    ? value.recordProperties
+                    : undefined;
+            if (built && "surface" in built) {
+                if (
+                    !built.scale ||
+                    Object.keys(built).some(
+                        (key) => key !== "surface" && key !== "scale",
+                    )
+                )
+                    context.fail(
+                        unwrappedSize,
+                        "Surface render target size supports surface and scale.",
+                    );
+                surface = built.surface!;
+                context.expectKind(surface, "engine", unwrappedSize);
+                scale = context.dataLowerer.compileKnownValueForSink(
+                    built.scale,
+                    { kind: "number" },
+                    unwrappedSize,
+                );
+            } else {
+                surface = value;
+                context.expectKind(surface, "engine", unwrappedSize);
+            }
         }
     } else {
         context.fail(object, "Render target descriptor requires size.");
