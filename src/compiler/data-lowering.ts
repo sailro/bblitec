@@ -12167,6 +12167,28 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 this.context.reachJsData();
                 return `bbl::js::json_string_array(${value.cpp})`;
             }
+            // A typeof-guarded assertion over a parsed scalar stores the
+            // member the document's kind names; a source typed as one
+            // primitive stores as that member.
+            if (
+                dataType.kind === "union" &&
+                dataType.members.every(
+                    (member) =>
+                        member.kind === "number" ||
+                        member.kind === "string" ||
+                        member.kind === "boolean",
+                ) &&
+                new Set(
+                    unionMembers(this.context.checker.getTypeAtLocation(node))
+                        .map(valueKindOf)
+                        .filter(
+                            (kind) => kind !== "null" && kind !== "undefined",
+                        ),
+                ).size > 1
+            ) {
+                this.context.reachJsData();
+                return `bbl::js::json_primitive_union<${this.context.dataTypes.cppType(dataType)}>(${value.cpp})`;
+            }
             // Any other array stores each element as its element sink stores
             // a parsed value; parsed records stay documents.
             if (dataType.kind === "vector") {

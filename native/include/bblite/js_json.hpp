@@ -1508,6 +1508,30 @@ template <std::size_t N> [[nodiscard]] inline Tuple<N> json_tuple(const JsonValu
     return result;
 }
 
+template <typename T, typename Variant> inline constexpr bool json_union_holds = false;
+template <typename T, typename... Members>
+inline constexpr bool json_union_holds<T, std::variant<Members...>> =
+    (std::is_same_v<T, Members> || ...);
+
+/**
+ * A parsed scalar as a primitive union stores it -- the lowering of an
+ * assertion such as `value as number | string | boolean` behind the
+ * source's typeof guard: the member the document's kind names. A kind the
+ * union does not hold cannot be stored.
+ */
+template <typename Variant> [[nodiscard]] inline Variant json_primitive_union(const JsonValue& value) {
+    if constexpr (json_union_holds<double, Variant>)
+        if (value.is_number())
+            return Variant(std::in_place_type<double>, value.to_number());
+    if constexpr (json_union_holds<std::string, Variant>)
+        if (value.is_string())
+            return Variant(std::in_place_type<std::string>, value.string_value());
+    if constexpr (json_union_holds<bool, Variant>)
+        if (value.is_boolean())
+            return Variant(std::in_place_type<bool>, value.truthy());
+    throw NamedError("TypeError", "The parsed value is not one of the union's primitive kinds");
+}
+
 /**
  * The first `count` values array destructuring iterates: an array (its
  * elements are shared), a string's code points; any other parsed value is

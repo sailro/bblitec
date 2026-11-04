@@ -159,3 +159,35 @@ void main();
         /bbl::js::json_tuple<3>\(v_config\.read_property\("sun"\)\.read_property\("direction"\)\)/,
     );
 });
+
+test("a typeof-guarded parsed scalar stores the primitive union member its kind names", async (t) => {
+    const source = `
+        const raw = JSON.parse('{"a":1,"b":"q","c":true,"d":[1]}') as Record<string, unknown>;
+        const params: Record<string, number | string | boolean> = {};
+        for (const k of Object.keys(raw)) {
+            const pv = raw[k];
+            if (typeof pv !== "number" && typeof pv !== "string" && typeof pv !== "boolean") continue;
+            params[k] = pv as number | string | boolean;
+        }
+        if (params["a"] !== 1 || params["b"] !== "q" || params["c"] !== true || "d" in params)
+            throw new Error("params " + JSON.stringify(params));
+    `;
+    runInNewContext(
+        ts.transpileModule(source, {
+            compilerOptions: {
+                target: ts.ScriptTarget.ES2022,
+                module: ts.ModuleKind.None,
+            },
+        }).outputText,
+    );
+    const result = compileSource(source);
+    assert.match(result.cpp, /bbl::js::json_primitive_union<std::variant</);
+    const native = optionalNativeFixtureTools(false);
+    await t.test("native assertions", { skip: !native }, () => {
+        runGeneratedProgram(
+            native!,
+            "json-tuple-inputs/primitive-union",
+            result.cpp,
+        );
+    });
+});
