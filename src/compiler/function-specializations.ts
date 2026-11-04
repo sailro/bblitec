@@ -41,11 +41,13 @@ export class FunctionSpecializations<T> {
     private readonly symbols = new EmissionMap<symbol, number>();
     @journaled private accessor nextObject = 0;
     private readonly entries = new EmissionMap<ts.Node, Map<string, T>>();
-    /** @unjournaled Ordered string-property schemas depend only on immutable name sequences. */
-    private readonly propertySchemas = new Map<
-        string,
-        readonly { name: string | symbol; key: string }[]
-    >();
+    /**
+     * @unjournaled Ordered string-property schemas depend only on immutable
+     * name sequences: a trie over each object's own names, in order.
+     */
+    private readonly propertySchemas: PropertySchemaNode = {
+        next: new Map(),
+    };
 
     private identity(value: object): number {
         let id = this.objects.get(value);
@@ -68,14 +70,25 @@ export class FunctionSpecializations<T> {
         };
         const propertySchema = (value: object) => {
             const names = Reflect.ownKeys(value);
-            const schema = names.every((name) => typeof name === "string")
-                ? JSON.stringify(names)
-                : undefined;
-            const cached =
-                schema === undefined
-                    ? undefined
-                    : this.propertySchemas.get(schema);
-            if (cached) return cached;
+            // A symbol's key is renumbered with its journaled registry, so
+            // only all-string schemas are kept.
+            let node: PropertySchemaNode | undefined = this.propertySchemas;
+            for (const name of names) {
+                if (typeof name === "symbol") {
+                    node = undefined;
+                    break;
+                }
+                let child: PropertySchemaNode | undefined = node.next.get(name);
+                if (!child)
+                    node.next.set(
+                        name,
+                        (child = {
+                            next: new Map<string, PropertySchemaNode>(),
+                        }),
+                    );
+                node = child;
+            }
+            if (node?.properties) return node.properties;
             const properties = names
                 .map((name) => ({
                     name,
@@ -87,8 +100,7 @@ export class FunctionSpecializations<T> {
                 .sort((left, right) =>
                     left.key < right.key ? -1 : left.key > right.key ? 1 : 0,
                 );
-            if (schema !== undefined)
-                this.propertySchemas.set(schema, properties);
+            if (node) node.properties = properties;
             return properties;
         };
         const encode = (value: unknown): void => {
@@ -108,13 +120,16 @@ export class FunctionSpecializations<T> {
                 tokens.push(`function:${this.identity(value)}`);
                 return;
             }
-            if (
-                value === undefined ||
-                typeof value === "string" ||
-                typeof value === "number" ||
-                typeof value === "bigint" ||
-                typeof value === "boolean"
-            ) {
+            if (typeof value === "string") {
+                tokens.push(`string:${JSON.stringify(value)}`);
+                return;
+            }
+            // A number's or boolean's text holds no delimiter (`,]}=:`).
+            if (typeof value === "number" || typeof value === "boolean") {
+                tokens.push(`${typeof value}:${value}`);
+                return;
+            }
+            if (value === undefined || typeof value === "bigint") {
                 tokens.push(`${typeof value}:${JSON.stringify(String(value))}`);
                 return;
             }
@@ -332,4 +347,10 @@ export function functionDependencies(
               ? [[declaredSymbol(context.checker, identifier), visibility]]
               : [];
     });
+}
+
+/** One step of the property-schema trie: the sorted properties of the names so far. */
+interface PropertySchemaNode {
+    readonly next: Map<string, PropertySchemaNode>;
+    properties?: readonly { name: string | symbol; key: string }[];
 }
