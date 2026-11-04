@@ -764,7 +764,6 @@ function compileSourceApplication(
                 resolved,
                 storage,
                 lazyModules,
-                planner,
             );
         };
         // A replay lowers the realm again from the start, so a survey keeps
@@ -1211,8 +1210,6 @@ class Compiler implements LoweringServices {
         public readonly options: ResolvedCompileOptions,
         storage: ReplayStorage,
         private readonly lazyModules: ReadonlySet<ts.SourceFile>,
-        /** The discarded planning attempt this compiler lowers for, if any. */
-        planner?: StorageDemandPlanner,
     ) {
         this.replayStorage = storage;
         this.dynamicBindings = storage.dynamicBindings;
@@ -1229,7 +1226,6 @@ class Compiler implements LoweringServices {
             new ClassHierarchy(checker, program),
             options.workers !== undefined,
             storage,
-            planner && ((request) => planner.planDemand(request)),
         );
         this.dataLowerer = new DataLowerer(this);
         this.classLowerer = new ClassLowerer(this);

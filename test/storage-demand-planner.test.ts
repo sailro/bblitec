@@ -4,8 +4,12 @@ import ts from "typescript";
 import { compileSource, surveySource } from "../src/compiler.js";
 import { SourceCoverage } from "../src/compiler/source-coverage.js";
 import { AbsenceTagStorageRequired } from "../src/compiler/absence-tag-storage.js";
-import { DynamicBindingStorageRequired } from "../src/compiler/dynamic-binding-storage.js";
 import {
+    DynamicBindingStorageRequired,
+    ParameterObjectStorageRequired,
+} from "../src/compiler/dynamic-binding-storage.js";
+import {
+    demandOrPlan,
     StorageDemandPlanner,
     storagePlanningStatistics,
     withStorageDemandPlanning,
@@ -376,6 +380,39 @@ test("past a rolled-back statement a plan collects only demands of a key", () =>
         demands: ["absence-tag", "absence-tag", "dynamic"],
         departed: 0,
     });
+});
+
+test("a demand lowering can go on past is planned, one kind per plan", () => {
+    const { checker, statements } = plannedStatements(`
+        function keep(first: { value: number }, second: { value: number }) {}
+        let other = { gain: 1 };
+    `);
+    const [first, second] = (statements[0] as ts.FunctionDeclaration)
+        .parameters;
+    const other = (statements[1] as ts.VariableStatement).declarationList
+        .declarations[0]!;
+    const demand = new ParameterObjectStorageRequired(first!);
+    // Strict lowering raises it.
+    assert.throws(
+        () => demandOrPlan(demand),
+        (error) => error === demand,
+    );
+    const planner = new StorageDemandPlanner(checker);
+    planner.run(() => {
+        demandOrPlan(demand);
+        demandOrPlan(new ParameterObjectStorageRequired(second!));
+        // A demand of another kind may follow from the planned ones.
+        demandOrPlan(new DynamicBindingStorageRequired(other, undefined));
+        assert.fail("planning goes on past a demand of another kind");
+    });
+    assert.deepEqual(
+        planner.demands.map((request) =>
+            request.kind === "parameter-object"
+                ? request.declaration.name.getText()
+                : request.kind,
+        ),
+        ["first", "second"],
+    );
 });
 
 test("a plan goes on past an engine owner and meets the next store's", () => {

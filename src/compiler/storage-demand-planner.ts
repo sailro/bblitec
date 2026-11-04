@@ -78,11 +78,15 @@ class PlanningWrite extends Error {}
 class PlanningCollected extends Error {}
 class PlanningDeparted extends Error {}
 
-/** A demand a planning attempt's lowering goes on without (`planDemand`). */
-export type PlannedDemand = Extract<
-    StorageRequest,
-    { kind: "record" | "engine-owner" }
->;
+/**
+ * Raises `demand` at a site lowering can go on past (a record join stored
+ * as a copy, a resource stored without its engine owner, a parameter's
+ * record copied): a planning attempt records it there and goes on.
+ */
+export function demandOrPlan(demand: StorageDemand): void {
+    if (!active) throw demand;
+    active.planDemand(demand.request);
+}
 
 /** A native generic call asks for its signature before lowering arguments or invoking it. */
 function independentGenericCall(
@@ -201,8 +205,8 @@ function rolledBackWrites(
  * bounded unless it is the compile's attempt (`complete`).
  * Its compiler reads frozen seed demands; new demands are applied only to a fresh
  * compiler. A demand rolls back its statement, whose written names are
- * lost to later statements, except a record join or a resource's engine
- * owner, which lowering goes on without (`planDemand`). Ordinary refusals
+ * lost to later statements, except one lowering goes on past
+ * (`demandOrPlan`). Ordinary refusals
  * end discovery, including lost-binding cascades, except in a survey, whose
  * strict attempts roll the refused statement back too. Past a rolled-back statement, which may have
  * met a demand first at its own site, a plan collects only demands of a key
@@ -230,11 +234,11 @@ export class StorageDemandPlanner {
     /** @unjournaled Whether a statement was rolled back: later demands may differ from strict lowering's. */
     private rolledBack = false;
     /**
-     * @unjournaled The kind of demand lowering went on without (a join stored
-     * as a copy, a resource stored without its engine owner): a later demand
-     * of this attempt may follow from it, so only that kind is collected.
+     * @unjournaled The kind of demand lowering went on without
+     * (`demandOrPlan`): a later demand of this attempt may follow from it,
+     * so only that kind is collected.
      */
-    private wentOn?: PlannedDemand["kind"];
+    private wentOn?: StorageRequest["kind"];
     private readonly deadline: number;
     private readonly statementLimit: number;
 
@@ -257,11 +261,8 @@ export class StorageDemandPlanner {
         this.statementLimit = budget === undefined ? Infinity : 10000;
     }
 
-    /**
-     * A demand lowering goes on without: a record join stores a copy, a
-     * resource keeps the storage it has.
-     */
-    public planDemand(request: PlannedDemand): void {
+    /** A demand lowering goes on without (`demandOrPlan`). */
+    public planDemand(request: StorageRequest): void {
         if (this.wentOn !== undefined && this.wentOn !== request.kind)
             throw new PlanningWrite();
         this.requireStrictSite([request]);

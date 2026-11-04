@@ -10,7 +10,7 @@ import {
     isEngineOwnerStorageDeclaration,
     type EngineOwnerStorageDeclaration,
 } from "./engine-owner-storage.js";
-import type { PlannedDemand } from "./storage-demand-planner.js";
+import { demandOrPlan } from "./storage-demand-planner.js";
 import { UNINHABITED_DOM_OBJECTS } from "./data-types/model.js";
 import { ERROR_CLASS_FIELDS, ERROR_CONSTRUCTORS } from "./error-values.js";
 import { functionSignatureSite } from "./function-storage-flow.js";
@@ -1557,25 +1557,18 @@ export class DataTypeRegistry {
         private readonly asynchronous = false,
         /** The storage demands this compile replays with; read, never added to. */
         private readonly storage = new ReplayStorage(checker),
-        /**
-         * A discarded planning attempt's sink for record joins and engine
-         * owners: lowering goes on without them, so one attempt meets a run.
-         */
-        private readonly planDemand?: (request: PlannedDemand) => void,
     ) {}
 
     /** Demands a record join; a planning attempt goes on with a copy. */
     private requireJoin(demand: NativeRecordStorageDemand): void {
-        if (!this.planDemand) throw new NativeRecordStorageRequired(demand);
-        this.planDemand({ kind: "record", demand });
+        demandOrPlan(new NativeRecordStorageRequired(demand));
     }
 
     /** Demands an engine owner; a planning attempt goes on with the storage it has. */
     private requireEngineOwner(
         declaration: EngineOwnerStorageDeclaration,
     ): void {
-        if (!this.planDemand) throw new EngineOwnerStorageRequired(declaration);
-        this.planDemand({ kind: "engine-owner", declaration });
+        demandOrPlan(new EngineOwnerStorageRequired(declaration));
     }
 
     /** A string literal union's identity across replays: its sorted members. */
