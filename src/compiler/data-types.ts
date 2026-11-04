@@ -920,6 +920,19 @@ function isDomEventType(
     );
 }
 
+/**
+ * Whether a type is, or includes, the DOM's EventTarget: a platform object
+ * the engine holds, never a plain record (`EventTarget & { ... }` included).
+ */
+function isDomEventTargetType(type: ts.Type): boolean {
+    return inheritsFrom(
+        type,
+        (inherited) =>
+            libraryName(inherited) === "EventTarget" &&
+            declaredInDomLibrary(inherited.symbol),
+    );
+}
+
 export function isDomElementType(symbol: ts.Symbol): boolean {
     return (
         declaredInDomLibrary(symbol) &&
@@ -7284,7 +7297,8 @@ export class DataTypeRegistry {
         allowStoredFunctions: boolean,
         call?: DataType<"function">,
     ): DataType | undefined {
-        if (isDomEventType(this.checker, type)) return undefined;
+        if (isDomEventType(this.checker, type) || isDomEventTargetType(type))
+            return undefined;
         const component = this.recordComponentOf(type);
         const layout = this.layoutProperties(type);
         if (layout.properties.size === 0) {
