@@ -294,6 +294,7 @@ export interface ExpressionContext
             | "audioSessionCpp"
             | "staticAssetUrlCandidates"
             | "sourceFiles"
+            | "inlinedCallArgument"
             | "checker"
             | "program"
             | "sourceFile"

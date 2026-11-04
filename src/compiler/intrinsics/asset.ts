@@ -107,6 +107,7 @@ export interface AssetIntrinsicContext
             | "bindings"
             | "staticAssetUrlCandidates"
             | "sourceFiles"
+            | "inlinedCallArgument"
             | "reachJsData"
             | "probeEmission"
             | "requireEngine"

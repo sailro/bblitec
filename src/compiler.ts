@@ -5064,6 +5064,23 @@ class Compiler implements LoweringServices {
     }
 
     /**
+     * Whether a read-only parameter of an inlined call is, through each
+     * inlined call that passes it on, a call's result: a generation run
+     * computes that text, and refuses a binding the program writes through.
+     */
+    public inlinedCallArgument(identifier: ts.Identifier): boolean {
+        const argument = this.userFunctions.inlinedArgument(
+            identifier,
+            (name) => this.bindings.scopeOf(name),
+        );
+        if (!argument) return false;
+        const source = this.unwrap(argument);
+        return ts.isCallExpression(source)
+            ? true
+            : ts.isIdentifier(source) && this.inlinedCallArgument(source);
+    }
+
+    /**
      * Required text from an unwritten module constant or its plain-data
      * fields, evaluated by the same generation executor as its initializer.
      */

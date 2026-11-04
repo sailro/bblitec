@@ -38,6 +38,7 @@ export interface StaticFetchContext extends Pick<
     | "fail"
     | "checker"
     | "sourceFiles"
+    | "inlinedCallArgument"
 > {}
 
 export function compileStaticFetch(
@@ -78,12 +79,13 @@ export function compileStaticFetch(
               )
             : packagedAssetFetch(context, url, discovery);
     if (ts.isIdentifier(url)) {
-        // An inlined call's parameter reads its argument's text.
+        // An inlined call's parameter a call's result fills reads that
+        // call's text, which a generation run computes.
         const bound = context.bindings.lookupOptional(url);
         if (
             bound &&
             bound.staticString === undefined &&
-            !bound.parameterBinding
+            !(bound.parameterBinding && context.inlinedCallArgument(url))
         ) {
             context.fail(
                 url,

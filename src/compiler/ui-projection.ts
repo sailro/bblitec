@@ -361,6 +361,7 @@ interface UiProjectionContext extends Pick<
     | "allocateTemporaryCppName"
     | "sourceFile"
     | "sourceFiles"
+    | "inlinedCallArgument"
     | "checker"
     | "compileBoolean"
     | "conditions"
