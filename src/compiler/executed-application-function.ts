@@ -33,6 +33,7 @@ import {
     CompilerSymbols,
     declarationOrigin,
     declaredSymbol,
+    isAbsentTypeofIdentifier,
     libraryGlobal,
     namedMember,
 } from "./symbols.js";
@@ -584,6 +585,9 @@ return __bblScope(${this.parts.get(targetFile)!.index})[${root}];
             this.resolveImport(identifier, symbol, file);
             return;
         }
+        // A binding only ambient declarations name is absent in the realm, as
+        // it is natively: bare `typeof` reads "undefined" and a read throws.
+        if (isAbsentTypeofIdentifier(checker, identifier)) return;
         const declaration = symbol.valueDeclaration ?? symbol.declarations?.[0];
         if (!declaration && identifier.text === "undefined") return;
         if (!declaration) {

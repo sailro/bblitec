@@ -257,6 +257,49 @@ test("an inlined helper's base URL folds through String methods and query parame
     assert.doesNotMatch(result.cpp, /folded index/);
 });
 
+test("a fetch URL a helper chain carries folds through a bundler define flag", (t) => {
+    // The URL reaches the fetch through two async helpers' parameters; its
+    // builder picks the file by a flag a bundler define would set, absent
+    // here, so `typeof` reads "undefined" at generation as natively.
+    const directory = mkdtempSync(join(tmpdir(), "bblitec-public-"));
+    t.after(() => rmSync(directory, { recursive: true, force: true }));
+    const publicDir = join(directory, "public");
+    mkdirSync(join(publicDir, "data"), { recursive: true });
+    writeFileSync(join(publicDir, "data", "full.bin"), "full");
+    writeFileSync(join(publicDir, "data", "demo.bin"), "d");
+    writeFileSync(
+        join(directory, "flag.ts"),
+        `declare const __APP_DEMO__: boolean | undefined;
+        export const IS_DEMO: boolean = typeof __APP_DEMO__ !== "undefined" && __APP_DEMO__ === true;`,
+    );
+    const result = compileSource(
+        String.raw`
+        import { IS_DEMO } from "./flag";
+        const APP_BASE: string = (location.origin + import.meta.env.BASE_URL).replace(/\/+$/, "");
+        function bundleUrl(base: string): string {
+            const asset = IS_DEMO ? "data/demo.bin" : "data/full.bin";
+            return ${'`${base.replace(/\\/$/, "")}/${asset}`'};
+        }
+        async function size(url: string): Promise<number> {
+            const response = await fetch(url);
+            return (await response.arrayBuffer()).byteLength;
+        }
+        async function preload(url: string): Promise<void> {
+            if ((await size(url)) !== 4) throw new Error("bundle size");
+        }
+        await preload(bundleUrl(APP_BASE));
+    `,
+        {
+            fileName: join(directory, "entry.ts"),
+            publicDir,
+            siteUrl: "https://example.invalid/project/",
+        },
+    );
+    const outputs = result.manifest.assets.map((asset) => asset.output);
+    assert.ok(outputs.some((output) => output.endsWith("full.bin")));
+    assert.ok(!outputs.some((output) => output.endsWith("demo.bin")));
+});
+
 test("explicit build environment preserves strings, empty values and missing defaults", () => {
     const result = compileSource(
         `

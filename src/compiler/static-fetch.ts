@@ -78,8 +78,13 @@ export function compileStaticFetch(
               )
             : packagedAssetFetch(context, url, discovery);
     if (ts.isIdentifier(url)) {
+        // An inlined call's parameter reads its argument's text.
         const bound = context.bindings.lookupOptional(url);
-        if (bound && bound.staticString === undefined) {
+        if (
+            bound &&
+            bound.staticString === undefined &&
+            !bound.parameterBinding
+        ) {
             context.fail(
                 url,
                 `Generation-time fetch URL '${url.text}' lost its static value (${bound.kind}: ${bound.cpp}).`,
