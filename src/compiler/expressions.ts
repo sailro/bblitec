@@ -96,6 +96,7 @@ import {
 import {
     CRYPTO_GET_RANDOM_VALUES,
     NAVIGATOR_GET_GAMEPADS,
+    readsLoweredDomMethod,
 } from "./dom-lowerings.js";
 import {
     compileNumberPredicate,
@@ -1741,6 +1742,16 @@ export class ExpressionLowerer {
                     "dom",
                     "webgpu",
                 ]) === "function"
+            )
+                return staticStringValue("function", (text) =>
+                    this.context.cppString(text),
+                );
+            // So is a platform method native lowers, read off an operand
+            // with no effects.
+            if (
+                readsLoweredDomMethod(this.context.checker, expression) &&
+                ts.isPropertyAccessExpression(expression) &&
+                !expressionHasEffects(expression.expression)
             )
                 return staticStringValue("function", (text) =>
                     this.context.cppString(text),

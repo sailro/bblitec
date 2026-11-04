@@ -68,6 +68,24 @@ const LOWERED_READS: ReadonlySet<string> = new Set(
 );
 
 /**
+ * Whether a member read names a DOM method native lowers as a call
+ * (`navigator.getGamepads`): the function a `typeof` test reads.
+ */
+export function readsLoweredDomMethod(
+    checker: ts.TypeChecker,
+    node: ts.Expression,
+): boolean {
+    if (!ts.isPropertyAccessExpression(node)) return false;
+    const symbol = resolvedSymbol(checker, node);
+    if (!symbol || !declaredInDomLibrary(symbol)) return false;
+    return (symbol.declarations ?? []).some((declaration) => {
+        if (!ts.isMethodSignature(declaration)) return false;
+        const api = declarationApi(declaration);
+        return api !== undefined && LOWERED_CALLS.has(api);
+    });
+}
+
+/**
  * Whether native lowers this DOM call, or this read of a DOM member (a
  * Window member through an authored view of Window too).
  */
