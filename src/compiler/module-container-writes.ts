@@ -30,6 +30,7 @@ import {
     unwrapExpression,
     variableKind,
     wrappedParent,
+    yieldedOperands,
 } from "./syntax.js";
 import {
     callSignatures,
@@ -379,6 +380,16 @@ function writesThroughBinding(
         const root = ts.isExpression(node) ? rootExpression(node) : node;
         if (ts.isCallExpression(root) && returnsConstant(scan, root))
             return true;
+        // One rooted at a selection (`(c ? a : b).url`) reads below each
+        // operand it yields.
+        if (
+            ts.isExpression(root) &&
+            root !== unwrapExpression(node as ts.Expression)
+        ) {
+            const operands = yieldedOperands(root);
+            if (operands.length > 1 || operands[0]!.operand !== root)
+                return operands.some(({ operand }) => names(scan, operand));
+        }
         const named =
             ts.isIdentifier(node) ||
             ts.isPropertyAccessExpression(node) ||

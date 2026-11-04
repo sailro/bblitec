@@ -144,7 +144,7 @@ test("a fetch of a URL the deployment holds no file at rejects", (t) => {
     runPackagedProgram(t, directory, result.cpp);
 });
 
-test("a generation-time fetch of a runtime-selected file reads its text and JSON at run time", (t) => {
+test("a generation-time fetch of a runtime-selected file reads its text and JSON at run time, a selection write included", (t) => {
     const directory = resolve("artifacts/packaged-fetch-selected-text");
     const publicDir = join(directory, "public");
     mkdirSync(join(publicDir, "data"), { recursive: true });
@@ -164,8 +164,13 @@ test("a generation-time fetch of a runtime-selected file reads its text and JSON
         const response = await fetch(choice.url);
         const text = await response.text();
         if (text !== '{"name":"a"}') throw new Error("text " + text);
-        const parsed = (await (await fetch(choice.url)).json()) as { name: string };
+        // A write through a selection may write either operand.
+        const first = { url: "/data/a.json" }, second = { url: "/data/a.json" };
+        (Date.now() < 0 ? first : second).url = "/data/b.json";
+        const parsed = (await (await fetch(first.url)).json()) as { name: string };
         if (parsed.name !== "a") throw new Error("json " + parsed.name);
+        const moved = (await (await fetch(second.url)).json()) as { name: string };
+        if (moved.name !== "b") throw new Error("selection " + moved.name);
     `,
         { fileName: join(directory, "entry.ts"), publicDir },
     );
@@ -419,6 +424,7 @@ test("packaged URL provenance refuses uncertain mutations, origins and unbounded
         `const entries=[{url:"/clips/voice_01.bin"}]; let alias:{url:string}[]=[]; alias=entries; alias[0].url="/clips/voice_02.bin"; const url=entries[0].url;`,
         `const a={url:"/clips/voice_01.bin"}; const b={url:"/clips/voice_01.bin"}; const pick=Math.random()>0.5?a:b; pick.url="/clips/voice_02.bin"; const url=a.url;`,
         `const a={url:"/clips/voice_01.bin"}; const box={a}; box.a.url="/clips/voice_02.bin"; const url=a.url;`,
+        `const a={url:"/clips/voice_01.bin"}; const b={url:"/clips/voice_01.bin"}; (Math.random()>0.5?a:b).url="/clips/voice_02.bin"; const url=a.url;`,
     ])
         assert.deepEqual(
             compileSource(program(body), {
@@ -431,7 +437,6 @@ test("packaged URL provenance refuses uncertain mutations, origins and unbounded
             body,
         );
     const cases = [
-        `const a={url:"/clips/voice_01.bin"}; const b={url:"/clips/voice_01.bin"}; (Math.random()>0.5?a:b).url="/clips/voice_02.bin"; const url=a.url;`,
         `const entries=["https://remote.invalid/a.bin","https://remote.invalid/b.bin"]; const url=entries[Math.floor(Math.random()*2)];`,
         `const entries=["/clips/../clips/voice_01.bin","/clips/%2e%2e/clips/voice_02.bin"]; const url=entries[Math.floor(Math.random()*2)];`,
         `const entries=["/clips%2fvoice_01.bin","/clips%5cvoice_02.bin"]; const url=entries[Math.floor(Math.random()*2)];`,

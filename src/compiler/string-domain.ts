@@ -37,6 +37,7 @@ import {
     type SupportedFunction,
     variableKind,
     valueConsumer,
+    yieldedOperands,
     ANY_KEY,
 } from "./syntax.js";
 import { pathStartsWith, type KeyPath } from "./projections.js";
@@ -291,10 +292,14 @@ function aliasDepth(name: ts.Identifier, holds: AliasSite["holds"]): number {
     }
 }
 
-/** The path `target` writes below its root binding, when every key is plain. */
-function memberWritePath(
+/**
+ * The path `target` writes below each root binding it may write, when every
+ * key is plain: a selection root (`(c ? a : b).url`) writes below each
+ * operand it yields. Empty when any root is not a plain binding.
+ */
+function memberWritePaths(
     target: ts.Expression,
-): { root: Binding; path: KeyPath } | undefined {
+): { root: Binding; path: KeyPath }[] {
     const path: string[] = [];
     let node = unwrapExpression(target);
     while (
@@ -302,13 +307,15 @@ function memberWritePath(
         ts.isElementAccessExpression(node)
     ) {
         const field = privateField(node);
-        if (field) return path.length > 0 ? { root: field, path } : undefined;
+        if (field) return path.length > 0 ? [{ root: field, path }] : [];
         path.unshift(memberStep(node));
         node = unwrapExpression(node.expression);
     }
-    return ts.isIdentifier(node) && path.length > 0
-        ? { root: node, path }
-        : undefined;
+    if (path.length === 0) return [];
+    const roots = yieldedOperands(node).map(({ operand }) => operand);
+    return roots.every(ts.isIdentifier)
+        ? roots.map((root) => ({ root, path }))
+        : [];
 }
 
 /**
@@ -605,9 +612,13 @@ function sourceGraph(
         ]) {
             if (!typeCanCarryReference(checker.getTypeAtLocation(value)))
                 continue;
-            const chain = memberWritePath(value);
+            const chains = memberWritePaths(value);
             for (const base of heldBindings(value))
-                add(base, path, chain?.root === base ? chain.path : []);
+                add(
+                    base,
+                    path,
+                    chains.find((chain) => chain.root === base)?.path ?? [],
+                );
         }
     };
     // A name `depth` members inside what it reads (a pattern leaf, a loop's
@@ -637,6 +648,18 @@ function sourceGraph(
         });
     };
     // Every binding a write can reach: a selection writes through each operand.
+    // The symbol of each root a member write writes, or none when one has none.
+    const resolvedWrites = (
+        written: readonly { root: Binding; path: KeyPath }[],
+    ): { symbol: ts.Symbol; path: KeyPath }[] | undefined => {
+        const resolved = written.flatMap(({ root, path }) => {
+            const symbol = resolvedSymbol(checker, root);
+            return symbol ? [{ symbol, path }] : [];
+        });
+        return resolved.length > 0 && resolved.length === written.length
+            ? resolved
+            : undefined;
+    };
     const mutate = (expression: ts.Expression): void => {
         for (const root of heldBindings(expression)) {
             const symbol = resolvedSymbol(checker, root);
@@ -784,27 +807,25 @@ function sourceGraph(
                             : undefined;
                     const whole = receiver && namedBinding(receiver);
                     const stored = receiver
-                        ? whole
-                            ? { root: whole, path: [] }
-                            : memberWritePath(receiver)
+                        ? resolvedWrites(
+                              whole
+                                  ? [{ root: whole, path: [] }]
+                                  : memberWritePaths(receiver),
+                          )
                         : undefined;
-                    const storedSymbol =
-                        stored && resolvedSymbol(checker, stored.root);
                     if (
                         stored &&
-                        storedSymbol &&
                         checker.isArrayType(
                             checker.getTypeAtLocation(receiver!),
                         )
                     ) {
-                        mutated.add(storedSymbol);
-                        const list = memberWrites.get(storedSymbol) ?? [];
-                        for (const value of inserted ?? [])
-                            list.push({
-                                path: [...stored.path, ANY_KEY],
-                                value,
-                            });
-                        memberWrites.set(storedSymbol, list);
+                        for (const { symbol, path } of stored) {
+                            mutated.add(symbol);
+                            const list = memberWrites.get(symbol) ?? [];
+                            for (const value of inserted ?? [])
+                                list.push({ path: [...path, ANY_KEY], value });
+                            memberWrites.set(symbol, list);
+                        }
                     } else if (
                         method &&
                         storesNoNewElement(checker, method, node)
@@ -826,17 +847,19 @@ function sourceGraph(
                             unwrapExpression(method.expression),
                         )
                             ? undefined
-                            : memberWritePath(
-                                  unwrapExpression(method.expression),
+                            : resolvedWrites(
+                                  memberWritePaths(
+                                      unwrapExpression(method.expression),
+                                  ),
                               );
-                        const symbol =
-                            written && resolvedSymbol(checker, written.root);
-                        if (written && symbol) {
-                            mutated.add(symbol);
-                            const list = memberWrites.get(symbol) ?? [];
-                            list.push({ path: [...written.path, ANY_KEY] });
-                            memberWrites.set(symbol, list);
-                        } else mutate(method.expression);
+                        if (written)
+                            for (const { symbol, path } of written) {
+                                mutated.add(symbol);
+                                const list = memberWrites.get(symbol) ?? [];
+                                list.push({ path: [...path, ANY_KEY] });
+                                memberWrites.set(symbol, list);
+                            }
+                        else mutate(method.expression);
                     }
                 }
                 for (const { target, kind, stored } of writeSites(node)) {
@@ -869,15 +892,16 @@ function sourceGraph(
                     // Only a plain `=` stores a value this domain can read;
                     // every other write leaves the binding's value unknown.
                     const value = kind === "assign" ? stored : undefined;
-                    const written = value && memberWritePath(target);
-                    const symbol =
-                        written && resolvedSymbol(checker, written.root);
-                    if (value && written && symbol) {
-                        mutated.add(symbol);
-                        const list = memberWrites.get(symbol) ?? [];
-                        list.push({ path: written.path, value });
-                        memberWrites.set(symbol, list);
-                    } else mutate(target);
+                    const written =
+                        value && resolvedWrites(memberWritePaths(target));
+                    if (value && written)
+                        for (const { symbol, path } of written) {
+                            mutated.add(symbol);
+                            const list = memberWrites.get(symbol) ?? [];
+                            list.push({ path, value });
+                            memberWrites.set(symbol, list);
+                        }
+                    else mutate(target);
                 }
             },
             { types: "skip" },
