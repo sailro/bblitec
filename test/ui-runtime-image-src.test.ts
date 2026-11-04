@@ -185,6 +185,47 @@ test("runtime img src reads a member a conditional spread copies", () => {
     assert.ok(!outputs.includes("assets/ui/blue.png"));
 });
 
+test("runtime img src reads a table by the keys a guard lets through", () => {
+    const result = compileEntry(`
+        type Icon = "record" | "play" | "load" | "save";
+        const ASSET = Object.freeze({
+            load: appUrl("/assets/ui/red.png"),
+            save: appUrl("/assets/ui/green.png"),
+            other: appUrl("/assets/ui/blue.png"),
+        });
+        function panel(): HTMLElement {
+            const root = document.createElement("div");
+            const setIcon = (host: HTMLElement, name: Icon): void => {
+                if (name === "load" || name === "save") {
+                    const img = document.createElement("img");
+                    img.src = ASSET[name];
+                    host.replaceChildren(img);
+                    return;
+                }
+                host.textContent = name;
+            };
+            const button = (label: string, name: Icon): void => {
+                const mark = document.createElement("span");
+                setIcon(mark, name);
+                mark.title = label;
+                mark.addEventListener("click", () => root.classList.toggle(label));
+                root.append(mark);
+            };
+            button("a", "record");
+            button("b", "load");
+            button("c", "save");
+            button("d", "play");
+            return root;
+        }
+        document.body.append(panel());
+    `);
+    const outputs = result.manifest.assets.map((asset) => asset.output);
+    for (const name of ["red", "green"])
+        assert.ok(outputs.includes(`assets/ui/${name}.png`), name);
+    // The guard leaves the table's other member out.
+    assert.ok(!outputs.includes("assets/ui/blue.png"));
+});
+
 test("runtime img src reads sorted, flat-mapped and named-callback records whose spreads lack the member", () => {
     const result = compileEntry(`
         interface Tool { name: string; image: string; wide?: boolean }

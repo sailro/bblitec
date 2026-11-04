@@ -100,6 +100,7 @@ import {
     callSignatures,
     unionMembers,
     boundedTupleElements,
+    stringLiteralValues,
 } from "./type-facts.js";
 import {
     absentAwareEquality,
@@ -14746,11 +14747,9 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 const keyType = this.context.checker.getTypeAtLocation(
                     target.argumentExpression,
                 );
-                const possibleKeys =
-                    keyType.isUnion() &&
-                    keyType.types.every((member) => member.isStringLiteral())
-                        ? new Set(keyType.types.map((member) => member.value))
-                        : undefined;
+                const possibleKeys = keyType.isUnion()
+                    ? stringLiteralValues(keyType)
+                    : undefined;
                 const fields = this.context.dataTypes
                     .structFields(type.name, target, "accessors")
                     .filter(

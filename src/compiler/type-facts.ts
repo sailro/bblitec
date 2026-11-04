@@ -542,6 +542,18 @@ export function nullability(type: ts.Type): Nullability {
     };
 }
 
+/** The texts a string literal type, or a union of them, admits; undefined for any other type. */
+export function stringLiteralValues(
+    type: ts.Type,
+): ReadonlySet<string> | undefined {
+    const values = new Set<string>();
+    for (const member of type.isUnion() ? type.types : [type]) {
+        if (!member.isStringLiteral()) return undefined;
+        values.add(member.value);
+    }
+    return values;
+}
+
 /**
  * The literal's named keys whose value types admit neither `null` nor
  * `undefined`: each is present on the object the literal builds.

@@ -237,11 +237,33 @@ test("replaceChildren and append insert nodes, text and spread element lists in 
         let visible = input.isConnected;
         function clearVisible(): boolean { visible = false; return true; }
         input.focus({ focusVisible: visible, preventScroll: clearVisible() });
+        // Elements a record field keeps with their engine, mapped into an
+        // array a binding takes: spread and \`at\` read their handles.
+        interface Entry { readonly button: HTMLElement; readonly key: string }
+        const entries: Entry[] = [];
+        for (const key of ["p", "q"]) {
+            const button = document.createElement("span");
+            button.id = key;
+            entries.push({ button, key });
+        }
+        const buttons = entries.map((entry) => entry.button);
+        let menu: HTMLElement[] = [];
+        menu = buttons;
+        const owned = document.createElement("div");
+        owned.id = "owned";
+        document.body.appendChild(owned);
+        owned.replaceChildren(...menu);
+        record(menu.at(-1)?.id === "q" && owned.contains(entries[0]!.button) ? "O" : "o");
         globalThis.close();
     `,
         { fileName: join(output, "entry.ts") },
     );
     writeFileSync(join(output, "program.hpp"), cpp);
+    // The mapped field elements keep their engine.
+    assert.match(
+        cpp,
+        /Array<std::pair<bbl::StoredEngine, bbl::UiElementHandle>>/,
+    );
     runRmlUiFixture(t, "dom-child-replacement", {
         macros: { BBLITE_WORKERS: 1, BBLITE_OFFSCREEN_SURFACES: 1 },
     });

@@ -53,11 +53,12 @@ export function compileArrayValueMethod(
     if (method === "at") {
         if (call.arguments.length > 1)
             lowerer.context.fail(call, "Array.at expects at most one index.");
+        // The stored element, as an index read takes it: a resource the
+        // array stores with its engine keeps that storage.
         const resultType: DataType =
-            lowerer.dataTypeAt(call) ??
-            (type.element.kind === "optional"
+            type.element.kind === "optional"
                 ? type.element
-                : { kind: "optional", inner: type.element });
+                : { kind: "optional", inner: type.element };
         return lowerer.leafValue(
             `bbl::js::array_relative_at<${lowerer.context.dataTypes.cppType(resultType)}>(${source}, ${numericArgument(0, "0.0")})`,
             resultType,

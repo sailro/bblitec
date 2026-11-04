@@ -42,7 +42,7 @@ import { compileFullscreenCall } from "./fullscreen.js";
 import { compileCanvasCaptureStream } from "./media-streams.js";
 import { timerCancellation } from "./workers.js";
 import { isDocumentReceiver } from "./dom-targets.js";
-import { isPinnedType } from "./data-types.js";
+import { isPinnedType, type DataType } from "./data-types.js";
 import {
     compileBooleanOptions,
     optionalOptionMember,
@@ -193,7 +193,10 @@ export class PlatformCalls {
      * A spread of a retained element list, snapshotted before the call, as
      * JavaScript spreads it before inserting.
      */
-    private uiElementSpread(argument: ts.SpreadElement): { spread: string } {
+    private uiElementSpread(argument: ts.SpreadElement): {
+        spread: string;
+        element: DataType;
+    } {
         const list = this.context.compileValue(argument.expression);
         const type = list.dataType;
         if (
@@ -207,6 +210,7 @@ export class PlatformCalls {
                 "A spread of retained UI nodes requires an element array.",
             );
         return {
+            element: type.element,
             spread: this.context.bindings.pinValueToTemporary(
                 {
                     kind: "data",
@@ -2579,9 +2583,14 @@ export class PlatformCalls {
                 const child = this.context.allocateTemporaryCppName(
                     "append_spread_child",
                 );
+                // An element the array stores with its engine appends its handle.
+                const node = this.context.dataLowerer.leafValue(
+                    child,
+                    value.element,
+                ).cpp;
                 const append = receiver.uiRoot
-                    ? `bbl::ui_append_to_root(${engine}, ${child})`
-                    : `bbl::ui_append_child(${engine}, ${receiver.cpp}, ${child})`;
+                    ? `bbl::ui_append_to_root(${engine}, ${node})`
+                    : `bbl::ui_append_child(${engine}, ${receiver.cpp}, ${node})`;
                 operations.push(
                     `[&] { for (const auto& ${child} : ${value.spread}) static_cast<void>(${append}); }()`,
                 );

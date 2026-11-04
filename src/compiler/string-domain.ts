@@ -41,6 +41,7 @@ import {
 } from "./syntax.js";
 import { pathStartsWith, type KeyPath } from "./projections.js";
 import {
+    stringLiteralValues,
     typeCanCarryReference,
     unionMembers,
     valueKindOf,
@@ -1174,12 +1175,20 @@ class StringDomain {
         if (
             domain === undefined ||
             domain instanceof UnboundedDomain ||
-            domain === nothing ||
-            domain.length === 0
+            domain === nothing
         )
             return undefined;
-        return domain.every((value) => keyIndex(value) === undefined)
-            ? domain
+        // The key's flow type keeps only the values a guard lets through
+        // (`if (name === "a" || name === "b")`), whatever its callers pass.
+        const narrowed = stringLiteralValues(
+            this.context.checker.getTypeAtLocation(key),
+        );
+        const keys = narrowed
+            ? domain.filter((value) => narrowed.has(value))
+            : domain;
+        return keys.length > 0 &&
+            keys.every((value) => keyIndex(value) === undefined)
+            ? keys
             : undefined;
     }
 
