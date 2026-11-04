@@ -13317,6 +13317,21 @@ check(
 `,
 );
 
+check(
+    "destructured-record-function-and-getter-members",
+    `
+    interface Deps { height(x: number): number; scale: number; field: { at(x: number): number }; readonly doubled: number }
+    let reads = 0;
+    function make(deps: Deps): (x: number) => number {
+        const { height, scale, field, doubled } = deps;
+        return (x) => height(x) * scale + field.at(x) + doubled;
+    }
+    function h(x: number): number { return x * 2; }
+    const f = make({ height: h, scale: 3, field: { at: (x: number) => x + 1 }, get doubled() { reads++; return 10; } });
+    if (f(2) !== 25 || reads !== 1) throw new Error("members " + f(2) + " " + reads);
+`,
+);
+
 test("a union with several function arms refuses a function value", () => {
     assert.throws(
         () =>

@@ -129,6 +129,7 @@ import {
     type GeometryTextureTypeName,
     type Value,
     type ValueKind,
+    recordMethodValue,
 } from "./types.js";
 import type { UiProjection } from "./ui-projection.js";
 import {
@@ -3740,14 +3741,7 @@ export class PropertyAccessLowerer {
                 if (classMethod)
                     this.refuseMethodValue(expression, classMethod);
                 const method = owner.recordMethods?.[property] ?? classMethod;
-                if (method) {
-                    return {
-                        kind: "callback",
-                        cpp: "",
-                        callbackDeclaration: method,
-                        callbackRecordOwner: owner,
-                    };
-                }
+                if (method) return recordMethodValue(owner, method);
                 const declared =
                     this.context.dataLowerer.dataTypeAt(expression);
                 const declaredTsType =

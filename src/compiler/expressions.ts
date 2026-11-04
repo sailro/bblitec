@@ -256,6 +256,7 @@ import {
     presenceFlagCpp,
     staticStringValue,
     withNativeMetadata,
+    recordMethodValue,
 } from "./types.js";
 import { recordAt } from "./record-access.js";
 import { pinOperand } from "./evaluation-order.js";
@@ -5495,13 +5496,7 @@ export class ExpressionLowerer {
             const value = owner.recordProperties?.[property];
             if (!value) {
                 const method = owner.recordMethods?.[property];
-                if (method)
-                    return {
-                        kind: "callback",
-                        cpp: "",
-                        callbackDeclaration: method,
-                        callbackRecordOwner: owner,
-                    };
+                if (method) return recordMethodValue(owner, method);
                 if (
                     this.context.dataLowerer.declaredAsDictionary(
                         unwrapped.expression,

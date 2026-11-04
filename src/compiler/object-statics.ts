@@ -8,6 +8,7 @@ import {
     scalarFacts,
     staticStringValue,
     type Value,
+    recordMethodValue,
 } from "./types.js";
 import {
     type DataStructField,
@@ -835,12 +836,7 @@ function compileObjectAssign(
                   ...pairs,
                   ...methods.map(([name, method]): [string, Value] => [
                       name,
-                      {
-                          kind: "callback",
-                          cpp: "",
-                          callbackDeclaration: method,
-                          callbackRecordOwner: value,
-                      },
+                      recordMethodValue(value, method),
                   ]),
               ]
             : pairs;

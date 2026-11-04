@@ -122,6 +122,7 @@ import {
     withNativeMetadata,
     type Value,
     type NullableResourceType,
+    recordMethodValue,
 } from "./types.js";
 import type { UiProjection } from "./ui-projection.js";
 import { withLiteralSelfBinding } from "./home-object-methods.js";
@@ -174,6 +175,7 @@ interface DeclarationContext
             | "captureEmittedStatements"
             | "compileCallbackWithValues"
             | "compileEngineCreation"
+            | "compileRecordGetter"
             | "compileForDataSink"
             | "compileStoredDataFunction"
             | "compileStringLiteral"
@@ -2326,12 +2328,7 @@ export class DeclarationLowerer {
             ),
         );
         for (const [key, method] of Object.entries(owner.recordMethods ?? {}))
-            callbacks.set(key, {
-                kind: "callback",
-                cpp: "",
-                callbackDeclaration: method,
-                callbackRecordOwner: owner,
-            });
+            callbacks.set(key, recordMethodValue(owner, method));
         if (callbacks.size === 0) return;
         const assigned = new Set<string>();
         const visited = new Set<ts.Symbol>();
@@ -6153,12 +6150,20 @@ export class DeclarationLowerer {
             }
             const { name, property } = this.bindingProperty(element);
             consumed.add(property);
+            // Each element reads its property as a member read does: a
+            // getter's value, a data field, or a function member.
+            const getter = value.recordGetters?.[property];
+            const method = value.recordMethods?.[property];
             const present =
                 this.context.moduleNamespaces.member(
                     value,
                     property,
                     element,
-                ) ?? value.recordProperties?.[property];
+                ) ??
+                (getter
+                    ? this.context.compileRecordGetter(value, getter)
+                    : value.recordProperties?.[property]) ??
+                (method ? recordMethodValue(value, method) : undefined);
             // A default applies exactly when the property is undefined:
             // absent from the record, or present as `undefined`.
             let propertyValue =

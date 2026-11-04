@@ -2195,6 +2195,19 @@ export function staticStringValue(
     return { kind: "string", cpp: cppString(text), staticString: text };
 }
 
+/** A record's own function member as a value: a call through it resolves as the record's method does. */
+export function recordMethodValue(
+    owner: Value,
+    method: NonNullable<Value["recordMethods"]>[string],
+): Value {
+    return {
+        kind: "callback",
+        cpp: "",
+        callbackDeclaration: method,
+        callbackRecordOwner: owner,
+    };
+}
+
 /** A string as the program sees it: a plain string value or a data leaf typed string. */
 export function isStringValue(value: Value): boolean {
     return (
