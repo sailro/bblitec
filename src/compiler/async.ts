@@ -67,6 +67,7 @@ import {
 } from "./error-values.js";
 import {
     isPromiseResultUsed,
+    optionalPromiseReactionOf,
     promiseReactionOf,
     promiseStatic,
     rejectionOnlyPromiseCpp,
@@ -405,7 +406,24 @@ export class AsyncLowerer {
             return this.compileAll(node, statics === "allSettled");
         if (statics === "race" || statics === "any")
             return this.compileRace(node, statics);
-        const reaction = promiseReactionOf(callee, context.checker);
+        // `p?.then(...)` on a receiver generation proves a promise cannot
+        // stop there: it is the reaction itself.
+        const direct = promiseReactionOf(callee, context.checker);
+        const optional = direct
+            ? undefined
+            : optionalPromiseReactionOf(callee, context.checker);
+        const present = optional
+            ? context.probeEmission(
+                  () => context.compileValue(optional.expression),
+                  (value) => value.kind === "promise",
+              )
+            : undefined;
+        if (present && present.kind !== "promise")
+            return context.fail(
+                callee,
+                "An optional promise reaction requires a receiver generation proves present.",
+            );
+        const reaction = direct ?? optional;
         if (reaction) {
             // A reaction the checker types undefined, null or void
             // (`undefined`, `null`, `void 0`) is no callback: then passes
@@ -454,7 +472,7 @@ export class AsyncLowerer {
                 );
             }
             const receiver = this.asPromise(
-                context.compileValue(reaction.expression),
+                present ?? context.compileValue(reaction.expression),
                 node,
             );
             let promise = this.orderedReceiver(receiver, [
