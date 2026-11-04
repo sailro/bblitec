@@ -1,0 +1,49 @@
+A row flex container measured for its max-content size summed its items' flex base sizes, so flex: 1 items (a
+zero basis) collapsed a shrink-to-fit toolbar to nothing. It now sums their max-content contributions (CSS
+Flexbox 9.9.1, 9.9.3): each item's max-content width, bounded by a length flex basis where it cannot grow or
+cannot shrink (a percentage basis is indefinite there), then by its min/max widths.
+
+diff --git a/Source/Core/Layout/FlexFormattingContext.cpp b/Source/Core/Layout/FlexFormattingContext.cpp
+index 2968e5e..89d24f1 100644
+--- a/Source/Core/Layout/FlexFormattingContext.cpp
++++ b/Source/Core/Layout/FlexFormattingContext.cpp
+@@ -436,6 +436,8 @@ void FlexFormattingContext::Format(Vector2f& flex_resulting_content_size, Vector
+ 		auto GetMainSize = [&](const Box& box) { return box.GetSize()[main_axis_horizontal ? 0 : 1]; };
+ 
+ 		const float sum_padding_border = item.main.sum_edges - (item.main.margin_a + item.main.margin_b);
++		// The item's max-content width, once measured.
++		float max_content_width = -1.f;
+ 
+ 		// Find the flex base size (possibly negative when using border box sizing)
+ 		if (!is_grid && computed.flex_basis().type != Style::FlexBasis::Auto)
+@@ -457,7 +459,8 @@ void FlexFormattingContext::Format(Vector2f& flex_resulting_content_size, Vector
+ 		}
+ 		else if (main_axis_horizontal)
+ 		{
+-			item.inner_flex_base_size = LayoutDetails::GetShrinkToFitWidth(element, flex_content_containing_block, intrinsic_inline);
++			item.inner_flex_base_size = max_content_width =
++				LayoutDetails::GetShrinkToFitWidth(element, flex_content_containing_block, intrinsic_inline);
+ 		}
+ 		else
+ 		{
+@@ -482,6 +485,20 @@ void FlexFormattingContext::Format(Vector2f& flex_resulting_content_size, Vector
+ 		// Calculate the hypothetical main size (clamped flex base size).
+ 		item.hypothetical_main_size = Math::Clamp(item.inner_flex_base_size, item.main.min_size, item.main.max_size) + item.main.sum_edges;
+ 		item.flex_base_size = item.inner_flex_base_size + item.main.sum_edges;
++		// A row measured for its max-content size sums its items' max-content contributions (CSS Flexbox 9.9.1, 9.9.3):
++		// each max-content width, bounded by a length flex basis where the item cannot grow or cannot shrink. A
++		// percentage basis is indefinite here and bounds nothing, as in Chromium.
++		if (!is_grid && main_axis_horizontal && intrinsic_inline)
++		{
++			if (max_content_width < 0.f)
++				max_content_width = LayoutDetails::GetShrinkToFitWidth(element, flex_content_containing_block, true);
++			const bool length_basis = computed.flex_basis().type == Style::FlexBasis::Length;
++			if (length_basis && item.flex_grow_factor == 0.f)
++				max_content_width = Math::Min(max_content_width, item.inner_flex_base_size);
++			if (length_basis && item.flex_shrink_factor == 0.f)
++				max_content_width = Math::Max(max_content_width, item.inner_flex_base_size);
++			item.hypothetical_main_size = Math::Clamp(max_content_width, item.main.min_size, item.main.max_size) + item.main.sum_edges;
++		}
+ 
+ 
+ 		if (is_grid) {

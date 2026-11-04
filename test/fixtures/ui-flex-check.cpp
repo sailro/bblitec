@@ -245,6 +245,55 @@ int main() {
         measured(calc, 248, "a percentage maximum in calc() resolves against its container");
         measured(minimum, 400, "a minimum width wins over the available width");
         measured(row_max, 150, "a row item's percentage maximum resolves against its row");
+
+        // A shrink-to-fit row sums its items' max-content contributions: each max-content width,
+        // bounded by the flex base size where the item cannot grow or shrink, then by min/max.
+        struct Contribution {
+            const char* label;
+            const char* row;
+            std::vector<std::pair<const char*, int>> items;
+            float width;
+        };
+        const std::vector<Contribution> contributions{
+            {"growable zero bases", "", {{"flex:1;", 100}, {"flex:1;", 60}}, 160},
+            {"a fixed percentage basis", "", {{"flex:0 0 50%;", 100}, {"", 60}}, 160},
+            {"zero bases and a gap", "column-gap:10px;", {{"flex:1 1 0px;", 100}, {"flex:1 1 0px;", 60}}, 170},
+            {"an inflexible basis floors and caps", "", {{"flex:0 0 200px;", 100}}, 200},
+            {"a definite width caps an inflexible item", "", {{"width:50px;", 100}}, 50},
+            {"a maximum width clamps", "", {{"max-width:50px;", 100}}, 50},
+            {"edges add to the contribution", "", {{"margin:0 7px;padding:0 3px;flex:1;", 100}}, 120},
+        };
+        std::vector<UiElementHandle> rows;
+        for (const auto& contribution : contributions) {
+            const auto measured_row = make(
+                (std::string("position:fixed;top:300px;right:18px;display:flex;align-items:start;") +
+                 contribution.row).c_str());
+            for (const auto& [style, content] : contribution.items) {
+                const auto item = make(style);
+                ui_append_child(engine, item,
+                                make(("width:" + std::to_string(content) + "px;height:10px;").c_str()));
+                ui_append_child(engine, measured_row, item);
+            }
+            ui_append_to_root(engine, measured_row);
+            rows.push_back(measured_row);
+        }
+        update();
+        for (size_t index = 0; index < rows.size(); ++index)
+            measured(rows[index], contributions[index].width, contributions[index].label);
+        // Without automatic minimums the items share the measured width.
+        const auto zero_minimums = make("position:fixed;top:400px;right:18px;display:flex;align-items:start;");
+        std::vector<UiElementHandle> shared;
+        for (const int content : {100, 60}) {
+            shared.push_back(make("flex:1 1 0px;min-width:0;"));
+            ui_append_child(engine, shared.back(),
+                            make(("width:" + std::to_string(content) + "px;height:10px;").c_str()));
+            ui_append_child(engine, zero_minimums, shared.back());
+        }
+        ui_append_to_root(engine, zero_minimums);
+        update();
+        measured(zero_minimums, 160, "zero minimums still measure their content");
+        measured(shared[0], 80, "zero minimums share the measured width");
+        measured(shared[1], 80, "zero minimums share the measured width equally");
     }
     SDL_DestroyWindow(window);
     SDL_Quit();

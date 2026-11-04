@@ -485,6 +485,13 @@
       "variants": ["all"]
     },
     {
+      "library": "rmlui",
+      "file": "native/patches/rmlui/0064-flex-row-max-content-contributions.patch",
+      "purpose": "a row flex container measured for its max-content size sums its items' max-content contributions",
+      "upstream": { "state": "unsubmitted" },
+      "variants": ["all"]
+    },
+    {
       "library": "dawn",
       "file": "native/patches/dawn/0001-android-surface-loss.patch",
       "purpose": "Report Android Vulkan surface loss at the next acquisition without losing the device",
