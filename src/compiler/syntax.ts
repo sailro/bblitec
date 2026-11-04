@@ -88,7 +88,7 @@ interface UnwrapOptions {
  */
 export function isExpressionWrapper(
     node: ts.Node,
-    options: UnwrapOptions = {},
+    options?: UnwrapOptions,
 ): node is
     | ts.ParenthesizedExpression
     | ts.AsExpression
@@ -96,14 +96,18 @@ export function isExpressionWrapper(
     | ts.NonNullExpression
     | ts.SatisfiesExpression
     | ts.AwaitExpression {
-    return (
-        ts.isParenthesizedExpression(node) ||
-        ts.isAsExpression(node) ||
-        ts.isTypeAssertionExpression(node) ||
-        ts.isNonNullExpression(node) ||
-        ts.isSatisfiesExpression(node) ||
-        (options.await === true && ts.isAwaitExpression(node))
-    );
+    switch (node.kind) {
+        case ts.SyntaxKind.ParenthesizedExpression:
+        case ts.SyntaxKind.AsExpression:
+        case ts.SyntaxKind.TypeAssertionExpression:
+        case ts.SyntaxKind.NonNullExpression:
+        case ts.SyntaxKind.SatisfiesExpression:
+            return true;
+        case ts.SyntaxKind.AwaitExpression:
+            return options?.await === true;
+        default:
+            return false;
+    }
 }
 
 /**
@@ -147,7 +151,7 @@ export function isTypeAssertion(
 /** The wrappers under an expression, outermost first, down to the value they wrap. */
 export function wrappersUnder(
     expression: ts.Expression,
-    options: UnwrapOptions = {},
+    options?: UnwrapOptions,
 ): readonly ts.Expression[] {
     const wrappers: ts.Expression[] = [];
     for (
@@ -162,7 +166,7 @@ export function wrappersUnder(
 /** The wrappers around a node, innermost first, up to its consumer. */
 export function wrappersAround(
     node: ts.Node,
-    options: UnwrapOptions = {},
+    options?: UnwrapOptions,
 ): readonly ts.Expression[] {
     const wrappers: ts.Expression[] = [];
     for (
@@ -177,11 +181,11 @@ export function wrappersAround(
 /** Strip the type-only and grouping wrappers around an expression. */
 export function unwrapExpression(
     expression: ts.Expression,
-    options: UnwrapOptions = {},
+    options?: UnwrapOptions,
 ): ts.Expression {
     let current = expression;
     while (isExpressionWrapper(current, options)) {
-        if (ts.isAwaitExpression(current)) options.onAwait?.(current);
+        if (ts.isAwaitExpression(current)) options?.onAwait?.(current);
         current = current.expression;
     }
     return current;
