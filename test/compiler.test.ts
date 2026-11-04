@@ -20583,6 +20583,30 @@ test("an inline collection find keeps the loaded search loop and the runtime gua
     assert.doesNotMatch(result.cpp, /\.animation_groups\[0\]/);
 });
 
+test("some over a collection tests its members by the search loop and keeps no match", () => {
+    const result = compileWithAnimationFixture(
+        `
+        import { createEngine, loadGltf } from "@babylonjs/lite";
+
+        function firstPresent(names: string[], has: (name: string) => boolean): string | undefined {
+            for (const name of names) if (has(name)) return name;
+            return undefined;
+        }
+        async function main() {
+            const engine = await createEngine({});
+            const container = await loadGltf(engine, "model.glb");
+            const groups = container.animationGroups ?? [];
+            const picked = firstPresent(["trot", "walk"], (name) => groups.some((group) => group.name === name));
+            if (picked !== "walk") throw new Error("no gait");
+        }
+        `,
+        ["walk", "run"],
+    );
+    assert.match(result.cpp, /bool \w+_found_\d+ = false;/);
+    assert.doesNotMatch(result.cpp, /_match/);
+    assert.match(result.cpp, /break;/);
+});
+
 test("handle identity compares at run time when a side has no generation-known slot", () => {
     const result = compileWithAnimationFixture(
         HANDLE_COLLECTION_SCENE(`

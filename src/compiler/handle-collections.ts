@@ -1,4 +1,5 @@
 import {
+    booleanValue,
     presenceFlagCpp,
     representedStorage,
     valueForKind,
@@ -1863,19 +1864,7 @@ export class HandleCollections {
         if (!target) {
             return undefined;
         }
-        this.context.expectArgumentCount(call, 1, 1);
-        const predicate = this.context.unwrap(argumentAt(call, 0));
-        if (
-            !ts.isArrowFunction(predicate) ||
-            predicate.parameters.length !== 1 ||
-            !ts.isIdentifier(predicate.parameters[0]!.name) ||
-            ts.isBlock(predicate.body)
-        ) {
-            this.context.fail(
-                call.arguments[0] ?? call,
-                "find takes an arrow whose one parameter is the element and whose body is the test.",
-            );
-        }
+        const predicate = this.searchPredicate(call, "find");
         const resolved =
             bound?.handleCollection?.asset !== undefined
                 ? this.staticFind(
@@ -1896,6 +1885,45 @@ export class HandleCollections {
             );
         }
         return this.runtimeFind(target, predicate);
+    }
+
+    /**
+     * `<collection>.some(<arrow>)`: whether `find` would match, by the same
+     * loaded loop -- the test runs in collection order and stops at the
+     * first match.
+     */
+    public compileSome(
+        call: ts.CallExpression,
+        callee: NamedMember,
+    ): Value | undefined {
+        if (callee.name !== "some") return undefined;
+        const target = this.iterationTarget(callee.expression);
+        if (!target) return undefined;
+        const predicate = this.searchPredicate(call, "some");
+        return booleanValue(
+            this.runtimeFind(target, predicate, "presence").optionalFoundCpp!,
+        );
+    }
+
+    /** A search's one arrow argument: the element parameter and the test. */
+    private searchPredicate(
+        call: ts.CallExpression,
+        method: string,
+    ): ts.ArrowFunction {
+        this.context.expectArgumentCount(call, 1, 1);
+        const predicate = this.context.unwrap(argumentAt(call, 0));
+        if (
+            !ts.isArrowFunction(predicate) ||
+            predicate.parameters.length !== 1 ||
+            !ts.isIdentifier(predicate.parameters[0]!.name) ||
+            ts.isBlock(predicate.body)
+        ) {
+            this.context.fail(
+                call.arguments[0] ?? call,
+                `${method} takes an arrow whose one parameter is the element and whose body is the test.`,
+            );
+        }
+        return predicate;
     }
 
     /**
@@ -2492,6 +2520,8 @@ export class HandleCollections {
     private runtimeFind(
         target: HandleCollectionTarget,
         predicate: ts.ArrowFunction,
+        /** Only whether one matched: the match itself is never read. */
+        presence?: "presence",
     ): Value {
         const predicateParameter = predicate.parameters[0]?.name;
         if (!predicateParameter || !ts.isIdentifier(predicateParameter)) {
@@ -2507,13 +2537,14 @@ export class HandleCollections {
         const found = this.context.allocateTemporaryCppName(
             `${target.temporaryLabel}_found`,
         );
-        this.context.emit({
-            kind: "declaration",
-            type: target.elementCppType,
-            name: result,
-            initializer: "",
-            initialization: "default",
-        });
+        if (!presence)
+            this.context.emit({
+                kind: "declaration",
+                type: target.elementCppType,
+                name: result,
+                initializer: "",
+                initialization: "default",
+            });
         // A caller may use the selected handle without testing the optional
         // result (for example, a scene whose asset contract guarantees the
         // named camera). The search still needs the flag for callers that do
@@ -2537,10 +2568,11 @@ export class HandleCollections {
                 );
                 context.emit({ kind: "open", code: `if (${test}) {` });
                 context.increaseIndent();
-                context.emit({
-                    kind: "expression",
-                    code: `${result} = ${item};`,
-                });
+                if (!presence)
+                    context.emit({
+                        kind: "expression",
+                        code: `${result} = ${item};`,
+                    });
                 context.emit({ kind: "expression", code: `${found} = true;` });
                 context.emit({
                     kind: "control",

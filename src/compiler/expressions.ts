@@ -7571,6 +7571,7 @@ export class ExpressionLowerer {
         // has no native intermediate array for that probe to lower.
         const found =
             this.context.handleCollections.compileFind(call, member) ??
+            this.context.handleCollections.compileSome(call, member) ??
             this.context.handleCollections.compileFilter(call, member);
         if (found) {
             return found;
