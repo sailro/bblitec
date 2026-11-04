@@ -1146,13 +1146,6 @@ struct HttpResponseInit {
         init.status, std::string(), std::move(headers), body, true, std::move(init.status_text)});
 }
 
-/** WHATWG UTF-8 replacement decoding, including initial BOM removal. */
-inline std::string decode_http_text(const std::vector<std::uint8_t>& bytes) {
-    if (bytes.empty())
-        return {};
-    return js::decode_utf8_removing_bom(
-        std::string_view(reinterpret_cast<const char*>(bytes.data()), bytes.size()));
-}
 
 inline bool http_response_ok(const HttpResponse& response) {
     return response->status >= 200 && response->status < 300;
@@ -1203,7 +1196,7 @@ inline js::Promise<std::vector<std::uint8_t>> consume_http_body(HttpResponse res
 
 inline js::Promise<std::string> http_response_text(const HttpResponse& response) {
     return consume_http_body(response).then(
-        [](const std::vector<std::uint8_t>& bytes) { return decode_http_text(bytes); });
+        [](const std::vector<std::uint8_t>& bytes) { return js::decode_utf8_removing_bom(bytes); });
 }
 
 inline js::Promise<js::ArrayBuffer> http_response_buffer(const HttpResponse& response) {

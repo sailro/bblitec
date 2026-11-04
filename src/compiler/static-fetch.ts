@@ -553,21 +553,47 @@ export function compileStaticFetchMethod(
             },
         };
     }
-    if (method === "text") {
+    if (method === "text" || method === "json") {
         if (call.arguments.length !== 0) {
-            context.fail(call, "Response.text() takes no arguments.");
+            context.fail(call, `Response.${method}() takes no arguments.`);
         }
+        // The file a runtime URL selects, decoded as a Response body is.
+        if (owner.dynamicAssetPathCpp) {
+            context.reachJsData();
+            const text = `bbl::js::decode_utf8_removing_bom(bbl::pal::read_binary_file(${owner.dynamicAssetPathCpp}))`;
+            const nativeCaptures =
+                owner.nativeCompanionCaptures?.dynamicAssetPathCpp ??
+                owner.nativeCaptures ??
+                [];
+            if (method === "text")
+                return { kind: "string", cpp: text, nativeCaptures };
+            context.reachFeature("data:json", call);
+            return {
+                kind: "data",
+                cpp: `bbl::js::json_parse(${text})`,
+                dataType: { kind: "json" },
+                nativeCaptures,
+            };
+        }
+        if (owner.staticString === undefined) {
+            context.fail(
+                call.expression,
+                "Fetched response has no static source.",
+            );
+        }
+    }
+    if (method === "text") {
         let source: string;
         try {
             const bytes = readAssetBytesSync(
-                owner.staticString ?? "",
+                owner.staticString!,
                 context.options.fileName,
             );
             source = new TextDecoder().decode(bytes);
         } catch (error: unknown) {
             context.fail(
                 call,
-                `Generation-time fetch of '${owner.staticString ?? ""}' failed: ${
+                `Generation-time fetch of '${owner.staticString}' failed: ${
                     error instanceof Error ? error.message : String(error)
                 }`,
             );
@@ -584,20 +610,17 @@ export function compileStaticFetchMethod(
             `Generation-time fetch responses support json(), text(), and arrayBuffer(), not '${method}()'.`,
         );
     }
-    if (call.arguments.length !== 0) {
-        context.fail(call, "Response.json() takes no arguments.");
-    }
     let parsed: unknown;
     try {
         const bytes = readAssetBytesSync(
-            owner.staticString ?? "",
+            owner.staticString!,
             context.options.fileName,
         );
         parsed = JSON.parse(new TextDecoder().decode(bytes));
     } catch (error: unknown) {
         context.fail(
             call,
-            `Generation-time fetch of '${owner.staticString ?? ""}' failed: ${
+            `Generation-time fetch of '${owner.staticString}' failed: ${
                 error instanceof Error ? error.message : String(error)
             }`,
         );

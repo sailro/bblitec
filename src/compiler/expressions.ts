@@ -4690,6 +4690,16 @@ export class ExpressionLowerer {
         if (ts.isArrayLiteralExpression(unwrapped)) {
             return this.staticContainer(this.compileValue(unwrapped));
         }
+        // `(await fetch(url)).text()`: the awaited response, unnamed.
+        const fetched = ts.isAwaitExpression(unwrapped)
+            ? this.context.unwrap(unwrapped.expression)
+            : unwrapped;
+        if (
+            ts.isCallExpression(fetched) &&
+            ts.isIdentifier(fetched.expression) &&
+            this.context.libraryGlobal(fetched.expression) === "fetch"
+        )
+            return this.staticContainer(this.compileValue(unwrapped));
         if (ts.isIdentifier(unwrapped)) {
             const bound = this.staticContainer(
                 this.context.bindings.lookupOptional(unwrapped),

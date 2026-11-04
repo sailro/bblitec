@@ -144,6 +144,42 @@ test("a fetch of a URL the deployment holds no file at rejects", (t) => {
     runPackagedProgram(t, directory, result.cpp);
 });
 
+test("a generation-time fetch of a runtime-selected file reads its text and JSON at run time", (t) => {
+    const directory = resolve("artifacts/packaged-fetch-selected-text");
+    const publicDir = join(directory, "public");
+    mkdirSync(join(publicDir, "data"), { recursive: true });
+    // The byte order mark is the decode's to remove, as a Response does.
+    writeFileSync(
+        join(publicDir, "data", "a.json"),
+        Buffer.concat([
+            Buffer.from([0xef, 0xbb, 0xbf]),
+            Buffer.from('{"name":"a"}'),
+        ]),
+    );
+    writeFileSync(join(publicDir, "data", "b.json"), '{"name":"b"}');
+    const result = compileSource(
+        `
+        const choice = { url: "/data/a.json" };
+        if (Date.now() < 0) choice.url = "/data/b.json";
+        const response = await fetch(choice.url);
+        const text = await response.text();
+        if (text !== '{"name":"a"}') throw new Error("text " + text);
+        const parsed = (await (await fetch(choice.url)).json()) as { name: string };
+        if (parsed.name !== "a") throw new Error("json " + parsed.name);
+    `,
+        { fileName: join(directory, "entry.ts"), publicDir },
+    );
+    assert.equal(result.manifest.assets.length, 2);
+    assert.match(result.cpp, /bbl::js::decode_utf8_removing_bom\(/);
+    assert.match(result.cpp, /bbl::js::json_parse\(/);
+    for (const asset of result.manifest.assets) {
+        const output = join(directory, asset.output);
+        mkdirSync(dirname(output), { recursive: true });
+        copyFileSync(resolve(directory, asset.source), output);
+    }
+    runPackagedProgram(t, directory, result.cpp);
+});
+
 function runPackagedProgram(
     t: test.TestContext,
     directory: string,

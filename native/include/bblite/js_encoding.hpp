@@ -2,9 +2,11 @@
 
 #include <bblite/js_error.hpp>
 
+#include <cstdint>
 #include <optional>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace bbl::js {
 
@@ -94,6 +96,12 @@ namespace bbl::js {
 
 [[nodiscard]] inline std::string decode_utf8_removing_bom(std::string_view bytes) {
     return *decode_utf8_removing_bom(bytes, false);
+}
+
+/** A body's bytes as `Response.text()` reads them. */
+[[nodiscard]] inline std::string decode_utf8_removing_bom(const std::vector<std::uint8_t>& bytes) {
+    return decode_utf8_removing_bom(
+        std::string_view(reinterpret_cast<const char*>(bytes.data()), bytes.size()));
 }
 
 /**
