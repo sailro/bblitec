@@ -187,6 +187,27 @@ int main() try {
                       std::string_view::npos;
         }
         require(refused, "a translucent accent refuses");
+
+        static_cast<void>(ui_remove_style_property(engine, dark_range, "accent-color"));
+
+        // Text without a color takes the root's CanvasText: black, white under a dark root
+        // scheme. A nested scheme leaves the inherited color, and an unresolved var() inherits.
+        const auto plain = add(light, "div", {});
+        const auto tinted = add(light, "div", {{"style", "color:rgb(10,20,30);"}});
+        const auto unresolved = add(tinted, "div", {{"style", "color:var(--undefined-ink);"}});
+        const auto nested_dark = add(dark, "div", {});
+        update();
+        require(same(element(plain)->GetComputedValues().color(), {0, 0, 0, 255}),
+                "text defaults to black");
+        require(same(element(unresolved)->GetComputedValues().color(), {10, 20, 30, 255}),
+                "an unresolved var() color inherits");
+        require(same(element(nested_dark)->GetComputedValues().color(), {0, 0, 0, 255}),
+                "a nested dark scheme keeps the inherited color");
+        ui_set_style_property(engine, ui_document_root(engine, UiDocumentPart::Html),
+                              "color-scheme", "dark");
+        update();
+        require(same(element(plain)->GetComputedValues().color(), {255, 255, 255, 255}),
+                "a dark root scheme turns text white");
     }
     SDL_DestroyWindow(window);
     SDL_Quit();
