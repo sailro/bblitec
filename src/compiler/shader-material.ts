@@ -1330,6 +1330,23 @@ export function sourceInstanceLanes(
 }
 
 /**
+ * Whether a program can draw on a mesh's instance lanes: one whose source
+ * reads them draws only where the mesh holds, or may acquire, the pool (and
+ * its colours where it reads them); the pin's plain prelude declares neither.
+ */
+export function drawsOnInstanceLanes(
+    program: Pick<CompiledShaderProgram, "vertexSource">,
+    mesh: Pick<SceneMeshManifest, "thinInstances" | "thinInstanceColors">,
+): boolean {
+    const required = sourceInstanceLanes(program);
+    return (
+        !required ||
+        (mesh.thinInstances !== undefined &&
+            (!required.colors || mesh.thinInstanceColors === true))
+    );
+}
+
+/**
  * Which scene-local shader programs draw instanced, and which of those also
  * bind the per-instance colour stream.
  *

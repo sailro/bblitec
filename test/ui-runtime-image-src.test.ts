@@ -211,6 +211,23 @@ test("runtime img src reads sorted, flat-mapped and named-callback records whose
     assert.ok(!outputs.includes("assets/ui/blue.png"));
 });
 
+test("runtime img src reads the member values Object.values lists", () => {
+    const result = compileEntry(`
+        const previews: Record<"on" | "off", string> = { on: "/assets/ui/red.png", off: "/assets/ui/green.png" };
+        const features = [{ preview: "/assets/ui/blue.png" }, { preview: "/assets/ui/red.png" }];
+        requestAnimationFrame(() => {
+            const warm = [...features.slice(1).flatMap((feature) => [feature.preview]), ...Object.values(previews)];
+            for (const url of warm) {
+                const preload = new Image();
+                preload.src = appUrl(url);
+            }
+        });
+    `);
+    const outputs = result.manifest.assets.map((asset) => asset.output);
+    for (const name of ["red", "green"])
+        assert.ok(outputs.includes(`assets/ui/${name}.png`), name);
+});
+
 test("runtime img src reads requests a class queue holds in private fields", () => {
     const result = compileEntry(`
         interface Card { name: string; picture?: string }

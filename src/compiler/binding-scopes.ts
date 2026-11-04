@@ -2332,6 +2332,57 @@ export class BindingScopes {
             this.context.describeNativeValue(pinned);
             return pinned;
         }
+        if (
+            isHandleKind(value.kind) &&
+            value.kind !== "engine" &&
+            value.kind !== "scene" &&
+            value.optionalStorageCpp &&
+            knownCondition(presenceFlagCpp(value)) !== true
+        ) {
+            // A maybe-absent handle pins its presence, and its payload only
+            // where present: the flag and the handle follow the snapshot, not
+            // the storage they came from. An engine or scene is shared state
+            // its captures name directly.
+            const present = this.context.allocateTemporaryCppName(
+                `${label}_present`,
+            );
+            this.context.emit({
+                kind: "declaration",
+                type: "const bool",
+                name: present,
+                initializer: presenceFlagCpp(value)!,
+                attributes: "[[maybe_unused]] ",
+            });
+            const presence = this.context.registerNativeConstBinding(present);
+            this.context.registerNativeBindingType(present, "bool");
+            const cpp = this.context.allocateTemporaryCppName(label);
+            this.context.emit({
+                kind: "declaration",
+                type: "auto",
+                name: cpp,
+                initializer: `${present} ? ${value.ownedCpp ?? snapshotReadCpp(value)} : std::decay_t<decltype(${value.cpp})>{}`,
+                attributes: "[[maybe_unused]] ",
+            });
+            this.context.registerNativeConstBinding(cpp);
+            const pinned: Value = {
+                ...value,
+                cpp,
+                optionalFoundCpp: present,
+                truthinessCpp: present,
+                nativeBinding: true,
+                nativeCompanionCaptures: {
+                    ...value.nativeCompanionCaptures,
+                    optionalFoundCpp: [presence],
+                    truthinessCpp: [presence],
+                },
+            };
+            delete writable(pinned).ownedCpp;
+            delete writable(pinned).optionalStorageCpp;
+            delete writable(pinned).stableOwnerCpp;
+            delete writable(pinned).sharedStorageCpp;
+            this.context.describeNativeValue(pinned);
+            return pinned;
+        }
         if (isHandleKind(value.kind)) {
             const cpp = this.context.allocateTemporaryCppName(label);
             // A scene snapshot owns its selected shared state while remaining

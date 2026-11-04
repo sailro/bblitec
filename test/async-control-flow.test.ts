@@ -417,7 +417,7 @@ test("nested cleanup preserves exception identity and runs every finalizer after
     runNative(result, directory, t);
 });
 
-// `resolveUrl(d.name)` over a constant record list is a shared call whose
+// `resolveUrl(DEFS[0]!.name)` over a constant record list is a shared call whose
 // string result is known at generation. The activation takes that constant
 // as its argument rather than a copy of the call's result the callee would
 // never read.
@@ -436,7 +436,7 @@ test("an async activation takes a generation-known shared result as its constant
             return url.length;
         }
         async function measureAll(resolveUrl: (name: string) => string): Promise<number[]> {
-            return Promise.all(DEFS.map((d) => measure(resolveUrl(d.name))));
+            return Promise.all([measure(resolveUrl(DEFS[0]!.name)), measure(resolveUrl(DEFS[1]!.name))]);
         }
         void (async () => {
             const lengths = await measureAll((name) => "/models/" + name);

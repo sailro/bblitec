@@ -103,10 +103,10 @@ test(
             "subpixel-rendering.patch",
         );
         const rmlui = names("rmlui", []);
-        assert.equal(rmlui.length, 57);
+        assert.equal(rmlui.length, 59);
         assert.deepEqual(
             rmlui.map((name) => Number(name.slice(0, 4))),
-            Array.from({ length: 57 }, (_, index) => index + 1),
+            Array.from({ length: rmlui.length }, (_, index) => index + 1),
         );
         assert.throws(
             () => names("dawn", ["windows"]),

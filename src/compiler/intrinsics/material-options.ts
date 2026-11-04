@@ -85,6 +85,7 @@ export interface MaterialOptionContext
             | "compileNumber"
             | "compileBoolean"
             | "conditions"
+            | "probeEmission"
             | "compileColor3"
             | "compileColor4"
             | "compileVec3"

@@ -153,6 +153,7 @@ import { observesDatasetFields } from "./canvas-instrumentation.js";
 import { uiMarkupValueShapes, type UiMarkupShape } from "./ui-markup-values.js";
 import {
     createsFormControls,
+    isUiMetadataAttribute,
     parseAuthoredMarkup,
     type UiAuthoredMarkupNode,
 } from "./ui-authored-markup.js";
@@ -551,6 +552,12 @@ export class UiProjection {
             `.style = ${cppString(rule.style)}`,
             rule.maxWidth !== undefined &&
                 `.max_width = ${doubleLiteral(rule.maxWidth)}`,
+            rule.minWidth !== undefined &&
+                `.min_width = ${doubleLiteral(rule.minWidth)}`,
+            rule.maxHeight !== undefined &&
+                `.max_height = ${doubleLiteral(rule.maxHeight)}`,
+            rule.minHeight !== undefined &&
+                `.min_height = ${doubleLiteral(rule.minHeight)}`,
             rule.hover && ".hover = true",
             rule.focusVisible === true && ".focus_visible = true",
             rule.active === true && ".active = true",
@@ -2010,6 +2017,9 @@ export class UiProjection {
     /** Closed markup alternatives one innerHTML write lowers beyond its first. */
     private static readonly UI_MARKUP_ALTERNATIVES = 32;
 
+    /** @unjournaled innerHTML sources whose closed domain is plain text (a pure analysis result). */
+    private readonly uiPlainMarkupTexts = new Set<ts.Node>();
+
     private static readonly PROJECTED_UI_STYLE_PROPERTIES =
         new EmissionSet<string>([
             ...uiLogicalSpacingProperties,
@@ -2068,6 +2078,8 @@ export class UiProjection {
             "column-gap",
             "cursor",
             "display",
+            "-webkit-box-orient",
+            "-webkit-line-clamp",
             "grid-template-columns",
             "grid-template-areas",
             "grid-area",
@@ -2836,7 +2848,12 @@ export class UiProjection {
                 return;
             }
             if (property === "outline") {
-                if (literalValue === "none") return;
+                // A zero width draws no outline, as none does.
+                if (
+                    literalValue === "none" ||
+                    UiProjection.UI_ZERO_OUTLINE.test(literalValue)
+                )
+                    return;
                 if (
                     /^(?:\d+(?:\.\d+)?px (?:solid|dashed) (?:#[0-9a-f]{3,8}|rgba?\([^;]+\)|[a-z]+)|(?:#[0-9a-f]{3,8}|rgba?\([^;]+\)|[a-z]+) (?:solid|dashed) \d+(?:\.\d+)?px)$/.test(
                         literalValue,
@@ -3054,8 +3071,9 @@ export class UiProjection {
 
     /**
      * The `background` shorthand's longhands, colour last: a CSS-wide
-     * keyword is every one's value (the PAL resolves it), another value the
-     * colour's, the others taking their initial values.
+     * keyword is every one's value (the PAL resolves it), `none` the image
+     * layer's (the colour initial), another value the colour's, the others
+     * taking their initial values.
      */
     private static uiBackgroundShorthand(
         value: string,
@@ -3065,7 +3083,11 @@ export class UiProjection {
             ...UiProjection.UI_BACKGROUND_RESETS.map(
                 ([name, initial]) => [name, keyword ?? initial] as const,
             ),
-            ["background-color", keyword ?? value],
+            [
+                "background-color",
+                keyword ??
+                    (/^none$/i.test(value.trim()) ? "transparent" : value),
+            ],
         ];
     }
 
@@ -3110,6 +3132,9 @@ export class UiProjection {
     }
 
     /** Properties whose values RmlUi reads in its own grammar. */
+    /** An outline shorthand of a zero width alone. */
+    private static readonly UI_ZERO_OUTLINE = /^0(?:\.0*)?(?:px)?$/;
+
     private static readonly UI_LOWERED_STYLE_VALUES = new EmissionSet([
         "border-image",
         ...UI_BORDER_IMAGE_LONGHANDS,
@@ -3366,7 +3391,7 @@ export class UiProjection {
                         return this.uiStyleRefusal(
                             site,
                             "background",
-                            "gradient layers require supported positions, nonnegative length/percentage sizes and no-repeat",
+                            "gradient layers require supported positions, nonnegative length/percentage sizes and repeat or no-repeat",
                         );
                     // The layers are the background image the PAL's
                     // background cascade paints, as a longhand's are.
@@ -3547,10 +3572,12 @@ export class UiProjection {
             } else if (property === "transition") {
                 literal = literal.replace(/\btransform\b/g, "bbl-transform");
             } else if (property === "--bbl-outline") {
-                literal = literal.replace(
-                    /^(.+)\s+(solid|dashed)\s+(\d+(?:\.\d+)?px)$/,
-                    "$3 $2 $1",
-                );
+                literal = UiProjection.UI_ZERO_OUTLINE.test(literal.trim())
+                    ? "none"
+                    : literal.replace(
+                          /^(.+)\s+(solid|dashed)\s+(\d+(?:\.\d+)?px)$/,
+                          "$3 $2 $1",
+                      );
             }
             nativeDeclarations.push(`${nativeProperty}:${literal}`);
         });
@@ -3748,7 +3775,7 @@ export class UiProjection {
                 "lowered: retained sheets accept tag/id/class compounds, attribute presence/equality, " +
                 "descendant/child/sibling chains and hover/active/focus/focus-visible/disabled/checked states, " +
                 "scrollbar and range thumb/track pseudo-elements, " +
-                "'@media' conjunctions of (max-width:Npx), (orientation:portrait|landscape), (prefers-reduced-motion:reduce|no-preference), (hover:hover|none) and (pointer:none|coarse|fine), '@container (max-width:Npx)', and '@keyframes' blocks.";
+                "'@media' conjunctions of (min-width|max-width|min-height|max-height:Npx), (orientation:portrait|landscape), (prefers-reduced-motion:reduce|no-preference), (hover:hover|none) and (pointer:none|coarse|fine), '@container (max-width:Npx)', and '@keyframes' blocks.";
             if (site) this.context.fail(site, message);
             this.context.failAtFile(message);
         };
@@ -4482,6 +4509,7 @@ export class UiProjection {
                     "width",
                     "height",
                     "xmlns",
+                    "preserveaspectratio",
                 ]),
                 numeric: new EmissionSet(["width", "height", "stroke-width"]),
             },
@@ -4621,6 +4649,11 @@ export class UiProjection {
                     fail(`requires static attribute '${name}' on <${tag}>.`);
                 }
                 let attributeValue = attribute.value;
+                // A root viewport may be a percentage of its CSS box.
+                const viewportPercentage =
+                    tag === "svg" &&
+                    (lowerName === "width" || lowerName === "height") &&
+                    /^(?:\d+(?:\.\d*)?|\.\d+)%$/.test(attributeValue.trim());
                 if (!insideSvg && tag !== "svg") {
                     const allowed = new EmissionSet([
                         "class",
@@ -4635,10 +4668,10 @@ export class UiProjection {
                             ? ["src", "alt", "width", "height", "fetchpriority"]
                             : []),
                     ]);
-                    const metadata =
-                        /^(?:aria|data)-[a-z][a-z0-9_.-]*$/.test(lowerName) &&
-                        !lowerName.startsWith("data-bbl-");
-                    if (!allowed.has(lowerName) && !metadata) {
+                    if (
+                        !allowed.has(lowerName) &&
+                        !isUiMetadataAttribute(lowerName)
+                    ) {
                         fail(
                             `attribute '${name}' is not supported on <${tag}>.`,
                         );
@@ -4713,14 +4746,18 @@ export class UiProjection {
                 } else {
                     const svgTag = tag as keyof typeof svgAttributeSchemas;
                     const schema = svgAttributeSchemas[svgTag];
-                    if (!schema.allowed.has(lowerName)) {
+                    if (
+                        !schema.allowed.has(lowerName) &&
+                        !isUiMetadataAttribute(lowerName)
+                    ) {
                         fail(
                             `attribute '${name}' is not supported on <${tag}>.`,
                         );
                     }
                     if (
                         schema.numeric.has(lowerName) &&
-                        !numeric.test(attributeValue)
+                        !numeric.test(attributeValue) &&
+                        !viewportPercentage
                     ) {
                         fail(
                             `attribute '${name}' on <${tag}> must be numeric.`,
@@ -4763,14 +4800,14 @@ export class UiProjection {
                         this.registerImageSource(attributeValue);
                     }
                     if (
-                        tag === "image" &&
+                        (tag === "image" || tag === "svg") &&
                         lowerName === "preserveaspectratio" &&
                         !/^(?:none|x(?:Min|Mid|Max)Y(?:Min|Mid|Max)(?:\s+(?:meet|slice))?)$/.test(
                             attributeValue.trim(),
                         )
                     ) {
                         fail(
-                            "<image> preserveAspectRatio requires none or an alignment with meet or slice.",
+                            `<${tag}> preserveAspectRatio requires none or an alignment with meet or slice.`,
                         );
                     }
                     if (
@@ -4796,18 +4833,41 @@ export class UiProjection {
                     svgPaint[lowerName] = attribute.value.trim().toLowerCase();
                 }
                 loweredAttributes.push({
-                    // The PAL replaces a packaged image reference with its data.
-                    name:
-                        lowerName === "viewbox"
-                            ? "viewBox"
-                            : lowerName === "preserveaspectratio"
-                              ? "preserveAspectRatio"
-                              : tag === "image" && lowerName === "href"
-                                ? "data-bbl-href"
-                                : lowerName,
+                    // The PAL replaces a packaged image reference with its data,
+                    // and requires an author size where a percentage viewport
+                    // stood (RmlUi would read it as pixels).
+                    name: viewportPercentage
+                        ? `data-bbl-viewport-${lowerName}`
+                        : lowerName === "viewbox"
+                          ? "viewBox"
+                          : lowerName === "preserveaspectratio"
+                            ? "preserveAspectRatio"
+                            : tag === "image" && lowerName === "href"
+                              ? "data-bbl-href"
+                              : lowerName,
                     value: attributeValue,
                 });
             }
+            // The rasterized document stretches to the root's box: exact only
+            // when a percentage viewport does not letterbox its viewBox.
+            if (
+                tag === "svg" &&
+                attributes.some(
+                    (attribute) =>
+                        /^(?:width|height)$/i.test(attribute.name) &&
+                        attribute.value.trim().endsWith("%"),
+                ) &&
+                attributes
+                    .find(
+                        (attribute) =>
+                            attribute.name.toLowerCase() ===
+                            "preserveaspectratio",
+                    )
+                    ?.value.trim() !== "none"
+            )
+                fail(
+                    "a percentage viewport requires preserveAspectRatio none: the viewBox stretches to the box.",
+                );
             // currentColor tints the whole rasterized SVG, an image included.
             if (tag === "image" && svgPaint) {
                 svgPaint.usesLiteralPaint = true;
@@ -4845,13 +4905,12 @@ export class UiProjection {
             if (tag === "path" && !attributeNames.has("d")) {
                 fail("<path> requires static path data in attribute 'd'.");
             }
+            // x and y default to 0; a rect without a size draws nothing.
             if (
                 tag === "rect" &&
-                !["x", "y", "width", "height"].every((name) =>
-                    attributeNames.has(name),
-                )
+                !["width", "height"].every((name) => attributeNames.has(name))
             ) {
-                fail("<rect> requires static x, y, width, and height.");
+                fail("<rect> requires static width and height.");
             }
             if (
                 tag === "image" &&
@@ -5145,6 +5204,14 @@ export class UiProjection {
         const alternatives = texts?.some((text) => /[<>]/.test(text))
             ? texts
             : undefined;
+        // A closed set of texts without tags or character references
+        // parses to that text: written as markup, it is its text content.
+        if (
+            texts?.length &&
+            !alternatives &&
+            texts.every((text) => !/[<&]/.test(text))
+        )
+            this.uiPlainMarkupTexts.add(node);
         domains.set(node, alternatives);
         return alternatives;
     }
@@ -5213,7 +5280,10 @@ export class UiProjection {
         if (
             sourceParts.length === 1 &&
             typeof sourceParts[0] !== "string" &&
-            sourceParts[0]?.kind === "text"
+            sourceParts[0]?.kind === "text" &&
+            !this.uiPlainMarkupTexts.has(
+                this.context.unwrap(sourceParts[0].expression),
+            )
         )
             this.context.fail(
                 expression,

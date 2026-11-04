@@ -265,6 +265,30 @@ export class ReplayStorage {
     }
 }
 
+/**
+ * A request that only adds its key to a set: wherever lowering meets it,
+ * it demands the same storage. Every other request carries what its site
+ * found (a record's type, a binding's storage, a completion proof).
+ */
+export function demandsKeyOnly(request: StorageRequest): boolean {
+    switch (request.kind) {
+        case "absence-tag":
+        case "class-field-presence":
+        case "engine-owner":
+        case "tuple-array":
+        case "parameter-object":
+        case "numeric-slot":
+        case "enum-array":
+        case "enum-record":
+        case "thrown-value":
+        case "shared-class":
+        case "unproven-completion":
+            return true;
+        default:
+            return false;
+    }
+}
+
 function addNew<T>(set: Set<T>, value: T): boolean {
     if (set.has(value)) return false;
     set.add(value);

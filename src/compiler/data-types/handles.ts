@@ -187,6 +187,15 @@ export function isInputSnapshotHandleKind(kind: HandleKind): boolean {
     return kind === "gamepad" || kind === "gamepad-button" || kind === "touch";
 }
 
+/**
+ * A handle whose value is its runtime identity alone, nothing generation-
+ * known: an input snapshot, or a decoded audio buffer. A shared body takes
+ * one as a native parameter instead of specializing on its value.
+ */
+export function isRuntimeIdentityHandleKind(kind: HandleKind): boolean {
+    return isInputSnapshotHandleKind(kind) || kind === "audio-buffer";
+}
+
 /** Whether a data type lists input snapshots, as a TouchEvent's TouchList does. */
 export function isInputSnapshotList(type: DataType | undefined): boolean {
     return (

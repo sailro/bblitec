@@ -31,6 +31,7 @@ import {
 
 const MESHOPT_EXTENSION = "EXT_meshopt_compression";
 const BASISU_EXTENSION = "KHR_texture_basisu";
+const TEXTURE_TRANSFORM_EXTENSION = "KHR_texture_transform";
 /** What a `.ktx2` image declares, and what its transcode packages as. */
 const KTX2_MIME = "image/ktx2";
 const KTX_MIME = compressedTextureFormat.mimeType;
@@ -209,16 +210,21 @@ function valueAt(root: unknown, path: readonly string[]): unknown {
  * colour space it chooses. Both run over a probe of the document: the
  * material and texture JSON as authored, and each image replaced by a
  * four-byte bufferView naming its own index, which is how an upload is
- * traced back to the image the pin read. What this packager adds are the
- * refusals of the documents where resolving the extension away would change
- * the result: a textureInfo the pin deletes before the transform hook runs,
- * a texCoord it does not forward, a strength it overrides, an image reached
- * at both colour spaces, a basisu texture no redirected slot reaches.
+ * traced back to the image the pin read. A textureInfo it deletes is gone
+ * before the transform hook runs, so upstream composes none of its
+ * `KHR_texture_transform`: those sites are returned for the packaged
+ * document to drop. What this packager adds are the refusals of the
+ * documents where resolving the extension away would change the result: a
+ * texCoord it does not forward, a strength it overrides, an image reached at
+ * both colour spaces, a basisu texture no redirected slot reaches.
  */
 async function basisuImageColorSpaces(
     assetName: string,
     document: JsonRecord,
-): Promise<Map<number, boolean>> {
+): Promise<{
+    colorSpaces: Map<number, boolean>;
+    uncomposedTransforms: { material: number; path: readonly string[] }[];
+}> {
     const textures = asRecords(document.textures);
     const basisuSource = (
         texture: JsonRecord | undefined,
@@ -227,8 +233,12 @@ async function basisuImageColorSpaces(
             asObject(asObject(texture?.extensions)?.[BASISU_EXTENSION])?.source,
         );
     const srgbByImage = new Map<number, boolean>();
+    const uncomposedTransforms: {
+        material: number;
+        path: readonly string[];
+    }[] = [];
     if (!textures.some((texture) => basisuSource(texture) !== undefined)) {
-        return srgbByImage;
+        return { colorSpaces: srgbByImage, uncomposedTransforms };
     }
     const images = asRecords(document.images);
     const markers = new DataView(
@@ -272,14 +282,8 @@ async function basisuImageColorSpaces(
         for (const { path, info } of stripped) {
             const slot = path.at(-1) ?? "";
             reachedTextures.add(asIndex(info.index) ?? -1);
-            if (asObject(info.extensions)?.["KHR_texture_transform"]) {
-                throw new Error(
-                    `glTF ${assetName} carries KHR_texture_transform on a ` +
-                        `${BASISU_EXTENSION} ${slot}; the pinned extension ` +
-                        "deletes the textureInfo before the transform hook " +
-                        "runs, so upstream composes none.",
-                );
-            }
+            if (asObject(info.extensions)?.[TEXTURE_TRANSFORM_EXTENSION])
+                uncomposedTransforms.push({ material: index, path });
             // A texCoord the pin forwards is one its fragment carries under
             // the slot's own name (`occlusionTexture` -> `occlusionTexCoord`).
             const texCoord = asIndex(info.texCoord);
@@ -327,7 +331,7 @@ async function basisuImageColorSpaces(
             );
         }
     });
-    return srgbByImage;
+    return { colorSpaces: srgbByImage, uncomposedTransforms };
 }
 
 /**
@@ -681,7 +685,8 @@ export async function packageGltf(
 
     // Resolve KHR_texture_basisu to the pinned transcode and mip list.
     // Select colour spaces before replacing the embedded images.
-    const basisuColorSpaces = await basisuImageColorSpaces(source, document);
+    const { colorSpaces: basisuColorSpaces, uncomposedTransforms } =
+        await basisuImageColorSpaces(source, document);
     const transcodedSamplers = new Map<number, number>();
     const embeddedLength = binaryLength;
     let embeddedBytes: Buffer | undefined;
@@ -792,6 +797,16 @@ export async function packageGltf(
         // on requiring it, and the empty-`extensionsRequired` rule is
         // stated once rather than in each resolving pass.
         dropExtension(document, BASISU_EXTENSION);
+        // Only the sites go: the declared transform feature still wraps the
+        // document's other textureInfos as upstream's does.
+        const materials = asRecords(document.materials);
+        for (const { material, path } of uncomposedTransforms) {
+            const info = asObject(valueAt(materials[material], path));
+            const extensions = asObject(info?.extensions);
+            if (!info || !extensions) continue;
+            delete extensions[TEXTURE_TRANSFORM_EXTENSION];
+            if (Object.keys(extensions).length === 0) delete info.extensions;
+        }
     }
 
     const finalPadding = (4 - (binaryLength % 4)) % 4;

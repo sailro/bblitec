@@ -19,6 +19,7 @@ import { undefinedValue, absenceOfNull } from "./values/model.js";
 import { argumentAt, accessKey } from "./syntax.js";
 import { functionUsesDynamicThis } from "./user-functions.js";
 import { isNullishLiteral, namedMember } from "./symbols.js";
+import { holdsOnly, PRIMITIVE_KINDS } from "./type-facts.js";
 
 import type { DataType } from "./data-types.js";
 import { optionalPresentCpp, optionalValueCpp, type Value } from "./types.js";
@@ -336,6 +337,94 @@ function compileParse(
         result: jsonType,
     });
     return jsonValue(`bbl::js::json_parse_revived(${text}, ${callback})`);
+}
+
+/**
+ * `value.member(...args)` on a dynamic value whose declared type is a record
+ * holding `member` as a function: the function the document holds, called
+ * with that declared signature (`bbl::js::json_call`, which throws as
+ * JavaScript does for a member that is not one). An optional chain on the
+ * receiver or the member skips the call, arguments included, when it is
+ * nullish. Undefined for an array or a primitive receiver, whose methods
+ * are its own.
+ */
+export function compileJsonMemberCall(
+    context: JsonBridgeContext,
+    call: ts.CallExpression,
+    member: { expression: ts.Expression; name: string },
+    receiver: Value,
+): Value | undefined {
+    const checker = context.checker;
+    const declaredReceiver = checker.getNonNullableType(
+        checker.getTypeAtLocation(member.expression),
+    );
+    if (
+        checker.isArrayType(declaredReceiver) ||
+        checker.isTupleType(declaredReceiver) ||
+        holdsOnly(declaredReceiver, PRIMITIVE_KINDS)
+    )
+        return undefined;
+    const declared = context.dataTypes.fromStoredTsType(
+        checker.getTypeAtLocation(call.expression),
+        call.expression,
+    );
+    if (declared?.kind !== "function" || declared.generic) return undefined;
+    const parameters = declared.parameters;
+    if (call.arguments.length > parameters.length)
+        return context.fail(
+            call,
+            `A dynamic call of '${member.name}' passes more arguments than its declared signature takes.`,
+        );
+    const optional = new Set(declared.optionalParameters ?? []);
+    const args = parameters.map((parameter, index) => {
+        const argument = call.arguments[index];
+        if (argument)
+            return context.dataLowerer.compileForSink(argument, parameter);
+        if (!optional.has(index))
+            return context.fail(
+                call,
+                `A dynamic call of '${member.name}' omits its required argument ${index + 1}.`,
+            );
+        return `${context.dataTypes.cppType(parameter)}{}`;
+    });
+    const result = declared.result;
+    const signature = [
+        result ? context.dataTypes.cppType(result) : "void",
+        ...parameters.map((parameter) => context.dataTypes.cppType(parameter)),
+    ].join(", ");
+    const name = context.cppString(member.name);
+    const callOf = (held: string): string =>
+        `bbl::js::json_call<${signature}>(${held}, ${name}${args.map((argument) => `, ${argument}`).join("")})`;
+    const access = context.unwrap(call.expression);
+    const optionalReceiver =
+        ts.isPropertyAccessExpression(access) &&
+        access.questionDotToken !== undefined;
+    const optionalMember = call.questionDotToken !== undefined;
+    if (!optionalReceiver && !optionalMember) {
+        const cpp = callOf(`${receiver.cpp}.get(${name})`);
+        return result
+            ? context.dataLowerer.leafValue(cpp, result)
+            : { kind: "void", cpp };
+    }
+    // The chain reads the receiver once and calls only when every optional
+    // link is there.
+    const nullish = (cpp: string): string =>
+        `(${cpp}.is_undefined() || ${cpp}.is_null())`;
+    const guards = [
+        ...(optionalReceiver ? [nullish("receiver")] : []),
+        ...(optionalMember ? [nullish("held")] : []),
+    ].join(" || ");
+    const prelude = `const bbl::js::JsonValue receiver = ${receiver.cpp}; const bbl::js::JsonValue held = ${optionalReceiver ? `${nullish("receiver")} ? bbl::js::JsonValue{} : ` : ""}receiver.get(${name});`;
+    if (!result)
+        return {
+            kind: "void",
+            cpp: `[&]() { ${prelude} if (${guards}) return; ${callOf("held")}; }()`,
+        };
+    const present = context.dataTypes.nullableType(result, true);
+    return context.dataLowerer.leafValue(
+        `[&]() -> ${context.dataTypes.cppType(present)} { ${prelude} if (${guards}) return {}; return ${callOf("held")}; }()`,
+        present,
+    );
 }
 
 /** The two `JSON` methods, recognized by the global they are read from. */

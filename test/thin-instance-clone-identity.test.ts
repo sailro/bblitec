@@ -74,18 +74,20 @@ ${compiled.cpp}`,
 });
 
 test("cloning an unbound mesh does not establish a thin pool", () => {
+    // The clone reads its own record, which an unbound source gave no pool
+    // (a later binding of the source is not the clone's): the member read
+    // throws the pin's TypeError when it runs (`thin_instance_data`).
     for (const lateBinding of [
         "",
         "setThinInstances(mesh,new Float32Array(16),1);",
     ])
-        assert.throws(
-            () =>
-                compileSource(`${imports}
+        assert.match(
+            compileSource(`${imports}
 const engine=await createEngine(new OffscreenCanvas(1,1));const mesh=createBox(engine);
 const clone=cloneTransformNode(mesh) as Mesh;
 ${lateBinding}
 const count=clone.thinInstances!.count;
-`),
-            /thin-instance pool this mesh never establishes/,
+`).cpp,
+            /bbl::thin_instance_count\(bbl::handle_at\(v_engine\.meshes, v_clone\)\.thin_instances\)/,
         );
 });

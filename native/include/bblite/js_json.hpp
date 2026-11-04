@@ -392,6 +392,8 @@ struct JsonNativeObject {
     }
     [[nodiscard]] virtual bool has_property(std::string_view key) const { return has_own(key); }
     [[nodiscard]] virtual std::string to_string() const { return "[object Object]"; }
+    /** A boxed function (`JsonNativeBox<Callback<Sig>>`): `typeof` reads "function". */
+    [[nodiscard]] virtual bool callable() const { return false; }
     virtual void set(std::string_view, const JsonValue&) {
         throw std::runtime_error("Dynamic property assignment requires an owned object.");
     }
@@ -594,6 +596,7 @@ public:
     [[nodiscard]] bool is_string() const { return kind_ == Kind::string; }
     [[nodiscard]] bool is_array() const { return kind_ == Kind::array; }
     [[nodiscard]] bool is_object() const { return kind_ == Kind::object; }
+    [[nodiscard]] bool is_callable() const { return native_ && native_->callable(); }
 
     /** `typeof value` -- the operator, spelled the way JavaScript spells it. */
     [[nodiscard]] std::string type_of() const {
@@ -606,9 +609,12 @@ public:
             return "number";
         case Kind::string:
             return "string";
+        case Kind::object:
+            if (is_callable())
+                return "function";
+            break;
         case Kind::null:
         case Kind::array:
-        case Kind::object:
             break;
         }
         return "object";
@@ -1197,6 +1203,33 @@ template <typename T> struct JsonNativeBox final : JsonNativeObject {
     void gc_trace(const TraceVisitor& visitor) const override { visitor(value); }
 };
 
+/**
+ * A function a document holds: the callback, with no own keys. A call reads it
+ * back with the signature the member's declared type gives (`json_call`).
+ */
+template <typename Sig> struct JsonNativeBox<Callback<Sig>> final : JsonNativeObject {
+    Callback<Sig> value;
+    explicit JsonNativeBox(Callback<Sig> source) : value(std::move(source)) {}
+    JsonValue get(std::string_view) const override { return {}; }
+    bbl::js::Array<std::string> own_keys() const override { return {}; }
+    const std::type_info& type() const override { return typeid(Callback<Sig>); }
+    const void* identity() const override { return value.weak_identity().lock().get(); }
+    bool callable() const override { return true; }
+    void gc_trace(const TraceVisitor& visitor) const override { visitor(value); }
+};
+
+/**
+ * `member(...args)` on a dynamic value: the function it holds, called with the
+ * signature its declared type gives. Any other member throws, as JavaScript
+ * does for a value that is not a function.
+ */
+template <typename R, typename... Args>
+R json_call(const JsonValue& member, std::string_view name, Args... args) {
+    if (!member.instance_of<Callback<R(Args...)>>())
+        throw NamedError("TypeError", std::string(name) + " is not a function");
+    return member.asserted_instance<Callback<R(Args...)>>()(std::forward<Args>(args)...);
+}
+
 /** Error views retain the exception owner; its standard fields are not enumerable. */
 template <> struct JsonNativeBox<Error> final : JsonNativeObject {
     Error value;
@@ -1300,7 +1333,11 @@ inline void json_write(JsonWriter& writer, const JsonValue& value) {
     case JsonValue::Kind::array:
         writer.begin_array();
         for (const JsonValue& element : value.elements()) {
-            json_write(writer, element);
+            // An array writes a function as null, as it writes undefined.
+            if (element.is_callable())
+                writer.null_value();
+            else
+                json_write(writer, element);
         }
         writer.end_array();
         return;
@@ -1309,7 +1346,7 @@ inline void json_write(JsonWriter& writer, const JsonValue& value) {
     }
     writer.begin_object();
     value.for_each_entry([&](const std::string& key, const JsonValue& entry) {
-        if (entry.is_undefined())
+        if (entry.is_undefined() || entry.is_callable())
             return;
         writer.key(key);
         json_write(writer, entry);

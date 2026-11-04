@@ -1937,6 +1937,12 @@ std::string ui_background_longhand(std::string_view shorthand, std::string_view 
 }
 
 void ui_set_background(Engine& engine, UiElementHandle element, std::string value) {
+    // `none` is the image layer alone, which the shorthand's reset already wrote: the colour
+    // takes its initial value.
+    if (js::string_lower(std::string(trim_css_token(value))) == "none") {
+        ui_set_style_property(engine, element, "--bbl-background-color", "transparent");
+        return;
+    }
     // Gradient layers are the image the background cascade paints (pal_ui_background.hpp).
     if (pal::ui_background_gradient_layers(value)) {
         ui_set_style_property(engine, element, "--bbl-background-color", "transparent");
@@ -2619,8 +2625,8 @@ UiElementHandle ui_active_element(Engine& engine) {
 
 namespace {
 void dispatch_ui_focus(Engine& engine, UiElementHandle element, std::string type,
-                       UiElementHandle related) {
-    auto event = dom_event(PlatformMouseEvent{}, type, dom_ui_path(engine, element), false, false,
+                       UiElementHandle related, bool bubbles = false) {
+    auto event = dom_event(PlatformMouseEvent{}, type, dom_ui_path(engine, element), bubbles, false,
                            related.value == invalid_handle
                                ? std::nullopt
                                : std::optional{DomEventTarget::node(related.value)});
@@ -2656,8 +2662,12 @@ bool ui_clear_focus(Engine& engine, UiElementHandle next) {
     const auto previous = ui_active_element(engine);
     set_ui_focused_element(engine, {});
     const auto revision = engine.ui_focus_revision;
-    if (previous.value != invalid_handle)
+    // Chromium: blur, then the bubbling focusout, on the element losing focus.
+    if (previous.value != invalid_handle) {
         dispatch_ui_focus(engine, previous, "blur", next);
+        if (revision == engine.ui_focus_revision)
+            dispatch_ui_focus(engine, previous, "focusout", next, true);
+    }
     return revision == engine.ui_focus_revision;
 }
 
@@ -2677,7 +2687,10 @@ void ui_focus(Engine& engine, UiElementHandle element, bool visible) {
     if (!ui_clear_focus(engine, element))
         return;
     set_ui_focused_element(engine, element);
+    const auto revision = engine.ui_focus_revision;
     dispatch_ui_focus(engine, element, "focus", previous);
+    if (revision == engine.ui_focus_revision)
+        dispatch_ui_focus(engine, element, "focusin", previous, true);
 }
 
 void ui_select_text(Engine& engine, UiElementHandle element) {
@@ -4312,7 +4325,10 @@ class UiResolvedFilter final : public Rml::Filter {
         value = rml_css_density_units(std::move(value));
         Rml::PropertyDictionary properties;
         const auto& specification = original.GetPropertySpecification();
-        if (!specification.ParsePropertyDeclaration(properties, "filter", value))
+        // Empty arguments are the pinned defaults, as RmlUi reads them: a transition interpolates
+        // a function its other list lacks against them (UiFilterInstancer).
+        if (!trim_css_token(value).empty() &&
+            !specification.ParsePropertyDeclaration(properties, "filter", value))
             throw std::runtime_error("Unsupported retained UI filter arguments: " + name);
         specification.SetPropertyDefaults(properties);
         auto filter = original.InstanceFilter(name, properties);
@@ -4334,20 +4350,86 @@ public:
     }
 };
 
+/**
+ * A single-value filter function's plain argument as the number its pinned instancer reads: a
+ * fraction, radians (`rad`) or CSS pixels (`px`), since RmlUi's transitions interpolate numbers,
+ * not text (Filter Effects 1 §11.1). Math, negative amounts and other units stay text.
+ */
+class UiFilterAmountParser final : public Rml::PropertyParser {
+public:
+    bool ParseValue(Rml::Property& property, const Rml::String& value,
+                    const Rml::ParameterMap& parameters) const override {
+        const bool length = parameters.find("px") != parameters.end();
+        const bool angle = parameters.find("rad") != parameters.end();
+        const std::string text = js::string_lower(std::string(trim_css_token(value)));
+        const bool negative = !text.empty() && text.front() == '-';
+        std::size_t offset = negative || (!text.empty() && text.front() == '+') ? 1 : 0;
+        const auto number = detail::css_decimal(text, offset);
+        if (!number || (negative && !angle))
+            return false;
+        // The units UiResolvedFilter admits; a unitless zero is the zero of any dimension.
+        const std::string_view unit = std::string_view(text).substr(offset);
+        double scale = 0;
+        if (unit.empty())
+            scale = (length || angle) && *number != 0 ? 0 : 1;
+        else if (unit == "%")
+            scale = length || angle ? 0 : .01;
+        else if (unit == "px" || unit == "dp")
+            scale = length ? 1 : 0;
+        else if (unit == "rad" || unit == "deg")
+            scale = !angle ? 0 : unit == "rad" ? 1 : std::numbers::pi / 180;
+        const auto amount = static_cast<float>((negative ? -*number : *number) * scale);
+        if (scale == 0 || !std::isfinite(amount))
+            return false;
+        property.value = amount;
+        property.unit = Rml::Unit::NUMBER;
+        return true;
+    }
+};
+
+/**
+ * A pinned filter function whose arguments resolve per element (UiResolvedFilter). Its default is
+ * the pinned one, the function's initial value for interpolation, which RmlUi interpolates it
+ * from or to when the other filter list lacks it.
+ */
 class UiFilterInstancer final : public Rml::FilterInstancer {
     Rml::FilterInstancer& original;
     Rml::PropertyId arguments;
+    // A typed amount's unit (UiFilterAmountParser); empty for a fraction.
+    std::string unit;
 
 public:
     explicit UiFilterInstancer(Rml::FilterInstancer& source) : original(source) {
-        arguments = RegisterProperty("filter", "").AddParser("string").GetId();
+        const auto& pinned = source.GetPropertySpecification();
+        const auto& ids = pinned.GetRegisteredProperties();
+        const auto* initial =
+            ids.Size() == 1 ? pinned.GetProperty(*ids.begin())->GetDefaultValue() : nullptr;
+        const bool amount =
+            initial && (initial->unit == Rml::Unit::NUMBER || initial->unit == Rml::Unit::PX ||
+                        initial->unit == Rml::Unit::RAD);
+        auto& definition = RegisterProperty("filter", amount ? initial->ToString() : "");
+        if (amount) {
+            unit = initial->unit == Rml::Unit::PX    ? "px"
+                   : initial->unit == Rml::Unit::RAD ? "rad"
+                                                     : "";
+            definition.AddParser("bbl-filter-amount", unit);
+        }
+        arguments = definition.AddParser("string").GetId();
     }
     Rml::SharedPtr<Rml::Filter> InstanceFilter(const Rml::String& name,
                                                const Rml::PropertyDictionary& properties) override {
         const auto* value = properties.GetProperty(arguments);
         if (!value)
             throw std::runtime_error("Missing retained UI filter arguments.");
-        return Rml::MakeShared<UiResolvedFilter>(original, name, value->Get<Rml::String>());
+        if (value->unit != Rml::Unit::NUMBER)
+            return Rml::MakeShared<UiResolvedFilter>(original, name, value->Get<Rml::String>());
+        // Only an overshooting easing interpolates a negative amount, which browsers clamp to
+        // the function's range; an authored one stays text and refuses.
+        float amount = value->Get<float>();
+        if (unit != "rad")
+            amount = std::max(amount, 0.0f);
+        return Rml::MakeShared<UiResolvedFilter>(original, name,
+                                                 js::number_to_string(amount) + unit);
     }
 };
 
@@ -6010,6 +6092,9 @@ struct UiRmlRuntime {
             substitution_runtime = this;
             Rml::StyleSheetSpecification::SetSubstitutionFilter(&substitute_css);
             register_ui_style_properties();
+            if (!Rml::StyleSheetSpecification::RegisterParser("bbl-filter-amount",
+                                                              &filter_amount_parser))
+                throw std::runtime_error("Duplicate retained UI filter amount parser.");
             for (const auto* name : {"brightness", "contrast", "grayscale", "invert", "opacity",
                                      "saturate", "sepia", "hue-rotate", "blur", "drop-shadow"}) {
                 auto* original = Rml::Factory::GetFilterInstancer(name);
@@ -6573,12 +6658,16 @@ struct UiRmlRuntime {
     }
 
     bool style_rule_media_matches(const UiStyleRule& rule) const {
+        const double density = std::max(1.0f, density_ratio);
+        const double width = static_cast<double>(viewport_width) / density;
+        const double height = static_cast<double>(viewport_height) / density;
         return (rule.orientation == UiOrientation::Any ||
                 (viewport_width <= viewport_height) ==
                     (rule.orientation == UiOrientation::Portrait)) &&
-               (rule.max_width < 0.0 ||
-                static_cast<double>(viewport_width) / std::max(1.0f, density_ratio) <=
-                    rule.max_width) &&
+               (rule.max_width < 0.0 || width <= rule.max_width) &&
+               (rule.min_width < 0.0 || width >= rule.min_width) &&
+               (rule.max_height < 0.0 || height <= rule.max_height) &&
+               (rule.min_height < 0.0 || height >= rule.min_height) &&
                rule.media.matches(media_device);
     }
 
@@ -6680,8 +6769,13 @@ struct UiRmlRuntime {
             if (public_style.empty() && rule.container_max_width < 0.0)
                 return;
             std::vector<std::string> conditions;
-            if (rule.max_width >= 0.0)
-                conditions.push_back("(max-width:" + std::to_string(rule.max_width) + "px)");
+            for (const auto& [feature, bound] :
+                 {std::pair{"max-width", rule.max_width}, std::pair{"min-width", rule.min_width},
+                  std::pair{"max-height", rule.max_height},
+                  std::pair{"min-height", rule.min_height}})
+                if (bound >= 0.0)
+                    conditions.push_back(std::string("(") + feature + ":" + std::to_string(bound) +
+                                         "px)");
             if (!rule.media.empty())
                 conditions.push_back("(theme:" + theme->name + ")");
             if (rule.orientation != UiOrientation::Any)
@@ -8718,14 +8812,35 @@ struct UiRmlRuntime {
         document->GetElementsByTagName(svg_elements, "svg");
         current_color_svg_elements.clear();
         current_color_svg_elements.reserve(svg_elements.size());
+        percentage_viewport_svg_elements.clear();
         for (Rml::Element* element : svg_elements) {
             if (element->HasAttribute("data-bbl-current-color")) {
                 current_color_svg_elements.push_back(element);
             }
+            if (element->HasAttribute("data-bbl-viewport-width") ||
+                element->HasAttribute("data-bbl-viewport-height"))
+                percentage_viewport_svg_elements.push_back(element);
+        }
+    }
+
+    /**
+     * A percentage viewport is the root's size only where no author style sets one, which
+     * RmlUi has no presentation-hint level for: an author size is required.
+     */
+    void check_percentage_svg_viewports() const {
+        for (Rml::Element* element : percentage_viewport_svg_elements) {
+            const auto& computed = element->GetComputedValues();
+            if ((element->HasAttribute("data-bbl-viewport-width") &&
+                 computed.width().type == Rml::Style::Width::Auto) ||
+                (element->HasAttribute("data-bbl-viewport-height") &&
+                 computed.height().type == Rml::Style::Height::Auto))
+                throw std::runtime_error("An inline SVG's percentage width or height needs an "
+                                         "author CSS size: it has no presentation-hint level.");
         }
     }
 
     bool sync_svg_current_colors() {
+        check_percentage_svg_viewports();
         bool changed = false;
         for (Rml::Element* element : current_color_svg_elements) {
             const Rml::Style::ComputedValues& computed = element->GetComputedValues();
@@ -8749,6 +8864,7 @@ struct UiRmlRuntime {
     SDL_Window* window = nullptr;
     UiSystemInterface system_interface;
     UiRenderRecorder render_interface;
+    UiFilterAmountParser filter_amount_parser;
     std::vector<std::unique_ptr<UiFilterInstancer>> filter_instancers;
     UiControlSchemeProperties control_scheme_properties{};
     UiRangeDecoratorInstancer range_decorator{control_scheme_properties};
@@ -8774,6 +8890,7 @@ struct UiRmlRuntime {
     bool gradient_text_dirty = true;
     bool style_trace_written = false;
     std::vector<Rml::Element*> current_color_svg_elements;
+    std::vector<Rml::Element*> percentage_viewport_svg_elements;
     std::vector<std::uint32_t> projected_root_order;
     std::uint64_t projected_revision = ~std::uint64_t{0};
     std::uint64_t projected_text_revision = 0;

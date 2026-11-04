@@ -84,6 +84,18 @@ export function sharesStorageKind(type: DataType): boolean {
     return kinds[type.kind].sharesStorage === true;
 }
 
+/** A number, boolean, string or string enum: storage that copies by value. */
+export function isScalarDataType(
+    type: DataType | undefined,
+): type is DataType<"number" | "boolean" | "string" | "enum"> {
+    return (
+        type?.kind === "number" ||
+        type?.kind === "boolean" ||
+        type?.kind === "string" ||
+        type?.kind === "enum"
+    );
+}
+
 /** The traits of a primitive held in a native value class (`primitive`). */
 export function primitiveTraits(
     type: DataType | undefined,
@@ -215,6 +227,15 @@ function children<K extends DataKind>(
     signatures: boolean,
 ): readonly DataType[] {
     return kinds[type.kind].children(type, fields, signatures);
+}
+
+/** The types a type holds: a struct's through `fields`, a callable's signature with `signatures`. */
+export function dataTypeChildren(
+    type: DataType,
+    fields: StructFieldTypes,
+    signatures: boolean,
+): readonly DataType[] {
+    return children(type, fields, signatures);
 }
 
 /** Whether a nullable handle use widens an erased field a present one settled. */

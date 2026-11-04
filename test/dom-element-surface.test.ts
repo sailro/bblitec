@@ -53,6 +53,10 @@ test("element event handler properties, containment, connection and layout exten
         box.onchange = () => record(box.checked ? "C" : "c");
         box.onchange = () => record(box.checked ? "D" : "d");
         box.addEventListener("blur", () => record("b"));
+        // The bubbling focus pair reaches an ancestor, after focus and blur.
+        let focusedIn = false;
+        document.body.addEventListener("focusin", (event) => { if (event.target === box && !focusedIn) { focusedIn = true; record("i"); } });
+        document.body.addEventListener("focusout", (event) => { if (event.target === box) record("o"); });
         const guard = document.createElement("input");
         guard.type = "checkbox";
         guard.id = "guard";

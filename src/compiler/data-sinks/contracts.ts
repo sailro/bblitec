@@ -26,6 +26,7 @@ export type DataSinkHost = Pick<
     | "enumMapLiteral"
     | "compileVectorSink"
     | "noteConstructedArray"
+    | "requireStoredStructSource"
     | "openRecordLiteral"
     | "compileMapOrSetNew"
     | "compileTypedArrayNew"

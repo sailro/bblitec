@@ -63,6 +63,9 @@ const pointerNames = new Set([
     "wheel",
     "focus",
     "blur",
+    // The bubbling pair, each dispatched after its focus or blur.
+    "focusin",
+    "focusout",
     "contextmenu",
     "resize",
     "beforeinput",

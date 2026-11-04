@@ -66,11 +66,19 @@ export function uiGradientBackground(value: string): string | undefined {
             layers.push(image);
             continue;
         }
-        // Gradients without a specified size fill their positioning area. Sized
-        // repetition needs tiling and is deliberately outside this projection.
-        const repeats = tokens.filter((token) => token === "no-repeat");
-        if (repeats.length !== 1) return undefined;
-        tokens.splice(tokens.indexOf("no-repeat"), 1);
+        // A layer repeats unless no-repeat says otherwise: its decorator tiles
+        // the paint box (RmlUi patch 0059). One-axis and spaced repetition
+        // are not represented.
+        const repeats = tokens.filter((token) =>
+            /^(?:(?:no-)?repeat(?:-[xy])?|space|round)$/.test(token),
+        );
+        const repeat = repeats[0] ?? "repeat";
+        if (
+            repeats.length > 1 ||
+            (repeat !== "repeat" && repeat !== "no-repeat")
+        )
+            return undefined;
+        if (repeats.length) tokens.splice(tokens.indexOf(repeat), 1);
         // One box names the origin and the clip, two the origin then the
         // clip; without one the layer is placed in the padding box.
         const named = tokens.filter((token) => boxes.has(token));
@@ -91,7 +99,7 @@ export function uiGradientBackground(value: string): string | undefined {
         // The decorator paints in the clip box and places the layer in its
         // origin box (RmlUi patch 0025), named apart only when they differ.
         layers.push(
-            `${image} ${clip} / ${size.map((token) => (token === "auto" ? "100%" : token)).join(" ")} / ${at.join(" ")}${origin === clip ? "" : ` / ${origin}`}`,
+            `${image} ${clip}${repeat === "repeat" ? " repeat" : ""} / ${size.map((token) => (token === "auto" ? "100%" : token)).join(" ")} / ${at.join(" ")}${origin === clip ? "" : ` / ${origin}`}`,
         );
     }
     return layers.length ? layers.join(",") : undefined;

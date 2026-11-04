@@ -9,6 +9,7 @@ import {
     objectTruthinessCpp,
     optionalPresentCpp,
     optionalValueCpp,
+    presenceCpp,
     presenceFlagCpp,
     readsNativeStorage,
     representedStorage,
@@ -26,6 +27,7 @@ import {
     compileDataExpressionSink,
     compileDataValueSink,
 } from "./data-sinks/operations.js";
+import { structSinkLowersWhole } from "./data-sinks/structures.js";
 import { someAnalysisNode, forEachAnalysisNode } from "./analysis-walk.js";
 import {
     EmissionSet,
@@ -117,6 +119,7 @@ import {
     requireDynamicBindingStorage,
 } from "./dynamic-binding-storage.js";
 import { CompileError } from "./compile-error.js";
+import { StorageDemand } from "./storage-demand.js";
 import { refuseEitherAbsence } from "./absence-tag-storage.js";
 import {
     NumericSlotStorageRequired,
@@ -162,7 +165,11 @@ import {
     recordFieldIsWritten,
 } from "./record-observations.js";
 import { sceneRelativeSourceLabel } from "../source-location.js";
-import { staticNumberValue } from "./option-helpers.js";
+import {
+    notJson,
+    staticJsonValue,
+    staticNumberValue,
+} from "./option-helpers.js";
 import {
     isObjectIdentityFunction,
     numberFromOptionalCpp,
@@ -188,6 +195,7 @@ import {
     isNumericSequenceType,
     isTypedArrayType,
     isOpaqueReference,
+    isScalarDataType,
     isHandleKind,
     passesByReference,
     reseatsOnAssignment,
@@ -260,6 +268,7 @@ import {
     outermostWrapper,
     propertyKey,
     unwrapExpression,
+    wrappedParent,
     isTypeAssertion,
     wrappersUnder,
     writeSites,
@@ -300,6 +309,28 @@ import { integerCounterOf } from "./integer-loops.js";
 import { readsErasedVoid } from "./undefined-values.js";
 import { classPrototypeKeys, classMemberTable } from "./class-members.js";
 import { isPlainJsonRecord } from "./json-record-views.js";
+
+/** A value's storage past an optional wrapper. */
+function presentDataType(value: Value | undefined): DataType | undefined {
+    return value?.dataType?.kind === "optional"
+        ? value.dataType.inner
+        : value?.dataType;
+}
+
+/** A source a struct local cannot hold in place: JSON, or a native object. */
+function outsideStructStorage(value: Value | undefined): boolean {
+    return isJsonValue(value) || isOpaqueReference(presentDataType(value));
+}
+
+/** The value a literal property or shorthand stores; undefined for others. */
+function literalMemberValue(
+    property: ts.ObjectLiteralElementLike,
+): ts.Expression | undefined {
+    const [member] = objectLiteralMembers([property]);
+    return member?.kind === "property" || member?.kind === "shorthand"
+        ? member.value
+        : undefined;
+}
 
 /**
  * Two member paths from one root, neither extending the other, name
@@ -2881,6 +2912,23 @@ export class DataLowerer {
             if (!owner) {
                 return undefined;
             }
+            // A retained element and its views have members, not elements.
+            if (owner.kind === "ui-element" && mode === "read") {
+                const key = this.context.compileValue(
+                    unwrapped.argumentExpression,
+                );
+                return (
+                    this.context.propertyAccess.readIndexedProperty(
+                        owner,
+                        key,
+                        unwrapped,
+                    ) ??
+                    this.context.fail(
+                        unwrapped.argumentExpression,
+                        "A retained element member read requires a generation-known string key.",
+                    )
+                );
+            }
             if (ts.isOptionalChain(unwrapped)) {
                 const optional = this.optionalElementRead(owner, unwrapped);
                 if (optional) return optional;
@@ -4796,6 +4844,66 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             : { ...narrowed, optionalFoundCpp: "true" };
     }
 
+    /**
+     * `(a ?? table[key]) ?? c`: a scalar `a` that missed falls back to an
+     * element read that can miss too (a bounds-checked index, a dictionary
+     * lookup), and the next `??` takes over when it does, whatever the
+     * element type says. The result keeps that absence as its found flag;
+     * undefined when the read cannot miss or the coalesce is not another's
+     * left side.
+     */
+    private chainedScalarCoalesce(
+        expression: ts.BinaryExpression,
+        leftFound: string,
+        leftCpp: string,
+        type: DataType,
+    ): Value | undefined {
+        const right = this.context.unwrap(expression.right);
+        const outer = wrappedParent(expression);
+        if (
+            !isScalarDataType(type) ||
+            !ts.isElementAccessExpression(right) ||
+            !ts.isBinaryExpression(outer) ||
+            outer.operatorToken.kind !== ts.SyntaxKind.QuestionQuestionToken ||
+            this.context.unwrap(outer.left) !== expression
+        )
+            return undefined;
+        const optional: DataType = { kind: "optional", inner: type };
+        const arm = this.context.probeEmission(
+            () =>
+                this.compileArm(() => {
+                    const element =
+                        this.compileGuardableElementAccess(right) ??
+                        this.context.compileValue(right);
+                    return presenceCpp(element) !== undefined
+                        ? this.compileKnownValueForSink(
+                              element,
+                              optional,
+                              right,
+                          )
+                        : undefined;
+                }),
+            (read) => read.value !== undefined,
+        );
+        if (arm.value === undefined) return undefined;
+        const cppType = this.context.dataTypes.cppType(optional);
+        const selected = this.context.bindings.pinValueToTemporary(
+            this.leafValue(
+                `(${leftFound} ? ${cppType}{${leftCpp}} : ${this.armExpression(expression.right, arm.lines, arm.value, optional)})`,
+                optional,
+            ),
+            "nullish",
+            expression,
+        );
+        return {
+            ...this.leafValue(optionalValueCpp(selected.cpp), type),
+            optionalFoundCpp: optionalPresentCpp(selected.cpp),
+            ...(selected.nativeCaptures
+                ? { nativeCaptures: selected.nativeCaptures }
+                : {}),
+        };
+    }
+
     public compileNullishCoalesce(
         expression: ts.BinaryExpression,
     ): Value | undefined {
@@ -4935,6 +5043,16 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 this.context.emitDiscardedValue(left);
                 return this.context.compileValue(expression.right);
             }
+            const chained =
+                left.kind === "data" && left.dataType
+                    ? this.chainedScalarCoalesce(
+                          expression,
+                          leftFound,
+                          left.cpp,
+                          left.dataType,
+                      )
+                    : undefined;
+            if (chained) return chained;
             // The fallback runs only on a miss, so what it emits (a pinned
             // call result, say) stays inside the arm the select takes.
             const { value: fallback, lines: fallbackLines } = this.compileArm(
@@ -4956,11 +5074,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             // through a span) selects its value or the fallback.
             if (
                 left.kind === "data" &&
-                left.dataType !== undefined &&
-                (left.dataType.kind === "number" ||
-                    left.dataType.kind === "string" ||
-                    left.dataType.kind === "boolean" ||
-                    left.dataType.kind === "enum") &&
+                isScalarDataType(left.dataType) &&
                 fallback.kind !== "json-null"
             ) {
                 const type = left.dataType;
@@ -5233,6 +5347,13 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 "nullish",
                 expression.left,
             ).cpp;
+            const chained = this.chainedScalarCoalesce(
+                expression,
+                optionalPresentCpp(temp),
+                optionalValueCpp(temp),
+                inner,
+            );
+            if (chained) return chained;
             const right = this.context.unwrap(expression.right);
             if (isNullishLiteral(this.context.checker, right)) {
                 return {
@@ -11369,30 +11490,83 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         );
     }
 
-    /** @unjournaled Active sink proof, restored by compileAssignmentSink finally. */
-    private assignmentArray:
-        { expression: ts.Expression; constructed: boolean } | undefined;
+    /**
+     * The right side an assignment sink lowers, whether it constructed an
+     * array, and the struct local it stores (`requireStoredStructSource`).
+     * @unjournaled Active sink proof, restored by compileAssignmentSink finally.
+     */
+    private assignmentSink:
+        | {
+              expression: ts.Expression;
+              constructed: boolean;
+              structLocal: ts.Identifier | undefined;
+          }
+        | undefined;
 
     /** An actual allocating vector sink reports its own result, not its elements. */
     public noteConstructedArray(node: ts.Node): void {
         if (
-            this.assignmentArray?.expression === node &&
+            this.assignmentSink?.expression === node &&
             this.convertedExpression(node) === node
         )
-            writable(this.assignmentArray).constructed = true;
+            writable(this.assignmentSink).constructed = true;
+    }
+
+    /**
+     * The value a struct sink lowered a struct local's whole right side to
+     * (`structSinkLowersWhole`), classified for the local's storage once,
+     * as the value it stores (`requireStructSourceStorage`).
+     */
+    public requireStoredStructSource(node: ts.Expression, value: Value): void {
+        const assignment = this.assignmentSink;
+        if (assignment?.structLocal && assignment.expression === node)
+            this.requireStructSourceStorage(
+                assignment.structLocal,
+                node,
+                value,
+            );
+    }
+
+    /**
+     * A struct local cannot store a JSON value or a native object of its
+     * type in place: either gives the binding dynamic storage.
+     */
+    private requireStructSourceStorage(
+        local: ts.Identifier,
+        right: ts.Expression,
+        incoming: Value | undefined,
+    ): void {
+        if (isJsonValue(incoming))
+            requireDynamicBindingStorage(this.context.checker, local);
+        const actual = presentDataType(incoming);
+        if (!isOpaqueReference(actual)) return;
+        const nativeType = this.context.checker.getNonNullableType(
+            this.context.checker.getTypeAtLocation(right),
+        );
+        const represented = this.context.dataTypes.fromTsType(
+            nativeType,
+            right,
+        );
+        if (represented && actual && dataTypesEqual(represented, actual))
+            requireDynamicBindingStorage(this.context.checker, local, {
+                nativeType,
+                node: right,
+            });
     }
 
     private compileAssignmentSink(
         expression: ts.Expression,
         dataType: DataType,
         destination?: string,
+        structLocal?: ts.Identifier,
     ): { cpp: string; constructedArray: boolean } {
-        const previous = this.assignmentArray;
+        const previous = this.assignmentSink;
         const assignment = {
             expression: this.context.unwrap(expression),
             constructed: false,
+            structLocal,
         };
-        this.assignmentArray = assignment;
+        this.assignmentSink = assignment;
         try {
             const cpp =
                 destination === undefined
@@ -11404,7 +11578,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                       );
             return { cpp, constructedArray: assignment.constructed };
         } finally {
-            this.assignmentArray = previous;
+            this.assignmentSink = previous;
         }
     }
 
@@ -12772,6 +12946,70 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
     }
 
     /**
+     * Stores `members[index]` of a literal, which stores its members one
+     * after another. A member whose holder needs object storage ends this
+     * attempt; a later member naming a constant of literal data stores the
+     * same record in the next attempt, so the demand its holder meets joins
+     * this one and one replay plans them all.
+     */
+    private storeLiteralMember<M>(
+        members: readonly M[],
+        index: number,
+        value: (member: M) => ts.Expression | undefined,
+        store: (member: M) => string,
+    ): string {
+        try {
+            return store(members[index]!);
+        } catch (error) {
+            if (!(error instanceof DynamicBindingStorageRequired)) throw error;
+            const joined: DynamicBindingStorageRequired[] = [];
+            for (const member of members.slice(index + 1)) {
+                const expression = value(member);
+                const demand =
+                    expression &&
+                    this.literalDataHolderDemand(expression, () =>
+                        store(member),
+                    );
+                if (demand) joined.push(demand);
+            }
+            throw error.joinedWith(joined);
+        }
+    }
+
+    /** The holder demand storing a constant of literal data meets, probed. */
+    private literalDataHolderDemand(
+        member: ts.Expression,
+        store: () => unknown,
+    ): DynamicBindingStorageRequired | undefined {
+        const name = this.context.unwrap(member);
+        const declaration = ts.isIdentifier(name)
+            ? initializedVariableDeclaration(this.context.checker, name)
+            : undefined;
+        if (
+            !declaration ||
+            variableKind(declaration) !== "const" ||
+            staticJsonValue(this.context, declaration.initializer!) === notJson
+        )
+            return undefined;
+        try {
+            this.context.probeEmission(store, () => false);
+        } catch (error) {
+            if (
+                error instanceof DynamicBindingStorageRequired &&
+                error.declaration === declaration &&
+                error.requests.length === 1
+            )
+                return error;
+            if (
+                !(error instanceof CompileError) &&
+                !(error instanceof StorageDemand)
+            )
+                throw error;
+        }
+        return undefined;
+    }
+
+    /**
      * Compiles an object literal against a struct type as a positional
      * aggregate in field order. Spread properties are rejected here; the
      * statement-level helper handles them.
@@ -12819,7 +13057,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 (property) =>
                     property.name && ts.isComputedPropertyName(property.name),
             );
-        for (const property of literal.properties) {
+        for (const [index, property] of literal.properties.entries()) {
             refuseProtoSetter(property, (node, message) =>
                 this.context.fail(node, message),
             );
@@ -12843,9 +13081,15 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 );
             }
             written.push(name);
-            let slot = this.compileForSink(
-                property.initializer,
-                dataType.element,
+            let slot = this.storeLiteralMember(
+                literal.properties,
+                index,
+                literalMemberValue,
+                (member) =>
+                    this.compileForSink(
+                        literalMemberValue(member)!,
+                        dataType.element,
+                    ),
             );
             if (reordered) {
                 const temporary = this.context.allocateTemporaryCppName("slot");
@@ -13041,7 +13285,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             this.context.emit(
                 `${this.context.dataTypes.cppType(dataType)} ${result};`,
             );
-            for (const property of literal.properties) {
+            for (const [index, property] of literal.properties.entries()) {
                 refuseProtoSetter(property, (node, message) =>
                     this.context.fail(node, message),
                 );
@@ -13139,12 +13383,12 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                         "Dictionary literals support properties, shorthand properties, and spreads.",
                     );
                 const name = property.name;
-                const literal = propertyKey(name);
+                const keyText = propertyKey(name);
                 const key =
-                    literal !== undefined
+                    keyText !== undefined
                         ? dataType.key.kind === "string"
-                            ? this.context.cppString(literal)
-                            : doubleLiteral(Number(literal))
+                            ? this.context.cppString(keyText)
+                            : doubleLiteral(Number(keyText))
                         : ts.isComputedPropertyName(name)
                           ? this.compileForSink(name.expression, dataType.key)
                           : this.context.fail(
@@ -13159,12 +13403,16 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                     name: keyName,
                     initializer: key,
                 });
-                const value = this.compileForRetainedSink(
-                    ts.isShorthandPropertyAssignment(property)
-                        ? property.name
-                        : property.initializer,
-                    dataType.value,
-                    "Record entry",
+                const value = this.storeLiteralMember(
+                    literal.properties,
+                    index,
+                    literalMemberValue,
+                    (member) =>
+                        this.compileForRetainedSink(
+                            literalMemberValue(member)!,
+                            dataType.value,
+                            "Record entry",
+                        ),
                 );
                 this.context.emit({
                     kind: "expression",
@@ -13174,7 +13422,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             this.registerLocal(result, "owned");
             return result;
         }
-        const entries = literal.properties.map((property) => {
+        const entries = literal.properties.map((property, index) => {
             if (!ts.isPropertyAssignment(property)) {
                 this.context.fail(
                     property,
@@ -13197,10 +13445,16 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                             property.name,
                             "Open Record keys must be strings or numbers.",
                         );
-            return `{${key}, ${this.compileForRetainedSink(
-                property.initializer,
-                dataType.value,
-                "Record entry",
+            return `{${key}, ${this.storeLiteralMember(
+                literal.properties,
+                index,
+                literalMemberValue,
+                (member) =>
+                    this.compileForRetainedSink(
+                        literalMemberValue(member)!,
+                        dataType.value,
+                        "Record entry",
+                    ),
             )}}`;
         });
         this.context.reachJsData();
@@ -13292,10 +13546,6 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             field: DataStructField,
             initializer: ts.Expression | ts.MethodDeclaration,
         ): string => {
-            this.context.dataTypes.requireEngineFieldStorage(
-                field,
-                initializer,
-            );
             if (!ts.isMethodDeclaration(initializer))
                 this.context.dataTypes.requireOwnUndefinedField(
                     dataType.name,
@@ -13366,7 +13616,15 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         const fieldsByName = new Map(
             fields.map((field) => [field.sourceName, field]),
         );
-        for (const [index, [name, initializer]] of [...provided].entries()) {
+        const members = [...provided];
+        this.context.dataTypes.requireEngineFieldsStorage(
+            [
+                ...members.flatMap(([name]) => fieldsByName.get(name) ?? []),
+                ...fields.filter((field) => !provided.has(field.sourceName)),
+            ],
+            (field) => provided.get(field.sourceName) ?? literal,
+        );
+        for (const [index, [name]] of members.entries()) {
             const field = fieldsByName.get(name);
             if (!field)
                 this.context.dataTypes.requireArmFields(
@@ -13375,7 +13633,16 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                     literal,
                     `Struct literal has unknown field '${name}'.`,
                 );
-            let cpp = compileField(field, initializer);
+            let cpp = this.storeLiteralMember(
+                members,
+                index,
+                ([member, initializer]) =>
+                    fieldsByName.has(member) && ts.isExpression(initializer)
+                        ? initializer
+                        : undefined,
+                ([member, initializer]) =>
+                    compileField(fieldsByName.get(member)!, initializer),
+            );
             if (ordered[index]) {
                 cpp = pinCpp(
                     this.context,
@@ -13392,7 +13659,6 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         const parts = fields.map((field) => {
             const cpp = compiled.get(field.sourceName);
             if (cpp !== undefined) return cpp;
-            this.context.dataTypes.requireEngineFieldStorage(field, literal);
             const absent =
                 field.defaultWhenMissing ||
                 (field.accessorReceiver && field.type.kind === "optional")
@@ -14268,6 +14534,17 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         const freshRecord =
             target.dataType.kind === "struct" &&
             yieldsFreshObject(this.context.checker, right);
+        // The right side lowered alone, a refusal as undefined; `keep`
+        // decides whether what it emitted stays.
+        const probeRight = (keep: (value: Value | undefined) => boolean) =>
+            this.context.probeEmission(() => {
+                try {
+                    return this.context.compileValue(expression.right);
+                } catch (error) {
+                    if (error instanceof CompileError) return undefined;
+                    throw error;
+                }
+            }, keep);
         if (
             kind !== "function" &&
             !reseatsOnAssignment(target.dataType, (name) =>
@@ -14277,17 +14554,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             !freshRecord
         ) {
             this.requireNumericSlot(
-                this.context.probeEmission(
-                    () => {
-                        try {
-                            return this.context.compileValue(expression.right);
-                        } catch (error) {
-                            if (error instanceof CompileError) return undefined;
-                            throw error;
-                        }
-                    },
-                    () => false,
-                ),
+                probeRight(() => false),
                 target.dataType,
                 expression.right,
             );
@@ -14296,49 +14563,20 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 `'${left.text}' holds a ${kind}; rebinding it would copy in native code where JavaScript would alias, so assign through a field or element instead.`,
             );
         }
-        if (target.dataType.kind === "struct") {
-            const incoming = this.context.probeEmission(
-                () => {
-                    try {
-                        return this.context.compileValue(expression.right);
-                    } catch (error) {
-                        if (error instanceof CompileError) return undefined;
-                        throw error;
-                    }
-                },
-                (value) =>
-                    isJsonValue(value) ||
-                    isOpaqueReference(
-                        value?.dataType?.kind === "optional"
-                            ? value.dataType.inner
-                            : value?.dataType,
-                    ),
+        // The struct sink lowers a call or a name once, as the value it
+        // stores, and classifies that value; any other right side is
+        // probed for the local's storage first.
+        const structLocal =
+            target.dataType.kind === "struct" ? left : undefined;
+        if (
+            structLocal &&
+            !structSinkLowersWhole(this.context.unwrap(expression.right))
+        )
+            this.requireStructSourceStorage(
+                structLocal,
+                expression.right,
+                probeRight(outsideStructStorage),
             );
-            if (isJsonValue(incoming))
-                requireDynamicBindingStorage(this.context.checker, left);
-            const actual =
-                incoming?.dataType?.kind === "optional"
-                    ? incoming.dataType.inner
-                    : incoming?.dataType;
-            if (isOpaqueReference(actual)) {
-                const nativeType = this.context.checker.getNonNullableType(
-                    this.context.checker.getTypeAtLocation(expression.right),
-                );
-                const represented = this.context.dataTypes.fromTsType(
-                    nativeType,
-                    expression.right,
-                );
-                if (
-                    represented &&
-                    actual &&
-                    dataTypesEqual(represented, actual)
-                )
-                    requireDynamicBindingStorage(this.context.checker, left, {
-                        nativeType,
-                        node: expression.right,
-                    });
-            }
-        }
         // Preserve the evaluated text fact across a scalar store; replaying
         // its source cannot recover facts from every lowered helper chain.
         const textValue =
@@ -14354,7 +14592,12 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                   ),
                   constructedArray: false,
               }
-            : this.compileAssignmentSink(expression.right, target.dataType);
+            : this.compileAssignmentSink(
+                  expression.right,
+                  target.dataType,
+                  undefined,
+                  structLocal,
+              );
         const storage = target.resourceStorageCpp ?? target.cpp;
         // Storage assigned its own read keeps the value it holds; C++
         // diagnoses the self-assignment.

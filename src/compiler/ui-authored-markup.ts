@@ -4,6 +4,17 @@ import {
 } from "../host-page-parser.js";
 
 /**
+ * An author's `aria-*` or `data-*` attribute: metadata without rendering
+ * semantics, on any element. `data-bbl-*` names are the projection's own.
+ */
+export function isUiMetadataAttribute(name: string): boolean {
+    return (
+        /^(?:aria|data)-[a-z][a-z0-9_.-]*$/.test(name) &&
+        !name.startsWith("data-bbl-")
+    );
+}
+
+/**
  * Static innerHTML that creates form controls. The controls own browser state
  * (value, checkedness, selectedness, listeners), which retained elements hold
  * and projected RML does not, so this markup is parsed at generation into the
@@ -123,7 +134,7 @@ export function parseAuthoredMarkup(
                 if (
                     !GLOBAL_ATTRIBUTES.has(name) &&
                     !allowed.has(name) &&
-                    !/^(?:aria|data)-[a-z][a-z0-9_.-]*$/.test(name)
+                    !isUiMetadataAttribute(name)
                 )
                     fail(`attribute '${name}' is not supported on <${tag}>.`);
                 if (name === "class")

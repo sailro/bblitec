@@ -204,6 +204,11 @@ interface PropertyRead {
      * serves through it (`if`, `??`, a null comparison) answers.
      */
     optionalHandle?: true;
+    /**
+     * The same for a property the native record keeps behind a pointer that
+     * stays empty until something sets it: its engagement is the presence.
+     */
+    optionalPointer?: true;
     /** Presence expression for an optional value whose owner is not a handle. */
     optionalFound?: (ownerCpp: string, engineCpp?: string) => string;
     /** Concrete storage used by a Texture2D-valued native property. */
@@ -253,15 +258,6 @@ interface PropertyRead {
      * Runs before anything is emitted.
      */
     reject?: (owner: Value) => string | undefined;
-    /**
-     * The read is served only where generation cannot prove the mesh has no
-     * thin-instance pool. The pool is not a handle: it is `MeshRecord`'s own
-     * live count and matrix rows, so a mesh whose identity generation
-     * resolved and which never reached a setter says so at its source line.
-     * A mesh arriving as a runtime handle keeps the pin's own non-null
-     * failure, raised by the emitted read.
-     */
-    requiresThinInstancePool?: true;
 }
 
 type PropertyRule = PropertyRead | RefusedProperty;
@@ -1603,8 +1599,10 @@ export const propertyRules: readonly PropertyRule[] = [
         property: "thinInstances",
         value: "thin-instance-pool",
         record: ["meshes", "thin_instances"],
-        requiresThinInstancePool: true,
         feature: "mesh:thin-instances",
+        // Undefined until a setter makes the pool; a member read off an
+        // absent one throws the pin's TypeError (`thin_instance_data`).
+        optionalPointer: true,
     },
     {
         // `ti.count` — the ACTIVE instance count, which every pinned helper
@@ -1890,17 +1888,6 @@ export function readProperty(
     if (rejection) {
         context.fail(expression, rejection);
     }
-    if (
-        rule.requiresThinInstancePool &&
-        !context.sceneManifest.meshHasThinInstancePool(owner)
-    ) {
-        context.fail(
-            expression,
-            `Reading '${property}' requires a thin-instance pool this mesh ` +
-                "never establishes; bind one with setThinInstances or " +
-                "addThinInstance first.",
-        );
-    }
     const originalExpression = ts.getOriginalNode(expression);
     const parent = originalExpression.parent;
     const simpleWriteTarget =
@@ -2016,6 +2003,11 @@ export function readProperty(
                   ...(rule.optionalHandle
                       ? {
                             optionalFoundCpp: handleFoundCpp(cpp),
+                        }
+                      : {}),
+                  ...(rule.optionalPointer
+                      ? {
+                            optionalFoundCpp: `static_cast<bool>(${cpp})`,
                         }
                       : {}),
                   ...(rule.optionalFound
@@ -2499,6 +2491,37 @@ export class PropertyAccessLowerer {
         ownerExpression: ts.Expression,
         expression: ts.PropertyAccessExpression,
     ): Value | undefined {
+        // The dataset and style views; a member of the dataset view is its
+        // data attribute, read the same through a property or a string key.
+        if (owner.kind === "ui-element" && owner.uiDataset) {
+            const dataName = property.replace(
+                /[A-Z]/g,
+                (letter) => `-${letter.toLowerCase()}`,
+            );
+            const engine = this.context.requireEngine(owner, expression);
+            return {
+                kind: "data",
+                cpp:
+                    `bbl::ui_dataset_value(${engine}, ${owner.cpp}, ` +
+                    `${this.context.cppString(`data-${dataName}`)})`,
+                dataType: {
+                    kind: "optional",
+                    inner: { kind: "string" },
+                    undefinedOnly: true,
+                },
+                engineCpp: engine,
+            };
+        }
+        if (owner.kind === "ui-element" && property === "dataset") {
+            const tag = this.context.ui.declaredUiTag(owner, ownerExpression);
+            return {
+                ...owner,
+                ...(tag === undefined ? {} : { uiTag: tag }),
+                uiDataset: true,
+            };
+        }
+        if (owner.kind === "ui-element" && property === "style")
+            return { ...owner, uiStyle: true };
         if (owner.kind === "ui-element" && !owner.uiDataset) {
             if (
                 property === "children" &&
@@ -3502,17 +3525,6 @@ export class PropertyAccessLowerer {
                 cpp: `static_cast<double>(${owner.cpp}.draw_call_count)`,
             };
         }
-        if (owner.kind === "ui-element" && property === "dataset") {
-            const tag = this.context.ui.declaredUiTag(owner, ownerExpression);
-            return {
-                ...owner,
-                ...(tag === undefined ? {} : { uiTag: tag }),
-                uiDataset: true,
-            };
-        }
-        if (owner.kind === "ui-element" && property === "style") {
-            return { ...owner, uiStyle: true };
-        }
         if (owner.kind === "ui-element") {
             const element = this.elementProperty(
                 owner,
@@ -3521,25 +3533,6 @@ export class PropertyAccessLowerer {
                 expression,
             );
             if (element) return element;
-        }
-        if (owner.kind === "ui-element" && owner.uiDataset) {
-            const dataName = property.replace(
-                /[A-Z]/g,
-                (letter) => `-${letter.toLowerCase()}`,
-            );
-            const engine = this.context.requireEngine(owner, expression);
-            return {
-                kind: "data",
-                cpp:
-                    `bbl::ui_dataset_value(${engine}, ${owner.cpp}, ` +
-                    `${this.context.cppString(`data-${dataName}`)})`,
-                dataType: {
-                    kind: "optional",
-                    inner: { kind: "string" },
-                    undefinedOnly: true,
-                },
-                engineCpp: engine,
-            };
         }
         if (
             owner.kind === "animation-group" &&
@@ -3970,6 +3963,26 @@ export class PropertyAccessLowerer {
         // does not become a third reader of the table.
         const declared = this.readOwnerProperty(owner, expression);
         return declared?.dataType ? declared : undefined;
+    }
+
+    /** A member read by a generation-known string key is that property's read. */
+    public readIndexedProperty(
+        owner: Value,
+        key: Value,
+        access: ts.ElementAccessExpression,
+    ): Value | undefined {
+        if (key.staticString === undefined) return undefined;
+        const property = ts.factory.createPropertyAccessExpression(
+            access.expression,
+            key.staticString,
+        );
+        ts.setTextRange(property, access);
+        ts.setOriginalNode(property, access);
+        ts.setTextRange(property.name, access.argumentExpression);
+        ts.setOriginalNode(property.name, access.argumentExpression);
+        const value = this.readResolvedProperty(owner, property);
+        if (value) this.context.emitDiscardedValue(key);
+        return value;
     }
 
     public readResolvedProperty(

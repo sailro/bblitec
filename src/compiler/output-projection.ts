@@ -1090,6 +1090,7 @@ ${projection.deferredCapabilitiesReached ? "#include <bblite/deferred_capability
                 ? [{ scene: false, text: meshProfileFallback }]
                 : []),
             ...sceneDeclarations(dataPreamble.shared),
+            ...sceneDeclarations(pbrPluginFunctions),
             ...nativeFunctionPrototypes.map((prototype) => ({
                 scene: true,
                 text: prototype,

@@ -69,6 +69,26 @@ test("computed dataset property names share attribute writes and snapshot their 
     );
 });
 
+test("a string-keyed dataset read is the property read of its data attribute", () => {
+    const read = (access: string) =>
+        compileSource(`
+        const buttons: HTMLButtonElement[] = [document.createElement("button")];
+        document.body.append(...buttons);
+        const found = buttons.findIndex((button) => ${access} === "x");
+        console.log(found);
+    `).cpp;
+    const keyed = read(`button.dataset["fooBar"]`);
+    assert.match(keyed, /ui_dataset_value\(.*"data-foo-bar"\)/);
+    assert.equal(
+        keyed.match(/ui_dataset_value\([^;]*/g)?.join("\n"),
+        read("button.dataset.fooBar")
+            .match(/ui_dataset_value\([^;]*/g)
+            ?.join("\n"),
+    );
+    // A member of the dataset view named like a view is still its data attribute.
+    assert.match(read(`button.dataset.style`), /"data-style"/);
+});
+
 test("dynamic and compound dataset writes retain explicit refusals", () => {
     for (const write of [
         `function write(key:string) { element.dataset[key] = "value"; } const writers:Array<typeof write>=[write];writers[0]!("value");`,

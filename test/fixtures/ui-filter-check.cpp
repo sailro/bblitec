@@ -1,15 +1,19 @@
 #include "pal_ui_rml.cpp"
 #include <cassert>
 
+namespace {
+double fixture_time = 0;
+} // namespace
+
 namespace bbl::pal {
 std::string asset_path(std::string_view) {
     throw std::runtime_error("Unexpected fixture asset read");
 }
 std::string environment_variable(const char*) { return {}; }
-double performance_milliseconds() { return 0; }
+double performance_milliseconds() { return fixture_time; }
 } // namespace bbl::pal
 
-int main() {
+int main() try {
     using namespace bbl;
     using namespace bbl::pal;
     const auto contrast = color_ui_filter("contrast", 0);
@@ -149,6 +153,106 @@ int main() {
         const auto& radius = record_ui_rml_frame(runtime, 640, 480);
         assert(radius.composites[0].filters[0].sigma == 6);
     }
+    {
+        // A transition interpolates filter lists function by function (Filter Effects 1 §11.1):
+        // one a list lacks starts from, or returns to, its initial value for interpolation.
+        Engine engine;
+        const auto sheet = ui_create_element(engine, "style");
+        ui_append_to_root(engine, sheet);
+        ui_add_class_style(engine, sheet, "eased",
+                           "width:40px;height:30px;background:white;"
+                           "transition:filter 100ms linear;");
+        ui_add_class_style(engine, sheet, "lifted", "filter:brightness(1.5);");
+        const auto child = ui_create_element(engine, "div");
+        ui_set_attribute(engine, child, "class", "eased");
+        ui_append_to_root(engine, child);
+        UiRmlRuntime runtime(engine, window, 640, 480);
+        const auto at = [&](double milliseconds) {
+            fixture_time = milliseconds;
+            update_ui_rml_runtime(runtime, 640, 480);
+            const auto& frame = record_ui_rml_frame(runtime, 640, 480);
+            return frame.composites.empty() ? std::vector<UiFilter>{} : frame.composites[0].filters;
+        };
+        const auto color = [](const UiFilter& filter, const char* name, float amount) {
+            const auto expected = color_ui_filter(name, amount);
+            for (std::size_t i = 0; i < expected.matrix.size(); ++i)
+                if (std::abs(filter.matrix[i] - expected.matrix[i]) > .0001f ||
+                    (i < 4 && std::abs(filter.offset[i] - expected.offset[i]) > .0001f))
+                    return false;
+            return filter.kind == UiFilterKind::Color;
+        };
+        at(1000);
+        // A hover-like rule adds a function the base lacks, then removes it.
+        ui_set_attribute(engine, child, "class", "eased lifted");
+        at(1000);
+        auto filters = at(1025);
+        assert(filters.size() == 1 && color(filters[0], "brightness", 1.125f));
+        filters = at(1100);
+        assert(filters.size() == 1 && color(filters[0], "brightness", 1.5f));
+        ui_set_attribute(engine, child, "class", "eased");
+        at(1100);
+        filters = at(1175);
+        assert(filters.size() == 1 && color(filters[0], "brightness", 1.125f));
+        assert(at(1200).empty());
+        // A shorter list is padded with the longer one's initial values.
+        ui_set_style_property(engine, child, "filter", "grayscale(.4) sepia(80%)");
+        at(1200);
+        filters = at(1250);
+        assert(filters.size() == 2 && color(filters[0], "grayscale", .2f) &&
+               color(filters[1], "sepia", .4f));
+        at(1300);
+        ui_set_style_property(engine, child, "filter", "grayscale(.2)");
+        at(1300);
+        filters = at(1350);
+        assert(filters.size() == 2 && color(filters[0], "grayscale", .3f) &&
+               color(filters[1], "sepia", .4f));
+        // Lists of different functions swap discretely, half-way.
+        at(1400);
+        ui_set_style_property(engine, child, "filter", "contrast(2)");
+        at(1400);
+        filters = at(1425);
+        assert(filters.size() == 1 && color(filters[0], "grayscale", .2f));
+        filters = at(1475);
+        assert(filters.size() == 1 && color(filters[0], "contrast", 2));
+        at(1500);
+        ui_set_style_property(engine, child, "filter", "none");
+        at(1500);
+        filters = at(1550);
+        assert(filters.size() == 1 && color(filters[0], "contrast", 1.5f));
+        // Angles and lengths interpolate in the pinned instancers' units.
+        at(1600);
+        ui_set_style_property(engine, child, "filter", "hue-rotate(90deg) blur(4px)");
+        at(1600);
+        filters = at(1650);
+        assert(filters.size() == 2 &&
+               color(filters[0], "hue-rotate", std::numbers::pi_v<float> / 4) &&
+               filters[1].kind == UiFilterKind::Blur && std::abs(filters[1].sigma - 2) < .0001f);
+        at(1700);
+        ui_set_style_property(engine, child, "filter", "none");
+        at(1700);
+        at(1750);
+        assert(at(1800).empty());
+        // A shadow a list lacks starts from the pinned default: transparent, zero lengths.
+        ui_set_style_property(engine, child, "filter", "drop-shadow(2px 4px 3px red)");
+        at(1800);
+        filters = at(1825);
+        assert(filters.size() == 1 && filters[0].kind == UiFilterKind::DropShadow);
+        filters = at(1900);
+        assert(filters.size() == 1 && filters[0].offset_x == 2 && filters[0].offset_y == 4 &&
+               filters[0].sigma == 3 && filters[0].color[0] == 1);
+        // An easing that overshoots below zero clamps amounts to their range.
+        ui_set_style_property(engine, child, "filter", "none");
+        at(1900);
+        at(2000);
+        ui_set_attribute(engine, child, "class", "eased springy");
+        ui_add_class_style(engine, sheet, "springy",
+                           "transition:filter 100ms cubic-bezier(.5,-1,.5,1);");
+        at(2000);
+        ui_set_style_property(engine, child, "filter", "grayscale(.4) blur(4px)");
+        at(2000);
+        filters = at(2010);
+        assert(filters.size() == 2 && color(filters[0], "grayscale", 0) && filters[1].sigma == 0);
+    }
     for (const auto& [filter, variable, error_text] :
          std::vector<std::tuple<std::string, std::string, std::string>>{
              {"blur(var(--Unsafe))", "2em", "filter unit"},
@@ -175,4 +279,7 @@ int main() {
     }
     SDL_DestroyWindow(window);
     SDL_Quit();
+} catch (const std::exception& error) {
+    std::fprintf(stderr, "%s\n", error.what());
+    return 1;
 }

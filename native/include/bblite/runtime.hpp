@@ -4056,8 +4056,11 @@ struct UiStyleRule {
     std::string secondary{};
     std::string tag{};
     std::string style{};
-    /** A negative value means the rule is not inside a max-width query. */
+    /** The viewport bounds of the rule's media query, in CSS pixels; negative for none. */
     double max_width = -1.0;
+    double min_width = -1.0;
+    double max_height = -1.0;
+    double min_height = -1.0;
     bool hover = false;
     bool focus_visible = false;
     bool active = false;

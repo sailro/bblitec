@@ -3319,6 +3319,96 @@ check(
 );
 
 check(
+    "dynamic-objects-hold-and-call-their-functions",
+    `
+    interface Handle { get: () => number; set: (radius: number) => void; min: number; max: number }
+    interface Config { left: string; brush?: Handle }
+    interface Context { scope: object; label: string }
+    function create() {
+        let brush: Handle | null = null;
+        let current: Config | null = null;
+        let seen = 0;
+        const poll = (): void => { if (brush) { seen += brush.get(); brush.set(brush.get() + 1); } };
+        return {
+            show(config: Config) { current = config; brush = config.brush ?? null; poll(); },
+            context(): Context | null { return current ? { scope: current, label: current.left } : null; },
+            nudge(to: number): number | undefined { brush?.set(to); return brush?.get(); },
+            seen: () => seen,
+        };
+    }
+    let radius = 3;
+    const hint = create();
+    const config: Config = { left: "a", brush: { get: () => radius, set: (value: number) => { radius = value; }, min: 0, max: 5 } };
+    hint.show(config);
+    const context = hint.context();
+    if (hint.seen() !== 3 || radius !== 4) throw new Error("calls");
+    if (!context || context.scope !== config || context.label !== "a") throw new Error("scope");
+    if (typeof config.brush?.get !== "function" || typeof config.brush.min !== "number") throw new Error("typeof");
+    if (JSON.stringify(config) !== '{"left":"a","brush":{"min":0,"max":5}}') throw new Error("stringify " + JSON.stringify(config));
+    if (hint.nudge(7) !== 7 || radius !== 7) throw new Error("optional calls");
+    hint.show({ left: "b" });
+    if (hint.seen() !== 3 || radius !== 7 || hint.nudge(9) !== undefined || radius !== 7) throw new Error("no brush");
+`,
+);
+
+checkInRealm(
+    "loops-start-async-activations-per-iteration",
+    `
+    const log: string[] = [];
+    async function settle(name: string): Promise<void> {
+        await Promise.resolve();
+        log.push(name);
+    }
+    const handlers: Array<() => Promise<void>> = [];
+    function fill(): void {
+        for (const name of ["a", "b", "c"]) {
+            handlers.push(async () => { await settle("late " + name); });
+            void settle(name);
+        }
+    }
+    fill();
+    setTimeout(async () => {
+        for (const handler of handlers) await handler();
+        if (log.join(",") !== "a,b,c,late a,late b,late c") throw new Error("log " + log.join(","));
+        globalThis.close();
+    }, 0);
+`,
+);
+
+checkInRealm(
+    "function-fields-return-dynamic-members-through-promises",
+    `
+    interface Entry { label: string; view?: unknown }
+    interface Follower { follow(dirty?: number | null): boolean }
+    interface Field { outline: (from: number) => Entry[]; first: () => Entry; follow: (dirty?: number | null) => boolean }
+    const followers = new Set<Follower>();
+    async function createField(view: object): Promise<Field> {
+        await Promise.resolve();
+        const entries: Entry[] = [{ label: "first", view }, { label: "second" }];
+        let follows = 0;
+        return {
+            outline: (from: number) => entries.slice(from),
+            first: () => entries[0]!,
+            follow: (dirty?: number | null) => ++follows > 0 && dirty !== undefined,
+        };
+    }
+    void (async () => {
+        const view = { id: 7 };
+        const field = await createField(view);
+        followers.add(field);
+        for (const follower of followers) if (follower !== field || !follower.follow(null)) throw new Error("follower");
+        const all = field.outline(0);
+        if (all.length !== 2 || all[0]!.view !== view || all[1]!.view !== undefined) throw new Error("outline");
+        const first = field.first();
+        if (first !== all[0] || first.label !== "first") throw new Error("identity");
+        first.view = 3;
+        if (field.outline(0)[0]!.view !== 3 || field.outline(1)[0]!.label !== "second") throw new Error("shared entry");
+        globalThis.close();
+    })();
+`,
+);
+
+check(
     "empty-object-tokens-compare-by-identity",
     `
     declare const brand: unique symbol;
@@ -16473,6 +16563,20 @@ check(
     const s = String.fromCodePoint(97, Math.floor(Math.random() * 0) + 0x1f600, 98);
     const parts = s.split("");
     if (parts.length !== 4 || parts[1]!.charCodeAt(0) !== 0xd83d || parts[1]! + parts[2]! !== s.slice(1, 3)) throw new Error("split " + parts.length);
+    `,
+);
+check(
+    "a coalesce chain reads a key missing from a dictionary as absent",
+    `
+    type Dict = Record<string, string>;
+    const EN: Dict = { greet: "Hello", bye: "Bye" };
+    const FR: Dict = { greet: "Bonjour" };
+    const TABLES: Record<"en" | "fr", Dict> = { en: EN, fr: FR };
+    let lang: "en" | "fr" = "en";
+    lang = Math.random() > 2 ? "en" : "fr";
+    function t(key: string): string { return TABLES[lang][key] ?? EN[key] ?? key; }
+    if (t("greet") !== "Bonjour" || t("bye") !== "Bye" || t("missing") !== "missing")
+        throw new Error("chain " + t("bye") + " " + t("missing"));
     `,
 );
 check(

@@ -5510,6 +5510,49 @@ test("compares a missing optional scalar as absent", () => {
     assert.match(result.cpp, /\.has_value\(\)/);
 });
 
+test("a loop that starts async activations and registers async listeners stays one native loop", () => {
+    // An await suspends the function it stands in: those in a callee or a
+    // listener the body registers belong to other activations.
+    const result = compileSource(`
+        const log: string[] = [];
+        async function settle(name: string): Promise<void> { await Promise.resolve(); log.push(name); }
+        const list = document.createElement("div");
+        document.body.appendChild(list);
+        function fill(): void {
+            for (const name of ["a", "b", "c"]) {
+                const item = document.createElement("span");
+                item.textContent = name;
+                list.appendChild(item);
+                item.addEventListener("click", async () => { await settle(name); });
+                void settle(name);
+            }
+        }
+        window.addEventListener("keydown", () => fill());
+    `);
+    assert.equal(result.cpp.match(/ui_create_element\(.*"span"\)/g)?.length, 1);
+    assert.match(
+        result.cpp,
+        /for \(std::size_t (\w+) = 0; \1 < \w+\.size\(\); \+\+\1\) \{\s*\[\[maybe_unused\]\] auto \w+ = bbl::js::snapshot_value/,
+    );
+});
+
+test("a live comparison selecting a number is emitted once", () => {
+    // The const-number fold probes the condition first; a declined probe
+    // must not leave its comparison temporary behind (-Wunused-variable).
+    const result = compileSource(`
+        function read(): string | null { return localStorage.getItem("toggle"); }
+        const toggle = read();
+        const migrated = toggle === "off" ? 0 : 1;
+        console.log(migrated);
+    `);
+
+    const temporaries = [
+        ...result.cpp.matchAll(/(v_bblite_optional_compare_\d+) = /g),
+    ].map((match) => match[1]!);
+    assert.equal(temporaries.length, 1);
+    assert.match(result.cpp, new RegExp(`${temporaries[0]}\\.has_value\\(\\)`));
+});
+
 test("expands a static tuple spread at a Color3 sink", () => {
     const result = compileSource(`
         import {
@@ -10559,7 +10602,7 @@ test("retains max-width media cascade and auto resets for live resize", () => {
     );
     assert.match(result.cpp, /right:\s*auto;\s*bottom:\s*auto/);
     const palUi = palUiRmlSource;
-    assert.match(palUi, /\(max-width:/);
+    assert.match(palUi, /"max-width", rule\.max_width/);
     assert.match(palUi, /context->SetDimensions/);
 });
 
@@ -13544,6 +13587,80 @@ test("refuses one shader material drawn both instanced and plain", () => {
     );
 });
 
+test("lays a lane-reading shader material out only where a possible mesh has the lanes", () => {
+    // A value naming one of several meshes may land the material on any of
+    // them; a plain one cannot draw the program (the pin's plain prelude
+    // declares no lanes), so the draw checks the mesh it lands on.
+    const { manifest } = compileSource(
+        instancedShaderSource(
+            "        const plain = createBox(engine);\n" +
+                "        const meshes = [box, plain];\n" +
+                "        for (const mesh of meshes) if (mesh !== plain) mesh.material = material;",
+        ),
+    );
+    const [program] = manifest.customShaderPrograms;
+    const variants = manifest.sceneMeshes.map(
+        (mesh) => mesh.shaderVariants ?? [mesh.shaderVariant],
+    );
+    assert.deepEqual(variants, [["scene-shader-0"], [undefined]]);
+    assert.equal(program?.useThinInstances, true);
+    assert.equal(program?.runtimeInstanceLayoutCheck, true);
+});
+
+test("composes a lane-reading shader material an unknown assignment puts on loaded meshes", () => {
+    // No scene mesh lays the program out, yet a loaded mesh may draw it; the
+    // lanes its source reads are the only form it can draw with.
+    const vertex =
+        "struct VertexOutput{@builtin(position) position:vec4<f32>,};\\n" +
+        "@vertex fn mainVertex(input:VertexInput)->VertexOutput{var out:VertexOutput;" +
+        "let iw=mat4x4<f32>(input.world0,input.world1,input.world2,input.world3);" +
+        "out.position=shaderSystem.viewProjection*(shaderSystem.world*iw)*vec4<f32>(input.position,1.0);" +
+        "out.position.w=out.position.w+input.instanceColor.a*0.0;return out;}";
+    const fragment =
+        "struct VertexOutput{@builtin(position) position:vec4<f32>,};\\n" +
+        "@fragment fn mainFragment(input:VertexOutput)->@location(0) vec4<f32>{return vec4<f32>(1.0);}";
+    const [program] = compileSource(`
+        import { createEngine, createShaderMaterial, getContainerMeshes, loadGltf, type ShaderMaterial } from "@babylonjs/lite";
+        interface Surface { material: ShaderMaterial }
+        function surfaces(): Surface[] {
+            return [{ material: createShaderMaterial({ vertexSource: "${vertex}", fragmentSource: "${fragment}", attributes: ["position"], uniforms: ["viewProjection", "world"] }) }];
+        }
+        async function main() {
+            const engine = await createEngine(document.createElement("canvas"));
+            const container = await loadGltf(engine, "model.glb");
+            const sets = surfaces();
+            for (const mesh of getContainerMeshes(container)) mesh.material = sets[0]!.material;
+        }
+    `).manifest.customShaderPrograms;
+    assert.equal(program?.drawReachable, true);
+    assert.equal(program?.useThinInstances, true);
+    assert.equal(program?.useThinInstanceColors, true);
+    assert.equal(program?.runtimeInstanceLayoutCheck, true);
+});
+
+test("gives a lane-reading shader material no plain layout from an unknown assignment", () => {
+    // A run-time material choice may name the program on a plain mesh; with
+    // no mesh holding its lanes it has no drawable layout there, and a draw
+    // that lands on one refuses at run time.
+    const { manifest } = compileSource(
+        instancedShaderSource(
+            "        const plain = createBox(engine);\n" +
+                "        plain.material = performance.now() > 1e15 ? material : createStandardMaterial();",
+        )
+            .replace("box.material = material;", "")
+            .replace(
+                "createShaderMaterial,",
+                "createShaderMaterial,\n        createStandardMaterial,",
+            ),
+    );
+    const [program] = manifest.customShaderPrograms;
+    assert.deepEqual(
+        manifest.sceneMeshes.map((mesh) => mesh.shaderVariants ?? []),
+        [[], []],
+    );
+    assert.equal(program?.runtimeInstanceLayoutCheck, true);
+});
+
 test("exposes only the pinned glTF container root entity", () => {
     const result = compileSource(`
         import {
@@ -15958,6 +16075,34 @@ ${call}
     }
 });
 
+test("tests a mesh's thin-instance pool by its presence", () => {
+    // `mesh.thinInstances` is undefined until a setter makes the pool, so a
+    // guard that makes an empty one only when absent reads the record.
+    const { cpp } = compileSource(`
+        import {
+            addThinInstance,
+            createBox,
+            createEngine,
+            enableThinInstanceGpuCulling,
+            removeThinInstance,
+        } from "@babylonjs/lite";
+
+        async function main() {
+            const engine = await createEngine(document.createElement("canvas"));
+            const mesh = createBox(engine);
+            if (!mesh.thinInstances) {
+                addThinInstance(mesh, new Float32Array(16));
+                removeThinInstance(mesh, 0);
+            }
+            enableThinInstanceGpuCulling(mesh, true);
+        }
+    `);
+    assert.match(
+        cpp,
+        /if \(!\(static_cast<bool>\(bbl::handle_at\([^\n]*\.meshes, [^\n]*\)\.thin_instances\)\)\)/,
+    );
+});
+
 test("refuses thin-instance pool calls the pin cannot serve", () => {
     const withPool = (body: string): string => `
         import {
@@ -15987,23 +16132,24 @@ ${body}
             ),
         /Expected 2 arguments/,
     );
-    // A mesh generation resolved and never bound a pool on has no count.
-    assert.throws(
-        () =>
-            compileSource(`
-                import {
-                    createBox,
-                    createEngine,
-                } from "@babylonjs/lite";
+    // A mesh that holds no pool reads `thinInstances` as undefined; a member
+    // read off it throws the pin's TypeError when it runs
+    // (`thin_instance_data`), whichever setter a later line reaches.
+    assert.match(
+        compileSource(`
+            import {
+                createBox,
+                createEngine,
+            } from "@babylonjs/lite";
 
-                async function main() {
-                    const engine = await createEngine(document.createElement("canvas"));
-                    const mesh = createBox(engine);
-                    const count = mesh.thinInstances!.count;
-                    return count;
-                }
-            `),
-        /requires a thin-instance pool this mesh never establishes/,
+            async function main() {
+                const engine = await createEngine(document.createElement("canvas"));
+                const mesh = createBox(engine);
+                const count = mesh.thinInstances!.count;
+                console.log(count);
+            }
+        `).cpp,
+        /bbl::thin_instance_count\(bbl::handle_at\(\w+\.meshes, \w+\)\.thin_instances\)/,
     );
     assert.throws(
         () =>

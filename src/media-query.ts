@@ -1,6 +1,10 @@
 /** The media features a retained sheet's query conjoins. */
 export interface UiMediaConditions {
+    /** Viewport bounds in CSS pixels, each inclusive. */
+    minWidth?: number;
     maxWidth?: number;
+    minHeight?: number;
+    maxHeight?: number;
     reducedMotion?: boolean;
     orientation?: "portrait" | "landscape";
     /** The primary pointing device's run-time capabilities. */
@@ -12,6 +16,16 @@ export interface MediaConditions extends UiMediaConditions {
     resolution?: number;
 }
 
+/** The viewport range features a sheet's query bounds. */
+const viewportBounds: ReadonlyMap<
+    string,
+    "minWidth" | "maxWidth" | "minHeight" | "maxHeight"
+> = new Map([
+    ["min-width", "minWidth"],
+    ["max-width", "maxWidth"],
+    ["min-height", "minHeight"],
+    ["max-height", "maxHeight"],
+]);
 const bareFeatures: ReadonlyMap<string, string> = new Map([
     ["prefers-reduced-motion", "reduce"],
     ["hover", "hover"],
@@ -40,11 +54,13 @@ export function parseMediaQuery(
         const value = feature[2]?.toLowerCase() ?? bareFeatures.get(name);
         if (value === undefined || named.has(name)) return undefined;
         named.add(name);
+        const bound =
+            surface === "sheet" ? viewportBounds.get(name) : undefined;
         if (
-            (name === "max-width" && surface === "sheet") ||
+            bound !== undefined ||
             (name === "resolution" && surface === "window")
         ) {
-            const unit = name === "max-width" ? "px" : "dppx";
+            const unit = bound !== undefined ? "px" : "dppx";
             const token = value.endsWith(unit)
                 ? value.slice(0, -unit.length)
                 : "";
@@ -56,7 +72,7 @@ export function parseMediaQuery(
                 (number === 0 && /[1-9]/.test(token.split(/e/i)[0]!))
             )
                 return undefined;
-            if (name === "max-width") conditions.maxWidth = number;
+            if (bound !== undefined) conditions[bound] = number;
             else conditions.resolution = number;
         } else if (
             name === "orientation" &&

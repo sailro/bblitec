@@ -21,7 +21,11 @@ import {
 } from "./native-record-storage.js";
 import { SharedClassStorageRequired } from "./shared-class-storage.js";
 import { StorageDemand } from "./storage-demand.js";
-import { ReplayStorage, type StorageRequest } from "./replay-storage.js";
+import {
+    demandsKeyOnly,
+    ReplayStorage,
+    type StorageRequest,
+} from "./replay-storage.js";
 import type { LoweringServices } from "./lowering-services.js";
 import { callSignatures } from "./type-facts.js";
 import { holderTest } from "./record-observations.js";
@@ -40,6 +44,7 @@ const statistics = {
     refused: 0,
     dependent: 0,
     writes: 0,
+    departed: 0,
 };
 
 /** Compiler constructions, including discarded planning; useful for measured comparisons. */
@@ -73,6 +78,8 @@ export function activeStorageDemandPlanner(): StorageDemandPlanner | undefined {
 class PlanningLimit extends Error {}
 class PlanningDependency extends Error {}
 class PlanningWrite extends Error {}
+class PlanningCollected extends Error {}
+class PlanningDeparted extends Error {}
 
 /** A native generic call asks for its signature before lowering arguments or invoking it. */
 function independentGenericCall(
@@ -193,7 +200,9 @@ function rolledBackWrites(
  * lost to later statements, except a record join, which lowering goes on
  * without (`planJoin`). Ordinary refusals end discovery, including
  * lost-binding cascades, except in a survey, whose strict attempts roll the
- * refused statement back too.
+ * refused statement back too. Past a rolled-back statement, which may have
+ * met a demand first at its own site, a plan collects only demands of a key
+ * (`demandsKeyOnly`); a survey's collects every demand.
  */
 export class StorageDemandPlanner {
     /** @unjournaled Demands must survive the statements they roll back. */
@@ -214,6 +223,8 @@ export class StorageDemandPlanner {
     private readonly dependencyChecks = new WeakMap<ts.Node, number>();
     /** @unjournaled Lost declaration sets grow across statement rollback. */
     private lostGeneration = 0;
+    /** @unjournaled Whether a statement was rolled back: later demands may differ from strict lowering's. */
+    private rolledBack = false;
     /**
      * @unjournaled A join was planned as a copy: a later demand of this
      * attempt may follow from that copy, so only joins are collected.
@@ -236,24 +247,44 @@ export class StorageDemandPlanner {
 
     /** A record join lowering goes on without, storing a copy. */
     public planJoin(demand: NativeRecordStorageDemand): void {
+        this.requireStrictSite([{ kind: "record", demand }]);
         this.copied = true;
         this.collect({ kind: "record", demand });
     }
 
-    public run(work: () => void): void {
+    /**
+     * A plan that lowered every statement without a demand compiled what
+     * the next strict attempt would; one that collected any is discarded.
+     */
+    public complete<T>(result: T): T {
+        if (this.demands.length > 0) throw new PlanningCollected();
+        return result;
+    }
+
+    /** What `work` returned, or undefined when planning stopped it. */
+    public run<T>(work: () => T): T | undefined {
         const previous = active;
         // eslint-disable-next-line @typescript-eslint/no-this-alias -- A synchronous dynamic scope, restored before returning.
         active = this;
         try {
-            work();
+            return work();
         } catch (error) {
             if (error instanceof StorageDemand) {
-                if (!this.copied) this.collect(error.request);
+                if (this.copied) return undefined;
+                if (this.metAtStrictSite(error.requests))
+                    for (const request of error.requests) this.collect(request);
+                else statistics.departed++;
             } else if (error instanceof CompileError) statistics.refused++;
             else if (error instanceof PlanningDependency)
                 statistics.dependent++;
             else if (error instanceof PlanningWrite) statistics.writes++;
-            else if (!(error instanceof PlanningLimit)) throw error;
+            else if (
+                !(error instanceof PlanningLimit) &&
+                !(error instanceof PlanningCollected) &&
+                !(error instanceof PlanningDeparted)
+            )
+                throw error;
+            return undefined;
         } finally {
             active = previous;
         }
@@ -319,13 +350,19 @@ export class StorageDemandPlanner {
             }
             if (!(error instanceof StorageDemand)) throw error;
             if (this.copied) throw new PlanningWrite();
-            this.collect(error.request);
+            this.requireStrictSite(error.requests);
+            for (const request of error.requests) this.collect(request);
             // An ownership change can reach what later statements read. A
             // survey's plan loses what it changes and goes on; another
             // plan ends.
             if (
                 !independentDemand(context, statement, error) &&
-                !(this.survey && this.loseDemanded(context, error.request))
+                !(
+                    this.survey &&
+                    error.requests.every((request) =>
+                        this.loseDemanded(context, request),
+                    )
+                )
             )
                 throw new PlanningWrite();
             this.lose(context.checker, statement);
@@ -393,8 +430,23 @@ export class StorageDemandPlanner {
         return reads;
     }
 
+    /** Whether strict lowering would meet `requests` as this plan did. */
+    private metAtStrictSite(requests: readonly StorageRequest[]): boolean {
+        return (
+            this.survey || !this.rolledBack || requests.every(demandsKeyOnly)
+        );
+    }
+
+    /** Ends a plan whose demands strict lowering could meet elsewhere first. */
+    private requireStrictSite(requests: readonly StorageRequest[]): void {
+        if (this.metAtStrictSite(requests)) return;
+        statistics.departed++;
+        throw new PlanningDeparted();
+    }
+
     /** Loses the names a rolled-back statement would have written. */
     private lose(checker: ts.TypeChecker, statement: ts.Statement): void {
+        this.rolledBack = true;
         const written = rolledBackWrites(statement);
         if (!written) throw new PlanningWrite();
         for (const name of written) this.loseName(checker, name);

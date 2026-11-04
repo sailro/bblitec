@@ -72,7 +72,7 @@ import {
 import type { Value } from "./types.js";
 import {
     isEngineScopedHandleKind,
-    isInputSnapshotHandleKind,
+    isRuntimeIdentityHandleKind,
 } from "./data-types/handles.js";
 import { dataTypeKey } from "./data-types/operations.js";
 import { nativeStructuralViewType } from "./native-owner-carrier.js";
@@ -754,6 +754,28 @@ function reachedByFile(
 }
 
 /**
+ * Visits, innermost first, each node enclosing one of `alias`'s names that
+ * `seen` has not; true when `visit` answers true for one.
+ */
+function visitEnclosing(
+    named: ReadonlyMap<ts.Symbol, readonly ts.Node[]>,
+    alias: ts.Symbol,
+    seen: Set<ts.Node>,
+    visit: (node: ts.Node) => boolean,
+): boolean {
+    for (const occurrence of named.get(alias) ?? [])
+        for (
+            let node: ts.Node | undefined = occurrence;
+            node && !seen.has(node);
+            node = node.parent
+        ) {
+            seen.add(node);
+            if (visit(node)) return true;
+        }
+    return false;
+}
+
+/**
  * The alias-set + fixed-point skeleton every inferred-mutation walk shares.
  *
  * Seeds the tracked set with the declared identifier's symbol, then rewalks
@@ -769,9 +791,10 @@ function reachedByFile(
  * `[, s] = values`) holds one. A cross-file walk names its `files` and the
  * files each new alias adds; `aliasingReturn` makes a named function whose
  * `return` carries an alias one more alias (its calls hold the identity).
- * A walk whose `mutates` accepts only `reached` nodes and adds no alias
- * settles the aliases from the alias sites alone, then tests just those
- * nodes: mutation is monotone in the alias set, so the answer is the same.
+ * A walk whose `mutates` accepts only `reached` nodes, or only nodes naming
+ * an alias (`occurrences`), and adds no alias settles the aliases from the
+ * alias sites alone, then tests just those nodes: mutation is monotone in
+ * the alias set, so the answer is the same.
  * When its aliasing clauses read only the program, `programAliases` names
  * them and the settled aliases are kept for the program's later scans.
  */
@@ -811,6 +834,16 @@ export function aliasedMutationScan(
         ) => boolean;
         /** The only nodes `mutates` accepts; it then adds no alias. */
         readonly reached?: ReadonlySet<ts.Node>;
+        /**
+         * The nodes naming each symbol in a file, for a walk whose `mutates`
+         * accepts only a node whose subtree names an alias and adds no alias,
+         * and whose aliasing clauses accept only a source naming one: the
+         * aliases settle from the sites enclosing their names, then only the
+         * nodes enclosing them are tested.
+         */
+        readonly occurrences?: (
+            file: ts.SourceFile,
+        ) => ReadonlyMap<ts.Symbol, readonly ts.Node[]>;
         /** Names aliasing clauses that read only the program (`reached` walks). */
         readonly programAliases?: string;
     },
@@ -854,8 +887,9 @@ export function aliasedMutationScan(
             if (aliasing) scan.addAlias(valueSymbol(name));
         }
     };
-    const reached = walk.reached;
-    if (reached) {
+    const { reached } = walk;
+    const occurrences = reached ? undefined : walk.occurrences;
+    if (reached || occurrences) {
         const key =
             walk.programAliases === undefined
                 ? undefined
@@ -873,11 +907,34 @@ export function aliasedMutationScan(
             walked = known.walked;
         } else {
             const files = new Set<ts.SourceFile>();
+            // With `occurrences`, the sites read are those enclosing each
+            // alias's names, once per alias and file; iterating the set
+            // reaches the aliases its sites add.
+            const read = new Map<ts.SourceFile, Set<ts.Symbol>>();
+            const settleNamed = (
+                file: ts.SourceFile,
+                named: ReadonlyMap<ts.Symbol, readonly ts.Node[]>,
+            ): void => {
+                const { byNode } = aliasSitesOf(file);
+                let done = read.get(file);
+                if (!done) read.set(file, (done = new Set()));
+                for (const alias of aliases) {
+                    if (done.has(alias)) continue;
+                    done.add(alias);
+                    visitEnclosing(named, alias, new Set(), (node) => {
+                        const sites = byNode.get(node);
+                        if (sites) extend(sites);
+                        return false;
+                    });
+                }
+            };
             while (pending.size > 0) {
                 for (const file of pending) {
                     files.add(file);
-                    for (const [, sites] of aliasSitesOf(file).ordered)
-                        extend(sites);
+                    if (occurrences) settleNamed(file, occurrences(file));
+                    else
+                        for (const [, sites] of aliasSitesOf(file).ordered)
+                            extend(sites);
                 }
                 pending = next;
                 next = new Set();
@@ -894,10 +951,28 @@ export function aliasedMutationScan(
             }
         }
         settled = true;
-        const byFile = reachedByFile(reached);
-        for (const file of walked)
-            for (const node of byFile.get(file) ?? [])
-                if (walk.mutates(node, scan)) return true;
+        if (reached) {
+            const byFile = reachedByFile(reached);
+            for (const file of walked)
+                for (const node of byFile.get(file) ?? [])
+                    if (walk.mutates(node, scan)) return true;
+            return false;
+        }
+        for (const file of walked) {
+            const scanned = sourceFileNodeSet(file);
+            const named = occurrences!(file);
+            const tested = new Set<ts.Node>();
+            for (const alias of aliases)
+                if (
+                    visitEnclosing(
+                        named,
+                        alias,
+                        tested,
+                        (node) => scanned.has(node) && walk.mutates(node, scan),
+                    )
+                )
+                    return true;
+        }
         return false;
     }
     while (pending.size > 0) {
@@ -3780,13 +3855,13 @@ export class UserFunctionLowerer {
                             kind: "handle",
                             handle: "scene-node",
                         } as const;
-                    const platformHandle =
+                    const identityHandle =
                         inner?.kind === "handle" &&
-                        isInputSnapshotHandleKind(inner.handle);
+                        isRuntimeIdentityHandleKind(inner.handle);
                     return mapped &&
                         mapped.kind !== "function" &&
                         (!context.dataTypes.carriesHandle(mapped) ||
-                            platformHandle)
+                            identityHandle)
                         ? mapped
                         : undefined;
                 },

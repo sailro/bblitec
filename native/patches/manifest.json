@@ -443,6 +443,20 @@
       "variants": ["all"]
     },
     {
+      "library": "rmlui",
+      "file": "native/patches/rmlui/0058-legacy-line-clamp.patch",
+      "purpose": "legacy line clamping: a vertical -webkit-box with -webkit-line-clamp ends at line N in an ellipsis",
+      "upstream": { "state": "unsubmitted" },
+      "variants": ["all"]
+    },
+    {
+      "library": "rmlui",
+      "file": "native/patches/rmlui/0059-repeating-sized-decorators.patch",
+      "purpose": "a sized decorator layer marked repeat tiles its paint box under the paint area clip",
+      "upstream": { "state": "unsubmitted" },
+      "variants": ["all"]
+    },
+    {
       "library": "dawn",
       "file": "native/patches/dawn/0001-android-surface-loss.patch",
       "purpose": "Report Android Vulkan surface loss at the next acquisition without losing the device",

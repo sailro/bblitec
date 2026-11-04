@@ -56,10 +56,19 @@ int main() try {
             {.primary = "panel",
              .style = "flex-wrap:wrap;margin-left:14px;text-align:right;background-color:red;",
              .max_width = 480});
+        const auto band = add("position:absolute;left:20px;top:200px;height:10px;");
+        ui_set_attribute(engine, band, "class", "band");
+        ui_add_class_style(engine, sheet, "band", "width:10px;");
+        ui_add_style_rule(engine, sheet,
+                          {.primary = "band",
+                           .style = "width:30px;",
+                           .min_width = 500,
+                           .max_height = 500,
+                           .min_height = 300});
         pal::UiRmlRuntime runtime(engine, window, 640, 480);
-        const auto update = [&](int width = 640) {
+        const auto update = [&](int width = 640, int height = 480) {
             pal::fixture_time_ms += 100;
-            pal::update_ui_rml_runtime(runtime, width, 480);
+            pal::update_ui_rml_runtime(runtime, width, height);
         };
         update();
         const auto raw = [&](UiElementHandle handle) {
@@ -75,6 +84,16 @@ int main() try {
         check(raw(panel)->GetProperty(Rml::PropertyId::BackgroundColor)->Get<Rml::Colourb>().red ==
                   255,
               "media paint applies");
+        // Each width and height bound is inclusive and all of them must hold.
+        const auto band_width = [&](int width, int height) {
+            update(width, height);
+            return raw(band)->GetBox().GetSize().x;
+        };
+        expectNear(band_width(640, 480), 30, "viewport inside every bound");
+        expectNear(band_width(500, 500), 30, "bounds are inclusive");
+        expectNear(band_width(499, 480), 10, "min-width excludes a narrower viewport");
+        expectNear(band_width(640, 501), 10, "max-height excludes a taller viewport");
+        expectNear(band_width(640, 299), 10, "min-height excludes a shorter viewport");
         update();
         expectNear(raw(panel)->GetAbsoluteOffset().x, 20, "wide viewport removes media margin");
         expectNear(raw(second)->GetAbsoluteOffset().y, 20, "wide viewport removes media wrapping");

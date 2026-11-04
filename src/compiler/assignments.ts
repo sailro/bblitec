@@ -4023,12 +4023,12 @@ function emitMaterialAssignment(
             context.sceneManifest.recordUnknownStandardMeshMaterial();
         }
         if (meshProfile === undefined) {
-            for (const profile of target.possibleSceneMeshProfiles ?? [
-                undefined,
-            ])
+            const profiles = target.possibleSceneMeshProfiles ?? [undefined];
+            for (const profile of profiles)
                 context.sceneManifest.recordSceneShaderMaterialDraw(
                     profile,
                     material,
+                    profiles.length > 1,
                 );
         }
         if (

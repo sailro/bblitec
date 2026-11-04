@@ -117,6 +117,21 @@ test("direct audio contexts preserve owned aliases and lifecycle promises", (t) 
                 return buffer;
             }
             first = await cachedBuffer();
+            // A maybe-absent buffer handed through a cue to a shared player:
+            // the player reads it only where present.
+            let cueBuffer: AudioBuffer | null = null;
+            let played = 0;
+            const play = (buffer: AudioBuffer | null, gain: number): void => {
+                if (gain <= 0 || !buffer) return;
+                played += buffer.length > 0 ? gain : 0;
+            };
+            const cue = (buffer: AudioBuffer | null, gain = 1): void => play(buffer, gain);
+            const cues = { tone: () => cue(cueBuffer), loud: () => cue(cueBuffer, 2) };
+            cues.tone();
+            cueBuffer = first;
+            cues.tone();
+            cues.loud();
+            if (played !== 3) throw new Error("nullable buffer cue " + played);
             const cached = await cachedBuffer();
             if (requests !== 1 || first !== cached || decoded.get("tone") !== cached || Math.abs(first.getChannelData(0)[100]-0.25)>0.001)
                 throw new Error("awaited nullable buffer cache");
@@ -288,4 +303,26 @@ test("audio capability guards and constructor boundaries", () => {
         "class AudioContext { value = 7; } const context = new AudioContext(); if (context.value !== 7) throw new Error('local');",
     );
     assert.doesNotMatch(shadowed.cpp, /audio_create_context/);
+});
+
+test("a shared player takes decoded audio buffers as native parameters", () => {
+    const { cpp } = compileSource(`
+        const context = new AudioContext();
+        const quiet = context.createBuffer(1, 4, 8000);
+        const loud = context.createBuffer(1, 8, 8000);
+        let played = 0;
+        function play(buffer: AudioBuffer | null, gain: number): void {
+            if (gain <= 0 || !buffer) return;
+            played += buffer.length * gain;
+        }
+        play(quiet, 1);
+        play(loud, 2);
+        if (played !== 20) throw new Error("played " + played);
+    `);
+    // A buffer is its runtime identity: one body plays both, rather than
+    // one specialization per buffer.
+    const bodies =
+        cpp.match(/^\S.*bbl_recursive_fn\d+_group\(.*\) \{$/gm) ?? [];
+    assert.equal(bodies.length, 1);
+    assert.match(bodies[0], /bbl::pal::AudioBufferHandle/);
 });

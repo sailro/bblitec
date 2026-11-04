@@ -37,6 +37,14 @@ const layoutValues: ReadonlyMap<string, RegExp> = new Map([
             String.raw`^(?:auto|${ratio}|auto\s+${ratio}|${ratio}\s+auto)$`,
         ),
     ],
+    // The display types the pinned layout formatters lay out, with the legacy
+    // boxes a -webkit-line-clamp needs (RmlUi 0058).
+    [
+        "display",
+        /^(?:none|block|inline|inline-block|flow-root|flex|inline-flex|table|inline-table|table-row|table-row-group|table-column|table-column-group|table-cell|grid|inline-grid|-webkit-box|-webkit-inline-box)$/,
+    ],
+    ["-webkit-box-orient", /^(?:horizontal|vertical|inline-axis|block-axis)$/],
+    ["-webkit-line-clamp", /^(?:none|[1-9][0-9]*)$/],
     ["float", /^(?:none|left|right)$/],
     ["clear", /^(?:none|left|right|both)$/],
     [

@@ -232,6 +232,21 @@ function valueJson(
     }
     if (value.kind === "tuple" && !value.cpp)
         return compileJsonTupleView(lowerer, value, node);
+    // A function a document holds is the callback its declared type stores,
+    // boxed: a member call reads it back with that signature (`json_call`).
+    if (value.kind === "callback") {
+        const expression = lowerer.convertedExpression(node);
+        const checker = lowerer.context.checker;
+        const declared =
+            expression &&
+            (declaredContextualType(checker, expression) ??
+                checker.getTypeAtLocation(expression));
+        const stored =
+            declared &&
+            lowerer.context.dataTypes.fromStoredTsType(declared, node);
+        if (stored?.kind === "function")
+            return `bbl::js::JsonValue::from_native(${lowerer.compileKnownValueForSink(value, stored, node)})`;
+    }
     const type = valueDataType(value);
     const cpp =
         value.kind === "number"

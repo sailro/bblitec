@@ -56,6 +56,8 @@ test("border lines keep their style, spell CSS shorthand resets and dashed outli
     assert.match(result.cpp, /border-left-style:hidden/);
     assert.match(result.cpp, /border:1px solid var\(--Edge\)/);
     assert.match(result.cpp, /--bbl-outline:2px dashed #fff/);
+    // A zero-width outline draws nothing, as none does.
+    assert.match(compile(".h{outline:0}").cpp, /--bbl-outline:none/);
     // `text-shadow: none` removes an inherited shadow.
     assert.match(compile(".g{text-shadow:none}").cpp, /font-effect:none/);
     // A generation-known style write lowers as a declaration does.

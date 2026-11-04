@@ -4987,28 +4987,6 @@ export class ExpressionLowerer {
         }
     }
 
-    private readIndexedProperty(
-        owner: Value,
-        key: Value,
-        access: ts.ElementAccessExpression,
-    ): Value | undefined {
-        if (key.staticString === undefined) return undefined;
-        const property = ts.factory.createPropertyAccessExpression(
-            access.expression,
-            key.staticString,
-        );
-        ts.setTextRange(property, access);
-        ts.setOriginalNode(property, access);
-        ts.setTextRange(property.name, access.argumentExpression);
-        ts.setOriginalNode(property.name, access.argumentExpression);
-        const value = this.context.propertyAccess.readResolvedProperty(
-            owner,
-            property,
-        );
-        if (value) this.context.emitDiscardedValue(key);
-        return value;
-    }
-
     /**
      * An index of an absent (null or undefined) receiver: an optional chain
      * short-circuits to undefined without evaluating the key; any other read
@@ -5069,7 +5047,11 @@ export class ExpressionLowerer {
                 const key = this.compileValue(unwrapped.argumentExpression);
                 // Select a known field before materializing a runtime enum
                 // table would discard the field's constant facts.
-                return this.readIndexedProperty(owner, key, unwrapped);
+                return this.context.propertyAccess.readIndexedProperty(
+                    owner,
+                    key,
+                    unwrapped,
+                );
             });
             if (constant) return constant;
         }
@@ -5165,7 +5147,11 @@ export class ExpressionLowerer {
                 : dataElement;
         }
         const key = this.compileValue(unwrapped.argumentExpression);
-        const resolved = this.readIndexedProperty(owner, key, unwrapped);
+        const resolved = this.context.propertyAccess.readIndexedProperty(
+            owner,
+            key,
+            unwrapped,
+        );
         if (resolved) return resolved;
         if (owner.kind === "camera-world-matrix") {
             const index = this.compileValue(unwrapped.argumentExpression);

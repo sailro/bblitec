@@ -3,6 +3,7 @@ import test from "node:test";
 import ts from "typescript";
 import { compileSource, surveySource } from "../src/compiler.js";
 import { SourceCoverage } from "../src/compiler/source-coverage.js";
+import { AbsenceTagStorageRequired } from "../src/compiler/absence-tag-storage.js";
 import { DynamicBindingStorageRequired } from "../src/compiler/dynamic-binding-storage.js";
 import {
     StorageDemandPlanner,
@@ -35,10 +36,11 @@ function measured<T>(enabled: boolean, run: () => T) {
         dependent: after.dependent - before.dependent,
         writes: after.writes - before.writes,
         collected: after.collected - before.collected,
+        departed: after.departed - before.departed,
     };
 }
 
-test("discarded storage planning batches generic signatures and preserves strict output", (t) => {
+test("planning meets each generic signature where strict lowering does and preserves its output", (t) => {
     const source =
         state +
         `
@@ -56,9 +58,12 @@ test("discarded storage planning batches generic signatures and preserves strict
         coverage.run(() => compileSource(source)),
     );
     assert.deepEqual(planned.result, baseline.result);
-    assert.equal(planned.planning, 1);
-    assert.ok(planned.collected >= 3);
-    assert.ok(planned.constructions < baseline.constructions);
+    // Each call's signature rolls its statement back; strict lowering could
+    // meet the next signature inside that call first, so a plan collects one
+    // and ends at the next: no more attempts than strict lowering.
+    assert.equal(planned.collected, 1);
+    assert.equal(planned.departed, 1);
+    assert.equal(planned.constructions, baseline.constructions);
     assert.ok(
         coverage
             .report()
@@ -78,6 +83,24 @@ test("discarded storage planning batches generic signatures and preserves strict
         "storage-demand-planner/signatures",
         planned.result.cpp,
     );
+});
+
+test("a plan that lowers every statement is the published compile", () => {
+    const source = state + `state.read(()=>3);state.read(()=>"text");`;
+    const baselineCoverage = new SourceCoverage();
+    const plannedCoverage = new SourceCoverage();
+    const baseline = measured(false, () =>
+        baselineCoverage.run(() => compileSource(source)),
+    );
+    const planned = measured(true, () =>
+        plannedCoverage.run(() => compileSource(source)),
+    );
+    assert.deepEqual(planned.result, baseline.result);
+    assert.deepEqual(plannedCoverage.report(), baselineCoverage.report());
+    // The plan met no demand: no strict attempt lowers it again.
+    assert.equal(planned.planning, 1);
+    assert.equal(planned.collected, 0);
+    assert.equal(planned.constructions, baseline.constructions);
 });
 
 test("discarded writes and accessor arguments stop before dependent signatures", () => {
@@ -304,4 +327,102 @@ test("a survey's plan goes on past a dependent demand, skipping what reads it", 
         dependent: 3,
         writes: 0,
     });
+});
+
+test("past a rolled-back statement a plan collects only demands of a key", () => {
+    // The first statement's absence tag rolls it back. Strict lowering would
+    // go on inside it and could meet the binding demand there first, with
+    // that site's storage: only a survey's plan collects it here.
+    const { checker, statements } = plannedStatements(`
+        const tagged: string | null | undefined = undefined;
+        const other: string | null | undefined = null;
+        let bound = { gain: 1 };
+    `);
+    const declaration = (index: number) =>
+        (statements[index] as ts.VariableStatement).declarationList
+            .declarations[0]!;
+    const plan = (survey: boolean) => {
+        const before = storagePlanningStatistics();
+        const planner = new StorageDemandPlanner(checker, 0, survey);
+        const context = {
+            checker,
+            transaction: (work: () => void) => work(),
+        } as unknown as Parameters<typeof planner.attemptStatement>[0];
+        const demands = [
+            new AbsenceTagStorageRequired(declaration(0)),
+            new AbsenceTagStorageRequired(declaration(1)),
+            new DynamicBindingStorageRequired(declaration(2), undefined),
+        ];
+        planner.run(() => {
+            for (const [index, demand] of demands.entries())
+                planner.attemptStatement(context, statements[index]!, () => {
+                    throw demand;
+                });
+        });
+        return {
+            demands: planner.demands.map((request) => request.kind),
+            departed: storagePlanningStatistics().departed - before.departed,
+        };
+    };
+    assert.deepEqual(plan(false), {
+        demands: ["absence-tag", "absence-tag"],
+        departed: 1,
+    });
+    assert.deepEqual(plan(true), {
+        demands: ["absence-tag", "absence-tag", "dynamic"],
+        departed: 0,
+    });
+});
+
+test("a struct store demands every element field's engine owner in one replay", () => {
+    const source = `
+        interface Layer { readonly panel: HTMLElement; readonly initial: HTMLElement; }
+        const layers: Layer[] = [];
+        function open(panel: HTMLElement, initial: HTMLElement): void {
+            layers.push({ panel, initial });
+        }
+        const panel = document.createElement("div");
+        const button = document.createElement("button");
+        panel.appendChild(button);
+        document.body.appendChild(panel);
+        open(panel, button);
+        const top = layers[layers.length - 1]!;
+        top.panel.classList.add("open");
+        top.initial.focus();
+    `;
+    const strict = measured(false, () => compileSource(source));
+    // The worker realm, then both fields' owners at once, then the compile.
+    assert.equal(strict.constructions, 3);
+});
+
+test("a record of literal tables demands every table's object storage in one replay", (t) => {
+    const source = `
+        type Lang = "en" | "fr" | "es";
+        type Dict = Record<string, string>;
+        const EN: Dict = { greet: "Hello", bye: "Bye" };
+        const FR: Dict = { greet: "Bonjour", bye: "Salut" };
+        const ES: Dict = { greet: "Hola", bye: "Adios" };
+        const TABLES: Record<Lang, Dict> = { en: EN, fr: FR, es: ES };
+        let current: Lang = "en";
+        function has(lang: Lang, key: string): boolean { return Object.prototype.hasOwnProperty.call(TABLES[lang], key); }
+        function t(key: string): string { return TABLES[current][key] ?? EN[key] ?? key; }
+        current = Math.random() > 2 ? "fr" : "es";
+        if (t("greet") !== "Hola" || !has("fr", "bye") || t("bye") !== "Adios") throw new Error("tables");
+    `;
+    const strict = measured(false, () => compileSource(source));
+    // One attempt meets the three tables' demands, the next compiles.
+    assert.equal(strict.constructions, 2);
+    const tools = optionalNativeFixtureTools();
+    if (!tools) {
+        t.skip("Native fixture compiler unavailable.");
+        return;
+    }
+    runGeneratedProgram(
+        tools,
+        "storage-demand-planner/literal-tables",
+        strict.result.cpp,
+        {
+            expectedOutput: "",
+        },
+    );
 });

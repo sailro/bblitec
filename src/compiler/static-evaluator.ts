@@ -361,6 +361,8 @@ export class StaticEvaluator {
         private readonly testedElement: (
             access: ts.ElementAccessExpression,
         ) => Value | undefined,
+        /** `Compiler.probeEmission`: a declined compile leaves no trace. */
+        private readonly probeEmission: LoweringServices["probeEmission"],
     ) {}
 
     /** @unjournaled A module constant's required text, fixed when first read: JS evaluates it once. */
@@ -1378,6 +1380,7 @@ export class StaticEvaluator {
                     conditions: {
                         compileCondition: (node) => this.compileCondition(node),
                     },
+                    probeEmission: this.probeEmission,
                     resolveStaticExpression: (node) =>
                         this.resolveStaticLiteral(node),
                 },
@@ -2140,6 +2143,7 @@ export class StaticEvaluator {
     private selection(pure: boolean) {
         return {
             ...this.staticFoldContext(),
+            probeEmission: this.probeEmission,
             conditions: {
                 compileCondition: (node: ts.Expression) =>
                     !pure || this.evaluationOrder.isPureExpression(node)

@@ -223,6 +223,25 @@ int run() {
         ui_remove(engine, svg);
         pal::update_ui_rml_runtime(runtime, 320, 240);
         assert(!runtime.projected_elements.at(svg.value).element);
+        // A percentage viewport is the root's size only under an author size.
+        const auto flag = ui_create_element(engine, "span");
+        ui_append_to_root(engine, flag);
+        ui_set_inner_rml(
+            engine, flag,
+            "<svg class=\"flag\" viewBox=\"0 0 60 30\" data-bbl-viewport-width=\"100%\" "
+            "preserveAspectRatio=\"none\"><rect width=\"60\" height=\"30\"/></svg>");
+        bool refused = false;
+        try {
+            pal::update_ui_rml_runtime(runtime, 320, 240);
+        } catch (const std::runtime_error&) {
+            refused = true;
+        }
+        if (!refused)
+            throw std::runtime_error("An unsized percentage viewport must refuse");
+        const auto flag_style = ui_create_element(engine, "style");
+        ui_append_to_root(engine, flag_style);
+        ui_add_class_style(engine, flag_style, "flag", "display:block;width:18px;height:12px;");
+        pal::update_ui_rml_runtime(runtime, 320, 240);
     }
     SDL_DestroyWindow(window);
     SDL_Quit();

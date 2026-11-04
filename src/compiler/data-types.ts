@@ -17,6 +17,7 @@ import {
     TYPED_ARRAY_KINDS,
 } from "./data-types/typed-arrays.js";
 import {
+    dataTypeChildren,
     dataTypeCppType,
     dataTypeKey,
     dataTypesEqual,
@@ -56,6 +57,7 @@ export {
     passesByReferenceKind,
     isOpaqueReference,
     isNativeStructuralView,
+    isScalarDataType,
     isUndefinedDataType,
     primitiveTraits,
     reseatsOnAssignment,
@@ -122,6 +124,7 @@ import {
     libraryName,
 } from "./symbols.js";
 import {
+    arrayElementType,
     absentValueKind,
     isNullable,
     nullability,
@@ -1187,6 +1190,39 @@ export function isAbsentSpreadProperty(
     );
 }
 
+/** The accessors and type assertions `registerRecordFacts` reads, in source order. */
+type RecordFactNode =
+    | ts.GetAccessorDeclaration
+    | ts.SetAccessorDeclaration
+    | ts.AsExpression
+    | ts.TypeAssertion;
+
+/** A program's record fact sources, walked once for every replay. */
+const recordFacts = new WeakMap<
+    readonly ts.SourceFile[],
+    readonly RecordFactNode[]
+>();
+
+function recordFactSources(
+    files: readonly ts.SourceFile[],
+): readonly RecordFactNode[] {
+    let nodes = recordFacts.get(files);
+    if (nodes) return nodes;
+    const found: RecordFactNode[] = [];
+    for (const file of files)
+        if (!file.isDeclarationFile)
+            forEachAnalysisNode(file, (node) => {
+                if (
+                    ts.isGetAccessorDeclaration(node) ||
+                    ts.isSetAccessorDeclaration(node) ||
+                    isTypeAssertion(node)
+                )
+                    found.push(node);
+            });
+    recordFacts.set(files, (nodes = found));
+    return nodes;
+}
+
 /** One field from a property every member of a union declares. */
 function unionPresence(
     properties: readonly ts.Symbol[],
@@ -1705,20 +1741,17 @@ export class DataTypeRegistry {
      */
     public registerRecordFacts(files: readonly ts.SourceFile[]): void {
         this.arraySources = finiteArraySources(this.checker, files);
-        for (const file of files) {
-            if (file.isDeclarationFile) continue;
-            forEachAnalysisNode(file, (node) => {
-                if (
-                    ts.isGetAccessorDeclaration(node) ||
-                    ts.isSetAccessorDeclaration(node)
-                )
-                    this.registerAccessor(node);
-                else if (isTypeAssertion(node)) {
-                    this.registerAssertedRecord(node);
-                    if (ts.isTypeReferenceNode(node.type))
-                        this.namedAssertions.push(node);
-                }
-            });
+        for (const node of recordFactSources(files)) {
+            if (
+                ts.isGetAccessorDeclaration(node) ||
+                ts.isSetAccessorDeclaration(node)
+            )
+                this.registerAccessor(node);
+            else {
+                this.registerAssertedRecord(node);
+                if (ts.isTypeReferenceNode(node.type))
+                    this.namedAssertions.push(node);
+            }
         }
     }
 
@@ -2929,6 +2962,33 @@ export class DataTypeRegistry {
         );
     }
 
+    /**
+     * `requireEngineFieldStorage` for each field one store writes, at the
+     * node writing it (`nodeOf`), in order. A field's storage depends on its own
+     * declarations alone, so the store demands every field that needs its
+     * engine in one replay; a field that refuses ends the scan, as the
+     * store would.
+     */
+    public requireEngineFieldsStorage(
+        fields: readonly DataStructField[],
+        nodeOf: (field: DataStructField) => ts.Node,
+    ): void {
+        const demands: EngineOwnerStorageRequired[] = [];
+        for (const field of fields) {
+            try {
+                this.requireEngineFieldStorage(field, nodeOf(field));
+            } catch (error) {
+                if (!(error instanceof EngineOwnerStorageRequired)) {
+                    if (demands.length === 0) throw error;
+                    break;
+                }
+                demands.push(error);
+            }
+        }
+        const [first, ...others] = demands;
+        if (first) throw first.joinedWith(others);
+    }
+
     /** A reached native-handle assertion settles an otherwise erased field's layout. */
     public requireAssertedHandleFieldStorage(
         expression: ts.Expression,
@@ -4084,17 +4144,26 @@ export class DataTypeRegistry {
     }
 
     /**
-     * Storage every value of a record type can take, for a position several
-     * writes share (a rebound binding, a function's returns): the members
-     * it reaches typed `unknown` hold dynamic values.
+     * Storage every value of a record type, or an array of them, can take,
+     * for a position several writes share (a rebound binding, a function's
+     * returns): the members it reaches typed `unknown` hold dynamic values.
      */
     public storedDynamicRecordType(
         type: ts.Type,
         node: ts.Node,
     ): DataType | undefined {
-        const record = this.checker.getNonNullableType(type);
-        return isPlainRecord(this.checker, record) ||
-            isRecordUnion(this.checker, record)
+        const records = (candidate: ts.Type): boolean => {
+            const record = this.checker.getNonNullableType(candidate);
+            return (
+                isPlainRecord(this.checker, record) ||
+                isRecordUnion(this.checker, record)
+            );
+        };
+        const present = this.checker.getNonNullableType(type);
+        const element = this.checker.isArrayType(present)
+            ? arrayElementType(this.checker, present)
+            : undefined;
+        return records(type) || (element !== undefined && records(element))
             ? this.withDynamicJsonTypes(true, () =>
                   this.fromStoredTsType(type, node),
               )
@@ -5145,6 +5214,8 @@ export class DataTypeRegistry {
                   ? this.dynamicJsonType(presentResult)
                   : undefined) ??
               this.fromStoredTsType(presentResult, node) ??
+              // Every call's result is the function's returns.
+              this.storedDynamicRecordType(presentResult, node) ??
               // A concrete null result uses the same payload as a required
               // null-only record field; it is still a returned value.
               ((presentResult.flags & ts.TypeFlags.Null) !== 0
@@ -10441,55 +10512,22 @@ export class DataTypeRegistry {
     } {
         const structs = new EmissionSet<string>();
         const enums = new EmissionSet<string>();
+        // Every type a reached type holds, as the kind table lists them (a
+        // promise's result, a map's entries, a callable's signature); only
+        // the named types are collected.
         const visit = (dataType: DataType): void => {
-            switch (dataType.kind) {
-                case "union":
-                    dataType.members.forEach(visit);
-                    return;
-                case "product":
-                    dataType.elements.forEach(visit);
-                    return;
-                case "struct": {
-                    if (structs.has(dataType.name)) {
-                        return;
-                    }
-                    structs.add(dataType.name);
-                    const definition = this.structsByName.get(dataType.name);
-                    for (const field of definition?.fields ?? []) {
-                        visit(field.type);
-                    }
-                    return;
-                }
-                case "enum":
-                    enums.add(dataType.name);
-                    return;
-                case "optional":
-                    visit(dataType.inner);
-                    return;
-                case "vector":
-                case "set":
-                case "iterator":
-                case "span":
-                    visit(dataType.element);
-                    return;
-                case "map":
-                    visit(dataType.key);
-                    visit(dataType.value);
-                    return;
-                case "function":
-                    if (dataType.generic)
-                        visit({ kind: "struct", name: dataType.generic });
-                    for (const parameter of dataType.parameters)
-                        visit(parameter);
-                    if (dataType.result) visit(dataType.result);
-                    return;
-                case "enummap":
-                    enums.add(dataType.enumName);
-                    visit(dataType.element);
-                    return;
-                default:
-                    return;
-            }
+            if (dataType.kind === "struct") {
+                if (structs.has(dataType.name)) return;
+                structs.add(dataType.name);
+            } else if (dataType.kind === "enum") enums.add(dataType.name);
+            else if (dataType.kind === "enummap") enums.add(dataType.enumName);
+            else if (dataType.kind === "function" && dataType.generic)
+                visit({ kind: "struct", name: dataType.generic });
+            dataTypeChildren(
+                dataType,
+                (name) => this.structFieldTypes(name),
+                true,
+            ).forEach(visit);
         };
         for (const name of this.emittedNamedTypes) {
             const struct = this.structsByName.get(name);
@@ -10508,37 +10546,13 @@ export class DataTypeRegistry {
         return { structs, enums };
     }
 
+    /** The by-value structs a field's type holds, which are defined before it. */
     private structDependencies(dataType: DataType): string[] {
-        switch (dataType.kind) {
-            case "union":
-                return dataType.members.flatMap((member) =>
-                    this.structDependencies(member),
-                );
-            case "product":
-                return dataType.elements.flatMap((element) =>
-                    this.structDependencies(element),
-                );
-            case "struct":
-                return this.isReferenceStruct(dataType.name)
-                    ? []
-                    : [dataType.name];
-            case "optional":
-                return this.structDependencies(dataType.inner);
-            case "vector":
-            case "span":
-                return this.structDependencies(dataType.element);
-            case "function":
-                return [
-                    ...dataType.parameters.flatMap((parameter) =>
-                        this.structDependencies(parameter),
-                    ),
-                    ...(dataType.result
-                        ? this.structDependencies(dataType.result)
-                        : []),
-                ];
-            default:
-                return [];
-        }
+        if (dataType.kind === "struct")
+            return this.isReferenceStruct(dataType.name) ? [] : [dataType.name];
+        return dataTypeChildren(dataType, () => [], true).flatMap((child) =>
+            this.structDependencies(child),
+        );
     }
 }
 

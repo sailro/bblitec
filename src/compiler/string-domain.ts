@@ -77,6 +77,8 @@ interface Origin {
     expression: ts.Expression;
     projection: KeyPath;
     environment: Environment;
+    /** A parameter the call omits, without a default: undefined. */
+    absent?: true;
 }
 type Environment = ReadonlyMap<ts.Symbol, Origin>;
 type Domain = readonly string[] | undefined;
@@ -1160,6 +1162,27 @@ class StringDomain {
         }
     }
 
+    /**
+     * The closed set of names a run-time key holds, each a member it reads;
+     * undefined for an unknown or open key, or one that may be an index.
+     */
+    private keyValues(
+        key: ts.Expression,
+        environment: Environment,
+    ): readonly string[] | undefined {
+        const domain = this.attempt(() => this.operand(key, [], environment));
+        if (
+            domain === undefined ||
+            domain instanceof UnboundedDomain ||
+            domain === nothing ||
+            domain.length === 0
+        )
+            return undefined;
+        return domain.every((value) => keyIndex(value) === undefined)
+            ? domain
+            : undefined;
+    }
+
     /** Reads an operand that builds a string: its nullish values are not replaced. */
     private operand(
         expression: ts.Expression,
@@ -1253,6 +1276,8 @@ class StringDomain {
                 () => this.read(node.right, projection, environment),
             ]);
         if (ts.isConditionalExpression(node)) {
+            if (this.provenFalse(node.condition, environment))
+                return this.read(node.whenFalse, projection, environment);
             const test = unwrapExpression(node.condition);
             const tested =
                 ts.isIdentifier(test) &&
@@ -1329,7 +1354,9 @@ class StringDomain {
     ): Domain {
         const declared = (): Domain =>
             this.declaredIdentifier(node, symbol, projection, environment);
-        const writes = this.graph.writes.get(symbol) ?? [];
+        const writes = (this.graph.writes.get(symbol) ?? []).filter(
+            (value) => !this.untestedWrite(value, environment),
+        );
         return writes.length
             ? this.union([
                   declared,
@@ -1341,6 +1368,111 @@ class StringDomain {
             : declared();
     }
 
+    /**
+     * A write inside an `if (parameter)` whose call omits that parameter:
+     * the test is false, so the call never makes it.
+     */
+    private untestedWrite(value: ts.Node, environment: Environment): boolean {
+        for (
+            let child: ts.Node = value, parent = value.parent;
+            parent && !ts.isFunctionLike(parent);
+            child = parent, parent = parent.parent
+        ) {
+            if (!ts.isIfStatement(parent) || parent.thenStatement !== child)
+                continue;
+            if (this.absent(parent.expression, environment)) return true;
+        }
+        return false;
+    }
+
+    /** A name for a parameter its call omits, directly or through the caller's own omitted one. */
+    private absent(
+        expression: ts.Expression,
+        environment: Environment,
+    ): boolean {
+        const node = unwrapExpression(expression);
+        const symbol =
+            ts.isIdentifier(node) && resolvedSymbol(this.context.checker, node);
+        const origin = symbol ? environment.get(symbol) : undefined;
+        return (
+            origin !== undefined &&
+            (origin.absent === true ||
+                (origin.expression !== node &&
+                    this.absent(origin.expression, origin.environment)))
+        );
+    }
+
+    /**
+     * The keys of the object literal a never-written const holds, every one
+     * named (no spread or computed key); undefined otherwise.
+     */
+    private closedRecordKeys(
+        expression: ts.Expression,
+    ): ReadonlySet<string> | undefined {
+        const node = unwrapExpression(expression);
+        const symbol =
+            ts.isIdentifier(node) && resolvedSymbol(this.context.checker, node);
+        const declaration = symbol ? symbol.valueDeclaration : undefined;
+        if (
+            !symbol ||
+            !declaration ||
+            !ts.isVariableDeclaration(declaration) ||
+            variableKind(declaration.parent) !== "const" ||
+            !declaration.initializer ||
+            this.graph.mutated.has(symbol)
+        )
+            return undefined;
+        const literal = unwrapExpression(declaration.initializer);
+        if (!ts.isObjectLiteralExpression(literal)) return undefined;
+        const keys = new Set<string>();
+        for (const member of objectLiteralMembers(literal, (name) =>
+            this.context.propertyName(name),
+        )) {
+            if (member.kind === "spread" || member.key === undefined)
+                return undefined;
+            keys.add(member.key);
+        }
+        return keys;
+    }
+
+    /**
+     * A guard that is false for every key the domain gives it:
+     * `Object.hasOwn(record, key)` over a closed record holding none of
+     * them, alone or in a conjunction.
+     */
+    private provenFalse(
+        condition: ts.Expression,
+        environment: Environment,
+    ): boolean {
+        const node = unwrapExpression(condition);
+        if (
+            ts.isBinaryExpression(node) &&
+            node.operatorToken.kind === ts.SyntaxKind.AmpersandAmpersandToken
+        )
+            return (
+                this.provenFalse(node.left, environment) ||
+                this.provenFalse(node.right, environment)
+            );
+        if (!ts.isCallExpression(node) || node.arguments.length !== 2)
+            return false;
+        const callee = namedMember(
+            this.context.checker,
+            unwrapExpression(node.expression),
+        );
+        if (
+            callee?.name !== "hasOwn" ||
+            this.context.libraryGlobal(callee.expression) !== "Object"
+        )
+            return false;
+        const keys = this.closedRecordKeys(node.arguments[0]!);
+        const values = keys && this.keyValues(node.arguments[1]!, environment);
+        return (
+            keys !== undefined &&
+            values !== undefined &&
+            values.every((value) => !keys.has(value))
+        );
+    }
+
     /** A binding's value as its declaration and calls give it. */
     private declaredIdentifier(
         node: Binding,
@@ -1349,6 +1481,7 @@ class StringDomain {
         environment: Environment,
     ): Domain {
         const origin = environment.get(symbol);
+        if (origin?.absent) return this.nullish ? nothing : undefined;
         if (origin)
             return this.read(
                 origin.expression,
@@ -1474,12 +1607,29 @@ class StringDomain {
             );
             if (domain) return domain;
         }
-        if (ts.isElementAccessExpression(node))
+        if (ts.isElementAccessExpression(node)) {
+            const step = memberStep(node);
+            const keys =
+                step === ANY_KEY
+                    ? this.keyValues(node.argumentExpression, environment)
+                    : undefined;
+            if (keys)
+                return this.union(
+                    keys.map(
+                        (key) => () =>
+                            this.read(
+                                node.expression,
+                                [key, ...projection],
+                                environment,
+                            ),
+                    ),
+                );
             return this.read(
                 node.expression,
-                [memberStep(node), ...projection],
+                [step, ...projection],
                 environment,
             );
+        }
         const key = projection[0];
         if (
             ts.isObjectLiteralExpression(node) &&
@@ -1710,6 +1860,13 @@ class StringDomain {
                         projection: [],
                         environment,
                     });
+                else if (symbol)
+                    nested.set(symbol, {
+                        expression: parameter.name,
+                        projection: [],
+                        environment,
+                        absent: true,
+                    });
             }
             return this.returned(declaration, projection, nested);
         }
@@ -1734,6 +1891,14 @@ class StringDomain {
                 ? objectIdentityCallArgument(this.context.checker, call)
                 : undefined;
         if (frozen) return this.read(frozen, projection, environment);
+        // Object.values lists its argument's member values.
+        const listed =
+            method === "values" &&
+            this.context.libraryGlobal(callee.expression) === "Object"
+                ? call.arguments[0]
+                : undefined;
+        if (listed && projection[0] === ANY_KEY)
+            return this.read(listed, projection, environment);
         const receiverType = this.context.checker.getTypeAtLocation(
             callee.expression,
         );

@@ -70,7 +70,7 @@ import {
     type TypedArrayKind,
 } from "./data-types.js";
 import type { DataLowerer } from "./data-lowering.js";
-import { isJsonValue } from "./json-bridge.js";
+import { compileJsonMemberCall, isJsonValue } from "./json-bridge.js";
 import {
     commonResourceValue,
     presenceCpp,
@@ -1363,6 +1363,15 @@ function compileKnownDataMethod(
         ),
         callee.expression,
     );
+    if (isJsonValue(narrowedOwner)) {
+        const held = compileJsonMemberCall(
+            lowerer.context,
+            call,
+            { expression: callee.expression, name: method },
+            narrowedOwner,
+        );
+        if (held) return held;
+    }
     if (isJsonValue(narrowedOwner)) {
         const declared = lowerer.dataTypeAt(callee.expression);
         if (declared?.kind === "string" || declared?.kind === "enum") {

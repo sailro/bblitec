@@ -3225,7 +3225,7 @@ const COMMANDS: readonly CommandSpec[] = [
     {
         name: "status",
         argument: SCENE_ARGUMENT,
-        flags: { boolean: ["--run"] },
+        flags: { value: AD_HOC_SOURCE_FLAGS, boolean: ["--run"] },
         summary:
             "generation record current, payload deployed, binary carries the tree's stamp (from its bytes); --run renders one frame under the identity gate",
         lock: false,

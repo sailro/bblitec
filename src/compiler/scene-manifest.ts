@@ -20,6 +20,7 @@ import { nodeParticleManifest } from "./intrinsics/particle.js";
 import type { LoweringServices } from "./lowering-services.js";
 import { SceneMaterialRecorder } from "./scene-materials.js";
 import {
+    drawsOnInstanceLanes,
     shaderThinInstanceLanes,
     sourceInstanceLanes,
 } from "./shader-material.js";
@@ -237,6 +238,15 @@ export class SceneManifestRecorder {
         number | undefined,
         Set<string>
     >();
+    /**
+     * Draws on one of several meshes a value may name: a program is laid out
+     * on those whose instance lanes it can draw with, and checks the mesh
+     * it lands on at run time.
+     */
+    private readonly possibleShaderMaterialDraws = new EmissionMap<
+        number,
+        Set<string>
+    >();
     @journaled private accessor standardMaterialUnknownMesh = false;
     private readonly runtimeMaterialProfiles = new EmissionSet<number>();
     @journaled private accessor runtimeMeshProfileCount = 0;
@@ -388,8 +398,28 @@ export class SceneManifestRecorder {
 
     /** Settles the records whose final shape depends on the whole entry. */
     public settle(): void {
-        for (const [index, variants] of this.shaderMaterialDraws) {
-            if (index === undefined) continue;
+        const draws = [
+            ...[...this.shaderMaterialDraws].map(
+                ([index, variants]) => [index, [...variants]] as const,
+            ),
+            ...[...this.possibleShaderMaterialDraws].map(
+                ([index, variants]) =>
+                    [
+                        index,
+                        [...variants].filter((variant) => {
+                            const program = this.reachedShaderProgram(
+                                variant,
+                                this.context.sourceFile,
+                            );
+                            writable(program).runtimeInstanceLayoutCheck = true;
+                            const mesh = this.sceneMeshes[index];
+                            return !mesh || drawsOnInstanceLanes(program, mesh);
+                        }),
+                    ] as const,
+            ),
+        ];
+        for (const [index, variants] of draws) {
+            if (index === undefined || variants.length === 0) continue;
             const mesh = this.sceneMeshes[index];
             if (!mesh)
                 throw new Error(`Shader draw has no mesh profile ${index}.`);
@@ -441,7 +471,8 @@ export class SceneManifestRecorder {
             );
             // A program no known assignment lays out can reach a mesh only
             // through an unknown one. When every such mesh has the same
-            // instance lanes for it, that is its only drawable layout.
+            // instance lanes for it, and the program can draw with them,
+            // that is its only drawable layout.
             for (const program of this.reachedShaderPrograms) {
                 if (
                     knownLayouts.has(program.name) ||
@@ -456,8 +487,13 @@ export class SceneManifestRecorder {
                             `${mesh.thinInstances}:${program.thinInstanceColorOption === false || mesh.thinInstanceColors === true}`,
                     ),
                 );
-                if (lanes.size === 1)
-                    knownLayouts.set(program.name, unknownMeshes[0]!);
+                const [layout] = unknownMeshes;
+                if (
+                    lanes.size === 1 &&
+                    layout &&
+                    drawsOnInstanceLanes(program, layout)
+                )
+                    knownLayouts.set(program.name, layout);
             }
             for (const program of this.reachedShaderPrograms)
                 writable(program).runtimeInstanceLayoutCheck = true;
@@ -471,13 +507,11 @@ export class SceneManifestRecorder {
                             const { name, thinInstanceColorOption } = program;
                             // A program reading the instance lanes draws on
                             // any mesh that holds, or may acquire, its pool.
-                            const required = sourceInstanceLanes(program);
-                            if (required && !knownLayouts.has(name))
-                                return (
-                                    mesh.thinInstances !== undefined &&
-                                    (!required.colors ||
-                                        mesh.thinInstanceColors === true)
-                                );
+                            if (
+                                sourceInstanceLanes(program) &&
+                                !knownLayouts.has(name)
+                            )
+                                return drawsOnInstanceLanes(program, mesh);
                             const known = knownLayouts.get(name);
                             if (known !== undefined) {
                                 return (
@@ -519,6 +553,11 @@ export class SceneManifestRecorder {
         this.settleShaderThinInstances();
         const drawVariants = new Set([
             ...(this.shaderMaterialDraws.get(undefined) ?? []),
+            // An unknown material on a mesh no profile names (a loaded one)
+            // may draw any reached program.
+            ...(this.unknownMaterialMeshProfiles.has(undefined)
+                ? this.reachedShaderPrograms.map(({ name }) => name)
+                : []),
             ...this.sceneMeshes.flatMap((mesh) => [
                 ...(mesh.shaderVariant === undefined
                     ? []
@@ -534,6 +573,19 @@ export class SceneManifestRecorder {
             const program = this.reachedShaderProgram(name, site);
             writable(program).drawReachable = drawVariants.has(name);
             if (!program.drawReachable) continue;
+            // A drawn program no scene mesh laid out (one drawn on loaded
+            // meshes) draws only with the lanes its source reads: the pin's
+            // plain prelude declares none, and its colour lane only for a
+            // pool with colours.
+            const required = sourceInstanceLanes(program);
+            if (required && !program.useThinInstances) {
+                writable(program).useThinInstances = true;
+                if (
+                    required.colors &&
+                    program.thinInstanceColorOption !== false
+                )
+                    writable(program).useThinInstanceColors = true;
+            }
             try {
                 lowerWgslShaderProgram(program);
             } catch (error: unknown) {
@@ -1115,18 +1167,36 @@ export class SceneManifestRecorder {
         this.shaderMaterialSources.set(name, site);
     }
 
-    /** A shader draw outside the mesh's own material assignment, such as a task override. */
+    /**
+     * A shader draw outside the mesh's own material assignment, such as a
+     * task override; `possible` when the mesh is one of several a value may
+     * name (`possibleShaderMaterialDraws`).
+     */
     public recordSceneShaderMaterialDraw(
         meshIndex: number | undefined,
         material: Value,
+        possible = false,
     ): void {
-        const variants =
+        const add = (variants: Set<string>): Set<string> => {
+            if (material.sceneShaderVariant !== undefined)
+                variants.add(material.sceneShaderVariant);
+            for (const variant of material.possibleSceneShaderVariants ?? [])
+                variants.add(variant);
+            return variants;
+        };
+        if (possible && meshIndex !== undefined) {
+            const variants = add(
+                this.possibleShaderMaterialDraws.get(meshIndex) ??
+                    new EmissionSet<string>(),
+            );
+            if (variants.size > 0)
+                this.possibleShaderMaterialDraws.set(meshIndex, variants);
+            return;
+        }
+        const variants = add(
             this.shaderMaterialDraws.get(meshIndex) ??
-            new EmissionSet<string>();
-        if (material.sceneShaderVariant !== undefined)
-            variants.add(material.sceneShaderVariant);
-        for (const variant of material.possibleSceneShaderVariants ?? [])
-            variants.add(variant);
+                new EmissionSet<string>(),
+        );
         if (variants.size > 0)
             this.shaderMaterialDraws.set(meshIndex, variants);
     }
