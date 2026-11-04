@@ -217,6 +217,46 @@ test("deployment URLs resolve external public assets and browser base values", (
     );
 });
 
+test("an inlined helper's base URL folds through String methods and query parameters", (t) => {
+    // A typed generation-time fetch needs its URL at generation: here a
+    // module constant over the deployment origin, passed to an inlined
+    // helper, trimmed by String.replace, and joined with a file a builder
+    // picks from the deployment query string.
+    const directory = mkdtempSync(join(tmpdir(), "bblitec-public-"));
+    t.after(() => rmSync(directory, { recursive: true, force: true }));
+    const publicDir = join(directory, "public");
+    mkdirSync(join(publicDir, "data"), { recursive: true });
+    writeFileSync(join(publicDir, "data", "index.json"), '{"count":2}');
+    writeFileSync(join(publicDir, "data", "alt.json"), '{"count":5}');
+    const result = compileSource(
+        String.raw`
+        const APP_BASE: string = (location.origin + import.meta.env.BASE_URL).replace(/\/+$/, "");
+        function joinBase(baseUrl: string, path: string): string {
+            return baseUrl.replace(/\/$/, "") + "/" + path.replace(/^\//, "");
+        }
+        function variantUrl(baseUrl: string): string {
+            const variant = new URLSearchParams(location.search).get("variant");
+            return baseUrl + "/data/" + (variant ?? "index") + ".json";
+        }
+        async function load(baseUrl: string): Promise<number> {
+            const plain = await fetch(joinBase(baseUrl, "/data/index.json"));
+            const variant = await fetch(variantUrl(baseUrl));
+            const plainIndex = (await plain.json()) as { count: number };
+            const variantIndex = (await variant.json()) as { count: number };
+            return plainIndex.count * 10 + variantIndex.count;
+        }
+        if ((await load(APP_BASE)) !== 25) throw new Error("folded index");
+    `,
+        {
+            fileName: join(directory, "entry.ts"),
+            publicDir,
+            siteUrl: "https://example.invalid/project/",
+            search: "variant=alt",
+        },
+    );
+    assert.doesNotMatch(result.cpp, /folded index/);
+});
+
 test("explicit build environment preserves strings, empty values and missing defaults", () => {
     const result = compileSource(
         `

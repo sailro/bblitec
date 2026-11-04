@@ -86,6 +86,15 @@ interface ExecutedFunctionContext {
     ): string | boolean | null | undefined;
 }
 
+/**
+ * Host globals a generation run may read: pure WHATWG URL parsing, which the
+ * realm receives from Node and which reads no host state.
+ */
+const GENERATION_HOST_GLOBALS: ReadonlySet<string> = new Set([
+    "URL",
+    "URLSearchParams",
+]);
+
 /** The pinned imports an executed closure may reach, by imported name. */
 const pinnedTags: ReadonlySet<string> = new Set(["wgsl"]);
 
@@ -122,7 +131,7 @@ export function executeApplicationFunction(
     const closure = new ExecutedClosure(context, target, label);
     const program = closure.program();
     const realm = vm.createContext(
-        {},
+        { URL, URLSearchParams },
         {
             name: `generation function ${label}`,
             microtaskMode: "afterEvaluate",
@@ -585,6 +594,13 @@ return __bblScope(${this.parts.get(targetFile)!.index})[${root}];
         }
         const origin = declarationOrigin(declaration);
         if (origin === "default-lib") return;
+        if (
+            origin === "dom" &&
+            GENERATION_HOST_GLOBALS.has(identifier.text) &&
+            ts.isVariableDeclaration(declaration) &&
+            declaration.getSourceFile().isDeclarationFile
+        )
+            return;
         if (
             origin !== "program" ||
             declaration.getSourceFile().isDeclarationFile

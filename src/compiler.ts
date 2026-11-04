@@ -5452,8 +5452,27 @@ class Compiler implements LoweringServices {
     private staticScalar(
         expression: ts.Expression,
     ): ExecutedScalar | undefined {
-        const value = this.compileValue(expression);
-        return value.staticString ?? value.staticBoolean ?? value.staticNumber;
+        return this.generationScalar(expression, this.compileValue(expression));
+    }
+
+    /**
+     * The scalar a generation run reads for `value`, compiled from
+     * `expression`: its static text, boolean or number, or the text
+     * generation knows another way (a module constant, an inlined call's
+     * argument).
+     */
+    private generationScalar(
+        expression: ts.Expression,
+        value: Value,
+    ): ExecutedScalar | undefined {
+        return (
+            value.staticString ??
+            value.staticBoolean ??
+            value.staticNumber ??
+            (isStringValue(value)
+                ? this.evaluator.staticTextValue(expression)
+                : undefined)
+        );
     }
 
     /** Retained objects stay native; only fresh, lossless literal data may cross realms. */
@@ -5515,10 +5534,7 @@ class Compiler implements LoweringServices {
         // Nested undefined values remain excluded by the lossless JSON boundary.
         if (absenceOf(carried) === "undefined" && !carried.parameterBinding)
             return { value: undefined };
-        const value =
-            carried.staticString ??
-            carried.staticBoolean ??
-            carried.staticNumber;
+        const value = this.generationScalar(node, carried);
         if (value !== undefined) return { value };
         // A complete static snapshot of retained data (a record or array
         // whose current contents generation knows) crosses as its copy.

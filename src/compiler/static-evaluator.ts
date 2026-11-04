@@ -127,6 +127,7 @@ import {
     writeSites,
     expressionHasEffects,
     functionKind,
+    regularExpressionParts,
     type SupportedFunction,
     variableKind,
 } from "./syntax.js";
@@ -300,6 +301,26 @@ export function retainedStaticText(
         () => false,
     );
 }
+
+/** String methods whose result depends only on their receiver and arguments. */
+const PURE_STRING_METHODS: ReadonlySet<string> = new Set([
+    "at",
+    "charAt",
+    "concat",
+    "normalize",
+    "padEnd",
+    "padStart",
+    "repeat",
+    "replace",
+    "replaceAll",
+    "slice",
+    "substring",
+    "toLowerCase",
+    "toUpperCase",
+    "trim",
+    "trimEnd",
+    "trimStart",
+]);
 
 export class StaticEvaluator {
     public constructor(
@@ -2088,6 +2109,51 @@ export class StaticEvaluator {
         );
     }
 
+    /**
+     * A pure String method of generation-known text with generation-known
+     * arguments (text, numbers, regular-expression literals), run as
+     * JavaScript runs it.
+     */
+    private stringMethodText(call: ts.CallExpression): string | undefined {
+        const callee = namedMember(this.checker, this.unwrap(call.expression));
+        if (
+            !callee ||
+            call.questionDotToken ||
+            (ts.isPropertyAccessExpression(callee.access) &&
+                callee.access.questionDotToken) ||
+            !PURE_STRING_METHODS.has(callee.name) ||
+            valueKindOf(this.checker.getTypeAtLocation(callee.expression)) !==
+                "string"
+        )
+            return undefined;
+        const receiver = this.staticTextValue(callee.expression);
+        if (receiver === undefined) return undefined;
+        const args: (string | number | RegExp)[] = [];
+        for (const argument of call.arguments) {
+            const unwrapped = this.unwrap(argument);
+            if (ts.isRegularExpressionLiteral(unwrapped)) {
+                const parts = regularExpressionParts(unwrapped);
+                if (!parts) return undefined;
+                args.push(new RegExp(parts.pattern, parts.flags));
+                continue;
+            }
+            const kind = valueKindOf(this.checker.getTypeAtLocation(unwrapped));
+            const passed =
+                kind === "number"
+                    ? this.staticNumberValue(unwrapped)
+                    : kind === "string"
+                      ? this.staticTextValue(unwrapped)
+                      : undefined;
+            if (passed === undefined) return undefined;
+            args.push(passed);
+        }
+        const run = String.prototype[
+            callee.name as keyof string
+        ] as unknown as (...values: (string | number | RegExp)[]) => unknown;
+        const result = run.apply(receiver, args);
+        return typeof result === "string" ? result : undefined;
+    }
+
     /** The arity of an expression's tuple type when every element is a required number. */
     private numberTupleArity(expression: ts.Expression): number | undefined {
         const elements = fixedTupleElements(
@@ -2253,6 +2319,11 @@ export class StaticEvaluator {
             if (value?.staticString !== undefined && !value.parameterBinding) {
                 return value.staticString;
             }
+            // An inlined call's read-only parameter reads its argument's text.
+            if (ts.isIdentifier(unwrapped) && value?.parameterBinding) {
+                const text = this.inlinedArgumentText(unwrapped);
+                if (text !== undefined) return text;
+            }
             if (value?.staticBoolean !== undefined && !value.parameterBinding) {
                 return String(value.staticBoolean);
             }
@@ -2288,6 +2359,8 @@ export class StaticEvaluator {
             ts.isCallExpression(unwrapped) &&
             valueKindOf(this.checker.getTypeAtLocation(unwrapped)) === "string"
         ) {
+            const method = this.stringMethodText(unwrapped);
+            if (method !== undefined) return method;
             try {
                 return this.generationText(unwrapped);
             } catch (error) {
