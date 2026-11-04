@@ -2147,10 +2147,11 @@ export class StaticEvaluator {
             if (passed === undefined) return undefined;
             args.push(passed);
         }
-        const run = String.prototype[
-            callee.name as keyof string
-        ] as unknown as (...values: (string | number | RegExp)[]) => unknown;
-        const result = run.apply(receiver, args);
+        // Called on the text itself, as the program calls it.
+        const methods = receiver as unknown as Readonly<
+            Record<string, (...values: (string | number | RegExp)[]) => unknown>
+        >;
+        const result = methods[callee.name]!(...args);
         return typeof result === "string" ? result : undefined;
     }
 

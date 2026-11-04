@@ -6570,7 +6570,7 @@ export class DataTypeRegistry {
                         const members = candidates.filter(
                             (candidate, index) =>
                                 candidates.findIndex((other) =>
-                                    dataTypesEqual(other!, candidate!),
+                                    dataTypesEqual(other, candidate),
                                 ) === index,
                         ) as DataType[];
                         mapped =
