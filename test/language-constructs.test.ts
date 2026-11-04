@@ -3194,6 +3194,33 @@ check(
 `,
 );
 
+test("arms that type one field with records of their own each hold their record", async (t) => {
+    // Two arms give `host` different records and a third lacks it; values
+    // come back through a reassigned function slot, whose signature needs
+    // the union's storage.
+    const source = `
+        interface A { readonly kind: "a"; readonly host: { readonly id: number; readonly x: number } }
+        interface B { readonly kind: "b"; readonly host: { readonly id: number; readonly y: string } }
+        interface C { readonly kind: "c"; readonly r: number }
+        type U = A | B | C;
+        const late = { f: (() => []) as () => readonly U[] };
+        late.f = () => [{ kind: "a", host: { id: 1, x: 7 } }, { kind: "b", host: { id: 2, y: "q" } }, { kind: "c", r: 3 }];
+        const list = late.f();
+        const text = list.map((v) => v.kind === "a" ? "a" + v.host.x : v.kind === "b" ? "b" + v.host.y : "c" + v.r).join(",");
+        if (text !== "a7,bq,c3") throw new Error("arm fields " + text);
+        let ids = 0;
+        for (const v of list) if (v.kind !== "c") ids += v.host.id;
+        if (ids !== 3) throw new Error("shared field " + ids);
+    `;
+    runInNewContext(
+        ts.transpileModule(source, {
+            compilerOptions: { target: ts.ScriptTarget.ES2022 },
+        }).outputText,
+    );
+    const result = compileSource(source);
+    await executeGeneratedAssertions(t, "arm-record-fields", result.cpp);
+});
+
 test("overlapping nullable union membership refuses unrepresented arm fields", () => {
     const source = `
         type R = { ok: false; a: string | null } | { ok: false; b: number } | { ok: true };

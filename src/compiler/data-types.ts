@@ -6558,6 +6558,26 @@ export class DataTypeRegistry {
                             }
                         }
                     }
+                    // Arms the tags tell apart may each give the field a
+                    // record type of its own: the field holds the one its
+                    // arm declares.
+                    if (
+                        !mapped &&
+                        candidates.every(
+                            (candidate) => candidate?.kind === "struct",
+                        )
+                    ) {
+                        const members = candidates.filter(
+                            (candidate, index) =>
+                                candidates.findIndex((other) =>
+                                    dataTypesEqual(other!, candidate!),
+                                ) === index,
+                        ) as DataType[];
+                        mapped =
+                            members.length === 1
+                                ? members[0]
+                                : { kind: "union", members };
+                    }
                     // Grouped arms fall back to the members' common view.
                     if (!mapped) return grouped ? undefined : null;
                 } else {
