@@ -1019,6 +1019,10 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
         provenance: "src/vat/vat-baker.ts setVatInstanceStorage",
         consumers: CMAKE,
     },
+    "mesh:vat-prepared": {
+        provenance: "src/vat/vat-baker.ts createVatBakeResults",
+        consumers: CMAKE,
+    },
     "mesh:skeleton": {
         provenance:
             "src/skeleton/create-skeleton.ts and " +

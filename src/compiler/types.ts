@@ -3384,6 +3384,7 @@ export type Feature =
     | "mesh:vat-time"
     | "mesh:deformed-position"
     | "mesh:vat-instance-storage"
+    | "mesh:vat-prepared"
     // A skeleton a scene authored in code rather than one the glTF loader
     // built from a skin. `createSkeleton` is the pin's own resource factory
     // and `mesh.skeleton = ...` is what puts the mesh on the skinned arm.

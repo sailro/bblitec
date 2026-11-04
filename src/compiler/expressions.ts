@@ -4547,27 +4547,31 @@ export class ExpressionLowerer {
     }
 
     /**
-     * One row of a bake's clip map, by name.
+     * One row of a bake's clip map, by name, static or computed.
      *
-     * The name is static in both reached scenes, and the row it selects is
-     * the bake's answer rather than generation's -- so this emits the
-     * native lookup and reports a miss the way every optional read in this
-     * port does. A zero frame count is that miss: no baked clip has one.
+     * The row it selects is the bake's answer rather than generation's --
+     * so this emits the native lookup and reports a miss the way every
+     * optional read in this port does. A zero frame count is that miss: no
+     * baked clip has one.
      */
     private compileVatClipRow(
         map: Value,
         access: ts.ElementAccessExpression,
     ): Value {
-        const clip = this.context.compileStringLiteral(
-            access.argumentExpression,
-        );
+        const name = this.compileValue(access.argumentExpression);
+        if (name.staticString === undefined)
+            this.context.expectKind(name, "string", access.argumentExpression);
+        const clip =
+            name.staticString !== undefined
+                ? this.context.cppString(name.staticString)
+                : name.cpp;
         const engine = this.context.requireEngine(map, access);
         const row = this.context.allocateTemporaryCppName("vat_clip");
         this.context.emit({
             kind: "declaration",
             type: "const bbl::VatClipRow",
             name: row,
-            initializer: `bbl::vat_clip_row(${engine}, ${map.cpp}, ${this.context.cppString(clip)})`,
+            initializer: `bbl::vat_clip_row(${engine}, ${map.cpp}, ${clip})`,
         });
         return {
             kind: "vat-clip",

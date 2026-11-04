@@ -193,6 +193,7 @@ export const featureSources: Record<Feature, string[]> = {
     "mesh:vat-time": [],
     "mesh:deformed-position": [],
     "mesh:vat-instance-storage": [],
+    "mesh:vat-prepared": [],
     "mesh:skeleton": [],
     "mesh:transform-node": [],
     "mesh:mirrored": [],

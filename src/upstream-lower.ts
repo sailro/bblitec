@@ -1488,6 +1488,7 @@ ${lowerThinInstanceSync(context)}
                 instances: features.includes("mesh:vat-instances"),
                 time: features.includes("mesh:vat-time"),
                 instanceStorage: features.includes("mesh:vat-instance-storage"),
+                prepared: features.includes("mesh:vat-prepared"),
             }),
         );
         emitReached("upstream/src/skeleton.cpp", () =>

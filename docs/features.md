@@ -289,6 +289,8 @@ composition and source albedo reads with `KHR_texture_transform` refuse.
 - `computeDeformedPositionToRef`: morph then four-joint skinning of one retained CPU vertex, at the pin's float stores.
 - `setVatTime` writes the VAT clock lane until the handle's next `play`/`update`. `setVatInstanceStorage` validates and
   stores the buffer the thin VAT pick reads.
+- `createVatBakeResult(s)` uploads prepared VAT payloads with the pin's checks. Bakes are storable handles; their counts,
+  clips and bone captures read natively. `texture` is not lowered.
 
 ## Sprites, picking, flow graphs, gizmos
 

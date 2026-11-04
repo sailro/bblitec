@@ -3828,6 +3828,46 @@ export class PropertyAccessLowerer {
                     : {}),
             };
         }
+        // The bake's counts and the bone captures a prepared payload
+        // carried, off its native record: the captures are the very typed
+        // arrays the payload passed, as the pin's result holds them.
+        if (owner.kind === "vat-bake") {
+            const counts: Record<string, string> = {
+                boneCount: "bone_count",
+                frameCount: "frame_count",
+            };
+            const captures: Record<string, string> = {
+                boneOrigins: "bone_origins",
+                boneMatrices: "bone_matrices",
+            };
+            const engine = this.context.requireEngine(owner, expression);
+            const bake = recordAt(`${engine}.vat_bakes`, owner.cpp);
+            if (Object.hasOwn(counts, property))
+                return {
+                    kind: "number",
+                    cpp: `static_cast<double>(${bake}.${counts[property]})`,
+                };
+            if (Object.hasOwn(captures, property)) {
+                const type = this.context.dataLowerer.dataTypeAt(expression);
+                if (
+                    !type ||
+                    this.context.dataTypes.cppType(type) !==
+                        "bbl::js::Nullable<bbl::js::Map<double, bbl::js::F32Array>>"
+                )
+                    this.context.fail(
+                        expression,
+                        `A VAT bake's '${property}' reads as optional per-bone Float32Arrays.`,
+                    );
+                this.context.reachJsData();
+                return {
+                    kind: "data",
+                    cpp: `${bake}.${captures[property]}`,
+                    dataType: type,
+                    borrowedData: true,
+                    engineCpp: engine,
+                };
+            }
+        }
         // A container's own handle collection, read without the `?? []`
         // guard the nullish resolver already claims. Asked before the
         // failure below rather than in `readOwnerProperty`, because the

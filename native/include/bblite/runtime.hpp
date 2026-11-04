@@ -614,6 +614,21 @@ struct VatBakeRecord {
     std::uint32_t frame_count = 0;
     std::vector<float> data;
     std::vector<VatClipRow> clips;
+    /** `boneOrigins` / `boneMatrices`: bone index -> its per-frame capture, when prepared with one. */
+    js::Nullable<js::Map<double, js::F32Array>> bone_origins, bone_matrices;
+};
+
+/**
+ * One `PreparedVatBakeResult` as `createVatBakeResults` reads it: the
+ * clips in property order, the captures as the program holds them. The
+ * counts default to NaN, which is how an absent record reads.
+ */
+struct PreparedVatPayload {
+    double bone_count = std::numeric_limits<double>::quiet_NaN();
+    double frame_count = std::numeric_limits<double>::quiet_NaN();
+    js::F32Array data;
+    std::vector<VatClipRow> clips;
+    js::Nullable<js::Map<double, js::F32Array>> bone_origins, bone_matrices;
 };
 
 /**
@@ -8048,6 +8063,8 @@ void stop_animation(Engine& engine, AnimationGroupHandle group);
 // for a scene that reached mesh:vat, which is the pin's own opt-in --
 // bakeVat is the dynamic-import trigger for the whole chunk.
 VatBake bake_vat(Engine& engine, MeshHandle mesh, const std::vector<AnimationGroupHandle>& groups);
+// `createVatBakeResults`: validated offline-prepared payloads, one bake each.
+js::Array<VatBake> create_vat_bakes(Engine& engine, const std::vector<PreparedVatPayload>& prepared);
 VatHandle attach_vat(Engine& engine, MeshHandle mesh, VatBake baked, const std::string& clip);
 void vat_play(Engine& engine, VatHandle handle, const std::string& clip,
               std::optional<double> offset, std::optional<double> fps);

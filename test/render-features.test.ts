@@ -336,3 +336,203 @@ test("a baked VAT is an engine handle a program stores and attaches later", () =
     assert.match(mapped.cpp, /bbl::VatBake/);
     assert.match(mapped.cpp, /bbl::attach_vat\(/);
 });
+
+test("createVatBakeResults validates prepared payloads in the pin's order and keeps their captures", async (t) => {
+    const vat = await importPinnedModule<{
+        createVatBakeResults(
+            this: void,
+            engine: object,
+            prepared: readonly unknown[],
+        ): {
+            boneCount: number;
+            frameCount: number;
+            clips: Record<
+                string,
+                { fromRow: number; frameCount: number; fps: number }
+            >;
+            boneOrigins?: Record<number, Float32Array>;
+            boneMatrices?: Record<number, Float32Array>;
+        }[];
+    }>("vat/vat-baker.js");
+    const engine = {
+        _device: {
+            createTexture: () => ({ destroy: () => {} }),
+            queue: { writeTexture: () => {} },
+        },
+    };
+    const clips = { walk: { fromRow: 0, frameCount: 2, fps: 30 } };
+    const payload = (patch: object): object => ({
+        boneCount: 2,
+        frameCount: 3,
+        data: new Float32Array(96),
+        clips,
+        ...patch,
+    });
+    // Each case as the pin answers it, then as the native call is fed it.
+    const cases: [object | undefined, string][] = [
+        [
+            payload({ boneOrigins: { 1: new Float32Array(9) } }),
+            "payload.bone_origins = js::Map<double, js::F32Array>{{1.0, js::F32Array(std::size_t{9})}};",
+        ],
+        [payload({ boneCount: 0 }), "payload.bone_count = 0.0;"],
+        [payload({ frameCount: 1.5 }), "payload.frame_count = 1.5;"],
+        [
+            payload({ data: new Float32Array(95) }),
+            "payload.data = js::F32Array(std::size_t{95});",
+        ],
+        [
+            payload({
+                clips: { walk: { fromRow: 2, frameCount: 2, fps: 30 } },
+            }),
+            'payload.clips = {VatClipRow{"walk", 2.0, 2.0, 30.0}};',
+        ],
+        [
+            payload({ clips: { walk: { fromRow: 0, frameCount: 2, fps: 0 } } }),
+            'payload.clips = {VatClipRow{"walk", 0.0, 2.0, 0.0}};',
+        ],
+        [
+            payload({ clips: { "": { fromRow: 0, frameCount: 2, fps: 30 } } }),
+            'payload.clips = {VatClipRow{"", 0.0, 2.0, 30.0}};',
+        ],
+        [
+            payload({ boneOrigins: { 2: new Float32Array(9) } }),
+            "payload.bone_origins = js::Map<double, js::F32Array>{{2.0, js::F32Array(std::size_t{9})}};",
+        ],
+        [
+            payload({ boneMatrices: { 0: new Float32Array(47) } }),
+            "payload.bone_matrices = js::Map<double, js::F32Array>{{0.0, js::F32Array(std::size_t{47})}};",
+        ],
+        [undefined, "payload = PreparedVatPayload{};"],
+    ];
+    const answer = (prepared: unknown): string => {
+        try {
+            const [result] = vat.createVatBakeResults(engine, [prepared]);
+            const origins = Object.entries(result!.boneOrigins ?? {});
+            return `${result!.boneCount}x${result!.frameCount} ${Object.entries(
+                result!.clips,
+            )
+                .map(
+                    ([name, clip]) =>
+                        `${name}:${clip.fromRow},${clip.frameCount},${clip.fps}`,
+                )
+                .join(
+                    " ",
+                )} ${origins.map(([bone, values]) => `${bone}=${values.length}`).join(" ")}`;
+        } catch (error) {
+            return (error as Error).message;
+        }
+    };
+    const expected = cases.map(([prepared]) => answer(prepared)).join("|");
+    assert.match(
+        expected,
+        /^2x3 walk:0,2,30 1=9\|#933\|#933\|#937\|#939\|#939\|#939\|#935\|#936\|#933$/,
+    );
+
+    const tools = optionalNativeFixtureTools(false);
+    if (!tools) {
+        t.skip("Native compiler unavailable");
+        return;
+    }
+    const lowered = new VatLowerer(new LoweringContext()).lower({
+        instances: false,
+        prepared: true,
+    });
+    const feed = cases.map(
+        ([, patch]) =>
+            `answers.push_back(answer([&](PreparedVatPayload& payload) { ${patch} }));`,
+    );
+    runGeneratedProgram(
+        tools,
+        "render-features/vat-prepared",
+        `${lowered.source}
+#include <iostream>
+namespace bbl { void stop_animation(Engine&, AnimationGroupHandle) {} }
+using namespace bbl;
+template <class Patch> std::string answer(Patch patch) {
+    Engine engine;
+    PreparedVatPayload payload;
+    payload.bone_count = 2.0;
+    payload.frame_count = 3.0;
+    payload.data = js::F32Array(std::size_t{96});
+    payload.clips = {VatClipRow{"walk", 0.0, 2.0, 30.0}};
+    patch(payload);
+    try {
+        const auto bakes = create_vat_bakes(engine, {payload});
+        const VatBakeRecord& bake = engine.vat_bakes.at(bakes.at(0).value);
+        std::string text = std::to_string(bake.bone_count) + "x" + std::to_string(bake.frame_count);
+        for (const VatClipRow& clip : bake.clips)
+            text += " " + clip.name + ":" + js::number_to_string(clip.from_row) + "," +
+                js::number_to_string(clip.frame_count) + "," + js::number_to_string(clip.fps);
+        text += " ";
+        if (bake.bone_origins)
+            for (const auto& [bone, values] : *bake.bone_origins)
+                text += js::number_to_string(bone) + "=" + std::to_string(values.size());
+        return text;
+    } catch (const std::runtime_error& error) {
+        return error.what();
+    }
+}
+int main() {
+    std::vector<std::string> answers;
+    ${feed.join("\n    ")}
+    for (std::size_t index = 0; index < answers.size(); ++index)
+        std::cout << (index ? "|" : "") << answers[index];
+}
+`,
+        { timeoutMs: 10000, expectedOutput: expected },
+    );
+});
+
+test("a program's prepared VAT records lower to the native upload and attach", () => {
+    const result = compileSource(`
+        import { addToScene, attachVat, createEngine, createSceneContext, createVatBakeResults, loadGltf, registerScene, startEngine, type Mesh, type PreparedVatBakeResult, type TransformNode } from "@babylonjs/lite";
+        const canvas = document.getElementById("renderCanvas") as HTMLCanvasElement;
+        const engine = await createEngine(canvas);
+        const scene = createSceneContext(engine);
+        const shark = await loadGltf(engine, "https://models.babylonjs.com/shark.glb");
+        addToScene(scene, shark);
+        function findSkinned(node: TransformNode): Mesh | null {
+            const m = node as unknown as Mesh;
+            if (m.skeleton) return m;
+            for (const c of (node.children ?? []) as TransformNode[]) { const hit = findSkinned(c); if (hit) return hit; }
+            return null;
+        }
+        const mesh = findSkinned(shark.entities[0] as TransformNode);
+        if (!mesh) throw new Error("skinned");
+        const prepared: PreparedVatBakeResult[] = [{
+            boneCount: 2,
+            frameCount: 2,
+            data: new Float32Array(64),
+            clips: { swim: { fromRow: 0, frameCount: 2, fps: 30 } },
+            boneOrigins: { 1: new Float32Array(6) },
+        }];
+        const bakes = createVatBakeResults(engine, prepared);
+        // A computed clip name, the counts and a capture, read off the bake.
+        const pick = ["swim", "idle"][Math.floor(Math.random() * 2)]!;
+        const clip = bakes[0]!.clips[pick];
+        const last = clip ? clip.fromRow + clip.frameCount - 1 : -1;
+        const origins = bakes[0]!.boneOrigins;
+        mesh.position.x = bakes[0]!.boneCount * bakes[0]!.frameCount + last + (origins ? Object.keys(origins).length : 0);
+        attachVat(engine, mesh, bakes[0]!, "swim");
+        await registerScene(scene);
+        await startEngine(engine);
+    `);
+    for (const feature of ["mesh:vat", "mesh:vat-prepared", "data:json"])
+        assert.ok(result.manifest.features.includes(feature), feature);
+    assert.match(result.cpp, /bbl::js::for_each_property_entry\(/);
+    assert.match(result.cpp, /\.bone_origins = [^;]*->boneOrigins;/);
+    assert.match(
+        result.cpp,
+        /bbl::js::Array<bbl::VatBake> \w+ = bbl::create_vat_bakes\(v_engine, \w+\);/,
+    );
+    assert.match(result.cpp, /bbl::vat_clip_row\(v_engine, [^,]+, (?!")/);
+    assert.match(
+        result.cpp,
+        /static_cast<double>\(bbl::handle_at\(v_engine\.vat_bakes, .+?\)\.bone_count\)/,
+    );
+    assert.match(
+        result.cpp,
+        /bbl::handle_at\(v_engine\.vat_bakes, .+?\)\.bone_origins/,
+    );
+    assert.match(result.cpp, /bbl::attach_vat\(/);
+});
