@@ -581,11 +581,17 @@ export class DeclarationLowerer {
             this.context.evaluationOrder.isPureExpression(
                 declaration.initializer,
             );
+        // Temporal-dead-zone storage is native whatever the binding holds, so
+        // its `unknown` positions are dynamic.
         const type = pure
             ? undefined
-            : this.lexicalBindingType(
-                  declaration.name,
-                  declaration.initializer,
+            : this.context.dataTypes.withDynamicJsonTypes(
+                  initialization === "temporal-dead-zone",
+                  () =>
+                      this.lexicalBindingType(
+                          declaration.name,
+                          declaration.initializer,
+                      ),
               );
         if (type) {
             this.forwardBindings.set(symbol, {
@@ -734,6 +740,8 @@ export class DeclarationLowerer {
         const declaredType = this.context.checker.getTypeAtLocation(name);
         const demanded =
             declaration && this.context.dynamicBindings.get(declaration);
+        // A declared slot is native storage whatever it will hold, so the
+        // `unknown` positions of its declared type are dynamic.
         let dataType =
             declaration && demanded
                 ? demandedStorageType(
@@ -742,7 +750,15 @@ export class DeclarationLowerer {
                       demanded,
                       undefined,
                   )
-                : this.context.dataTypes.fromTsType(declaredType, name);
+                : (this.context.dataTypes.fromTsType(declaredType, name) ??
+                  (declaration?.type
+                      ? this.context.dataTypes.withDynamicJsonTypes(true, () =>
+                            this.context.dataTypes.fromTsType(
+                                declaredType,
+                                name,
+                            ),
+                        )
+                      : undefined));
         // Only an assignment gives this binding a value.
         if (dataType)
             dataType = this.reboundBindingStorage(dataType, declaredType);

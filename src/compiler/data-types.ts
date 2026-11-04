@@ -7109,11 +7109,13 @@ export class DataTypeRegistry {
         // another shape; the joined layout can then hold its null value.
         if (members.every((member) => (member.flags & ts.TypeFlags.Null) !== 0))
             return { kind: "null" };
-        // A field typed `object` or `unknown` holds dynamic values, as such a
-        // binding does (`dynamicJsonType`): the records it holds keep their
-        // identity.
+        // A field typed `object` holds dynamic values, as such a binding does
+        // (`dynamicJsonType`): the records it holds keep their identity. So
+        // does one typed `unknown` where storage is dynamic; elsewhere its
+        // record keeps the concrete values it holds.
         if (
-            (resolved.flags & ts.TypeFlags.Unknown) !== 0 ||
+            (this.dynamicJsonStorage &&
+                (resolved.flags & ts.TypeFlags.Unknown) !== 0) ||
             (this.checker.getNonNullableType(resolved).flags &
                 ts.TypeFlags.NonPrimitive) !==
                 0
