@@ -152,6 +152,7 @@ import {
 import {
     probePixelsAsset,
     registerSpriteAtlasAsset,
+    withStableAssetSources,
 } from "./compiler/assets.js";
 import {
     compileStaticFetch,
@@ -698,6 +699,15 @@ export function surveySource(
 }
 
 function compileSourceApplication(
+    source: string,
+    options: CompileOptions,
+): CompileResult {
+    return withStableAssetSources(() =>
+        lowerSourceApplication(source, options),
+    );
+}
+
+function lowerSourceApplication(
     source: string,
     options: CompileOptions,
 ): CompileResult {

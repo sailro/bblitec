@@ -292,6 +292,30 @@ function requireUniqueOutput(
  * the source entry-relative makes manifests portable and lets both routes
  * share the same packaged payload and output name.
  */
+let knownSources: Map<string, boolean> | undefined;
+
+/**
+ * Runs one compile, while the asset sources on disk do not change: each
+ * path's existence is read once.
+ */
+export function withStableAssetSources<T>(run: () => T): T {
+    const previous = knownSources;
+    knownSources = new Map();
+    try {
+        return run();
+    } finally {
+        knownSources = previous;
+    }
+}
+
+function sourceExists(path: string): boolean {
+    if (!knownSources) return existsSync(path);
+    let exists = knownSources.get(path);
+    if (exists === undefined)
+        knownSources.set(path, (exists = existsSync(path)));
+    return exists;
+}
+
 export function canonicalLocalAssetSource(
     source: string,
     entryFileName: string,
@@ -306,7 +330,7 @@ export function canonicalLocalAssetSource(
     const absoluteSource = isAbsolute(source)
         ? resolve(source)
         : resolve(entryDirectory, source);
-    if (!existsSync(absoluteSource)) return source;
+    if (!sourceExists(absoluteSource)) return source;
     return relative(entryDirectory, absoluteSource).split(sep).join("/");
 }
 
@@ -535,7 +559,7 @@ export function resolveBundledAsset(
 ): string {
     // A prior resolution or directory scan may already have produced a local
     // absolute path. On POSIX its leading slash also resembles a public URL.
-    if (isAbsolute(source) && existsSync(source)) return source;
+    if (isAbsolute(source) && sourceExists(source)) return source;
     const deployed = deploymentAssetSource(source, deployment);
     if (deployed !== undefined) return deployed;
     if (source === "/brdf-lut.png") {
@@ -559,7 +583,7 @@ export function resolveBundledAsset(
     if (source.startsWith("/") && entryFileName) {
         const entryDirectory = dirname(resolve(entryFileName));
         const local = resolve(entryDirectory, `.${source}`);
-        if (existsSync(local)) {
+        if (sourceExists(local)) {
             return relative(entryDirectory, local).split(sep).join("/");
         }
     }

@@ -1885,23 +1885,7 @@ export class BindingScopes {
                     !ts.isIdentifier(declaration.name)
                 )
                     continue;
-                const collections: Value[] = [];
-                const seen = new Set<Value>();
-                const collect = (value: Value): void => {
-                    if (seen.has(value)) return;
-                    seen.add(value);
-                    if (
-                        value.collectionCardinality ||
-                        value.staticElements ||
-                        value.staticElementsOwner
-                    )
-                        collections.push(value);
-                    for (const member of Object.values(
-                        value.recordProperties ?? {},
-                    ))
-                        collect(member);
-                };
-                collect(binding.value);
+                const collections = heldCollections(binding.value);
                 if (collections.length && mayChange(declaration.name)) {
                     // Mutating an existing handle's properties keeps the array's
                     // membership and its common resource family unchanged.
@@ -3536,6 +3520,38 @@ export function sceneNodeVectorProperties(
             } satisfies Value,
         ]),
     );
+}
+
+const NO_COLLECTIONS: readonly Value[] = [];
+
+function holdsCollection(value: Value): boolean {
+    return Boolean(
+        value.collectionCardinality ||
+        value.staticElements ||
+        value.staticElementsOwner,
+    );
+}
+
+/**
+ * The collections a value holds: itself, then through its record
+ * properties in order, each value once.
+ */
+function heldCollections(value: Value): readonly Value[] {
+    if (!value.recordProperties)
+        return holdsCollection(value) ? [value] : NO_COLLECTIONS;
+    const collections: Value[] = [];
+    const seen = new Set<Value>();
+    const visit = (current: Value): void => {
+        if (seen.has(current)) return;
+        seen.add(current);
+        if (holdsCollection(current)) collections.push(current);
+        const properties = current.recordProperties;
+        if (properties)
+            for (const key in properties)
+                if (Object.hasOwn(properties, key)) visit(properties[key]!);
+    };
+    visit(value);
+    return collections;
 }
 
 /**
