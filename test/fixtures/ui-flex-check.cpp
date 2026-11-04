@@ -308,6 +308,57 @@ int main() {
         measured(zero_minimums, 160, "zero minimums still measure their content");
         measured(shared[0], 80, "zero minimums share the measured width");
         measured(shared[1], 80, "zero minimums share the measured width equally");
+        // A row item whose min-width is auto never shrinks below its min-content width, capped by a
+        // definite width and its maximum (CSS Flexbox 4.5); min-width: 0 or clipped overflow lifts it.
+        struct Minimum {
+            const char* label;
+            std::vector<std::pair<const char*, int>> items;
+            std::vector<float> widths;
+        };
+        const std::vector<Minimum> minimums{
+            {"zero bases grow from their minimums", {{"flex:1;", 100}, {"flex:1;", 60}}, {100, 60}},
+            {"shrinking stops at the minimums",
+             {{"flex:0 1 auto;", 100}, {"flex:0 1 auto;", 60}},
+             {100, 60}},
+            {"zero minimums shrink in proportion",
+             {{"flex:0 1 auto;min-width:0;", 100}, {"flex:0 1 auto;min-width:0;", 60}},
+             {75, 45}},
+            {"clipped overflow has no minimum",
+             {{"flex:0 1 auto;overflow:hidden;", 100}, {"flex:0 1 auto;", 60}},
+             {60, 60}},
+            {"a maximum width caps the minimum",
+             {{"flex:0 1 auto;max-width:40px;", 100}, {"flex:0 1 auto;", 60}},
+             {40, 60}},
+        };
+        std::vector<std::vector<UiElementHandle>> minimum_items;
+        for (const auto& minimum : minimums) {
+            const auto minimum_row = make(
+                "position:absolute;left:10px;top:420px;width:120px;display:flex;align-items:start;");
+            minimum_items.emplace_back();
+            for (const auto& [style, content] : minimum.items) {
+                minimum_items.back().push_back(make(style));
+                ui_append_child(
+                    engine, minimum_items.back().back(),
+                    make(("width:" + std::to_string(content) + "px;height:10px;").c_str()));
+                ui_append_child(engine, minimum_row, minimum_items.back().back());
+            }
+            ui_append_to_root(engine, minimum_row);
+        }
+        update();
+        for (size_t row_index = 0; row_index < minimums.size(); ++row_index)
+            for (size_t index = 0; index < minimums[row_index].widths.size(); ++index)
+                measured(minimum_items[row_index][index], minimums[row_index].widths[index],
+                         minimums[row_index].label);
+        // A shrink-to-fit row's contributions are bounded by the minimums too.
+        const auto zero_basis_row =
+            make("position:fixed;top:460px;right:18px;display:flex;align-items:start;");
+        const auto zero_basis = make("flex:0 0 0px;");
+        ui_append_child(engine, zero_basis, make("width:100px;height:10px;"));
+        ui_append_child(engine, zero_basis_row, zero_basis);
+        ui_append_to_root(engine, zero_basis_row);
+        update();
+        measured(zero_basis_row, 100, "an inflexible zero basis contributes its minimum");
+        measured(zero_basis, 100, "an inflexible zero basis keeps its minimum");
     }
     SDL_DestroyWindow(window);
     SDL_Quit();
