@@ -693,7 +693,7 @@ export function surveySource(
             return { report: collector.report(), result };
         } catch (error) {
             if (!(error instanceof Error)) throw error;
-            return { report: collector.report(error.message) };
+            return { report: collector.report(error) };
         }
     });
 }

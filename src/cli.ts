@@ -949,6 +949,8 @@ function writeSurvey(
     }
     if (!report.complete) {
         console.error(`Survey incomplete: ${report.terminal}`);
+        for (const frame of report.terminalStack ?? [])
+            console.error(`    ${frame}`);
         process.exitCode = 1;
     }
 }

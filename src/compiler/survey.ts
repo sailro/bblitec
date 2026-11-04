@@ -63,6 +63,8 @@ export interface SurveyReport {
     /** False when an error outside statement lowering ended the survey. */
     complete: boolean;
     terminal?: string;
+    /** The stack frames that raised `terminal`, innermost first: an error without a source location names its raiser. */
+    terminalStack?: string[];
     statements: { attempted: number; refused: number };
     refusals: SurveyRefusal[];
     classes: SurveyClass[];
@@ -231,7 +233,7 @@ export class SurveyCollector {
         return symbol ? attempt.declarations.get(symbol) : undefined;
     }
 
-    public report(terminal?: string): SurveyReport {
+    public report(terminal?: Error): SurveyReport {
         const merged = new Map<string, Census>();
         let attempted = 0;
         for (const attempt of this.realms.values()) {
@@ -278,7 +280,16 @@ export class SurveyCollector {
         return {
             schemaVersion: 1,
             complete: terminal === undefined,
-            ...(terminal === undefined ? {} : { terminal }),
+            ...(terminal === undefined
+                ? {}
+                : {
+                      terminal: terminal.message,
+                      terminalStack: (terminal.stack ?? "")
+                          .split("\n")
+                          .map((line) => line.trim())
+                          .filter((line) => line.startsWith("at "))
+                          .slice(0, 12),
+                  }),
             statements: {
                 attempted,
                 refused: refusals.reduce(

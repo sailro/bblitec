@@ -247,6 +247,10 @@ test("an error outside statement lowering ends the survey as incomplete", () => 
     assert.equal(result, undefined);
     assert.match(report.terminal ?? "", /built-in/);
     assert.deepEqual(report.refusals, []);
+    // The frames name the raiser of a refusal that carries no source location.
+    const frames = report.terminalStack ?? [];
+    assert.ok(frames.length > 0 && frames.length <= 12);
+    assert.ok(frames.every((frame) => frame.startsWith("at ")));
 });
 
 test("a site refusal decided after lowering is recorded against its statement", () => {
