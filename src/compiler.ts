@@ -815,15 +815,35 @@ function compileSourceApplication(
             } else return false;
             return true;
         };
-        // A second storage demand no plan foresaw starts a discarded planning
-        // attempt, which collects the demands past it; demands the last plan
-        // lacked plan again, to a fixed point. A plan that found no more
-        // than the next strict attempt would doubles the demands the next
-        // one waits for.
+        const addPlanned = (planner: StorageDemandPlanner): number =>
+            planner.demands.filter(
+                (demand) =>
+                    !storage.joinsAlreadyHeld(demand) && storage.add(demand),
+            ).length;
+        // Once a storage demand restarted the realm, every attempt outside a
+        // survey is a plan: it goes on past the demands later statements do
+        // not read, so one attempt meets a run of them, and a plan that
+        // lowered every statement is the compile. A plan that adds no demand
+        // leaves the next attempt to strict lowering. A survey's attempts
+        // are always strict: there a second demand no plan foresaw starts a
+        // discarded plan, and a plan that found no more than the next strict
+        // attempt would doubles the demands the next one waits for.
+        let planning = false;
         let unplanned = 0;
         let interval = 2;
         for (;;) {
             const started = performance.now();
+            if (planning) {
+                const planner = new StorageDemandPlanner(input.checker);
+                try {
+                    const planned = planner.run(() => lower(planner));
+                    if (planned) return planned;
+                } catch (planningError) {
+                    if (!acceptReplay(planningError)) throw planningError;
+                }
+                planning = addPlanned(planner) > 0;
+                continue;
+            }
             try {
                 return survey
                     ? survey.attempt(input.sourceFile.fileName, lower)
@@ -832,36 +852,27 @@ function compileSourceApplication(
                 if (!acceptReplay(error)) throw error;
                 if (
                     !(error instanceof StorageDemand) ||
-                    !storageDemandPlanningEnabled() ||
-                    ++unplanned < interval
+                    !storageDemandPlanningEnabled()
                 )
                     continue;
+                if (!survey) {
+                    planning = true;
+                    continue;
+                }
+                if (++unplanned < interval) continue;
                 unplanned = 0;
                 // A plan may lower as much as two strict attempts.
                 const planner = new StorageDemandPlanner(
                     input.checker,
                     2 * (performance.now() - started),
-                    survey !== undefined,
+                    true,
                 );
-                // A plan that rolled a statement back is discarded: the next
-                // strict attempt owns its coverage realm, and a survey's
-                // attempts are always strict.
                 try {
-                    const planned = planner.run(() => {
-                        if (!survey) return lower(planner);
-                        newCompiler(planner).compile();
-                        return undefined;
-                    });
-                    if (planned) return planned;
+                    planner.run(() => newCompiler(planner).compile());
                 } catch (planningError) {
                     if (!acceptReplay(planningError)) throw planningError;
                 }
-                const added = planner.demands.filter(
-                    (demand) =>
-                        !storage.joinsAlreadyHeld(demand) &&
-                        storage.add(demand),
-                ).length;
-                interval = added > 1 ? 2 : 2 * interval;
+                interval = addPlanned(planner) > 1 ? 2 : 2 * interval;
             }
         }
     };
@@ -1218,7 +1229,7 @@ class Compiler implements LoweringServices {
             new ClassHierarchy(checker, program),
             options.workers !== undefined,
             storage,
-            planner && ((demand) => planner.planJoin(demand)),
+            planner && ((request) => planner.planDemand(request)),
         );
         this.dataLowerer = new DataLowerer(this);
         this.classLowerer = new ClassLowerer(this);

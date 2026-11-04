@@ -58,11 +58,11 @@ test("planning meets each generic signature where strict lowering does and prese
         coverage.run(() => compileSource(source)),
     );
     assert.deepEqual(planned.result, baseline.result);
-    // Each call's signature rolls its statement back; strict lowering could
-    // meet the next signature inside that call first, so a plan collects one
-    // and ends at the next: no more attempts than strict lowering.
-    assert.equal(planned.collected, 1);
-    assert.equal(planned.departed, 1);
+    // Each call's signature rolls its statement back; strict lowering
+    // could meet the next signature inside that call first, so each plan
+    // collects one and ends at the next: no more attempts than strict.
+    assert.equal(planned.collected, 6);
+    assert.equal(planned.departed, 5);
     assert.equal(planned.constructions, baseline.constructions);
     assert.ok(
         coverage
@@ -97,9 +97,10 @@ test("a plan that lowers every statement is the published compile", () => {
     );
     assert.deepEqual(planned.result, baseline.result);
     assert.deepEqual(plannedCoverage.report(), baselineCoverage.report());
-    // The plan met no demand: no strict attempt lowers it again.
-    assert.equal(planned.planning, 1);
-    assert.equal(planned.collected, 0);
+    // The first plan meets the second signature; the second plan meets no
+    // demand and is the compile: no strict attempt lowers it again.
+    assert.equal(planned.planning, 2);
+    assert.equal(planned.collected, 1);
     assert.equal(planned.constructions, baseline.constructions);
 });
 
@@ -117,8 +118,10 @@ test("discarded writes and accessor arguments stop before dependent signatures",
         const baseline = measured(false, () => compileSource(source));
         const planned = measured(true, () => compileSource(source));
         assert.deepEqual(planned.result, baseline.result);
+        // One plan stops at the lost write; each plan collects one signature.
         assert.equal(planned.writes, 1);
-        assert.equal(planned.collected, 1);
+        assert.equal(planned.collected, 3);
+        assert.equal(planned.constructions, baseline.constructions);
         runGeneratedProgram(
             tools,
             `storage-demand-planner/writes-${index}`,
@@ -140,8 +143,8 @@ test("a rolled-back declaration stops planning at its dependent read", () => {
     const baseline = measured(false, () => compileSource(source));
     const planned = measured(true, () => compileSource(source));
     assert.deepEqual(planned.result, baseline.result);
-    assert.equal(planned.planning, 1);
     assert.equal(planned.dependent, 1);
+    assert.equal(planned.constructions, baseline.constructions);
 });
 
 test("survey and coverage publish only fresh strict attempts after planning refusal", () => {
@@ -184,8 +187,8 @@ test("planning goes on past declaration storage demands and stops at a lost writ
     `;
     const tools = optionalNativeFixtureTools(false);
     assert.ok(tools);
-    // Each statement declares only its own name: one plan collects the
-    // remaining presence and absence demands without changing strict output.
+    // Each statement declares only its own name: plans collect the remaining
+    // presence and absence demands without changing strict output.
     const independent =
         options +
         properties
@@ -198,7 +201,7 @@ test("planning goes on past declaration storage demands and stops at a lost writ
     const baseline = measured(false, () => compileSource(independent));
     const planned = measured(true, () => compileSource(independent));
     assert.deepEqual(planned.result, baseline.result);
-    assert.equal(planned.planning, 1);
+    assert.equal(planned.planning, 2);
     assert.ok(planned.collected >= 3);
     assert.ok(planned.constructions < baseline.constructions);
     runGeneratedProgram(
@@ -207,7 +210,8 @@ test("planning goes on past declaration storage demands and stops at a lost writ
         planned.result.cpp,
     );
     // A rolled-back statement's write loses `seen`: the next statement
-    // reading it ends discovery.
+    // reading it ends each plan's discovery, so every plan meets one demand,
+    // as many attempts as strict lowering takes.
     const counted =
         options +
         `let seen = 0;` +
@@ -218,9 +222,9 @@ test("planning goes on past declaration storage demands and stops at a lost writ
     const countedBaseline = measured(false, () => compileSource(counted));
     const countedPlanned = measured(true, () => compileSource(counted));
     assert.deepEqual(countedPlanned.result, countedBaseline.result);
-    assert.equal(countedPlanned.planning, 1);
-    assert.equal(countedPlanned.dependent, 1);
-    assert.equal(countedPlanned.collected, 1);
+    assert.equal(countedPlanned.dependent, 4);
+    assert.equal(countedPlanned.collected, 4);
+    assert.equal(countedPlanned.constructions, countedBaseline.constructions);
     runGeneratedProgram(
         tools,
         "storage-demand-planner/absence-tag-writes",
@@ -251,11 +255,11 @@ test("planning collects every record join one statement meets", () => {
     const baseline = measured(false, () => compileSource(source));
     const planned = measured(true, () => compileSource(source));
     assert.deepEqual(planned.result, baseline.result);
-    // Each join ends a strict attempt; the plan goes on with a copy.
+    // Each join ends a strict attempt; a plan goes on with a copy.
     assert.equal(baseline.constructions, 5);
-    assert.equal(planned.planning, 1);
-    assert.equal(planned.collected, 2);
-    assert.equal(planned.constructions, 4);
+    assert.equal(planned.planning, 2);
+    assert.equal(planned.collected, 3);
+    assert.equal(planned.constructions, 3);
     const tools = optionalNativeFixtureTools(false);
     assert.ok(tools);
     runGeneratedProgram(
@@ -372,6 +376,38 @@ test("past a rolled-back statement a plan collects only demands of a key", () =>
         demands: ["absence-tag", "absence-tag", "dynamic"],
         departed: 0,
     });
+});
+
+test("a plan goes on past an engine owner and meets the next store's", () => {
+    const source = `
+        interface A { readonly a: HTMLElement; }
+        interface B { readonly b: HTMLElement; }
+        interface C { readonly c: HTMLElement; }
+        interface D { readonly d: HTMLElement; }
+        const as: A[] = [];
+        const bs: B[] = [];
+        const cs: C[] = [];
+        const ds: D[] = [];
+        const root = document.createElement("div");
+        document.body.appendChild(root);
+        as.push({ a: root });
+        bs.push({ b: root });
+        cs.push({ c: root });
+        ds.push({ d: root });
+        as[0]!.a.classList.add("a");
+        bs[0]!.b.classList.add("b");
+        cs[0]!.c.classList.add("c");
+        ds[0]!.d.classList.add("open");
+    `;
+    const strict = measured(false, () => compileSource(source));
+    const planned = measured(true, () => compileSource(source));
+    assert.deepEqual(planned.result, strict.result);
+    // The worker realm, each field's owner, then the compile.
+    assert.equal(strict.constructions, 6);
+    // After the first owner one plan keeps the others' stores and meets
+    // all three; the next plan is the compile.
+    assert.equal(planned.collected, 3);
+    assert.equal(planned.constructions, 4);
 });
 
 test("a struct store demands every element field's engine owner in one replay", () => {

@@ -15,10 +15,7 @@ import {
     ParameterObjectStorageRequired,
 } from "./dynamic-binding-storage.js";
 import { GenericFunctionStorageRequired } from "./generic-function-storage.js";
-import {
-    NativeRecordStorageRequired,
-    type NativeRecordStorageDemand,
-} from "./native-record-storage.js";
+import { NativeRecordStorageRequired } from "./native-record-storage.js";
 import { SharedClassStorageRequired } from "./shared-class-storage.js";
 import { StorageDemand } from "./storage-demand.js";
 import {
@@ -80,6 +77,12 @@ class PlanningDependency extends Error {}
 class PlanningWrite extends Error {}
 class PlanningCollected extends Error {}
 class PlanningDeparted extends Error {}
+
+/** A demand a planning attempt's lowering goes on without (`planDemand`). */
+export type PlannedDemand = Extract<
+    StorageRequest,
+    { kind: "record" | "engine-owner" }
+>;
 
 /** A native generic call asks for its signature before lowering arguments or invoking it. */
 function independentGenericCall(
@@ -194,13 +197,14 @@ function rolledBackWrites(
 }
 
 /**
- * A bounded discarded emission collects storage demands at transaction boundaries.
+ * A discarded emission collects storage demands at transaction boundaries,
+ * bounded unless it is the compile's attempt (`complete`).
  * Its compiler reads frozen seed demands; new demands are applied only to a fresh
- * strict compiler. A demand rolls back its statement, whose written names are
- * lost to later statements, except a record join, which lowering goes on
- * without (`planJoin`). Ordinary refusals end discovery, including
- * lost-binding cascades, except in a survey, whose strict attempts roll the
- * refused statement back too. Past a rolled-back statement, which may have
+ * compiler. A demand rolls back its statement, whose written names are
+ * lost to later statements, except a record join or a resource's engine
+ * owner, which lowering goes on without (`planDemand`). Ordinary refusals
+ * end discovery, including lost-binding cascades, except in a survey, whose
+ * strict attempts roll the refused statement back too. Past a rolled-back statement, which may have
  * met a demand first at its own site, a plan collects only demands of a key
  * (`demandsKeyOnly`); a survey's collects every demand.
  */
@@ -226,30 +230,43 @@ export class StorageDemandPlanner {
     /** @unjournaled Whether a statement was rolled back: later demands may differ from strict lowering's. */
     private rolledBack = false;
     /**
-     * @unjournaled A join was planned as a copy: a later demand of this
-     * attempt may follow from that copy, so only joins are collected.
+     * @unjournaled The kind of demand lowering went on without (a join stored
+     * as a copy, a resource stored without its engine owner): a later demand
+     * of this attempt may follow from it, so only that kind is collected.
      */
-    private copied = false;
+    private wentOn?: PlannedDemand["kind"];
     private readonly deadline: number;
+    private readonly statementLimit: number;
 
     /**
      * `budget`: milliseconds the attempt may lower for, at least ten
-     * seconds; `survey`: whether it plans a survey's strict attempts.
+     * seconds, or undefined for a plan that is the compile's attempt and
+     * lowers as far as it can; `survey`: whether it plans a survey's strict
+     * attempts.
      */
     public constructor(
         checker: ts.TypeChecker,
-        budget = 0,
+        budget?: number,
         private readonly survey = false,
     ) {
         this.collected = new ReplayStorage(checker);
-        this.deadline = performance.now() + Math.max(10000, budget);
+        this.deadline =
+            budget === undefined
+                ? Infinity
+                : performance.now() + Math.max(10000, budget);
+        this.statementLimit = budget === undefined ? Infinity : 10000;
     }
 
-    /** A record join lowering goes on without, storing a copy. */
-    public planJoin(demand: NativeRecordStorageDemand): void {
-        this.requireStrictSite([{ kind: "record", demand }]);
-        this.copied = true;
-        this.collect({ kind: "record", demand });
+    /**
+     * A demand lowering goes on without: a record join stores a copy, a
+     * resource keeps the storage it has.
+     */
+    public planDemand(request: PlannedDemand): void {
+        if (this.wentOn !== undefined && this.wentOn !== request.kind)
+            throw new PlanningWrite();
+        this.requireStrictSite([request]);
+        this.wentOn = request.kind;
+        this.collect(request);
     }
 
     /**
@@ -270,7 +287,7 @@ export class StorageDemandPlanner {
             return work();
         } catch (error) {
             if (error instanceof StorageDemand) {
-                if (this.copied) return undefined;
+                if (this.wentOn) return undefined;
                 if (this.metAtStrictSite(error.requests))
                     for (const request of error.requests) this.collect(request);
                 else statistics.departed++;
@@ -296,7 +313,7 @@ export class StorageDemandPlanner {
         lower: () => void,
     ): void {
         if (
-            ++this.statements > 10000 ||
+            ++this.statements > this.statementLimit ||
             this.demands.length >= 256 ||
             performance.now() > this.deadline
         )
@@ -349,7 +366,7 @@ export class StorageDemandPlanner {
                 return;
             }
             if (!(error instanceof StorageDemand)) throw error;
-            if (this.copied) throw new PlanningWrite();
+            if (this.wentOn) throw new PlanningWrite();
             this.requireStrictSite(error.requests);
             for (const request of error.requests) this.collect(request);
             // An ownership change can reach what later statements read. A
