@@ -127,6 +127,7 @@ import type { UiProjection } from "./ui-projection.js";
 import { withLiteralSelfBinding } from "./home-object-methods.js";
 import { emitSharedCell, sharedCellCpp } from "./shared-cells.js";
 import {
+    assignsOnlyConstructedEvents,
     inferPromiseRejectStorage,
     inferUninitializedStorage,
 } from "./uninitialized-handle.js";
@@ -779,6 +780,16 @@ export class DeclarationLowerer {
             });
             return;
         }
+        if (
+            dataType.kind === "borrowed-platform-event" &&
+            declaration &&
+            assignsOnlyConstructedEvents(
+                declaration,
+                this.context.checker,
+                (expression) => this.context.libraryGlobal(expression),
+            )
+        )
+            dataType = { kind: "handle", handle: "dom-event" };
         if (dataType.kind === "borrowed-platform-event") {
             this.context.fail(
                 name,

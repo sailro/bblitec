@@ -4,6 +4,8 @@ import {
     absenceOf,
     absenceOfNull,
     jsonAbsenceCpp,
+    optionalPresentCpp,
+    optionalValueCpp,
     valueDataType,
 } from "../values/model.js";
 import { isHandleKind } from "../data-types/handles.js";
@@ -126,6 +128,39 @@ function ownedDocument(
     return `([&]() { bbl::js::JsonValue::Object own; ${stores.join(" ")} return bbl::js::JsonValue::from_object(std::move(own)); }())`;
 }
 
+/**
+ * A DOM target a document holds, boxed by its identity (a synthetic event's
+ * `relatedTarget`); an absent one is `null`.
+ */
+function jsonDomTarget(
+    lowerer: DataSinkHost,
+    value: Value,
+    node: ts.Node,
+): string | undefined {
+    const type =
+        value.dataType?.kind === "optional"
+            ? value.dataType.inner
+            : value.dataType;
+    if (
+        value.kind !== "ui-element" &&
+        type?.kind !== "event-target" &&
+        !(type?.kind === "handle" && type.handle === "ui-element")
+    )
+        return undefined;
+    if (value.dataType?.kind !== "optional")
+        return `bbl::js::json_value(${eventTargetCpp(lowerer.context, value, node)})`;
+    const slot = lowerer.context.bindings.pinValueToTemporary(
+        value,
+        "json_target",
+    );
+    const present = lowerer.leafValue(optionalValueCpp(slot.cpp), type!);
+    const engined =
+        value.engineCpp !== undefined
+            ? { ...present, engineCpp: value.engineCpp }
+            : present;
+    return `(${optionalPresentCpp(slot.cpp)} ? bbl::js::json_value(${eventTargetCpp(lowerer.context, engined, node)}) : ${jsonAbsenceCpp("null")})`;
+}
+
 function valueJson(
     _dataType: DataType<"json">,
     lowerer: DataSinkHost,
@@ -224,6 +259,8 @@ function valueJson(
             );
     }
     if (value.kind === "json-null") return jsonAbsenceCpp(absenceOfNull(value));
+    const domTarget = jsonDomTarget(lowerer, value, node);
+    if (domTarget !== undefined) return domTarget;
     if (value.kind === "record" && !value.cpp) {
         const owned = ownedDocument(lowerer, value, node);
         if (owned !== undefined) return owned;

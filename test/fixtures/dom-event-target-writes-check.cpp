@@ -43,6 +43,21 @@ int main() try {
               "the current target is not the bubbled target");
         check(ui_get_attribute(engine, origin, "data-last") == "self",
               "the last click wrote through its current target");
+        // The detached capture's event went to the document; the button is connected.
+        check(ui_get_attribute(engine, origin, "data-connected1") == "false",
+              "a detached element is not connected");
+        check(ui_get_attribute(engine, origin, "data-connected2") == "true",
+              "a connected element is");
+        check(ui_get_attribute(engine, origin, "data-cancelled") == "document",
+              "the document received the detached target's event");
+        check(ui_get_attribute(engine, origin, "data-downs") == "2",
+              "both constructed events reached the button");
+        check(ui_get_attribute(engine, origin, "data-related-first") == "none",
+              "a constructed event without a related target has none");
+        check(ui_get_attribute(engine, origin, "data-related") == "previous",
+              "a constructed event carries its related target");
+        check(ui_get_attribute(engine, origin, "data-client") == "3",
+              "an init typed as the platform dictionary sets its fields");
 
         pal::UiRmlRuntime runtime(engine, window, 640, 480);
         const auto update = [&](double milliseconds) {

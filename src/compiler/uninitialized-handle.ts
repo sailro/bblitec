@@ -73,6 +73,49 @@ export function inferPromiseRejectStorage(
  * handle or the same record (`let pose; try { pose = format(world); } catch
  * { ... } use(pose.x)`), assigned where the source assigns it.
  */
+/**
+ * Whether every assignment to `let name: Event;` constructs the event it
+ * stores (`new MouseEvent(...)`): the binding owns that synthetic event, not
+ * one a platform callback lends.
+ */
+export function assignsOnlyConstructedEvents(
+    declaration: ts.VariableDeclaration,
+    checker: ts.TypeChecker,
+    libraryGlobal: (expression: ts.Expression) => string | undefined,
+): boolean {
+    if (declaration.initializer || !ts.isIdentifier(declaration.name))
+        return false;
+    const symbol = declaredSymbol(checker, declaration.name);
+    if (!symbol) return false;
+    let writes = 0;
+    let constructed = true;
+    const visit = (node: ts.Node): void => {
+        if (!constructed) return;
+        if (
+            ts.isBinaryExpression(node) &&
+            node.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
+            ts.isIdentifier(node.left) &&
+            declaredSymbol(checker, node.left) === symbol
+        ) {
+            writes++;
+            const right = node.right;
+            constructed =
+                ts.isNewExpression(right) &&
+                ["Event", "MouseEvent", "PointerEvent", "InputEvent"].includes(
+                    libraryGlobal(right.expression) ?? "",
+                );
+        }
+        ts.forEachChild(node, visit);
+    };
+    visit(
+        ts.findAncestor(
+            declaration,
+            (node) => ts.isFunctionLike(node) || ts.isSourceFile(node),
+        )!,
+    );
+    return constructed && writes > 0;
+}
+
 export function inferUninitializedStorage(
     declaration: ts.VariableDeclaration,
     checker: ts.TypeChecker,

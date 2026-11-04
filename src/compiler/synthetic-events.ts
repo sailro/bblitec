@@ -4,7 +4,7 @@ import type { LoweringServices } from "./lowering-services.js";
 import type { Value } from "./types.js";
 import { domTargetIdentity } from "./dom-targets.js";
 import { jsonAbsenceCpp } from "./values/model.js";
-import { namedMember } from "./symbols.js";
+import { declaredInDomLibrary, namedMember } from "./symbols.js";
 
 type Context = Pick<
     LoweringServices,
@@ -21,6 +21,7 @@ type Context = Pick<
     | "requireDefaultEngine"
     | "defaultEngine"
     | "options"
+    | "cppString"
 >;
 
 const options = {
@@ -38,6 +39,7 @@ const options = {
         "shiftKey",
         "altKey",
         "metaKey",
+        "relatedTarget",
     ],
     PointerEvent: ["pointerId", "pointerType", "isPrimary", "pressure"],
     InputEvent: ["data", "inputType", "isComposing"],
@@ -65,6 +67,10 @@ export function compileSyntheticEventConstructor(
     if (name !== "Event") for (const key of options[name]) allowed.add(key);
     if (name === "PointerEvent")
         for (const key of options.MouseEvent) allowed.add(key);
+    // An optional field the platform's init dictionary declares may be
+    // absent at run time (an init typed `MouseEventInit`): the event
+    // refuses it there only when present.
+    let deferred = false;
     if (args[1]) {
         const type = context.checker.getNonNullableType(
             context.checker.getTypeAtLocation(args[1]),
@@ -75,6 +81,14 @@ export function compileSyntheticEventConstructor(
                 "Synthetic event options require represented named fields.",
             );
         for (const property of type.getProperties()) {
+            if (
+                !allowed.has(property.name) &&
+                (property.flags & ts.SymbolFlags.Optional) !== 0 &&
+                declaredInDomLibrary(property)
+            ) {
+                deferred = true;
+                continue;
+            }
             if (!allowed.has(property.name))
                 context.fail(
                     args[1],
@@ -104,9 +118,19 @@ export function compileSyntheticEventConstructor(
             kind: "string",
         }),
     });
-    const init = args[1]
+    const compiled = args[1]
         ? context.dataLowerer.compileForSink(args[1], { kind: "json" })
         : jsonAbsenceCpp("undefined");
+    let init = compiled;
+    if (deferred) {
+        init = context.allocateTemporaryCppName("event_init");
+        context.emit({
+            kind: "declaration",
+            type: "const auto",
+            name: init,
+            initializer: `bbl::require_event_options(${compiled}, ${context.cppString(name)}, {${[...allowed].map((key) => context.cppString(key)).join(", ")}})`,
+        });
+    }
     const kind = name === "Event" ? "Event" : name.slice(0, -5);
     return {
         kind: "dom-event",

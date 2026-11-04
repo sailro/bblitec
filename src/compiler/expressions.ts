@@ -5852,6 +5852,7 @@ export class ExpressionLowerer {
             conditionalType?.kind === "set" ||
             conditionalType?.kind === "map" ||
             conditionalType?.kind === "json" ||
+            conditionalType?.kind === "event-target" ||
             (conditionalType?.kind === "struct" &&
                 this.context.dataTypes.isReferenceStruct(conditionalType.name))
         ) {

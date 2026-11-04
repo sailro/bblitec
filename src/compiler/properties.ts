@@ -2439,6 +2439,16 @@ export class PropertyAccessLowerer {
                 dataType: { kind: "handle", handle: "ui-element" },
             };
         }
+        // A Node's connection: the checker has ruled out the Window.
+        if (
+            owner.dataType?.kind === "event-target" &&
+            property === "isConnected"
+        )
+            return {
+                kind: "boolean",
+                cpp: `bbl::dom_target_is_connected(${eventTargetCpp(this.context, owner, expression.expression)})`,
+                impure: true,
+            };
         if (
             owner.dataType?.kind === "event-target" &&
             isAbsentWindowMember(property)
