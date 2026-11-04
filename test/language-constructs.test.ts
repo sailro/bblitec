@@ -3194,6 +3194,25 @@ check(
 `,
 );
 
+test("Object.is reads a static NaN or infinite operand beside a call", async (t) => {
+    const source = `
+        const missing = NaN;
+        let calls = 0;
+        function read(): number { calls++; return Number("x" + calls); }
+        if (!Object.is(read(), missing)) throw new Error("NaN is NaN");
+        if (Object.is(missing, 0) || !Object.is(-Infinity, -1 / 0)) throw new Error("static operands");
+        if (calls !== 1) throw new Error("operand order");
+    `;
+    runInNewContext(
+        ts.transpileModule(source, {
+            compilerOptions: { target: ts.ScriptTarget.ES2022 },
+        }).outputText,
+    );
+    const result = compileSource(source);
+    assert.match(result.cpp, /quiet_NaN/);
+    await executeGeneratedAssertions(t, "object-is-nan", result.cpp);
+});
+
 test("arms that type one field with records of their own each hold their record", async (t) => {
     // Two arms give `host` different records and a third lacks it; values
     // come back through a reassigned function slot, whose signature needs

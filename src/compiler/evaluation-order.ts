@@ -44,7 +44,7 @@ import {
     namedMember,
     accessedPropertySymbol,
 } from "./symbols.js";
-import { doubleLiteral } from "../cpp-literals.js";
+import { doubleCpp } from "../cpp-literals.js";
 import type { LoweringServices } from "./lowering-services.js";
 import { readsNativeStorage, snapshotReadCpp, type Value } from "./types.js";
 import { isRebound } from "./binding-rebinds.js";
@@ -2353,7 +2353,7 @@ export function readScalarOperand(
     // later consumers still inspect that storage's presence or active arm.
     const representation = value.dataType?.kind ?? value.kind;
     if (representation === "number" && value.staticNumber !== undefined)
-        return { ...value, cpp: doubleLiteral(value.staticNumber) };
+        return { ...value, cpp: doubleCpp(value.staticNumber) };
     if (representation === "boolean" && value.staticBoolean !== undefined)
         return { ...value, cpp: value.staticBoolean ? "true" : "false" };
     if (representation === "string" && value.staticString !== undefined)
