@@ -161,9 +161,9 @@ int main() {
             ui_set_attribute(engine, handle, "style", style);
             return handle;
         };
-        const auto column = make(
-            "position:fixed;top:10px;right:18px;display:flex;flex-direction:column;"
-            "align-items:center;padding:14px 20px;box-sizing:border-box;");
+        const auto column =
+            make("position:fixed;top:10px;right:18px;display:flex;flex-direction:column;"
+                 "align-items:center;padding:14px 20px;box-sizing:border-box;");
         const auto column_inner =
             make("width:100%;display:flex;flex-direction:column;align-items:center;");
         const auto column_title = make("padding:7px 26px;min-width:0;");
@@ -178,7 +178,8 @@ int main() {
         ui_append_child(engine, column_inner, column_fields);
         ui_append_child(engine, column, column_inner);
         ui_append_to_root(engine, column);
-        const auto shrink_row = make("position:fixed;top:200px;right:18px;display:flex;align-items:start;");
+        const auto shrink_row =
+            make("position:fixed;top:200px;right:18px;display:flex;align-items:start;");
         const auto half = make("width:50%;padding:0 5%;");
         ui_append_child(engine, half, make("width:100px;height:10px;"));
         const auto rest = make("");
@@ -209,15 +210,15 @@ int main() {
         // An item's percentage min/max widths resolve against its flex container, not against the
         // zero base its own shrink-to-fit measurement sees.
         const auto clamped = [&](const char* panel_style, const char* item_style, int content) {
-            const auto clamped_panel = make(
-                (std::string("position:fixed;top:300px;right:18px;width:356px;display:flex;"
-                             "padding:14px 28px;box-sizing:border-box;") +
-                 panel_style)
-                    .c_str());
+            const auto clamped_panel =
+                make((std::string("position:fixed;top:300px;right:18px;width:356px;display:flex;"
+                                  "padding:14px 28px;box-sizing:border-box;") +
+                      panel_style)
+                         .c_str());
             const auto clamped_inner =
                 make("width:100%;display:flex;flex-direction:column;align-items:center;");
             const auto item = make((std::string("padding:7px 26px;border:10px solid transparent;"
-                                                 "box-sizing:border-box;min-width:0;") +
+                                                "box-sizing:border-box;min-width:0;") +
                                     item_style)
                                        .c_str());
             ui_append_child(engine, item,
@@ -227,14 +228,17 @@ int main() {
             ui_append_to_root(engine, clamped_panel);
             return item;
         };
-        const auto fits = clamped("flex-direction:column;align-items:center;", "max-width:100%;", 150);
-        const auto wide = clamped("flex-direction:column;align-items:center;", "max-width:100%;", 400);
-        const auto calc =
-            clamped("flex-direction:column;align-items:center;", "max-width:calc(100% - 52px);", 400);
-        const auto minimum = clamped("flex-direction:column;align-items:center;", "min-width:400px;", 150);
-        const auto row_panel = make(
-            "position:fixed;top:360px;right:18px;width:356px;display:flex;align-items:start;"
-            "padding:14px 28px;box-sizing:border-box;");
+        const auto fits =
+            clamped("flex-direction:column;align-items:center;", "max-width:100%;", 150);
+        const auto wide =
+            clamped("flex-direction:column;align-items:center;", "max-width:100%;", 400);
+        const auto calc = clamped("flex-direction:column;align-items:center;",
+                                  "max-width:calc(100% - 52px);", 400);
+        const auto minimum =
+            clamped("flex-direction:column;align-items:center;", "min-width:400px;", 150);
+        const auto row_panel =
+            make("position:fixed;top:360px;right:18px;width:356px;display:flex;align-items:start;"
+                 "padding:14px 28px;box-sizing:border-box;");
         const auto row_max = make("max-width:50%;");
         ui_append_child(engine, row_max, make("width:400px;height:10px;"));
         ui_append_child(engine, row_panel, row_max);
@@ -257,21 +261,30 @@ int main() {
         const std::vector<Contribution> contributions{
             {"growable zero bases", "", {{"flex:1;", 100}, {"flex:1;", 60}}, 160},
             {"a fixed percentage basis", "", {{"flex:0 0 50%;", 100}, {"", 60}}, 160},
-            {"zero bases and a gap", "column-gap:10px;", {{"flex:1 1 0px;", 100}, {"flex:1 1 0px;", 60}}, 170},
+            {"zero bases and a gap",
+             "column-gap:10px;",
+             {{"flex:1 1 0px;", 100}, {"flex:1 1 0px;", 60}},
+             170},
             {"an inflexible basis floors and caps", "", {{"flex:0 0 200px;", 100}}, 200},
             {"a definite width caps an inflexible item", "", {{"width:50px;", 100}}, 50},
             {"a maximum width clamps", "", {{"max-width:50px;", 100}}, 50},
-            {"edges add to the contribution", "", {{"margin:0 7px;padding:0 3px;flex:1;", 100}}, 120},
+            {"edges add to the contribution",
+             "",
+             {{"margin:0 7px;padding:0 3px;flex:1;", 100}},
+             120},
         };
         std::vector<UiElementHandle> rows;
         for (const auto& contribution : contributions) {
-            const auto measured_row = make(
-                (std::string("position:fixed;top:300px;right:18px;display:flex;align-items:start;") +
-                 contribution.row).c_str());
+            const auto measured_row =
+                make((std::string(
+                          "position:fixed;top:300px;right:18px;display:flex;align-items:start;") +
+                      contribution.row)
+                         .c_str());
             for (const auto& [style, content] : contribution.items) {
                 const auto item = make(style);
-                ui_append_child(engine, item,
-                                make(("width:" + std::to_string(content) + "px;height:10px;").c_str()));
+                ui_append_child(
+                    engine, item,
+                    make(("width:" + std::to_string(content) + "px;height:10px;").c_str()));
                 ui_append_child(engine, measured_row, item);
             }
             ui_append_to_root(engine, measured_row);
@@ -281,7 +294,8 @@ int main() {
         for (size_t index = 0; index < rows.size(); ++index)
             measured(rows[index], contributions[index].width, contributions[index].label);
         // Without automatic minimums the items share the measured width.
-        const auto zero_minimums = make("position:fixed;top:400px;right:18px;display:flex;align-items:start;");
+        const auto zero_minimums =
+            make("position:fixed;top:400px;right:18px;display:flex;align-items:start;");
         std::vector<UiElementHandle> shared;
         for (const int content : {100, 60}) {
             shared.push_back(make("flex:1 1 0px;min-width:0;"));
