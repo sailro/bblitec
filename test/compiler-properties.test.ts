@@ -215,6 +215,30 @@ test("names the same camera fields for reads and both write paths", () => {
     assert.match(result.cpp, /bbl::create_box\([^;]*angular_sensibility/);
 });
 
+test("writes an arc-rotate camera's inertial offsets and panning inertia", () => {
+    // The pinned controls apply and decay these per frame; a program that
+    // stops the camera clears them.
+    const result = compileSource(
+        sceneWithCamera(`
+            camera.inertialAlphaOffset = 0;
+            camera.inertialBetaOffset = 0;
+            camera.inertialRadiusOffset = 0;
+            camera.inertialPanningX = 0;
+            camera.inertialPanningY = 0;
+            camera.panningInertia = camera.inertia * 0.5;
+        `),
+    );
+    for (const field of [
+        "inertial_alpha_offset",
+        "inertial_beta_offset",
+        "inertial_radius_offset",
+        "inertial_panning_x",
+        "inertial_panning_y",
+    ])
+        assert.match(result.cpp, new RegExp(`\\.${field} = 0\\.0;`), field);
+    assert.match(result.cpp, /\.panning_inertia = [^;]*\.inertia \* 0\.5/);
+});
+
 test("keeps the raw GPU device closed outside the matrix upload helper", () => {
     assert.throws(
         () =>

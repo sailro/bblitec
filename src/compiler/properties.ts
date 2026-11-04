@@ -1055,6 +1055,42 @@ export const propertyRules: readonly PropertyRule[] = [
     },
     {
         owner: "camera",
+        property: "panningInertia",
+        value: "number",
+        record: ["cameras", "panning_inertia"],
+    },
+    {
+        owner: "camera",
+        property: "inertialAlphaOffset",
+        value: "number",
+        record: ["cameras", "inertial_alpha_offset"],
+    },
+    {
+        owner: "camera",
+        property: "inertialBetaOffset",
+        value: "number",
+        record: ["cameras", "inertial_beta_offset"],
+    },
+    {
+        owner: "camera",
+        property: "inertialRadiusOffset",
+        value: "number",
+        record: ["cameras", "inertial_radius_offset"],
+    },
+    {
+        owner: "camera",
+        property: "inertialPanningX",
+        value: "number",
+        record: ["cameras", "inertial_panning_x"],
+    },
+    {
+        owner: "camera",
+        property: "inertialPanningY",
+        value: "number",
+        record: ["cameras", "inertial_panning_y"],
+    },
+    {
+        owner: "camera",
         property: "_yaw",
         value: "number",
         record: ["cameras", "free_yaw"],
