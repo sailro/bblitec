@@ -13299,6 +13299,24 @@ check(
 `,
 );
 
+check(
+    "discriminated-union-with-an-intersection-arm",
+    `
+    interface Moved { created?: readonly number[]; anchors?: readonly (readonly [number, number, number])[] }
+    type Outcome = ({ committed: true } & Moved) | { committed: false; refusal: { owner: string; reason: "a" | "b" } };
+    const done = (ids: number[]): Outcome => ({ committed: true, created: ids });
+    const refused = (owner: string): Outcome => ({ committed: false, refusal: { owner, reason: "a" } });
+    const results: Array<() => Outcome> = [() => done([1, 2]), () => refused("x")];
+    const text = results
+        .map((result) => {
+            const outcome = result();
+            return outcome.committed ? "c" + (outcome.created?.length ?? 0) : "r" + outcome.refusal.owner;
+        })
+        .join(",");
+    if (text !== "c2,rx") throw new Error("outcomes " + text);
+`,
+);
+
 test("a union with several function arms refuses a function value", () => {
     assert.throws(
         () =>

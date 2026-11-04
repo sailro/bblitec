@@ -144,6 +144,7 @@ import {
     classInstanceDeclaration,
     inheritsFrom,
     unionMembers,
+    objectLikeType,
     boundedTupleElements,
     tupleElements,
     fixedTupleElements,
@@ -5817,9 +5818,7 @@ export class DataTypeRegistry {
         // A tagged union whose arm field cannot map has no representation: the
         // common-field struct would hide that field and refuse at the literal
         // that spells it, far from the cause.
-        const object = members.every(
-            (member) => (member.flags & ts.TypeFlags.Object) !== 0,
-        )
+        const object = members.every(objectLikeType)
             ? this.mapRecursiveStruct(type, type.aliasSymbol?.name, (name) => {
                   const discriminated = this.fromDiscriminatedObjectUnion(
                       type,
@@ -6024,12 +6023,7 @@ export class DataTypeRegistry {
         node: ts.Node,
         name: string,
     ): DataType | undefined {
-        if (
-            type.types.length < 2 ||
-            type.types.some(
-                (member) => (member.flags & ts.TypeFlags.Object) === 0,
-            )
-        ) {
+        if (type.types.length < 2 || !type.types.every(objectLikeType)) {
             return undefined;
         }
         const propertiesByMember = type.types.map((member) =>
@@ -6247,12 +6241,7 @@ export class DataTypeRegistry {
               readonly grouped: boolean;
           }
         | undefined {
-        if (
-            type.types.length < 2 ||
-            type.types.some(
-                (member) => (member.flags & ts.TypeFlags.Object) === 0,
-            )
-        ) {
+        if (type.types.length < 2 || !type.types.every(objectLikeType)) {
             return undefined;
         }
         const propertiesByMember = type.types.map((member) =>
