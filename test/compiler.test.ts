@@ -14020,25 +14020,42 @@ test("refuses to erase an optional numeric mesh expando that is read", () => {
 });
 
 test("refuses to erase a DOM call on a receiver erasure cannot classify", () => {
-    for (const call of [
+    const program = (helper: string, call: string): string => `
+        import { createEngine, createSceneContext, registerScene, startEngine } from "@babylonjs/lite";
+        function active(): HTMLElement { return ${helper}; }
+        async function main() {
+            const engine = await createEngine({});
+            const scene = createSceneContext(engine);
+            ${call};
+            await registerScene(scene);
+            await startEngine(engine);
+        }
+        void main();
+    `;
+    const calls = [
         `active().style.setProperty("color", "red")`,
         `active().classList.add("busy")`,
-    ])
+    ];
+    // The focused element is native state: its style and classes are written.
+    const lowered = calls.map(
+        (call) =>
+            compileSource(
+                program("document.activeElement as HTMLElement", call),
+            ).cpp,
+    );
+    assert.match(
+        lowered[0]!,
+        /bbl::ui_set_style_property\([^;]*"color", "red"\)/,
+    );
+    assert.match(lowered[1]!, /bbl::ui_set_class\([^;]*"busy", true\)/);
+    // A value the program made is no element the call could act on.
+    for (const call of calls)
         assert.throws(
             () =>
-                compileSource(`
-                    import { createEngine, createSceneContext, registerScene, startEngine } from "@babylonjs/lite";
-                    function active(): HTMLElement { return document.activeElement as HTMLElement; }
-                    async function main() {
-                        const engine = await createEngine({});
-                        const scene = createSceneContext(engine);
-                        ${call};
-                        await registerScene(scene);
-                        await startEngine(engine);
-                    }
-                    void main();
-                `),
-            /would erase on a receiver that is not browser state/,
+                compileSource(
+                    program(`({ id: "x" } as unknown) as HTMLElement`, call),
+                ),
+            /A DOM helper must return a retained element/,
         );
 });
 
