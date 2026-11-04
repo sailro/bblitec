@@ -478,6 +478,13 @@
       "variants": ["all"]
     },
     {
+      "library": "rmlui",
+      "file": "native/patches/rmlui/0063-shrink-to-fit-percentage-limits.patch",
+      "purpose": "percentage min/max widths are cyclic in a shrink-to-fit width; column flex items clamp by them",
+      "upstream": { "state": "unsubmitted" },
+      "variants": ["all"]
+    },
+    {
       "library": "dawn",
       "file": "native/patches/dawn/0001-android-surface-loss.patch",
       "purpose": "Report Android Vulkan surface loss at the next acquisition without losing the device",

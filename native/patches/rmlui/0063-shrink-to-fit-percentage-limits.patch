@@ -1,0 +1,49 @@
+A block box's own percentage min/max widths resolved against a zero base inside its shrink-to-fit width, so
+max-width: 100% clamped the measured content to nothing. They are cyclic there and now behave as zero and none
+(CSS Sizing 3 5.2.1). A column flex item's hypothetical cross size clamps by its min/max widths, which resolve
+against the flex container, as a fit-content width does.
+
+diff --git a/Source/Core/Layout/BlockContainer.cpp b/Source/Core/Layout/BlockContainer.cpp
+index 48e9161..b84db97 100644
+--- a/Source/Core/Layout/BlockContainer.cpp
++++ b/Source/Core/Layout/BlockContainer.cpp
+@@ -370,12 +370,14 @@ void BlockContainer::PlaceQueuedFloats(float vertical_position)
+ 	}
+ }
+ 
++// The box's own percentage min/max widths are cyclic here: an indefinite base makes them zero and none (CSS Sizing 3
++// 5.2.1). Callers clamp the result by them against the box's containing block.
+ float BlockContainer::GetShrinkToFitWidth() const
+ {
+     if (element->IsInlineSizeContainer()) {
+         const auto& computed = element->GetComputedValues();
+         float minimum, maximum;
+-        LayoutDetails::GetMinMaxWidth(minimum, maximum, computed, box, 0.f);
++        LayoutDetails::GetMinMaxWidth(minimum, maximum, computed, box, -1.f);
+         return Math::Clamp(computed.width().type == Style::Width::Length ? box.GetSize().x : 0.f, minimum, maximum);
+     }
+ 	auto& computed = element->GetComputedValues();
+@@ -412,7 +414,7 @@ float BlockContainer::GetShrinkToFitWidth() const
+ 	}
+ 
+ 	float min_width, max_width;
+-	LayoutDetails::GetMinMaxWidth(min_width, max_width, computed, box, 0.f);
++	LayoutDetails::GetMinMaxWidth(min_width, max_width, computed, box, -1.f);
+ 	content_width = Math::Clamp(content_width, min_width, max_width);
+ 
+ 	return content_width;
+diff --git a/Source/Core/Layout/FlexFormattingContext.cpp b/Source/Core/Layout/FlexFormattingContext.cpp
+index e657fd7..2968e5e 100644
+--- a/Source/Core/Layout/FlexFormattingContext.cpp
++++ b/Source/Core/Layout/FlexFormattingContext.cpp
+@@ -933,8 +933,8 @@ void FlexFormattingContext::Format(Vector2f& flex_resulting_content_size, Vector
+ 				if (content_size.x < 0.0f)
+ 				{
+ 					item.box.SetContent(Vector2f(content_size.x, GetInnerUsedMainSize(item)));
+-					item.hypothetical_cross_size =
+-						LayoutDetails::GetShrinkToFitWidth(item.element, flex_content_containing_block, intrinsic_inline) + item.cross.sum_edges;
++					const float fit_width = LayoutDetails::GetShrinkToFitWidth(item.element, flex_content_containing_block, intrinsic_inline);
++					item.hypothetical_cross_size = Math::Clamp(fit_width, item.cross.min_size, item.cross.max_size) + item.cross.sum_edges;
+ 				}
+ 				else
+ 				{

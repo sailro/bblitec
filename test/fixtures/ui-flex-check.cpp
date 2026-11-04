@@ -205,6 +205,46 @@ int main() {
             std::fprintf(stderr, "row rest offset: actual %.2f; expected 96\n", rest_x);
             std::exit(1);
         }
+
+        // An item's percentage min/max widths resolve against its flex container, not against the
+        // zero base its own shrink-to-fit measurement sees.
+        const auto clamped = [&](const char* panel_style, const char* item_style, int content) {
+            const auto clamped_panel = make(
+                (std::string("position:fixed;top:300px;right:18px;width:356px;display:flex;"
+                             "padding:14px 28px;box-sizing:border-box;") +
+                 panel_style)
+                    .c_str());
+            const auto clamped_inner =
+                make("width:100%;display:flex;flex-direction:column;align-items:center;");
+            const auto item = make((std::string("padding:7px 26px;border:10px solid transparent;"
+                                                 "box-sizing:border-box;min-width:0;") +
+                                    item_style)
+                                       .c_str());
+            ui_append_child(engine, item,
+                            make(("width:" + std::to_string(content) + "px;height:10px;").c_str()));
+            ui_append_child(engine, clamped_inner, item);
+            ui_append_child(engine, clamped_panel, clamped_inner);
+            ui_append_to_root(engine, clamped_panel);
+            return item;
+        };
+        const auto fits = clamped("flex-direction:column;align-items:center;", "max-width:100%;", 150);
+        const auto wide = clamped("flex-direction:column;align-items:center;", "max-width:100%;", 400);
+        const auto calc =
+            clamped("flex-direction:column;align-items:center;", "max-width:calc(100% - 52px);", 400);
+        const auto minimum = clamped("flex-direction:column;align-items:center;", "min-width:400px;", 150);
+        const auto row_panel = make(
+            "position:fixed;top:360px;right:18px;width:356px;display:flex;align-items:start;"
+            "padding:14px 28px;box-sizing:border-box;");
+        const auto row_max = make("max-width:50%;");
+        ui_append_child(engine, row_max, make("width:400px;height:10px;"));
+        ui_append_child(engine, row_panel, row_max);
+        ui_append_to_root(engine, row_panel);
+        update();
+        measured(fits, 222, "a percentage maximum leaves fitting content alone");
+        measured(wide, 300, "a percentage maximum caps wide content at its container");
+        measured(calc, 248, "a percentage maximum in calc() resolves against its container");
+        measured(minimum, 400, "a minimum width wins over the available width");
+        measured(row_max, 150, "a row item's percentage maximum resolves against its row");
     }
     SDL_DestroyWindow(window);
     SDL_Quit();
