@@ -3970,9 +3970,18 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             case "handle":
                 return !staticOnly && value.kind === sink.handle;
             case "json":
+                // A dynamic value holds a scalar as the scalar's own sink does.
                 return (
                     value.kind === "json-null" ||
-                    (!staticOnly && isJsonValue(value))
+                    (!staticOnly && isJsonValue(value)) ||
+                    (["number", "boolean", "string"] as const).some((kind) =>
+                        this.knownValueFitsSink(
+                            value,
+                            { kind },
+                            node,
+                            staticOnly,
+                        ),
+                    )
                 );
             case "union":
                 return sink.members.some((member) =>
@@ -4259,13 +4268,18 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
     /**
      * The function a call reads from a union slot TypeScript narrowed to
      * its one function arm (`typeof f === "function" ? f() : f`). The call
-     * checks the arm it reads: any other is not callable (a TypeError).
+     * checks the arm it reads: any other is not callable (a TypeError). An
+     * optional slot so narrowed is present: the callee's type admits no
+     * absence.
      */
     public unionFunctionMember(
         value: Value,
         callee: ts.Expression,
     ): (Value & { dataType: DataType<"function"> }) | undefined {
-        const type = value.dataType;
+        const type =
+            value.dataType?.kind === "optional"
+                ? value.dataType.inner
+                : value.dataType;
         if (type?.kind !== "union") return undefined;
         const arms = type.members.flatMap((member, index) =>
             member.kind === "function" ? [{ member, index }] : [],
@@ -4282,10 +4296,14 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         )
             return undefined;
         this.context.reachJsData();
+        const present =
+            type === value.dataType
+                ? value
+                : this.presentOptionalValue(value, type);
         return {
             ...this.projectedNativeValue(
-                value,
-                `bbl::js::function_member<${arm.index}>(${value.cpp})`,
+                present,
+                `bbl::js::function_member<${arm.index}>(${present.cpp})`,
                 arm.member,
             ),
             dataType: arm.member,
@@ -5426,6 +5444,14 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 resultType.inner.kind === "enum"
             )
                 resultType = { kind: "optional", inner: { kind: "string" } };
+            // A readonly array selected from the union is its stored array,
+            // as a conditional's selected array is (a view would not outlive
+            // the select).
+            else if (resultType.kind === "span")
+                resultType =
+                    this.context.dataTypes.markStoredObjectReferences(
+                        resultType,
+                    );
             const present = this.compileKnownValueForSink(
                 this.leafValue(`(*${temp})`, inner),
                 resultType,
@@ -14747,9 +14773,10 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 const keyType = this.context.checker.getTypeAtLocation(
                     target.argumentExpression,
                 );
-                const possibleKeys = keyType.isUnion()
-                    ? stringLiteralValues(keyType)
-                    : undefined;
+                const possibleKeys =
+                    unionMembers(keyType).length > 1
+                        ? stringLiteralValues(keyType)
+                        : undefined;
                 const fields = this.context.dataTypes
                     .structFields(type.name, target, "accessors")
                     .filter(

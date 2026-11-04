@@ -1454,7 +1454,9 @@ function compileKnownDataMethod(
         const functionType = field?.type;
         if (
             field &&
-            functionType?.kind === "union" &&
+            (functionType?.kind === "union" ||
+                (functionType?.kind === "optional" &&
+                    functionType.inner.kind === "union")) &&
             dataType?.kind !== "optional" &&
             !field.accessor
         ) {

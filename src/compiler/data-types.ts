@@ -5953,13 +5953,21 @@ export class DataTypeRegistry {
         return this.tupleStorage(elements);
     }
 
-    /** Mixed scalar/object alternatives retain their own representation and identity. */
+    /**
+     * Mixed scalar/object alternatives retain their own representation and
+     * identity, as do a function and one object `typeof` tells apart (an
+     * array or its resolver).
+     */
     private readonly mixedUnionsInProgress = new EmissionSet<ts.Type>();
 
     private fromMixedUnion(
         type: ts.UnionType,
         node: ts.Node,
     ): DataType | undefined {
+        const callable = type.types.filter(
+            (member) =>
+                callSignatures(this.checker, member, "present").length > 0,
+        ).length;
         if (
             !type.types.some(
                 (member) =>
@@ -5969,6 +5977,7 @@ export class DataTypeRegistry {
                             ts.TypeFlags.BooleanLike)) !==
                     0,
             ) &&
+            !(type.types.length === 2 && callable === 1) &&
             !type.types.every(binaryLibraryClass) &&
             !type.types.every(
                 (member) => this.nativeHandleKind(member) !== undefined,
@@ -7088,12 +7097,14 @@ export class DataTypeRegistry {
         // another shape; the joined layout can then hold its null value.
         if (members.every((member) => (member.flags & ts.TypeFlags.Null) !== 0))
             return { kind: "null" };
-        // A field typed `object` holds dynamic values, as such a binding
-        // does (`dynamicJsonType`): the records it holds keep their identity.
+        // A field typed `object` or `unknown` holds dynamic values, as such a
+        // binding does (`dynamicJsonType`): the records it holds keep their
+        // identity.
         if (
+            (resolved.flags & ts.TypeFlags.Unknown) !== 0 ||
             (this.checker.getNonNullableType(resolved).flags &
                 ts.TypeFlags.NonPrimitive) !==
-            0
+                0
         )
             return { kind: "json" };
         if (!undefinedOnly(resolved)) {

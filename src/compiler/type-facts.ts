@@ -547,7 +547,7 @@ export function stringLiteralValues(
     type: ts.Type,
 ): ReadonlySet<string> | undefined {
     const values = new Set<string>();
-    for (const member of type.isUnion() ? type.types : [type]) {
+    for (const member of unionMembers(type)) {
         if (!member.isStringLiteral()) return undefined;
         values.add(member.value);
     }

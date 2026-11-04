@@ -13208,6 +13208,30 @@ check(
 `,
 );
 
+check(
+    "array-or-resolver-fields-and-unknown-fields",
+    `
+    interface Entry { id: number; view?: unknown }
+    interface Request { outline?: readonly Entry[] | (() => readonly Entry[]) }
+    // A stored closure reads the handler before its declaration runs.
+    let registered: ((request: Request) => number) | undefined;
+    const handlers: (() => void)[] = [() => { registered = count; }];
+    let live = 7;
+    const count = (request: Request): number => {
+        const o = request.outline;
+        const entries = typeof o === "function" ? o() : (o ?? []);
+        return entries.length * 10 + (entries[0]?.id ?? 0);
+    };
+    handlers[0]!();
+    const requests: Request[] = [{ outline: [{ id: 1, view: "a" }] }, { outline: () => [{ id: live }, { id: 2 }] }, {}];
+    live = 8;
+    const counts = requests.map((request) => registered!(request));
+    if (counts.join(",") !== "11,28,0") throw new Error("array or resolver " + counts.join(","));
+    const view = (requests[0]!.outline as readonly Entry[])[0]!.view;
+    if (typeof view !== "string" || view !== "a") throw new Error("unknown field");
+`,
+);
+
 test("a union with several function arms refuses a function value", () => {
     assert.throws(
         () =>
