@@ -176,10 +176,11 @@ export function cppOuterReads(source: string): ReadonlySet<string> {
         }
         if (token.kind === "identifier" && !token.qualified)
             names.add(token.text);
+        // A return type may spell a function type (`Callback<void()>`).
         if (returnType)
             returnType =
                 token.kind === "identifier" ||
-                ["::", "<", ">", ",", "*", "&"].includes(token.text);
+                ["::", "<", ">", ",", "*", "&", "(", ")"].includes(token.text);
         else if (lambdaHead && token.text === "->") returnType = true;
         lambdaHead =
             token.text === ")" ||
