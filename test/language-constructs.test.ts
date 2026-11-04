@@ -13282,6 +13282,23 @@ check(
 `,
 );
 
+check(
+    "spread-of-nullable-optional-fields",
+    `
+    // A spread reads whether each optional field is own; one admitting null
+    // keeps its absence apart from null.
+    interface Init { a?: number; target?: { id: number } | null; flag?: boolean }
+    const make = (extra: Init = {}) => {
+        const full: Init & { kind: string } = { kind: "p", ...extra };
+        return full;
+    };
+    const makers: Array<typeof make> = [make];
+    const rows = [makers[0]!(), makers[0]!({ a: 5, target: null }), makers[0]!({ target: { id: 2 } })];
+    const text = rows.map((r) => ("target" in r) + ":" + r.a + ":" + (r.target === null ? "null" : r.target?.id)).join(",");
+    if (text !== "false:undefined:undefined,true:5:null,true:undefined:2") throw new Error("presence " + text);
+`,
+);
+
 test("a union with several function arms refuses a function value", () => {
     assert.throws(
         () =>

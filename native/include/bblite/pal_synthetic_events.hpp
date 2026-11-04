@@ -81,18 +81,17 @@ public:
 };
 
 /**
- * An init dictionary typed wider than the represented fields (`MouseEventInit`): a present field
- * outside `represented` refuses, as generation does for one it sees.
+ * An init holding members its event's dictionary declares but the native event does not
+ * represent (`unrepresented`): one present refuses, as generation refuses one it sees.
  */
 [[nodiscard]] inline js::JsonValue
 require_event_options(js::JsonValue options, std::string_view event,
-                      std::initializer_list<std::string_view> represented) {
+                      std::initializer_list<std::string_view> unrepresented) {
     if (options.is_null() || options.is_undefined())
         return options;
-    for (const auto& key : options.own_keys())
-        if (std::find(represented.begin(), represented.end(), key) == represented.end() &&
-            !options.get(key).is_undefined())
-            throw std::runtime_error(std::string(event) + " option '" + key +
+    for (const auto key : unrepresented)
+        if (!options.get(key).is_undefined())
+            throw std::runtime_error(std::string(event) + " option '" + std::string(key) +
                                      "' is not represented.");
     return options;
 }

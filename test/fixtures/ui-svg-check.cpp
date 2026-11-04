@@ -26,6 +26,22 @@ int run_window_application(WorkerEntry initialize, EngineOptions) {
 
 int run() {
     using namespace bbl;
+    // A smooth curve reflects the previous segment's last control point about the current one.
+    const auto lowest_after = [](std::string_view data, double from) {
+        const auto lines = pal::ui_svg_path_polylines(data);
+        if (!lines)
+            throw std::runtime_error("SVG path flattening: " + std::string(data));
+        double lowest = 0;
+        for (const auto& point : lines->front())
+            if (point.x > from)
+                lowest = std::min(lowest, point.y);
+        return lowest;
+    };
+    const auto cubic = lowest_after("M0 0C0 10 10 10 10 0s10-10 10 0", 10);
+    const auto quadratic = lowest_after("M0 0Q5 10 10 0T20 0", 10);
+    if (cubic > -7 || cubic < -7.6 || quadratic > -4.5 || quadratic < -5.1)
+        throw std::runtime_error("SVG smooth curves: " + std::to_string(cubic) + ", " +
+                                 std::to_string(quadratic));
     assert(SDL_Init(SDL_INIT_VIDEO));
     SDL_Window* window = SDL_CreateWindow("Retained SVG", 320, 240, SDL_WINDOW_HIDDEN);
     assert(window && generated_main() == 0);

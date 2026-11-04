@@ -118,6 +118,20 @@ function ownedDocument(
         converted && unwrapObjectIdentity(lowerer.context.checker, converted);
     if (!expression || !yieldsFreshObject(lowerer.context.checker, expression))
         return undefined;
+    return recordDocumentSnapshot(lowerer, record, node);
+}
+
+/**
+ * A document of a record's own properties as they are now, a key a
+ * conditional spread wrote set only while own: what a WebIDL dictionary
+ * conversion (an event's init) reads once, keeping no alias.
+ */
+export function recordDocumentSnapshot(
+    lowerer: DataSinkHost,
+    record: Value,
+    node: ts.Node,
+): string | undefined {
+    if (!isPlainJsonRecord(record)) return undefined;
     const entries = ownEntries(lowerer.ownObjectContext(), record, node);
     if (!entries) return undefined;
     const stores = entries.map(({ key, value, presence }) => {

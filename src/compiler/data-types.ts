@@ -103,7 +103,10 @@ import {
     type RecordJoin,
 } from "./record-components.js";
 import ts from "typescript";
-import { requireDeclarationAbsenceTag } from "./absence-tag-storage.js";
+import {
+    AbsenceTagStorageRequired,
+    requireDeclarationAbsenceTag,
+} from "./absence-tag-storage.js";
 import { classFieldPresenceSource } from "./class-field-presence-storage.js";
 import { isPinnedSource } from "../pinned-program.js";
 import { createHash } from "node:crypto";
@@ -7837,6 +7840,18 @@ export class DataTypeRegistry {
                 );
         }
         if (presence === "ambiguous") this.refuseAmbiguousPresence(field, node);
+        // A field holding null beside absence, whose presence is read, keeps
+        // the two apart in tagged storage: a library-declared field too (an
+        // init dictionary's `relatedTarget`), the record's storage being the
+        // program's.
+        if (presence === "nullable" && !field.accessorReceiver)
+            for (const declaration of field.declarations ?? [])
+                if (
+                    (ts.isPropertySignature(declaration) ||
+                        ts.isPropertyDeclaration(declaration)) &&
+                    !this.storage.absenceTags.has(declaration)
+                )
+                    throw new AbsenceTagStorageRequired(declaration);
         if (arms || presence !== "own")
             this.presenceReads.set(`${structName}.${field.sourceName}`, {
                 structName,

@@ -504,7 +504,7 @@ inline UiSvgMarkup ui_svg_markup(const Engine& engine, UiElementHandle root_hand
         if (!outline && hit.pointer)
             throw std::runtime_error("A retained SVG <" + tag +
                                      "> taking the pointer needs geometry its hit test "
-                                     "flattens (M/L/H/V/A/C/Q/Z paths, numeric points).");
+                                     "flattens (M/L/H/V/A/C/S/Q/T/Z paths, numeric points).");
         hit.outline = std::move(outline).value_or(UiSvgPolylines{});
         hit.fill = tag != "line" && ui_svg_paint_keyword(values[0]) != "none";
         if (ui_svg_paint_keyword(values[1]) != "none")

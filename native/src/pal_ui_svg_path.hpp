@@ -6,6 +6,7 @@
 #include <cstddef>
 #include <numbers>
 #include <system_error>
+#include <utility>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -45,7 +46,7 @@ public:
     std::optional<char> command() {
         skip_separators();
         if (at_ < text_.size() &&
-            std::string_view("MmLlHhVvAaCcQqZz").find(text_[at_]) != std::string_view::npos)
+            std::string_view("MmLlHhVvAaCcSsQqTtZz").find(text_[at_]) != std::string_view::npos)
             return text_[at_++];
         return std::nullopt;
     }
@@ -155,6 +156,12 @@ inline std::optional<UiSvgPolylines> ui_svg_path_polylines(std::string_view data
     UiSvgPolylines lines;
     UiSvgPoint current, start;
     std::optional<char> command;
+    // The previous segment's last control point, which a smooth curve of its kind reflects.
+    std::optional<UiSvgPoint> cubic_control, quad_control;
+    const auto reflected = [&](const std::optional<UiSvgPoint>& control) {
+        return control ? UiSvgPoint{2 * current.x - control->x, 2 * current.y - control->y}
+                       : current;
+    };
     while (!reader.done()) {
         if (const auto next = reader.command())
             command = next;
@@ -169,6 +176,8 @@ inline std::optional<UiSvgPolylines> ui_svg_path_polylines(std::string_view data
                 return std::nullopt;
             return relative ? UiSvgPoint{current.x + *x, current.y + *y} : UiSvgPoint{*x, *y};
         };
+        const auto previous_cubic = std::exchange(cubic_control, std::nullopt);
+        const auto previous_quad = std::exchange(quad_control, std::nullopt);
         switch (op) {
         case 'M':
         case 'm': {
@@ -226,15 +235,31 @@ inline std::optional<UiSvgPolylines> ui_svg_path_polylines(std::string_view data
             if (!p1 || !p2 || !p3 || lines.empty())
                 return std::nullopt;
             append_cubic(lines.back(), current, *p1, *p2, *p3);
+            cubic_control = *p2;
+            current = *p3;
+            break;
+        }
+        case 'S':
+        case 's': {
+            const auto p2 = point();
+            const auto p3 = point();
+            if (!p2 || !p3 || lines.empty())
+                return std::nullopt;
+            append_cubic(lines.back(), current, reflected(previous_cubic), *p2, *p3);
+            cubic_control = *p2;
             current = *p3;
             break;
         }
         case 'Q':
-        case 'q': {
-            const auto control = point();
+        case 'q':
+        case 'T':
+        case 't': {
+            const bool smooth = op == 'T' || op == 't';
+            const auto control = smooth ? std::optional{reflected(previous_quad)} : point();
             const auto to = point();
             if (!control || !to || lines.empty())
                 return std::nullopt;
+            quad_control = *control;
             // A quadratic is the cubic with its control points two thirds along.
             append_cubic(
                 lines.back(), current,

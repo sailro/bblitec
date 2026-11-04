@@ -5,7 +5,7 @@ import {
 } from "./closure-captures.js";
 import type { Value } from "./types.js";
 import { isNativeOwnerRecord } from "./native-owner-carrier.js";
-import { cppIdentifiers } from "./cpp-identifiers.js";
+import { cppOuterReads } from "./cpp-identifiers.js";
 import { cppIdentifierPattern } from "../cpp-literals.js";
 
 /** Captures follow the current value graph, including rolled-back mutations. */
@@ -67,9 +67,7 @@ export class NativeCaptureCache {
                 // (a `??` temporary under `String(...)`); program-lifetime
                 // storage is every body's already.
                 if (cppIdentifierPattern.test(name)) return;
-                for (const identifier of cppIdentifiers(name, {
-                    unqualified: true,
-                })) {
+                for (const identifier of cppOuterReads(name)) {
                     const read = this.nativeBindings.get(identifier);
                     names.set(identifier, read);
                     if (read && !read.entryLifetime) bindings.add(read);
