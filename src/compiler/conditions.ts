@@ -42,7 +42,12 @@ import {
     variableKind,
 } from "./syntax.js";
 import { recordAt } from "./record-access.js";
-import { declaredIn, libraryName, resolvedSymbol } from "./symbols.js";
+import {
+    declaredIn,
+    libraryName,
+    nullishComparison,
+    resolvedSymbol,
+} from "./symbols.js";
 import { ApplicationRealmRequired } from "./worker-modules.js";
 import { retainTextValue } from "./text-surface.js";
 import { pinOperand } from "./evaluation-order.js";
@@ -202,11 +207,30 @@ export class ConditionLowerer {
      * pin's loader sets them for a skinned node with joint and weight
      * streams and for a primitive with morph targets, and an attachment
      * sets them in scene code; the record keeps which of those it got.
-     * Only the test is lowered: no other read of either member is.
+     * Only the test is lowered: no other read of either member is. A loose
+     * `== null` / `!= null` is the same test, both members being objects,
+     * and a read through a cast of a native mesh is that mesh's member.
      */
     private meshDeformationPresence(
         expression: ts.Expression,
     ): string | undefined {
+        const comparison = nullishComparison(this.context.checker, expression);
+        if (comparison) {
+            const binary = this.context.unwrap(
+                expression,
+            ) as ts.BinaryExpression;
+            const literal =
+                binary.left === comparison.tested ? binary.right : binary.left;
+            const present =
+                comparison.loose &&
+                this.context.symbols.isNullishLiteral(literal)
+                    ? this.meshDeformationPresence(
+                          this.context.unwrap(comparison.tested),
+                      )
+                    : undefined;
+            if (present === undefined) return undefined;
+            return comparison.negated ? present : `!(${present})`;
+        }
         if (
             !ts.isPropertyAccessExpression(expression) ||
             expression.questionDotToken
@@ -217,14 +241,23 @@ export class ConditionLowerer {
             return undefined;
         const member = resolvedSymbol(this.context.checker, expression);
         const owner = member?.declarations?.[0]?.parent;
-        if (
-            !declaredIn(member, "babylon") ||
-            !owner ||
-            !ts.isInterfaceDeclaration(owner) ||
-            owner.name.text !== "Mesh"
-        )
-            return undefined;
-        const mesh = this.context.compileValue(expression.expression);
+        const pinned =
+            declaredIn(member, "babylon") &&
+            owner !== undefined &&
+            ts.isInterfaceDeclaration(owner) &&
+            owner.name.text === "Mesh";
+        const mesh = pinned
+            ? this.context.compileValue(expression.expression)
+            : this.context.probeEmission(() =>
+                  unlessRefused(() => {
+                      // The object itself: a cast stores nothing.
+                      const value = this.context.compileValue(
+                          this.context.unwrap(expression.expression),
+                      );
+                      return value.kind === "mesh" ? value : undefined;
+                  }),
+              );
+        if (!mesh) return undefined;
         if (mesh.kind !== "mesh")
             return this.context.fail(
                 expression,

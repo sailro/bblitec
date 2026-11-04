@@ -561,3 +561,33 @@ test("a program's prepared VAT records lower to the native upload and attach", (
     );
     assert.match(result.cpp, /bbl::attach_vat\([^;]*v_pick/);
 });
+
+test("a skeleton presence test reads the mesh record through a loose null test and a cast", () => {
+    const result = compileSource(`
+        import { addToScene, createEngine, createSceneContext, loadGltf, registerScene, startEngine, type Mesh, type TransformNode } from "@babylonjs/lite";
+        function collect(node: TransformNode, out: Mesh[]): Mesh[] {
+            out.push(node as unknown as Mesh);
+            for (const child of (node.children ?? []) as TransformNode[]) collect(child, out);
+            return out;
+        }
+        const canvas = document.getElementById("renderCanvas") as HTMLCanvasElement;
+        const engine = await createEngine(canvas);
+        const scene = createSceneContext(engine);
+        const shark = await loadGltf(engine, "https://models.babylonjs.com/shark.glb");
+        addToScene(scene, shark);
+        const meshes = collect(shark.entities[0] as TransformNode, []);
+        const cast = meshes.filter((m) => (m as unknown as { skeleton?: unknown }).skeleton != null);
+        const rigid = meshes.filter((m) => m.skeleton == null);
+        if (cast.length + rigid.length !== meshes.length) throw new Error("partition");
+        await registerScene(scene);
+        await startEngine(engine);
+    `);
+    assert.match(
+        result.cpp,
+        /return bbl::handle_at\(v_engine\.meshes, \w+\)\.skeleton_attached;/,
+    );
+    assert.match(
+        result.cpp,
+        /return !\(bbl::handle_at\(v_engine\.meshes, \w+\)\.skeleton_attached\);/,
+    );
+});
