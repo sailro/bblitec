@@ -28,8 +28,8 @@ namespace bbl::pal {
 /**
  * One packaged candidate: the key a site selects it by, the absolute URL a
  * fetch of it answers as (fragment removed), and the asset output it reads;
- * an empty output is a URL the deployment serves no file at, which answers
- * 404 as a static file server does.
+ * an empty output is a URL the deployment holds no file at, which rejects as
+ * a URL outside the package does.
  */
 struct PackagedFetchEntry {
     std::string_view key;
@@ -113,9 +113,14 @@ inline js::Promise<HttpResponse> fetch_packaged(std::string url, std::string pat
         });
 }
 
-/** The 404 a static file server answers for a URL it holds no file at. */
-[[nodiscard]] inline js::Promise<HttpResponse> fetch_not_served(std::string url) {
-    return js::Promise<HttpResponse>::resolved(make_buffered_response(404, std::move(url), {}));
+/**
+ * A fetch of a URL the deployment holds no file at: it rejects, as one
+ * outside the package does. The native build cannot tell whether a server
+ * would answer it, so it promises no status.
+ */
+[[nodiscard]] inline js::Promise<HttpResponse> fetch_not_packaged(const std::string& url) {
+    return js::Promise<HttpResponse>::rejected(std::make_exception_ptr(
+        js::NamedError("TypeError", "Failed to fetch: no packaged file at " + url)));
 }
 
 /** The program's asset path of an entry's output (`bbl::asset_path`). */
@@ -166,7 +171,7 @@ inline bool register_packaged_responses(std::string_view base, PackagedAssetPath
     return href;
 }
 
-/** A packaged response: the absolute URL it answers as, and the file it reads (none: 404). */
+/** A packaged response: the absolute URL it answers as, and the file it reads (none: not packaged). */
 struct PackagedResponse {
     std::string url;
     std::string path;
@@ -204,7 +209,7 @@ fetch_registered_packaged(const std::string& url, std::string range) {
     if (!packaged)
         return std::nullopt;
     if (packaged->path.empty())
-        return fetch_not_served(std::move(packaged->url));
+        return fetch_not_packaged(packaged->url);
     return fetch_packaged(std::move(packaged->url), std::move(packaged->path), std::move(range));
 }
 

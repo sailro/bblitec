@@ -12,7 +12,11 @@ import { dirname, relative, resolve, sep } from "node:path";
 import { floatLiteral } from "../cpp-literals.js";
 import { readAssetBytesSync } from "./asset-bytes-sync.js";
 import { canonicalLocalAssetSource, resolveBundledAsset } from "./assets.js";
-import { deploymentUrl, packagedResponseUrl } from "./deployment.js";
+import {
+    deploymentAssetSource,
+    deploymentUrl,
+    packagedResponseUrl,
+} from "./deployment.js";
 import { assetUrlDomain } from "./asset-url-domain.js";
 import { jsonToValue, type JsonValuePolicy } from "./json-value.js";
 import { isStringValue, type CompileAsset, type Value } from "./types.js";
@@ -100,11 +104,11 @@ export function compileStaticFetch(
         context.options.fileName,
         context.options,
     );
-    // A local URL the deployment holds no file at answers 404, as its static
-    // server does. Only an owned response carries that status; a
-    // generation-known one reads the file.
+    // A URL the deployment's public directory holds no file at rejects when
+    // fetched, as a URL outside the package does. Only an owned response
+    // settles at run time; a generation-known one reads the file.
     if (
-        localAssetPath(source, context.options.fileName) !== undefined &&
+        deploymentAssetSource(logicalSource, context.options) === source &&
         !readablePackagedAsset(context, source)
     ) {
         if (!response) throw new ApplicationRealmRequired();

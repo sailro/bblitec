@@ -106,7 +106,9 @@ test("packaged fetch owns responses, snapshots selections and rejects missing or
     runPackagedProgram(t, directory, result.cpp);
 });
 
-test("a fetch of a URL the deployment holds no file at answers 404", (t) => {
+test("a fetch of a URL the deployment holds no file at rejects", (t) => {
+    // The native build cannot tell whether a server would answer the URL,
+    // so the fetch rejects, as one outside the package does.
     const directory = resolve("artifacts/packaged-fetch-not-served");
     const publicDir = join(directory, "public");
     mkdirSync(publicDir, { recursive: true });
@@ -115,16 +117,15 @@ test("a fetch of a URL the deployment holds no file at answers 404", (t) => {
         async function catalog(): Promise<string> {
             try {
                 const response = await fetch("/files/absent.json");
-                if (response.url !== "https://assets.example/files/absent.json") throw new Error("url");
                 if (!response.ok) throw new Error(\`HTTP \${response.status}\`);
                 return ((await response.json()) as { name: string }).name;
             } catch (error) {
-                return "fallback:" + (error as Error).message;
+                return "fallback:" + (error instanceof TypeError ? "TypeError" : String(error));
             }
         }
         void (async () => {
             const name = await catalog();
-            if (name !== "fallback:HTTP 404") throw new Error("not served " + name);
+            if (name !== "fallback:TypeError") throw new Error("not packaged " + name);
             globalThis.close();
         })();
     `,
