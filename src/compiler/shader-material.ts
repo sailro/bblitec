@@ -40,7 +40,12 @@ import type {
     SceneMeshManifest,
     Value,
 } from "./types.js";
-import { isTypedArrayType, tupleComponents } from "./data-types.js";
+import {
+    isTypedArrayType,
+    tupleComponents,
+    type DataType,
+} from "./data-types.js";
+import { isJsonValue } from "./json-bridge.js";
 import { presenceCpp } from "./types.js";
 import { knownCondition } from "./values/model.js";
 
@@ -1212,7 +1217,24 @@ export function compileShaderUniformComponents(
     // pin stores the value into a Float32Array. `castNumber` is the one
     // rule for a number at a float sink: a static lane becomes a float
     // literal, a runtime lane a `static_cast<float>`.
-    const value = context.compileValue(expression);
+    const compiled = context.compileValue(expression);
+    // A parsed array is the ArrayLike the setter reads: its numbers, length
+    // checked as any numeric array's are.
+    const numberVectorType: DataType = {
+        kind: "vector",
+        element: { kind: "number" },
+    };
+    const value: Value = isJsonValue(compiled)
+        ? {
+              kind: "data",
+              cpp: context.dataLowerer.compileKnownValueForSink(
+                  compiled,
+                  numberVectorType,
+                  expression,
+              ),
+              dataType: numberVectorType,
+          }
+        : compiled;
     if (value.kind === "tuple" && value.tupleElements?.length === count) {
         return value.tupleElements.map((element) =>
             context.castNumber(element, "float"),
