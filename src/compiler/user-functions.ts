@@ -44,6 +44,7 @@ import {
     holdsNoPayload,
     valueKindOf,
     unionMembers,
+    boundedTupleElements,
     fixedTupleElements,
 } from "./type-facts.js";
 import {
@@ -361,6 +362,39 @@ function storesReturnedOwners(
         default:
             return false;
     }
+}
+
+/**
+ * Whether a function only spreads its rest parameter as the last argument
+ * of calls: its length, which native lanes do not carry, is then never
+ * read, and each lane lands where the argument it stands for would.
+ */
+function restOnlyForwarded(
+    checker: ts.TypeChecker,
+    parameter: ts.ParameterDeclaration,
+    declaration: ts.SignatureDeclaration,
+): boolean {
+    if (!ts.isIdentifier(parameter.name)) return false;
+    const symbol = declaredSymbol(checker, parameter.name);
+    const body = "body" in declaration ? declaration.body : undefined;
+    return (
+        !!symbol &&
+        !!body &&
+        !someAnalysisNode(body, (node) => {
+            if (
+                !ts.isIdentifier(node) ||
+                declaredSymbol(checker, node) !== symbol
+            )
+                return false;
+            const spread = node.parent;
+            const call = spread.parent;
+            return !(
+                ts.isSpreadElement(spread) &&
+                ts.isCallExpression(call) &&
+                call.arguments.at(-1) === spread
+            );
+        })
+    );
 }
 
 /** Plain-data field reads cannot invoke accessors; preserve real getter effects. */
@@ -5500,13 +5534,26 @@ export class UserFunctionLowerer {
                 "reads",
                 declaration,
             );
-        // A rest parameter of a fixed tuple type is the signature's
-        // trailing parameters, one lane each.
+        // A rest parameter of a tuple type is the signature's trailing
+        // parameters, one lane each: a fixed tuple always, one with optional
+        // elements when the body only forwards it.
         const restParameter = runtimeParameters.at(-1);
         const restLanes =
             dataType.restParameter === undefined &&
             restParameter?.declaration.dotDotDotToken
-                ? fixedTupleElements(this.checker, restParameter.type)?.length
+                ? (
+                      fixedTupleElements(this.checker, restParameter.type) ??
+                      (restOnlyForwarded(
+                          this.checker,
+                          restParameter.declaration,
+                          declaration,
+                      )
+                          ? boundedTupleElements(
+                                this.checker,
+                                restParameter.type,
+                            )
+                          : undefined)
+                  )?.length
                 : undefined;
         const tupleRest =
             restLanes !== undefined &&
@@ -5522,7 +5569,7 @@ export class UserFunctionLowerer {
         )
             context.fail(
                 declaration,
-                "A stored function's tuple rest parameter is bound from lanes only when every element is required and the signature passes each one.",
+                "A stored function's tuple rest parameter is bound from lanes only when every element is required, or the body only forwards it as the last spread argument of calls, and the signature passes each one.",
             );
         const prefix = context.allocateUserFunctionPrefix();
         const cppName = `${prefix}stored_callback`;
