@@ -102,6 +102,7 @@ import { isJsonValue } from "./json-bridge.js";
 import {
     absenceKind,
     excludesObjectColour,
+    fixedTupleElements,
     isNullable,
     stringPlusOperands,
     valueKindOf,
@@ -363,6 +364,12 @@ export class StaticEvaluator {
         ) => Value | undefined,
         /** `Compiler.probeEmission`: a declined compile leaves no trace. */
         private readonly probeEmission: LoweringServices["probeEmission"],
+        /** `DataLowerer.compileKnownValueForSink`: a value as a data sink stores it. */
+        private readonly valueForSink: (
+            value: Value,
+            dataType: DataType,
+            node: ts.Node,
+        ) => string,
     ) {}
 
     /** @unjournaled A module constant's required text, fixed when first read: JS evaluates it once. */
@@ -2051,6 +2058,24 @@ export class StaticEvaluator {
         precision: "float" | "double",
         length = 3,
     ): string[] | undefined {
+        // A parsed array the source asserts as a numeric tuple stores as the
+        // tuple sink stores it: each lane is Number(element).
+        if (
+            isJsonValue(value) &&
+            this.numberTupleArity(expression) === length
+        ) {
+            const dataType: DataType = { kind: "tuple", arity: length };
+            const tuple: Value = {
+                kind: "data",
+                cpp: this.valueForSink(value, dataType, expression),
+                dataType,
+            };
+            return tupleComponents(
+                this.bindDataTuple(tuple, length),
+                length,
+                precision,
+            );
+        }
         if (!value || !isDataTuple(value, length)) {
             return undefined;
         }
@@ -2061,6 +2086,17 @@ export class StaticEvaluator {
             length,
             precision,
         );
+    }
+
+    /** The arity of an expression's tuple type when every element is a required number. */
+    private numberTupleArity(expression: ts.Expression): number | undefined {
+        const elements = fixedTupleElements(
+            this.checker,
+            this.checker.getTypeAtLocation(expression),
+        );
+        return elements?.every((type) => valueKindOf(type) === "number")
+            ? elements.length
+            : undefined;
     }
 
     private numberValue(

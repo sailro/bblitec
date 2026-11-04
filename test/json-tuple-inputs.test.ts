@@ -126,3 +126,36 @@ test("JSON number arrays build and fill typed arrays element by element", (t) =>
     }
     runGeneratedProgram(native, "json-tuple-inputs/typed-arrays", result.cpp);
 });
+
+test("a parsed array asserted as a Vec3 reaches a light direction lane by lane", () => {
+    // A config deep-merged over its defaults is a parsed document; the
+    // field's tuple type is the source's assertion over it, as at any
+    // numeric tuple sink.
+    const source = `import { addToScene, createDirectionalLight, createEngine, createSceneContext, registerScene, startEngine } from "babylon-lite";
+interface Config { sun: { direction: [number, number, number] } }
+const DEFAULTS: Config = { sun: { direction: [-0.4, -1, -0.3] } };
+function merge<T>(base: T, over: unknown): T {
+    if (over === null || typeof over !== "object" || Array.isArray(over)) return base;
+    const out: Record<string, unknown> = { ...(base as Record<string, unknown>) };
+    for (const [key, value] of Object.entries(over as Record<string, unknown>)) out[key] = value;
+    return out as T;
+}
+async function main(): Promise<void> {
+    const canvas = document.getElementById("renderCanvas") as HTMLCanvasElement;
+    const engine = await createEngine(canvas);
+    const scene = createSceneContext(engine);
+    const config = merge(DEFAULTS, JSON.parse(localStorage.getItem("config") ?? "{}") as unknown);
+    addToScene(scene, createDirectionalLight(config.sun.direction, 1));
+    await registerScene(scene);
+    await startEngine(engine);
+}
+void main();
+`;
+    const result = compileSource(source, {
+        fileName: "light-from-parsed-config.ts",
+    });
+    assert.match(
+        result.cpp,
+        /bbl::js::json_tuple<3>\(v_config\.read_property\("sun"\)\.read_property\("direction"\)\)/,
+    );
+});
