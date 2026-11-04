@@ -13265,6 +13265,23 @@ check(
 `,
 );
 
+check(
+    "spread-of-a-literal-factory-typed-wider",
+    `
+    // The factory's one literal decides the own keys, not the optional
+    // fields its declared intersection adds.
+    interface Init { a?: number; target?: { id: number } | null; flag?: boolean }
+    const pressed = { value: 0 };
+    const init = (): Init & { kind: string } => ({ a: 1, kind: "pointer", flag: pressed.value > 0 });
+    const make = (b: number) => ({ ...init(), b });
+    const makers: Array<typeof make> = [make];
+    pressed.value = 1;
+    const rows = [makers[0]!(2), makers[0]!(3)];
+    const text = rows.map((row) => row.a + ":" + row.kind + ":" + row.flag + ":" + row.b + ":" + ("target" in row)).join(",");
+    if (text !== "1:pointer:true:2:false,1:pointer:true:3:false") throw new Error("own keys " + text);
+`,
+);
+
 test("a union with several function arms refuses a function value", () => {
     assert.throws(
         () =>

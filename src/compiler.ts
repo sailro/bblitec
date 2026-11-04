@@ -7243,10 +7243,6 @@ class Compiler implements LoweringServices {
         });
     }
 
-    public nativeBindingNamed(name: string): NativeCaptureBinding | undefined {
-        return this.nativeBindings.get(name);
-    }
-
     public nativeBindingCheckpoint(): number {
         return this.nextNativeBindingSequence;
     }
