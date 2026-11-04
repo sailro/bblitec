@@ -13232,6 +13232,39 @@ check(
 `,
 );
 
+check(
+    "shared-body-record-argument-members",
+    `
+    // A shared body specialized on a static key and a record argument reads
+    // the record's runtime members from the caller.
+    const EN: Record<string, string> = { "status.ready": "Ready {count}", "status.paused": "Paused" };
+    const FR: Record<string, string> = { "status.ready": "Pret {count}", "status.paused": "Pause" };
+    type Lang = "en" | "fr";
+    const TABLES: Record<Lang, Record<string, string>> = { en: EN, fr: FR };
+    let current: Lang = "en";
+    function translate(lang: Lang, key: string, params?: Record<string, string>): string {
+        let s = TABLES[lang][key] ?? EN[key] ?? key;
+        if (params) for (const [k, v] of Object.entries(params)) s = s.split("{" + k + "}").join(v);
+        return s;
+    }
+    function t(key: string, params?: Record<string, string>): string { return translate(current, key, params); }
+    interface Path { points: number[] }
+    interface Snapshot { path?: Path }
+    const enum Phase { Paused, Ready }
+    function status(snapshot: Snapshot, phase: Phase): string {
+        switch (phase) {
+            case Phase.Paused: return t("status.paused");
+            case Phase.Ready: return t("status.ready", { count: String(snapshot.path?.points.length ?? 0) });
+        }
+    }
+    const statuses: Array<typeof status> = [status];
+    if (statuses[0]!({ path: { points: [1, 2, 3] } }, Phase.Ready) !== "Ready 3") throw new Error("ready");
+    current = "fr";
+    if (statuses[0]!({}, Phase.Ready) !== "Pret 0") throw new Error("ready without a path");
+    if (statuses[0]!({}, Phase.Paused) !== "Pause") throw new Error("paused");
+`,
+);
+
 test("a union with several function arms refuses a function value", () => {
     assert.throws(
         () =>

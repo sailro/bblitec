@@ -1,3 +1,4 @@
+import { cppIdentifiers } from "./cpp-identifiers.js";
 import {
     booleanValue,
     commonResourceValue,
@@ -1515,6 +1516,7 @@ export interface UserFunctionContext
             | "endNativeFunctionBody"
             | "registerNativeBinding"
             | "registerNativeBindingType"
+            | "nativeBindingNamed"
             | "registerNativeConstBinding"
             | "registerNativeTemporary"
             | "nativeEmission"
@@ -3156,6 +3158,59 @@ export class UserFunctionLowerer {
     }
 
     /**
+     * Pins a record argument's scalar members whose expressions read a
+     * caller's native binding they do not carry as a capture (a `??`
+     * temporary under `String(...)`), so a body emitted apart captures their
+     * values rather than naming that local. Program-lifetime storage and
+     * carried captures the body reaches already. Aliases share the
+     * properties object, so each reads the pinned member.
+     */
+    private pinRuntimeRecordMembers(
+        context: UserFunctionContext,
+        record: Value,
+        visited = new Set<object>(),
+    ): void {
+        const properties = writable(record.recordProperties!);
+        // A record can reach itself through its members.
+        if (visited.has(properties)) return;
+        visited.add(properties);
+        for (const [name, member] of Object.entries(properties)) {
+            if (member.kind === "record" && member.recordProperties) {
+                this.pinRuntimeRecordMembers(context, member, visited);
+                continue;
+            }
+            const stored =
+                member.dataType?.kind === "optional"
+                    ? member.dataType.inner
+                    : member.dataType;
+            if (
+                !(
+                    ["number", "boolean", "string"].includes(member.kind) ||
+                    (member.kind === "data" &&
+                        (stored?.kind === "number" ||
+                            stored?.kind === "boolean" ||
+                            stored?.kind === "string"))
+                ) ||
+                member.nativeBinding ||
+                cppIdentifierPattern.test(member.cpp) ||
+                ![...cppIdentifiers(member.cpp, { unqualified: true })].some(
+                    (identifier) =>
+                        context.nativeBindingNamed(identifier)
+                            ?.entryLifetime === false &&
+                        !member.nativeCaptures?.some(
+                            (binding) => binding.name === identifier,
+                        ),
+                )
+            )
+                continue;
+            properties[name] = context.bindings.pinValueToTemporary(
+                member,
+                "shared_argument",
+            );
+        }
+    }
+
+    /**
      * Whether a call inside a recursive group passes its root, at
      * `index`, anything but the generation-known scalar `argument` the
      * entry call passes: another literal, or any expression other than
@@ -4146,11 +4201,15 @@ export class UserFunctionLowerer {
             rootEntry.captured[index] = value;
         });
 
-        // Resource containers and JSON arguments are specialized through their
-        // values. Give expressions caller-side storage so the emitted body's
-        // closure captures their value, including any temporary dependencies.
+        // Resource containers, JSON arguments and records are specialized
+        // through their values. Give expressions caller-side storage so the
+        // emitted body's closure captures their value, including any temporary
+        // dependencies: a record's runtime members, whose facts generation
+        // does not know.
         rootEntry.captured.forEach((value, index) => {
-            if (
+            if (value?.kind === "record" && value.recordProperties)
+                this.pinRuntimeRecordMembers(context, value);
+            else if (
                 value?.kind === "data" &&
                 value.dataType &&
                 (value.dataType.kind === "json" ||

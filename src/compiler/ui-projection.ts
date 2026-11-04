@@ -34,6 +34,7 @@ import {
     unrepresentedUiEasing,
 } from "../ui-motion.js";
 import {
+    uiBackgroundLayer,
     uiGradientBackground,
     uiGradientImageList,
 } from "../ui-gradient-background.js";
@@ -2545,7 +2546,7 @@ export class UiProjection {
                     this.uiStyleRefusal(
                         site,
                         property,
-                        "only a single raster image or a list of gradient images, with auto, contain, cover or zero sizing and centered or default positioning, is represented",
+                        UiProjection.UI_IMAGE_BACKGROUND_SURFACE,
                     );
                 return;
             }
@@ -3069,16 +3070,65 @@ export class UiProjection {
             .join("");
     }
 
+    private static readonly UI_IMAGE_BACKGROUND_SURFACE =
+        "only a single raster image or a list of gradient images, with auto, contain, cover, zero or two-length sizing and centered, default or offset positioning, is represented";
+
     /**
      * The `background` shorthand's longhands, colour last: a CSS-wide
-     * keyword is every one's value (the PAL resolves it), `none` the image
-     * layer's (the colour initial), another value the colour's, the others
-     * taking their initial values.
+     * keyword is every one's value (the PAL resolves it), a raster image
+     * layer each of its components, `none` the image layer's (the colour
+     * initial), another value the colour's, the others taking their initial
+     * values.
      */
-    private static uiBackgroundShorthand(
+    private uiBackgroundShorthand(
         value: string,
+        site?: ts.Node,
     ): (readonly [string, string])[] {
         const keyword = cssWideKeyword(value);
+        const layer =
+            keyword === undefined ? uiBackgroundLayer(value) : undefined;
+        const raster =
+            layer?.image !== undefined && /^url\(/i.test(layer.image);
+        // A layer placing no image sets its longhands too; a custom property
+        // there may be its colour, which the colour lowering keeps.
+        if (
+            layer &&
+            (raster ||
+                (layer.image === undefined &&
+                    layer.placed &&
+                    !/\bvar\(/i.test(value)))
+        ) {
+            const size =
+                typeof layer.size === "string"
+                    ? layer.size
+                    : layer.size.every((token) => token === "auto")
+                      ? "auto"
+                      : layer.size.join(" ");
+            const longhands = [
+                ["background-clip", layer.clip],
+                ["background-image", layer.image ?? "none"],
+                ["background-size", size],
+                ["background-position", layer.position.join(" ")],
+                ["background-repeat", layer.repeat],
+                ["background-origin", layer.origin],
+                ["background-attachment", layer.attachment],
+                ["background-color", layer.color ?? "transparent"],
+            ] as const;
+            if (raster && layer.clip !== "border-box")
+                this.uiStyleRefusal(
+                    site,
+                    "background",
+                    "box clipping currently applies to solid backgrounds",
+                );
+            for (const [name, longhand] of longhands)
+                if (supportedUiImageBackground(name, longhand) === false)
+                    this.uiStyleRefusal(
+                        site,
+                        "background",
+                        `${name} ${longhand}: ${UiProjection.UI_IMAGE_BACKGROUND_SURFACE}`,
+                    );
+            return [...longhands];
+        }
         return [
             ...UiProjection.UI_BACKGROUND_RESETS.map(
                 ([name, initial]) => [name, keyword ?? initial] as const,
@@ -3408,14 +3458,8 @@ export class UiProjection {
                     `background-color:${String(color).trim()};` +
                     `decorator:image("__BBLITE_UI_ASSET_${String(index)}__" cover);`,
             )
-            // RmlUi exposes the colour property explicitly rather than the
-            // browser background shorthand used by the reached HUDs.
-            .replace(
-                /\bbackground\s*:\s*center(?:\s+center)?\s*\/\s*(contain|cover)\s+no-repeat\s*;?/gi,
-                "background-color:transparent;background-image:none;background-position:center center;background-size:$1;background-repeat:no-repeat;background-origin:padding-box;background-attachment:scroll;background-clip:border-box;",
-            )
             .replace(/\bbackground\s*:([^;]*)/gi, (_match, value: string) =>
-                UiProjection.uiBackgroundShorthand(value)
+                this.uiBackgroundShorthand(value, site)
                     .map(([name, longhand]) => `${name}:${longhand}`)
                     .join(";"),
             )
@@ -3554,13 +3598,16 @@ export class UiProjection {
             let nativeProperty = nativeUiImageProperty(property, literal);
             if (property === "background-image") {
                 const source = uiBackgroundImageSource(literal);
-                if (source !== undefined)
-                    literal = JSON.stringify(
-                        this.context.assetRegistry.registerAsset(
-                            documentAssetSource(this.context, source),
-                            "texture",
-                        ).output,
+                if (source !== undefined) {
+                    const { output } = this.context.assetRegistry.registerAsset(
+                        documentAssetSource(this.context, source),
+                        "texture",
                     );
+                    // LunaSVG rasterizes an SVG image for its decorator.
+                    if (/\.svg$/i.test(output))
+                        this.context.reachFeature("ui:inline-svg", site);
+                    literal = JSON.stringify(output);
+                }
             } else if (property === "clip") {
                 nativeProperty = "bbl-zero-clip";
                 literal = literal.toLowerCase() === "auto" ? "0" : "1";

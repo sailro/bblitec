@@ -9,10 +9,8 @@
  * `fetch`, which serves a data URL from the string), which is why nothing in
  * the pinned loaders marks the case.
  *
- * Only the base64 form is read. A percent-encoded body is legal in the URL
- * syntax and no reached scene writes one, so it refuses by name rather than
- * decoding through a second path this repository would then have to keep
- * agreeing with the first.
+ * A body is base64 or percent-encoded (RFC 2397): each `%XX` is one octet,
+ * every other character its UTF-8 bytes (an inline SVG background's text).
  */
 
 /** The media type and bytes a `data:` URL carries. */
@@ -37,11 +35,22 @@ export function isDataUrl(source: string): boolean {
 export function parseDataUrl(source: string): DataUrlPayload | undefined {
     const header = parseDataUrlHeader(source);
     if (!header) return undefined;
+    const body = source.slice(header.bodyStart);
     return {
         mediaType: header.mediaType,
         // A Buffer already IS a Uint8Array; wrapping its view avoids copying
         // the decoded payload a second time.
-        bytes: Buffer.from(source.slice(header.bodyStart), "base64"),
+        bytes: header.base64
+            ? Buffer.from(body, "base64")
+            : Buffer.concat(
+                  body
+                      .split(/(%[0-9a-f]{2})/i)
+                      .map((part) =>
+                          /^%[0-9a-f]{2}$/i.test(part)
+                              ? Buffer.of(Number.parseInt(part.slice(1), 16))
+                              : Buffer.from(part, "utf8"),
+                      ),
+              ),
     };
 }
 
@@ -58,25 +67,19 @@ function dataUrlMediaType(source: string): string | undefined {
 
 function parseDataUrlHeader(
     source: string,
-): { mediaType: string; bodyStart: number } | undefined {
+): { mediaType: string; bodyStart: number; base64: boolean } | undefined {
     if (!isDataUrl(source)) return undefined;
     const comma = source.indexOf(",");
     if (comma < 0) {
         throw new Error(`A data URL carries no payload: ${preview(source)}.`);
     }
     const parameters = source.slice("data:".length, comma).split(";");
-    const base64 = parameters.some(
-        (parameter) => parameter.trim().toLowerCase() === "base64",
-    );
-    if (!base64) {
-        throw new Error(
-            "Only base64 data URLs are materialized; " +
-                `${preview(source)} is percent-encoded.`,
-        );
-    }
     return {
         mediaType: (parameters[0] ?? "").trim().toLowerCase(),
         bodyStart: comma + 1,
+        base64: parameters.some(
+            (parameter) => parameter.trim().toLowerCase() === "base64",
+        ),
     };
 }
 

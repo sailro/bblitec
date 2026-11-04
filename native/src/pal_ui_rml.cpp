@@ -116,7 +116,7 @@ char ascii_lower(char value) {
     return value >= 'A' && value <= 'Z' ? static_cast<char>(value + ('a' - 'A')) : value;
 }
 
-#if BBLITE_HAS_IMAGE_DECODER || BBLITE_UI_SVG_IMAGES
+#if BBLITE_HAS_IMAGE_DECODER || BBLITE_UI_SVG_IMAGES || BBLITE_UI_INLINE_SVG
 /** A packaged URL's file: a static host serves its path whatever its query or fragment. */
 std::string packaged_url_path(std::string url) {
     if (const auto end = url.find_first_of("?#"); end != std::string::npos)
@@ -5634,7 +5634,7 @@ public:
             return reinterpret_cast<Rml::TextureHandle>(texture.release());
         }
 #endif
-#if BBLITE_HAS_IMAGE_DECODER
+#if BBLITE_HAS_IMAGE_DECODER || BBLITE_UI_INLINE_SVG
         Rml::FileInterface* files = Rml::GetFileInterface();
         const std::string path = packaged_url_path(source);
         Rml::FileHandle file = files->Open(path);
@@ -5656,6 +5656,11 @@ public:
         const Rml::String extension = extension_offset == Rml::String::npos
                                           ? Rml::String{}
                                           : source.substr(extension_offset + 1);
+#if BBLITE_UI_INLINE_SVG
+        if (js::string_lower(extension) == "svg")
+            return svg_texture(texture_dimensions, encoded);
+#endif
+#if BBLITE_HAS_IMAGE_DECODER
         SDL_Surface* surface = nullptr;
         {
             std::lock_guard lock(image_decoder_mutex());
@@ -5693,11 +5698,55 @@ public:
         }
         return GenerateTexture(pixels, texture_dimensions);
 #else
+        throw std::runtime_error("This scene was built without raster image decoding: " + source);
+#endif
+#else
         (void)texture_dimensions;
         (void)source;
         throw std::runtime_error("This scene was built without image decoding.");
 #endif
     }
+
+#if BBLITE_UI_INLINE_SVG
+    /** The density SVG images rasterize at: the UI context's density-independent pixel ratio. */
+    float raster_density = 1.0f;
+
+    /**
+     * An SVG image LunaSVG rasterizes at `raster_density`. RmlUi scales a texture's dimensions
+     * by that ratio, so they stay the image's intrinsic size while its pixels are the device's.
+     */
+    Rml::TextureHandle svg_texture(Rml::Vector2i& texture_dimensions,
+                                   const std::vector<Rml::byte>& encoded) {
+        const auto document = lunasvg::Document::loadFromData(
+            reinterpret_cast<const char*>(encoded.data()), encoded.size());
+        if (!document || !(document->width() > 0) || !(document->height() > 0))
+            return {};
+        const auto pixels_of = [](float length) {
+            return std::max(1, static_cast<int>(std::lround(length)));
+        };
+        const float scale = std::max(1.0f, raster_density);
+        const Rml::Vector2i raster{pixels_of(document->width() * scale),
+                                   pixels_of(document->height() * scale)};
+        const lunasvg::Bitmap bitmap = document->renderToBitmap(raster.x, raster.y);
+        if (bitmap.isNull())
+            return {};
+        // LunaSVG's premultiplied ARGB32 words are B, G, R, A bytes in memory.
+        std::vector<Rml::byte> pixels(static_cast<std::size_t>(raster.x) * raster.y * 4);
+        for (int y = 0; y < raster.y; ++y) {
+            const std::uint8_t* row = bitmap.data() + static_cast<std::size_t>(y) * bitmap.stride();
+            Rml::byte* out = pixels.data() + static_cast<std::size_t>(y) * raster.x * 4;
+            for (int x = 0; x < raster.x; ++x, row += 4, out += 4) {
+                out[0] = row[2];
+                out[1] = row[1];
+                out[2] = row[0];
+                out[3] = row[3];
+            }
+        }
+        const Rml::TextureHandle handle = GenerateTexture(pixels, raster);
+        texture_dimensions = {pixels_of(document->width()), pixels_of(document->height())};
+        return handle;
+    }
+#endif
 
     Rml::TextureHandle GenerateTexture(Rml::Span<const Rml::byte> source,
                                        Rml::Vector2i source_dimensions) override {
@@ -6396,6 +6445,9 @@ struct UiRmlRuntime {
             return false;
         density_ratio = next_density_ratio;
         context->SetDensityIndependentPixelRatio(density_ratio);
+#if BBLITE_UI_INLINE_SVG
+        render_interface.raster_density = density_ratio;
+#endif
         return true;
     }
 

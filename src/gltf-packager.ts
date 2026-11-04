@@ -77,32 +77,17 @@ function isMeshoptFallbackBuffer(buffer: JsonRecord): boolean {
     return meshoptExtension(buffer)?.fallback === true;
 }
 
-/**
- * A glTF's own inline resource.
- *
- * The base64 arm is `src/data-url.ts`'s, which is the one an asset URL takes;
- * a glTF may also embed a percent-encoded body, which that module refuses
- * deliberately, so this keeps the second arm rather than widening the
- * asset-facing reader to a form no reached asset URL uses.
- */
+/** A glTF's own inline resource, base64 or percent-encoded. */
 function dataUri(
     uri: string,
 ): { bytes: Uint8Array; contentType?: string } | undefined {
-    if (!isDataUrl(uri)) return undefined;
-    const match = /^data:([^;,]+)?(;base64)?,(.*)$/s.exec(uri);
-    if (!match) return undefined;
-    const contentType = match[1];
-    if (match[2]) {
-        const inline = parseDataUrl(uri)!;
-        return {
+    const inline = parseDataUrl(uri);
+    return (
+        inline && {
             bytes: inline.bytes,
-            ...(contentType ? { contentType } : {}),
-        };
-    }
-    return {
-        bytes: Buffer.from(decodeURIComponent(match[3]!), "utf8"),
-        ...(contentType ? { contentType } : {}),
-    };
+            ...(inline.mediaType ? { contentType: inline.mediaType } : {}),
+        }
+    );
 }
 
 async function readResource(

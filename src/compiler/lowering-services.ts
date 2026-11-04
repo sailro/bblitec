@@ -486,6 +486,8 @@ export interface LoweringServices {
         cppType?: string,
     ): NativeCaptureBinding;
     registerNativeBindingType(name: string, cppType: string): void;
+    /** The native binding a C++ name already has, without registering one. */
+    nativeBindingNamed(name: string): NativeCaptureBinding | undefined;
     nativeBindingCheckpoint(): number;
     captureHoistedLines(
         emitBody: () => void,
