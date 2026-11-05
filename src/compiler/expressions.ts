@@ -6420,10 +6420,17 @@ export class ExpressionLowerer {
             expressionHasEffects(expression.expression)
         )
             return undefined;
-        const owner = this.context.probeEmission(
-            () => this.compileValue(expression.expression),
-            () => false,
-        );
+        let owner: Value;
+        try {
+            owner = this.context.probeEmission(
+                () => this.compileValue(expression.expression),
+                () => false,
+            );
+        } catch (error) {
+            // A receiver that does not lower here is the ordinary path's.
+            if (error instanceof CompileError) return undefined;
+            throw error;
+        }
         const kind =
             owner.dataType?.kind === "number" ||
             owner.dataType?.kind === "string" ||
