@@ -760,10 +760,7 @@ ${options.cpuGeometry ? `            record.cpu_streams = read_gltf_cpu_streams(
             // Scene code writes node transforms, so the node's world is its
             // transform node's, composed through the hierarchy live: a pose
             // writes its channels into the scene nodes. Skeleton palettes
-            // compose under the live mesh world; morphs still require
-            // separate wiring.
-            if (planned_morph)
-                throw std::runtime_error("A morphed glTF primitive reached a node-carrying load.");
+            // compose under the live mesh world.
             record.parent_world.reset();`
                     : ""
             }
@@ -833,7 +830,7 @@ ${
                         initial_joint_matrices.push_back(read_matrix(palette, bone));
                 }
                 publish_gltf_deformation(${recordAt("engine.meshes", "mesh_handle")},
-                    mesh_world, initial_joint_matrices, planned_skin != nullptr, morph_default_weights);
+                    mesh_world, initial_joint_matrices, planned_skin != nullptr, morph_default_weights${nodeTransforms ? ", true" : ""});
                 // mesh.skeleton upstream: the node named a skin, so the
                 // pose pass writes this record a joint palette rather than
                 // its own world matrix.

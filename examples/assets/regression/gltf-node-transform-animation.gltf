@@ -7,7 +7,7 @@
   "scenes": [
     {
       "nodes": [
-        3
+        4
       ]
     }
   ],
@@ -40,11 +40,21 @@
       ]
     },
     {
+      "name": "StepWeights",
+      "mesh": 3,
+      "translation": [
+        1.7999999999999998,
+        0,
+        0
+      ]
+    },
+    {
       "name": "Group",
       "children": [
         0,
         1,
-        2
+        2,
+        3
       ],
       "translation": [
         0,
@@ -191,6 +201,11 @@
           "input": 4,
           "output": 7,
           "interpolation": "STEP"
+        },
+        {
+          "input": 4,
+          "output": 8,
+          "interpolation": "STEP"
         }
       ],
       "channels": [
@@ -213,6 +228,13 @@
           "target": {
             "node": 2,
             "path": "scale"
+          }
+        },
+        {
+          "sampler": 3,
+          "target": {
+            "node": 3,
+            "path": "weights"
           }
         }
       ]

@@ -1330,8 +1330,6 @@ export async function recordMeshPlan(
                         "places from its own loaded node worlds rather " +
                         "than from the scene's node records.",
                 );
-            if (plannedMeshes.some((mesh) => mesh.morph !== undefined))
-                refuse("morphed primitives");
             if (sourceLights.length > 0) refuse("punctual lights");
             if (sourceCameras.length > 0) refuse("cameras");
             hierarchy = packageNodeHierarchy(root, nodeMap, packer);

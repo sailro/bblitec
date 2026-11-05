@@ -1,7 +1,7 @@
 // An animated glTF whose loaded nodes the scene also moves: the root is
 // recentered and the animated nodes' parent is scaled and turned, while the
-// clip moves, turns and scales each child. Both compose through the pin's
-// node hierarchy.
+// clip moves, turns and scales three children and drives the fourth's morph
+// weights. Both compose through the pin's node hierarchy.
 import {
     addToScene,
     createArcRotateCamera,
@@ -28,7 +28,7 @@ async function main(): Promise<void> {
     const engine = await createEngine(canvas);
     const scene = createSceneContext(engine);
     scene.clearColor = { r: 0.04, g: 0.05, b: 0.08, a: 1 };
-    scene.camera = createArcRotateCamera(-Math.PI / 2, Math.PI / 2.3, 4.2, {
+    scene.camera = createArcRotateCamera(-Math.PI / 2, Math.PI / 2.3, 5.4, {
         x: 0,
         y: 0,
         z: 0,
