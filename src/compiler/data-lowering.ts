@@ -13009,7 +13009,10 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
      * same record in the next attempt, so the demand its holder meets joins
      * this one and one replay plans them all. Likewise a member whose
      * record must become a document joins every later member's own: that
-     * demand is decided by the member's record type alone.
+     * demand is decided by the member's record type alone. Members whose
+     * records share one struct all meet the demand naming its first record
+     * type, which each replay moves off the struct in turn: a member
+     * written as a literal joins its own type's, as that replay would.
      */
     public storeLiteralMember<M>(
         members: readonly M[],
@@ -13040,7 +13043,20 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                         () => store(member),
                         isDocumentRecordDemand,
                     );
-                    if (demand) joined.push(demand);
+                    if (!demand) continue;
+                    const expression = value(member);
+                    const own =
+                        demand.demand.type === error.demand.type && expression
+                            ? this.context.dataTypes.documentDemandOf(
+                                  this.context.checker.getTypeAtLocation(
+                                      expression,
+                                  ),
+                                  expression,
+                              )
+                            : undefined;
+                    joined.push(
+                        own ? new NativeRecordStorageRequired(own) : demand,
+                    );
                 }
                 throw error.joinedWith(joined);
             }

@@ -659,6 +659,44 @@ test("records stored into a document demand every element's document storage in 
     );
 });
 
+test("records sharing one struct demand each element's document storage in one replay", (t) => {
+    // The four element literals share one layout, whose document demand
+    // names the first record type; each element joins its own.
+    const source = `
+        interface Variant { readonly file: string; readonly clips?: { readonly normal?: string[] } }
+        const BASE: readonly [Variant, Variant, Variant, Variant] = [
+            { file: "a", clips: { normal: ["w"] } }, { file: "b", clips: { normal: ["x"] } },
+            { file: "c", clips: { normal: ["y"] } }, { file: "d", clips: { normal: ["z"] } },
+        ];
+        const doc = JSON.parse('{"kind":"fish"}') as Record<string, unknown>;
+        doc.variants = [
+            { id: "f1", ...BASE[0], scale: 1, weight: 1 },
+            { id: "f2", ...BASE[1], scale: 2, weight: 1 },
+            { id: "f3", ...BASE[2], scale: 3, weight: 1 },
+            { id: "f4", ...BASE[3], scale: 4, weight: 1 },
+        ];
+        const text = JSON.stringify(doc);
+        if (!text.includes('{"id":"f4","file":"d","clips":{"normal":["z"]},"scale":4,"weight":1}')) throw new Error(text);
+    `;
+    const strict = measured(false, () => compileSource(source));
+    // The document binding, the variant type with every element's own
+    // record at once, then the compile.
+    assert.equal(strict.constructions, 3);
+    const tools = optionalNativeFixtureTools();
+    if (!tools) {
+        t.skip("Native fixture compiler unavailable.");
+        return;
+    }
+    runGeneratedProgram(
+        tools,
+        "storage-demand-planner/shared-struct-elements",
+        strict.result.cpp,
+        {
+            expectedOutput: "",
+        },
+    );
+});
+
 test("a record of literal tables demands every table's object storage in one replay", (t) => {
     const source = `
         type Lang = "en" | "fr" | "es";
