@@ -37,6 +37,7 @@ export interface VatIntrinsicContext
             | "reachJsData"
             | "reachJson"
             | "compileForDataSink"
+            | "checker"
         > {}
 
 /**
@@ -223,7 +224,12 @@ function compilePreparedVat(
     const engine = context.compileValue(argumentAt(call, 0));
     context.expectKind(engine, "engine", argumentAt(call, 0));
     const argument = argumentAt(call, 1);
-    const sink = context.dataLowerer.dataTypeAt(argument);
+    // The payload stores as the parameter's declared type, as an argument
+    // does: an inline literal's own type names its clips as fields.
+    const declared = context.checker.getContextualType(argument);
+    const sink = declared
+        ? context.dataTypes.fromTsType(declared, argument)
+        : context.dataLowerer.dataTypeAt(argument);
     const record = many
         ? sink?.kind === "vector" || sink?.kind === "span"
             ? sink.element

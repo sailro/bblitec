@@ -600,6 +600,21 @@ int main() {
     );
 });
 
+test("inline prepared VAT payloads store as the parameter's records", () => {
+    // A literal's own type names its clips as fields; the payload stores as
+    // the declared PreparedVatBakeResult, whose clips are a named map.
+    const result = compileSource(`
+        import { createEngine, createVatBakeResult, createVatBakeResults } from "@babylonjs/lite";
+        const engine = await createEngine(document.getElementById("renderCanvas") as HTMLCanvasElement);
+        const one = createVatBakeResult(engine, { boneCount: 1, frameCount: 2, data: new Float32Array(32), clips: { idle: { fromRow: 0, frameCount: 2, fps: 30 } } });
+        const many = createVatBakeResults(engine, [{ boneCount: 1, frameCount: 1, data: new Float32Array(16), clips: { walk: { fromRow: 0, frameCount: 1, fps: 24 } } }]);
+        console.log(one.clips.idle!.fps, many[0]!.clips.walk!.fps);
+    `);
+    assert.equal(result.cpp.match(/bbl::create_vat_bakes\(/g)?.length, 2);
+    assert.match(result.cpp, /"idle"/);
+    assert.match(result.cpp, /"walk"/);
+});
+
 test("a program's prepared VAT records lower to the native upload and attach", () => {
     const result = compileSource(`
         import { addToScene, attachVat, createEngine, createSceneContext, createVatBakeResults, loadGltf, registerScene, startEngine, type Mesh, type PreparedVatBakeResult, type TransformNode } from "@babylonjs/lite";
