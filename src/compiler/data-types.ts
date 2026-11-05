@@ -2323,11 +2323,7 @@ export class DataTypeRegistry {
             !source ||
             !fields ||
             this.isClassStruct(name) ||
-            fields.some(
-                (field) =>
-                    (field.accessor && !dictionaryView) ||
-                    field.type.kind === "function",
-            )
+            fields.some((field) => field.accessor && !dictionaryView)
         )
             return undefined;
         return { ...source, document: true };
