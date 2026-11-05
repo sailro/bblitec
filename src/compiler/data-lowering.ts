@@ -13047,7 +13047,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                     const expression = value(member);
                     const own =
                         demand.demand.type === error.demand.type && expression
-                            ? this.context.dataTypes.documentDemandOf(
+                            ? this.context.dataTypes.structMemberDocumentDemand(
                                   this.context.checker.getTypeAtLocation(
                                       expression,
                                   ),

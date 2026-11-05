@@ -2334,6 +2334,21 @@ export class DataTypeRegistry {
      * accessor defined on one at run time), or undefined where the type has
      * it or no plain record holds it.
      */
+    /**
+     * The document demand naming one record type of a struct whose document
+     * demand (`documentRecordDemand`) names another: the struct's next record
+     * type, as the replay that moves the first off it would name it.
+     */
+    public structMemberDocumentDemand(
+        type: ts.Type,
+        node: ts.Node,
+    ): NativeRecordStorageDemand | undefined {
+        const record = this.checker.getNonNullableType(type);
+        return this.documentRecords.has(this.structIdentity(record))
+            ? undefined
+            : { ...this.recordDemand(record, node), document: true };
+    }
+
     public documentDemandOf(
         type: ts.Type,
         node: ts.Node,
