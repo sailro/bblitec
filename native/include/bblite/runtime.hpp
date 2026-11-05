@@ -572,6 +572,38 @@ struct SceneSkeletonHandle {
     std::uint32_t value = invalid_handle;
 };
 
+/** The rgba32float texels of a GPU texture the program made from its own floats. */
+struct GpuTextureTexels {
+    std::vector<float> rgba;
+    std::uint32_t width = 0;
+    std::uint32_t height = 0;
+};
+
+/**
+ * The identity of a GPU texture: the device generation it was created
+ * under and the allocation ordinal `publish_gpu_texture_identity` hands
+ * out. An ordinal rather than the object's address, so the shared record
+ * carries no foreign handle and a recycled address cannot alias an older
+ * texture. Generated readers compare identities and test `object` for
+ * zero, which no published identity carries. A texture the program made
+ * from its own floats (a VAT bake's) also carries those texels, which is
+ * what binding it samples.
+ */
+struct GpuTextureIdentity {
+    std::uint64_t generation = 0;
+    std::uint64_t object = 0;
+    std::shared_ptr<const GpuTextureTexels> texels;
+    friend bool operator==(const GpuTextureIdentity&, const GpuTextureIdentity&) = default;
+};
+
+/** The texels behind a program-made texture; any other texture's are the backend's alone. */
+inline const GpuTextureTexels& gpu_texture_texels(const GpuTextureIdentity& texture) {
+    if (!texture.texels)
+        throw std::runtime_error(
+            "Only a texture the program made from its own data exposes its size natively.");
+    return *texture.texels;
+}
+
 /** One baked vertex-animation texture (`VatBakeResult`). */
 struct VatBake {
     std::uint32_t value = invalid_handle;
@@ -612,7 +644,8 @@ struct VatClipRow {
 struct VatBakeRecord {
     std::uint32_t bone_count = 0;
     std::uint32_t frame_count = 0;
-    std::vector<float> data;
+    /** `texture`: the baked texels; bakes of bit-equal payloads share one, as the pin's upload does. */
+    GpuTextureIdentity texture;
     std::vector<VatClipRow> clips;
     /** `boneOrigins` / `boneMatrices`: bone index -> its per-frame capture, when prepared with one. */
     js::Nullable<js::Map<double, js::F32Array>> bone_origins, bone_matrices;
@@ -2118,6 +2151,9 @@ struct TextureData {
     std::shared_ptr<const std::vector<CompressedTexture>> compressed_alternatives;
     std::shared_ptr<GpuTextureSource> gpu_source;
     std::shared_ptr<RenderTextureData> render_source;
+    // A program-made texture's rgba32float texels (`GpuTextureIdentity`),
+    // uploaded as they are: one level, no encoding, sampled unfiltered.
+    std::shared_ptr<const GpuTextureTexels> float_texels;
 
     /**
      * Whether this slot carries an image at all.
@@ -2129,7 +2165,8 @@ struct TextureData {
      * drifts.
      */
     bool has_image() const {
-        return gpu_source || render_source || !bytes.empty() || !compressed.mips.empty();
+        return gpu_source || render_source || float_texels || !bytes.empty() ||
+               !compressed.mips.empty();
     }
 };
 
@@ -4537,20 +4574,6 @@ struct GpuDeviceIdentity {
     friend bool operator==(const GpuDeviceIdentity&, const GpuDeviceIdentity&) = default;
 };
 /**
- * The identity of a texture a backend published for the device-recovery
- * observers: the device generation it was created under and the
- * allocation ordinal `publish_gpu_texture_identity` hands out. An ordinal
- * rather than the object's address, so the shared record carries no
- * foreign handle and a recycled address cannot alias an older texture.
- * Generated readers compare identities and test `object` for zero, which
- * no published identity carries.
- */
-struct GpuTextureIdentity {
-    std::uint64_t generation = 0;
-    std::uint64_t object = 0;
-    friend bool operator==(const GpuTextureIdentity&, const GpuTextureIdentity&) = default;
-};
-/**
  * A `getOrCreateSampler` sampler: the pool keeps one object per device and
  * canonical descriptor, so a sampler is that pair and equal pairs are one
  * object.
@@ -4558,7 +4581,15 @@ struct GpuTextureIdentity {
 struct GpuSampler {
     GpuDeviceIdentity device{};
     TextureSamplerState state{};
+    /** 0 for a pooled sampler; each `device.createSampler` result is an object of its own. */
+    std::uint64_t object = 0;
     friend bool operator==(const GpuSampler&, const GpuSampler&) = default;
+};
+/** `texture.createView()`: the whole texture, a new view object each call. */
+struct GpuTextureView {
+    GpuTextureIdentity texture;
+    std::uint64_t object = 0;
+    friend bool operator==(const GpuTextureView&, const GpuTextureView&) = default;
 };
 struct EnvironmentIdentity {
     Engine* engine = nullptr;
@@ -4643,6 +4674,8 @@ struct Engine {
     std::function<void()> flush_gpu_retirements;
     std::function<void()> dispose_gpu_retirements;
     std::uint64_t device_generation = 1;
+    /** The last ordinal a GPU texture, view or device-made sampler took. */
+    std::uint64_t published_gpu_objects = 0;
     bool device_disposed = false;
     std::uint64_t draw_call_count = 0;
     OwnerLifetime lifetime;
@@ -5262,6 +5295,28 @@ inline js::Nullable<StoredTexture> transmission_grab_depth_texture(Engine& engin
     return StoredTexture{retained_render_texture(engine, reference)};
 }
 
+/**
+ * A `Texture2D` record made of GPU parts: the pin's bindings sample its view
+ * through its sampler, so it is the view's texels at the sampler's state. The
+ * fields they do not read must agree: the view is of the record's own
+ * texture, at that texture's size.
+ */
+inline FileTexture gpu_parts_texture(Engine& engine, const GpuTextureIdentity& texture,
+                                     const GpuTextureView& view, const GpuSampler& sampler,
+                                     double width, double height) {
+    const GpuTextureTexels& texels = gpu_texture_texels(view.texture);
+    if (!(view.texture == texture) || width != texels.width || height != texels.height)
+        throw std::runtime_error(
+            "A Texture2D made of GPU parts binds a view of its own texture at that texture's size.");
+    FileTexture result;
+    result.data.float_texels = view.texture.texels;
+    result.data.sampler = sampler.state;
+    result.width = texels.width;
+    result.height = texels.height;
+    result.identity = engine.next_file_texture_identity++;
+    return result;
+}
+
 /** A `loadTexture2D` record before its image is read: sampler, upload flags and identity. */
 inline FileTexture file_texture_record(Engine& engine, TextureSamplerState sampler, bool invert_y,
                                        bool srgb, bool premultiply_alpha) {
@@ -5288,8 +5343,6 @@ struct Engine::DeviceRecoveryState {
     std::unordered_map<const SceneState*, std::size_t> renderable_counts;
     std::vector<GpuTextureIdentity> shadows;
     GpuTextureIdentity fallback;
-    /** The last ordinal `publish_gpu_texture_identity` handed out. */
-    std::uint64_t published_textures = 0;
     /** `_armedDevice`: the generation whose loss the handler recovers, 0 for none. */
     double armed_device = 0.0;
     /** `_forceNextLoss`. */
@@ -5308,11 +5361,18 @@ struct Engine::DeviceRecoveryState {
  * exactly when the same texture stood behind both.
  */
 inline GpuTextureIdentity publish_gpu_texture_identity(Engine& engine) {
-    return {engine.device_generation, ++engine.device_recovery->published_textures};
+    return {engine.device_generation, ++engine.published_gpu_objects, nullptr};
 }
 
 inline GpuDeviceIdentity gpu_device_identity(Engine& engine) {
     return {&engine, engine.device_generation};
+}
+inline GpuSampler create_device_sampler(const GpuDeviceIdentity& device,
+                                        TextureSamplerState state) {
+    return {device, state, ++device.engine->published_gpu_objects};
+}
+inline GpuTextureView create_texture_view(Engine& engine, const GpuTextureIdentity& texture) {
+    return {texture, ++engine.published_gpu_objects};
 }
 /** `texture.sampler = sampler` on a render target's texture or depth facade. */
 inline void set_render_texture_sampler(Engine& engine, const RenderTextureRef& texture,

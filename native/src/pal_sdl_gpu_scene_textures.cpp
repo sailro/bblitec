@@ -66,9 +66,37 @@ SDL_GPUTexture* upload_compressed_texture(SDL_GPUDevice* device,
     return texture_owner.release();
 }
 
+SDL_GPUTexture* create_float_texture(SDL_GPUDevice* device, std::uint32_t width,
+                                     std::uint32_t height, const char* label) {
+    SDL_GPUTextureCreateInfo texture_info{};
+    texture_info.type = SDL_GPU_TEXTURETYPE_2D;
+    texture_info.format = SDL_GPU_TEXTUREFORMAT_R32G32B32A32_FLOAT;
+    texture_info.usage = SDL_GPU_TEXTUREUSAGE_SAMPLER;
+    texture_info.width = width;
+    texture_info.height = height;
+    texture_info.layer_count_or_depth = 1;
+    texture_info.num_levels = 1;
+    texture_info.sample_count = SDL_GPU_SAMPLECOUNT_1;
+    SDL_GPUTexture* texture = SDL_CreateGPUTexture(device, &texture_info);
+    if (!texture)
+        gpu_error(label);
+    return texture;
+}
+
 SDL_GPUTexture* upload_texture(SDL_GPUDevice* device, const TextureData& texture_data, bool srgb,
                                std::array<std::uint8_t, 4> fallback,
                                std::array<std::uint32_t, 2>* size) {
+    if (const auto& texels = texture_data.float_texels) {
+        if (size)
+            *size = {texels->width, texels->height};
+        OwnedSdlTexture texture{create_float_texture(device, texels->width, texels->height,
+                                                     "SDL_CreateGPUTexture float material"),
+                                {device}};
+        upload_2d_texture_into(device, texture.get(), texels->rgba.data(),
+                               texels->rgba.size() * sizeof(float), texels->width, texels->height,
+                               "float material image");
+        return texture.release();
+    }
     // A compressed slot carries its own format and its own chain, so the
     // encoding flag has nothing to select: the container states which of
     // the two views its blocks decode through.

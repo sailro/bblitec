@@ -1336,6 +1336,23 @@ const sceneInputs: readonly SceneInput[] = [
         },
     },
     {
+        // A VAT bake's texture bound by hand: two bit-equal payloads share
+        // one texture, and a shader material reads it in both stages through
+        // a Texture2D built from its GPU parts.
+        id: "regression-vat-bone-texture",
+        name: "Regression - VAT Bone Texture",
+        source: "examples/regression-vat-bone-texture.ts",
+        sourceOrigin: "bblitec-regression",
+        title: "Babylon Lite Native - VAT Bone Texture",
+        parity: {
+            maxFullMad: 0.001,
+            maxForegroundMad: 0.001,
+            backgroundColor: [26, 38, 26],
+            backgroundThreshold: 30,
+            nativeEnvironment: fixedCaptureEnvironment(),
+        },
+    },
+    {
         // Scene 214 with enableCsmStaticCache: quiet casters demote into
         // the static cache, and a caster moved every frame stays dynamic
         // and draws over the copied cache layers.

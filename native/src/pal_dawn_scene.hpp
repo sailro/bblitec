@@ -2176,6 +2176,13 @@ WGPUTexture upload_material_texture(DawnState& state, const TextureData& texture
                                     const std::array<std::uint8_t, 4>& fallback,
                                     std::uint32_t& out_mip_count);
 
+/** A sampled rgba32float texture of one level, `width` x `height`. */
+WGPUTexture create_float_texture(WGPUDevice device, std::uint32_t width, std::uint32_t height,
+                                 const char* failure);
+/** Its whole level from tightly packed rgba32float rows, through the queue. */
+void write_float_texture(WGPUQueue queue, WGPUTexture texture, const float* data,
+                         std::uint32_t width, std::uint32_t height);
+
 // `.babylon` reflection cube, matching the pinned loadCubeTexture:
 // rgba8unorm faces with a full GPU-blit mip chain generated per face.
 WGPUTexture upload_reflection_cube(DawnState& state,
@@ -2497,9 +2504,6 @@ void sync_morph_weights(DawnState& state, DawnMesh& mesh, const ModelGeometry& g
 #endif
 
 #if BBLITE_PBR_VARIANTS > 0 || BBLITE_STANDARD_SKELETON
-WGPUTexture create_pinned_float_texture(DawnState& state, std::uint32_t width, std::uint32_t height,
-                                        const char* failure);
-
 /**
  * The bone palette as the pin's own texture.
  *
@@ -2515,10 +2519,6 @@ void write_pinned_bone_texture(DawnState& state, DawnMesh& mesh, const MeshRecor
 
 #if BBLITE_PBR_VARIANTS > 0
 #if BBLITE_VAT
-/** One rgba32float upload of `height` rows through the queue. */
-void write_pinned_float_texture(DawnState& state, WGPUTexture texture, const float* data,
-                                const VatTextureLayout& layout);
-
 /**
  * The baked VAT as the pin's own texture, plus the settings block the
  * vertex stage reads its row range and clock from.

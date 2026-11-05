@@ -74,3 +74,41 @@ test("getOrCreateSampler refuses what the backends' samplers cannot hold", () =>
             descriptor,
         );
 });
+
+test("device.createSampler applies WebGPU's descriptor defaults and makes a sampler per call", () => {
+    const result = compileSource(`
+        import { createEngine } from "@babylonjs/lite";
+        const engine = await createEngine(document.getElementById("renderCanvas") as HTMLCanvasElement);
+        const device = (engine as unknown as { _device: GPUDevice })._device;
+        const plain = device.createSampler();
+        const linear = device.createSampler({ magFilter: "linear", minFilter: "linear", addressModeU: "repeat", lodMaxClamp: 4 });
+        console.log(plain, linear);
+    `);
+    const state = (name: string): string => {
+        const match = new RegExp(
+            `v_${name} = bbl::create_device_sampler\\(v_device, (bbl::TextureSamplerState\\{[^}]*\\})\\);`,
+        ).exec(result.cpp);
+        assert.ok(match, name);
+        return match[1]!;
+    };
+    assert.equal(
+        state("plain"),
+        "bbl::TextureSamplerState{bbl::TextureFilter::nearest, bbl::TextureFilter::nearest, bbl::TextureMipmapMode::nearest, bbl::TextureAddressMode::clamp, bbl::TextureAddressMode::clamp, 1.0f, 32.0f}",
+    );
+    assert.equal(
+        state("linear"),
+        "bbl::TextureSamplerState{bbl::TextureFilter::linear, bbl::TextureFilter::linear, bbl::TextureMipmapMode::nearest, bbl::TextureAddressMode::repeat, bbl::TextureAddressMode::clamp, 1.0f, 4.0f}",
+    );
+    for (const descriptor of ['{ compare: "less" }', "{ lodMinClamp: 1 }"])
+        assert.throws(
+            () =>
+                compileSource(`
+                import { createEngine } from "@babylonjs/lite";
+                const engine = await createEngine(document.getElementById("renderCanvas") as HTMLCanvasElement);
+                const device = (engine as unknown as { _device: GPUDevice })._device;
+                console.log(device.createSampler(${descriptor}));
+            `),
+            /sampler/i,
+            descriptor,
+        );
+});

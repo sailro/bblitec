@@ -1672,11 +1672,12 @@ export type ValueKind =
     | "engine"
     | "environment-textures"
     | "pbr-local-probe-set"
-    // A captured browser GPUDevice exists only so a structurally recognized
-    // thin-instance upload helper can be replaced as a unit. No generic raw
-    // device operation is part of the compiled surface.
+    // A captured browser GPUDevice: its identity, `createSampler`, and a
+    // structurally recognized thin-instance upload helper replaced as a
+    // unit. No other raw device operation is part of the compiled surface.
     | "gpu-device"
     | "gpu-texture"
+    | "gpu-texture-view"
     | "gpu-sampler"
     | "device-recovery"
     | "gpu-environment"

@@ -952,6 +952,17 @@ export const propertyRules: readonly PropertyRule[] = [
         helper: "bbl::gpu_device_identity",
         impure: true,
     },
+    // A GPU texture's size, natively known for the textures the program
+    // made from its own data: they carry their texels.
+    ...(["width", "height"] as const).map(
+        (property): PropertyRead => ({
+            owner: "gpu-texture",
+            property,
+            value: "number",
+            access: (texture) =>
+                `static_cast<double>(bbl::gpu_texture_texels(${texture}).${property})`,
+        }),
+    ),
     {
         owner: "gpu-device",
         property: "queue",
@@ -3829,6 +3840,14 @@ export class PropertyAccessLowerer {
             };
             const engine = this.context.requireEngine(owner, expression);
             const bake = recordAt(`${engine}.vat_bakes`, owner.cpp);
+            // The bake's rgba32float texture, its texels with it.
+            if (property === "texture")
+                return {
+                    kind: "gpu-texture",
+                    cpp: `${bake}.texture`,
+                    engineCpp: engine,
+                    dataType: { kind: "handle", handle: "gpu-texture" },
+                };
             if (Object.hasOwn(counts, property))
                 return {
                     kind: "number",

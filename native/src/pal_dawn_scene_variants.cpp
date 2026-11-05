@@ -430,21 +430,6 @@ void sync_morph_weights(DawnState& state, DawnMesh& mesh, const ModelGeometry& g
 
 #if (BBLITE_HAS_DAWN && BBLITE_HAS_PBR_RENDERER) && BBLITE_PINNED_MATERIALS &&                     \
     (BBLITE_PBR_VARIANTS > 0 || BBLITE_STANDARD_SKELETON)
-WGPUTexture create_pinned_float_texture(DawnState& state, std::uint32_t width, std::uint32_t height,
-                                        const char* failure) {
-    WGPUTextureDescriptor descriptor = WGPU_TEXTURE_DESCRIPTOR_INIT;
-    descriptor.dimension = WGPUTextureDimension_2D;
-    descriptor.size = {width, height, 1};
-    descriptor.format = WGPUTextureFormat_RGBA32Float;
-    descriptor.usage = WGPUTextureUsage_TextureBinding | WGPUTextureUsage_CopyDst;
-    descriptor.mipLevelCount = 1;
-    descriptor.sampleCount = 1;
-    DawnTexture texture{wgpuDeviceCreateTexture(state.device, &descriptor)};
-    if (!texture)
-        dawn_error(failure);
-    return texture.release();
-}
-
 void write_pinned_bone_texture(DawnState& state, DawnMesh& mesh, const MeshRecord& record) {
     sync_pinned_bone_palette(
         mesh, record,
@@ -455,36 +440,19 @@ void write_pinned_bone_texture(DawnState& state, DawnMesh& mesh, const MeshRecor
             if (mesh.pinned_bone_texture) {
                 wgpuTextureRelease(mesh.pinned_bone_texture);
             }
-            mesh.pinned_bone_texture = create_pinned_float_texture(
-                state, palette.width, palette.height, "pinned bone texture creation failed.");
+            mesh.pinned_bone_texture = create_float_texture(
+                state.device, palette.width, palette.height, "pinned bone texture creation failed.");
             mesh.pinned_bone_view = create_dawn_texture_view(mesh.pinned_bone_texture, nullptr);
         },
         [&](const float* floats, const BonePaletteLayout& palette) {
-            WGPUTexelCopyTextureInfo destination = WGPU_TEXEL_COPY_TEXTURE_INFO_INIT;
-            destination.texture = mesh.pinned_bone_texture;
-            WGPUTexelCopyBufferLayout layout = WGPU_TEXEL_COPY_BUFFER_LAYOUT_INIT;
-            layout.bytesPerRow = palette.bytes;
-            layout.rowsPerImage = palette.height;
-            WGPUExtent3D extent{palette.width, palette.height, 1};
-            DawnGpuDevice{state.queue}.write_texture(&destination, floats, palette.bytes, &layout,
-                                                     &extent);
+            write_float_texture(state.queue, mesh.pinned_bone_texture, floats, palette.width,
+                                palette.height);
         });
 }
 #endif
 
 #if (BBLITE_HAS_DAWN && BBLITE_HAS_PBR_RENDERER) && BBLITE_PINNED_MATERIALS &&                     \
     BBLITE_PBR_VARIANTS > 0 && BBLITE_VAT
-void write_pinned_float_texture(DawnState& state, WGPUTexture texture, const float* data,
-                                const VatTextureLayout& layout) {
-    WGPUTexelCopyTextureInfo destination = WGPU_TEXEL_COPY_TEXTURE_INFO_INIT;
-    destination.texture = texture;
-    WGPUTexelCopyBufferLayout copy = WGPU_TEXEL_COPY_BUFFER_LAYOUT_INIT;
-    copy.bytesPerRow = layout.row_bytes;
-    copy.rowsPerImage = layout.height;
-    WGPUExtent3D extent{layout.width, layout.height, 1};
-    DawnGpuDevice{state.queue}.write_texture(&destination, data, layout.bytes, &copy, &extent);
-}
-
 void write_pinned_vat_texture(DawnState& state, DawnMesh& mesh, const MeshRecord& record,
                               const Engine& engine) {
     sync_pinned_vat(
@@ -494,12 +462,13 @@ void write_pinned_vat_texture(DawnState& state, DawnMesh& mesh, const MeshRecord
                 wgpuTextureViewRelease(mesh.pinned_vat_view);
             if (mesh.pinned_vat_texture)
                 wgpuTextureRelease(mesh.pinned_vat_texture);
-            mesh.pinned_vat_texture = create_pinned_float_texture(
-                state, layout.width, layout.height, "pinned VAT texture creation failed.");
+            mesh.pinned_vat_texture = create_float_texture(
+                state.device, layout.width, layout.height, "pinned VAT texture creation failed.");
             mesh.pinned_vat_view = create_dawn_texture_view(mesh.pinned_vat_texture, nullptr);
             if (!mesh.pinned_vat_view)
                 dawn_error("pinned VAT texture view creation failed.");
-            write_pinned_float_texture(state, mesh.pinned_vat_texture, bake.data.data(), layout);
+            write_float_texture(state.queue, mesh.pinned_vat_texture,
+                                bake.texture.texels->rgba.data(), layout.width, layout.height);
         },
         [&](const VatData& vat) {
             if (!mesh.pinned_vat_settings) {
@@ -523,16 +492,16 @@ void write_pinned_vat_texture(DawnState& state, DawnMesh& mesh, const MeshRecord
                 wgpuTextureViewRelease(mesh.pinned_vat_instance_view);
             if (mesh.pinned_vat_instance_texture)
                 wgpuTextureRelease(mesh.pinned_vat_instance_texture);
-            mesh.pinned_vat_instance_texture = create_pinned_float_texture(
-                state, vat.instance_texels, 1u, "pinned VAT instance texture creation failed.");
+            mesh.pinned_vat_instance_texture = create_float_texture(
+                state.device, vat.instance_texels, 1u, "pinned VAT instance texture creation failed.");
             mesh.pinned_vat_instance_view =
                 create_dawn_texture_view(mesh.pinned_vat_instance_texture, nullptr);
             if (!mesh.pinned_vat_instance_view)
                 dawn_error("pinned VAT instance view creation failed.");
         },
         [&](const VatData& vat, const VatTextureLayout& layout) {
-            write_pinned_float_texture(state, mesh.pinned_vat_instance_texture,
-                                       vat.instance_params.data(), layout);
+            write_float_texture(state.queue, mesh.pinned_vat_instance_texture,
+                                vat.instance_params.data(), layout.width, layout.height);
         }
 #else
         [](const VatData&) {}, [](const VatData&, const VatTextureLayout&) {}

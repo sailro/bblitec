@@ -848,6 +848,7 @@ export function platformHandleKind(
     | "touch"
     | "gpu-device"
     | "gpu-texture"
+    | "gpu-texture-view"
     | "gpu-sampler"
     | "custom-event"
     | "dom-event"
@@ -856,6 +857,7 @@ export function platformHandleKind(
     if (declaredIn(type.symbol, "dom", "webgpu")) {
         if (libraryName(type) === "GPUDevice") return "gpu-device";
         if (libraryName(type) === "GPUTexture") return "gpu-texture";
+        if (libraryName(type) === "GPUTextureView") return "gpu-texture-view";
         if (libraryName(type) === "GPUSampler") return "gpu-sampler";
     }
     if (!type.symbol || !declaredInDomLibrary(type.symbol)) return undefined;

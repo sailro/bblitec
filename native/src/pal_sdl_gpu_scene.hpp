@@ -1559,9 +1559,6 @@ void push_mesh_stage_blocks(SDL_GPUCommandBuffer* command, const Scene& scene, c
 void upload_pinned_float_texture(GpuState& state, SDL_GPUTexture* texture, const float* data,
                                  std::uint32_t width, std::uint32_t height, std::uint32_t bytes);
 
-SDL_GPUTexture* create_pinned_float_texture(GpuState& state, std::uint32_t width,
-                                            std::uint32_t height, const char* label);
-
 /**
  * The nearest-clamp sampler every palette row is read through.
  *
@@ -1838,6 +1835,10 @@ SDL_GPUTexture* upload_compressed_texture(SDL_GPUDevice* device,
 SDL_GPUTexture* upload_texture(SDL_GPUDevice* device, const TextureData& texture_data, bool srgb,
                                std::array<std::uint8_t, 4> fallback,
                                std::array<std::uint32_t, 2>* size = nullptr);
+
+/** A sampled rgba32float texture of one level, `width` x `height`. */
+SDL_GPUTexture* create_float_texture(SDL_GPUDevice* device, std::uint32_t width,
+                                     std::uint32_t height, const char* label);
 
 SDL_GPUTexture* upload_cube_texture(SDL_GPUDevice* device,
                                     const std::array<TextureData, 6>* texture_data);

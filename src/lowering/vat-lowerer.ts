@@ -27,6 +27,8 @@ export class VatLowerer {
 
     public lower(options: {
         instances: boolean;
+        /** `bakeVat` reached: it stops each clip through the group module. */
+        baked?: boolean;
         time?: boolean;
         instanceStorage?: boolean;
         prepared?: boolean;
@@ -166,20 +168,22 @@ constexpr float kVatDefaultFrameRate = ${this.context.floatLiteral(
                 defaultFrameRate,
             )};
 
-${lowerGltfVatBinding(this.context)}
-
 MeshRecord& vat_mesh(Engine& engine, MeshHandle mesh) {
     return ${recordAt("engine.meshes", "mesh")};
 }
 
-// A new bake's handle is its slot in the engine's list.
+${
+    options.baked || options.prepared
+        ? `// A new bake's handle is its slot in the engine's list.
 VatBake vat_store_bake(Engine& engine, VatBakeRecord bake) {
     engine.vat_bakes.push_back(std::move(bake));
     return VatBake{
         static_cast<std::uint32_t>(engine.vat_bakes.size() - 1)};
 }
 
-VatData& vat_data(Engine& engine, VatHandle handle) {
+`
+        : ""
+}VatData& vat_data(Engine& engine, VatHandle handle) {
     MeshRecord& record = vat_mesh(engine, handle.mesh);
     if (!record.has_vat) {
         throw std::runtime_error("VatHandle names a mesh with no VAT.");
@@ -196,112 +200,9 @@ const VatClipRow* vat_clip(
     return nullptr;
 }
 
-// clipFrameCount: inclusive of frame zero, so a one-second 60fps clip
-// bakes 61 rows.
-std::uint32_t vat_clip_frames(float duration, float fps) {
-    const double frames =
-        bbl::js::round_js(static_cast<double>(duration) *
-                   static_cast<double>(fps)) +
-        1.0;
-    return static_cast<std::uint32_t>(std::max(1.0, frames));
-}
-
 } // namespace
 
-VatBake bake_vat(
-    Engine& engine,
-    MeshHandle mesh,
-    const std::vector<AnimationGroupHandle>& groups) {
-    MeshRecord& record = vat_mesh(engine, mesh);
-    gltf_vat_require_skeleton(record.skinned && !record.has_vat, record.name);
-    VatBakeRecord bake;
-    // Every clip contributes a contiguous row block, clip 0 first, in the
-    // order the container hands them over -- the pin's own layout, which
-    // the clip row map then indexes.
-    std::uint32_t total_frames = 0;
-    std::vector<std::uint32_t> frames_per_clip;
-    frames_per_clip.reserve(groups.size());
-    for (const AnimationGroupHandle group : groups) {
-        if (group.value >= engine.animation_groups.size()) {
-            throw std::runtime_error("bakeVat names no such clip.");
-        }
-        const AnimationGroupRecord& clip_record =
-            ${recordAt("engine.animation_groups", "group")};
-        if (clip_record.asset >= engine.assets.size()) {
-            throw std::runtime_error("bakeVat clip has no asset.");
-        }
-        const AssetRecord& asset = engine.assets[clip_record.asset];
-        const bool has_binding = gltf_vat_binding_of(
-            record.skinned && !record.has_vat,
-            static_cast<bool>(asset.animation_has_skeleton),
-            [&]() { return asset.animation_has_skeleton(mesh); });
-        const auto palette = has_binding && asset.animation_bone_palette
-            ? asset.animation_bone_palette(mesh)
-            : std::vector<std::array<float, 16>>{};
-        gltf_vat_require_binding(has_binding,
-            static_cast<double>(palette.size()),
-            static_cast<double>(record.bone_matrices.size()), record.name, clip_record.name);
-        if (!asset.animation_cpu_go_to_frame || !asset.animation_bone_palette) {
-            throw std::runtime_error("CPU-only animation evaluation is unavailable for this animation controller");
-        }
-        const float duration = asset.clip_duration
-            ? asset.clip_duration(clip_record.clip)
-            : 0.0f;
-        const std::uint32_t frames =
-            vat_clip_frames(duration, kVatDefaultFrameRate);
-        frames_per_clip.push_back(frames);
-        bake.clips.push_back(VatClipRow{
-            clip_record.name,
-            static_cast<double>(total_frames),
-            static_cast<double>(frames),
-            static_cast<double>(kVatDefaultFrameRate)});
-        total_frames += frames;
-    }
-    bake.frame_count = std::max(1u, total_frames);
-    // Refused before the seek, not after: a default-constructed handle is
-    // index 0, so seeking one would either throw group_record's own
-    // "Invalid animation group handle" -- naming the wrong thing -- or,
-    // when the engine holds groups from another asset, silently pose the
-    // mesh from an unrelated clip.
-    if (groups.empty()) {
-        throw std::runtime_error(
-            "bakeVat: the container published no animation groups, so "
-            "there is no clip to bake.");
-    }
-    bake.bone_count =
-        static_cast<std::uint32_t>(record.bone_matrices.size());
-    if (bake.bone_count == 0) {
-        throw std::runtime_error(
-            "bakeVat: the mesh published no bone palette to bake.");
-    }
-    const std::size_t floats_per_frame =
-        static_cast<std::size_t>(bake.bone_count) * 16u;
-    bake.data.assign(
-        static_cast<std::size_t>(bake.frame_count) * floats_per_frame,
-        0.0f);
-    std::size_t row = 0;
-    for (std::size_t index = 0; index < groups.size(); ++index) {
-        const AnimationGroupRecord& clip_record = ${recordAt("engine.animation_groups", "groups[index]")};
-        const AssetRecord& asset = engine.assets[clip_record.asset];
-        const std::uint32_t frames = frames_per_clip[index];
-        for (std::uint32_t frame = 0; frame < frames; ++frame) {
-            asset.animation_cpu_go_to_frame(clip_record.clip, static_cast<double>(frame));
-            const auto matrices = asset.animation_bone_palette(mesh);
-            for (std::size_t bone = 0; bone < bake.bone_count; ++bone) {
-                std::copy_n(
-                    matrices.at(bone).data(),
-                    16,
-                    bake.data.data() + row * floats_per_frame + bone * 16);
-            }
-            ++row;
-        }
-        // stopAnimation after each clip: the bake replaces live playback.
-        stop_animation(engine, groups[index]);
-    }
-    return vat_store_bake(engine, std::move(bake));
-}
-
-VatHandle attach_vat(
+${options.baked ? this.lowerBake() : ""}VatHandle attach_vat(
     Engine& engine,
     MeshHandle mesh,
     VatBake baked,
@@ -643,15 +544,157 @@ js::Array<VatBake> create_vat_bakes(
         // A payload is usually a view of a fetched bundle, so its bytes are
         // copied from the buffer rather than iterated.
         const auto bytes = bbl::js::typed_array_bytes(source.data);
-        bake.data.resize(source.data.size());
-        std::memcpy(bake.data.data(), bytes.data(), bytes.size());
+        auto texels = std::make_shared<GpuTextureTexels>();
+        texels->width = bake.bone_count * 4u;
+        texels->height = bake.frame_count;
+        texels->rgba.resize(source.data.size());
+        std::memcpy(texels->rgba.data(), bytes.data(), bytes.size());
+        bake.texture.texels = std::move(texels);
         validated.push_back(std::move(bake));
     }
+    // uploadPreparedMany: payloads of one bone count and bit-equal data
+    // share one texture.
+    std::vector<GpuTextureIdentity> unique;
     js::Array<VatBake> results;
-    for (VatBakeRecord& bake : validated)
+    for (VatBakeRecord& bake : validated) {
+        const GpuTextureTexels& texels = *bake.texture.texels;
+        const auto shared = std::find_if(unique.begin(), unique.end(),
+            [&](const GpuTextureIdentity& candidate) {
+                return candidate.texels->width == texels.width &&
+                       candidate.texels->rgba.size() == texels.rgba.size() &&
+                       std::memcmp(candidate.texels->rgba.data(), texels.rgba.data(),
+                                   texels.rgba.size() * sizeof(float)) == 0;
+            });
+        if (shared != unique.end()) {
+            bake.texture = *shared;
+        } else {
+            auto texture = publish_gpu_texture_identity(engine);
+            texture.texels = std::move(bake.texture.texels);
+            bake.texture = unique.emplace_back(std::move(texture));
+        }
         results.push_back(vat_store_bake(engine, std::move(bake)));
+    }
     return results;
 }
+`;
+    }
+
+    /** `bakeVat`: the clip-by-clip pose bake into a new texture. */
+    private lowerBake(): string {
+        return `namespace {
+
+${lowerGltfVatBinding(this.context)}
+
+// clipFrameCount: inclusive of frame zero, so a one-second 60fps clip
+// bakes 61 rows.
+std::uint32_t vat_clip_frames(float duration, float fps) {
+    const double frames =
+        bbl::js::round_js(static_cast<double>(duration) *
+                   static_cast<double>(fps)) +
+        1.0;
+    return static_cast<std::uint32_t>(std::max(1.0, frames));
+}
+
+} // namespace
+
+VatBake bake_vat(
+    Engine& engine,
+    MeshHandle mesh,
+    const std::vector<AnimationGroupHandle>& groups) {
+    MeshRecord& record = vat_mesh(engine, mesh);
+    gltf_vat_require_skeleton(record.skinned && !record.has_vat, record.name);
+    VatBakeRecord bake;
+    // Every clip contributes a contiguous row block, clip 0 first, in the
+    // order the container hands them over -- the pin's own layout, which
+    // the clip row map then indexes.
+    std::uint32_t total_frames = 0;
+    std::vector<std::uint32_t> frames_per_clip;
+    frames_per_clip.reserve(groups.size());
+    for (const AnimationGroupHandle group : groups) {
+        if (group.value >= engine.animation_groups.size()) {
+            throw std::runtime_error("bakeVat names no such clip.");
+        }
+        const AnimationGroupRecord& clip_record =
+            ${recordAt("engine.animation_groups", "group")};
+        if (clip_record.asset >= engine.assets.size()) {
+            throw std::runtime_error("bakeVat clip has no asset.");
+        }
+        const AssetRecord& asset = engine.assets[clip_record.asset];
+        const bool has_binding = gltf_vat_binding_of(
+            record.skinned && !record.has_vat,
+            static_cast<bool>(asset.animation_has_skeleton),
+            [&]() { return asset.animation_has_skeleton(mesh); });
+        const auto palette = has_binding && asset.animation_bone_palette
+            ? asset.animation_bone_palette(mesh)
+            : std::vector<std::array<float, 16>>{};
+        gltf_vat_require_binding(has_binding,
+            static_cast<double>(palette.size()),
+            static_cast<double>(record.bone_matrices.size()), record.name, clip_record.name);
+        if (!asset.animation_cpu_go_to_frame || !asset.animation_bone_palette) {
+            throw std::runtime_error("CPU-only animation evaluation is unavailable for this animation controller");
+        }
+        const float duration = asset.clip_duration
+            ? asset.clip_duration(clip_record.clip)
+            : 0.0f;
+        const std::uint32_t frames =
+            vat_clip_frames(duration, kVatDefaultFrameRate);
+        frames_per_clip.push_back(frames);
+        bake.clips.push_back(VatClipRow{
+            clip_record.name,
+            static_cast<double>(total_frames),
+            static_cast<double>(frames),
+            static_cast<double>(kVatDefaultFrameRate)});
+        total_frames += frames;
+    }
+    bake.frame_count = std::max(1u, total_frames);
+    // Refused before the seek, not after: a default-constructed handle is
+    // index 0, so seeking one would either throw group_record's own
+    // "Invalid animation group handle" -- naming the wrong thing -- or,
+    // when the engine holds groups from another asset, silently pose the
+    // mesh from an unrelated clip.
+    if (groups.empty()) {
+        throw std::runtime_error(
+            "bakeVat: the container published no animation groups, so "
+            "there is no clip to bake.");
+    }
+    bake.bone_count =
+        static_cast<std::uint32_t>(record.bone_matrices.size());
+    if (bake.bone_count == 0) {
+        throw std::runtime_error(
+            "bakeVat: the mesh published no bone palette to bake.");
+    }
+    const std::size_t floats_per_frame =
+        static_cast<std::size_t>(bake.bone_count) * 16u;
+    auto texels = std::make_shared<GpuTextureTexels>();
+    texels->width = bake.bone_count * 4u;
+    texels->height = bake.frame_count;
+    texels->rgba.assign(
+        static_cast<std::size_t>(bake.frame_count) * floats_per_frame,
+        0.0f);
+    std::size_t row = 0;
+    for (std::size_t index = 0; index < groups.size(); ++index) {
+        const AnimationGroupRecord& clip_record = ${recordAt("engine.animation_groups", "groups[index]")};
+        const AssetRecord& asset = engine.assets[clip_record.asset];
+        const std::uint32_t frames = frames_per_clip[index];
+        for (std::uint32_t frame = 0; frame < frames; ++frame) {
+            asset.animation_cpu_go_to_frame(clip_record.clip, static_cast<double>(frame));
+            const auto matrices = asset.animation_bone_palette(mesh);
+            for (std::size_t bone = 0; bone < bake.bone_count; ++bone) {
+                std::copy_n(
+                    matrices.at(bone).data(),
+                    16,
+                    texels->rgba.data() + row * floats_per_frame + bone * 16);
+            }
+            ++row;
+        }
+        // stopAnimation after each clip: the bake replaces live playback.
+        stop_animation(engine, groups[index]);
+    }
+    bake.texture = publish_gpu_texture_identity(engine);
+    bake.texture.texels = std::move(texels);
+    return vat_store_bake(engine, std::move(bake));
+}
+
 `;
     }
 

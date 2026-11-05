@@ -4322,7 +4322,7 @@ public:
                     texture = state.esm_blurs[generator.esm_index].blur_v;
 #endif
                 recovery.shadows[i] = {engine.device_generation,
-                                       reinterpret_cast<std::uintptr_t>(texture)};
+                                       reinterpret_cast<std::uintptr_t>(texture), nullptr};
             }
 #endif
             recovery.resources_ready = true;

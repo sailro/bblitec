@@ -1,3 +1,4 @@
+import { texture2DFromParts } from "../data-sinks/resources.js";
 import { isPbrMaterialValue } from "../values/model.js";
 import {
     compileCreateExternalTexture,
@@ -1396,8 +1397,9 @@ function compileSetShaderTexture(
             argumentAt(call, 1),
             "Shader texture names require a string.",
         );
+    const given = context.compileValue(argumentAt(call, 2));
     let texture = context.bindings.pinValueToTemporary(
-        context.compileValue(argumentAt(call, 2)),
+        texture2DFromParts(context, given, argumentAt(call, 2)) ?? given,
         "shader_texture",
         call,
     );

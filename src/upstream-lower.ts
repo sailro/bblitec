@@ -1486,6 +1486,7 @@ ${lowerThinInstanceSync(context)}
         emitReached("upstream/src/vat.cpp", () =>
             new VatLowerer(context).lower({
                 instances: features.includes("mesh:vat-instances"),
+                baked: features.includes("animation:gltf-groups"),
                 time: features.includes("mesh:vat-time"),
                 instanceStorage: features.includes("mesh:vat-instance-storage"),
                 prepared: features.includes("mesh:vat-prepared"),

@@ -4657,7 +4657,8 @@ public:
         if (engine.device_recovery) {
             auto& recovery = *engine.device_recovery;
             recovery.environments[scene.state.get()] = {
-                engine.device_generation, reinterpret_cast<std::uintptr_t>(state.environment)};
+                engine.device_generation, reinterpret_cast<std::uintptr_t>(state.environment),
+                nullptr};
             std::size_t renderable_count = state.meshes.size();
 #if BBLITE_PINNED_BACKGROUNDS
             renderable_count += state.background_arms.size();
@@ -4668,7 +4669,7 @@ public:
             for (std::size_t i = 0; i < state.shadow_generators.size(); ++i) {
                 recovery.shadows[i] = {
                     engine.device_generation,
-                    reinterpret_cast<std::uintptr_t>(state.shadow_generators[i].map)};
+                    reinterpret_cast<std::uintptr_t>(state.shadow_generators[i].map), nullptr};
             }
 #endif
             recovery.resources_ready = true;

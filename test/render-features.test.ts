@@ -508,6 +508,98 @@ int main() {
     );
 });
 
+test("prepared VAT payloads share a texture exactly when the pin's upload shares one", async (t) => {
+    const vat = await importPinnedModule<{
+        createVatBakeResults(
+            this: void,
+            engine: object,
+            prepared: readonly unknown[],
+        ): { texture: object }[];
+    }>("vat/vat-baker.js");
+    const engine = {
+        _device: {
+            createTexture: () => ({ destroy: () => {} }),
+            queue: { writeTexture: () => {} },
+        },
+    };
+    const clips = { walk: { fromRow: 0, frameCount: 2, fps: 30 } };
+    const zeros = new Float32Array(96);
+    const negativeZero = new Float32Array(96);
+    negativeZero[5] = -0;
+    // One data object twice, a bit-equal copy, a -0 lane, then the same
+    // length under another bone count, twice.
+    const payloads: [number, number, Float32Array][] = [
+        [2, 3, zeros],
+        [2, 3, zeros],
+        [2, 3, new Float32Array(96)],
+        [2, 3, negativeZero],
+        [1, 6, new Float32Array(96)],
+        [1, 6, new Float32Array(96)],
+    ];
+    const results = vat.createVatBakeResults(
+        engine,
+        payloads.map(([boneCount, frameCount, data]) => ({
+            boneCount,
+            frameCount,
+            data,
+            clips,
+        })),
+    );
+    const expected = results
+        .map((result) =>
+            results.findIndex(
+                (candidate) => candidate.texture === result.texture,
+            ),
+        )
+        .join(" ");
+    assert.equal(expected, "0 0 0 3 4 4");
+
+    const tools = optionalNativeFixtureTools(false);
+    if (!tools) {
+        t.skip("Native compiler unavailable");
+        return;
+    }
+    const lowered = new VatLowerer(new LoweringContext()).lower({
+        instances: false,
+        prepared: true,
+    });
+    const feed = payloads.map(
+        ([boneCount, frameCount, data]) =>
+            `payloads.push_back(payload(${boneCount}.0, ${frameCount}.0, ${Object.is(data[5], -0) ? "true" : "false"}));`,
+    );
+    runGeneratedProgram(
+        tools,
+        "render-features/vat-prepared-sharing",
+        `${lowered.source}
+#include <iostream>
+namespace bbl { void stop_animation(Engine&, AnimationGroupHandle) {} }
+using namespace bbl;
+PreparedVatPayload payload(double bones, double frames, bool negative_zero) {
+    PreparedVatPayload result;
+    result.bone_count = bones;
+    result.frame_count = frames;
+    result.data = js::F32Array(std::size_t{96});
+    if (negative_zero) result.data.store(5, -0.0f);
+    result.clips = {VatClipRow{"walk", 0.0, 2.0, 30.0}};
+    return result;
+}
+int main() {
+    Engine engine;
+    std::vector<PreparedVatPayload> payloads;
+    ${feed.join("\n    ")}
+    const auto bakes = create_vat_bakes(engine, payloads);
+    for (std::size_t index = 0; index < bakes.size(); ++index) {
+        const GpuTextureIdentity& texture = engine.vat_bakes.at(bakes.at(index).value).texture;
+        std::size_t first = 0;
+        while (!(engine.vat_bakes.at(bakes.at(first).value).texture == texture)) ++first;
+        std::cout << (index ? " " : "") << first;
+    }
+}
+`,
+        { timeoutMs: 10000, expectedOutput: expected },
+    );
+});
+
 test("a program's prepared VAT records lower to the native upload and attach", () => {
     const result = compileSource(`
         import { addToScene, attachVat, createEngine, createSceneContext, createVatBakeResults, loadGltf, registerScene, startEngine, type Mesh, type PreparedVatBakeResult, type TransformNode } from "@babylonjs/lite";

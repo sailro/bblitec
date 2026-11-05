@@ -10,6 +10,7 @@ export type HandleKind =
     | "asset"
     | "gpu-device"
     | "gpu-texture"
+    | "gpu-texture-view"
     | "gpu-sampler"
     | "device-recovery"
     | "gpu-environment"

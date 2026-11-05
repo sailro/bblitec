@@ -11,6 +11,33 @@ import { floatLiteral } from "../../cpp-literals.js";
 export interface SamplerIntrinsicContext
     extends IntrinsicCallContext, Pick<LoweringServices, "fail"> {}
 
+type SamplerDescriptorContext = Pick<LoweringServices, "compileValue" | "fail">;
+
+/** What a sampler descriptor's absent fields take. */
+interface SamplerDefaults {
+    readonly fields: ReadonlyMap<string, string | number>;
+    readonly lodMinClamp: number;
+    readonly lodMaxClamp: number;
+}
+
+/**
+ * WebGPU's own `GPUSamplerDescriptor` defaults, which `device.createSampler`
+ * applies: nearest filters, clamp-to-edge, LOD 0 to 32, no anisotropy.
+ */
+const DEVICE_SAMPLER_DEFAULTS: SamplerDefaults = {
+    fields: new Map<string, string | number>([
+        ["addressModeU", "clamp-to-edge"],
+        ["addressModeV", "clamp-to-edge"],
+        ["addressModeW", "clamp-to-edge"],
+        ["magFilter", "nearest"],
+        ["minFilter", "nearest"],
+        ["mipmapFilter", "nearest"],
+        ["maxAnisotropy", 1],
+    ]),
+    lodMinClamp: 0,
+    lodMaxClamp: 32,
+};
+
 const FILTERS: Readonly<Record<string, string>> = {
     nearest: "nearest",
     linear: "linear",
@@ -38,16 +65,65 @@ export function compileSamplerIntrinsic(
     const engine = context.compileValue(argumentAt(call, 0));
     context.expectKind(engine, "engine", argumentAt(call, 0));
     const key = pinnedSamplerKey(sharedPinnedContext());
-    const fields = new Map<string, string | number>(key.defaults);
-    let lodMinClamp = key.lodMinClamp;
-    let lodMaxClamp = key.lodMaxClamp;
-    const descriptor = call.arguments[1];
+    const state = samplerState(context, call, call.arguments[1], {
+        fields: key.defaults,
+        lodMinClamp: key.lodMinClamp,
+        lodMaxClamp: key.lodMaxClamp,
+    });
+    return {
+        kind: "gpu-sampler",
+        cpp: `bbl::GpuSampler{bbl::gpu_device_identity(${engine.cpp}), ${state}}`,
+        engineCpp: engine.cpp,
+        dataType: { kind: "handle", handle: "gpu-sampler" },
+    };
+}
+
+/**
+ * `device.createSampler(descriptor?)` on the engine's device: a new sampler
+ * object each call, its state WebGPU's defaults under the fields given.
+ */
+export function compileDeviceSampler(
+    context: SamplerDescriptorContext &
+        Pick<LoweringServices, "expectArgumentCount" | "requireEngine">,
+    call: ts.CallExpression,
+    device: Value,
+): Value {
+    context.expectArgumentCount(call, 0, 1);
+    const state = samplerState(
+        context,
+        call,
+        call.arguments[0],
+        DEVICE_SAMPLER_DEFAULTS,
+    );
+    return {
+        kind: "gpu-sampler",
+        cpp: `bbl::create_device_sampler(${device.cpp}, ${state})`,
+        engineCpp: context.requireEngine(device, call),
+        dataType: { kind: "handle", handle: "gpu-sampler" },
+    };
+}
+
+/**
+ * A descriptor's native sampler state over its defaults. Every field must
+ * be known at generation; the fields both backends cannot represent (a
+ * comparison, a LOD floor, a W address mode other than clamp-to-edge)
+ * refuse.
+ */
+function samplerState(
+    context: SamplerDescriptorContext,
+    call: ts.CallExpression,
+    descriptor: ts.Expression | undefined,
+    defaults: SamplerDefaults,
+): string {
+    const fields = new Map<string, string | number>(defaults.fields);
+    let lodMinClamp = defaults.lodMinClamp;
+    let lodMaxClamp = defaults.lodMaxClamp;
     if (descriptor) {
         const value = context.compileValue(descriptor);
         if (value.kind !== "record" || !value.recordProperties)
             return context.fail(
                 descriptor,
-                "getOrCreateSampler takes a descriptor generation knows.",
+                "A sampler descriptor must be known at generation.",
             );
         for (const [name, field] of Object.entries(value.recordProperties)) {
             // The label names the GPU object; the pool does not key it.
@@ -83,7 +159,10 @@ export function compileSamplerIntrinsic(
             context.fail(call, `Unknown sampler ${name} '${text(name)}'.`);
         return mode;
     };
-    if (lodMinClamp !== key.lodMinClamp || address("addressModeW") !== "clamp")
+    if (
+        lodMinClamp !== defaults.lodMinClamp ||
+        address("addressModeW") !== "clamp"
+    )
         context.fail(
             call,
             "A sampler with a LOD floor or a W address mode other than clamp-to-edge is not lowered.",
@@ -104,18 +183,13 @@ export function compileSamplerIntrinsic(
             call,
             "A sampler's maxAnisotropy is an integer in [1, 16], above 1 only with linear filters.",
         );
-    const state =
+    return (
         `bbl::TextureSamplerState{` +
         `bbl::TextureFilter::${filter("minFilter")}, ` +
         `bbl::TextureFilter::${filter("magFilter")}, ` +
         `bbl::TextureMipmapMode::${filter("mipmapFilter")}, ` +
         `bbl::TextureAddressMode::${address("addressModeU")}, ` +
         `bbl::TextureAddressMode::${address("addressModeV")}, ` +
-        `${floatLiteral(anisotropy)}, ${floatLiteral(lodMaxClamp)}}`;
-    return {
-        kind: "gpu-sampler",
-        cpp: `bbl::GpuSampler{bbl::gpu_device_identity(${engine.cpp}), ${state}}`,
-        engineCpp: engine.cpp,
-        dataType: { kind: "handle", handle: "gpu-sampler" },
-    };
+        `${floatLiteral(anisotropy)}, ${floatLiteral(lodMaxClamp)}}`
+    );
 }

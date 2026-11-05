@@ -42,7 +42,8 @@ import { compileFullscreenCall } from "./fullscreen.js";
 import { compileCanvasCaptureStream } from "./media-streams.js";
 import { timerCancellation } from "./workers.js";
 import { isDocumentReceiver } from "./dom-targets.js";
-import { isPinnedType, type DataType } from "./data-types.js";
+import { isPinnedType, platformHandleKind, type DataType } from "./data-types.js";
+import { compileDeviceSampler } from "./intrinsics/sampler.js";
 import {
     compileBooleanOptions,
     optionalOptionMember,
@@ -524,6 +525,30 @@ export class PlatformCalls {
                 return {
                     kind: "void",
                     cpp: `bbl::add_gpu_error_listener(${owner.cpp}, ${callback.cpp})`,
+                };
+            }
+        }
+        if (callee?.name === "createSampler" || callee?.name === "createView") {
+            const kind = platformHandleKind(
+                receiverType(this.context, callee.expression),
+            );
+            if (kind === "gpu-device" && callee.name === "createSampler")
+                return compileDeviceSampler(
+                    this.context,
+                    call,
+                    this.context.compileValue(callee.expression),
+                );
+            // A view with no descriptor: the whole texture, a new object.
+            if (kind === "gpu-texture" && callee.name === "createView") {
+                this.context.expectArgumentCount(call, 0, 0);
+                const texture = this.context.compileValue(callee.expression);
+                this.context.expectKind(texture, "gpu-texture", callee.expression);
+                const engine = this.context.requireEngine(texture, call);
+                return {
+                    kind: "gpu-texture-view",
+                    cpp: `bbl::create_texture_view(${engine}, ${texture.cpp})`,
+                    engineCpp: engine,
+                    dataType: { kind: "handle", handle: "gpu-texture-view" },
                 };
             }
         }
