@@ -621,6 +621,12 @@ export function runLabSoundFixture(options: {
     });
 }
 
+export interface GeneratedProgramOptions {
+    flags?: readonly string[];
+    timeoutMs?: number;
+    expectedOutput?: string;
+}
+
 /**
  * Compiles one generated translation unit in `artifacts/<name>` with the
  * fixture's own `flags` and runs it: a failed assertion or an uncaught throw
@@ -630,11 +636,7 @@ export function runGeneratedProgram(
     tools: WindowsBuildTools,
     name: string,
     cpp: string,
-    options: {
-        flags?: readonly string[];
-        timeoutMs?: number;
-        expectedOutput?: string;
-    } = {},
+    options: GeneratedProgramOptions = {},
 ): string {
     const directory = resolve("artifacts", name);
     mkdirSync(directory, { recursive: true });

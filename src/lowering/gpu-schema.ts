@@ -1,5 +1,11 @@
 /** WebGPU declarations shared by pinned record families at the platform boundary. */
 import {
+    cppIdentifier,
+    doubleCpp,
+    snakeCase,
+    stringLiteral,
+} from "../cpp-literals.js";
+import {
     arrayOf as array,
     descriptor,
     field,
@@ -11,6 +17,7 @@ import {
     optionalOf as optional,
     recordScalars,
     spelled,
+    stripOptional,
 } from "./record-shapes.js";
 import type {
     MemberSpec,
@@ -492,6 +499,70 @@ const subsetExtensions: readonly RecordSpec[] = [
     ]),
 ];
 
+const samplerDescriptorMembers: readonly (readonly [string, MemberSpec])[] = [
+    ["label", field(optional(string))],
+    ["addressModeU", field(optional(string))],
+    ["addressModeV", field(optional(string))],
+    ["addressModeW", field(optional(string))],
+    ["magFilter", field(optional(string))],
+    ["minFilter", field(optional(string))],
+    ["mipmapFilter", field(optional(string))],
+    ["lodMinClamp", field(optional(number))],
+    ["lodMaxClamp", field(optional(number))],
+    ["compare", field(optional(string))],
+    ["maxAnisotropy", field(optional(number))],
+];
+
+/** `GPUSamplerDescriptor`, as `bblite/gpu_sampler.hpp` declares it. */
+const gpuSamplerDescriptor = descriptor(
+    "GPUSamplerDescriptor",
+    "GpuSamplerDescriptor",
+    samplerDescriptorMembers,
+);
+
+/** Each `GPUSamplerDescriptor` member, in declaration order: its native field and kind. */
+export const gpuSamplerDescriptorMembers: ReadonlyMap<
+    string,
+    { readonly field: string; readonly kind: "string" | "number" }
+> = new Map(
+    samplerDescriptorMembers.map(([name, member]) => {
+        const shape = stripOptional(member.shape);
+        if (shape.kind !== "string" && shape.kind !== "number")
+            throw new Error(`GPUSamplerDescriptor.${name} is not a scalar.`);
+        return [
+            name,
+            {
+                field: member.field ?? cppIdentifier(snakeCase(name)),
+                kind: shape.kind,
+            },
+        ];
+    }),
+);
+
+/**
+ * `GPUSamplerDescriptor` members settled at generation, each of its
+ * member's kind, as `bbl::GpuSamplerDescriptor`: `webgpu_sampler` defaults
+ * the rest and validates it natively.
+ */
+export function gpuSamplerDescriptorCpp(
+    given: ReadonlyMap<string, string | number>,
+): string {
+    const fields = [...gpuSamplerDescriptorMembers].flatMap(
+        ([name, { field }]) => {
+            const value = given.get(name);
+            if (value === undefined) return [];
+            return [
+                `.${field} = ${typeof value === "string" ? `std::string(${stringLiteral(value)})` : doubleCpp(value)}`,
+            ];
+        },
+    );
+    if (fields.length !== given.size)
+        throw new Error(
+            `GPUSamplerDescriptor declares none of ${[...given.keys()].filter((name) => !gpuSamplerDescriptorMembers.has(name)).join(", ")}.`,
+        );
+    return `bbl::GpuSamplerDescriptor{${fields.join(", ")}}`;
+}
+
 /**
  * The WebGPU subset the pin's compute, indirect and buffer-mapping paths
  * speak (the streamed splat library), over the same device interface:
@@ -542,19 +613,7 @@ export const gpuSubsetRecords: readonly RecordSpec[] = [
             ["end", method(fn([], none), "end")],
         ]),
     },
-    descriptor("GPUSamplerDescriptor", "GpuSamplerDescriptor", [
-        ["label", field(optional(string))],
-        ["addressModeU", field(optional(string))],
-        ["addressModeV", field(optional(string))],
-        ["addressModeW", field(optional(string))],
-        ["magFilter", field(optional(string))],
-        ["minFilter", field(optional(string))],
-        ["mipmapFilter", field(optional(string))],
-        ["lodMinClamp", field(optional(number))],
-        ["lodMaxClamp", field(optional(number))],
-        ["compare", field(optional(string))],
-        ["maxAnisotropy", field(optional(number))],
-    ]),
+    gpuSamplerDescriptor,
     descriptor("GPUSupportedLimits", "GpuSupportedLimits", [
         ["maxBufferSize", field(number)],
         ["maxStorageBufferBindingSize", field(number)],

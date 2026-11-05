@@ -401,11 +401,10 @@ function structReader(
     field(name: string): DataStructField | undefined;
     cpp(owner: string, field: DataStructField): string;
 } {
-    const reference = context.dataTypes.isReferenceStruct(type.name);
-    const fields = context.dataTypes.structFields(type.name, node);
     return {
-        reference,
-        field: (name) => fields.find((field) => field.sourceName === name),
+        reference: context.dataTypes.isReferenceStruct(type.name),
+        field: (name) =>
+            context.dataTypes.findStructField(type.name, name, node),
         cpp: (owner, field) =>
             `${owner}${context.dataTypes.memberAccess(type.name)}${field.name}`,
     };

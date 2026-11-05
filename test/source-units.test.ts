@@ -12,6 +12,7 @@ import {
     buildNativeFixture,
     optionalNativeFixtureTools,
 } from "./native-fixture.js";
+import { TINT_PLUGIN } from "./program-snippets.js";
 
 test("source units link shared types, tables and calls across equal module basenames", (t) => {
     const directory = resolve("artifacts/test-source-units");
@@ -104,11 +105,7 @@ test("a module growing a PBR plugin list carries the plugin signature algebra", 
     const files = {
         "tint.ts": `
             import type { MaterialPlugin, createPbrMaterial } from "@babylonjs/lite";
-            const tint: MaterialPlugin = {
-                name: "tint",
-                getCustomCode: (shaderType) =>
-                    shaderType === "fragment" ? { CUSTOM_FRAGMENT_UPDATE_DIFFUSE: "baseColor = baseColor * 0.5;" } : null,
-            };
+            ${TINT_PLUGIN}
             export function addTint(material: ReturnType<typeof createPbrMaterial>): void {
                 if (!material.plugins?.includes(tint)) material.plugins = [...(material.plugins ?? []), tint];
             }

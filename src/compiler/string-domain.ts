@@ -1421,8 +1421,9 @@ class StringDomain {
     }
 
     /**
-     * A write inside an `if (parameter)` whose call omits that parameter:
-     * the test is false, so the call never makes it.
+     * A write inside an `if` whose test is false in this environment
+     * (`provenFalse`: a parameter the call omits), which the call never
+     * makes.
      */
     private untestedWrite(value: ts.Node, environment: Environment): boolean {
         for (
@@ -1432,7 +1433,7 @@ class StringDomain {
         ) {
             if (!ts.isIfStatement(parent) || parent.thenStatement !== child)
                 continue;
-            if (this.absent(parent.expression, environment)) return true;
+            if (this.provenFalse(parent.expression, environment)) return true;
         }
         return false;
     }
@@ -1488,9 +1489,10 @@ class StringDomain {
     }
 
     /**
-     * A guard that is false for every key the domain gives it:
-     * `Object.hasOwn(record, key)` over a closed record holding none of
-     * them, alone or in a conjunction.
+     * A guard that is false in this environment: a parameter the call omits
+     * (undefined), or `Object.hasOwn(record, key)` over a closed record
+     * holding none of the keys the domain gives it; alone or in a
+     * conjunction.
      */
     private provenFalse(
         condition: ts.Expression,
@@ -1505,6 +1507,7 @@ class StringDomain {
                 this.provenFalse(node.left, environment) ||
                 this.provenFalse(node.right, environment)
             );
+        if (this.absent(node, environment)) return true;
         if (!ts.isCallExpression(node) || node.arguments.length !== 2)
             return false;
         const callee = namedMember(

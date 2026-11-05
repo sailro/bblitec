@@ -62,6 +62,7 @@ import {
     soleBindingName,
     declaredKey,
     sourceEntry,
+    ownParameters,
 } from "../compiler/syntax.js";
 import {
     calledDeclaration,
@@ -550,16 +551,6 @@ function isInlineCallback(node: ts.Node, checker: ts.TypeChecker): boolean {
         parent.expression !== child &&
         callsArgumentInPlace(checker, parent, child)
     );
-}
-
-/** A function's own parameters: a TypeScript `this` parameter types its receiver. */
-function ownParameters(
-    node: ts.SignatureDeclaration,
-): readonly ts.ParameterDeclaration[] {
-    const first = node.parameters[0];
-    return first && ts.isIdentifier(first.name) && first.name.text === "this"
-        ? node.parameters.slice(1)
-        : node.parameters;
 }
 
 // ── Evaluation order ───────────────────────────────────────────────────

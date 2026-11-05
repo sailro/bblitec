@@ -979,7 +979,7 @@ export type ParameterInput =
  */
 export function argumentForParameter(
     call: ts.CallExpression | ts.NewExpression,
-    declaration: Pick<ts.SignatureDeclarationBase, "parameters">,
+    declaration: { readonly parameters: readonly ts.ParameterDeclaration[] },
     parameterIndex: number,
 ): ParameterInput {
     const parameter = declaration.parameters[parameterIndex];
@@ -996,6 +996,16 @@ export function argumentForParameter(
     return ts.isSpreadElement(argument)
         ? { kind: "unknown" }
         : { kind: "argument", argument };
+}
+
+/** A function's own parameters: a TypeScript `this` parameter types its receiver and takes no argument. */
+export function ownParameters(
+    declaration: Pick<ts.SignatureDeclarationBase, "parameters">,
+): readonly ts.ParameterDeclaration[] {
+    const first = declaration.parameters[0];
+    return first && ts.isIdentifier(first.name) && first.name.text === "this"
+        ? declaration.parameters.slice(1)
+        : declaration.parameters;
 }
 
 /**

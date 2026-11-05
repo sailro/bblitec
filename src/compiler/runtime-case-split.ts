@@ -1,4 +1,5 @@
 import ts from "typescript";
+import { someAnalysisNode } from "./analysis-walk.js";
 import { CompileError } from "./compile-error.js";
 import type { LoweringServices } from "./lowering-services.js";
 import { declaredSymbol, resolvedSymbol, sameExpression } from "./symbols.js";
@@ -22,6 +23,7 @@ import {
 import {
     isAbsentValue,
     knownCondition,
+    nullValue,
     presenceCpp,
     undefinedValue,
 } from "./values/model.js";
@@ -117,20 +119,30 @@ function refusesPerOutcome(error: unknown): boolean {
     );
 }
 
+/** What a test reads as in one arm: true (a present object), false, or absent. */
+type Outcome = "truthy" | "falsy" | "absent";
+
 /**
  * One runtime test: the node read once, and every node spelling it. A
  * `condition` is a selection's test; a `boolean` an argument value that is a
  * boolean; a `presence` an argument value that is an object or one absence
  * (`undefined` or `null`); an `optional-boolean` a boolean or one absence.
- * Outcome 0 is true (present), 1 false (absent), 2 an optional boolean's
- * absence; `outcomes` are the ones the value can take.
+ * `outcomes` are the ones the value can take.
  */
 interface Selector {
     kind: "condition" | "boolean" | "presence" | "optional-boolean";
     test: ts.Expression;
     nodes: readonly ts.Expression[];
-    outcomes: readonly number[];
+    outcomes: readonly Outcome[];
 }
+
+/** Every outcome a test of `kind` can take. */
+const KIND_OUTCOMES: Readonly<Record<Selector["kind"], readonly Outcome[]>> = {
+    condition: ["truthy", "falsy"],
+    boolean: ["truthy", "falsy"],
+    presence: ["truthy", "absent"],
+    "optional-boolean": ["truthy", "falsy", "absent"],
+};
 
 /**
  * The selectors a split forces: `fixed` take their one outcome in every
@@ -142,9 +154,12 @@ interface RuntimeSelectors {
     variable: readonly Selector[];
 }
 
-/** The outcome that stands for "false" in a dependency probe. */
-function falseOutcome(selector: Selector): number {
-    return selector.outcomes.includes(1) ? 1 : selector.outcomes[0]!;
+/** The outcome that stands for "false" in a dependency probe: the first one past truth. */
+function falseOutcome(selector: Selector): Outcome {
+    return (
+        selector.outcomes.find((outcome) => outcome !== "truthy") ??
+        selector.outcomes[0]!
+    );
 }
 
 /**
@@ -155,7 +170,7 @@ function withOutcomes<T>(
     context: CaseSplitContext,
     fixed: readonly Selector[],
     variable: readonly Selector[],
-    variableOutcomes: readonly (number | undefined)[],
+    variableOutcomes: readonly (Outcome | undefined)[],
     compile: () => T,
 ): T {
     const selectors = [...fixed, ...variable];
@@ -168,7 +183,7 @@ function withOutcomes<T>(
         if (outcome === undefined) return;
         for (const node of selector.nodes) {
             if (selector.kind === "condition")
-                context.conditionOverrides.set(node, outcome === 0);
+                context.conditionOverrides.set(node, outcome === "truthy");
             else
                 context.valueOverrides.set(
                     node,
@@ -196,15 +211,15 @@ function forcedValue(
     context: CaseSplitContext,
     selector: Selector,
     node: ts.Expression,
-    outcome: number,
+    outcome: Outcome,
 ): Value {
     const absent = (): Value =>
         nullability(context.checker.getTypeAtLocation(node)).null
-            ? { kind: "json-null", cpp: "" }
+            ? nullValue()
             : undefinedValue();
     // A present object is truthy and present wherever the arm reads it.
     if (selector.kind === "presence")
-        return outcome === 0
+        return outcome === "truthy"
             ? {
                   ...context.dataLowerer.narrowOptional(
                       context.compileValue(node),
@@ -215,11 +230,11 @@ function forcedValue(
                   optionalFoundCpp: "true",
               }
             : absent();
-    if (outcome === 2) return absent();
+    if (outcome === "absent") return absent();
     return {
         kind: "boolean",
-        cpp: outcome === 0 ? "true" : "false",
-        staticBoolean: outcome === 0,
+        cpp: outcome === "truthy" ? "true" : "false",
+        staticBoolean: outcome === "truthy",
     };
 }
 
@@ -254,7 +269,7 @@ function dependedSelectors(
     compile: () => Value | undefined,
 ): readonly Selector[] | undefined {
     if (candidates.length <= 2) return candidates;
-    const refuses = (outcomes: readonly (number | undefined)[]): boolean => {
+    const refuses = (outcomes: readonly (Outcome | undefined)[]): boolean => {
         try {
             context.probeEmission(
                 () =>
@@ -323,7 +338,7 @@ function selectorTests(
                 kind,
                 test,
                 nodes: [test],
-                outcomes: kind === "optional-boolean" ? [0, 1, 2] : [0, 1],
+                outcomes: KIND_OUTCOMES[kind],
             });
     };
     const calls: ts.CallExpression[] = [];
@@ -401,11 +416,9 @@ function selectorTests(
 
 /** Whether an expression holds a selection a split reads as its own test. */
 function containsSelection(node: ts.Node): boolean {
-    return (
-        ts.isConditionalExpression(node) ||
-        (!ts.isFunctionLike(node) &&
-            (ts.forEachChild(node, containsSelection) ?? false))
-    );
+    return someAnalysisNode(node, ts.isConditionalExpression, {
+        functions: "skip",
+    });
 }
 
 /**
@@ -437,8 +450,8 @@ function runtimeSelectors(
         const outcomes =
             truth === undefined
                 ? group.outcomes
-                : group.outcomes.filter((outcome) =>
-                      truth ? outcome === 0 : outcome !== 0,
+                : group.outcomes.filter(
+                      (outcome) => (outcome === "truthy") === truth,
                   );
         (outcomes.length === 1 ? fixed : variable).push({
             ...group,
@@ -498,7 +511,7 @@ function splitCall(
             // presence alone.
             return {
                 presence,
-                ...(selector.outcomes.includes(0)
+                ...(selector.outcomes.includes("truthy")
                     ? { truth: pin(`${presence} && ${truth}`) }
                     : {}),
             };
@@ -522,7 +535,7 @@ function splitCall(
             initializer: "",
             initialization: "default",
         });
-    const arm = (outcomes: readonly number[]): void => {
+    const arm = (outcomes: readonly Outcome[]): void => {
         const value = withOutcomes(
             context,
             fixed,
@@ -538,17 +551,17 @@ function splitCall(
             });
         else context.emitDiscardedValue(value);
     };
-    const branch = (depth: number, outcomes: number[]): void => {
+    const branch = (depth: number, outcomes: Outcome[]): void => {
         if (depth === selectors.length) {
             arm(outcomes);
             return;
         }
         const test = tests[depth]!;
         const selector = selectors[depth]!;
-        // Outcome 0 is the truth test; an optional boolean's 1 its presence
-        // (after 0, false); the last outcome is the rest.
-        const guard = (outcome: number): string =>
-            outcome === 0 ? test.truth! : test.presence!;
+        // Truth is the truth test; an optional boolean's falsy one its
+        // presence (after truth, false); the last outcome is the rest.
+        const guard = (outcome: Outcome): string =>
+            outcome === "truthy" ? test.truth! : test.presence!;
         selector.outcomes.forEach((outcome, index) => {
             const last = index === selector.outcomes.length - 1;
             context.emit(

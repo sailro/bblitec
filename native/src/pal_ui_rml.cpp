@@ -8881,9 +8881,10 @@ struct UiRmlRuntime {
             if (element->HasAttribute("data-bbl-current-color")) {
                 current_color_svg_elements.push_back(element);
             }
-            if (element->HasAttribute("data-bbl-viewport-width") ||
-                element->HasAttribute("data-bbl-viewport-height"))
-                percentage_viewport_svg_elements.push_back(element);
+            const bool width = element->HasAttribute("data-bbl-viewport-width");
+            const bool height = element->HasAttribute("data-bbl-viewport-height");
+            if (width || height)
+                percentage_viewport_svg_elements.push_back({element, width, height});
         }
     }
 
@@ -8892,12 +8893,10 @@ struct UiRmlRuntime {
      * RmlUi has no presentation-hint level for: an author size is required.
      */
     void check_percentage_svg_viewports() const {
-        for (Rml::Element* element : percentage_viewport_svg_elements) {
-            const auto& computed = element->GetComputedValues();
-            if ((element->HasAttribute("data-bbl-viewport-width") &&
-                 computed.width().type == Rml::Style::Width::Auto) ||
-                (element->HasAttribute("data-bbl-viewport-height") &&
-                 computed.height().type == Rml::Style::Height::Auto))
+        for (const PercentageSvgViewport& viewport : percentage_viewport_svg_elements) {
+            const auto& computed = viewport.element->GetComputedValues();
+            if ((viewport.width && computed.width().type == Rml::Style::Width::Auto) ||
+                (viewport.height && computed.height().type == Rml::Style::Height::Auto))
                 throw std::runtime_error("An inline SVG's percentage width or height needs an "
                                          "author CSS size: it has no presentation-hint level.");
         }
@@ -8954,7 +8953,13 @@ struct UiRmlRuntime {
     bool gradient_text_dirty = true;
     bool style_trace_written = false;
     std::vector<Rml::Element*> current_color_svg_elements;
-    std::vector<Rml::Element*> percentage_viewport_svg_elements;
+    /** An inline SVG root and which of its axes the markup gave a percentage viewport. */
+    struct PercentageSvgViewport {
+        Rml::Element* element = nullptr;
+        bool width = false;
+        bool height = false;
+    };
+    std::vector<PercentageSvgViewport> percentage_viewport_svg_elements;
     std::vector<std::uint32_t> projected_root_order;
     std::uint64_t projected_revision = ~std::uint64_t{0};
     std::uint64_t projected_text_revision = 0;

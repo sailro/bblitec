@@ -6,15 +6,22 @@ const SAMPLER_MODULE = "src/resource/sampler-pool.ts";
 
 /**
  * What `getOrCreateSampler` keys a pooled sampler by
- * (`resource/sampler-pool.ts` over `resource/texture-sampler-pool.ts`): each
- * descriptor field's default, and the comparison and LOD clamps the general
- * boundary adds. Two descriptors with one key are one sampler.
+ * (`resource/sampler-pool.ts` over `resource/texture-sampler-pool.ts`): the
+ * comparison and LOD clamps the general boundary adds, then each
+ * `textureSamplerDefaults` field. Two descriptors with one key are one
+ * sampler.
  */
 export interface PinnedSamplerKey {
-    /** `textureSamplerDefaults`, in the pool's key order. */
-    readonly defaults: ReadonlyMap<string, string | number>;
-    readonly lodMinClamp: number;
-    readonly lodMaxClamp: number;
+    /**
+     * Every descriptor member the key reads, with the default it reads for
+     * an absent one; `compare` has none.
+     */
+    readonly members: ReadonlyMap<string, string | number | undefined>;
+    /**
+     * `samplerKey(descriptor)`: the general boundary's statements and the
+     * pool's key loop unrolled over its defaults, returning the key.
+     */
+    readonly keyFunction: ts.FunctionDeclaration;
 }
 
 const keys = new WeakMap<LoweringContext, PinnedSamplerKey>();
@@ -27,39 +34,6 @@ export function pinnedSamplerKey(context: LoweringContext): PinnedSamplerKey {
 }
 
 function readPinnedSamplerKey(context: LoweringContext): PinnedSamplerKey {
-    const file = context.sourceFile(POOL_MODULE);
-    const literal = context.unwrapExpression(
-        context.variableInitializer(file, "textureSamplerDefaults"),
-    );
-    if (!ts.isObjectLiteralExpression(literal))
-        return context.contractError(
-            literal,
-            "Expected the sampler pool's defaults as an object literal.",
-        );
-    const value = (expression: ts.Expression): string | number => {
-        const unwrapped = context.unwrapExpression(expression);
-        if (ts.isIdentifier(unwrapped))
-            return value(context.variableInitializer(file, unwrapped.text));
-        return ts.isNumericLiteral(unwrapped)
-            ? context.numericValue(unwrapped, file)
-            : context.stringValue(unwrapped, file);
-    };
-    const defaults = new Map<string, string | number>();
-    for (const property of literal.properties) {
-        if (!ts.isPropertyAssignment(property))
-            return context.contractError(
-                property,
-                "Expected the sampler pool's defaults as plain properties.",
-            );
-        const name = context.propertyName(property.name);
-        if (name === undefined)
-            return context.contractError(
-                property,
-                "Expected the sampler pool's defaults under plain names.",
-            );
-        defaults.set(name, value(property.initializer));
-    }
-    // The general boundary's clamps: what it keys beyond the pool's fields.
     context.assertFunctionContract(
         SAMPLER_MODULE,
         "getOrCreateSampler",
@@ -78,21 +52,175 @@ function readPinnedSamplerKey(context: LoweringContext): PinnedSamplerKey {
         SAMPLER_MODULE,
         "getOrCreateSampler",
     ).declaration;
-    // `descriptor.lodXClamp ?? <default>`: the default the key compares to.
-    const clamp = (name: string): number => {
-        const initializer = context.unwrapExpression(
-            context.variableInitializer(general, name),
+    const members = new Map<string, string | number | undefined>();
+    // What the extra key reads: the contract spells each read as
+    // `descriptor.<member>` or `descriptor.<member> ?? <default>`.
+    for (const statement of general.body!.statements)
+        for (const variable of ts.isVariableStatement(statement)
+            ? statement.declarationList.declarations
+            : []) {
+            const initializer = context.unwrapExpression(variable.initializer!);
+            const [read, fallback] = ts.isBinaryExpression(initializer)
+                ? [initializer.left, initializer.right]
+                : [initializer, undefined];
+            if (
+                ts.isPropertyAccessExpression(read) &&
+                context.expressionMatchesShape(read.expression, "descriptor")
+            )
+                members.set(
+                    read.name.text,
+                    fallback &&
+                        context.numericValue(fallback, general.getSourceFile()),
+                );
+        }
+
+    const file = context.sourceFile(POOL_MODULE);
+    const table = context.unwrapExpression(
+        context.variableInitializer(file, "textureSamplerDefaults"),
+    );
+    if (!ts.isObjectLiteralExpression(table))
+        return context.contractError(
+            table,
+            "Expected the sampler pool's defaults as an object literal.",
         );
-        return ts.isBinaryExpression(initializer)
-            ? context.numericValue(initializer.right, general.getSourceFile())
-            : context.contractError(
-                  initializer,
-                  `Expected the sampler key's ${name} default.`,
-              );
+    const literal = (expression: ts.Expression): ts.Expression => {
+        const unwrapped = context.unwrapExpression(expression);
+        return ts.isIdentifier(unwrapped)
+            ? literal(context.variableInitializer(file, unwrapped.text))
+            : unwrapped;
     };
-    return {
-        defaults,
-        lodMinClamp: clamp("minLod"),
-        lodMaxClamp: clamp("maxLod"),
-    };
+    const defaults = table.properties.map((property) => {
+        if (!ts.isPropertyAssignment(property))
+            return context.contractError(
+                property,
+                "Expected the sampler pool's defaults as plain properties.",
+            );
+        const name = context.propertyName(property.name);
+        if (name === undefined)
+            return context.contractError(
+                property,
+                "Expected the sampler pool's defaults under plain names.",
+            );
+        const value = literal(property.initializer);
+        members.set(
+            name,
+            ts.isNumericLiteral(value)
+                ? context.numericValue(value, file)
+                : context.stringValue(value, file),
+        );
+        return { name, value };
+    });
+
+    // The pool's key: `let key = extraKey;`, then one `key += ...` per field.
+    const pool = context.functionDeclaration(
+        POOL_MODULE,
+        "getOrCreateSampler",
+    ).declaration;
+    const loop = pool.body!.statements.find(ts.isForInStatement);
+    if (!loop)
+        return context.contractError(
+            pool,
+            "Expected sampler defaults key loop.",
+        );
+    context.assertExpressionShape(
+        loop.expression,
+        "textureSamplerDefaults",
+        "Sampler key fields",
+    );
+    const keyStatement = pool.body!.statements.find(
+        (statement) =>
+            ts.isVariableStatement(statement) &&
+            statement.declarationList.declarations.some(
+                (variable) =>
+                    ts.isIdentifier(variable.name) &&
+                    variable.name.text === "key",
+            ),
+    );
+    if (!keyStatement)
+        return context.contractError(
+            pool,
+            "Expected sampler key initialization.",
+        );
+    const loopStatements = ts.isBlock(loop.statement)
+        ? loop.statement.statements
+        : [loop.statement];
+    const [alias, accumulation] = loopStatements;
+    if (
+        loopStatements.length !== 2 ||
+        !alias ||
+        !ts.isVariableStatement(alias) ||
+        !accumulation
+    )
+        return context.contractError(
+            loop,
+            "Expected field alias and key accumulation.",
+        );
+    context.assertExpressionShape(
+        alias.declarationList.declarations[0]!.initializer!,
+        "property as keyof typeof textureSamplerDefaults",
+        "Sampler key field alias",
+    );
+    const printed = [
+        ...general
+            .body!.statements.slice(0, -1)
+            .map((statement) => statement.getText()),
+        keyStatement.getText(),
+    ];
+    for (const { name, value } of defaults) {
+        // `descriptor[field] ?? textureSamplerDefaults[field]` at this field.
+        const result = ts.transform(accumulation, [
+            (transformation) => (root) => {
+                const visit: ts.Visitor = (node) => {
+                    if (
+                        ts.isElementAccessExpression(node) &&
+                        context.expressionMatchesShape(
+                            node.argumentExpression,
+                            "field",
+                        )
+                    ) {
+                        if (
+                            context.expressionMatchesShape(
+                                node.expression,
+                                "textureSamplerDefaults",
+                            )
+                        )
+                            return value;
+                        if (
+                            context.expressionMatchesShape(
+                                node.expression,
+                                "descriptor",
+                            )
+                        )
+                            return ts.factory.updateElementAccessExpression(
+                                node,
+                                node.expression,
+                                ts.factory.createStringLiteral(name),
+                            );
+                    }
+                    return ts.visitEachChild(node, visit, transformation);
+                };
+                return ts.visitNode(root, visit, ts.isStatement)!;
+            },
+        ]);
+        printed.push(
+            ts
+                .createPrinter()
+                .printNode(
+                    ts.EmitHint.Unspecified,
+                    result.transformed[0]!,
+                    file,
+                ),
+        );
+        result.dispose();
+    }
+    const keyFile = ts.createSourceFile(
+        SAMPLER_MODULE,
+        `function samplerKey(descriptor) { ${printed.join("\n")} return key; }`,
+        ts.ScriptTarget.Latest,
+        true,
+    );
+    const keyFunction = keyFile.statements[0];
+    if (!keyFunction || !ts.isFunctionDeclaration(keyFunction))
+        throw new Error("Invalid specialized sampler key.");
+    return { members, keyFunction };
 }

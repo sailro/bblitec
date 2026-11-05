@@ -8,7 +8,7 @@
 // of its function passes the same such binding. A store this cannot follow
 // leaves the name's engine unknown.
 import ts from "typescript";
-import { sourceFileNodes } from "./analysis-walk.js";
+import { identifiersByName, sourceFileNodes } from "./analysis-walk.js";
 import { pinnedHandleKind } from "./data-types.js";
 import { namedMember, resolvedSymbol, valueSymbolOf } from "./symbols.js";
 import {
@@ -47,7 +47,6 @@ export class EngineFieldIdentities {
     /** @unjournaled A store whose name the analysis cannot read: every name is unknown. */
     private unnamed = false;
     /** @unjournaled Derived from the checked program before emission. */
-    private identifiers?: Map<string, ts.Identifier[]>;
     /** @unjournaled Derived from the checked program before emission. */
     private readonly roots = new Map<string, ts.Symbol | undefined>();
 
@@ -278,20 +277,14 @@ export class EngineFieldIdentities {
 
     /** Every value reference to `symbol` in the program, by its name. */
     private references(symbol: ts.Symbol): ts.Identifier[] {
-        if (!this.identifiers) {
-            const identifiers = new Map<string, ts.Identifier[]>();
-            for (const node of this.nodes())
-                if (ts.isIdentifier(node)) {
-                    const list = identifiers.get(node.text);
-                    if (list) list.push(node);
-                    else identifiers.set(node.text, [node]);
-                }
-            this.identifiers = identifiers;
-        }
-        return (this.identifiers.get(symbol.name) ?? []).filter(
-            (identifier) =>
-                isValueReference(identifier) &&
-                resolvedSymbol(this.checker, identifier) === symbol,
+        return this.files.flatMap((file) =>
+            file.isDeclarationFile
+                ? []
+                : (identifiersByName(file).get(symbol.name) ?? []).filter(
+                      (identifier) =>
+                          isValueReference(identifier) &&
+                          resolvedSymbol(this.checker, identifier) === symbol,
+                  ),
         );
     }
 }

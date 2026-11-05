@@ -155,7 +155,7 @@ struct AnimationRuntime {
     std::size_t asset_index=0;
     std::vector<std::optional<std::string>> node_names;
     std::vector<AnimationClip> clips;
-    std::vector<AnimatedNode> nodes;
+${options.nodeTransforms ? "" : "    std::vector<AnimatedNode> nodes;"}
     std::vector<SkinRuntime> skins;
     std::vector<AnimatedMeshBinding> meshes;
 ${options.animationPointer ? "    std::vector<AnimatedLightBinding> light_nodes;" : ""}
@@ -180,19 +180,7 @@ struct GltfAnimationOverrideRows {
 };
 GltfAnimationOverrideRows gltf_animation_override_rows(const Engine& engine,std::size_t asset_index){
     return {asset_index<engine.assets.size()?&engine.assets[asset_index].bone_overrides:nullptr};
-}${
-        options.nodeTransforms
-            ? `
-// Scene code writes node transforms, so the asset carries the pin's node
-// hierarchy (AssetRecord::nodes): glTF node \`index\`'s scene node, when the
-// scene reaches it.
-std::optional<TransformNodeHandle> gltf_animation_scene_node(const Engine& engine,std::size_t asset_index,std::size_t index){
-    const auto& nodes=engine.assets.at(asset_index).nodes;
-    if(index>=nodes.size()||nodes[index].value==invalid_handle)return std::nullopt;
-    return nodes[index];
-}`
-            : ""
-    }
+}
 `;
 }
 
@@ -222,27 +210,17 @@ export function gltfAnimationPoseTransportCpp(
     cameraRefresh: string,
     light?: ReturnType<typeof gltfAnimatedLightCpp>,
 ): string {
-    return `
-        const auto refresh_live_worlds=[animation_runtime=animation_runtime.get()${cameraRefresh || options.animationPointer || options.nodeTransforms ? ",&engine" : ""}]() {
-            for(auto& node:animation_runtime->nodes){node.computed=false;node.computing=false;}${
-                options.nodeTransforms
-                    ? `
-            // Each glTF node's local is its scene node's, which carries the
-            // scene's writes and the channels a pose wrote into it.
-            for(std::size_t index=0;index<animation_runtime->nodes.size();++index) {
-                const auto handle=gltf_animation_scene_node(engine,animation_runtime->asset_index,index);
-                if(!handle)continue;
-                const auto& record=${recordAt("engine.transform_nodes", "*handle")};
-                auto& node=animation_runtime->nodes[index];
-                node.has_matrix=true;
-                if(record.local_matrix) {
-                    for(std::size_t lane=0;lane<node.matrix.size();++lane)node.matrix[lane]=record.local_matrix->load(lane);
-                } else {
-                    node.matrix=upstream::trs_matrix(record);
-                }
-            }`
-                    : ""
-            }
+    // Under node transforms each record hangs under its node's scene node and
+    // a channel writes that scene node, so the engine composes every world a
+    // pose moves and no glTF node world is composed here. The mesh plan
+    // refuses punctual lights and cameras on such a load, so no light or
+    // camera follows a glTF node.
+    const nodeTransforms = options.nodeTransforms === true;
+    const refresh = nodeTransforms
+        ? ""
+        : `
+        const auto refresh_live_worlds=[animation_runtime=animation_runtime.get()${cameraRefresh || options.animationPointer ? ",&engine" : ""}]() {
+            for(auto& node:animation_runtime->nodes){node.computed=false;node.computing=false;}
             std::function<const Matrix&(std::size_t)> compute_animated_world=[&](std::size_t index)->const Matrix& {
                 auto& node=animation_runtime->nodes.at(index);
                 if(node.computed)return node.world;
@@ -268,7 +246,32 @@ ${
         : ""
 }
 ${cameraRefresh}
-        };
+        };`;
+    // A channel writes the pin's TransformNode: the glTF node's scene node
+    // under node transforms, else the runtime's node copy.
+    const floats = (lanes: readonly string[]): string =>
+        `{${lanes.map((lane) => `static_cast<float>(${lane})`).join(",")}}`;
+    const writes = (
+        [
+            ["translation", ["x", "y", "z"], "position", "{x,y,z}"],
+            [
+                "rotation",
+                ["x", "y", "z", "w"],
+                "rotation_quaternion",
+                floats(["x", "y", "z", "w"]),
+            ],
+            ["scale", ["x", "y", "z"], "scaling", floats(["x", "y", "z"])],
+        ] as const
+    )
+        .map(
+            ([path, lanes, property, value]) => `
+            const auto write_${path}=[&](std::size_t target,${lanes.map((lane) => `double ${lane}`).join(",")}){
+                wrote_live_node=true;
+                ${nodeTransforms ? `set_transform_node_${property}(engine,scene_node(target),${value});` : `auto& node=animation_runtime->nodes.at(target);node.${path}={${lanes.join(",")}};`}
+            };`,
+        )
+        .join("");
+    return `${refresh}
         const auto publish_mesh=[animation_runtime=animation_runtime.get(),&engine](std::size_t index) {
             const auto& binding=animation_runtime->meshes.at(index);
             // The pin keeps posing a mesh removeFromScene disposed; nothing
@@ -277,12 +280,10 @@ ${cameraRefresh}
             if(!found||found->retired)return;
             auto& mesh=*found;
 ${options.vat ? `            if(mesh.has_vat)return;` : ""}
-            publish_gltf_deformation(mesh,gltf_rooted_world(animation_runtime->nodes.at(binding.node).world),
-                binding.initial_joint_matrices,binding.skin<animation_runtime->skins.size(),binding.morph_default_weights${options.nodeTransforms ? ",true" : ""});
+            publish_gltf_deformation(mesh,${nodeTransforms ? "" : "gltf_rooted_world(animation_runtime->nodes.at(binding.node).world),\n                "}binding.initial_joint_matrices,binding.skin<animation_runtime->skins.size(),binding.morph_default_weights);
         };
-        animation_runtime->publish_pose=[animation_runtime=animation_runtime.get(),refresh_live_worlds,publish_mesh]() {
-            refresh_live_worlds();
-            for(std::size_t index=0;index<animation_runtime->meshes.size();++index)publish_mesh(index);
+        animation_runtime->publish_pose=[animation_runtime=animation_runtime.get(),${nodeTransforms ? "" : "refresh_live_worlds,"}publish_mesh]() {
+${nodeTransforms ? "" : "            refresh_live_worlds();\n"}            for(std::size_t index=0;index<animation_runtime->meshes.size();++index)publish_mesh(index);
         };
         animation_runtime->upload_bones=[animation_runtime=animation_runtime.get()](GltfAnimationPoseSkeleton& skeleton,
             const GltfAnimationFloats& values,double) {
@@ -303,45 +304,19 @@ ${options.vat ? `            if(mesh.has_vat)return;` : ""}
             pose.bone_override_count=static_cast<double>(overrides.size());
             auto apply_overrides=[&](auto& trs,double count,bool hidden_only) {
                 gltf_apply_animation_bone_overrides(overrides,trs,count,hidden_only);
-            };
-${
-    options.nodeTransforms
-        ? `            // A channel moves the glTF node's scene node, as the pin's
-            // animation writes the TransformNode itself.
-            const auto scene_node=[&](std::size_t target){
-                return gltf_animation_scene_node(engine,animation_runtime->asset_index,target);
-            };
-`
-        : ""
-}            const auto write_translation=[&](std::size_t target,double x,double y,double z){
-                wrote_live_node=true;
-                auto& node=animation_runtime->nodes.at(target);node.translation={x,y,z};${
-                    options.nodeTransforms
-                        ? `
-                if(const auto handle=scene_node(target))set_transform_node_position(engine,*handle,{x,y,z});`
-                        : ""
-                }
-            };
-            const auto write_rotation=[&](std::size_t target,double x,double y,double z,double w){
-                wrote_live_node=true;
-                auto& node=animation_runtime->nodes.at(target);node.rotation={x,y,z,w};${
-                    options.nodeTransforms
-                        ? `
-                if(const auto handle=scene_node(target))set_transform_node_rotation_quaternion(engine,*handle,
-                    {static_cast<float>(x),static_cast<float>(y),static_cast<float>(z),static_cast<float>(w)});`
-                        : ""
-                }
-            };
-            const auto write_scale=[&](std::size_t target,double x,double y,double z){
-                wrote_live_node=true;
-                auto& node=animation_runtime->nodes.at(target);node.scale={x,y,z};${
-                    options.nodeTransforms
-                        ? `
-                if(const auto handle=scene_node(target))set_transform_node_scaling(engine,*handle,
-                    {static_cast<float>(x),static_cast<float>(y),static_cast<float>(z)});`
-                        : ""
-                }
-            };
+            };${
+                nodeTransforms
+                    ? `
+            // The pin binds a live channel only to a node its node map holds,
+            // which is a node the hierarchy built.
+            const auto& scene_nodes=engine.assets.at(animation_runtime->asset_index).nodes;
+            const auto scene_node=[&](std::size_t target) {
+                const TransformNodeHandle handle=scene_nodes.at(target);
+                if(handle.value==invalid_handle)throw std::runtime_error("A glTF animation channel targets a node its scene does not reach.");
+                return handle;
+            };`
+                    : ""
+            }${writes}
             gltf_evaluate_animation_pose(pose,time,upload_gpu,
                 [](const auto& sampler,double t,double arity,bool quaternion,auto& output,double offset){
                     gltf_evaluate_animation_sampler(sampler,t,arity,quaternion,output,offset);

@@ -1135,11 +1135,11 @@ for (const [variant, context] of [
                 assert(std::abs(record.emissive_base_factor.r * record.emissive_strength - record.emissive_factor.r) < 1e-6f);
                 if (mat.get("_rawMatDef").get("pbrMetallicRoughness").truthy()) {
                     assert(record.base_color_texture.has_image());
-                    assert(record.base_color_texture.sampler.max_lod == (!variant_material && sampled ? 0.0f : TextureData{}.sampler.max_lod));
+                    assert(record.base_color_texture.sampler.max_lod == (!variant_material && sampled ? 0.0f : texture_sampler_state(GpuSamplerDescriptor{}).max_lod));
                     assert(record.base_color_texture.sampler.max_anisotropy == (variant_material ? ${Number(variantSamplerDefaults.maxAnisotropy)}.0f : sampled ? 1.0f : ${Number(samplerDefaults.maxAnisotropy)}.0f));
                 }
                 if (record.metallic_reflectance_texture.has_image()) {
-                    assert(record.metallic_reflectance_texture.sampler.max_lod == TextureData{}.sampler.max_lod);
+                    assert(record.metallic_reflectance_texture.sampler.max_lod == texture_sampler_state(GpuSamplerDescriptor{}).max_lod);
                     assert(record.metallic_reflectance_texture.sampler.max_anisotropy == (variant_material ? ${Number(variantSamplerDefaults.maxAnisotropy)}.0f : ${Number(samplerDefaults.maxAnisotropy)}.0f));
                 }
                 }

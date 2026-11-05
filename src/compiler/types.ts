@@ -324,8 +324,10 @@ export interface CompileManifest {
      * Each registered scene's lights, in registration order, when the
      * program registers more than one: the pin selects a draw's light mode
      * from its own scene's lights, so composition takes each scene's arms.
+     * Null for a scene whose topology generation does not know, whose
+     * draws may take any arm.
      */
-    registeredSceneLightKinds?: LightKind[][];
+    registeredSceneLightKinds?: (LightKind[] | null)[];
     /** A callback can add lights at run time, so the static list above is
      *  then only a lower bound and composition must retain compatible arms. */
     dynamicSceneLights: boolean;

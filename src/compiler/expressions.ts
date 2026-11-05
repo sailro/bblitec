@@ -39,6 +39,7 @@ import {
     ownKeysKnown,
     staticKeyOf,
     undefinedValue,
+    nullValue,
     valueDataType,
 } from "./values/model.js";
 import { isEffectTaskMethodName } from "./effect-task-methods.js";
@@ -98,7 +99,7 @@ import {
     NAVIGATOR_GET_GAMEPADS,
     readsLoweredDomMethod,
 } from "./dom-lowerings.js";
-import { holdsDomTarget } from "./dom-targets.js";
+import { probedDomTarget } from "./dom-targets.js";
 import {
     compileNumberPredicate,
     foldNumberFormat,
@@ -143,6 +144,7 @@ import {
     isMemberAccess,
     localCallback,
     propertyKey,
+    selectionArms,
 } from "./syntax.js";
 import {
     compileErrorConstruction,
@@ -177,7 +179,11 @@ import {
     compileMediaStreamMethodCall,
     mediaStreamTypeof,
 } from "./media-streams.js";
-import { CompileError, unlessRuntimeValue } from "./compile-error.js";
+import {
+    CompileError,
+    unlessRefused,
+    unlessRuntimeValue,
+} from "./compile-error.js";
 import { retainedStaticText } from "./static-evaluator.js";
 import { finalReturn, firstReturn } from "./loop-control.js";
 import {
@@ -748,9 +754,7 @@ export class ExpressionLowerer {
                 );
         }
 
-        if (unwrapped.kind === ts.SyntaxKind.NullKeyword) {
-            return { kind: "json-null", cpp: "" };
-        }
+        if (unwrapped.kind === ts.SyntaxKind.NullKeyword) return nullValue();
         const bigint = compileBigIntValue(this.context, unwrapped);
         if (bigint) return bigint;
 
@@ -1764,59 +1768,9 @@ export class ExpressionLowerer {
                     staticString: "undefined",
                 };
             }
-            // A platform class or function the program does not shadow is a
-            // function, whether or not the native platform holds it (a use
-            // of it is its own question).
-            if (
-                ts.isIdentifier(expression) &&
-                !this.context.bindings.lookupOptional(expression) &&
-                declaredGlobalTypeof(this.context.checker, expression, [
-                    "default-lib",
-                    "dom",
-                    "webgpu",
-                ]) === "function"
-            )
-                return staticStringValue("function", (text) =>
-                    this.context.cppString(text),
-                );
-            // So is a platform method native lowers, read off an operand
-            // with no effects.
-            if (
-                readsLoweredDomMethod(this.context.checker, expression) &&
-                ts.isPropertyAccessExpression(expression) &&
-                !expressionHasEffects(expression.expression)
-            )
-                return staticStringValue("function", (text) =>
-                    this.context.cppString(text),
-                );
-            // So is an EventTarget method, which every DOM event target has,
-            // read off one through any view of it (`{ dispatchEvent?(event:
-            // Event): boolean }`); an optional chain may read no target.
-            if (
-                ts.isPropertyAccessExpression(expression) &&
-                !ts.isOptionalChain(expression) &&
-                EVENT_TARGET_METHODS.has(expression.name.text) &&
-                !expressionHasEffects(expression.expression) &&
-                this.context.probeEmission(
-                    () =>
-                        holdsDomTarget(
-                            this.context.dataLowerer.narrowOptional(
-                                this.compileValue(expression.expression),
-                                expression.expression,
-                            ),
-                        ),
-                    () => false,
-                )
-            )
-                return staticStringValue("function", (text) =>
-                    this.context.cppString(text),
-                );
-            // A member of a primitive is its wrapper prototype's, or absent:
-            // `typeof (5).then` is "undefined", which a thenable test reads
-            // off a value held as a number.
-            const primitiveMember = this.primitiveMemberTypeof(expression);
-            if (primitiveMember)
-                return staticStringValue(primitiveMember, (text) =>
+            const tag = this.staticMemberTypeof(expression);
+            if (tag)
+                return staticStringValue(tag, (text) =>
                     this.context.cppString(text),
                 );
             // typeof observes an element past the end as undefined.
@@ -2516,7 +2470,7 @@ export class ExpressionLowerer {
                     staticString: value.browserValue.value,
                 };
             case "null":
-                return { kind: "json-null", cpp: "" };
+                return nullValue();
             case "undefined":
                 return undefinedValue();
             case "dom-rect":
@@ -5812,7 +5766,7 @@ export class ExpressionLowerer {
         if (
             element?.kind === "handle" &&
             element.handle === "ui-element" &&
-            [unwrapped.whenTrue, unwrapped.whenFalse].some((arm) =>
+            selectionArms(unwrapped).some((arm) =>
                 this.context.isCanvasElement(arm),
             )
         )
@@ -6410,43 +6364,66 @@ export class ExpressionLowerer {
     }
 
     /**
-     * `typeof owner.name` where the owner, read without effects, is a
-     * number, string or boolean: "undefined" for a name its wrapper
-     * prototype lacks, "function" for one of its methods; undefined for
-     * any other member or owner.
+     * A `typeof` generation knows without lowering the operand:
+     * - "function" for a platform class or function the program does not
+     *   shadow, whether or not the native platform holds it (a use of it is
+     *   its own question), and for a platform method native lowers, read
+     *   off an operand with no effects;
+     * - "function" for an EventTarget method, which every DOM event target
+     *   has, read off one through any view of it (`{ dispatchEvent?(event:
+     *   Event): boolean }`);
+     * - for a member of a number, string or boolean read without effects,
+     *   its wrapper prototype's: "undefined" for a name it lacks (`typeof
+     *   (5).then`, which a thenable test reads off a value held as a
+     *   number), "function" for one of its methods.
+     * Undefined for any other operand.
      */
-    private primitiveMemberTypeof(
+    private staticMemberTypeof(
         expression: ts.Expression,
     ): "undefined" | "function" | undefined {
+        const checker = this.context.checker;
+        if (
+            ts.isIdentifier(expression) &&
+            !this.context.bindings.lookupOptional(expression) &&
+            declaredGlobalTypeof(checker, expression, [
+                "default-lib",
+                "dom",
+                "webgpu",
+            ]) === "function"
+        )
+            return "function";
         if (
             !ts.isPropertyAccessExpression(expression) ||
-            ts.isOptionalChain(expression) ||
             expressionHasEffects(expression.expression)
         )
             return undefined;
-        let owner: Value;
-        try {
-            owner = this.context.probeEmission(
-                () => this.compileValue(expression.expression),
-                () => false,
-            );
-        } catch (error) {
-            // A receiver that does not lower here is the ordinary path's.
-            if (error instanceof CompileError) return undefined;
-            throw error;
-        }
+        if (readsLoweredDomMethod(checker, expression)) return "function";
+        // An optional chain may read no owner.
+        if (ts.isOptionalChain(expression)) return undefined;
+        const receiver = expression.expression;
+        if (
+            EVENT_TARGET_METHODS.has(expression.name.text) &&
+            probedDomTarget(this.context, receiver)
+        )
+            return "function";
+        // An owner's storage, not its type (a cast may name an object type
+        // for a value held as a number), decides; a receiver that does not
+        // lower here is the ordinary path's.
+        const owner = this.context.probeEmission(
+            () => unlessRefused(() => this.compileValue(receiver)),
+            () => false,
+        );
         const kind =
-            owner.dataType?.kind === "number" ||
-            owner.dataType?.kind === "string" ||
-            owner.dataType?.kind === "boolean"
+            owner?.dataType?.kind === "number" ||
+            owner?.dataType?.kind === "string" ||
+            owner?.dataType?.kind === "boolean"
                 ? owner.dataType.kind
-                : owner.kind === "number" ||
-                    owner.kind === "string" ||
-                    owner.kind === "boolean"
+                : owner?.kind === "number" ||
+                    owner?.kind === "string" ||
+                    owner?.kind === "boolean"
                   ? owner.kind
                   : undefined;
         if (!kind) return undefined;
-        const checker = this.context.checker;
         const primitive =
             kind === "number"
                 ? checker.getNumberType()

@@ -3,9 +3,9 @@ import { EmissionWeakMap } from "./emission-transaction.js";
 import {
     DynamicBindingStorageRequired,
     demandedStorageType,
-    initializedVariableDeclaration,
 } from "./dynamic-binding-storage.js";
-import { literalMember, unwrapExpression, variableKind } from "./syntax.js";
+import { constInitializer } from "./browser-erasure.js";
+import { literalMember, unwrapExpression } from "./syntax.js";
 import type { CapturedClosure } from "./closure-captures.js";
 import type { Value } from "./types.js";
 import type { DataSinkHost } from "./data-sinks/contracts.js";
@@ -47,14 +47,9 @@ export function viewLiteral(
 ): ts.Expression | undefined {
     const converted = lowerer.convertedExpression(node);
     const expression = converted && unwrapExpression(converted);
-    if (!expression || !ts.isIdentifier(expression)) return expression;
-    const declaration = initializedVariableDeclaration(
-        lowerer.context.checker,
-        expression,
-    );
-    return declaration && variableKind(declaration) === "const"
-        ? declaration.initializer
-        : undefined;
+    return expression && ts.isIdentifier(expression)
+        ? constInitializer(lowerer.context, expression)
+        : expression;
 }
 
 export function compileJsonTupleView(

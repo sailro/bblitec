@@ -409,7 +409,9 @@ export async function composeScenePipeline({
         assetJoin.assetLightNodes !== undefined ||
         assetJoin.babylonLights.length > 0;
     const staticLightKinds =
-        !result.manifest.dynamicSceneLights && !assetLightsReached
+        !result.manifest.dynamicSceneLights &&
+        !assetLightsReached &&
+        !result.manifest.registeredSceneLightKinds?.includes(null)
             ? result.manifest.sceneLightKinds
             : undefined;
     const hasShadowReceiver =
@@ -418,7 +420,9 @@ export async function composeScenePipeline({
             result.manifest.dynamicShadowReceivers);
     const staticArms = staticLightKinds
         ? (result.manifest.registeredSceneLightKinds ?? [staticLightKinds])
-              .map((kinds) => staticSceneLightArms(kinds, hasShadowReceiver))
+              .map((kinds) =>
+                  staticSceneLightArms(kinds ?? [], hasShadowReceiver),
+              )
               .reduce((all, arms) => ({
                   lightKinds: [
                       ...new Set([...all.lightKinds, ...arms.lightKinds]),

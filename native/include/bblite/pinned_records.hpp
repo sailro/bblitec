@@ -170,11 +170,6 @@ template <class... Parts> void console_line(const Parts&... parts) {
     std::cerr << line << '\n';
 }
 
-template <class T, class Variant> struct IsAlternative : std::false_type {};
-template <class T, class... Members>
-struct IsAlternative<T, std::variant<Members...>>
-    : std::bool_constant<(std::is_same_v<T, Members> || ...)> {};
-
 /**
  * A union read as another union of its member types: the held member, kept.
  * A narrowing's excluded members are the ones the checker proved absent, so
@@ -185,7 +180,7 @@ template <class To, class... From>
     return std::visit(
         [](const auto& held) -> To {
             using Held = std::decay_t<decltype(held)>;
-            if constexpr (IsAlternative<Held, To>::value)
+            if constexpr (js::is_alternative_v<Held, To>)
                 return To(std::in_place_type<Held>, held);
             else
                 throw std::logic_error("A narrowed pinned union holds an excluded member.");

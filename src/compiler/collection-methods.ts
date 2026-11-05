@@ -1,15 +1,11 @@
 import ts from "typescript";
 import type { DataLowerer } from "./data-lowering.js";
-import type { DataType } from "./data-types.js";
+import { presentDataType, type DataType } from "./data-types.js";
 import { optionalPresentCpp, optionalValueCpp, type Value } from "./types.js";
 import { compileJsonPropertyKey, isJsonValue } from "./json-bridge.js";
 import { namedMember } from "./symbols.js";
-import {
-    localCallback,
-    soleReturnedExpression,
-    unwrapExpression,
-} from "./syntax.js";
-import { holdsOnly } from "./type-facts.js";
+import { localCallback } from "./syntax.js";
+import { arrayElementType, holdsOnly, tupleElements } from "./type-facts.js";
 
 /** Construct from a present iterable; both absent values create an empty owner. */
 export function compileCollectionIterable(
@@ -201,35 +197,17 @@ export function compileMapInitializer(
 }
 
 /**
- * Whether entries are a `map` call whose callback returns a `[key, value]`
- * literal with a key holding only strings: each pair's key is then the
- * property key it converts to, whatever element carrier the pairs share.
+ * Whether every key of an array of `[key, value]` pairs holds only strings
+ * by its type: each pair's key is then the property key it converts to,
+ * whatever element carrier the pairs share.
  */
-function mapsStringKeyedPairs(
+function stringKeyedEntries(
     checker: ts.TypeChecker,
     entries: ts.Expression,
 ): boolean {
-    if (
-        !ts.isCallExpression(entries) ||
-        namedMember(checker, unwrapExpression(entries.expression))?.name !==
-            "map"
-    )
-        return false;
-    const callback =
-        entries.arguments[0] && unwrapExpression(entries.arguments[0]);
-    const returned =
-        callback &&
-        (ts.isArrowFunction(callback) || ts.isFunctionExpression(callback))
-            ? soleReturnedExpression(callback.body)
-            : undefined;
-    const pair = returned && unwrapExpression(returned);
-    return (
-        pair !== undefined &&
-        ts.isArrayLiteralExpression(pair) &&
-        pair.elements.length === 2 &&
-        !pair.elements.some(ts.isSpreadElement) &&
-        holdsOnly(checker.getTypeAtLocation(pair.elements[0]!), ["string"])
-    );
+    const pair = arrayElementType(checker, checker.getTypeAtLocation(entries));
+    const key = pair && tupleElements(checker, pair)?.[0];
+    return key !== undefined && holdsOnly(key.type, ["string"]);
 }
 
 /** Consume key/value entries for Map constructors and Object.fromEntries. */
@@ -276,11 +254,15 @@ export function compileEntryCollection(
     absentIsEmpty = false,
 ): Value {
     const input = lowerer.context.unwrap(expression);
-    // A key the source proves a string is read as one from a shared carrier.
+    // A key the entries' type proves a string, held in a carrier the pairs
+    // share, is read as the string it is; a key stored as itself converts.
     const stringKeys =
-        type.dictionary && mapsStringKeyedPairs(lowerer.context.checker, input);
+        type.dictionary && stringKeyedEntries(lowerer.context.checker, input);
     const compileKey = (value: Value, keyType: DataType): string => {
-        if (!type.dictionary || stringKeys)
+        if (
+            !type.dictionary ||
+            (stringKeys && presentDataType(value.dataType)?.kind === "union")
+        )
             return lowerer.compileLaneForSink(value, keyType, input);
         const key = compileJsonPropertyKey(lowerer.context, value, input);
         // Heterogeneous pairs can share a union element carrier. Converting

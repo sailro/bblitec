@@ -210,6 +210,11 @@ export class SurveyCollector {
         );
     }
 
+    /** The statements the last attempt of `realm` lowered. */
+    public statementsLowered(realm: string): number {
+        return this.realms.get(realm)?.attempted ?? 0;
+    }
+
     /** Runs one realm's compile attempt, replacing the census a previous attempt of that realm left. */
     public attempt<T>(realm: string, run: () => T): T {
         this.attempts++;

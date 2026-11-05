@@ -14,6 +14,7 @@ import type {
     CompiledShaderSampler,
     CompiledShaderStorageBuffer,
 } from "./compiler/types.js";
+import { GPU_VERTEX_ATTRIBUTES } from "./gpu-vertex-attributes.js";
 
 export type ShaderStage = "vertex" | "fragment";
 /** A pipeline's value for a numeric WGSL override ID, distinct from its declaration. */
@@ -2842,19 +2843,11 @@ export function lowerWgslShaderProgram(
 // `VertexInput`, which both render backends bind from GpuVertex; the
 // browser-composed twin assigns locations by declaration order against its
 // own buffers, so only the native map has to match the native vertex table.
-const attributeTypes: Record<string, { location: number; type: ShaderType }> = {
-    position: { location: 0, type: "vec3<f32>" },
-    normal: { location: 1, type: "vec3<f32>" },
-    tangent: { location: 2, type: "vec4<f32>" },
-    uv: { location: 3, type: "vec2<f32>" },
-    uv2: { location: 5, type: "vec2<f32>" },
-    color: { location: 6, type: "vec4<f32>" },
-    // The skinning lanes the deformation stage adds (`GpuVertex::joints`,
-    // `GpuVertex::weights`): joint indices ride a float lane, which a read
-    // converts back to the pin's `vec4<u32>` (`convertedAttributes`).
-    joints: { location: 8, type: "vec4<f32>" },
-    weights: { location: 9, type: "vec4<f32>" },
-};
+// A joint index read converts back to the pin's `vec4<u32>`
+// (`convertedAttributes`).
+const attributeTypes: Readonly<
+    Record<string, { location: number; type: ShaderType }>
+> = GPU_VERTEX_ATTRIBUTES;
 
 /** Attributes the native vertex holds in another type than the pin declares, read as the pin's. */
 const convertedAttributes: Readonly<Record<string, string>> = {

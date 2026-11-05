@@ -1,19 +1,34 @@
-/** Native palette/weight storage shared by the source initial state and live pose adapter. */
-export function gltfDeformationStateCpp(): string {
+import type { GltfLoaderOptions } from "./loader.js";
+
+/**
+ * Native palette/weight storage shared by the source initial state and live
+ * pose adapter. Under node transforms every record hangs under its node's
+ * scene node, whose world the engine composes, so the publish takes no node
+ * world.
+ */
+export function gltfDeformationStateCpp(options: GltfLoaderOptions): string {
+    const sceneParent = options.nodeTransforms === true;
     return `
 // A skinned record carries the pin's palette, \`invMeshWorld * jointWorld *
-// IBM\`, under its node's world; an unskinned animated node carries its
+// IBM\`, under its node's world; ${
+        sceneParent
+            ? `an unskinned animated node's record hangs
+// under the node's scene node, which the pose moves itself.`
+            : `an unskinned animated node carries its
 // live world as the record's parent world, as the pin's mesh child of that
-// node does -- unless the record hangs under the node's scene node
-// (\`scene_parent\`), which the pose moved itself.
-void publish_gltf_deformation(MeshRecord& mesh, const Matrix& node_world,
-    const std::vector<Matrix>& joint_matrices, bool skinned, const std::vector<float>& morph_weights,
-    bool scene_parent = false) {
+// node does.`
+    }
+void publish_gltf_deformation(MeshRecord& mesh,${sceneParent ? "" : " const Matrix& node_world,"}
+    const std::vector<Matrix>& joint_matrices, bool skinned, const std::vector<float>& morph_weights) {
     if (skinned) {
         mesh.bone_matrices = joint_matrices;
         ++mesh.bone_matrices_version;
-    } else if (!scene_parent) {
+    }${
+        sceneParent
+            ? ""
+            : ` else {
         mesh.parent_world = node_world;
+    }`
     }
     mesh.morph_weights = {};
     for (std::size_t target = 0; target < morph_weights.size() && target < mesh.morph_weights.size(); ++target)

@@ -1,12 +1,6 @@
 import { resolve } from "node:path";
 import test from "node:test";
-import { runInNewContext } from "node:vm";
-import ts from "typescript";
-import { compileSource } from "../src/compiler.js";
-import {
-    optionalNativeFixtureTools,
-    runGeneratedProgram,
-} from "./native-fixture.js";
+import { runSelfCheckingProgram } from "./self-checking-program.js";
 
 test("a Proxy over a parsed record reads through its traps and the live target", (t) => {
     // The view computes one field, reads every other one from the parsed
@@ -35,15 +29,8 @@ let refused = false;
 try { (view as Save).cz = 9; } catch (error) { refused = error instanceof TypeError; }
 if (!refused || save.cz !== 5) throw new Error("set trap");
 `;
-    runInNewContext(
-        ts.transpileModule(source, {
-            compilerOptions: { target: ts.ScriptTarget.ES2022 },
-        }).outputText,
-    );
-    const { cpp } = compileSource(source, {
-        fileName: resolve("document-proxy.ts"),
+    return runSelfCheckingProgram(t, "document-proxy", source, {
+        compile: { fileName: resolve("document-proxy.ts") },
+        expectedOutput: "",
     });
-    const native = optionalNativeFixtureTools(false);
-    if (!native) return t.skip("Native fixture compiler unavailable.");
-    runGeneratedProgram(native, "document-proxy", cpp, { expectedOutput: "" });
 });

@@ -1,14 +1,8 @@
 import { resolve } from "node:path";
 import test from "node:test";
-import { runInNewContext } from "node:vm";
-import ts from "typescript";
-import { compileSource } from "../src/compiler.js";
-import {
-    optionalNativeFixtureTools,
-    runGeneratedProgram,
-} from "./native-fixture.js";
+import { runSelfCheckingProgram } from "./self-checking-program.js";
 
-test("a record type with methods that parsed values reach is a document whose methods are called or refused", async (t) => {
+test("a record type with methods that parsed values reach is a document whose methods are called or refused", (t) => {
     // One record type holds a literal with its method and parsed records
     // that never carry one: a call runs the literal's method and throws a
     // TypeError for a parsed record, and a parsed record keeps the keys its
@@ -46,17 +40,8 @@ main().then((result) => {
     if (result !== "made contents|saved TypeError|marker d|none") throw new Error(result);
 });
 `;
-    await runInNewContext(
-        ts.transpileModule(source, {
-            compilerOptions: { target: ts.ScriptTarget.ES2022 },
-        }).outputText,
-    );
-    const { cpp } = compileSource(source, {
-        fileName: resolve("document-function-fields.ts"),
-    });
-    const native = optionalNativeFixtureTools(false);
-    if (!native) return t.skip("Native fixture compiler unavailable.");
-    runGeneratedProgram(native, "document-function-fields", cpp, {
+    return runSelfCheckingProgram(t, "document-function-fields", source, {
+        compile: { fileName: resolve("document-function-fields.ts") },
         expectedOutput: "",
     });
 });

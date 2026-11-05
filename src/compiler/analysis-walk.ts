@@ -42,6 +42,30 @@ export function sourceFileNodes(file: ts.SourceFile): readonly ts.Node[] {
     return nodes;
 }
 
+/** @unjournaled Parsed syntax is immutable: each file's identifiers by name, kept. */
+const fileIdentifiers = new WeakMap<
+    ts.SourceFile,
+    ReadonlyMap<string, readonly ts.Identifier[]>
+>();
+
+/** A file's identifiers outside type positions, by name, in source order. */
+export function identifiersByName(
+    file: ts.SourceFile,
+): ReadonlyMap<string, readonly ts.Identifier[]> {
+    let known = fileIdentifiers.get(file);
+    if (!known) {
+        const names = new Map<string, ts.Identifier[]>();
+        for (const node of sourceFileNodes(file)) {
+            if (!ts.isIdentifier(node)) continue;
+            const list = names.get(node.text);
+            if (list) list.push(node);
+            else names.set(node.text, [node]);
+        }
+        fileIdentifiers.set(file, (known = names));
+    }
+    return known;
+}
+
 /** Preorder analysis with explicit boundaries and early termination. */
 export function findAnalysisNode<T extends ts.Node>(
     root: ts.Node,

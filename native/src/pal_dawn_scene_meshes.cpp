@@ -16,6 +16,7 @@
 #include <bblite/features/shadows_csm.hpp>
 
 #include "pal_dawn_scene.hpp"
+#include "pal_texture_sampler_cache.hpp"
 #if BBLITE_GPU_MORPH_STORAGE
 #include <bblite/upstream/morph_targets.hpp>
 #endif
@@ -26,14 +27,10 @@ inline namespace dawn_scene {
 #if (BBLITE_HAS_DAWN && BBLITE_HAS_PBR_RENDERER)
 /** The device's one sampler for a state a render target's `texture.sampler` names. */
 WGPUSampler dawn_render_texture_sampler(DawnState& state, const TextureSamplerState& sampler) {
-    for (const auto& [kept, created] : state.render_texture_samplers)
-        if (kept == sampler)
-            return created;
-    WGPUSampler created = create_texture_sampler(state.device, sampler);
-    if (!created)
-        dawn_error("render texture sampler creation failed.");
-    state.render_texture_samplers.emplace_back(sampler, created);
-    return created;
+    return cached_texture_sampler(state.render_texture_samplers, sampler,
+                                  [&](const TextureSamplerState& made) {
+                                      return create_texture_sampler(state.device, made);
+                                  });
 }
 
 void release_dawn_shader_bindings(DawnShaderBindings& bindings) {

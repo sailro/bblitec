@@ -393,6 +393,23 @@ export const loadTexture2DDefaults: LoadTexture2DDefaults = {
  * `mipMaps` texture generated, and a texture without mips has one level,
  * which a zero clamp selects.
  */
+/** The native sampler state aggregate, each member already spelled in C++. */
+export function textureSamplerStateCpp(state: {
+    minFilter: string;
+    magFilter: string;
+    mipmapMode: string;
+    addressModeU: string;
+    addressModeV: string;
+    anisotropy: string;
+    maxLod: string;
+}): string {
+    return (
+        `bbl::TextureSamplerState{${state.minFilter}, ${state.magFilter}, ` +
+        `${state.mipmapMode}, ${state.addressModeU}, ${state.addressModeV}, ` +
+        `${state.anisotropy}, ${state.maxLod}}`
+    );
+}
+
 export function loadTexture2DSamplerCpp(sampler: {
     minFilter: string;
     magFilter: string;
@@ -413,16 +430,17 @@ export function loadTexture2DSamplerCpp(sampler: {
                 `literals: ${Object.keys(mipmapModeByPin).join(", ")}.`,
         );
     }
-    return (
-        `bbl::TextureSamplerState{` +
-        `bbl::TextureFilter::${sampler.minFilter}, ` +
-        `bbl::TextureFilter::${sampler.magFilter}, ` +
-        `bbl::${mipmapMode}, ` +
-        `${sampler.addressModeUCpp}, ` +
-        `${sampler.addressModeVCpp}, ` +
-        `${floatLiteral(allLinear ? anisotropy.allLinear : anisotropy.otherwise)}, ` +
-        `${sampler.mipMaps ? "1000.0f" : "0.0f"}}`
-    );
+    return textureSamplerStateCpp({
+        minFilter: `bbl::TextureFilter::${sampler.minFilter}`,
+        magFilter: `bbl::TextureFilter::${sampler.magFilter}`,
+        mipmapMode: `bbl::${mipmapMode}`,
+        addressModeU: sampler.addressModeUCpp,
+        addressModeV: sampler.addressModeVCpp,
+        anisotropy: floatLiteral(
+            allLinear ? anisotropy.allLinear : anisotropy.otherwise,
+        ),
+        maxLod: sampler.mipMaps ? "1000.0f" : "0.0f",
+    });
 }
 
 /** Everything `bbl::load_file_texture` takes past the path. */

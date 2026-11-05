@@ -122,7 +122,7 @@ import {
     initializedVariableDeclaration,
     requireDynamicBindingStorage,
 } from "./dynamic-binding-storage.js";
-import { CompileError } from "./compile-error.js";
+import { CompileError, unlessRefused } from "./compile-error.js";
 import { StorageDemand } from "./storage-demand.js";
 import { refuseEitherAbsence } from "./absence-tag-storage.js";
 import {
@@ -4470,8 +4470,10 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                             (kind) => kind === inner.kind,
                         ) ||
                             // A stored node handle the checker narrows to
-                            // its concrete family (`TransformNode`).
-                            inner.kind === "handle") &&
+                            // its concrete family (`TransformNode`), or a
+                            // stored DOM event target.
+                            inner.kind === "handle" ||
+                            inner.kind === "event-target") &&
                         provenPresent(
                             this.context.checker.getTypeAtLocation(expression),
                         ))))
@@ -13002,11 +13004,9 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
      * attempt; a later member naming a constant of literal data stores the
      * same record in the next attempt, so the demand its holder meets joins
      * this one and one replay plans them all. Likewise a member whose
-     * record must become a document joins every later member's own: that
-     * demand is decided by the member's record type alone. Members whose
-     * records share one struct all meet the demand naming its first record
-     * type, which each replay moves off the struct in turn: a member
-     * written as a literal joins its own type's, as that replay would.
+     * record must become a document joins every later member's own, each
+     * naming the member's own record type (`documentRecordDemand` of the
+     * member's expression in the literal, `value`).
      */
     public storeLiteralMember<M>(
         members: readonly M[],
@@ -13031,28 +13031,40 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 throw error.joinedWith(joined);
             }
             if (isDocumentRecordDemand(error)) {
+                // A sink naming the struct's registering type for a member
+                // written in the literal names the member's own instead.
+                const own = (
+                    member: M,
+                    demand: NativeRecordStorageRequired,
+                ): NativeRecordStorageRequired => {
+                    const expression = value(member);
+                    const struct =
+                        expression &&
+                        demand.requests.length === 1 &&
+                        this.context.dataTypes.fromTsType(
+                            demand.demand.type,
+                            expression,
+                        );
+                    const named =
+                        struct &&
+                        struct.kind === "struct" &&
+                        this.context.dataTypes.documentRecordDemand(
+                            struct.name,
+                            expression,
+                        );
+                    return named && named.type !== demand.demand.type
+                        ? new NativeRecordStorageRequired(named)
+                        : demand;
+                };
                 const joined: NativeRecordStorageRequired[] = [];
                 for (const member of members.slice(index + 1)) {
                     const demand = this.probedDemand(
                         () => store(member),
                         isDocumentRecordDemand,
                     );
-                    if (!demand) continue;
-                    const expression = value(member);
-                    const own =
-                        demand.demand.type === error.demand.type && expression
-                            ? this.context.dataTypes.structMemberDocumentDemand(
-                                  this.context.checker.getTypeAtLocation(
-                                      expression,
-                                  ),
-                                  expression,
-                              )
-                            : undefined;
-                    joined.push(
-                        own ? new NativeRecordStorageRequired(own) : demand,
-                    );
+                    if (demand) joined.push(own(member, demand));
                 }
-                throw error.joinedWith(joined);
+                throw own(members[index]!, error).joinedWith(joined);
             }
             throw error;
         }
@@ -14625,14 +14637,13 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         // The right side lowered alone, a refusal as undefined; `keep`
         // decides whether what it emitted stays.
         const probeRight = (keep: (value: Value | undefined) => boolean) =>
-            this.context.probeEmission(() => {
-                try {
-                    return this.context.compileValue(expression.right);
-                } catch (error) {
-                    if (error instanceof CompileError) return undefined;
-                    throw error;
-                }
-            }, keep);
+            this.context.probeEmission(
+                () =>
+                    unlessRefused(() =>
+                        this.context.compileValue(expression.right),
+                    ),
+                keep,
+            );
         if (
             kind !== "function" &&
             !reseatsOnAssignment(target.dataType, (name) =>
@@ -15469,6 +15480,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         if (mode === "write") {
             const demand = this.context.dataTypes.documentRecordDemand(
                 dataType.name,
+                access.expression,
             );
             if (demand) throw new NativeRecordStorageRequired(demand);
             this.context.fail(
@@ -16064,6 +16076,13 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
     public compileUnionLogicalValue(
         expression: ts.BinaryExpression,
     ): Value | undefined {
+        // Only a union, or a type parameter one may bind, maps to one.
+        const checked = this.context.checker.getTypeAtLocation(expression);
+        if (
+            !checked.isUnion() &&
+            (checked.flags & ts.TypeFlags.TypeParameter) === 0
+        )
+            return undefined;
         const type = this.dataTypeAt(expression);
         if (type?.kind !== "union") return undefined;
         const cppType = this.context.dataTypes.cppType(type);

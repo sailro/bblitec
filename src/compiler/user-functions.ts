@@ -43,7 +43,6 @@ import {
     isNullable,
     holdsNoPayload,
     valueKindOf,
-    valueKinds,
     unionMembers,
     boundedTupleElements,
     fixedTupleElements,
@@ -127,6 +126,7 @@ import {
     mutatingCallTarget,
     outermostWrapper,
     requiredParameterCount,
+    ownParameters,
     restParameterIndex,
     rootIdentifier,
     sourceFunctionName,
@@ -163,6 +163,7 @@ import {
     callTypeArguments,
     mentionsTypeParameter,
     requiredArgumentCount,
+    acceptsOmittedVoid,
 } from "./type-arguments.js";
 import { emitSharedCell, sharedCellCpp } from "./shared-cells.js";
 import { isStaticMember } from "./class-members.js";
@@ -1204,20 +1205,35 @@ export function resolveFunctionDeclaration(
 }
 
 /**
- * Whether a function literal's final parameter is a rest parameter of a
- * fixed tuple type: its lanes are ordinary parameters of a signature that
- * spells them, rather than a packed array.
+ * The lanes a function's tuple rest parameter is, each an ordinary
+ * trailing parameter of a signature that spells them rather than a packed
+ * array: a fixed tuple's elements always, one with optional elements' when
+ * the body only forwards it (`restOnlyForwarded`). Undefined for any other
+ * final parameter.
  */
-export function hasFixedTupleRest(
+function tupleRestLanes(
+    checker: ts.TypeChecker,
+    declaration: ts.SignatureDeclaration,
+): readonly unknown[] | undefined {
+    const last = declaration.parameters.at(-1);
+    if (!last?.dotDotDotToken) return undefined;
+    const type = checker.getTypeAtLocation(last);
+    return (
+        fixedTupleElements(checker, type) ??
+        (restOnlyForwarded(checker, last, declaration)
+            ? boundedTupleElements(checker, type)
+            : undefined)
+    );
+}
+
+/** Whether a function literal's final parameter is a rest parameter of tuple lanes (`tupleRestLanes`). */
+export function hasTupleRestLanes(
     checker: ts.TypeChecker,
     declaration: ts.Node,
 ): boolean {
-    if (!isSupportedFunction(declaration)) return false;
-    const last = declaration.parameters.at(-1);
     return (
-        last?.dotDotDotToken !== undefined &&
-        fixedTupleElements(checker, checker.getTypeAtLocation(last)) !==
-            undefined
+        isSupportedFunction(declaration) &&
+        tupleRestLanes(checker, declaration) !== undefined
     );
 }
 
@@ -5531,25 +5547,11 @@ export class UserFunctionLowerer {
                 declaration,
             );
         // A rest parameter of a tuple type is the signature's trailing
-        // parameters, one lane each: a fixed tuple always, one with optional
-        // elements when the body only forwards it.
+        // parameters, one lane each.
         const restParameter = runtimeParameters.at(-1);
         const restLanes =
-            dataType.restParameter === undefined &&
-            restParameter?.declaration.dotDotDotToken
-                ? (
-                      fixedTupleElements(this.checker, restParameter.type) ??
-                      (restOnlyForwarded(
-                          this.checker,
-                          restParameter.declaration,
-                          declaration,
-                      )
-                          ? boundedTupleElements(
-                                this.checker,
-                                restParameter.type,
-                            )
-                          : undefined)
-                  )?.length
+            dataType.restParameter === undefined
+                ? tupleRestLanes(this.checker, declaration)?.length
                 : undefined;
         const tupleRest =
             restLanes !== undefined &&
@@ -7069,20 +7071,15 @@ export class UserFunctionLowerer {
         if (cached) {
             return cached;
         }
-        // A `this` parameter types the receiver; it takes no argument.
-        const parameters = declaration.parameters
-            .filter(
-                (parameter) =>
-                    !ts.isIdentifier(parameter.name) ||
-                    parameter.name.text !== "this",
-            )
-            .map((parameter): UserFunctionParameterIr => {
+        const parameters = ownParameters(declaration).map(
+            (parameter): UserFunctionParameterIr => {
                 return {
                     declaration: parameter,
                     name: parameter.name,
                     type: this.checker.getTypeAtLocation(parameter),
                 };
-            });
+            },
+        );
         const body = declaration.body;
         if (!body) {
             fail(declaration, "Reached user functions require a body.");
@@ -7519,6 +7516,7 @@ export class UserFunctionLowerer {
                 this.checker,
                 call,
                 parameters,
+                (type) => context.dataTypes.resolveTypeParameter(type),
             );
             if (call.arguments.length < minimum)
                 fail(
@@ -7816,9 +7814,9 @@ export class UserFunctionLowerer {
                 // An omitted optional, or one whose type at this call
                 // accepts `void`, which TypeScript lets a call omit.
                 (parameter.declaration.questionToken ||
-                valueKinds(
-                    context.dataTypes.resolveTypeParameter(parameter.type),
-                ).has("void")
+                acceptsOmittedVoid(parameter.type, (type) =>
+                    context.dataTypes.resolveTypeParameter(type),
+                )
                     ? undefinedValue()
                     : context.fail(
                           parameter.declaration,

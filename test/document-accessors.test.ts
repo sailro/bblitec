@@ -1,12 +1,6 @@
 import { resolve } from "node:path";
 import test from "node:test";
-import { runInNewContext } from "node:vm";
-import ts from "typescript";
-import { compileSource } from "../src/compiler.js";
-import {
-    optionalNativeFixtureTools,
-    runGeneratedProgram,
-} from "./native-fixture.js";
+import { runSelfCheckingProgram } from "./self-checking-program.js";
 
 test("accessors defined on a copy of a parsed record read live and keep their places", (t) => {
     // The copy keeps every parsed key; two of them become getters over a
@@ -34,17 +28,8 @@ try { (view as Save).cx = 9; } catch (error) { if (error instanceof TypeError) r
 try { delete (view as Partial<Save>).cx; } catch (error) { if (error instanceof TypeError) refused++; }
 if (refused !== 2 || view.cx !== 4) throw new Error("refused " + refused);
 `;
-    runInNewContext(
-        ts.transpileModule(source, {
-            compilerOptions: { target: ts.ScriptTarget.ES2022 },
-        }).outputText,
-    );
-    const { cpp } = compileSource(source, {
-        fileName: resolve("document-accessors.ts"),
-    });
-    const native = optionalNativeFixtureTools(false);
-    if (!native) return t.skip("Native fixture compiler unavailable.");
-    runGeneratedProgram(native, "document-accessors", cpp, {
+    return runSelfCheckingProgram(t, "document-accessors", source, {
+        compile: { fileName: resolve("document-accessors.ts") },
         expectedOutput: "",
     });
 });
@@ -72,17 +57,8 @@ let refused = false;
 try { feel.orbit = 3; } catch (error) { refused = error instanceof TypeError; }
 if (!refused || feel.orbit !== 1) throw new Error("getter-only write");
 `;
-    runInNewContext(
-        ts.transpileModule(source, {
-            compilerOptions: { target: ts.ScriptTarget.ES2022 },
-        }).outputText,
-    );
-    const { cpp } = compileSource(source, {
-        fileName: resolve("document-literal-getters.ts"),
-    });
-    const native = optionalNativeFixtureTools(false);
-    if (!native) return t.skip("Native fixture compiler unavailable.");
-    runGeneratedProgram(native, "document-literal-getters", cpp, {
+    return runSelfCheckingProgram(t, "document-literal-getters", source, {
+        compile: { fileName: resolve("document-literal-getters.ts") },
         expectedOutput: "",
     });
 });

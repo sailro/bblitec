@@ -1,15 +1,10 @@
 import assert from "node:assert/strict";
 import { resolve } from "node:path";
 import test from "node:test";
-import { runInNewContext } from "node:vm";
 import ts from "typescript";
-import { compileSource } from "../src/compiler.js";
 import { createCompilerProgram } from "../src/compiler/program.js";
 import { programObservations } from "../src/compiler/program-observations.js";
-import {
-    optionalNativeFixtureTools,
-    runGeneratedProgram,
-} from "./native-fixture.js";
+import { runSelfCheckingProgram } from "./self-checking-program.js";
 
 // Generic setters and reflective writers reach a record only through the
 // calls that hand it over.
@@ -103,17 +98,8 @@ setOptional(row, "a", 2);
 if (!frame.publish(3) || frame.publish(4)) throw new Error("live view");
 if (row.a !== 2) throw new Error("setter");
 `;
-    runInNewContext(
-        ts.transpileModule(source, {
-            compilerOptions: { target: ts.ScriptTarget.ES2022 },
-        }).outputText,
-    );
-    const { cpp } = compileSource(source, {
-        fileName: resolve("written-holders-view.ts"),
-    });
-    const native = optionalNativeFixtureTools(false);
-    if (!native) return t.skip("Native fixture compiler unavailable.");
-    runGeneratedProgram(native, "written-holders-view", cpp, {
+    return runSelfCheckingProgram(t, "written-holders-view", source, {
+        compile: { fileName: resolve("written-holders-view.ts") },
         expectedOutput: "",
     });
 });

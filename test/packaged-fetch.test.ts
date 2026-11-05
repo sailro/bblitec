@@ -4,6 +4,7 @@ import { copyFileSync, mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import test from "node:test";
 import { compileSource } from "../src/compiler.js";
+import type { CompileResult } from "../src/compiler/types.js";
 import {
     optionalNativeFixtureTools,
     runNativeFixtureCompiler,
@@ -97,13 +98,7 @@ test("packaged fetch owns responses, snapshots selections and rejects missing or
             asset.source.endsWith("sound.bin"),
         ),
     );
-    for (const asset of result.manifest.assets) {
-        if (asset.source.endsWith("missing.bin")) continue;
-        const output = join(directory, asset.output);
-        mkdirSync(dirname(output), { recursive: true });
-        copyFileSync(resolve(directory, asset.source), output);
-    }
-    runPackagedProgram(t, directory, result.cpp);
+    runPackagedProgram(t, directory, result, "missing.bin");
 });
 
 test("a fetch of a URL the deployment holds no file at rejects", (t) => {
@@ -141,7 +136,7 @@ test("a fetch of a URL the deployment holds no file at rejects", (t) => {
             asset.source.endsWith("absent.json"),
         ),
     );
-    runPackagedProgram(t, directory, result.cpp);
+    runPackagedProgram(t, directory, result);
 });
 
 test("a generation-time fetch of a runtime-selected file reads its text and JSON at run time, a selection write included", (t) => {
@@ -177,12 +172,7 @@ test("a generation-time fetch of a runtime-selected file reads its text and JSON
     assert.equal(result.manifest.assets.length, 2);
     assert.match(result.cpp, /bbl::js::decode_utf8_removing_bom\(/);
     assert.match(result.cpp, /bbl::js::json_parse\(/);
-    for (const asset of result.manifest.assets) {
-        const output = join(directory, asset.output);
-        mkdirSync(dirname(output), { recursive: true });
-        copyFileSync(resolve(directory, asset.source), output);
-    }
-    runPackagedProgram(t, directory, result.cpp);
+    runPackagedProgram(t, directory, result);
 });
 
 test("a URL member a record takes from a spread call result keeps that member's domain", (t) => {
@@ -212,12 +202,7 @@ test("a URL member a record takes from a spread call result keeps that member's 
         { fileName: join(directory, "entry.ts"), publicDir },
     );
     assert.equal(result.manifest.assets.length, 2);
-    for (const asset of result.manifest.assets) {
-        const output = join(directory, asset.output);
-        mkdirSync(dirname(output), { recursive: true });
-        copyFileSync(resolve(directory, asset.source), output);
-    }
-    runPackagedProgram(t, directory, result.cpp);
+    runPackagedProgram(t, directory, result);
 });
 
 test("a runtime-selected KTX2 URL loads among its packaged containers", () => {
@@ -249,11 +234,22 @@ test("a runtime-selected KTX2 URL loads among its packaged containers", () => {
     );
 });
 
+/**
+ * Stages the program's packaged assets at their deployment paths, but the one
+ * whose source ends with `withheld`, then builds and runs the program.
+ */
 function runPackagedProgram(
     t: test.TestContext,
     directory: string,
-    program: string,
+    result: CompileResult,
+    withheld?: string,
 ): void {
+    for (const asset of result.manifest.assets) {
+        if (withheld !== undefined && asset.source.endsWith(withheld)) continue;
+        const output = join(directory, asset.output);
+        mkdirSync(dirname(output), { recursive: true });
+        copyFileSync(resolve(directory, asset.source), output);
+    }
     const native = optionalNativeFixtureTools();
     if (!native) {
         t.skip("Native fixture compiler unavailable.");
@@ -261,7 +257,7 @@ function runPackagedProgram(
     }
     const cpp = join(directory, "check.cpp"),
         exe = join(directory, "check.exe");
-    writeFileSync(cpp, program);
+    writeFileSync(cpp, result.cpp);
     runNativeFixtureCompiler(native, [
         "/DBBLITE_WORKERS=1",
         `/Fo:${directory}/`,
@@ -346,12 +342,7 @@ test("packaged URL domains survive descriptor selection, base helpers and async 
             (asset) => !asset.source.endsWith("unrelated.bin"),
         ),
     );
-    for (const asset of result.manifest.assets) {
-        const output = join(directory, asset.output);
-        mkdirSync(dirname(output), { recursive: true });
-        copyFileSync(resolve(directory, asset.source), output);
-    }
-    runPackagedProgram(t, directory, result.cpp);
+    runPackagedProgram(t, directory, result);
 });
 
 test("a module URL reads as the package's public root in conditions and URL bases", (t) => {
@@ -378,12 +369,7 @@ test("a module URL reads as the package's public root in conditions and URL base
         { fileName: join(directory, "entry.ts"), publicDir },
     );
     assert.equal(result.manifest.assets.length, 1);
-    for (const asset of result.manifest.assets) {
-        const output = join(directory, asset.output);
-        mkdirSync(dirname(output), { recursive: true });
-        copyFileSync(resolve(directory, asset.source), output);
-    }
-    runPackagedProgram(t, directory, result.cpp);
+    runPackagedProgram(t, directory, result);
 });
 
 test("worker native-object mutations preserve sibling packaged URL selection", (t) => {
@@ -437,12 +423,7 @@ test("worker native-object mutations preserve sibling packaged URL selection", (
         result.manifest.assets.map((asset) => asset.source),
         ["public/files/bytes.bin"],
     );
-    for (const asset of result.manifest.assets) {
-        const output = join(directory, asset.output);
-        mkdirSync(dirname(output), { recursive: true });
-        copyFileSync(resolve(directory, asset.source), output);
-    }
-    runPackagedProgram(t, directory, result.cpp);
+    runPackagedProgram(t, directory, result);
 });
 
 test("packaged URL provenance refuses uncertain mutations, origins and unbounded domains", () => {

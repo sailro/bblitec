@@ -2281,10 +2281,13 @@ export class DataTypeRegistry {
      * for a parsed document reaching it: a plain-data record or synthetic
      * dictionary view (no stored functions or authored accessors), not a
      * class, and not a record type the pinned package declares, which keeps
-     * the struct its engine intrinsics exchange.
+     * the struct its engine intrinsics exchange. Record types share a struct
+     * by layout: the demand names the `stored` value's own type where it
+     * maps to the struct, else the type that registered it.
      */
     public documentRecordDemand(
         name: string,
+        stored?: ts.Node,
     ): NativeRecordStorageDemand | undefined {
         if (this.isPackageRecord(name)) return undefined;
         const source = this.nativeRecordSources.get(name);
@@ -2310,20 +2313,27 @@ export class DataTypeRegistry {
             fields.some((field) => field.accessor && !dictionaryView)
         )
             return undefined;
+        const own =
+            stored &&
+            this.checker.getNonNullableType(
+                this.checker.getTypeAtLocation(stored),
+            );
+        if (own && own !== source.type) {
+            const mapped = this.fromTsType(own, stored);
+            const named =
+                mapped?.kind === "struct" && mapped.name === name
+                    ? this.ownDocumentDemand(own, stored)
+                    : undefined;
+            if (named) return named;
+        }
         return { ...source, document: true };
     }
 
-    /**
-     * The document demand naming one record type of a struct whose document
-     * demand (`documentRecordDemand`) names another: the struct's next record
-     * type, as the replay that moves the first off it would name it.
-     * Undefined where the type has the layout.
-     */
-    public structMemberDocumentDemand(
-        type: ts.Type,
+    /** The document demand naming record type `record` itself; undefined where it has the layout. */
+    private ownDocumentDemand(
+        record: ts.Type,
         node: ts.Node,
     ): NativeRecordStorageDemand | undefined {
-        const record = this.checker.getNonNullableType(type);
         return this.documentRecords.has(this.structIdentity(record))
             ? undefined
             : { ...this.recordDemand(record, node), document: true };
@@ -2342,7 +2352,7 @@ export class DataTypeRegistry {
             this.resolveTypeParameter(type),
         );
         return isPlainRecord(this.checker, record)
-            ? this.structMemberDocumentDemand(record, node)
+            ? this.ownDocumentDemand(record, node)
             : undefined;
     }
 
@@ -6071,10 +6081,13 @@ export class DataTypeRegistry {
         type: ts.UnionType,
         node: ts.Node,
     ): DataType | undefined {
-        const callable = type.types.filter(
-            (member) =>
-                callSignatures(this.checker, member, "present").length > 0,
-        ).length;
+        // A pair of one callable and one other member.
+        const callablePair = (): boolean =>
+            type.types.length === 2 &&
+            type.types.filter(
+                (member) =>
+                    callSignatures(this.checker, member, "present").length > 0,
+            ).length === 1;
         if (
             !type.types.some(
                 (member) =>
@@ -6084,7 +6097,7 @@ export class DataTypeRegistry {
                             ts.TypeFlags.BooleanLike)) !==
                     0,
             ) &&
-            !(type.types.length === 2 && callable === 1) &&
+            !callablePair() &&
             !type.types.every(binaryLibraryClass) &&
             !type.types.every(
                 (member) => this.nativeHandleKind(member) !== undefined,

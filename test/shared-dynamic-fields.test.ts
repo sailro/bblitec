@@ -1,12 +1,6 @@
 import { resolve } from "node:path";
 import test from "node:test";
-import { runInNewContext } from "node:vm";
-import ts from "typescript";
-import { compileSource } from "../src/compiler.js";
-import {
-    optionalNativeFixtureTools,
-    runGeneratedProgram,
-} from "./native-fixture.js";
+import { runSelfCheckingProgram } from "./self-checking-program.js";
 
 test("a record field holding a parsed array shares it with the record type it is stored as", (t) => {
     // The returned literal keeps the parsed config's array; stored as `Snap`
@@ -25,17 +19,8 @@ config.stops.push(4);
 for (const listener of listeners) listener(snap);
 if (seen !== 5 || !same) throw new Error("shared stops " + seen);
 `;
-    runInNewContext(
-        ts.transpileModule(source, {
-            compilerOptions: { target: ts.ScriptTarget.ES2022 },
-        }).outputText,
-    );
-    const { cpp } = compileSource(source, {
-        fileName: resolve("shared-dynamic-fields.ts"),
-    });
-    const native = optionalNativeFixtureTools(false);
-    if (!native) return t.skip("Native fixture compiler unavailable.");
-    runGeneratedProgram(native, "shared-dynamic-fields", cpp, {
+    return runSelfCheckingProgram(t, "shared-dynamic-fields", source, {
+        compile: { fileName: resolve("shared-dynamic-fields.ts") },
         expectedOutput: "",
     });
 });

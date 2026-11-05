@@ -1684,23 +1684,13 @@ function compileObjectDefineProperty(
             global,
         ),
     ];
-    if (target?.dataType.kind === "json")
-        return applyDocumentDefinitions(
-            context,
-            call,
-            "defineProperty",
-            target,
-            definitions,
-        );
-    return target
-        ? applyPropertyDefinitions(
-              context,
-              call,
-              "defineProperty",
-              { ...target, dataType: target.dataType as DataType<"struct"> },
-              definitions,
-          )
-        : applyGlobalDefinitions(context, call, "defineProperty", definitions);
+    return applyDefinitions(
+        context,
+        call,
+        "defineProperty",
+        target,
+        definitions,
+    );
 }
 
 function compileObjectDefineProperties(
@@ -1743,25 +1733,37 @@ function compileObjectDefineProperties(
             ),
         );
     }
+    return applyDefinitions(
+        context,
+        call,
+        "defineProperties",
+        target,
+        definitions,
+    );
+}
+
+/** Applies definitions to the realm's global object, a document or a record. */
+function applyDefinitions(
+    context: ObjectStaticContext,
+    call: ts.CallExpression,
+    method: "defineProperty" | "defineProperties",
+    target: ReturnType<typeof definitionTarget> | undefined,
+    definitions: readonly PropertyDefinition[],
+): Value {
     if (!target)
-        return applyGlobalDefinitions(
-            context,
-            call,
-            "defineProperties",
-            definitions,
-        );
+        return applyGlobalDefinitions(context, call, method, definitions);
     if (target.dataType.kind === "json")
         return applyDocumentDefinitions(
             context,
             call,
-            "defineProperties",
+            method,
             target,
             definitions,
         );
     return applyPropertyDefinitions(
         context,
         call,
-        "defineProperties",
+        method,
         { ...target, dataType: target.dataType },
         definitions,
     );

@@ -1,7 +1,6 @@
 import test from "node:test";
-import { runInNewContext } from "node:vm";
-import ts from "typescript";
 import { compileSource } from "../src/compiler.js";
+import { assertAsyncSourceCloses } from "./async-oracle.js";
 import {
     headlessRealmHost,
     optionalNativeFixtureTools,
@@ -38,12 +37,7 @@ main().then((words) => {
     globalThis.close();
 });
 `;
-    await runInNewContext(
-        ts.transpileModule(source, {
-            compilerOptions: { target: ts.ScriptTarget.ES2022 },
-        }).outputText,
-        { close: () => undefined },
-    );
+    await assertAsyncSourceCloses(source);
     const { cpp } = compileSource(source);
     const tools = optionalNativeFixtureTools(false);
     if (!tools) return t.skip("Native fixture compiler unavailable.");

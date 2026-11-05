@@ -1,11 +1,5 @@
 import test from "node:test";
-import { runInNewContext } from "node:vm";
-import ts from "typescript";
-import { compileSource } from "../src/compiler.js";
-import {
-    optionalNativeFixtureTools,
-    runGeneratedProgram,
-} from "./native-fixture.js";
+import { runSelfCheckingProgram } from "./self-checking-program.js";
 
 test("a logical value whose operands differ in kind selects an operand, not a number", (t) => {
     // `name || index` yields the string when it is non-empty: a numeric
@@ -26,15 +20,7 @@ const joined = labels.join(",");
 if (joined !== "p-a,p-1,t-b,t-3,o-c,o-5,a-6,a-") throw new Error(joined);
 if (rights !== 4) throw new Error("rights " + rights);
 `;
-    runInNewContext(
-        ts.transpileModule(source, {
-            compilerOptions: { target: ts.ScriptTarget.ES2022 },
-        }).outputText,
-    );
-    const { cpp } = compileSource(source);
-    const tools = optionalNativeFixtureTools(false);
-    if (!tools) return t.skip("Native fixture compiler unavailable.");
-    runGeneratedProgram(tools, "mixed-logical-values", cpp, {
+    return runSelfCheckingProgram(t, "mixed-logical-values", source, {
         expectedOutput: "",
     });
 });

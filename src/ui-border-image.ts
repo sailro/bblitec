@@ -57,9 +57,12 @@ const parseSlices = (value: string): readonly string[] | undefined =>
 const parseWidths = (value: string): readonly string[] | undefined =>
     fourSides(value, new RegExp(`^(?:${number}(?:px|%)?|auto)$`));
 
+/** A zero length: no painted outset or outline. */
+export const UI_ZERO_LENGTH = /^0(?:\.0*)?(?:px)?$/;
+
 /** No painted outset. */
 const zeroOutset = (value: string): boolean =>
-    fourSides(value, /^0(?:\.0*)?(?:px)?$/) !== undefined;
+    fourSides(value, UI_ZERO_LENGTH) !== undefined;
 
 /** Stretching, the only repeat represented. */
 const stretches = (value: string): boolean =>

@@ -3,6 +3,7 @@
 #include <bblite/js_data.hpp>
 #include <bblite/js_promise.hpp>
 #include <bblite/gpu_object.hpp>
+#include <bblite/gpu_sampler.hpp>
 #include <bblite/runtime.hpp>
 
 #include <memory>
@@ -146,20 +147,6 @@ struct GpuBindGroupLayoutEntry {
     bbl::js::Nullable<GpuBufferBindingLayout> buffer;
     bbl::js::Nullable<GpuSamplerBindingLayout> sampler;
     bbl::js::Nullable<GpuTextureBindingLayout> texture;
-};
-/** `GPUSamplerDescriptor`; absent members take WebGPU's defaults. */
-struct GpuSamplerDescriptor {
-    bbl::js::Nullable<std::string> label;
-    bbl::js::Nullable<std::string> address_mode_u;
-    bbl::js::Nullable<std::string> address_mode_v;
-    bbl::js::Nullable<std::string> address_mode_w;
-    bbl::js::Nullable<std::string> mag_filter;
-    bbl::js::Nullable<std::string> min_filter;
-    bbl::js::Nullable<std::string> mipmap_filter;
-    bbl::js::Nullable<double> lod_min_clamp;
-    bbl::js::Nullable<double> lod_max_clamp;
-    bbl::js::Nullable<std::string> compare;
-    bbl::js::Nullable<double> max_anisotropy;
 };
 struct GpuBindGroupLayoutDescriptor {
     bbl::js::Nullable<std::string> label;

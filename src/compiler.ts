@@ -815,9 +815,10 @@ function lowerSourceApplication(
         // leaves the next attempt to strict lowering. A survey's attempts
         // are always strict: a discarded plan runs between them, as far as
         // it can, after each restart while plans pay -- each demand a plan
-        // adds saves a strict attempt as long as the last one. After a plan
-        // that took longer than the attempts it saved, strict attempts run
-        // for as long as that plan did before the next one, twice as long
+        // adds saves a strict attempt as long as the last one. Costs are
+        // statement lowerings, so the schedule is the program's alone. After
+        // a plan that lowered more statements than the attempts it saved,
+        // strict attempts lower as many before the next one, twice as many
         // after each further such plan: a survey whose plans stop paying
         // spends ever less of its time planning, and the next plan that
         // pays plans after every restart again.
@@ -825,7 +826,6 @@ function lowerSourceApplication(
         let owed = 0;
         let unpaid = 0;
         for (;;) {
-            const started = performance.now();
             if (planning) {
                 const planner = new StorageDemandPlanner(input.checker);
                 try {
@@ -853,9 +853,12 @@ function lowerSourceApplication(
                     planning = true;
                     continue;
                 }
-                const planned = performance.now();
-                owed -= planned - started;
+                const strict = survey.statementsLowered(
+                    input.sourceFile.fileName,
+                );
+                owed -= strict;
                 if (owed > 0) continue;
+                const planned = performance.now();
                 const planner = new StorageDemandPlanner(
                     input.checker,
                     true,
@@ -868,10 +871,14 @@ function lowerSourceApplication(
                 }
                 for (const replay of planner.replays) acceptReplay(replay);
                 const added = addPlanned(planner);
-                const planMs = performance.now() - planned;
-                survey.planned(added, planMs, planner.ended());
-                unpaid = added * (planned - started) > planMs ? 0 : unpaid + 1;
-                owed = unpaid === 0 ? 0 : planMs * 2 ** (unpaid - 1);
+                survey.planned(
+                    added,
+                    performance.now() - planned,
+                    planner.ended(),
+                );
+                unpaid = added * strict > planner.statements ? 0 : unpaid + 1;
+                owed =
+                    unpaid === 0 ? 0 : planner.statements * 2 ** (unpaid - 1);
             }
         }
     };

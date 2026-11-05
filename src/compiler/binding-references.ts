@@ -1,34 +1,7 @@
 import ts from "typescript";
+import { identifiersByName } from "./analysis-walk.js";
 import { resolvedSymbol } from "./symbols.js";
 import { referenceSite, specifierSourceName } from "./syntax.js";
-
-/** @unjournaled Pure functions of the checked program, kept across replays. */
-const namedIdentifiers = new WeakMap<
-    ts.SourceFile,
-    ReadonlyMap<string, readonly ts.Identifier[]>
->();
-
-/** A file's identifiers outside type positions, by name. */
-function identifiersByName(
-    file: ts.SourceFile,
-): ReadonlyMap<string, readonly ts.Identifier[]> {
-    let known = namedIdentifiers.get(file);
-    if (!known) {
-        const names = new Map<string, ts.Identifier[]>();
-        const visit = (node: ts.Node): void => {
-            if (ts.isTypeNode(node)) return;
-            if (ts.isIdentifier(node)) {
-                const list = names.get(node.text);
-                if (list) list.push(node);
-                else names.set(node.text, [node]);
-            }
-            ts.forEachChild(node, visit);
-        };
-        visit(file);
-        namedIdentifiers.set(file, (known = names));
-    }
-    return known;
-}
 
 /** Whether a declaration binds a name of its module's top level. */
 function declaresModuleBinding(declaration: ts.Declaration): boolean {

@@ -1,8 +1,11 @@
 import ts from "typescript";
 import { someAnalysisNode } from "./analysis-walk.js";
-import { declaredSymbol, namedMember } from "./symbols.js";
+import { declaredSymbol, namedMember, resolvedSymbol } from "./symbols.js";
+import { localClassOfSymbol } from "./class-members.js";
 import {
     bindingNameIdentifiers,
+    classBaseExpression,
+    evaluationContainer,
     expressionMayRunCode,
     rootExpression,
     rootIdentifier,
@@ -171,13 +174,18 @@ function independentDemand(
     );
 }
 
-/** The body of the function a declaration is local to; undefined at module level. */
+/**
+ * The body of the function whose frame a declaration's variable lives in;
+ * undefined in a module or class static block, which run once.
+ */
 function functionBodyOf(
     declaration: ts.Declaration | undefined,
 ): ts.Block | undefined {
-    const owner =
-        declaration && ts.findAncestor(declaration.parent, ts.isFunctionLike);
-    const body = owner && "body" in owner ? owner.body : undefined;
+    const owner = declaration && evaluationContainer(declaration);
+    const body =
+        owner && ts.isFunctionLike(owner) && "body" in owner
+            ? owner.body
+            : undefined;
     return body && ts.isBlock(body) ? body : undefined;
 }
 
@@ -284,6 +292,8 @@ export class StorageDemandPlanner {
     private lowering?: ts.Statement;
     /** @unjournaled What ended the plan's work: undefined while it runs or once it returned. */
     private stop: unknown;
+    /** @unjournaled The statements the plan lowered: its cost, in a survey's measure. */
+    private lowered = 0;
 
     /**
      * @unjournaled The replays besides storage (`replayable`) a survey's
@@ -303,6 +313,11 @@ export class StorageDemandPlanner {
         private readonly replayable?: (error: unknown) => error is Error,
     ) {
         this.collected = new ReplayStorage(checker);
+    }
+
+    /** The statements the plan lowered. */
+    public get statements(): number {
+        return this.lowered;
     }
 
     /** Whether lowering goes on past a demand that allows it (`demandOrPlan`). */
@@ -362,7 +377,7 @@ export class StorageDemandPlanner {
         lower: () => void,
     ): void {
         this.lowering = statement;
-        this.beginActivation(statement);
+        this.lowered++;
         if (this.demands.length >= 256)
             throw new PlanningStop("the 256 demands one plan collects");
         // Under a generic instantiation a statement reads the types the
@@ -394,7 +409,8 @@ export class StorageDemandPlanner {
                         if (this.lostClasses.size === 0) return false;
                         const owner = thisClass(node);
                         return (
-                            owner !== undefined && this.lostClasses.has(owner)
+                            owner !== undefined &&
+                            this.extendsLostClass(context.checker, owner)
                         );
                     }
                     if (!ts.isIdentifier(node)) return false;
@@ -475,11 +491,7 @@ export class StorageDemandPlanner {
     ): boolean {
         if (request.kind === "generic") return true;
         if (request.kind === "record") {
-            if (!this.lostTypes.includes(request.demand.type)) {
-                this.lostTypes = [...this.lostTypes, request.demand.type];
-                this.lostTypeReads.clear();
-                this.lostGeneration++;
-            }
+            this.loseType(request.demand.type);
             return true;
         }
         if (
@@ -568,7 +580,37 @@ export class StorageDemandPlanner {
             if (!this.lostClasses.has(owner)) {
                 this.lostClasses.add(owner);
                 this.lostGeneration++;
+                // Its instances are lost wherever a name holds one too.
+                const symbol =
+                    owner.name && declaredSymbol(checker, owner.name);
+                if (symbol)
+                    this.loseType(checker.getDeclaredTypeOfSymbol(symbol));
             }
+    }
+
+    /** Whether `owner` is a lost class or extends one: its `this` reads what the class lost. */
+    private extendsLostClass(
+        checker: ts.TypeChecker,
+        owner: ts.ClassLikeDeclaration,
+    ): boolean {
+        for (
+            let current: ts.ClassLikeDeclaration | undefined = owner;
+            current;
+        ) {
+            if (this.lostClasses.has(current)) return true;
+            const base = classBaseExpression(current);
+            current =
+                base &&
+                localClassOfSymbol(resolvedSymbol(checker, base.expression));
+        }
+        return false;
+    }
+
+    private loseType(type: ts.Type): void {
+        if (this.lostTypes.includes(type)) return;
+        this.lostTypes = [...this.lostTypes, type];
+        this.lostTypeReads.clear();
+        this.lostGeneration++;
     }
 
     private loseName(checker: ts.TypeChecker, name: ts.Identifier): void {
@@ -587,9 +629,10 @@ export class StorageDemandPlanner {
 
     /**
      * A function body's first statement begins an activation, whose locals
-     * are not the ones an earlier activation's rollback lost.
+     * are not the ones an earlier activation's rollback lost. Every
+     * statement lowered while the plan runs is noted, recovered or not.
      */
-    private beginActivation(statement: ts.Statement): void {
+    public beginActivation(statement: ts.Statement): void {
         const body = statement.parent;
         if (
             !ts.isBlock(body) ||

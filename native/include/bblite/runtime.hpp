@@ -12,6 +12,7 @@
 #include <bblite/snapshot_list.hpp>
 #include <bblite/rendering_contexts.hpp>
 #include <bblite/dom_event_state.hpp>
+#include <bblite/gpu_sampler.hpp>
 
 #include <algorithm>
 #include <array>
@@ -5367,9 +5368,36 @@ inline GpuTextureIdentity publish_gpu_texture_identity(Engine& engine) {
 inline GpuDeviceIdentity gpu_device_identity(Engine& engine) {
     return {&engine, engine.device_generation};
 }
+/**
+ * A `GPUSamplerDescriptor` as a texture binds it: `webgpu_sampler`'s
+ * resolution, which the state holds but for a W address mode and a LOD
+ * floor, both refused.
+ */
+inline TextureSamplerState texture_sampler_state(const GpuSamplerDescriptor& descriptor) {
+    using Address = pal::WebGpuSampler::Address;
+    const pal::WebGpuSampler sampler = pal::webgpu_sampler(descriptor);
+    if (sampler.address_w != Address::clamp_to_edge || sampler.lod_min_clamp != 0.0f)
+        pal::webgpu_refuse("a texture's sampler state has no W address mode or LOD floor.");
+    const auto filter = [](bool linear) {
+        return linear ? TextureFilter::linear : TextureFilter::nearest;
+    };
+    const auto address = [](Address mode) {
+        return mode == Address::repeat          ? TextureAddressMode::repeat
+               : mode == Address::mirror_repeat ? TextureAddressMode::mirror
+                                                : TextureAddressMode::clamp;
+    };
+    return {filter(sampler.min_linear),
+            filter(sampler.mag_linear),
+            sampler.mipmap_linear ? TextureMipmapMode::linear : TextureMipmapMode::nearest,
+            address(sampler.address_u),
+            address(sampler.address_v),
+            static_cast<float>(sampler.max_anisotropy),
+            sampler.lod_max_clamp};
+}
+/** `device.createSampler(descriptor)`: a sampler object of its own each call. */
 inline GpuSampler create_device_sampler(const GpuDeviceIdentity& device,
-                                        TextureSamplerState state) {
-    return {device, state, ++device.engine->published_gpu_objects};
+                                        const GpuSamplerDescriptor& descriptor) {
+    return {device, texture_sampler_state(descriptor), ++device.engine->published_gpu_objects};
 }
 inline GpuTextureView create_texture_view(Engine& engine, const GpuTextureIdentity& texture) {
     return {texture, ++engine.published_gpu_objects};
@@ -6058,12 +6086,6 @@ inline void resize_engine(Engine& engine) {
 inline MaterialHandle mark_shader_material_transmissive(Engine& engine, MaterialHandle material) {
     handle_at(engine.materials, material).shader_transmissive = true;
     return material;
-}
-
-/** A PBR material's own `doubleSided`; materials whose props never named it have none. */
-inline js::Nullable<bool> material_double_sided(const Engine& engine, MaterialHandle material) {
-    const auto& value = handle_at(engine.materials, material).source_double_sided;
-    return value ? js::Nullable<bool>{*value} : js::Nullable<bool>{};
 }
 
 /** The shader factory's authored alpha flag; other material families omit it. */

@@ -1,12 +1,10 @@
 import ts from "typescript";
 import type { LoweringServices } from "./lowering-services.js";
 import { pinDetached } from "./dom-listeners.js";
-import { holdsDomTarget } from "./dom-targets.js";
+import { probedDomTarget } from "./dom-targets.js";
 import { POINTER_CAPTURE_OPERATIONS } from "./dom-lowerings.js";
 import { resolvedDomApi, namedMember } from "./symbols.js";
 import { argumentAt } from "./syntax.js";
-import { nullability } from "./type-facts.js";
-import { optionalValueCpp } from "./values/model.js";
 import type { Value } from "./types.js";
 import type { UiProjection } from "./ui-projection.js";
 
@@ -53,25 +51,11 @@ function captureTarget(
                   );
                   return accept(candidate) ? candidate : undefined;
               });
-    // An optional target the checker narrowed past absence is present.
-    const narrowed = nullability(context.checker.getTypeAtLocation(receiver));
-    const present = (candidate: Value): Value | undefined =>
-        candidate.dataType?.kind === "event-target"
-            ? candidate
-            : candidate.dataType?.kind === "optional" &&
-                candidate.dataType.inner.kind === "event-target" &&
-                !narrowed.null &&
-                !narrowed.undefined
-              ? {
-                    ...candidate,
-                    cpp: optionalValueCpp(candidate.cpp),
-                    dataType: candidate.dataType.inner,
-                }
-              : undefined;
-    const stored = compiled((candidate) => present(candidate) !== undefined);
+    // An optional target the checker narrowed past absence is present
+    // (`narrowOptional`).
     const value =
         prepared ??
-        (stored && present(stored)) ??
+        compiled((candidate) => candidate.dataType?.kind === "event-target") ??
         ui.compileUiElementReceiver(receiver) ??
         compiled((candidate) => candidate.kind === "ui-element");
     if (!value) {
@@ -116,16 +100,7 @@ export function compilePointerCapture(
         domApi === undefined &&
         POINTER_CAPTURE_OPERATIONS.has(viewed) &&
         (context.isCanvasElement(callee.expression) ||
-            context.probeEmission(
-                () =>
-                    holdsDomTarget(
-                        context.dataLowerer.narrowOptional(
-                            context.compileValue(callee.expression),
-                            callee.expression,
-                        ),
-                    ),
-                () => false,
-            ));
+            probedDomTarget(context, callee.expression));
     const operation = POINTER_CAPTURE_OPERATIONS.get(
         domApi ?? (viewsTarget ? viewed : ""),
     );

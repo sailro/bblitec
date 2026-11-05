@@ -1,11 +1,12 @@
 A flex container measured for its max-content size (GetMaxContentSize, an indefinite inline size) builds its
 items as grid items are built: cyclic inline percentages behave as auto, zero or none (CSS Sizing 3 5.2.1)
 instead of resolving against the 10000 px stand-in, so a shrink-to-fit panel with a width: 100% child takes
-its content's width. The aspect-ratio refusal that IntrinsicWidth carried for grid items moves to the grid
-item checks, beside the other grid refusals.
+its content's width. LayoutDetails::BuildIntrinsicHorizontalSize owns that rule for item boxes and item sizing.
+The aspect-ratio refusal that IntrinsicWidth carried for grid items moves to the grid item checks, beside the
+other grid refusals.
 
 diff --git a/Source/Core/Layout/FlexFormattingContext.cpp b/Source/Core/Layout/FlexFormattingContext.cpp
-index 152fcb8..e657fd7 100644
+index 152fcb8..f29c1ed 100644
 --- a/Source/Core/Layout/FlexFormattingContext.cpp
 +++ b/Source/Core/Layout/FlexFormattingContext.cpp
 @@ -243,6 +243,9 @@ void FlexFormattingContext::Format(Vector2f& flex_resulting_content_size, Vector
@@ -27,7 +28,7 @@ index 152fcb8..e657fd7 100644
  		}
  		FlexItem item = {};
  		item.element = element;
-@@ -370,20 +375,21 @@ void FlexFormattingContext::Format(Vector2f& flex_resulting_content_size, Vector
+@@ -370,21 +375,17 @@ void FlexFormattingContext::Format(Vector2f& flex_resulting_content_size, Vector
          }
  		// A grid area's block size is indefinite until the rows are sized.
  		LayoutDetails::BuildBox(item.box, is_grid ? Vector2f(flex_content_containing_block.x, -1.f) : flex_content_containing_block, element,
@@ -37,25 +38,24 @@ index 152fcb8..e657fd7 100644
  		Style::LengthPercentageAuto item_main_size;
  
  		{
- 			ComputedAxisSize computed_main_size =
- 				main_axis_horizontal ? LayoutDetails::BuildComputedHorizontalSize(computed) : LayoutDetails::BuildComputedVerticalSize(computed);
--			const ComputedAxisSize computed_cross_size =
-+			ComputedAxisSize computed_cross_size =
- 				!main_axis_horizontal ? LayoutDetails::BuildComputedHorizontalSize(computed) : LayoutDetails::BuildComputedVerticalSize(computed);
+-			ComputedAxisSize computed_main_size =
+-				main_axis_horizontal ? LayoutDetails::BuildComputedHorizontalSize(computed) : LayoutDetails::BuildComputedVerticalSize(computed);
++			const auto BuildHorizontalSize = intrinsic_inline ? LayoutDetails::BuildIntrinsicHorizontalSize : LayoutDetails::BuildComputedHorizontalSize;
++			const ComputedAxisSize computed_main_size =
++				main_axis_horizontal ? BuildHorizontalSize(computed) : LayoutDetails::BuildComputedVerticalSize(computed);
+ 			const ComputedAxisSize computed_cross_size =
+-				!main_axis_horizontal ? LayoutDetails::BuildComputedHorizontalSize(computed) : LayoutDetails::BuildComputedVerticalSize(computed);
++				!main_axis_horizontal ? BuildHorizontalSize(computed) : LayoutDetails::BuildComputedVerticalSize(computed);
  
 -			if (is_grid) {
 -				if (computed_main_size.size.type == Style::LengthPercentageAuto::Percentage) computed_main_size.size = {Style::LengthPercentageAuto::Auto, 0.f};
 -				if (computed_main_size.min_size.type == Style::LengthPercentage::Percentage) computed_main_size.min_size = {Style::LengthPercentage::Length, 0.f};
 -				if (computed_main_size.max_size.type == Style::LengthPercentage::Percentage) computed_main_size.max_size = {Style::LengthPercentage::Length, FLT_MAX};
-+			if (intrinsic_inline) {
-+				ComputedAxisSize& inline_size = main_axis_horizontal ? computed_main_size : computed_cross_size;
-+				if (inline_size.size.type == Style::LengthPercentageAuto::Percentage) inline_size.size = {Style::LengthPercentageAuto::Auto, 0.f};
-+				if (inline_size.min_size.type == Style::LengthPercentage::Percentage) inline_size.min_size = {Style::LengthPercentage::Length, 0.f};
-+				if (inline_size.max_size.type == Style::LengthPercentage::Percentage) inline_size.max_size = {Style::LengthPercentage::Length, FLT_MAX};
- 			}
+-			}
  			GetItemSizing(item.main, computed_main_size, is_grid ? 0.f : main_size_base_value, direction_reverse);
  			GetItemSizing(item.cross, computed_cross_size, cross_size_base_value, wrap_reverse, is_grid ? 0.f : -1.f);
-@@ -451,7 +457,7 @@ void FlexFormattingContext::Format(Vector2f& flex_resulting_content_size, Vector
+ 
+@@ -451,7 +452,7 @@ void FlexFormattingContext::Format(Vector2f& flex_resulting_content_size, Vector
  		}
  		else if (main_axis_horizontal)
  		{
@@ -64,7 +64,7 @@ index 152fcb8..e657fd7 100644
  		}
  		else
  		{
-@@ -928,7 +934,7 @@ void FlexFormattingContext::Format(Vector2f& flex_resulting_content_size, Vector
+@@ -928,7 +929,7 @@ void FlexFormattingContext::Format(Vector2f& flex_resulting_content_size, Vector
  				{
  					item.box.SetContent(Vector2f(content_size.x, GetInnerUsedMainSize(item)));
  					item.hypothetical_cross_size =
@@ -74,7 +74,7 @@ index 152fcb8..e657fd7 100644
  				else
  				{
 diff --git a/Source/Core/Layout/LayoutDetails.cpp b/Source/Core/Layout/LayoutDetails.cpp
-index 2b4b422..bd6ade1 100644
+index 2b4b422..f6ab7af 100644
 --- a/Source/Core/Layout/LayoutDetails.cpp
 +++ b/Source/Core/Layout/LayoutDetails.cpp
 @@ -123,13 +123,11 @@ static bool IsDefiniteAspectRatioSize(Element* element, bool height)
@@ -92,7 +92,21 @@ index 2b4b422..bd6ade1 100644
  	const ComputedValues& computed = element->GetComputedValues();
  	if (content_area.x >= 0.f && content_area.y < 0.f)
  	{
-@@ -259,7 +257,7 @@ void LayoutDetails::BuildBox(Box& box, Vector2f containing_block, Element* eleme
+@@ -229,9 +227,10 @@ void LayoutDetails::BuildBox(Box& box, Vector2f containing_block, Element* eleme
+ 		};
+ 
+ 		if (intrinsic_width) {
+-			if (computed.width().type == Style::LengthPercentageAuto::Percentage) content_area.x = -1.f;
+-			if (computed.min_width().type == Style::LengthPercentage::Percentage) min_size.x = 0.f;
+-			if (computed.max_width().type == Style::LengthPercentage::Percentage) max_size.x = FLT_MAX;
++			const ComputedAxisSize horizontal = BuildIntrinsicHorizontalSize(computed);
++			content_area.x = ResolveValueOr(horizontal.size, containing_block.x, -1.f);
++			min_size.x = ResolveValueOr(horizontal.min_size, containing_block.x, 0.f);
++			max_size.x = ResolveValueOr(horizontal.max_size, containing_block.x, FLT_MAX);
+ 		}
+ 		// Adjust sizes for the given box sizing model.
+ 		if (computed.box_sizing() == Style::BoxSizing::BorderBox)
+@@ -259,7 +258,7 @@ void LayoutDetails::BuildBox(Box& box, Vector2f containing_block, Element* eleme
  			content_area = CalculateSizeForReplacedElement(content_area, min_size, max_size, intrinsic_size, intrinsic_ratio);
  
  		if (box_context != BuildBoxMode::Inline)
@@ -101,3 +115,36 @@ index 2b4b422..bd6ade1 100644
  	}
  
  	box.SetContent(content_area);
+@@ -451,6 +450,18 @@ ComputedAxisSize LayoutDetails::BuildComputedHorizontalSize(const ComputedValues
+ 		computed.margin_left(), computed.margin_right(), computed.border_left_width(), computed.border_right_width(), computed.box_sizing()};
+ }
+ 
++ComputedAxisSize LayoutDetails::BuildIntrinsicHorizontalSize(const ComputedValues& computed)
++{
++	ComputedAxisSize size = BuildComputedHorizontalSize(computed);
++	if (size.size.type == Style::LengthPercentageAuto::Percentage)
++		size.size = {Style::LengthPercentageAuto::Auto, 0.f};
++	if (size.min_size.type == Style::LengthPercentage::Percentage)
++		size.min_size = {Style::LengthPercentage::Length, 0.f};
++	if (size.max_size.type == Style::LengthPercentage::Percentage)
++		size.max_size = {Style::LengthPercentage::Length, FLT_MAX};
++	return size;
++}
++
+ ComputedAxisSize LayoutDetails::BuildComputedVerticalSize(const ComputedValues& computed)
+ {
+ 	return ComputedAxisSize{computed.height(), computed.min_height(), computed.max_height(), computed.padding_top(), computed.padding_bottom(),
+diff --git a/Source/Core/Layout/LayoutDetails.h b/Source/Core/Layout/LayoutDetails.h
+index 19bdacd..bba84b8 100644
+--- a/Source/Core/Layout/LayoutDetails.h
++++ b/Source/Core/Layout/LayoutDetails.h
+@@ -89,6 +89,9 @@ public:
+ 
+ 	/// Build computed axis size along the horizontal direction (width and friends).
+ 	static ComputedAxisSize BuildComputedHorizontalSize(const ComputedValues& computed);
++	/// Build computed axis size along the horizontal direction of an intrinsic size contribution: cyclic percentage
++	/// widths behave as auto, zero and none (CSS Sizing 3 §5.2.1) instead of resolving against a stand-in width.
++	static ComputedAxisSize BuildIntrinsicHorizontalSize(const ComputedValues& computed);
+ 	/// Build computed axis size along the vertical direction (height and friends).
+ 	static ComputedAxisSize BuildComputedVerticalSize(const ComputedValues& computed);
+ 	/// Resolve edge sizes from a computed axis size.

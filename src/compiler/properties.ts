@@ -1204,13 +1204,14 @@ export const propertyRules: readonly PropertyRule[] = [
         impure: true,
     },
     {
+        // A PBR material's own `doubleSided`; materials whose props never
+        // named it have none.
         owner: "material",
         property: "doubleSided",
         value: "data",
         dataType: { kind: "optional", inner: { kind: "boolean" } },
-        helper: "bbl::material_double_sided",
-        helperTakesEngine: true,
-        helperReturnsFreshData: true,
+        record: ["materials", "source_double_sided"],
+        nativeOptionalScalar: "bool",
     },
     {
         owner: "material",
@@ -3834,19 +3835,24 @@ export class PropertyAccessLowerer {
                 frameCount: "frame_count",
             };
             const engine = this.context.requireEngine(owner, expression);
-            const bake = recordAt(`${engine}.vat_bakes`, owner.cpp);
+            const bake = (field: string): string =>
+                nativeLocation(
+                    { record: ["vat_bakes", field] },
+                    owner.cpp,
+                    engine,
+                );
             // The bake's rgba32float texture, its texels with it.
             if (property === "texture")
                 return {
                     kind: "gpu-texture",
-                    cpp: `${bake}.texture`,
+                    cpp: bake("texture"),
                     engineCpp: engine,
                     dataType: { kind: "handle", handle: "gpu-texture" },
                 };
             if (Object.hasOwn(counts, property))
                 return {
                     kind: "number",
-                    cpp: `static_cast<double>(${bake}.${counts[property]})`,
+                    cpp: `static_cast<double>(${bake(counts[property]!)})`,
                 };
             if (Object.hasOwn(VAT_BONE_CAPTURE_FIELDS, property)) {
                 const type = this.context.dataLowerer.dataTypeAt(expression);
@@ -3862,7 +3868,7 @@ export class PropertyAccessLowerer {
                 this.context.reachJsData();
                 return {
                     kind: "data",
-                    cpp: `${bake}.${VAT_BONE_CAPTURE_FIELDS[property]}`,
+                    cpp: bake(VAT_BONE_CAPTURE_FIELDS[property]!),
                     dataType: type,
                     borrowedData: true,
                     engineCpp: engine,

@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import { resolve } from "node:path";
 import test from "node:test";
-import { runInNewContext } from "node:vm";
 import ts from "typescript";
 import { compileSource } from "../src/compiler.js";
 import { createCompilerProgram } from "../src/compiler/program.js";
@@ -9,6 +8,7 @@ import {
     optionalNativeFixtureTools,
     runGeneratedProgram,
 } from "./native-fixture.js";
+import { runSelfCheckingProgram } from "./self-checking-program.js";
 
 function check(name: string, source: string): void {
     test(name, (t) => {
@@ -25,15 +25,12 @@ function check(name: string, source: string): void {
                 ),
             [],
         );
-        runInNewContext(
-            ts.transpileModule(source, {
-                compilerOptions: { target: ts.ScriptTarget.ES2022 },
-            }).outputText,
+        return runSelfCheckingProgram(
+            t,
+            `callable-structural-views/${name}`,
+            source,
+            { compile: { fileName } },
         );
-        const { cpp } = compileSource(source, { fileName });
-        const native = optionalNativeFixtureTools(false);
-        if (!native) return t.skip("Native fixture compiler unavailable.");
-        runGeneratedProgram(native, `callable-structural-views/${name}`, cpp);
     });
 }
 

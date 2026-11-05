@@ -317,10 +317,10 @@ test("a PBR material's doubleSided reads its own property: a glTF material's, na
     assert.match(result.cpp, /\.double_sided = false, \.specular_aa/);
     assert.match(
         result.cpp,
-        /bbl::material_double_sided\(v_engine, v_unnamed\)\.has_value\(\)/,
+        /bbl::handle_at\(v_engine\.materials, v_unnamed\)\.source_double_sided\)\.has_value\(\)/,
     );
     assert.match(
         result.cpp,
-        /bbl::material_double_sided\(v_engine, \(\(\*v_source\)\)\.second\)/,
+        /bbl::handle_at\(v_engine\.materials, \(\(\*v_source\)\)\.second\)\.source_double_sided\)/,
     );
 });

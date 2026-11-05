@@ -16,8 +16,8 @@ import { cppIdentifierPattern, stringLiteral } from "../cpp-literals.js";
 import {
     forEachAnalysisNode,
     findAnalysisNodeWithState,
+    identifiersByName,
     someAnalysisNode,
-    sourceFileNodes,
 } from "./analysis-walk.js";
 import {
     browserDeploymentValue,
@@ -251,29 +251,6 @@ export type ForwardDeclaration = ts.VariableDeclaration & {
     initializer: ts.Expression;
 };
 
-/** @unjournaled Parsed syntax is immutable: each file's identifier positions by name. */
-const fileIdentifierPositions = new WeakMap<
-    ts.SourceFile,
-    ReadonlyMap<string, readonly number[]>
->();
-
-function identifierPositions(
-    file: ts.SourceFile,
-): ReadonlyMap<string, readonly number[]> {
-    let positions = fileIdentifierPositions.get(file);
-    if (positions) return positions;
-    const found = new Map<string, number[]>();
-    for (const node of sourceFileNodes(file)) {
-        if (!ts.isIdentifier(node)) continue;
-        const list = found.get(node.text);
-        if (list) list.push(node.pos);
-        else found.set(node.text, [node.pos]);
-    }
-    positions = found;
-    fileIdentifierPositions.set(file, positions);
-    return positions;
-}
-
 /**
  * Whether a declaration's scope spells its name outside the declaration,
  * where any read its initializer reaches outside itself must be: written
@@ -286,13 +263,13 @@ function spelledOutside(
 ): boolean {
     const scope = declaration.parent.parent.parent;
     return (
-        identifierPositions(declaration.getSourceFile())
+        identifiersByName(declaration.getSourceFile())
             .get(name.text)
             ?.some(
-                (position) =>
-                    position >= scope.pos &&
-                    position < scope.end &&
-                    outsideDeclaration(declaration, position),
+                ({ pos }) =>
+                    pos >= scope.pos &&
+                    pos < scope.end &&
+                    outsideDeclaration(declaration, pos),
             ) ?? false
     );
 }

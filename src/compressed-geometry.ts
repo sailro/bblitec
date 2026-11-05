@@ -97,6 +97,14 @@ export function dropExtension(json: JsonRecord, name: string): void {
     }
 }
 
+/** Drops one resolved extension from an object's `extensions`, and the map once it is empty. */
+export function dropObjectExtension(object: JsonRecord, name: string): void {
+    const extensions = asObject(object.extensions);
+    if (!extensions) return;
+    delete extensions[name];
+    if (Object.keys(extensions).length === 0) delete object.extensions;
+}
+
 /** The extensions a document declares, as the two passes below read them. */
 function declaredExtensions(json: JsonRecord): string[] {
     return Array.isArray(json.extensionsUsed)
@@ -548,10 +556,7 @@ async function decodeDracoGlb(
                 accessors[numberValue(primitive.indices, -1)],
             );
 
-            delete extensions[DRACO_EXTENSION];
-            if (Object.keys(extensions).length === 0) {
-                delete primitive.extensions;
-            }
+            dropObjectExtension(primitive, DRACO_EXTENSION);
             rewritten += 1;
         }
     }

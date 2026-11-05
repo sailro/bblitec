@@ -5,7 +5,7 @@ import { isTaggedStorageWidening } from "../data-types/operations.js";
 import { nullability, callSignatures } from "../type-facts.js";
 import { isNullishLiteral } from "../symbols.js";
 import type { Value } from "../types.js";
-import { hasFixedTupleRest } from "../user-functions.js";
+import { hasTupleRestLanes } from "../user-functions.js";
 import {
     hasUndefinedCompletion,
     hasNonThenableCompletion,
@@ -57,7 +57,7 @@ function expressionFunction(
             nativeType?.kind === "function" &&
             nativeType.restParameter !== undefined &&
             dataType.restParameter === undefined &&
-            !hasFixedTupleRest(lowerer.context.checker, unwrapped)
+            !hasTupleRestLanes(lowerer.context.checker, unwrapped)
         ) {
             const cpp = lowerer.context.compileStoredDataFunction(
                 unwrapped,
@@ -523,7 +523,7 @@ function valueFunction(
             nativeType?.kind === "function" &&
             nativeType.restParameter !== undefined &&
             dataType.restParameter === undefined &&
-            !hasFixedTupleRest(
+            !hasTupleRestLanes(
                 lowerer.context.checker,
                 value.callbackDeclaration,
             )

@@ -1,32 +1,16 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { runInNewContext } from "node:vm";
-import ts from "typescript";
 import { compileSource } from "../src/compiler.js";
 import {
     optionalNativeFixtureTools,
     runGeneratedProgram,
 } from "./native-fixture.js";
+import { runSelfCheckingProgram } from "./self-checking-program.js";
 
 function check(name: string, source: string): void {
-    test(name, (t) => {
-        runInNewContext(
-            ts.transpileModule(source, {
-                compilerOptions: { target: ts.ScriptTarget.ES2022 },
-            }).outputText,
-        );
-        const result = compileSource(source);
-        const tools = optionalNativeFixtureTools(false);
-        if (!tools) {
-            t.skip("Native fixture compiler unavailable.");
-            return;
-        }
-        runGeneratedProgram(
-            tools,
-            `json-compound-assignments/${name}`,
-            result.cpp,
-        );
-    });
+    test(name, (t) =>
+        runSelfCheckingProgram(t, `json-compound-assignments/${name}`, source),
+    );
 }
 
 check(

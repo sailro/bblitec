@@ -1,11 +1,5 @@
 import test from "node:test";
-import { runInNewContext } from "node:vm";
-import ts from "typescript";
-import { compileSource } from "../src/compiler.js";
-import {
-    optionalNativeFixtureTools,
-    runGeneratedProgram,
-} from "./native-fixture.js";
+import { runSelfCheckingProgram } from "./self-checking-program.js";
 
 test("a trailing parameter whose type at the call is void may be omitted", (t) => {
     // `place(context: C)` with `C = void` is called as `place()`, as
@@ -22,13 +16,7 @@ function trailing<T>(value: number, extra: T): number {
 }
 if (trailing<void>(2) !== 3 || trailing<number>(2, 5) !== 2) throw new Error("trailing");
 `;
-    runInNewContext(
-        ts.transpileModule(source, {
-            compilerOptions: { target: ts.ScriptTarget.ES2022 },
-        }).outputText,
-    );
-    const { cpp } = compileSource(source);
-    const tools = optionalNativeFixtureTools(false);
-    if (!tools) return t.skip("Native fixture compiler unavailable.");
-    runGeneratedProgram(tools, "void-parameters", cpp, { expectedOutput: "" });
+    return runSelfCheckingProgram(t, "void-parameters", source, {
+        expectedOutput: "",
+    });
 });

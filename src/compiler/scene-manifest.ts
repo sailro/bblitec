@@ -354,9 +354,8 @@ export class SceneManifestRecorder {
                       registeredSceneLightKinds:
                           this.context.admissions.temporalRegisteredScenes.map(
                               (topology) =>
-                                  (topology?.lights ?? []).map(
-                                      ({ kind }) => kind,
-                                  ),
+                                  topology?.lights.map(({ kind }) => kind) ??
+                                  null,
                           ),
                   }
                 : {}),

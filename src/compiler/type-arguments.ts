@@ -40,15 +40,27 @@ export function callTypeArguments(
 }
 
 /**
+ * Whether a parameter of type `type` accepts `void` (`place(context: C)`
+ * with `C = void`), which TypeScript lets a call omit like an optional
+ * one; `resolve` reads the type parameters in force.
+ */
+export function acceptsOmittedVoid(
+    type: ts.Type,
+    resolve: (type: ts.Type) => ts.Type,
+): boolean {
+    return valueKinds(resolve(type)).has("void");
+}
+
+/**
  * How many arguments a call must pass, as TypeScript counts them: the
  * declaration's required parameters, less the trailing ones whose type at
- * this call accepts `void` (`place(context: C)` with `C = void`), which a
- * call may omit like optional ones.
+ * this call accepts `void` (`acceptsOmittedVoid`).
  */
 export function requiredArgumentCount(
     checker: ts.TypeChecker,
     call: ts.CallExpression | ts.NewExpression,
     parameters: readonly ts.ParameterDeclaration[],
+    resolve: (type: ts.Type) => ts.Type,
 ): number {
     let count = requiredParameterCount(parameters);
     const resolved = checker.getResolvedSignature(call);
@@ -57,8 +69,9 @@ export function requiredArgumentCount(
         const parameter = resolved.parameters[count - 1];
         if (
             !parameter ||
-            !valueKinds(checker.getTypeOfSymbolAtLocation(parameter, call)).has(
-                "void",
+            !acceptsOmittedVoid(
+                checker.getTypeOfSymbolAtLocation(parameter, call),
+                resolve,
             )
         )
             break;

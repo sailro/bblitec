@@ -91,6 +91,16 @@ int main() {
         assert(text->GetLines().size() == all_lines);
         assert(std::abs(height() - 20.f * float(all_lines)) < .1f);
         assert(!ellipsized(1));
+
+        // A clamp line too wide for its ellipsis sheds characters until both fit.
+        ui_set_style_property(engine, panel, "display", "-webkit-box");
+        ui_set_text(
+            engine, panel,
+            "abcdefghijklmnopqrstuvwxyz abcdefghijklmnopqrstuvwxyz abcdefghijklmnopqrstuvwxyz");
+        update();
+        text = dynamic_cast<Rml::ElementText*>(element->GetChild(0));
+        assert(text && ellipsized(1));
+        assert(text->GetLines().at(1).width <= 120);
     }
     SDL_DestroyWindow(window);
     SDL_Quit();

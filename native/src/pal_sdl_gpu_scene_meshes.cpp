@@ -17,6 +17,7 @@
 #include <bblite/features/shadows_csm.hpp>
 
 #include "pal_sdl_gpu_scene.hpp"
+#include "pal_texture_sampler_cache.hpp"
 #include <unordered_set>
 #if BBLITE_GPU_MORPH_STORAGE
 #include <bblite/upstream/morph_targets.hpp>
@@ -252,12 +253,10 @@ SDL_GPUBuffer* shader_storage_buffer(GpuState& state, const Engine& engine,
 
 /** The device's one sampler for a state a render target's `texture.sampler` names. */
 SDL_GPUSampler* sdl_render_texture_sampler(GpuState& state, const TextureSamplerState& sampler) {
-    for (const auto& [kept, created] : state.render_texture_samplers)
-        if (kept == sampler)
-            return created;
-    SDL_GPUSampler* created = create_texture_sampler(state.device, sampler);
-    state.render_texture_samplers.emplace_back(sampler, created);
-    return created;
+    return cached_texture_sampler(state.render_texture_samplers, sampler,
+                                  [&](const TextureSamplerState& made) {
+                                      return create_texture_sampler(state.device, made);
+                                  });
 }
 
 void bind_shader_material_textures(GpuState& state, SDL_GPURenderPass* pass,

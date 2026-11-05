@@ -34,13 +34,13 @@ export function supportedUiImageBackground(
     if (property === "background-size")
         return (
             wide ||
-            /^(?:auto|contain|cover|0(?:px)?\s+0(?:px)?)$/.test(keyword) ||
+            /^(?:auto|contain|cover)$/.test(keyword) ||
             uiBackgroundPair(value, "size")
         );
     if (property === "background-position")
         return (
             wide ||
-            /^(?:center(?:\s+center)?|0%\s+0%)$/.test(keyword) ||
+            /^center(?:\s+center)?$/.test(keyword) ||
             uiBackgroundPair(value, "position")
         );
     if (property === "background-repeat")

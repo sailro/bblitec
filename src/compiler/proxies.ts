@@ -184,17 +184,8 @@ export class RecordProxies {
             cpp: context.cppString(field.sourceName),
             staticString: field.sourceName,
         };
-        const argument = (name: string, argumentType: DataType): Value => ({
-            ...context.dataLowerer.leafValue(name, argumentType),
-            nativeCaptures: [
-                context.registerNativeBinding(
-                    name,
-                    false,
-                    false,
-                    context.dataTypes.cppType(argumentType),
-                ),
-            ],
-        });
+        const argument = (name: string, argumentType: DataType): Value =>
+            this.trapArgument(name, argumentType);
         const getter = context.captureManagedClosureLines(() => {
             const receiver = argument(receiverName, type);
             const value =
@@ -347,18 +338,10 @@ export class RecordProxies {
         }
         const keyName = context.allocateTemporaryCppName("proxy_key");
         const valueName = context.allocateTemporaryCppName("proxy_value");
-        const argument = (
-            name: string,
-            dataType: DataType,
-            cppType: string,
-        ) => ({
-            ...context.dataLowerer.leafValue(name, dataType),
-            nativeCaptures: [
-                context.registerNativeBinding(name, false, false, cppType),
-            ],
-        });
+        const argument = (name: string, dataType: DataType): Value =>
+            this.trapArgument(name, dataType);
         const read = context.captureManagedClosureLines(() => {
-            const key = argument(keyName, { kind: "string" }, "std::string");
+            const key = argument(keyName, { kind: "string" });
             const result = this.invokeTrap(handler, "get", [target, key], node);
             context.useNativeValue(target);
             context.emit(
@@ -391,8 +374,8 @@ export class RecordProxies {
                 "set",
                 [
                     target,
-                    argument(keyName, { kind: "string" }, "std::string"),
-                    argument(valueName, json, "bbl::js::JsonValue"),
+                    argument(keyName, { kind: "string" }),
+                    argument(valueName, json),
                 ],
                 `${target.cpp}.set(${keyName}, ${valueName})`,
             ),
@@ -400,7 +383,7 @@ export class RecordProxies {
         const erase = context.captureManagedClosureLines(() =>
             accepted(
                 "deleteProperty",
-                [target, argument(keyName, { kind: "string" }, "std::string")],
+                [target, argument(keyName, { kind: "string" })],
                 `${target.cpp}.remove(${keyName})`,
             ),
         );
@@ -413,6 +396,21 @@ export class RecordProxies {
                 `bbl::js::Callback<bool(std::string)>(${renderClosure(erase, key, "bool")}))`,
             json,
         );
+    }
+
+    /** A native closure's parameter `name`, read by the trap it calls. */
+    private trapArgument(name: string, dataType: DataType): Value {
+        return {
+            ...this.context.dataLowerer.leafValue(name, dataType),
+            nativeCaptures: [
+                this.context.registerNativeBinding(
+                    name,
+                    false,
+                    false,
+                    this.context.dataTypes.cppType(dataType),
+                ),
+            ],
+        };
     }
 
     private trap(handler: Value, name: string) {

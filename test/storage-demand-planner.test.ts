@@ -274,20 +274,50 @@ test("planning collects every record join one statement meets", () => {
     );
 });
 
-/** A one-file program, for driving the planner over real statements. */
+type PlannedContext = Parameters<StorageDemandPlanner["attemptStatement"]>[0];
+
+/**
+ * A one-file program, for driving the planner over real statements: its
+ * checker, its statements, a lowering context the planner reads, and the
+ * declaration of the variable statement at an index.
+ */
 function plannedStatements(source: string) {
     const options: ts.CompilerOptions = { target: ts.ScriptTarget.ES2022 };
     const host = ts.createCompilerHost(options, true);
     const file = ts.createSourceFile("input.ts", source, options.target!, true);
     host.getSourceFile = (path) => (path === "input.ts" ? file : undefined);
     const program = ts.createProgram(["input.ts"], options, host);
-    return { checker: program.getTypeChecker(), statements: file.statements };
+    const checker = program.getTypeChecker();
+    const context = {
+        checker,
+        transaction: (work: () => void) => work(),
+        dataTypes: { substitutesTypeParameters: () => false },
+    } as unknown as PlannedContext;
+    return {
+        checker,
+        statements: file.statements,
+        context,
+        declarationAt: (index: number, statements = file.statements) =>
+            (statements[index] as ts.VariableStatement).declarationList
+                .declarations[0]!,
+    };
+}
+
+/** Lowers `statement` under `planner` as statement emission does: its activation, then its recovery. */
+function attemptPlanned(
+    planner: StorageDemandPlanner,
+    context: PlannedContext,
+    statement: ts.Statement,
+    lower: () => void,
+): void {
+    planner.beginActivation(statement);
+    planner.attemptStatement(context, statement, lower);
 }
 
 test("a survey's plan goes on past a dependent demand, skipping what reads it", () => {
     // Each record `let` demands dynamic storage; the statements reading one
     // wait for the next attempt, and the unrelated one is still collected.
-    const { checker, statements } = plannedStatements(`
+    const { checker, statements, context } = plannedStatements(`
         let first = { gain: 1 };
         first = { gain: 2 };
         const doubled = first.gain * 2;
@@ -297,14 +327,9 @@ test("a survey's plan goes on past a dependent demand, skipping what reads it", 
     const plan = (survey: boolean) => {
         const before = storagePlanningStatistics();
         const planner = new StorageDemandPlanner(checker, survey);
-        const context = {
-            checker,
-            transaction: (work: () => void) => work(),
-            dataTypes: { substitutesTypeParameters: () => false },
-        } as unknown as Parameters<typeof planner.attemptStatement>[0];
         planner.run(() => {
             for (const statement of statements)
-                planner.attemptStatement(context, statement, () => {
+                attemptPlanned(planner, context, statement, () => {
                     if (
                         ts.isVariableStatement(statement) &&
                         (statement.declarationList.flags & ts.NodeFlags.Let) !==
@@ -342,25 +367,19 @@ test("a survey's plan goes on past a dependent demand, skipping what reads it", 
 test("a survey's plan loses a generic signature's statement and goes on", () => {
     // A destructured generic call's demand is not independent: an ordinary
     // plan ends there, a survey's loses the statement's names.
-    const { checker, statements } = plannedStatements(`
+    const { checker, statements, context, declarationAt } = plannedStatements(`
         function pair<T>(value: T): [T, T] { return [value, value]; }
         const [left, right] = pair(1);
         const sum = left + right;
         let other = { gain: 1 };
     `);
-    const call = (statements[1] as ts.VariableStatement).declarationList
-        .declarations[0]!.initializer as ts.CallExpression;
+    const call = declarationAt(1).initializer as ts.CallExpression;
     const plan = (survey: boolean) => {
         const before = storagePlanningStatistics();
         const planner = new StorageDemandPlanner(checker, survey);
-        const context = {
-            checker,
-            transaction: (work: () => void) => work(),
-            dataTypes: { substitutesTypeParameters: () => false },
-        } as unknown as Parameters<typeof planner.attemptStatement>[0];
         let lowered = 0;
         planner.run(() => {
-            planner.attemptStatement(context, statements[1]!, () => {
+            attemptPlanned(planner, context, statements[1]!, () => {
                 throw new GenericFunctionStorageRequired({
                     family: "pair",
                     arguments: [],
@@ -370,11 +389,10 @@ test("a survey's plan loses a generic signature's statement and goes on", () => 
                     site: call,
                 });
             });
-            planner.attemptStatement(context, statements[2]!, () => lowered++);
-            planner.attemptStatement(context, statements[3]!, () => {
+            attemptPlanned(planner, context, statements[2]!, () => lowered++);
+            attemptPlanned(planner, context, statements[3]!, () => {
                 throw new DynamicBindingStorageRequired(
-                    (statements[3] as ts.VariableStatement).declarationList
-                        .declarations[0]!,
+                    declarationAt(3),
                     undefined,
                 );
             });
@@ -402,7 +420,7 @@ test("a survey's plan loses a write through this by its class and goes on", () =
     // The method statement reads the lost binding and writes through
     // `this`: the class's other reads of `this` wait for the next attempt,
     // and the unrelated binding's demand is still collected.
-    const { checker, statements } = plannedStatements(`
+    const { checker, statements, context, declarationAt } = plannedStatements(`
         let first = { gain: 1 };
         class Counter {
             total = 0;
@@ -420,24 +438,18 @@ test("a survey's plan loses a write through this by its class and goes on", () =
         ).body!.statements[0]!;
     const before = storagePlanningStatistics();
     const planner = new StorageDemandPlanner(checker, true);
-    const context = {
-        checker,
-        transaction: (work: () => void) => work(),
-        dataTypes: { substitutesTypeParameters: () => false },
-    } as unknown as Parameters<typeof planner.attemptStatement>[0];
     const binding = (index: number) => () => {
         throw new DynamicBindingStorageRequired(
-            (statements[index] as ts.VariableStatement).declarationList
-                .declarations[0]!,
+            declarationAt(index),
             undefined,
         );
     };
     let lowered = 0;
     planner.run(() => {
-        planner.attemptStatement(context, statements[0]!, binding(0));
+        attemptPlanned(planner, context, statements[0]!, binding(0));
         for (const name of ["add", "read"])
-            planner.attemptStatement(context, body(name), () => lowered++);
-        planner.attemptStatement(context, statements[2]!, binding(2));
+            attemptPlanned(planner, context, body(name), () => lowered++);
+        attemptPlanned(planner, context, statements[2]!, binding(2));
     });
     const after = storagePlanningStatistics();
     assert.deepEqual(
@@ -454,7 +466,7 @@ test("a survey's plan loses a write through this by its class and goes on", () =
 });
 
 test("a survey's plan records a replay besides storage and goes on", () => {
-    const { checker, statements } = plannedStatements(`
+    const { checker, statements, context, declarationAt } = plannedStatements(`
         const state = { query: "a" };
         let other = { gain: 1 };
     `);
@@ -464,19 +476,13 @@ test("a survey's plan records a replay besides storage and goes on", () => {
         true,
         (error): error is Error => error instanceof QueryReplay,
     );
-    const context = {
-        checker,
-        transaction: (work: () => void) => work(),
-        dataTypes: { substitutesTypeParameters: () => false },
-    } as unknown as Parameters<typeof planner.attemptStatement>[0];
     planner.run(() => {
-        planner.attemptStatement(context, statements[0]!, () => {
+        attemptPlanned(planner, context, statements[0]!, () => {
             throw new QueryReplay("query state");
         });
-        planner.attemptStatement(context, statements[1]!, () => {
+        attemptPlanned(planner, context, statements[1]!, () => {
             throw new DynamicBindingStorageRequired(
-                (statements[1] as ts.VariableStatement).declarationList
-                    .declarations[0]!,
+                declarationAt(1),
                 undefined,
             );
         });
@@ -494,7 +500,7 @@ test("a survey's plan records a replay besides storage and goes on", () => {
 test("a survey's plan forgets a function's lost locals when its body starts again", () => {
     // The first activation loses `seen`, so its read waits; the second
     // activation declares it afresh and its read lowers.
-    const { checker, statements } = plannedStatements(`
+    const { checker, statements, context, declarationAt } = plannedStatements(`
         function count(items: number[]): number {
             let seen = { total: 0 };
             return seen.total + items.length;
@@ -502,24 +508,18 @@ test("a survey's plan forgets a function's lost locals when its body starts agai
     `);
     const body = (statements[0] as ts.FunctionDeclaration).body!.statements;
     const planner = new StorageDemandPlanner(checker, true);
-    const context = {
-        checker,
-        transaction: (work: () => void) => work(),
-        dataTypes: { substitutesTypeParameters: () => false },
-    } as unknown as Parameters<typeof planner.attemptStatement>[0];
-    const declaration = (body[0] as ts.VariableStatement).declarationList
-        .declarations[0]!;
+    const declaration = declarationAt(0, body);
     const lowered: number[] = [];
     planner.run(() => {
         for (const activation of [1, 2]) {
-            planner.attemptStatement(context, body[0]!, () => {
+            attemptPlanned(planner, context, body[0]!, () => {
                 if (activation === 1)
                     throw new DynamicBindingStorageRequired(
                         declaration,
                         undefined,
                     );
             });
-            planner.attemptStatement(context, body[1]!, () =>
+            attemptPlanned(planner, context, body[1]!, () =>
                 lowered.push(activation),
             );
         }
@@ -531,22 +531,15 @@ test("past a rolled-back statement a plan collects only demands of a key", () =>
     // The first statement's absence tag rolls it back. Strict lowering would
     // go on inside it and could meet the binding demand there first, with
     // that site's storage: only a survey's plan collects it here.
-    const { checker, statements } = plannedStatements(`
+    const { checker, statements, context, declarationAt } = plannedStatements(`
         const tagged: string | null | undefined = undefined;
         const other: string | null | undefined = null;
         let bound = { gain: 1 };
     `);
-    const declaration = (index: number) =>
-        (statements[index] as ts.VariableStatement).declarationList
-            .declarations[0]!;
+    const declaration = (index: number) => declarationAt(index);
     const plan = (survey: boolean) => {
         const before = storagePlanningStatistics();
         const planner = new StorageDemandPlanner(checker, survey);
-        const context = {
-            checker,
-            transaction: (work: () => void) => work(),
-            dataTypes: { substitutesTypeParameters: () => false },
-        } as unknown as Parameters<typeof planner.attemptStatement>[0];
         const demands = [
             new AbsenceTagStorageRequired(declaration(0)),
             new AbsenceTagStorageRequired(declaration(1)),
@@ -554,7 +547,7 @@ test("past a rolled-back statement a plan collects only demands of a key", () =>
         ];
         planner.run(() => {
             for (const [index, demand] of demands.entries())
-                planner.attemptStatement(context, statements[index]!, () => {
+                attemptPlanned(planner, context, statements[index]!, () => {
                     throw demand;
                 });
         });
@@ -574,14 +567,13 @@ test("past a rolled-back statement a plan collects only demands of a key", () =>
 });
 
 test("a demand lowering can go on past is planned, one kind per plan", () => {
-    const { checker, statements } = plannedStatements(`
+    const { checker, statements, declarationAt } = plannedStatements(`
         function keep(first: { value: number }, second: { value: number }) {}
         let other = { gain: 1 };
     `);
     const [first, second] = (statements[0] as ts.FunctionDeclaration)
         .parameters;
-    const other = (statements[1] as ts.VariableStatement).declarationList
-        .declarations[0]!;
+    const other = declarationAt(1);
     const demand = new ParameterObjectStorageRequired(first!);
     // Strict lowering raises it.
     assert.throws(
@@ -610,27 +602,21 @@ test("a survey's plan meets a demand lowering can go on past as its statement's"
     // Lowering on past the parameter's copy would end a plan at the next
     // statement's demand; a survey's plan loses the parameter's function
     // and collects the unrelated binding's demand too.
-    const { checker, statements } = plannedStatements(`
+    const { checker, statements, context, declarationAt } = plannedStatements(`
         function keep(first: { value: number }) {}
         keep({ value: 1 });
         let other = { gain: 1 };
     `);
     const first = (statements[0] as ts.FunctionDeclaration).parameters[0]!;
-    const other = (statements[2] as ts.VariableStatement).declarationList
-        .declarations[0]!;
+    const other = declarationAt(2);
     const plan = (survey: boolean) => {
         const before = storagePlanningStatistics();
         const planner = new StorageDemandPlanner(checker, survey);
-        const context = {
-            checker,
-            transaction: (work: () => void) => work(),
-            dataTypes: { substitutesTypeParameters: () => false },
-        } as unknown as Parameters<typeof planner.attemptStatement>[0];
         planner.run(() => {
-            planner.attemptStatement(context, statements[1]!, () =>
+            attemptPlanned(planner, context, statements[1]!, () =>
                 demandOrPlan(new ParameterObjectStorageRequired(first)),
             );
-            planner.attemptStatement(context, statements[2]!, () => {
+            attemptPlanned(planner, context, statements[2]!, () => {
                 throw new DynamicBindingStorageRequired(other, undefined);
             });
         });
@@ -702,79 +688,56 @@ test("a struct store demands every element field's engine owner in one replay", 
     assert.equal(strict.constructions, 3);
 });
 
-test("records stored into a document demand every element's document storage in one replay", (t) => {
-    const source = `
-        interface Variant { readonly file: string; readonly clips?: { readonly normal?: string[] } }
-        const BASE: readonly [Variant, Variant, Variant, Variant] = [
-            { file: "a", clips: { normal: ["w"] } }, { file: "b", clips: { normal: ["x"] } },
-            { file: "c", clips: { normal: ["y"] } }, { file: "d", clips: { normal: ["z"] } },
-        ];
-        const doc = JSON.parse('{"kind":"catalog"}') as Record<string, unknown>;
-        doc.variants = [
-            { id: "f1", ...BASE[0], scale: 1 },
-            { id: "f2", ...BASE[1], scale: 2, weight: 1 },
-            { id: "f3", ...BASE[2], scale: 3, depth: 2 },
-            { id: "f4", ...BASE[3], scale: 4, speed: 3 },
-        ];
-        const text = JSON.stringify(doc);
-        if (!text.includes('{"id":"f4","file":"d","clips":{"normal":["z"]},"scale":4,"speed":3}')) throw new Error(text);
-    `;
-    const strict = measured(false, () => compileSource(source));
-    // The document binding, then the variant type with the four elements'
-    // own records at once, then the compile.
-    assert.equal(strict.constructions, 3);
-    const tools = optionalNativeFixtureTools();
-    if (!tools) {
-        t.skip("Native fixture compiler unavailable.");
-        return;
-    }
-    runGeneratedProgram(
-        tools,
-        "storage-demand-planner/document-elements",
-        strict.result.cpp,
-        {
-            expectedOutput: "",
-        },
-    );
-});
-
-test("records sharing one struct demand each element's document storage in one replay", (t) => {
-    // The four element literals share one layout, whose document demand
-    // names the first record type; each element joins its own.
-    const source = `
-        interface Variant { readonly file: string; readonly clips?: { readonly normal?: string[] } }
-        const BASE: readonly [Variant, Variant, Variant, Variant] = [
-            { file: "a", clips: { normal: ["w"] } }, { file: "b", clips: { normal: ["x"] } },
-            { file: "c", clips: { normal: ["y"] } }, { file: "d", clips: { normal: ["z"] } },
-        ];
-        const doc = JSON.parse('{"kind":"catalog"}') as Record<string, unknown>;
-        doc.variants = [
-            { id: "f1", ...BASE[0], scale: 1, weight: 1 },
-            { id: "f2", ...BASE[1], scale: 2, weight: 1 },
-            { id: "f3", ...BASE[2], scale: 3, weight: 1 },
-            { id: "f4", ...BASE[3], scale: 4, weight: 1 },
-        ];
-        const text = JSON.stringify(doc);
-        if (!text.includes('{"id":"f4","file":"d","clips":{"normal":["z"]},"scale":4,"weight":1}')) throw new Error(text);
-    `;
-    const strict = measured(false, () => compileSource(source));
-    // The document binding, the variant type with every element's own
-    // record at once, then the compile.
-    assert.equal(strict.constructions, 3);
-    const tools = optionalNativeFixtureTools();
-    if (!tools) {
-        t.skip("Native fixture compiler unavailable.");
-        return;
-    }
-    runGeneratedProgram(
-        tools,
-        "storage-demand-planner/shared-struct-elements",
-        strict.result.cpp,
-        {
-            expectedOutput: "",
-        },
-    );
-});
+for (const [label, extras, fixture] of [
+    [
+        // Each element literal has its own layout.
+        "records stored into a document demand every element's document storage in one replay",
+        ["", ", weight: 1", ", depth: 2", ", speed: 3"],
+        "document-elements",
+    ],
+    [
+        // The element literals share one layout; each element's demand
+        // names its own record type.
+        "records sharing one struct demand each element's document storage in one replay",
+        [", weight: 1", ", weight: 1", ", weight: 1", ", weight: 1"],
+        "shared-struct-elements",
+    ],
+] as const)
+    test(label, (t) => {
+        const elements = extras
+            .map(
+                (extra, index) =>
+                    `{ id: "f${index + 1}", ...BASE[${index}], scale: ${index + 1}${extra} }`,
+            )
+            .join(", ");
+        const last = extras[3].replace(/, (\w+): (\d+)/, ',"$1":$2');
+        const source = `
+            interface Variant { readonly file: string; readonly clips?: { readonly normal?: string[] } }
+            const BASE: readonly [Variant, Variant, Variant, Variant] = [
+                { file: "a", clips: { normal: ["w"] } }, { file: "b", clips: { normal: ["x"] } },
+                { file: "c", clips: { normal: ["y"] } }, { file: "d", clips: { normal: ["z"] } },
+            ];
+            const doc = JSON.parse('{"kind":"catalog"}') as Record<string, unknown>;
+            doc.variants = [${elements}];
+            const text = JSON.stringify(doc);
+            if (!text.includes('{"id":"f4","file":"d","clips":{"normal":["z"]},"scale":4${last}}')) throw new Error(text);
+        `;
+        const strict = measured(false, () => compileSource(source));
+        // The document binding, then the variant type with the four
+        // elements' own records at once, then the compile.
+        assert.equal(strict.constructions, 3);
+        const tools = optionalNativeFixtureTools();
+        if (!tools) {
+            t.skip("Native fixture compiler unavailable.");
+            return;
+        }
+        runGeneratedProgram(
+            tools,
+            `storage-demand-planner/${fixture}`,
+            strict.result.cpp,
+            { expectedOutput: "" },
+        );
+    });
 
 test("a fresh record of records stored into a document demands every member's storage in one replay", (t) => {
     // The document snapshots the literal's members one after another; each

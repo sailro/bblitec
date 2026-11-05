@@ -973,7 +973,9 @@ export class StatementLowerer {
         // so its refusal is the caller's statement to record: swallowing it
         // would hand the caller a binding with no value, and every later
         // read of that binding would count as a gap of its own.
-        const recovery = activeStorageDemandPlanner() ?? activeSurvey();
+        const planner = activeStorageDemandPlanner();
+        planner?.beginActivation(statement);
+        const recovery = planner ?? activeSurvey();
         if (
             recovery === undefined ||
             context.speculating ||

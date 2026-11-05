@@ -491,7 +491,7 @@ ParsedGlbContainer parse_glb_container(const ts::ArrayBuffer& buffer) {
                         this.context,
                     ),
                     animationNodeRest: lowerGltfAnimationNodeRest(this.context),
-                    deformationState: gltfDeformationStateCpp(),
+                    deformationState: gltfDeformationStateCpp(options),
                     animationBindings: gltfAnimationBindingsCpp(),
                     materialAssembly: lowerGltfMaterialAssembly(this.context),
                     materialTextures: lowerGltfMaterialTextures(this.context),

@@ -6,8 +6,10 @@ import {
 import { bindingRebinds } from "./binding-rebinds.js";
 import { declaredSymbol, resolvedSymbol } from "./symbols.js";
 import {
+    argumentForParameter,
     directCallOf,
     literalKey,
+    ownParameters,
     unwrapExpression,
     variableKind,
 } from "./syntax.js";
@@ -116,19 +118,14 @@ function passedArguments(
         return undefined;
     const calls = directCalls(program, checker, fn);
     if (!calls) return undefined;
-    // A `this` parameter takes no argument position.
-    const positional = fn.parameters.filter(
-        (candidate) =>
-            !ts.isIdentifier(candidate.name) || candidate.name.text !== "this",
-    );
-    const index = positional.indexOf(parameter);
+    const positional = { parameters: ownParameters(fn) };
+    const index = positional.parameters.indexOf(parameter);
     if (index < 0) return undefined;
     const passed = parameter.initializer ? [parameter.initializer] : [];
     for (const call of calls) {
-        if (call.arguments.slice(0, index + 1).some(ts.isSpreadElement))
-            return undefined;
-        const argument = call.arguments[index];
-        if (argument) passed.push(argument);
+        const input = argumentForParameter(call, positional, index);
+        if (input.kind === "unknown") return undefined;
+        if (input.kind === "argument") passed.push(input.argument);
     }
     return passed;
 }

@@ -167,8 +167,7 @@ function compileLocalesAndOptions(
         optional || isNullable(context.checker.getTypeAtLocation(optionsNode))
             ? presenceCpp(bound)
             : undefined;
-    const access =
-        optional || context.dataTypes.isReferenceStruct(type.name) ? "->" : ".";
+    const access = optional ? "->" : context.dataTypes.memberAccess(type.name);
     const fields: Record<string, Value> = {};
     for (const field of context.dataTypes.structFields(
         type.name,

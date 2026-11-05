@@ -1,7 +1,8 @@
 legacy line clamping: display:-webkit-box/-webkit-inline-box with a vertical -webkit-box-orient and a -webkit-line-clamp
 is a flow-root/inline-block whose formatting context shows its first N lines: the box ends at line N and that line's
-ending text run ends in an ellipsis when a line follows it. Without the clamp, a legacy box is a flex container along
-its orient. CSS Overflow 4: https://drafts.csswg.org/css-overflow-4/#webkit-line-clamp
+ending text run ends in an ellipsis when a line follows it, shedding characters until both fit through the loop
+text-overflow shortens with (ShortenText). Without the clamp, a legacy box is a flex container along its orient.
+CSS Overflow 4: https://drafts.csswg.org/css-overflow-4/#webkit-line-clamp
 
 diff --git a/Include/RmlUi/Core/ComputedValues.h b/Include/RmlUi/Core/ComputedValues.h
 index 9de1e74..653fbd3 100644
@@ -149,10 +150,55 @@ index c70726a..7aa27f2 100644
  	// Invalid properties
  	case PropertyId::Invalid:
 diff --git a/Source/Core/ElementText.cpp b/Source/Core/ElementText.cpp
-index d395cd4..f8f1cef 100644
+index d395cd4..26fada9 100644
 --- a/Source/Core/ElementText.cpp
 +++ b/Source/Core/ElementText.cpp
-@@ -363,6 +363,31 @@ void ElementText::AddLine(Vector2f line_position, String line)
+@@ -27,6 +27,29 @@ struct TextOverflowResolved {
+ 	String overflow_text;
+ };
+ 
++// An ellipsis: U+2026 where the font has it, otherwise three full stops.
++static const char* Ellipsis(FontFaceHandle font_face_handle)
++{
++	return GetFontEngineInterface()->GetFontMetrics(font_face_handle).has_ellipsis ? "\xE2\x80\xA6" : "...";
++}
++
++// The text before `end` followed by `suffix`, with characters removed from its end one at a time, but none before
++// `limit`, while `overflows` holds for its width.
++template <typename Overflows>
++static String ShortenText(const String& text, StringIteratorU8 end, const char* limit, const String& suffix, FontFaceHandle font_face_handle,
++	const TextShapingContext& text_shaping_context, Overflows overflows)
++{
++	String shortened;
++	shortened.reserve(text.size() + suffix.size());
++	for (;; --end)
++	{
++		shortened.assign(text.c_str(), end.get());
++		shortened.append(suffix);
++		if (end.get() == limit || !overflows(GetFontEngineInterface()->GetStringWidth(font_face_handle, shortened, text_shaping_context)))
++			return shortened;
++	}
++}
++
+ static TextOverflowResolved ResolveTextOverflow(Element* parent, FontFaceHandle font_face_handle)
+ {
+ 	if (!parent)
+@@ -52,12 +75,8 @@ static TextOverflowResolved ResolveTextOverflow(Element* parent, FontFaceHandle
+ 
+ 	const float overflow_width = parent->GetScrollLeft() + box.GetSize().x + AccumulateRightSideEdgesUpTo(box, clip_area);
+ 
+-	constexpr char ellipsis_chars[] = "\xE2\x80\xA6"; // U+2026
+-	constexpr char dots_chars[] = "...";
+-
+-	String overflow_text = (text_overflow == Style::TextOverflow::String
+-			? parent->GetComputedValues().text_overflow_string()
+-			: (GetFontEngineInterface()->GetFontMetrics(font_face_handle).has_ellipsis ? ellipsis_chars : dots_chars));
++	String overflow_text =
++		(text_overflow == Style::TextOverflow::String ? parent->GetComputedValues().text_overflow_string() : Ellipsis(font_face_handle));
+ 
+ 	return TextOverflowResolved{
+ 		true,
+@@ -363,6 +382,22 @@ void ElementText::AddLine(Vector2f line_position, String line)
  	geometry_dirty = true;
  }
  
@@ -164,26 +210,53 @@ index d395cd4..f8f1cef 100644
 +
 +	const auto& computed = GetComputedValues();
 +	const TextShapingContext text_shaping_context{computed.language(), computed.direction(), computed.font_kerning(), computed.letter_spacing()};
-+	const char* ellipsis = (GetFontEngineInterface()->GetFontMetrics(font_face_handle).has_ellipsis ? "\xE2\x80\xA6" : "...");
 +
 +	// The ellipsis follows the line's content; characters before it are removed one at a time until both fit.
 +	Line& line = lines[line_index];
-+	String text = line.text + ellipsis;
-+	StringIteratorU8 view(line.text, line.text.size());
-+	while (view && view.get() != line.text.c_str() &&
-+		GetFontEngineInterface()->GetStringWidth(font_face_handle, text, text_shaping_context) > available_width)
-+	{
-+		--view;
-+		text.assign(line.text.c_str(), view.get());
-+		text.append(ellipsis);
-+	}
-+	line.text = std::move(text);
++	line.text = ShortenText(line.text, StringIteratorU8(line.text, line.text.size()), line.text.c_str(), Ellipsis(font_face_handle),
++		font_face_handle, text_shaping_context, [&](float width) { return width > available_width; });
 +	geometry_dirty = true;
 +}
 +
  void ElementText::SuppressAutoLayout()
  {
  	dirty_layout_on_change = false;
+@@ -507,8 +542,9 @@ void ElementText::GenerateGeometry(RenderManager& render_manager, const FontFace
+ 			opacity, text_shaping_context, mesh_list);
+ 	}
+ 
+-	const auto text_overflows_on_line = [&](const Line& line) { return line.position.x + line.width > text_overflow.overflow_width; };
+-	if (text_overflow.enabled && std::any_of(lines.begin(), lines.end(), text_overflows_on_line))
++	const auto text_overflows_on_line = [&](const Line& line, float width) { return line.position.x + width > text_overflow.overflow_width; };
++	if (text_overflow.enabled &&
++		std::any_of(lines.begin(), lines.end(), [&](const Line& line) { return text_overflows_on_line(line, line.width); }))
+ 	{
+ 		mesh_list.clear();
+ 
+@@ -522,15 +558,15 @@ void ElementText::GenerateGeometry(RenderManager& render_manager, const FontFace
+ 			StringIteratorU8 view(line.text, line.text.size());
+ 			--view;
+ 
+-			// If we have text overflow, reduce the string one character at a time, append the ellipsis or custom
+-			// string, and try again until it fits. @performance Can be improved by e.g. logarithmic search. Consider
+-			// combining it with the word-breaking algorithm of 'GenerateLine'.
+-			for (; text_overflows_on_line(line) && view && view.get() != line.text.c_str(); --view)
++			// If we have text overflow, reduce the string one character at a time, keeping the first, append the
++			// ellipsis or custom string, and try again until it fits. @performance Can be improved by e.g. logarithmic
++			// search. Consider combining it with the word-breaking algorithm of 'GenerateLine'.
++			if (text_overflows_on_line(line, line.width) && view.get() != line.text.c_str())
+ 			{
+-				abbreviated_text.reserve(line.text.size() + text_overflow.overflow_text.size());
+-				abbreviated_text.assign(line.text.c_str(), view.get());
+-				abbreviated_text.append(text_overflow.overflow_text);
+-				line.width = GetFontEngineInterface()->GetStringWidth(font_face_handle, abbreviated_text, text_shaping_context);
++				StringIteratorU8 second(line.text);
++				++second;
++				abbreviated_text = ShortenText(line.text, view, second.get(), text_overflow.overflow_text, font_face_handle, text_shaping_context,
++					[&](float width) { return text_overflows_on_line(line, width); });
+ 				text_submit_view = abbreviated_text;
+ 			}
+ 
 diff --git a/Source/Core/Layout/BlockContainer.cpp b/Source/Core/Layout/BlockContainer.cpp
 index b1792d9..48e9161 100644
 --- a/Source/Core/Layout/BlockContainer.cpp

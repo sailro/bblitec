@@ -508,6 +508,8 @@ public:
     /** Throws when this value is a non-configurable accessor slot. */
     void check_redefinition(std::string_view key) const;
     [[nodiscard]] bool nonconfigurable_accessor() const;
+    /** Whether this value is an accessor slot, read through `property_value`. */
+    [[nodiscard]] bool is_accessor_slot() const;
 
     [[nodiscard]] static JsonValue from_proxy_view(JsonValue target,
                                                    Callback<JsonValue(std::string)> read,
@@ -735,7 +737,7 @@ public:
                 visitor(key, native_->get(key));
         } else if (kind_ == Kind::object) {
             json_for_each_object_entry(*object_, [&](const auto& key, const JsonValue& value) {
-                if (value.instance_of<JsonAccessorSlot>())
+                if (value.is_accessor_slot())
                     visitor(key, value.property_value());
                 else
                     visitor(key, value);
@@ -802,7 +804,7 @@ public:
             if (source.kind_ == Kind::object && !source.native_)
                 json_for_each_object_entry(*source.object_,
                                            [&](const auto& key, const JsonValue& value) {
-                                               if (value.instance_of<JsonAccessorSlot>())
+                                               if (value.is_accessor_slot())
                                                    copy_entry(key, value.property_value());
                                                else
                                                    copy_entry(key, value);
@@ -1457,14 +1459,16 @@ struct JsonAccessorSlot final : JsonNativeObject {
     }
 };
 
+inline bool JsonValue::is_accessor_slot() const { return instance_of<JsonAccessorSlot>(); }
+
 inline JsonValue JsonValue::property_value() const {
-    if (!instance_of<JsonAccessorSlot>())
+    if (!is_accessor_slot())
         return *this;
     return static_cast<const JsonAccessorSlot&>(*native_).getter();
 }
 
 inline bool JsonValue::set_accessor(std::string_view key, const JsonValue& value) const {
-    if (!instance_of<JsonAccessorSlot>())
+    if (!is_accessor_slot())
         return false;
     const auto& slot = static_cast<const JsonAccessorSlot&>(*native_);
     if (!slot.setter)
@@ -1475,8 +1479,7 @@ inline bool JsonValue::set_accessor(std::string_view key, const JsonValue& value
 }
 
 inline bool JsonValue::nonconfigurable_accessor() const {
-    return instance_of<JsonAccessorSlot>() &&
-           !static_cast<const JsonAccessorSlot&>(*native_).configurable;
+    return is_accessor_slot() && !static_cast<const JsonAccessorSlot&>(*native_).configurable;
 }
 
 inline void JsonValue::check_accessor_removal(std::string_view key) const {
@@ -1709,11 +1712,6 @@ template <std::size_t N> [[nodiscard]] inline Tuple<N> json_tuple(const JsonValu
     return result;
 }
 
-template <typename T, typename Variant> inline constexpr bool json_union_holds = false;
-template <typename T, typename... Members>
-inline constexpr bool json_union_holds<T, std::variant<Members...>> =
-    (std::is_same_v<T, Members> || ...);
-
 /**
  * A parsed scalar as a primitive union stores it -- the lowering of an
  * assertion such as `value as number | string | boolean` behind the
@@ -1722,13 +1720,13 @@ inline constexpr bool json_union_holds<T, std::variant<Members...>> =
  */
 template <typename Variant>
 [[nodiscard]] inline Variant json_primitive_union(const JsonValue& value) {
-    if constexpr (json_union_holds<double, Variant>)
+    if constexpr (is_alternative_v<double, Variant>)
         if (value.is_number())
             return Variant(std::in_place_type<double>, value.to_number());
-    if constexpr (json_union_holds<std::string, Variant>)
+    if constexpr (is_alternative_v<std::string, Variant>)
         if (value.is_string())
             return Variant(std::in_place_type<std::string>, value.string_value());
-    if constexpr (json_union_holds<bool, Variant>)
+    if constexpr (is_alternative_v<bool, Variant>)
         if (value.is_boolean())
             return Variant(std::in_place_type<bool>, value.truthy());
     throw NamedError("TypeError", "The parsed value is not one of the union's primitive kinds");

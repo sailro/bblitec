@@ -541,36 +541,39 @@ js::Array<VatBake> create_vat_bakes(
             vat_prepared_capture(source.bone_matrices, bone_count, 16.0, frame_count);
         bake.bone_count = ${jsToUint32Call("bone_count")};
         bake.frame_count = ${jsToUint32Call("frame_count")};
-        // A payload is usually a view of a fetched bundle, so its bytes are
-        // copied from the buffer rather than iterated.
-        const auto bytes = bbl::js::typed_array_bytes(source.data);
-        auto texels = std::make_shared<GpuTextureTexels>();
-        texels->width = bake.bone_count * 4u;
-        texels->height = bake.frame_count;
-        texels->rgba.resize(source.data.size());
-        std::memcpy(texels->rgba.data(), bytes.data(), bytes.size());
-        bake.texture.texels = std::move(texels);
         validated.push_back(std::move(bake));
     }
     // uploadPreparedMany: payloads of one bone count and bit-equal data
-    // share one texture.
-    std::vector<GpuTextureIdentity> unique;
+    // share one texture, whose texels are the first one's.
+    struct UniqueTexture {
+        GpuTextureIdentity texture;
+        std::span<std::uint8_t> bytes;
+    };
+    std::vector<UniqueTexture> unique;
     js::Array<VatBake> results;
-    for (VatBakeRecord& bake : validated) {
-        const GpuTextureTexels& texels = *bake.texture.texels;
+    for (std::size_t index = 0; index < validated.size(); ++index) {
+        VatBakeRecord& bake = validated[index];
+        const auto bytes = bbl::js::typed_array_bytes(prepared[index].data);
+        const std::uint32_t width = bake.bone_count * 4u;
         const auto shared = std::find_if(unique.begin(), unique.end(),
-            [&](const GpuTextureIdentity& candidate) {
-                return candidate.texels->width == texels.width &&
-                       candidate.texels->rgba.size() == texels.rgba.size() &&
-                       std::memcmp(candidate.texels->rgba.data(), texels.rgba.data(),
-                                   texels.rgba.size() * sizeof(float)) == 0;
+            [&](const UniqueTexture& candidate) {
+                return candidate.texture.texels->width == width &&
+                       candidate.bytes.size() == bytes.size() &&
+                       std::memcmp(candidate.bytes.data(), bytes.data(), bytes.size()) == 0;
             });
         if (shared != unique.end()) {
-            bake.texture = *shared;
+            bake.texture = shared->texture;
         } else {
+            // A payload is usually a view of a fetched bundle, so its bytes
+            // are copied from the buffer rather than iterated.
+            auto texels = std::make_shared<GpuTextureTexels>();
+            texels->width = width;
+            texels->height = bake.frame_count;
+            texels->rgba.resize(prepared[index].data.size());
+            std::memcpy(texels->rgba.data(), bytes.data(), bytes.size());
             auto texture = publish_gpu_texture_identity(engine);
-            texture.texels = std::move(bake.texture.texels);
-            bake.texture = unique.emplace_back(std::move(texture));
+            texture.texels = std::move(texels);
+            bake.texture = unique.emplace_back(UniqueTexture{std::move(texture), bytes}).texture;
         }
         results.push_back(vat_store_bake(engine, std::move(bake)));
     }

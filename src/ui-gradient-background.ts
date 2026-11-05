@@ -24,7 +24,7 @@ function position(
         center: "50%",
         bottom: "100%",
     };
-    if (tokens.length === 0) return ["0%", "0%"];
+    if (tokens.length === 0) return INITIAL_LAYER.position;
     if (tokens.length > 2) return undefined;
     let [x = "center", y = "center"] = tokens.map((token) =>
         token.toLowerCase(),
@@ -65,6 +65,42 @@ export interface UiBackgroundLayer {
     readonly size: "contain" | "cover" | readonly [string, string];
     /** The one token no other component claims: a final layer's colour. */
     readonly color?: string;
+}
+
+/** A layer writing no component: each one's initial value. */
+const INITIAL_LAYER: UiBackgroundLayer = {
+    placed: false,
+    repeat: "repeat",
+    boxed: false,
+    origin: "padding-box",
+    clip: "border-box",
+    attachment: "scroll",
+    position: ["0%", "0%"],
+    size: ["auto", "auto"],
+};
+
+/**
+ * A layer's `background` longhands besides the colour, in shorthand order;
+ * by default their initial values.
+ */
+export function uiBackgroundLonghands(
+    layer: UiBackgroundLayer = INITIAL_LAYER,
+): (readonly [string, string])[] {
+    const size =
+        typeof layer.size === "string"
+            ? layer.size
+            : layer.size.every((token) => token === "auto")
+              ? "auto"
+              : layer.size.join(" ");
+    return [
+        ["background-clip", layer.clip],
+        ["background-image", layer.image ?? "none"],
+        ["background-size", size],
+        ["background-position", layer.position.join(" ")],
+        ["background-repeat", layer.repeat],
+        ["background-origin", layer.origin],
+        ["background-attachment", layer.attachment],
+    ];
 }
 
 /** A layer's components; undefined when a component repeats or misparses. */
@@ -132,8 +168,8 @@ export function uiBackgroundLayer(
         return undefined;
     const at = position(placement ?? []);
     if (!at) return undefined;
-    const origin = named[0] ?? "padding-box";
-    let layerSize: UiBackgroundLayer["size"] = ["auto", "auto"];
+    const origin = named[0] ?? INITIAL_LAYER.origin;
+    let layerSize = INITIAL_LAYER.size;
     if (size !== undefined) {
         const [width, height = "auto", ...rest] = size;
         if (!width || rest.length) return undefined;
@@ -150,11 +186,11 @@ export function uiBackgroundLayer(
             repeat !== undefined ||
             attachment !== undefined ||
             named.length > 0,
-        repeat: repeat ?? "repeat",
+        repeat: repeat ?? INITIAL_LAYER.repeat,
         boxed: named.length > 0,
         origin,
-        clip: named[1] ?? named[0] ?? "border-box",
-        attachment: attachment ?? "scroll",
+        clip: named[1] ?? named[0] ?? INITIAL_LAYER.clip,
+        attachment: attachment ?? INITIAL_LAYER.attachment,
         position: at,
         size: layerSize,
         ...(color !== undefined ? { color } : {}),

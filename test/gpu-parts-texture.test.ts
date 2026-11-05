@@ -36,7 +36,7 @@ test("a Texture2D built from a bake's GPU parts binds the view's texels through 
     assert.match(result.cpp, /\.vat_bakes, v_baked\)\.texture/);
     assert.match(
         result.cpp,
-        /bbl::create_device_sampler\(v_device, bbl::TextureSamplerState\{bbl::TextureFilter::nearest, bbl::TextureFilter::nearest, bbl::TextureMipmapMode::nearest, bbl::TextureAddressMode::clamp, bbl::TextureAddressMode::clamp, 1\.0f, 32\.0f\}\)/,
+        /bbl::create_device_sampler\(v_device, bbl::GpuSamplerDescriptor\{\.mag_filter = std::string\("nearest"\), \.min_filter = std::string\("nearest"\)\}\)/,
     );
     assert.match(result.cpp, /bbl::create_texture_view\(v_engine, v_tex\)/);
     assert.match(result.cpp, /bbl::gpu_texture_texels\(v_tex\)\.width/);
@@ -106,11 +106,13 @@ int main() {
     const GpuDeviceIdentity device = gpu_device_identity(engine);
     // Each createSampler and createView call is an object of its own; a
     // pooled sampler is its key.
-    std::cout << (create_device_sampler(device, nearest) == create_device_sampler(device, nearest))
+    // WebGPU's defaults are the nearest state.
+    const GpuSamplerDescriptor defaults{};
+    std::cout << (create_device_sampler(device, defaults) == create_device_sampler(device, defaults))
               << (GpuSampler{device, nearest} == GpuSampler{device, nearest})
               << (create_texture_view(engine, texture) == create_texture_view(engine, texture));
     const GpuTextureView view = create_texture_view(engine, texture);
-    const GpuSampler sampler = create_device_sampler(device, nearest);
+    const GpuSampler sampler = create_device_sampler(device, defaults);
     const FileTexture bound = gpu_parts_texture(engine, texture, view, sampler, 4.0, 2.0);
     std::cout << " " << (bound.data.float_texels == texels) << bound.width << "x" << bound.height
               << (bound.data.sampler == nearest) << bound.data.has_image();

@@ -27,6 +27,7 @@ import {
     renderUiBorderImage,
     renderUiBorderImageLonghand,
     UI_BORDER_IMAGE_LONGHANDS,
+    UI_ZERO_LENGTH,
 } from "../ui-border-image.js";
 import {
     unrepresentedUiAnimation,
@@ -35,6 +36,7 @@ import {
 } from "../ui-motion.js";
 import {
     uiBackgroundLayer,
+    uiBackgroundLonghands,
     uiGradientBackground,
     uiGradientImageList,
 } from "../ui-gradient-background.js";
@@ -2859,7 +2861,7 @@ export class UiProjection {
                 // A zero width draws no outline, as none does.
                 if (
                     literalValue === "none" ||
-                    UiProjection.UI_ZERO_OUTLINE.test(literalValue)
+                    UI_ZERO_LENGTH.test(literalValue)
                 )
                     return;
                 if (
@@ -3052,15 +3054,7 @@ export class UiProjection {
     private static readonly UI_BACKGROUND_RESETS: readonly (readonly [
         string,
         string,
-    ])[] = [
-        ["background-clip", "border-box"],
-        ["background-image", "none"],
-        ["background-size", "auto"],
-        ["background-position", "0% 0%"],
-        ["background-repeat", "repeat"],
-        ["background-origin", "padding-box"],
-        ["background-attachment", "scroll"],
-    ];
+    ])[] = uiBackgroundLonghands();
 
     private static readonly UI_SHORTHAND_RESETS: ReadonlyMap<
         string,
@@ -3105,20 +3099,8 @@ export class UiProjection {
                     layer.placed &&
                     !/\bvar\(/i.test(value)))
         ) {
-            const size =
-                typeof layer.size === "string"
-                    ? layer.size
-                    : layer.size.every((token) => token === "auto")
-                      ? "auto"
-                      : layer.size.join(" ");
             const longhands = [
-                ["background-clip", layer.clip],
-                ["background-image", layer.image ?? "none"],
-                ["background-size", size],
-                ["background-position", layer.position.join(" ")],
-                ["background-repeat", layer.repeat],
-                ["background-origin", layer.origin],
-                ["background-attachment", layer.attachment],
+                ...uiBackgroundLonghands(layer),
                 ["background-color", layer.color ?? "transparent"],
             ] as const;
             if (raster && layer.clip !== "border-box")
@@ -3187,9 +3169,6 @@ export class UiProjection {
         }
         return effects.length > 0 ? effects.join(",") : undefined;
     }
-
-    /** An outline shorthand of a zero width alone. */
-    private static readonly UI_ZERO_OUTLINE = /^0(?:\.0*)?(?:px)?$/;
 
     /** Properties whose values RmlUi reads in its own grammar. */
     private static readonly UI_LOWERED_STYLE_VALUES = new EmissionSet([
@@ -3626,7 +3605,7 @@ export class UiProjection {
             } else if (property === "transition") {
                 literal = literal.replace(/\btransform\b/g, "bbl-transform");
             } else if (property === "--bbl-outline") {
-                literal = UiProjection.UI_ZERO_OUTLINE.test(literal.trim())
+                literal = UI_ZERO_LENGTH.test(literal.trim())
                     ? "none"
                     : literal.replace(
                           /^(.+)\s+(solid|dashed)\s+(\d+(?:\.\d+)?px)$/,
@@ -4693,6 +4672,7 @@ export class UiProjection {
                 }
                 return value.toLowerCase() === "currentcolor" ? "white" : value;
             };
+            let percentageViewport = false;
             for (const attribute of attributes) {
                 const name = attribute.name;
                 const lowerName = name.toLowerCase();
@@ -4708,6 +4688,7 @@ export class UiProjection {
                     tag === "svg" &&
                     (lowerName === "width" || lowerName === "height") &&
                     /^(?:\d+(?:\.\d*)?|\.\d+)%$/.test(attributeValue.trim());
+                percentageViewport ||= viewportPercentage;
                 if (!insideSvg && tag !== "svg") {
                     const allowed = new EmissionSet([
                         "class",
@@ -4905,12 +4886,7 @@ export class UiProjection {
             // The rasterized document stretches to the root's box: exact only
             // when a percentage viewport does not letterbox its viewBox.
             if (
-                tag === "svg" &&
-                attributes.some(
-                    (attribute) =>
-                        /^(?:width|height)$/i.test(attribute.name) &&
-                        attribute.value.trim().endsWith("%"),
-                ) &&
+                percentageViewport &&
                 attributes
                     .find(
                         (attribute) =>

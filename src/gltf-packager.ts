@@ -4,7 +4,7 @@ import { compressedTextureFormat } from "./compressed-texture-format.js";
 import { packageKtx1 } from "./compressed-texture-package.js";
 import { downloadCachedResource } from "./asset-download-cache.js";
 import { isDataUrl, parseDataUrl } from "./data-url.js";
-import { dropExtension } from "./compressed-geometry.js";
+import { dropExtension, dropObjectExtension } from "./compressed-geometry.js";
 import { packageSourceAlbedoIdentities } from "./gltf-material-texture-identity.js";
 import { pinnedGltfMaterialCore } from "./pinned-gltf-material-core.js";
 import { packageMeshWalks, type CompiledMeshWalk } from "./gltf-mesh-walks.js";
@@ -772,10 +772,7 @@ export async function packageGltf(
             if (image === undefined) continue;
             texture.source = image;
             texture.sampler = transcodedSamplers.get(image);
-            delete extensions![BASISU_EXTENSION];
-            if (Object.keys(extensions!).length === 0) {
-                delete texture.extensions;
-            }
+            dropObjectExtension(texture, BASISU_EXTENSION);
         }
         // The same drop the geometry passes make, from the same home: a
         // document whose bytes no longer carry the extension must not go
@@ -787,10 +784,7 @@ export async function packageGltf(
         const materials = asRecords(document.materials);
         for (const { material, path } of uncomposedTransforms) {
             const info = asObject(valueAt(materials[material], path));
-            const extensions = asObject(info?.extensions);
-            if (!info || !extensions) continue;
-            delete extensions[TEXTURE_TRANSFORM_EXTENSION];
-            if (Object.keys(extensions).length === 0) delete info.extensions;
+            if (info) dropObjectExtension(info, TEXTURE_TRANSFORM_EXTENSION);
         }
     }
 

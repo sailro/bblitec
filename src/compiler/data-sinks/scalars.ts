@@ -194,6 +194,10 @@ function valueJson(
         lowerer.markEscaped(value);
         return value.cpp;
     }
+    const expression =
+        value.kind === "record" || value.dataType?.kind === "struct"
+            ? lowerer.convertedExpression(node)
+            : undefined;
     // Stored document members remain mutable through every retained alias.
     // A native observation wrapper only supplies reads; a plain record
     // therefore acquires the document owner before entering this storage.
@@ -201,6 +205,7 @@ function valueJson(
     if (value.dataType?.kind === "struct") {
         const demand = lowerer.context.dataTypes.documentRecordDemand(
             value.dataType.name,
+            expression,
         );
         if (demand) throw new NativeRecordStorageRequired(demand);
     }
@@ -220,10 +225,6 @@ function valueJson(
             node,
             "AggregateError reflection requires represented property descriptors.",
         );
-    const expression =
-        value.kind === "record" || value.dataType?.kind === "struct"
-            ? lowerer.convertedExpression(node)
-            : undefined;
     const contextual =
         expression &&
         declaredContextualType(lowerer.context.checker, expression);
@@ -233,6 +234,7 @@ function valueJson(
         if (value.dataType?.kind === "struct") {
             const demand = lowerer.context.dataTypes.documentRecordDemand(
                 value.dataType.name,
+                expression,
             );
             if (demand) throw new NativeRecordStorageRequired(demand);
             return lowerer.context.fail(

@@ -1270,6 +1270,12 @@ throw_nullish_access(const char* message = "Cannot read properties of null or un
 template <typename T> inline constexpr bool is_ref_v = false;
 template <typename T> inline constexpr bool is_ref_v<Ref<T>> = true;
 
+/** Whether `T` is one of the union `Variant`'s members. */
+template <typename T, typename Variant> inline constexpr bool is_alternative_v = false;
+template <typename T, typename... Members>
+inline constexpr bool is_alternative_v<T, std::variant<Members...>> =
+    (std::is_same_v<T, Members> || ...);
+
 template <typename T> class Nullable {
 public:
     Nullable() = default;
