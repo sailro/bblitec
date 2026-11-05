@@ -6691,7 +6691,9 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                     access,
                     "accessors",
                 );
-                const arrow = this.context.dataTypes.memberAccess(dataType.name);
+                const arrow = this.context.dataTypes.memberAccess(
+                    dataType.name,
+                );
                 if (field.accessor)
                     return this.accessorRead(
                         `${owner.cpp}${arrow}${field.name}`,
@@ -13325,6 +13327,8 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
     public openRecordLiteral(
         literal: ts.ObjectLiteralExpression,
         dataType: DataType & { kind: "map" },
+        /** Members the caller lowers itself (a document's accessors). */
+        skipped?: ReadonlySet<ts.ObjectLiteralElementLike>,
     ): string {
         if (
             literal.properties.some(
@@ -13341,6 +13345,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 `${this.context.dataTypes.cppType(dataType)} ${result};`,
             );
             for (const [index, property] of literal.properties.entries()) {
+                if (skipped?.has(property)) continue;
                 refuseProtoSetter(property, (node, message) =>
                     this.context.fail(node, message),
                 );
@@ -13867,7 +13872,9 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 .map((field) => [field.sourceName, field]),
         );
         const member = this.context.dataTypes.memberAccess(target.type.name);
-        const sourceMember = this.context.dataTypes.memberAccess(sourceType.name);
+        const sourceMember = this.context.dataTypes.memberAccess(
+            sourceType.name,
+        );
         const assigned = new EmissionSet<string>();
         for (const entry of structOwnEntries(
             this.ownObjectContext(),

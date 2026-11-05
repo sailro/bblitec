@@ -142,6 +142,7 @@ import {
     variableKind,
     isMemberAccess,
     localCallback,
+    propertyKey,
 } from "./syntax.js";
 import {
     compileErrorConstruction,
@@ -263,7 +264,7 @@ import {
 import { recordAt } from "./record-access.js";
 import { pinOperand } from "./evaluation-order.js";
 import { someAnalysisNode } from "./analysis-walk.js";
-import type { NativeExpression } from "./closure-captures.js";
+import { renderClosure, type NativeExpression } from "./closure-captures.js";
 import { compileWithRuntimeCaseSplit } from "./runtime-case-split.js";
 import { numberToStringCpp } from "../cpp-expressions.js";
 
@@ -6273,6 +6274,8 @@ export class ExpressionLowerer {
                               value: { kind: "json" },
                               dictionary: true,
                           };
+                if (unwrapped.properties.some(ts.isGetAccessorDeclaration))
+                    return this.documentWithGetters(unwrapped, dictionary);
                 return this.context.dataLowerer.leafValue(
                     this.context.dataLowerer.compileForSink(
                         unwrapped,
@@ -6289,6 +6292,91 @@ export class ExpressionLowerer {
             }
         }
         return this.compileStaticObjectValue(unwrapped);
+    }
+
+    /**
+     * A literal whose data members a dictionary holds and that declares
+     * getters: a document of those members (`json_value` of the dictionary)
+     * with each getter an own accessor slot, defined after the data as the
+     * literal defines it. Only getters after every spread and data member of
+     * their key, and that read no `this`, keep the literal's order and
+     * receiver; a setter has no stored form here.
+     */
+    private documentWithGetters(
+        literal: ts.ObjectLiteralExpression,
+        dictionary: DataType<"map">,
+    ): Value {
+        const members = literal.properties;
+        const getters = members.filter(ts.isGetAccessorDeclaration);
+        const json: DataType = { kind: "json" };
+        if (
+            dictionary.value.kind !== "json" ||
+            members.some(ts.isSetAccessorDeclaration)
+        )
+            this.context.fail(
+                literal,
+                "A dynamic literal with accessors stores getters into a document only.",
+            );
+        for (const getter of getters) {
+            const key = propertyKey(getter.name);
+            const later = members.slice(members.indexOf(getter) + 1);
+            if (
+                key === undefined ||
+                functionUsesDynamicThis(getter) ||
+                later.some(
+                    (member) =>
+                        ts.isSpreadAssignment(member) ||
+                        (!ts.isGetAccessorDeclaration(member) &&
+                            member.name !== undefined &&
+                            propertyKey(member.name) === key),
+                )
+            )
+                this.context.fail(
+                    getter,
+                    "A dynamic literal's getter needs a literal key, no 'this', and no later spread or data member of its key.",
+                );
+        }
+        const data = this.context.dataLowerer.openRecordLiteral(
+            literal,
+            dictionary,
+            new Set(getters),
+        );
+        const document =
+            this.context.allocateTemporaryCppName("accessor_document");
+        this.context.reachJson();
+        this.context.emit({
+            kind: "declaration",
+            type: "bbl::js::JsonValue",
+            name: document,
+            initializer: `bbl::js::json_value(${data})`,
+        });
+        const owner: Value = { kind: "record", cpp: "" };
+        for (const getter of getters) {
+            const body = this.context.captureManagedClosureLines(() =>
+                this.context.emit(
+                    `return ${this.context.dataLowerer.compileKnownValueForSink(
+                        this.context.compileRecordGetter(owner, getter),
+                        json,
+                        getter,
+                    )};`,
+                ),
+            );
+            this.context.emit({
+                kind: "expression",
+                code: `${document}.define_accessor(${this.context.cppString(propertyKey(getter.name)!)}, bbl::js::Callback<bbl::js::JsonValue()>(${renderClosure(body, "", "bbl::js::JsonValue")}), bbl::js::Callback<void(bbl::js::JsonValue)>{}, true);`,
+            });
+        }
+        return {
+            ...this.context.dataLowerer.leafValue(document, json),
+            nativeCaptures: [
+                this.context.registerNativeBinding(
+                    document,
+                    false,
+                    false,
+                    "bbl::js::JsonValue",
+                ),
+            ],
+        };
     }
 
     /** Whether a spread source is a struct whose `?` fields decide its keys at run time. */

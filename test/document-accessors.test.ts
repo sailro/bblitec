@@ -48,3 +48,41 @@ if (refused !== 2 || view.cx !== 4) throw new Error("refused " + refused);
         expectedOutput: "",
     });
 });
+
+test("a literal spreading a parsed record keeps its getters as accessors", (t) => {
+    // The spread copies every parsed key; the getters read state that
+    // changes after the literal is built, in their own places.
+    const source = `"use strict";
+interface Feel { orbit: number; pan: number; zoom: number }
+let weight = 1;
+function resolveFeel<T extends { orbit: number; pan: number }>(authored: T): T {
+    return {
+        ...authored,
+        get orbit() { return 0.5 * weight; },
+        get pan() { return 0.25 * weight; },
+    };
+}
+const config = JSON.parse('{"orbit":0.9,"pan":0.8,"zoom":2,"label":"classic"}') as Feel;
+const feel = resolveFeel(config);
+weight = 2;
+if (feel.orbit !== 1 || feel.pan !== 0.5 || feel.zoom !== 2) throw new Error("getters " + feel.orbit);
+if (Object.keys(feel).join(",") !== "orbit,pan,zoom,label") throw new Error("keys " + Object.keys(feel).join(","));
+if (JSON.stringify(feel) !== '{"orbit":1,"pan":0.5,"zoom":2,"label":"classic"}') throw new Error("stringify " + JSON.stringify(feel));
+let refused = false;
+try { feel.orbit = 3; } catch (error) { refused = error instanceof TypeError; }
+if (!refused || feel.orbit !== 1) throw new Error("getter-only write");
+`;
+    runInNewContext(
+        ts.transpileModule(source, {
+            compilerOptions: { target: ts.ScriptTarget.ES2022 },
+        }).outputText,
+    );
+    const { cpp } = compileSource(source, {
+        fileName: resolve("document-literal-getters.ts"),
+    });
+    const native = optionalNativeFixtureTools(false);
+    if (!native) return t.skip("Native fixture compiler unavailable.");
+    runGeneratedProgram(native, "document-literal-getters", cpp, {
+        expectedOutput: "",
+    });
+});
