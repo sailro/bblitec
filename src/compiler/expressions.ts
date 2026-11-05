@@ -206,7 +206,11 @@ import {
     compileCompressedJsonPromiseThen,
 } from "./compressed-json.js";
 import { compileArrayPredicateOverData } from "./data-methods.js";
-import { dataTypesEqual, type DataType } from "./data-types.js";
+import {
+    dataTypesEqual,
+    presentDataType,
+    type DataType,
+} from "./data-types.js";
 import { isBinaryDataType } from "./data-types/typed-arrays.js";
 import { readCallableProperty } from "./properties.js";
 import {
@@ -3461,6 +3465,7 @@ export class ExpressionLowerer {
                 "Conditional expressions require matching native value branches " +
                     `(received ${whenTrue.kind}${whenTrue.cpp.length === 0 ? " without native storage" : ""} ` +
                     `and ${whenFalse.kind}${whenFalse.cpp.length === 0 ? " without native storage" : ""}).`,
+                "mismatched-branches",
             );
         }
         let conditional = commonResourceValue(
@@ -5803,8 +5808,7 @@ export class ExpressionLowerer {
                 : undefined);
         // The engine canvas has no element handle: an element selection
         // holding it stores DOM event targets.
-        const element =
-            inferred?.kind === "optional" ? inferred.inner : inferred;
+        const element = presentDataType(inferred);
         if (
             element?.kind === "handle" &&
             element.handle === "ui-element" &&

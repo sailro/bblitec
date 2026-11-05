@@ -6,7 +6,7 @@ import { localAssetPath } from "../asset-source.js";
 import ts from "typescript";
 import { argumentAt } from "./syntax.js";
 import { cacheOnlyRequestOptions } from "./http.js";
-import { readdirSync } from "node:fs";
+import { readdirSync, statSync } from "node:fs";
 import { dirname, relative, resolve, sep } from "node:path";
 
 import { floatLiteral } from "../cpp-literals.js";
@@ -183,11 +183,17 @@ function registerAs(
     return (source) => context.assetRegistry.registerAsset(source, kind).output;
 }
 
-/** Readability is shared by literal, candidate-table and directory discovery. */
+/**
+ * Readability is shared by literal, candidate-table and directory discovery.
+ * A local file answers from its directory entry, without reading it.
+ */
 export function readablePackagedAsset(
     context: Pick<StaticFetchContext, "options">,
     source: string,
 ): boolean {
+    const local = localAssetPath(source, resolve(context.options.fileName));
+    if (local)
+        return statSync(local, { throwIfNoEntry: false })?.isFile() ?? false;
     try {
         readAssetBytesSync(source, context.options.fileName);
         return true;

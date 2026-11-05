@@ -195,6 +195,7 @@ import {
 import {
     dataTypesEqual,
     isUndefinedDataType,
+    presentDataType,
     doubleLiteral,
     isNumericSequenceType,
     isTypedArrayType,
@@ -314,16 +315,12 @@ import { readsErasedVoid } from "./undefined-values.js";
 import { classPrototypeKeys, classMemberTable } from "./class-members.js";
 import { isPlainJsonRecord } from "./json-record-views.js";
 
-/** A value's storage past an optional wrapper. */
-function presentDataType(value: Value | undefined): DataType | undefined {
-    return value?.dataType?.kind === "optional"
-        ? value.dataType.inner
-        : value?.dataType;
-}
-
 /** A source a struct local cannot hold in place: JSON, or a native object. */
 function outsideStructStorage(value: Value | undefined): boolean {
-    return isJsonValue(value) || isOpaqueReference(presentDataType(value));
+    return (
+        isJsonValue(value) ||
+        isOpaqueReference(presentDataType(value?.dataType))
+    );
 }
 
 /** The value a literal property or shorthand stores; undefined for others. */
@@ -4276,10 +4273,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         value: Value,
         callee: ts.Expression,
     ): (Value & { dataType: DataType<"function"> }) | undefined {
-        const type =
-            value.dataType?.kind === "optional"
-                ? value.dataType.inner
-                : value.dataType;
+        const type = presentDataType(value.dataType);
         if (type?.kind !== "union") return undefined;
         const arms = type.members.flatMap((member, index) =>
             member.kind === "function" ? [{ member, index }] : [],
@@ -11573,7 +11567,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
     ): void {
         if (isJsonValue(incoming))
             requireDynamicBindingStorage(this.context.checker, local);
-        const actual = presentDataType(incoming);
+        const actual = presentDataType(incoming?.dataType);
         if (!isOpaqueReference(actual)) return;
         const nativeType = this.context.checker.getNonNullableType(
             this.context.checker.getTypeAtLocation(right),

@@ -647,7 +647,6 @@ function sourceGraph(
             aliases.set(from, edges);
         });
     };
-    // Every binding a write can reach: a selection writes through each operand.
     // The symbol of each root a member write writes, or none when one has none.
     const resolvedWrites = (
         written: readonly { root: Binding; path: KeyPath }[],
@@ -660,6 +659,17 @@ function sourceGraph(
             ? resolved
             : undefined;
     };
+    // A member write of a resolved root: the binding is mutated there.
+    const writeMember = (
+        symbol: ts.Symbol,
+        ...writes: readonly MemberWrite[]
+    ): void => {
+        mutated.add(symbol);
+        const list = memberWrites.get(symbol) ?? [];
+        list.push(...writes);
+        memberWrites.set(symbol, list);
+    };
+    // Every binding a write can reach: a selection writes through each operand.
     const mutate = (expression: ts.Expression): void => {
         for (const root of heldBindings(expression)) {
             const symbol = resolvedSymbol(checker, root);
@@ -819,13 +829,14 @@ function sourceGraph(
                             checker.getTypeAtLocation(receiver!),
                         )
                     ) {
-                        for (const { symbol, path } of stored) {
-                            mutated.add(symbol);
-                            const list = memberWrites.get(symbol) ?? [];
-                            for (const value of inserted ?? [])
-                                list.push({ path: [...path, ANY_KEY], value });
-                            memberWrites.set(symbol, list);
-                        }
+                        for (const { symbol, path } of stored)
+                            writeMember(
+                                symbol,
+                                ...(inserted ?? []).map((value) => ({
+                                    path: [...path, ANY_KEY],
+                                    value,
+                                })),
+                            );
                     } else if (
                         method &&
                         storesNoNewElement(checker, method, node)
@@ -853,12 +864,10 @@ function sourceGraph(
                                   ),
                               );
                         if (written)
-                            for (const { symbol, path } of written) {
-                                mutated.add(symbol);
-                                const list = memberWrites.get(symbol) ?? [];
-                                list.push({ path: [...path, ANY_KEY] });
-                                memberWrites.set(symbol, list);
-                            }
+                            for (const { symbol, path } of written)
+                                writeMember(symbol, {
+                                    path: [...path, ANY_KEY],
+                                });
                         else mutate(method.expression);
                     }
                 }
@@ -895,12 +904,8 @@ function sourceGraph(
                     const written =
                         value && resolvedWrites(memberWritePaths(target));
                     if (value && written)
-                        for (const { symbol, path } of written) {
-                            mutated.add(symbol);
-                            const list = memberWrites.get(symbol) ?? [];
-                            list.push({ path, value });
-                            memberWrites.set(symbol, list);
-                        }
+                        for (const { symbol, path } of written)
+                            writeMember(symbol, { path, value });
                     else mutate(target);
                 }
             },

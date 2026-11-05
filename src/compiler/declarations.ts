@@ -971,6 +971,23 @@ export class DeclarationLowerer {
             !plain(selection.whenFalse)
         )
             return undefined;
+        // Two literals of one kind always share one native storage.
+        const literalKind = (node: ts.Expression): ts.SyntaxKind => {
+            const current = this.context.unwrap(node);
+            return current.kind === ts.SyntaxKind.FalseKeyword
+                ? ts.SyntaxKind.TrueKeyword
+                : ts.isNoSubstitutionTemplateLiteral(current)
+                  ? ts.SyntaxKind.StringLiteral
+                  : current.kind;
+        };
+        const armKind = literalKind(selection.whenTrue);
+        if (
+            armKind === literalKind(selection.whenFalse) &&
+            (armKind === ts.SyntaxKind.NumericLiteral ||
+                armKind === ts.SyntaxKind.StringLiteral ||
+                armKind === ts.SyntaxKind.TrueKeyword)
+        )
+            return undefined;
         const symbol = declaredSymbol(checker, declaration.name);
         const references = symbol
             ? bindingReferences(this.context.program, checker, symbol)
@@ -1003,9 +1020,7 @@ export class DeclarationLowerer {
                     } catch (error) {
                         return (
                             error instanceof CompileError &&
-                            error.message.includes(
-                                "Conditional expressions require matching native value branches",
-                            )
+                            error.reason === "mismatched-branches"
                         );
                     }
                 },

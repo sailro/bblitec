@@ -113,3 +113,28 @@ export function forEachAnalysisNode(
 ): void {
     findAnalysisNode(root, (node) => action(node) ?? false, policy);
 }
+
+/**
+ * A walk over a program's source files (not its declaration files) keeping,
+ * in source order, what `select` maps each node to: run once per file list
+ * and kept for every replay.
+ */
+export function sourceFilesWalk<T, A extends readonly unknown[] = []>(
+    select: (node: ts.Node, ...args: A) => T | undefined,
+): (files: readonly ts.SourceFile[], ...args: A) => readonly T[] {
+    const walked = new WeakMap<readonly ts.SourceFile[], readonly T[]>();
+    return (files, ...args) => {
+        let found = walked.get(files);
+        if (!found) {
+            const entries: T[] = [];
+            for (const file of files)
+                if (!file.isDeclarationFile)
+                    forEachAnalysisNode(file, (node) => {
+                        const entry = select(node, ...args);
+                        if (entry !== undefined) entries.push(entry);
+                    });
+            walked.set(files, (found = entries));
+        }
+        return found;
+    };
+}

@@ -24,6 +24,15 @@ interface VatMethodContext extends Pick<
     | "fail"
 > {}
 
+/**
+ * The per-bone captures a prepared VAT payload carries, by the pin's name,
+ * as the native bake record's fields.
+ */
+export const VAT_BONE_CAPTURE_FIELDS: Readonly<Record<string, string>> = {
+    boneOrigins: "bone_origins",
+    boneMatrices: "bone_matrices",
+};
+
 export interface VatIntrinsicContext
     extends
         IntrinsicCallContext,
@@ -360,10 +369,7 @@ function preparedVatFields(
                 : row
         }); });`,
     ];
-    for (const [source, target] of [
-        ["boneOrigins", "bone_origins"],
-        ["boneMatrices", "bone_matrices"],
-    ] as const) {
+    for (const [source, target] of Object.entries(VAT_BONE_CAPTURE_FIELDS)) {
         const field = read.field(source);
         if (!field) continue;
         const capture =

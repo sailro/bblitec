@@ -818,20 +818,6 @@ function writesWhere(
  * Whether a value of type `holder` can be a record of one of `records`, one
  * answer per holder and record list.
  */
-/**
- * `holderTest` under a generic instantiation: each type parameter the walk
- * meets is first `resolve`d to the type the active call binds it to.
- * Uncached, since the answer is the instantiation's.
- */
-export function holdsRecordUnder(
-    checker: ts.TypeChecker,
-    holder: ts.Type,
-    records: readonly ts.Type[],
-    resolve: (type: ts.Type) => ts.Type,
-): boolean {
-    return holdsRecord(checker, holder, records, resolve);
-}
-
 export function holderTest(
     checker: ts.TypeChecker,
 ): (holder: ts.Type, records: readonly ts.Type[]) => boolean {
@@ -849,7 +835,13 @@ export function holderTest(
     };
 }
 
-function holdsRecord(
+/**
+ * Whether a value of type `holder` can be a record of one of `records`.
+ * Under a generic instantiation each type the walk meets is first
+ * `resolve`d to the type the active call binds; {@link holderTest} caches
+ * the answers outside one.
+ */
+export function holdsRecord(
     checker: ts.TypeChecker,
     holder: ts.Type,
     records: readonly ts.Type[],
@@ -866,15 +858,14 @@ function holdsRecord(
             holdsRecord(checker, constraint, records, resolve)
         );
     }
-    const open = OPEN_HOLDER_FLAGS;
-    if ((holder.flags & open) !== 0) return true;
+    if ((holder.flags & OPEN_HOLDER_FLAGS) !== 0) return true;
     if (holder.isUnion())
         return holder.types.some((member) =>
             holdsRecord(checker, member, records, resolve),
         );
     if (
         holder.isIntersection() &&
-        holder.types.some((member) => (member.flags & open) !== 0)
+        holder.types.some((member) => (member.flags & OPEN_HOLDER_FLAGS) !== 0)
     )
         return true;
     if (

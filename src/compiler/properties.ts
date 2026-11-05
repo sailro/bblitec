@@ -96,6 +96,7 @@ import { eventTargetCpp } from "./dom-targets.js";
 import { readCharacterProperty } from "./intrinsics/character-controller.js";
 import { readPhysicsProperty } from "./physics-surface.js";
 import { geometryEnumMember } from "./intrinsics/engine-options.js";
+import { VAT_BONE_CAPTURE_FIELDS } from "./intrinsics/vat.js";
 import type { PhysicsIntrinsicContext } from "./intrinsics/physics.js";
 import type { LoweringServices } from "./lowering-services.js";
 import {
@@ -3832,10 +3833,6 @@ export class PropertyAccessLowerer {
                 boneCount: "bone_count",
                 frameCount: "frame_count",
             };
-            const captures: Record<string, string> = {
-                boneOrigins: "bone_origins",
-                boneMatrices: "bone_matrices",
-            };
             const engine = this.context.requireEngine(owner, expression);
             const bake = recordAt(`${engine}.vat_bakes`, owner.cpp);
             // The bake's rgba32float texture, its texels with it.
@@ -3851,7 +3848,7 @@ export class PropertyAccessLowerer {
                     kind: "number",
                     cpp: `static_cast<double>(${bake}.${counts[property]})`,
                 };
-            if (Object.hasOwn(captures, property)) {
+            if (Object.hasOwn(VAT_BONE_CAPTURE_FIELDS, property)) {
                 const type = this.context.dataLowerer.dataTypeAt(expression);
                 if (
                     !type ||
@@ -3865,7 +3862,7 @@ export class PropertyAccessLowerer {
                 this.context.reachJsData();
                 return {
                     kind: "data",
-                    cpp: `${bake}.${captures[property]}`,
+                    cpp: `${bake}.${VAT_BONE_CAPTURE_FIELDS[property]}`,
                     dataType: type,
                     borrowedData: true,
                     engineCpp: engine,

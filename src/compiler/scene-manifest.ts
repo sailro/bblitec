@@ -415,19 +415,21 @@ export class SceneManifestRecorder {
                 ([index, variants]) => [index, [...variants]] as const,
             ),
             ...[...this.possibleShaderMaterialDraws].map(
-                ([index, variants]) =>
-                    [
-                        index,
-                        [...variants].filter((variant) => {
-                            const program = this.reachedShaderProgram(
-                                variant,
-                                this.context.sourceFile,
-                            );
-                            writable(program).runtimeInstanceLayoutCheck = true;
-                            const mesh = this.sceneMeshes[index];
-                            return !mesh || drawsOnInstanceLanes(program, mesh);
-                        }),
-                    ] as const,
+                ([index, variants]) => {
+                    const mesh = this.sceneMeshes[index];
+                    const drawn: string[] = [];
+                    for (const variant of variants) {
+                        const program = this.reachedShaderProgram(
+                            variant,
+                            this.context.sourceFile,
+                        );
+                        // The mesh it lands on is checked at run time.
+                        writable(program).runtimeInstanceLayoutCheck = true;
+                        if (!mesh || drawsOnInstanceLanes(program, mesh))
+                            drawn.push(variant);
+                    }
+                    return [index, drawn] as const;
+                },
             ),
         ];
         for (const [index, variants] of draws) {
@@ -1189,28 +1191,16 @@ export class SceneManifestRecorder {
         material: Value,
         possible = false,
     ): void {
-        const add = (variants: Set<string>): Set<string> => {
-            if (material.sceneShaderVariant !== undefined)
-                variants.add(material.sceneShaderVariant);
-            for (const variant of material.possibleSceneShaderVariants ?? [])
-                variants.add(variant);
-            return variants;
-        };
-        if (possible && meshIndex !== undefined) {
-            const variants = add(
-                this.possibleShaderMaterialDraws.get(meshIndex) ??
-                    new EmissionSet<string>(),
-            );
-            if (variants.size > 0)
-                this.possibleShaderMaterialDraws.set(meshIndex, variants);
-            return;
-        }
-        const variants = add(
-            this.shaderMaterialDraws.get(meshIndex) ??
-                new EmissionSet<string>(),
-        );
-        if (variants.size > 0)
-            this.shaderMaterialDraws.set(meshIndex, variants);
+        const draws: Map<number | undefined, Set<string>> = possible &&
+        meshIndex !== undefined
+            ? this.possibleShaderMaterialDraws
+            : this.shaderMaterialDraws;
+        const variants = draws.get(meshIndex) ?? new EmissionSet<string>();
+        if (material.sceneShaderVariant !== undefined)
+            variants.add(material.sceneShaderVariant);
+        for (const variant of material.possibleSceneShaderVariants ?? [])
+            variants.add(variant);
+        if (variants.size > 0) draws.set(meshIndex, variants);
     }
 
     /** Which material a scene-code mesh was assigned, by its mesh index. */

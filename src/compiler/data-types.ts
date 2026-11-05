@@ -57,6 +57,7 @@ export {
 export {
     dataTypesEqual,
     passesByReferenceKind,
+    presentDataType,
     isOpaqueReference,
     isNativeStructuralView,
     isScalarDataType,
@@ -167,7 +168,7 @@ import {
     classInstanceProperties,
     isStaticMember,
 } from "./class-members.js";
-import { forEachAnalysisNode } from "./analysis-walk.js";
+import { sourceFilesWalk } from "./analysis-walk.js";
 import {
     propertyKey,
     unwrapExpression,
@@ -1221,31 +1222,14 @@ type RecordFactNode =
     | ts.AsExpression
     | ts.TypeAssertion;
 
-/** A program's record fact sources, walked once for every replay. */
-const recordFacts = new WeakMap<
-    readonly ts.SourceFile[],
-    readonly RecordFactNode[]
->();
-
-function recordFactSources(
-    files: readonly ts.SourceFile[],
-): readonly RecordFactNode[] {
-    let nodes = recordFacts.get(files);
-    if (nodes) return nodes;
-    const found: RecordFactNode[] = [];
-    for (const file of files)
-        if (!file.isDeclarationFile)
-            forEachAnalysisNode(file, (node) => {
-                if (
-                    ts.isGetAccessorDeclaration(node) ||
-                    ts.isSetAccessorDeclaration(node) ||
-                    isTypeAssertion(node)
-                )
-                    found.push(node);
-            });
-    recordFacts.set(files, (nodes = found));
-    return nodes;
-}
+/** A program's record fact sources. */
+const recordFactSources = sourceFilesWalk((node): RecordFactNode | undefined =>
+    ts.isGetAccessorDeclaration(node) ||
+    ts.isSetAccessorDeclaration(node) ||
+    isTypeAssertion(node)
+        ? node
+        : undefined,
+);
 
 /** One field from a property every member of a union declares. */
 function unionPresence(
@@ -2330,14 +2314,10 @@ export class DataTypeRegistry {
     }
 
     /**
-     * The document layout for a plain record type its objects need (an
-     * accessor defined on one at run time), or undefined where the type has
-     * it or no plain record holds it.
-     */
-    /**
      * The document demand naming one record type of a struct whose document
      * demand (`documentRecordDemand`) names another: the struct's next record
      * type, as the replay that moves the first off it would name it.
+     * Undefined where the type has the layout.
      */
     public structMemberDocumentDemand(
         type: ts.Type,
@@ -2349,6 +2329,11 @@ export class DataTypeRegistry {
             : { ...this.recordDemand(record, node), document: true };
     }
 
+    /**
+     * The document layout for a plain record type its objects need (an
+     * accessor defined on one at run time), or undefined where the type has
+     * it or no plain record holds it.
+     */
     public documentDemandOf(
         type: ts.Type,
         node: ts.Node,
@@ -2356,12 +2341,9 @@ export class DataTypeRegistry {
         const record = this.checker.getNonNullableType(
             this.resolveTypeParameter(type),
         );
-        if (
-            !isPlainRecord(this.checker, record) ||
-            this.documentRecords.has(this.structIdentity(record))
-        )
-            return undefined;
-        return { ...this.recordDemand(record, node), document: true };
+        return isPlainRecord(this.checker, record)
+            ? this.structMemberDocumentDemand(record, node)
+            : undefined;
     }
 
     /** Scalar dictionary slots can share mutable storage with a document view. */
@@ -7093,12 +7075,15 @@ export class DataTypeRegistry {
         return undefined;
     }
 
-    /** A type with every type parameter in force replaced by its argument. */
     /** Whether a generic call's type arguments are in force (`resolveTypeParameter`). */
     public substitutesTypeParameters(): boolean {
-        return this.typeArgumentFrames().length > 0;
+        return (
+            this.activeTypeArguments !== undefined ||
+            this.callTypeArguments.length > 0
+        );
     }
 
+    /** A type with every type parameter in force replaced by its argument. */
     public resolveTypeParameter(type: ts.Type): ts.Type {
         const seen = new Set<ts.Type>();
         while (!seen.has(type)) {

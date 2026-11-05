@@ -58,6 +58,13 @@ export function passesByReferenceKind(type: DataType): boolean {
     return kinds[type.kind].byReference;
 }
 
+/** A storage past its optional wrapper. */
+export function presentDataType(
+    type: DataType | undefined,
+): DataType | undefined {
+    return type?.kind === "optional" ? type.inner : type;
+}
+
 /** An optional undefined field stores key presence, never a different value. */
 export function isUndefinedDataType(type: DataType | undefined): boolean {
     return (
@@ -133,7 +140,7 @@ export function reseatsOnAssignment(
     if (type.kind === "struct") return isReferenceStruct(type.name);
     const reseats = kinds[type.kind].reseats;
     return reseats === "children"
-        ? children(type, () => [], false).every((child) =>
+        ? dataTypeChildren(type, () => [], false).every((child) =>
               reseatsOnAssignment(child, isReferenceStruct),
           )
         : reseats === true;
@@ -157,7 +164,7 @@ export function containsDataKind(
         if (seen.has(type.name)) return false;
         seen.add(type.name);
     }
-    return children(type, fields, signatures).some((child) =>
+    return dataTypeChildren(type, fields, signatures).some((child) =>
         containsDataKind(child, target, fields, signatures, seen, matches),
     );
 }
@@ -181,7 +188,7 @@ function kindTraceCondition<K extends DataKind>(
     if (typeof traced === "function") return traced(type);
     if (traced !== "children") return traced === "always";
     return anyTraceCondition(
-        children(type, () => [], false).map((child) =>
+        dataTypeChildren(type, () => [], false).map((child) =>
             tracedEdgeCondition(child, record),
         ),
     );
@@ -225,21 +232,13 @@ export function recordTraceConditions(
     return conditions;
 }
 
-function children<K extends DataKind>(
+/** The types a type holds: a struct's through `fields`, a callable's signature with `signatures`. */
+export function dataTypeChildren<K extends DataKind>(
     type: DataType<K>,
     fields: StructFieldTypes,
     signatures: boolean,
 ): readonly DataType[] {
     return kinds[type.kind].children(type, fields, signatures);
-}
-
-/** The types a type holds: a struct's through `fields`, a callable's signature with `signatures`. */
-export function dataTypeChildren(
-    type: DataType,
-    fields: StructFieldTypes,
-    signatures: boolean,
-): readonly DataType[] {
-    return children(type, fields, signatures);
 }
 
 /** Whether a nullable handle use widens an erased field a present one settled. */

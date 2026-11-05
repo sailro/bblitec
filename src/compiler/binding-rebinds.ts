@@ -2,7 +2,7 @@ import ts from "typescript";
 import { forEachAnalysisNode, someAnalysisNode } from "./analysis-walk.js";
 import { EmissionWeakMap } from "./emission-transaction.js";
 import { declaredSymbol, valueSymbolOf } from "./symbols.js";
-import { unwrapExpression, writeSites, type WriteSite } from "./syntax.js";
+import { directCallOf, writeSites, type WriteSite } from "./syntax.js";
 import { hoistedVarWrites } from "./var-bindings.js";
 
 // Source facts outlive emission attempts: one index per checker and file.
@@ -120,12 +120,11 @@ export function bindingIsOnlyCalledDirectly(
                     declaredSymbol(checker, node) !== symbol
                 )
                     return false;
-                const parent = node.parent;
+                const call = directCallOf(node);
                 return (
-                    !ts.isCallExpression(parent) ||
-                    unwrapExpression(parent.expression) !== node ||
+                    !call ||
                     (caller !== undefined &&
-                        ts.findAncestor(parent, ts.isFunctionLike) !== caller)
+                        ts.findAncestor(call, ts.isFunctionLike) !== caller)
                 );
             },
             { types: "skip" },

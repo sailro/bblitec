@@ -149,6 +149,12 @@ interface RepeatedBodyAnswers {
     readonly "array-elements": Map<ts.Identifier, boolean>;
 }
 
+/** A repeated body's answers and the nodes it reached when they were taken. */
+interface RepeatedBodyEntry {
+    readonly reached: ReadonlySet<ts.Node>;
+    readonly answers: RepeatedBodyAnswers;
+}
+
 export class BindingScopes {
     private readonly transparentRebindingScopes = new EmissionWeakSet<
         Map<ts.Symbol, VariableBinding>
@@ -297,12 +303,11 @@ export class BindingScopes {
         expression: ts.Expression,
     ): ts.ConditionalExpression | undefined {
         const name = unwrapExpression(expression);
-        const symbol = ts.isIdentifier(name)
-            ? this.context.symbols.valueSymbol(name)
-            : undefined;
-        return symbol && !this.lookupOptional(name as ts.Identifier)
-            ? this.deferredSelections.get(symbol)
-            : undefined;
+        if (this.deferredSelections.size === 0 || !ts.isIdentifier(name))
+            return undefined;
+        const symbol = this.context.symbols.valueSymbol(name);
+        const selection = symbol && this.deferredSelections.get(symbol);
+        return selection && !this.lookupOptional(name) ? selection : undefined;
     }
 
     /** The innermost scope binding the variable an identifier names. */
@@ -1888,19 +1893,19 @@ export class BindingScopes {
         visitor: (value: Value, elementsUnchanged: boolean) => void,
     ): void {
         const visited = new Set<ts.Symbol>();
-        let answers: RepeatedBodyAnswers | undefined;
+        let entry: RepeatedBodyEntry | undefined;
         const mayChange = (
             bound: ts.Identifier,
             observation: "deep" | "array-elements" = "deep",
         ): boolean => {
-            if (!answers) {
+            if (!entry) {
                 const reached = new Set<ts.Node>();
                 walkReachedLoopNodes(this.context, body, (node) => {
                     reached.add(node);
                 });
-                answers = this.repeatedBodyAnswers(body, reached);
+                entry = this.repeatedBodyAnswers(body, reached);
             }
-            const known = answers[observation];
+            const known = entry.answers[observation];
             let changed = known.get(bound);
             if (changed === undefined) {
                 changed = loopBoundMayChange(
@@ -1908,7 +1913,7 @@ export class BindingScopes {
                     body,
                     bound,
                     observation,
-                    this.repeatedBodyChanges.get(body)!.reached,
+                    entry.reached,
                 );
                 known.set(bound, changed);
             }
@@ -1955,27 +1960,27 @@ export class BindingScopes {
      */
     private readonly repeatedBodyChanges = new WeakMap<
         ts.Node,
-        { reached: ReadonlySet<ts.Node>; answers: RepeatedBodyAnswers }
+        RepeatedBodyEntry
     >();
 
     /** The answers recorded for `body`, kept while it reaches the same nodes. */
     private repeatedBodyAnswers(
         body: ts.Node,
         reached: ReadonlySet<ts.Node>,
-    ): RepeatedBodyAnswers {
+    ): RepeatedBodyEntry {
         const known = this.repeatedBodyChanges.get(body);
         if (
             known &&
             known.reached.size === reached.size &&
             [...reached].every((node) => known.reached.has(node))
         )
-            return known.answers;
-        const answers: RepeatedBodyAnswers = {
-            deep: new Map(),
-            "array-elements": new Map(),
+            return known;
+        const entry: RepeatedBodyEntry = {
+            reached,
+            answers: { deep: new Map(), "array-elements": new Map() },
         };
-        this.repeatedBodyChanges.set(body, { reached, answers });
-        return answers;
+        this.repeatedBodyChanges.set(body, entry);
+        return entry;
     }
 
     /** Invalidate one native array's complete snapshot through all aliases. */

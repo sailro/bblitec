@@ -339,9 +339,8 @@ void seek_vat(Engine& engine, double seconds) {
      * settled by storage: the compiler hands over numbers, a typed array
      * and maps. A missing payload or clip arrives as NaN fields, which the
      * pin's own integer checks refuse with the codes `undefined` gets.
-     * Sibling payloads with byte-identical data share one GPU texture
-     * upstream; natively every attached mesh uploads its own, as baked
-     * ones do.
+     * Sibling payloads with byte-identical data share one GPU texture, as
+     * upstream.
      */
     private lowerPrepared(): string {
         const positive = this.context.functionDeclaration(
@@ -471,10 +470,11 @@ void seek_vat(Engine& engine, double seconds) {
         `,
             "VAT prepared upload",
         );
-        const isIf = (node: ts.Node): node is ts.IfStatement =>
-            ts.isIfStatement(node);
-        const [, , bone, length] = this.context.findNodes(capture, isIf);
-        const [data, , clip] = this.context.findNodes(create, isIf);
+        const [, , bone, length] = this.context.findNodes(
+            capture,
+            ts.isIfStatement,
+        );
+        const [data, , clip] = this.context.findNodes(create, ts.isIfStatement);
         const code = (node: ts.Node): number =>
             pinnedErrorCode(this.context, node);
         return `

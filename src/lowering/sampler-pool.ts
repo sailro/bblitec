@@ -17,7 +17,16 @@ export interface PinnedSamplerKey {
     readonly lodMaxClamp: number;
 }
 
+const keys = new WeakMap<LoweringContext, PinnedSamplerKey>();
+
+/** The pool's key, read from the pin once per lowering context. */
 export function pinnedSamplerKey(context: LoweringContext): PinnedSamplerKey {
+    let key = keys.get(context);
+    if (!key) keys.set(context, (key = readPinnedSamplerKey(context)));
+    return key;
+}
+
+function readPinnedSamplerKey(context: LoweringContext): PinnedSamplerKey {
     const file = context.sourceFile(POOL_MODULE);
     const literal = context.unwrapExpression(
         context.variableInitializer(file, "textureSamplerDefaults"),

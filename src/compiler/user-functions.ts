@@ -7509,15 +7509,22 @@ export class UserFunctionLowerer {
         const parameters =
             calledDeclaration(this.checker, call)?.parameters ??
             ir.parameters.map((parameter) => parameter.declaration);
-        const minimum = requiredArgumentCount(this.checker, call, parameters);
+        // Only a call short of the declared required parameters resolves
+        // its signature for the trailing ones it may omit.
         if (
-            call.arguments.length < minimum &&
+            call.arguments.length < requiredParameterCount(parameters) &&
             !call.arguments.some(ts.isSpreadElement)
         ) {
-            fail(
+            const minimum = requiredArgumentCount(
+                this.checker,
                 call,
-                `Function '${refusalName(ir)}' expects ${minimum}-${ir.parameters.length} arguments, received ${call.arguments.length}.`,
+                parameters,
             );
+            if (call.arguments.length < minimum)
+                fail(
+                    call,
+                    `Function '${refusalName(ir)}' expects ${minimum}-${ir.parameters.length} arguments, received ${call.arguments.length}.`,
+                );
         }
         // A returned callback can mention its factory's type parameters
         // without declaring any itself. The source call's signature carries

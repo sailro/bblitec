@@ -27,6 +27,7 @@ import {
 import {
     forEachAnalysisNode,
     someAnalysisNode,
+    sourceFilesWalk,
 } from "./compiler/analysis-walk.js";
 import {
     emissionArray,
@@ -556,25 +557,13 @@ const parameterDefaultAnswers = new WeakMap<
     }
 >();
 
-/** The variable and parameter names a program declares, walked once for every replay. */
-const declaredNames = new WeakMap<ts.Program, ReadonlySet<string>>();
-
-function sourceDeclaredNames(program: ts.Program): ReadonlySet<string> {
-    let names = declaredNames.get(program);
-    if (names) return names;
-    const found = new Set<string>();
-    for (const file of program.getSourceFiles())
-        if (!file.isDeclarationFile)
-            forEachAnalysisNode(file, (node) => {
-                if (
-                    (ts.isVariableDeclaration(node) || ts.isParameter(node)) &&
-                    ts.isIdentifier(node.name)
-                )
-                    found.add(node.name.text);
-            });
-    declaredNames.set(program, (names = found));
-    return names;
-}
+/** The variable and parameter names a program declares. */
+const sourceDeclaredNames = sourceFilesWalk((node) =>
+    (ts.isVariableDeclaration(node) || ts.isParameter(node)) &&
+    ts.isIdentifier(node.name)
+        ? node.name.text
+        : undefined,
+);
 
 /** A site `predeclareStoredObjectReferences` maps before emission. */
 type StoredReferenceSite =
@@ -624,28 +613,8 @@ function storedReferenceSite(
     return undefined;
 }
 
-/** A program's stored-reference sites in source order, walked once for every replay. */
-const storedReferenceNodes = new WeakMap<
-    ts.Program,
-    readonly StoredReferenceSite[]
->();
-
-function storedReferenceSites(
-    program: ts.Program,
-    symbols: CompilerSymbols,
-): readonly StoredReferenceSite[] {
-    let sites = storedReferenceNodes.get(program);
-    if (sites) return sites;
-    const found: StoredReferenceSite[] = [];
-    for (const file of program.getSourceFiles())
-        if (!file.isDeclarationFile)
-            forEachAnalysisNode(file, (node) => {
-                const site = storedReferenceSite(node, symbols);
-                if (site) found.push(site);
-            });
-    storedReferenceNodes.set(program, (sites = found));
-    return sites;
-}
+/** A program's stored-reference sites in source order. */
+const storedReferenceSites = sourceFilesWalk(storedReferenceSite);
 
 /**
  * Executed module constants: numbers are JavaScript doubles, and every value
@@ -702,6 +671,18 @@ function compileSourceApplication(
 ): CompileResult {
     return withStableAssetSources(() =>
         lowerSourceApplication(source, options),
+    );
+}
+
+/**
+ * The replays besides storage a compile applies before its next attempt: a
+ * lazy module's activation, runtime query state, pending activations.
+ */
+function isReplayBesidesStorage(error: unknown): error is Error {
+    return (
+        error instanceof ModuleActivationRequired ||
+        error instanceof RuntimeSearchParamsRequired ||
+        error instanceof PendingActivationsRequired
     );
 }
 
@@ -878,9 +859,7 @@ function lowerSourceApplication(
                 const planner = new StorageDemandPlanner(
                     input.checker,
                     true,
-                    (replay): replay is Error =>
-                        replay instanceof ModuleActivationRequired ||
-                        replay instanceof RuntimeSearchParamsRequired,
+                    isReplayBesidesStorage,
                 );
                 try {
                     planner.run(() => newCompiler(planner).compile());
@@ -1545,7 +1524,10 @@ class Compiler implements LoweringServices {
                     : undefined);
             if (type) this.dataTypes.markStoredObjectReferences(type);
         }
-        for (const site of storedReferenceSites(this.program, this.symbols)) {
+        for (const site of storedReferenceSites(
+            this.program.getSourceFiles(),
+            this.symbols,
+        )) {
             switch (site.kind) {
                 case "retained": {
                     const targetType = this.checker.getTypeAtLocation(
@@ -1698,7 +1680,7 @@ class Compiler implements LoweringServices {
     }
 
     private collectSourceCppNames(): void {
-        for (const name of sourceDeclaredNames(this.program))
+        for (const name of sourceDeclaredNames(this.program.getSourceFiles()))
             this.sourceCppNames.add(this.bindings.cppIdentifier(name));
     }
 

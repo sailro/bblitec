@@ -1901,7 +1901,7 @@ export class HandleCollections {
         if (!target) return undefined;
         const predicate = this.searchPredicate(call, "some");
         return booleanValue(
-            this.runtimeFind(target, predicate, "presence").optionalFoundCpp!,
+            this.runtimeFind(target, predicate, true).optionalFoundCpp!,
         );
     }
 
@@ -2521,7 +2521,7 @@ export class HandleCollections {
         target: HandleCollectionTarget,
         predicate: ts.ArrowFunction,
         /** Only whether one matched: the match itself is never read. */
-        presence?: "presence",
+        presenceOnly = false,
     ): Value {
         const predicateParameter = predicate.parameters[0]?.name;
         if (!predicateParameter || !ts.isIdentifier(predicateParameter)) {
@@ -2537,7 +2537,7 @@ export class HandleCollections {
         const found = this.context.allocateTemporaryCppName(
             `${target.temporaryLabel}_found`,
         );
-        if (!presence)
+        if (!presenceOnly)
             this.context.emit({
                 kind: "declaration",
                 type: target.elementCppType,
@@ -2568,7 +2568,7 @@ export class HandleCollections {
                 );
                 context.emit({ kind: "open", code: `if (${test}) {` });
                 context.increaseIndent();
-                if (!presence)
+                if (!presenceOnly)
                     context.emit({
                         kind: "expression",
                         code: `${result} = ${item};`,

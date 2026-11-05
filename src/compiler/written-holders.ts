@@ -5,7 +5,12 @@ import {
 } from "./binding-references.js";
 import { bindingRebinds } from "./binding-rebinds.js";
 import { declaredSymbol, resolvedSymbol } from "./symbols.js";
-import { literalKey, unwrapExpression, variableKind } from "./syntax.js";
+import {
+    directCallOf,
+    literalKey,
+    unwrapExpression,
+    variableKind,
+} from "./syntax.js";
 import { determinedTypeArguments } from "./type-arguments.js";
 import { unionMembers } from "./type-facts.js";
 
@@ -77,8 +82,8 @@ function directCalls(
     if (symbol && !exportedUnderAnotherName(program, checker, symbol)) {
         calls = [];
         for (const reference of bindingReferences(program, checker, symbol)) {
-            const call = reference.parent;
-            if (!ts.isCallExpression(call) || call.expression !== reference) {
+            const call = directCallOf(reference);
+            if (!call) {
                 calls = undefined;
                 break;
             }
@@ -190,6 +195,31 @@ function instantiatedTypes(
 }
 
 /**
+ * What `read` answers for the arguments a parameter of a function the
+ * program only calls directly receives, when `node` reads one; a parameter
+ * already being read answers `cycle`. Undefined where `node` reads none.
+ */
+function throughParameter<T>(
+    program: ts.Program,
+    checker: ts.TypeChecker,
+    node: ts.Expression,
+    active: Set<ts.Node>,
+    cycle: T,
+    read: (passed: readonly ts.Expression[]) => T,
+): { answer: T } | undefined {
+    const parameter = readParameter(checker, node);
+    const passed = parameter && passedArguments(program, checker, parameter);
+    if (!parameter || !passed) return undefined;
+    if (active.has(parameter)) return { answer: cycle };
+    active.add(parameter);
+    try {
+        return { answer: read(passed) };
+    } finally {
+        active.delete(parameter);
+    }
+}
+
+/**
  * The static types of the objects an expression evaluates to: a parameter
  * of a function the program only calls directly holds what its calls pass,
  * and a type parameter of such a function is what its calls instantiate.
@@ -202,20 +232,20 @@ function heldTypes(
 ): readonly ts.Type[] {
     const type = checker.getTypeAtLocation(object);
     if (!openHolder(type)) return [type];
-    const parameter = readParameter(checker, object);
-    const passed = parameter && passedArguments(program, checker, parameter);
-    if (parameter && passed) {
-        if (active.has(parameter)) return [];
-        active.add(parameter);
-        try {
-            return passed.flatMap((argument) =>
+    const through = throughParameter(
+        program,
+        checker,
+        object,
+        active,
+        [],
+        (passed): readonly ts.Type[] =>
+            passed.flatMap((argument) =>
                 heldTypes(program, checker, argument, active),
-            );
-        } finally {
-            active.delete(parameter);
-        }
-    }
-    return instantiatedTypes(program, checker, type, active);
+            ),
+    );
+    return through
+        ? through.answer
+        : instantiatedTypes(program, checker, type, active);
 }
 
 /**
@@ -231,12 +261,13 @@ function keyNames(
 ): readonly string[] | undefined {
     const literal = literalKey(key);
     if (literal !== undefined) return [literal];
-    const parameter = readParameter(checker, key);
-    const passed = parameter && passedArguments(program, checker, parameter);
-    if (parameter && passed) {
-        if (active.has(parameter)) return [];
-        active.add(parameter);
-        try {
+    const through = throughParameter(
+        program,
+        checker,
+        key,
+        active,
+        [],
+        (passed): readonly string[] | undefined => {
             const names: string[] = [];
             for (const argument of passed) {
                 const named = keyNames(program, checker, argument, active);
@@ -244,10 +275,9 @@ function keyNames(
                 names.push(...named);
             }
             return names;
-        } finally {
-            active.delete(parameter);
-        }
-    }
+        },
+    );
+    if (through) return through.answer;
     const names: string[] = [];
     for (const member of instantiatedTypes(
         program,

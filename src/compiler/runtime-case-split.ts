@@ -147,13 +147,22 @@ function falseOutcome(selector: Selector): number {
     return selector.outcomes.includes(1) ? 1 : selector.outcomes[0]!;
 }
 
-/** Compiles `compile` with each selector forced to its outcome (`undefined` leaves it runtime). */
+/**
+ * Compiles `compile` with each `fixed` selector forced to its one outcome
+ * and each other selector to its outcome (`undefined` leaves it runtime).
+ */
 function withOutcomes<T>(
     context: CaseSplitContext,
-    selectors: readonly Selector[],
-    outcomes: readonly (number | undefined)[],
+    fixed: readonly Selector[],
+    variable: readonly Selector[],
+    variableOutcomes: readonly (number | undefined)[],
     compile: () => T,
 ): T {
+    const selectors = [...fixed, ...variable];
+    const outcomes = [
+        ...fixed.map((selector) => selector.outcomes[0]),
+        ...variableOutcomes,
+    ];
     selectors.forEach((selector, index) => {
         const outcome = outcomes[index];
         if (outcome === undefined) return;
@@ -249,15 +258,7 @@ function dependedSelectors(
         try {
             context.probeEmission(
                 () =>
-                    withOutcomes(
-                        context,
-                        [...fixed, ...candidates],
-                        [
-                            ...fixed.map((selector) => selector.outcomes[0]),
-                            ...outcomes,
-                        ],
-                        compile,
-                    ),
+                    withOutcomes(context, fixed, candidates, outcomes, compile),
                 () => false,
             );
             return false;
@@ -309,32 +310,34 @@ function selectorTests(
     call: ts.CallExpression,
 ): Selector[] | undefined {
     // Each distinct test with every place it appears.
-    const groups: {
-        kind: Selector["kind"];
-        test: ts.Expression;
-        nodes: ts.Expression[];
-        outcomes: readonly number[];
-    }[] = [];
-    const calls: ts.CallExpression[] = [];
-    let effects = false;
-    // An argument value of a few outcomes, unless a selection inside it
-    // already splits it.
-    const valuePosition = (node: ts.Expression): void => {
-        const kind = argumentSelectorKind(context.checker, node);
-        if (!kind || containsSelection(node)) return;
+    const groups: (Selector & { nodes: ts.Expression[] })[] = [];
+    const addGroup = (kind: Selector["kind"], test: ts.Expression): void => {
         const group = groups.find(
             (candidate) =>
                 candidate.kind === kind &&
-                sameExpression(context.checker, candidate.test, node),
+                sameExpression(context.checker, candidate.test, test),
         );
-        if (group) group.nodes.push(node);
+        if (group) group.nodes.push(test);
         else
             groups.push({
                 kind,
-                test: node,
-                nodes: [node],
+                test,
+                nodes: [test],
                 outcomes: kind === "optional-boolean" ? [0, 1, 2] : [0, 1],
             });
+    };
+    const calls: ts.CallExpression[] = [];
+    let effects = false;
+    // An argument value of a few outcomes, unless it is a literal (already
+    // a constant) or a selection inside it already splits it.
+    const valuePosition = (node: ts.Expression): void => {
+        if (
+            node.kind === ts.SyntaxKind.TrueKeyword ||
+            node.kind === ts.SyntaxKind.FalseKeyword
+        )
+            return;
+        const kind = argumentSelectorKind(context.checker, node);
+        if (kind && !containsSelection(node)) addGroup(kind, node);
     };
     const visit = (node: ts.Node): void => {
         if (effects || ts.isFunctionLike(node)) return;
@@ -353,21 +356,8 @@ function selectorTests(
             effects = true;
             return;
         }
-        if (ts.isConditionalExpression(node)) {
-            const group = groups.find(
-                ({ kind, test }) =>
-                    kind === "condition" &&
-                    sameExpression(context.checker, test, node.condition),
-            );
-            if (group) group.nodes.push(node.condition);
-            else
-                groups.push({
-                    kind: "condition",
-                    test: node.condition,
-                    nodes: [node.condition],
-                    outcomes: [0, 1],
-                });
-        }
+        if (ts.isConditionalExpression(node))
+            addGroup("condition", node.condition);
         if (ts.isPropertyAssignment(node)) valuePosition(node.initializer);
         if (ts.isShorthandPropertyAssignment(node)) valuePosition(node.name);
         ts.forEachChild(node, visit);
@@ -535,8 +525,9 @@ function splitCall(
     const arm = (outcomes: readonly number[]): void => {
         const value = withOutcomes(
             context,
-            [...fixed, ...selectors],
-            [...fixed.map((selector) => selector.outcomes[0]!), ...outcomes],
+            fixed,
+            selectors,
+            outcomes,
             compile,
         );
         if (!value) throw new CompileError("", 0, 0, "unanswered");

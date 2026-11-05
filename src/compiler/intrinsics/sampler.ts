@@ -5,27 +5,28 @@ import type { Value } from "../types.js";
 import { absenceOf } from "../values/model.js";
 import type { IntrinsicCallContext } from "./context.js";
 import { sharedPinnedContext } from "../../lowering/context.js";
-import { pinnedSamplerKey } from "../../lowering/sampler-pool.js";
+import {
+    pinnedSamplerKey,
+    type PinnedSamplerKey,
+} from "../../lowering/sampler-pool.js";
 import { floatLiteral } from "../../cpp-literals.js";
+import {
+    addressModeCppByPin,
+    mipmapModeByPin,
+    textureFilterCppByPin,
+} from "../../pinned-address-modes.js";
 
 export interface SamplerIntrinsicContext
     extends IntrinsicCallContext, Pick<LoweringServices, "fail"> {}
 
 type SamplerDescriptorContext = Pick<LoweringServices, "compileValue" | "fail">;
 
-/** What a sampler descriptor's absent fields take. */
-interface SamplerDefaults {
-    readonly fields: ReadonlyMap<string, string | number>;
-    readonly lodMinClamp: number;
-    readonly lodMaxClamp: number;
-}
-
 /**
  * WebGPU's own `GPUSamplerDescriptor` defaults, which `device.createSampler`
  * applies: nearest filters, clamp-to-edge, LOD 0 to 32, no anisotropy.
  */
-const DEVICE_SAMPLER_DEFAULTS: SamplerDefaults = {
-    fields: new Map<string, string | number>([
+const DEVICE_SAMPLER_DEFAULTS: PinnedSamplerKey = {
+    defaults: new Map<string, string | number>([
         ["addressModeU", "clamp-to-edge"],
         ["addressModeV", "clamp-to-edge"],
         ["addressModeW", "clamp-to-edge"],
@@ -36,16 +37,6 @@ const DEVICE_SAMPLER_DEFAULTS: SamplerDefaults = {
     ]),
     lodMinClamp: 0,
     lodMaxClamp: 32,
-};
-
-const FILTERS: Readonly<Record<string, string>> = {
-    nearest: "nearest",
-    linear: "linear",
-};
-const ADDRESS_MODES: Readonly<Record<string, string>> = {
-    "clamp-to-edge": "clamp",
-    repeat: "repeat",
-    "mirror-repeat": "mirror",
 };
 
 /**
@@ -64,12 +55,12 @@ export function compileSamplerIntrinsic(
     context.expectArgumentCount(call, 1, 2);
     const engine = context.compileValue(argumentAt(call, 0));
     context.expectKind(engine, "engine", argumentAt(call, 0));
-    const key = pinnedSamplerKey(sharedPinnedContext());
-    const state = samplerState(context, call, call.arguments[1], {
-        fields: key.defaults,
-        lodMinClamp: key.lodMinClamp,
-        lodMaxClamp: key.lodMaxClamp,
-    });
+    const state = samplerState(
+        context,
+        call,
+        call.arguments[1],
+        pinnedSamplerKey(sharedPinnedContext()),
+    );
     return {
         kind: "gpu-sampler",
         cpp: `bbl::GpuSampler{bbl::gpu_device_identity(${engine.cpp}), ${state}}`,
@@ -113,9 +104,9 @@ function samplerState(
     context: SamplerDescriptorContext,
     call: ts.CallExpression,
     descriptor: ts.Expression | undefined,
-    defaults: SamplerDefaults,
+    defaults: PinnedSamplerKey,
 ): string {
-    const fields = new Map<string, string | number>(defaults.fields);
+    const fields = new Map<string, string | number>(defaults.defaults);
     let lodMinClamp = defaults.lodMinClamp;
     let lodMaxClamp = defaults.lodMaxClamp;
     if (descriptor) {
@@ -146,22 +137,24 @@ function samplerState(
                 );
         }
     }
-    const text = (name: string): string => String(fields.get(name));
-    const filter = (name: string): string => {
-        const mode = FILTERS[text(name)];
-        if (!mode)
-            context.fail(call, `Unknown sampler ${name} '${text(name)}'.`);
-        return mode;
+    // The field's native spelling, refused unless `table` has a row for it.
+    const spelled = (
+        name: string,
+        table: Readonly<Record<string, string>>,
+    ): string => {
+        const text = String(fields.get(name));
+        const cpp = table[text];
+        if (cpp === undefined)
+            context.fail(call, `Unknown sampler ${name} '${text}'.`);
+        return cpp;
     };
-    const address = (name: string): string => {
-        const mode = ADDRESS_MODES[text(name)];
-        if (!mode)
-            context.fail(call, `Unknown sampler ${name} '${text(name)}'.`);
-        return mode;
-    };
+    const minFilter = spelled("minFilter", textureFilterCppByPin);
+    const magFilter = spelled("magFilter", textureFilterCppByPin);
+    const mipmapFilter = `bbl::${spelled("mipmapFilter", mipmapModeByPin)}`;
     if (
         lodMinClamp !== defaults.lodMinClamp ||
-        address("addressModeW") !== "clamp"
+        spelled("addressModeW", addressModeCppByPin) !==
+            addressModeCppByPin["clamp-to-edge"]
     )
         context.fail(
             call,
@@ -173,23 +166,18 @@ function samplerState(
         anisotropy < 1 ||
         anisotropy > 16 ||
         (anisotropy > 1 &&
-            [
-                filter("minFilter"),
-                filter("magFilter"),
-                filter("mipmapFilter"),
-            ].some((mode) => mode !== "linear"))
+            ["minFilter", "magFilter", "mipmapFilter"].some(
+                (name) => fields.get(name) !== "linear",
+            ))
     )
         context.fail(
             call,
             "A sampler's maxAnisotropy is an integer in [1, 16], above 1 only with linear filters.",
         );
     return (
-        `bbl::TextureSamplerState{` +
-        `bbl::TextureFilter::${filter("minFilter")}, ` +
-        `bbl::TextureFilter::${filter("magFilter")}, ` +
-        `bbl::TextureMipmapMode::${filter("mipmapFilter")}, ` +
-        `bbl::TextureAddressMode::${address("addressModeU")}, ` +
-        `bbl::TextureAddressMode::${address("addressModeV")}, ` +
+        `bbl::TextureSamplerState{${minFilter}, ${magFilter}, ${mipmapFilter}, ` +
+        `${spelled("addressModeU", addressModeCppByPin)}, ` +
+        `${spelled("addressModeV", addressModeCppByPin)}, ` +
         `${floatLiteral(anisotropy)}, ${floatLiteral(lodMaxClamp)}}`
     );
 }

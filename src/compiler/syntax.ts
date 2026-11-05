@@ -716,6 +716,20 @@ export function referenceBases(
     );
 }
 
+/**
+ * The call `reference` is the callee of, past the wrappers around it
+ * (`(f)(x)`, `f!(x)`); undefined where it is used otherwise.
+ */
+export function directCallOf(
+    reference: ts.Expression,
+): ts.CallExpression | undefined {
+    const callee = outermostWrapper(reference);
+    const call = callee.parent;
+    return ts.isCallExpression(call) && call.expression === callee
+        ? call
+        : undefined;
+}
+
 /** The identifier a property/element-access chain is rooted at, if any. */
 export function rootIdentifier(
     expression: ts.Expression,

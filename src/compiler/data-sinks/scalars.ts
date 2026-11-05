@@ -18,7 +18,7 @@ import { unwrapObjectIdentity } from "../static-evaluator.js";
 import { dataTypesEqual, type DataType } from "../data-types.js";
 import type { Value } from "../types.js";
 import { isJsonValue } from "../json-bridge.js";
-import { eventTargetCpp } from "../dom-targets.js";
+import { eventTargetCpp, holdsDomTarget } from "../dom-targets.js";
 import {
     authoredErrorValue,
     errorConstructor,
@@ -165,23 +165,17 @@ function jsonDomTarget(
     value: Value,
     node: ts.Node,
 ): string | undefined {
-    const type =
-        value.dataType?.kind === "optional"
-            ? value.dataType.inner
-            : value.dataType;
-    if (
-        value.kind !== "ui-element" &&
-        type?.kind !== "event-target" &&
-        !(type?.kind === "handle" && type.handle === "ui-element")
-    )
-        return undefined;
+    if (!holdsDomTarget(value)) return undefined;
     if (value.dataType?.kind !== "optional")
         return `bbl::js::json_value(${eventTargetCpp(lowerer.context, value, node)})`;
     const slot = lowerer.context.bindings.pinValueToTemporary(
         value,
         "json_target",
     );
-    const present = lowerer.leafValue(optionalValueCpp(slot.cpp), type!);
+    const present = lowerer.leafValue(
+        optionalValueCpp(slot.cpp),
+        value.dataType.inner,
+    );
     const engined =
         value.engineCpp !== undefined
             ? { ...present, engineCpp: value.engineCpp }

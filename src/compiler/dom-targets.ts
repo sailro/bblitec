@@ -1,6 +1,7 @@
 import ts from "typescript";
 import type { LoweringServices } from "./lowering-services.js";
 import type { Value } from "./types.js";
+import { presentDataType } from "./data-types/operations.js";
 import { documentEngine } from "./window-events.js";
 import { declaredInDomLibrary } from "./symbols.js";
 import { inheritsFrom } from "./type-facts.js";
@@ -52,10 +53,7 @@ type Context = Pick<
  * element, a stored event target or the engine canvas.
  */
 export function holdsDomTarget(value: Value): boolean {
-    const present =
-        value.dataType?.kind === "optional"
-            ? value.dataType.inner
-            : value.dataType;
+    const present = presentDataType(value.dataType);
     return (
         value.kind === "ui-element" ||
         present?.kind === "event-target" ||

@@ -26,7 +26,7 @@ import {
 } from "./replay-storage.js";
 import type { LoweringServices } from "./lowering-services.js";
 import { callSignatures } from "./type-facts.js";
-import { holderTest, holdsRecordUnder } from "./record-observations.js";
+import { holderTest, holdsRecord } from "./record-observations.js";
 
 type StatementContext = Pick<
     LoweringServices,
@@ -73,11 +73,10 @@ export function activeStorageDemandPlanner(): StorageDemandPlanner | undefined {
     return active;
 }
 
-class PlanningLimit extends Error {}
+/** Ends a plan; the message says what ended it. */
+class PlanningStop extends Error {}
 class PlanningDependency extends Error {}
 class PlanningWrite extends Error {}
-class PlanningCollected extends Error {}
-class PlanningDeparted extends Error {}
 
 /**
  * Raises `demand` at a site lowering can go on past (a record join stored
@@ -286,11 +285,10 @@ export class StorageDemandPlanner {
     /** @unjournaled What ended the plan's work: undefined while it runs or once it returned. */
     private stop: unknown;
 
-    /** `survey`: whether the plan runs between a survey's strict attempts. */
     /**
-     * @unjournaled The replays besides storage (a lazy module's activation,
-     * runtime query state) a survey's plan met: the compile applies them
-     * after the plan, as a strict attempt's restart would.
+     * @unjournaled The replays besides storage (`replayable`) a survey's
+     * plan met: the compile applies them after the plan, as a strict
+     * attempt's restart would.
      */
     readonly replays: Error[] = [];
 
@@ -328,7 +326,8 @@ export class StorageDemandPlanner {
      * the next strict attempt would; one that collected any is discarded.
      */
     public complete<T>(result: T): T {
-        if (this.demands.length > 0) throw new PlanningCollected();
+        if (this.demands.length > 0)
+            throw new PlanningStop("the end of a plan that collected demands");
         return result;
     }
 
@@ -350,12 +349,7 @@ export class StorageDemandPlanner {
             else if (error instanceof PlanningDependency)
                 statistics.dependent++;
             else if (error instanceof PlanningWrite) statistics.writes++;
-            else if (
-                !(error instanceof PlanningLimit) &&
-                !(error instanceof PlanningCollected) &&
-                !(error instanceof PlanningDeparted)
-            )
-                throw error;
+            else if (!(error instanceof PlanningStop)) throw error;
             return undefined;
         } finally {
             active = previous;
@@ -370,10 +364,13 @@ export class StorageDemandPlanner {
         this.lowering = statement;
         this.beginActivation(statement);
         if (this.demands.length >= 256)
-            throw new PlanningLimit("the 256 demands one plan collects");
+            throw new PlanningStop("the 256 demands one plan collects");
         // Under a generic instantiation a statement reads the types the
-        // active call binds, so a check holds for that call alone.
-        const cached = !context.dataTypes.substitutesTypeParameters();
+        // active call binds, so a check of lost types holds for that call
+        // alone.
+        const cached =
+            this.lostTypes.length === 0 ||
+            !context.dataTypes.substitutesTypeParameters();
         if (
             (this.lostDeclarations.size > 0 ||
                 this.lostClasses.size > 0 ||
@@ -394,6 +391,7 @@ export class StorageDemandPlanner {
                         checked.push(node);
                     }
                     if (node.kind === ts.SyntaxKind.ThisKeyword) {
+                        if (this.lostClasses.size === 0) return false;
                         const owner = thisClass(node);
                         return (
                             owner !== undefined && this.lostClasses.has(owner)
@@ -458,7 +456,7 @@ export class StorageDemandPlanner {
                 )
             )
                 throw new PlanningWrite(
-                    `a demand of kind ${error.requests[0]?.kind ?? "storage"} whose change later statements may read`,
+                    `a demand of kind ${error.request.kind} whose change later statements may read`,
                 );
             this.lose(context.checker, statement);
         }
@@ -521,7 +519,7 @@ export class StorageDemandPlanner {
         if ((type.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) !== 0)
             return false;
         if (context.dataTypes.substitutesTypeParameters())
-            return holdsRecordUnder(checker, type, this.lostTypes, (held) =>
+            return holdsRecord(checker, type, this.lostTypes, (held) =>
                 context.dataTypes.resolveTypeParameter(held),
             );
         let reads = this.lostTypeReads.get(type);
@@ -544,7 +542,7 @@ export class StorageDemandPlanner {
     private requireStrictSite(requests: readonly StorageRequest[]): void {
         if (this.metAtStrictSite(requests)) return;
         statistics.departed++;
-        throw new PlanningDeparted(
+        throw new PlanningStop(
             "a demand strict lowering could meet elsewhere first",
         );
     }
@@ -601,9 +599,10 @@ export class StorageDemandPlanner {
             return;
         const locals = this.lostLocals.get(body);
         if (!locals) return;
+        // Fewer lost names leave every recorded independent statement
+        // independent: the checks keep their generation.
         for (const symbol of locals) this.lostDeclarations.delete(symbol);
         this.lostLocals.delete(body);
-        this.lostGeneration++;
     }
 
     private collect(request: StorageRequest): void {

@@ -3188,10 +3188,10 @@ export class UiProjection {
         return effects.length > 0 ? effects.join(",") : undefined;
     }
 
-    /** Properties whose values RmlUi reads in its own grammar. */
     /** An outline shorthand of a zero width alone. */
     private static readonly UI_ZERO_OUTLINE = /^0(?:\.0*)?(?:px)?$/;
 
+    /** Properties whose values RmlUi reads in its own grammar. */
     private static readonly UI_LOWERED_STYLE_VALUES = new EmissionSet([
         "border-image",
         ...UI_BORDER_IMAGE_LONGHANDS,

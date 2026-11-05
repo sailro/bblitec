@@ -297,37 +297,30 @@ export function compileRenderTargetOptions(
     // each arm's own sizing: the pin scales a `{ surface, scale }` and reads
     // a surface's canvas directly.
     const selection = context.bindings.deferredSelection(size);
-    const arms = selection
-        ? ([
-              renderTargetSize(context, selectionArms(selection)[0]),
-              renderTargetSize(context, selectionArms(selection)[1]),
-          ] as const)
-        : undefined;
-    if (
-        arms &&
-        selection &&
-        (!arms[0].surface ||
-            !arms[1].surface ||
-            arms.some((arm) => arm.width !== "0u" || arm.height !== "0u"))
-    )
-        context.fail(
-            selection,
-            "A selected render target size selects between surface sizes.",
-        );
-    if (arms?.[0].surface && arms[1].surface)
-        context.expectSameEngine(arms[0].surface, arms[1].surface, selection!);
-    const { width, height, surface, scale } = arms
-        ? {
-              width: "0u",
-              height: "0u",
-              surface: arms[0].surface,
-              scale: undefined,
-          }
-        : renderTargetSize(context, size);
-    const selectedScale =
-        arms && selection
-            ? `if (${context.conditions.compileCondition(selection.condition)}) { ${arms[0].scale !== undefined ? surfaceScaleCpp(arms[0].surface!, arms[0].scale) : ""} } else { ${arms[1].scale !== undefined ? surfaceScaleCpp(arms[1].surface!, arms[1].scale) : ""} }`
-            : undefined;
+    let sized: RenderTargetSize;
+    let selectedScale: string | undefined;
+    if (selection) {
+        const [whenTrue, whenFalse] = selectionArms(selection);
+        const first = renderTargetSize(context, whenTrue);
+        const second = renderTargetSize(context, whenFalse);
+        if (
+            !first.surface ||
+            !second.surface ||
+            [first, second].some(
+                (arm) => arm.width !== "0u" || arm.height !== "0u",
+            )
+        )
+            return context.fail(
+                selection,
+                "A selected render target size selects between surface sizes.",
+            );
+        context.expectSameEngine(first.surface, second.surface, selection);
+        const armScale = (arm: RenderTargetSize, surface: Value): string =>
+            arm.scale !== undefined ? surfaceScaleCpp(surface, arm.scale) : "";
+        sized = { width: "0u", height: "0u", surface: first.surface };
+        selectedScale = `if (${context.conditions.compileCondition(selection.condition)}) { ${armScale(first, first.surface)} } else { ${armScale(second, second.surface)} }`;
+    } else sized = renderTargetSize(context, size);
+    const { width, height, surface, scale } = sized;
     const sampleCount = samples
         ? compilePositiveInteger(context, samples)
         : "1u";
