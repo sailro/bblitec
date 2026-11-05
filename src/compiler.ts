@@ -834,12 +834,15 @@ function lowerSourceApplication(
         // leaves the next attempt to strict lowering. A survey's attempts
         // are always strict: a discarded plan runs between them, as far as
         // it can, after each restart while plans pay -- each demand a plan
-        // adds saves a strict attempt as long as the last one; a plan that
-        // took longer than the attempts it saved doubles the restarts the
-        // next plan waits for.
+        // adds saves a strict attempt as long as the last one. After a plan
+        // that took longer than the attempts it saved, strict attempts run
+        // for as long as that plan did before the next one, twice as long
+        // after each further such plan: a survey whose plans stop paying
+        // spends ever less of its time planning, and the next plan that
+        // pays plans after every restart again.
         let planning = false;
-        let unplanned = 0;
-        let interval = 1;
+        let owed = 0;
+        let unpaid = 0;
         for (;;) {
             const started = performance.now();
             if (planning) {
@@ -869,9 +872,9 @@ function lowerSourceApplication(
                     planning = true;
                     continue;
                 }
-                if (++unplanned < interval) continue;
-                unplanned = 0;
                 const planned = performance.now();
+                owed -= planned - started;
+                if (owed > 0) continue;
                 const planner = new StorageDemandPlanner(input.checker, true);
                 try {
                     planner.run(() => newCompiler(planner).compile());
@@ -881,8 +884,8 @@ function lowerSourceApplication(
                 const added = addPlanned(planner);
                 const planMs = performance.now() - planned;
                 survey.planned(added, planMs, planner.ended());
-                interval =
-                    added * (planned - started) > planMs ? 1 : 2 * interval;
+                unpaid = added * (planned - started) > planMs ? 0 : unpaid + 1;
+                owed = unpaid === 0 ? 0 : planMs * 2 ** (unpaid - 1);
             }
         }
     };
