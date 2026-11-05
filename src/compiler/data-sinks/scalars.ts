@@ -10,7 +10,7 @@ import {
 } from "../values/model.js";
 import { isHandleKind } from "../data-types/handles.js";
 import { absenceKind, declaredContextualType } from "../type-facts.js";
-import { hasNonNullAssertion } from "../syntax.js";
+import { hasNonNullAssertion, literalMember } from "../syntax.js";
 import { ownEntries } from "../object-statics.js";
 import { yieldsFreshObject } from "../fresh-records.js";
 import { unwrapObjectIdentity } from "../static-evaluator.js";
@@ -36,6 +36,7 @@ import {
     compileJsonRecordView,
     compileJsonTupleView,
     isPlainJsonRecord,
+    viewLiteral,
 } from "../json-record-views.js";
 
 import type { DataSinkHost, DataSinkOperations } from "./contracts.js";
@@ -134,8 +135,21 @@ export function recordDocumentSnapshot(
     if (!isPlainJsonRecord(record)) return undefined;
     const entries = ownEntries(lowerer.ownObjectContext(), record, node);
     if (!entries) return undefined;
-    const stores = entries.map(({ key, value, presence }) => {
-        const stored = `own.emplace_back(${lowerer.context.cppString(key)}, ${lowerer.compileMemberForSink(value, { kind: "json" }, node, key)});`;
+    const literal = viewLiteral(lowerer, node);
+    const stores = entries.map(({ key, presence }, index) => {
+        const value = lowerer.storeLiteralMember(
+            entries,
+            index,
+            (entry) => literal && literalMember(literal, entry.key),
+            (entry) =>
+                lowerer.compileMemberForSink(
+                    entry.value,
+                    { kind: "json" },
+                    node,
+                    entry.key,
+                ),
+        );
+        const stored = `own.emplace_back(${lowerer.context.cppString(key)}, ${value});`;
         return presence ? `if (${presence.ownCpp}) ${stored}` : stored;
     });
     lowerer.context.reachJson();

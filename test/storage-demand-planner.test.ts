@@ -738,6 +738,39 @@ test("records sharing one struct demand each element's document storage in one r
     );
 });
 
+test("a fresh record of records stored into a document demands every member's storage in one replay", (t) => {
+    // The document snapshots the literal's members one after another; each
+    // const record's type joins the first member's document demand.
+    const source = `
+        interface Tower { readonly height: number; readonly courses: readonly { shift: number }[] }
+        interface House { readonly section: number; readonly length: number }
+        interface Mana { readonly max: number; readonly regen: number }
+        const TOWER: Tower = { height: 0.3, courses: [{ shift: 0 }] };
+        const HOUSE: House = { section: 0.2, length: 1.5 };
+        const MANA: Mana = { max: 10, regen: 0.5 };
+        const doc = JSON.parse('{"kind":"config"}') as Record<string, unknown>;
+        doc.styles = { tower: TOWER, house: HOUSE, mana: MANA };
+        const text = JSON.stringify(doc);
+        if (text !== '{"kind":"config","styles":{"tower":{"height":0.3,"courses":[{"shift":0}]},"house":{"section":0.2,"length":1.5},"mana":{"max":10,"regen":0.5}}}') throw new Error(text);
+    `;
+    const strict = measured(false, () => compileSource(source));
+    // The three member types at once, then the compile.
+    assert.equal(strict.constructions, 2);
+    const tools = optionalNativeFixtureTools();
+    if (!tools) {
+        t.skip("Native fixture compiler unavailable.");
+        return;
+    }
+    runGeneratedProgram(
+        tools,
+        "storage-demand-planner/document-snapshot-members",
+        strict.result.cpp,
+        {
+            expectedOutput: "",
+        },
+    );
+});
+
 test("a record of literal tables demands every table's object storage in one replay", (t) => {
     const source = `
         type Lang = "en" | "fr" | "es";
