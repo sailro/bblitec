@@ -1801,6 +1801,14 @@ export class ExpressionLowerer {
                 return staticStringValue("function", (text) =>
                     this.context.cppString(text),
                 );
+            // A member of a primitive is its wrapper prototype's, or absent:
+            // `typeof (5).then` is "undefined", which a thenable test reads
+            // off a value held as a number.
+            const primitiveMember = this.primitiveMemberTypeof(expression);
+            if (primitiveMember)
+                return staticStringValue(primitiveMember, (text) =>
+                    this.context.cppString(text),
+                );
             // typeof observes an element past the end as undefined.
             const compiledOperand =
                 (ts.isElementAccessExpression(expression)
@@ -6389,6 +6397,52 @@ export class ExpressionLowerer {
                 ),
             ],
         };
+    }
+
+    /**
+     * `typeof owner.name` where the owner, read without effects, is a
+     * number, string or boolean: "undefined" for a name its wrapper
+     * prototype lacks, "function" for one of its methods; undefined for
+     * any other member or owner.
+     */
+    private primitiveMemberTypeof(
+        expression: ts.Expression,
+    ): "undefined" | "function" | undefined {
+        if (
+            !ts.isPropertyAccessExpression(expression) ||
+            ts.isOptionalChain(expression) ||
+            expressionHasEffects(expression.expression)
+        )
+            return undefined;
+        const owner = this.context.probeEmission(
+            () => this.compileValue(expression.expression),
+            () => false,
+        );
+        const kind =
+            owner.dataType?.kind === "number" ||
+            owner.dataType?.kind === "string" ||
+            owner.dataType?.kind === "boolean"
+                ? owner.dataType.kind
+                : owner.kind === "number" ||
+                    owner.kind === "string" ||
+                    owner.kind === "boolean"
+                  ? owner.kind
+                  : undefined;
+        if (!kind) return undefined;
+        const checker = this.context.checker;
+        const primitive =
+            kind === "number"
+                ? checker.getNumberType()
+                : kind === "string"
+                  ? checker.getStringType()
+                  : checker.getBooleanType();
+        const member = checker
+            .getApparentType(primitive)
+            .getProperty(expression.name.text);
+        if (!member) return "undefined";
+        return (member.flags & ts.SymbolFlags.Method) !== 0
+            ? "function"
+            : undefined;
     }
 
     /** Whether a spread source is a struct whose `?` fields decide its keys at run time. */
