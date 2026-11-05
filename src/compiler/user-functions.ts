@@ -43,6 +43,7 @@ import {
     isNullable,
     holdsNoPayload,
     valueKindOf,
+    valueKinds,
     unionMembers,
     boundedTupleElements,
     fixedTupleElements,
@@ -158,7 +159,11 @@ import {
     FunctionSpecializations,
     functionDependencies,
 } from "./function-specializations.js";
-import { callTypeArguments, mentionsTypeParameter } from "./type-arguments.js";
+import {
+    callTypeArguments,
+    mentionsTypeParameter,
+    requiredArgumentCount,
+} from "./type-arguments.js";
 import { emitSharedCell, sharedCellCpp } from "./shared-cells.js";
 import { isStaticMember } from "./class-members.js";
 
@@ -5494,7 +5499,10 @@ export class UserFunctionLowerer {
             context.fail(node, message),
         );
         const runtimeParameters = ir.parameters.filter(
-            (parameter) => !holdsNoPayload(parameter.type),
+            (parameter) =>
+                !holdsNoPayload(
+                    context.dataTypes.resolveTypeParameter(parameter.type),
+                ),
         );
         if (
             runtimeParameters
@@ -7499,7 +7507,11 @@ export class UserFunctionLowerer {
         const parameters =
             calledDeclaration(this.checker, call)?.parameters ??
             ir.parameters.map((parameter) => parameter.declaration);
-        const minimum = requiredParameterCount(parameters);
+        const minimum = requiredArgumentCount(
+            this.checker,
+            call,
+            parameters,
+        );
         if (
             call.arguments.length < minimum &&
             !call.arguments.some(ts.isSpreadElement)
@@ -7796,7 +7808,12 @@ export class UserFunctionLowerer {
                 (argument &&
                     this.taggedAbsence(context, parameter, argument, source)) ??
                 argument ??
-                (parameter.declaration.questionToken
+                // An omitted optional, or one whose type at this call
+                // accepts `void`, which TypeScript lets a call omit.
+                (parameter.declaration.questionToken ||
+                valueKinds(
+                    context.dataTypes.resolveTypeParameter(parameter.type),
+                ).has("void")
                     ? undefinedValue()
                     : context.fail(
                           parameter.declaration,

@@ -1,5 +1,11 @@
 import ts from "typescript";
-import { isTypeReference, callSignatures, unionMembers } from "./type-facts.js";
+import {
+    isTypeReference,
+    callSignatures,
+    unionMembers,
+    valueKinds,
+} from "./type-facts.js";
+import { requiredParameterCount } from "./syntax.js";
 
 type Fail = (node: ts.Node, message: string) => never;
 
@@ -31,6 +37,34 @@ export function callTypeArguments(
                 `Type parameter '${parameter.name.text}' is not determined by this call's arguments; spell it explicitly.`,
             );
     return bindings;
+}
+
+/**
+ * How many arguments a call must pass, as TypeScript counts them: the
+ * declaration's required parameters, less the trailing ones whose type at
+ * this call accepts `void` (`place(context: C)` with `C = void`), which a
+ * call may omit like optional ones.
+ */
+export function requiredArgumentCount(
+    checker: ts.TypeChecker,
+    call: ts.CallExpression | ts.NewExpression,
+    parameters: readonly ts.ParameterDeclaration[],
+): number {
+    let count = requiredParameterCount(parameters);
+    const resolved = checker.getResolvedSignature(call);
+    if (!resolved) return count;
+    while (count > 0) {
+        const parameter = resolved.parameters[count - 1];
+        if (
+            !parameter ||
+            !valueKinds(checker.getTypeOfSymbolAtLocation(parameter, call)).has(
+                "void",
+            )
+        )
+            break;
+        count--;
+    }
+    return count;
 }
 
 /**
