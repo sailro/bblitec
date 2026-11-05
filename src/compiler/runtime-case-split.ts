@@ -20,6 +20,7 @@ import {
     writeSites,
 } from "./syntax.js";
 import {
+    isAbsentValue,
     knownCondition,
     presenceCpp,
     undefinedValue,
@@ -79,14 +80,20 @@ export function compileWithRuntimeCaseSplit(
         // stands only when the split fails too.
         if (!refusesPerOutcome(error)) throw error;
         // Which tests stay runtime ones is asked only of a call that refused.
-        const candidates = runtimeSelectors(context, tests);
-        if (candidates === undefined) throw error;
-        const selectors = dependedSelectors(context, candidates, compile);
+        const runtime = runtimeSelectors(context, tests);
+        if (runtime === undefined) throw error;
+        const selectors = dependedSelectors(context, runtime, compile);
         if (selectors === undefined) throw error;
         const split = context.probeEmission(
             () => {
                 try {
-                    return splitCall(context, call, selectors, compile);
+                    return splitCall(
+                        context,
+                        call,
+                        runtime.fixed,
+                        selectors,
+                        compile,
+                    );
                 } catch (inner) {
                     // An arm's own storage demand restarts generation with
                     // it satisfied, after which the split can succeed.
@@ -116,19 +123,28 @@ function refusesPerOutcome(error: unknown): boolean {
  * boolean; a `presence` an argument value that is an object or one absence
  * (`undefined` or `null`); an `optional-boolean` a boolean or one absence.
  * Outcome 0 is true (present), 1 false (absent), 2 an optional boolean's
- * absence.
+ * absence; `outcomes` are the ones the value can take.
  */
 interface Selector {
     kind: "condition" | "boolean" | "presence" | "optional-boolean";
     test: ts.Expression;
     nodes: readonly ts.Expression[];
+    outcomes: readonly number[];
+}
+
+/**
+ * The selectors a split forces: `fixed` take their one outcome in every
+ * arm (a value whose truth generation knows but whose storage the callee
+ * would read at run time), `variable` ones branch.
+ */
+interface RuntimeSelectors {
+    fixed: readonly Selector[];
+    variable: readonly Selector[];
 }
 
 /** The outcome that stands for "false" in a dependency probe. */
-const FALSE_OUTCOME = 1;
-
-function outcomeCount(selector: Selector): number {
-    return selector.kind === "optional-boolean" ? 3 : 2;
+function falseOutcome(selector: Selector): number {
+    return selector.outcomes.includes(1) ? 1 : selector.outcomes[0]!;
 }
 
 /** Compiles `compile` with each selector forced to its outcome (`undefined` leaves it runtime). */
@@ -225,14 +241,20 @@ function argumentSelectorKind(
  */
 function dependedSelectors(
     context: CaseSplitContext,
-    candidates: readonly Selector[],
+    { fixed, variable: candidates }: RuntimeSelectors,
     compile: () => Value | undefined,
 ): readonly Selector[] | undefined {
     if (candidates.length <= 2) return candidates;
     const refuses = (outcomes: readonly (number | undefined)[]): boolean => {
         try {
             context.probeEmission(
-                () => withOutcomes(context, candidates, outcomes, compile),
+                () =>
+                    withOutcomes(
+                        context,
+                        [...fixed, ...candidates],
+                        [...fixed.map((selector) => selector.outcomes[0]), ...outcomes],
+                        compile,
+                    ),
                 () => false,
             );
             return false;
@@ -245,8 +267,8 @@ function dependedSelectors(
     };
     const depended = candidates.filter((_, index) =>
         refuses(
-            candidates.map((_, other) =>
-                other === index ? undefined : FALSE_OUTCOME,
+            candidates.map((candidate, other) =>
+                other === index ? undefined : falseOutcome(candidate),
             ),
         ),
     );
@@ -288,6 +310,7 @@ function selectorTests(
         kind: Selector["kind"];
         test: ts.Expression;
         nodes: ts.Expression[];
+        outcomes: readonly number[];
     }[] = [];
     const calls: ts.CallExpression[] = [];
     let effects = false;
@@ -302,7 +325,13 @@ function selectorTests(
                 sameExpression(context.checker, candidate.test, node),
         );
         if (group) group.nodes.push(node);
-        else groups.push({ kind, test: node, nodes: [node] });
+        else
+            groups.push({
+                kind,
+                test: node,
+                nodes: [node],
+                outcomes: kind === "optional-boolean" ? [0, 1, 2] : [0, 1],
+            });
     };
     const visit = (node: ts.Node): void => {
         if (effects || ts.isFunctionLike(node)) return;
@@ -333,6 +362,7 @@ function selectorTests(
                     kind: "condition",
                     test: node.condition,
                     nodes: [node.condition],
+                    outcomes: [0, 1],
                 });
         }
         if (ts.isPropertyAssignment(node)) valuePosition(node.initializer);
@@ -385,26 +415,62 @@ function containsSelection(node: ts.Node): boolean {
     );
 }
 
-/** The tests that stay runtime ones, when few enough to split on. */
+/**
+ * The tests that stay runtime ones, when few enough to split on. A value
+ * the callee would read from run-time storage is forced even where
+ * generation knows its truth: then only the outcomes that truth allows
+ * remain (a falsy optional boolean is `false` or absent).
+ */
 function runtimeSelectors(
     context: CaseSplitContext,
     groups: readonly Selector[],
-): readonly Selector[] | undefined {
-    const runtime = groups.filter(({ test }) => {
-        const folded = context.probeEmission(
-            () => context.conditions.compileCondition(test),
-            () => false,
+): RuntimeSelectors | undefined {
+    const fixed: Selector[] = [];
+    const variable: Selector[] = [];
+    for (const group of groups) {
+        const truth = knownCondition(
+            context.probeEmission(
+                () => context.conditions.compileCondition(group.test),
+                () => false,
+            ),
         );
-        return knownCondition(folded) === undefined;
-    });
-    return runtime.length > 0 && runtime.length <= MAX_CANDIDATE_SELECTORS
-        ? runtime
+        if (group.kind !== "condition") {
+            const value = context.probeEmission(
+                () => context.compileValue(group.test),
+                () => false,
+            );
+            if (staticArgument(value)) continue;
+        } else if (truth !== undefined) continue;
+        const outcomes =
+            truth === undefined
+                ? group.outcomes
+                : group.outcomes.filter((outcome) =>
+                      truth ? outcome === 0 : outcome !== 0,
+                  );
+        (outcomes.length === 1 ? fixed : variable).push({
+            ...group,
+            outcomes,
+        });
+    }
+    return (fixed.length > 0 || variable.length > 0) &&
+        variable.length <= MAX_CANDIDATE_SELECTORS
+        ? { fixed, variable }
         : undefined;
+}
+
+/** Whether an argument value already reads as a constant: a known boolean, an absence, a record. */
+function staticArgument(value: Value): boolean {
+    return (
+        value.staticBoolean !== undefined ||
+        isAbsentValue(value) ||
+        (value.kind === "record" && presenceCpp(value) === undefined)
+    );
 }
 
 function splitCall(
     context: CaseSplitContext,
     call: ts.CallExpression,
+    fixed: readonly Selector[],
     selectors: readonly Selector[],
     compile: () => Value | undefined,
 ): Value | undefined {
@@ -451,7 +517,12 @@ function splitCall(
             initialization: "default",
         });
     const arm = (outcomes: readonly number[]): void => {
-        const value = withOutcomes(context, selectors, outcomes, compile);
+        const value = withOutcomes(
+            context,
+            [...fixed, ...selectors],
+            [...fixed.map((selector) => selector.outcomes[0]!), ...outcomes],
+            compile,
+        );
         if (!value) throw new CompileError("", 0, 0, "unanswered");
         if (result)
             context.emit({
@@ -466,23 +537,24 @@ function splitCall(
             return;
         }
         const test = tests[depth]!;
-        const guards = test.presence
-            ? [test.truth, test.presence]
-            : [test.truth];
-        // `if (truth) {0} else if (presence) {1} else {2}`.
-        for (let outcome = 0; outcome < outcomeCount(selectors[depth]!); outcome++) {
-            const guard = guards[outcome];
+        const selector = selectors[depth]!;
+        // Outcome 0 is the truth test; an optional boolean's 1 its presence
+        // (after 0, false); the last outcome is the rest.
+        const guard = (outcome: number): string =>
+            outcome === 0 ? test.truth : test.presence!;
+        selector.outcomes.forEach((outcome, index) => {
+            const last = index === selector.outcomes.length - 1;
             context.emit(
-                outcome === 0
-                    ? { kind: "open", code: `if (${guard}) {` }
-                    : guard
-                      ? { kind: "branch", code: `} else if (${guard}) {` }
-                      : { kind: "branch", code: "} else {" },
+                index === 0
+                    ? { kind: "open", code: `if (${guard(outcome)}) {` }
+                    : last
+                      ? { kind: "branch", code: "} else {" }
+                      : { kind: "branch", code: `} else if (${guard(outcome)}) {` },
             );
             context.increaseIndent();
             branch(depth + 1, [...outcomes, outcome]);
             context.decreaseIndent();
-        }
+        });
         context.emit({ kind: "close", code: "}" });
     };
     context.enterRuntimeControlFlow();

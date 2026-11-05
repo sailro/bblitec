@@ -34,6 +34,7 @@ import {
 } from "./pinned-shader-defines.js";
 import {
     lowerWgslShaderProgram,
+    readsSkinningAttributes,
     shaderSystemMatrixEnumerator,
     shaderSystemMatrixTable,
 } from "../shader-ir.js";
@@ -2622,6 +2623,15 @@ ${options.publicCameraMatrices ? lowerShaderPacketCameraInitialization(this.cont
         for (const source of options.shaderPrograms) {
             if (source.drawReachable === false) continue;
             const name = source.name;
+            // The skinning lanes are the deformation stage's: geometry
+            // without them has no joints or weights to read.
+            if (
+                !options.gpuDeformation &&
+                readsSkinningAttributes(source.attributes)
+            )
+                throw new Error(
+                    `Shader material '${name}' reads joints or weights, which only skinned geometry (GPU deformation) carries.`,
+                );
             const program = lowerWgslShaderProgram(source);
             // D3D12 links separately compiled signatures by register. Both
             // stages must put position after locations when the fragment
