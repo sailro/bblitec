@@ -481,6 +481,11 @@ public:
     template <typename Getter>
     [[nodiscard]] static JsonValue from_tuple_view(Getter getter, std::size_t length);
 
+    [[nodiscard]] static JsonValue from_proxy_view(JsonValue target,
+                                                   Callback<JsonValue(std::string)> read,
+                                                   Callback<bool(std::string, JsonValue)> write,
+                                                   Callback<bool(std::string)> erase);
+
     [[nodiscard]] static JsonValue from_array_reference(const bbl::js::Array<JsonValue>& elements) {
         JsonValue value;
         value.kind_ = Kind::array;
@@ -1312,6 +1317,56 @@ JsonValue JsonValue::from_record_view(Getter getter, bbl::js::Array<std::string>
     JsonValue value;
     value.kind_ = Kind::object;
     value.native_ = make_gc_shared<JsonRecordView<Getter>>(std::move(getter), std::move(keys));
+    return value;
+}
+
+/**
+ * A Proxy over a dynamic object: its handler's traps read, write and delete
+ * properties, and a falsish `set` or `deleteProperty` result throws, as it
+ * does in strict code. The keys and presence no trap answers are the
+ * target's own, read live.
+ */
+struct JsonProxyView final : JsonNativeObject {
+    JsonValue target;
+    mutable Callback<JsonValue(std::string)> read;
+    Callback<bool(std::string, JsonValue)> write;
+    Callback<bool(std::string)> erase;
+    JsonProxyView(JsonValue object, Callback<JsonValue(std::string)> get,
+                  Callback<bool(std::string, JsonValue)> set, Callback<bool(std::string)> remove)
+        : target(std::move(object)), read(std::move(get)), write(std::move(set)),
+          erase(std::move(remove)) {}
+    JsonValue get(std::string_view key) const override { return read(std::string(key)); }
+    bbl::js::Array<std::string> own_keys() const override { return target.own_keys(); }
+    bool has_own(std::string_view key) const override { return target.has_own(key); }
+    void set(std::string_view key, const JsonValue& value) override {
+        if (!write(std::string(key), value))
+            throw NamedError("TypeError", "'set' on proxy: trap returned falsish for property '" +
+                                              std::string(key) + "'");
+    }
+    void remove(std::string_view key) override {
+        if (!erase(std::string(key)))
+            throw NamedError("TypeError",
+                             "'deleteProperty' on proxy: trap returned falsish for property '" +
+                                 std::string(key) + "'");
+    }
+    const std::type_info& type() const override { return typeid(JsonProxyView); }
+    const void* identity() const override { return this; }
+    void gc_trace(const TraceVisitor& visitor) const override {
+        visitor(target);
+        visitor(read);
+        visitor(write);
+        visitor(erase);
+    }
+};
+
+inline JsonValue JsonValue::from_proxy_view(JsonValue target,
+                                            Callback<JsonValue(std::string)> read,
+                                            Callback<bool(std::string, JsonValue)> write,
+                                            Callback<bool(std::string)> erase) {
+    JsonValue value;
+    value.kind_ = Kind::object;
+    value.native_ = make_gc_shared<JsonProxyView>(std::move(target), std::move(read),
+                                                  std::move(write), std::move(erase));
     return value;
 }
 
