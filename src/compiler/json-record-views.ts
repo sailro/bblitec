@@ -57,12 +57,18 @@ export function compileJsonTupleView(
     const index = context.allocateTemporaryCppName("dynamic_index");
     const body = context.captureManagedClosureLines(() => {
         context.registerNativeBinding(index);
-        values.forEach((value, slot) => {
-            const cpp = lowerer.compileMemberForSink(
-                value,
-                { kind: "json" },
-                node,
+        values.forEach((_, slot) => {
+            const cpp = lowerer.storeLiteralMember(
+                values,
                 slot,
+                () => undefined,
+                (value) =>
+                    lowerer.compileMemberForSink(
+                        value,
+                        { kind: "json" },
+                        node,
+                        values.indexOf(value),
+                    ),
             );
             context.emit(`if (${index} == ${slot}) return ${cpp};`);
         });
@@ -168,12 +174,18 @@ export function compileJsonRecordView(
     const key = context.allocateTemporaryCppName("dynamic_key");
     const body = context.captureManagedClosureLines(() => {
         context.registerNativeBinding(key);
-        for (const field of fields) {
-            const value = lowerer.compileMemberForSink(
-                field.value,
-                { kind: "json" },
-                node,
-                field.name,
+        for (const [index, field] of fields.entries()) {
+            const value = lowerer.storeLiteralMember(
+                fields,
+                index,
+                () => undefined,
+                (member) =>
+                    lowerer.compileMemberForSink(
+                        member.value,
+                        { kind: "json" },
+                        node,
+                        member.name,
+                    ),
             );
             context.emit(
                 `if (${key} == ${context.cppString(field.name)}) return ${value};`,

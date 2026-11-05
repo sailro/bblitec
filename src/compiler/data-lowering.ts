@@ -80,7 +80,10 @@ import {
     compileMapInitializer,
 } from "./collection-methods.js";
 import { requireObservedPromise } from "./promise-observations.js";
-import { NativeRecordStorageRequired } from "./native-record-storage.js";
+import {
+    isDocumentRecordDemand,
+    NativeRecordStorageRequired,
+} from "./native-record-storage.js";
 import {
     contextualProperty,
     absenceKind,
@@ -13004,9 +13007,11 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
      * after another. A member whose holder needs object storage ends this
      * attempt; a later member naming a constant of literal data stores the
      * same record in the next attempt, so the demand its holder meets joins
-     * this one and one replay plans them all.
+     * this one and one replay plans them all. Likewise a member whose
+     * record must become a document joins every later member's own: that
+     * demand is decided by the member's record type alone.
      */
-    private storeLiteralMember<M>(
+    public storeLiteralMember<M>(
         members: readonly M[],
         index: number,
         value: (member: M) => ts.Expression | undefined,
@@ -13015,19 +13020,50 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         try {
             return store(members[index]!);
         } catch (error) {
-            if (!(error instanceof DynamicBindingStorageRequired)) throw error;
-            const joined: DynamicBindingStorageRequired[] = [];
-            for (const member of members.slice(index + 1)) {
-                const expression = value(member);
-                const demand =
-                    expression &&
-                    this.literalDataHolderDemand(expression, () =>
-                        store(member),
-                    );
-                if (demand) joined.push(demand);
+            if (error instanceof DynamicBindingStorageRequired) {
+                const joined: DynamicBindingStorageRequired[] = [];
+                for (const member of members.slice(index + 1)) {
+                    const expression = value(member);
+                    const demand =
+                        expression &&
+                        this.literalDataHolderDemand(expression, () =>
+                            store(member),
+                        );
+                    if (demand) joined.push(demand);
+                }
+                throw error.joinedWith(joined);
             }
-            throw error.joinedWith(joined);
+            if (isDocumentRecordDemand(error)) {
+                const joined: NativeRecordStorageRequired[] = [];
+                for (const member of members.slice(index + 1)) {
+                    const demand = this.probedDemand(
+                        () => store(member),
+                        isDocumentRecordDemand,
+                    );
+                    if (demand) joined.push(demand);
+                }
+                throw error.joinedWith(joined);
+            }
+            throw error;
         }
+    }
+
+    /** The demand `store` meets that `accepts`, probed; undefined when it meets another or none. */
+    private probedDemand<D extends StorageDemand>(
+        store: () => unknown,
+        accepts: (error: unknown) => error is D,
+    ): D | undefined {
+        try {
+            this.context.probeEmission(store, () => false);
+        } catch (error) {
+            if (accepts(error)) return error;
+            if (
+                !(error instanceof CompileError) &&
+                !(error instanceof StorageDemand)
+            )
+                throw error;
+        }
+        return undefined;
     }
 
     /** The holder demand storing a constant of literal data meets, probed. */
@@ -13045,22 +13081,13 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             staticJsonValue(this.context, declaration.initializer!) === notJson
         )
             return undefined;
-        try {
-            this.context.probeEmission(store, () => false);
-        } catch (error) {
-            if (
+        return this.probedDemand(
+            store,
+            (error): error is DynamicBindingStorageRequired =>
                 error instanceof DynamicBindingStorageRequired &&
                 error.declaration === declaration &&
-                error.requests.length === 1
-            )
-                return error;
-            if (
-                !(error instanceof CompileError) &&
-                !(error instanceof StorageDemand)
-            )
-                throw error;
-        }
-        return undefined;
+                error.requests.length === 1,
+        );
     }
 
     /**
@@ -16039,7 +16066,9 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             "logical_value",
             (left, condition) =>
                 `${isAnd ? `!(${condition})` : condition} ? ${cppType}{${this.compileKnownValueForSink(
-                    isAnd ? left : this.narrowOptional(left, expression.left, true),
+                    isAnd
+                        ? left
+                        : this.narrowOptional(left, expression.left, true),
                     type,
                     expression.left,
                 )}} : ${cppType}{}`,
