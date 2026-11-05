@@ -3901,14 +3901,11 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                     handleCppType(fieldHandle.handle)
                     ? field.type
                     : candidate;
-            // An array of known resources owns each element's engine.
-            const knownElements =
-                value?.staticElementsOwner?.staticElements ??
-                value?.staticElements;
+            // An array of resources owns each element's engine, as one
+            // resource does: the declared field stores it with its owner.
             const resource = (type: DataType): DataType => {
                 const present = type.kind === "optional" ? type.inner : type;
-                return knownElements &&
-                    (present.kind === "vector" || present.kind === "span")
+                return present.kind === "vector" || present.kind === "span"
                     ? present.element
                     : present;
             };
