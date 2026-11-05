@@ -394,7 +394,8 @@ function structReader(
     return {
         reference,
         field: (name) => fields.find((field) => field.sourceName === name),
-        cpp: (owner, field) => `${owner}${reference ? "->" : "."}${field.name}`,
+        cpp: (owner, field) =>
+            `${owner}${context.dataTypes.memberAccess(type.name)}${field.name}`,
     };
 }
 

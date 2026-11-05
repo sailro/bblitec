@@ -4126,9 +4126,6 @@ export class DeclarationLowerer {
         // Give nested handle arrays the native field's one invalidatable snapshot.
         // Later reads share it; aliases, element writes and escapes withdraw it.
         if (annotated.kind === "struct") {
-            const reference = this.context.dataTypes.isReferenceStruct(
-                annotated.name,
-            );
             const fields = this.context.dataTypes.structFields(
                 annotated.name,
                 initializer,
@@ -4154,7 +4151,7 @@ export class DeclarationLowerer {
                 ) {
                     staticRecordProperties[field.sourceName] = {
                         ...this.context.dataLowerer.leafValue(
-                            `${boundCpp}${reference ? "->" : "."}${field.name}`,
+                            `${boundCpp}${this.context.dataTypes.memberAccess(annotated.name)}${field.name}`,
                             field.type,
                         ),
                         optionalFoundCpp: "true",
@@ -4170,7 +4167,7 @@ export class DeclarationLowerer {
                     continue;
                 staticRecordProperties[field.sourceName] = {
                     ...this.context.dataLowerer.leafValue(
-                        `${boundCpp}${reference ? "->" : "."}${field.name}`,
+                        `${boundCpp}${this.context.dataTypes.memberAccess(annotated.name)}${field.name}`,
                         field.type,
                     ),
                     staticElements: source.tupleElements,
@@ -4341,9 +4338,7 @@ export class DeclarationLowerer {
         node: ts.Node,
     ): Record<string, Value> | undefined {
         if (type.kind !== "struct") return undefined;
-        const memberAccess = this.context.dataTypes.isReferenceStruct(type.name)
-            ? "->"
-            : ".";
+        const memberAccess = this.context.dataTypes.memberAccess(type.name);
         const properties: Record<string, Value> = {};
         for (const field of this.context.dataTypes.structFields(
             type.name,
@@ -5729,7 +5724,7 @@ export class DeclarationLowerer {
                     element,
                     "accessors",
                 );
-                const slotCpp = `${temporary}${this.context.dataTypes.isReferenceStruct(value.dataType.name) ? "->" : "."}${field.name}`;
+                const slotCpp = `${temporary}${this.context.dataTypes.memberAccess(value.dataType.name)}${field.name}`;
                 // An accessor's getter runs once; the binding owns its result.
                 const storedFieldCpp = field.accessor
                     ? this.context.allocateTemporaryCppName("accessed")

@@ -28,9 +28,7 @@ export function writableVec3Lanes(
     }
     if (value.kind === "data" && value.dataType?.kind === "struct") {
         const dataType = value.dataType;
-        const separator = context.dataTypes.isReferenceStruct(dataType.name)
-            ? "->"
-            : ".";
+        const separator = context.dataTypes.memberAccess(dataType.name);
         return ["x", "y", "z"].map((name) => {
             const field = context.dataTypes.structField(
                 dataType.name,

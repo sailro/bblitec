@@ -681,9 +681,6 @@ function valueStruct(
                   "record_data_source",
               )
             : value;
-        const sourceArrow = lowerer.context.dataTypes.isReferenceStruct(
-            sourceType.name,
-        );
         const stored = new Set(fields.map((field) => field.sourceName));
         lowerer.context.dataTypes.noteRecordConversion(
             dataType,
@@ -724,7 +721,7 @@ function valueStruct(
                         `Struct ${sourceType.name} is missing required destination field '${field.sourceName}'.`,
                     );
                 }
-                const sourceCpp = `${held.cpp}${sourceArrow ? "->" : "."}${source.name}`;
+                const sourceCpp = `${held.cpp}${lowerer.context.dataTypes.memberAccess(sourceType.name)}${source.name}`;
                 if (copyDataSlots && field.accessorReceiver) {
                     let stored = "";
                     const lines = lowerer.context.captureEmittedLines(() => {

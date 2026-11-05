@@ -302,7 +302,7 @@ export function compileBooleanOptions<N extends string>(
                     : reference
                       ? `static_cast<bool>(${cpp})`
                       : undefined;
-            const member = reference ? "->" : ".";
+            const member = context.dataTypes.memberAccess(recordType.name);
             for (const field of context.dataTypes.structFields(
                 recordType.name,
                 expression,

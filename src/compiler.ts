@@ -3870,9 +3870,7 @@ class Compiler implements LoweringServices {
     ): string {
         if (value.kind === "data" && value.dataType?.kind === "struct") {
             const type = precision === "float" ? "bbl::Vec3" : "bbl::Vec3d";
-            const arrow = this.dataTypes.isReferenceStruct(value.dataType.name)
-                ? "->"
-                : ".";
+            const arrow = this.dataTypes.memberAccess(value.dataType.name);
             const lanes = ["x", "y", "z"].map((name) => {
                 const field = this.dataTypes.structField(
                     value.dataType!.kind === "struct"
@@ -6965,9 +6963,7 @@ class Compiler implements LoweringServices {
             if (type.kind !== "struct" || ancestry.has(type.name)) return;
             ancestry.add(type.name);
             try {
-                const access = this.dataTypes.isReferenceStruct(type.name)
-                    ? "->"
-                    : ".";
+                const access = this.dataTypes.memberAccess(type.name);
                 for (const field of this.dataTypes.structFields(
                     type.name,
                     this.sourceFile,

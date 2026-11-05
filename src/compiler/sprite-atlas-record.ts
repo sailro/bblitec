@@ -180,14 +180,13 @@ export function compileSpriteAtlasRecord(
         // texture three times), so moving them from sequenced IIFE
         // statements into a call changes no observable evaluation.
         const frameType = storedFrameType;
-        const arrow = context.dataTypes.isReferenceStruct(frameType.name);
         const access = (base: string, name: string): string => {
             const field = context.dataTypes.structField(
                 frameType.name,
                 name,
                 node,
             );
-            return `${base}${arrow ? "->" : "."}${field.name}`;
+            return `${base}${context.dataTypes.memberAccess(frameType.name)}${field.name}`;
         };
         context.reachJsData();
         reachTextureArm();

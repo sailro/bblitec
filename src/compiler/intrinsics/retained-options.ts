@@ -60,7 +60,7 @@ export function retainedOptions(
         "options_owner",
         site,
     );
-    const access = context.dataTypes.isReferenceStruct(type.name) ? "->" : ".";
+    const access = context.dataTypes.memberAccess(type.name);
     return context.dataTypes
         .structFields(type.name, site)
         .filter(

@@ -400,9 +400,7 @@ function compileShapeParameters(
             record,
             "physics_shape_parameters",
         );
-        const access = context.dataTypes.isReferenceStruct(type.name)
-            ? "->"
-            : ".";
+        const access = context.dataTypes.memberAccess(type.name);
         const fields: Record<string, Value> = {};
         for (const field of context.dataTypes.structFields(
             type.name,

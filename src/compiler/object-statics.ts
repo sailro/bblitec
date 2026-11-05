@@ -167,9 +167,7 @@ export function structOwnEntries(
     excludedKeys?: ReadonlySet<string>,
 ): OwnEntry[] {
     refuseErrorReflection(context, owner, node);
-    const access = context.dataTypes.isReferenceStruct(dataType.name)
-        ? "->"
-        : ".";
+    const access = context.dataTypes.memberAccess(dataType.name);
     const sourceFields = owner.recordOwnKeys
         ? owner.recordOwnKeys.map((key) =>
               context.dataTypes.structField(
@@ -997,9 +995,7 @@ function compileObjectAssign(
             "assign_target",
             targetExpression,
         );
-        const access = context.dataTypes.isReferenceStruct(structType.name)
-            ? "->"
-            : ".";
+        const access = context.dataTypes.memberAccess(structType.name);
         // Evaluate the complete argument list before getters or target setters
         // run. Stored sources retain identity, so later arguments may mutate them.
         const values = sources.map((source) => {

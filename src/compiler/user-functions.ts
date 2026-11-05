@@ -2379,11 +2379,7 @@ export class UserFunctionLowerer {
                         // Capture at the return expression's evaluation, before
                         // mutable storage erases the facts. Only primitives are
                         // copied; every read still uses the real call's owner.
-                        const access = context.dataTypes.isReferenceStruct(
-                            returnType.name,
-                        )
-                            ? "->"
-                            : ".";
+                        const access = context.dataTypes.memberAccess(returnType.name);
                         writable(result).recordProperties = Object.fromEntries(
                             fields
                                 .filter((field) =>
@@ -2418,11 +2414,7 @@ export class UserFunctionLowerer {
                     call,
                     "accessors",
                 );
-                const access = context.dataTypes.isReferenceStruct(
-                    returnType.name,
-                )
-                    ? "->"
-                    : ".";
+                const access = context.dataTypes.memberAccess(returnType.name);
                 const presentProperties: Record<string, Value> = {};
                 for (const key of presentLiteralKeys(
                     this.checker,
@@ -3135,9 +3127,7 @@ export class UserFunctionLowerer {
             call,
             "accessors",
         );
-        const member = context.dataTypes.isReferenceStruct(struct.name)
-            ? "->"
-            : ".";
+        const member = context.dataTypes.memberAccess(struct.name);
         const refreshed: Array<[string, Value]> = [];
         for (const [key, value] of Object.entries(properties)) {
             const stable =
@@ -4487,11 +4477,7 @@ export class UserFunctionLowerer {
                 call,
                 "accessors",
             );
-            const member = context.dataTypes.isReferenceStruct(
-                result.dataType.name,
-            )
-                ? "->"
-                : ".";
+            const member = context.dataTypes.memberAccess(result.dataType.name);
             projected.recordProperties = Object.fromEntries(
                 Object.keys(metadata.recordProperties).map((key) => {
                     const field = fields.find(

@@ -1466,7 +1466,7 @@ function compileKnownDataMethod(
                 lowerer.context.allocateTemporaryCppName("callback_receiver");
             const member = lowerer.unionFunctionMember(
                 lowerer.leafValue(
-                    `${receiver}${referenceReceiver ? "->" : "."}${field.name}`,
+                    `${receiver}${lowerer.context.dataTypes.memberAccess(recordType.name)}${field.name}`,
                     functionType,
                 ),
                 callee.access,
@@ -1514,7 +1514,7 @@ function compileKnownDataMethod(
             return lowerer.compileCallableRecordCall(
                 call,
                 lowerer.leafValue(
-                    `${receiver}${referenceReceiver ? "->" : "."}${field.name}`,
+                    `${receiver}${lowerer.context.dataTypes.memberAccess(recordType.name)}${field.name}`,
                     functionType,
                 ),
             );
@@ -1522,7 +1522,9 @@ function compileKnownDataMethod(
         if (functionType?.kind === "function") {
             const referenceReceiver =
                 lowerer.context.dataTypes.isReferenceStruct(recordType.name);
-            const member = referenceReceiver ? "->" : ".";
+            const member = lowerer.context.dataTypes.memberAccess(
+                recordType.name,
+            );
             const receiver =
                 lowerer.context.allocateTemporaryCppName("callback_receiver");
             const optional = dataType?.kind === "optional";

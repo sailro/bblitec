@@ -389,9 +389,7 @@ export class RecordProxies {
         );
         context.useNativeValue(target);
         context.useNativeValue(receiver);
-        const member = context.dataTypes.isReferenceStruct(target.dataType.name)
-            ? "->"
-            : ".";
+        const member = context.dataTypes.memberAccess(target.dataType.name);
         const slot = `${target.cpp}${member}${field.name}`;
         if (field.accessor && !field.accessorReceiver && receiverNode)
             context.fail(

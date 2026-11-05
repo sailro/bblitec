@@ -3272,9 +3272,7 @@ export class StatementLowerer {
                 )
             )
                 context.dataTypes.structFields(dataType.name, node);
-            const access = context.dataTypes.isReferenceStruct(dataType.name)
-                ? "->"
-                : ".";
+            const access = context.dataTypes.memberAccess(dataType.name);
             const object = context.bindings.pinValueToTemporary(
                 owner,
                 "object",

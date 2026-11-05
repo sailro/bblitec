@@ -8033,6 +8033,11 @@ export class DataTypeRegistry {
         return this.referenceStructNames.has(name);
     }
 
+    /** How a record of the struct reaches its fields: through its reference, or in place. */
+    public memberAccess(name: string): "->" | "." {
+        return this.isReferenceStruct(name) ? "->" : ".";
+    }
+
     /**
      * Maps a local class demanded by a native data position onto the reference
      * struct that stands for one of its instances.

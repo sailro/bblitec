@@ -3006,7 +3006,7 @@ export class DataLowerer {
         const target =
             reference && !preparedOwner
                 ? `${this.context.bindings.pinValueToTemporary(owner, "accessor_owner", left.expression).cpp}->`
-                : `${owner.cpp}${reference ? "->" : "."}`;
+                : `${owner.cpp}${this.context.dataTypes.memberAccess(type.name)}`;
         const value = this.compileForSink(right, field.type);
         this.context.emit({
             kind: "expression",
@@ -3056,7 +3056,7 @@ export class DataLowerer {
         const target =
             reference && !preparedOwner
                 ? `${this.context.bindings.pinValueToTemporary(owner, "accessor_owner", left.expression).cpp}->`
-                : `${owner.cpp}${reference ? "->" : "."}`;
+                : `${owner.cpp}${this.context.dataTypes.memberAccess(type.name)}`;
         const write = (field: DataStructField, value: string): string =>
             field.accessor
                 ? `${target}${field.name}.set(${value});`
@@ -6691,11 +6691,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                     access,
                     "accessors",
                 );
-                const arrow = this.context.dataTypes.isReferenceStruct(
-                    dataType.name,
-                )
-                    ? "->"
-                    : ".";
+                const arrow = this.context.dataTypes.memberAccess(dataType.name);
                 if (field.accessor)
                     return this.accessorRead(
                         `${owner.cpp}${arrow}${field.name}`,
@@ -6768,11 +6764,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 access.argumentExpression,
                 keyType.name,
             );
-            const arrow = this.context.dataTypes.isReferenceStruct(
-                dataType.name,
-            )
-                ? "->"
-                : ".";
+            const arrow = this.context.dataTypes.memberAccess(dataType.name);
             const slot = fields.some((field) => field.accessor)
                 ? this.context.dataTypes.keyedSlotMember(
                       dataType.name,
@@ -9759,7 +9751,6 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         const type = owner.dataType;
         const properties = owner.recordProperties;
         if (type?.kind !== "struct" || !properties) return;
-        const reference = this.context.dataTypes.isReferenceStruct(type.name);
         for (const field of this.context.dataTypes.structFields(
             type.name,
             node,
@@ -9770,7 +9761,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 field.type.kind === "optional" ? field.type.inner : field.type;
             if (source?.kind !== "tuple" || memberType.kind !== "vector")
                 continue;
-            const storedSlot = `${owner.cpp}${reference ? "->" : "."}${field.name}`;
+            const storedSlot = `${owner.cpp}${this.context.dataTypes.memberAccess(type.name)}${field.name}`;
             const slot = field.accessor ? `${storedSlot}.get()` : storedSlot;
             const member = this.leafValue(
                 field.type.kind === "optional" ? `(*${slot})` : slot,
@@ -9931,9 +9922,6 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             this.context.useNativeValue(owner),
         );
         const elementType = type.element;
-        const reference = this.context.dataTypes.isReferenceStruct(
-            elementType.name,
-        );
         writable(owner).staticElements = elements.map((element, index) => {
             const cpp = `bbl::js::array_index_checked(${owner.cpp}, ${index}.0, ${this.context.cppString(sceneRelativeSourceLabel(node))})`;
             const recordProperties: Record<string, Value> = {};
@@ -9949,7 +9937,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                     continue;
                 recordProperties[field.sourceName] = {
                     ...this.leafValue(
-                        `${cpp}${reference ? "->" : "."}${field.name}`,
+                        `${cpp}${this.context.dataTypes.memberAccess(elementType.name)}${field.name}`,
                         field.type,
                     ),
                     nativeCaptures: captures.nativeCaptures,
@@ -13860,16 +13848,8 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 .structFields(target.type.name, source, "accessors")
                 .map((field) => [field.sourceName, field]),
         );
-        const member = this.context.dataTypes.isReferenceStruct(
-            target.type.name,
-        )
-            ? "->"
-            : ".";
-        const sourceMember = this.context.dataTypes.isReferenceStruct(
-            sourceType.name,
-        )
-            ? "->"
-            : ".";
+        const member = this.context.dataTypes.memberAccess(target.type.name);
+        const sourceMember = this.context.dataTypes.memberAccess(sourceType.name);
         const assigned = new EmissionSet<string>();
         for (const entry of structOwnEntries(
             this.ownObjectContext(),
@@ -14044,7 +14024,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             );
             declared = true;
         };
-        const member = referenceStruct ? "->" : ".";
+        const member = this.context.dataTypes.memberAccess(dataType.name);
         // Every accessor slot of the new object holds the copied value as data.
         const fieldOf = (name: string, node: ts.Node): DataStructField =>
             this.context.dataTypes.structField(
@@ -14948,7 +14928,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         }
         this.deleteSlot(
             this.leafValue(
-                `${owner.cpp}${this.context.dataTypes.isReferenceStruct(type.name) ? "->" : "."}${field.name}`,
+                `${owner.cpp}${this.context.dataTypes.memberAccess(type.name)}${field.name}`,
                 field.type,
             ),
             field.optionalProperty === true,
@@ -15408,7 +15388,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             structName,
             field,
             ownerCpp,
-            this.context.dataTypes.isReferenceStruct(structName) ? "->" : ".",
+            this.context.dataTypes.memberAccess(structName),
             node,
         );
         if (presence === undefined) return "true";
@@ -15470,9 +15450,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             kind: "string",
         });
         const parameter = this.context.allocateTemporaryCppName("property_key");
-        const arrow = this.context.dataTypes.isReferenceStruct(dataType.name)
-            ? "->"
-            : ".";
+        const arrow = this.context.dataTypes.memberAccess(dataType.name);
         const resultType = this.context.dataTypes.nullableType(common, true);
         const resultCpp = this.context.dataTypes.cppType(resultType);
         this.context.reachJsData();
@@ -17611,9 +17589,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             node,
             "accessors",
         );
-        const arrow = this.context.dataTypes.isReferenceStruct(type.name)
-            ? "->"
-            : ".";
+        const arrow = this.context.dataTypes.memberAccess(type.name);
         return {
             ...this.leafValue(
                 `${source.cpp}${arrow}${field.name}${field.accessor ? ".get()" : ""}`,
@@ -18212,7 +18188,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 : owner;
             return {
                 kind: "accessor" as const,
-                slot: `${held.cpp}${reference ? "->" : "."}${field.name}`,
+                slot: `${held.cpp}${this.context.dataTypes.memberAccess(owner.dataType.name)}${field.name}`,
             };
         });
     }
@@ -18793,11 +18769,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                               kind: "string",
                           }),
             });
-            const arrow = this.context.dataTypes.isReferenceStruct(
-                dataType.name,
-            )
-                ? "->"
-                : ".";
+            const arrow = this.context.dataTypes.memberAccess(dataType.name);
             const tests = fields.map((field) => {
                 const test = this.absentComparison(
                     this.leafValue(
