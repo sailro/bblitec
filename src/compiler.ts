@@ -1348,13 +1348,6 @@ class Compiler implements LoweringServices {
         this.emitEntryBody(entry);
         if (!this.options.pageStartup?.length) this.emitNativeHostUi();
         this.finalizeSceneRegistration();
-        if (this.features.has("engine:device-recovery")) {
-            if (this.admissions.temporalRegisteredScenes.length > 1)
-                this.fail(
-                    this.sourceFile,
-                    "Device recovery resource observations currently require one registered scene.",
-                );
-        }
         this.admissions.enforceDeferredAdmissions();
         const particles = this.sceneManifest.reachedNodeParticles;
         if (

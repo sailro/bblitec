@@ -4652,6 +4652,25 @@ const sceneInputs: readonly SceneInput[] = [
         },
     },
     {
+        id: "regression-device-recovery-scenes",
+        name: "Regression - Device Recovery Scenes",
+        source: "examples/regression-device-recovery-scenes.ts",
+        sourceOrigin: "bblitec-regression",
+        title: "Babylon Lite Native - Device Recovery Scenes",
+        parity: {
+            // The browser reference is the frame before the forced loss;
+            // the native capture is a frame after both scenes recovered.
+            maxFullMad: 0.001,
+            maxForegroundMad: 0.002,
+            backgroundColor: [20, 23, 36],
+            backgroundThreshold: 30,
+            nativeEnvironment: {
+                BBLITE_INPUT_REPLAY: "Dataset@captured=true",
+                BBLITE_SCREENSHOT_FRAME: "50",
+            },
+        },
+    },
+    {
         id: "regression-gltf-node-transform-animation",
         name: "Regression - glTF Node Transform Animation",
         source: "examples/regression-gltf-node-transform-animation.ts",

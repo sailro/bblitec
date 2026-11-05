@@ -305,6 +305,7 @@ test("registers unique generated scene targets", () => {
             "regression-gltf-topology",
             "regression-gltf-step-animation",
             "regression-gltf-node-transform-animation",
+            "regression-device-recovery-scenes",
             "regression-node-local-attributes",
             "scene144",
             "scene217",

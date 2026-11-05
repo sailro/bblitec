@@ -320,6 +320,12 @@ export interface CompileManifest {
      *  scene order. When `dynamicSceneLights` is false this is the complete
      *  light topology and shader composition must not widen it. */
     sceneLightKinds: LightKind[];
+    /**
+     * Each registered scene's lights, in registration order, when the
+     * program registers more than one: the pin selects a draw's light mode
+     * from its own scene's lights, so composition takes each scene's arms.
+     */
+    registeredSceneLightKinds?: LightKind[][];
     /** A callback can add lights at run time, so the static list above is
      *  then only a lower bound and composition must retain compatible arms. */
     dynamicSceneLights: boolean;

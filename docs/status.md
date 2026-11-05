@@ -332,6 +332,7 @@ Repository fixtures against pinned Babylon Lite.
 | glTF-topology | <img src="images/scenes/regression-gltf-topology.png" alt="glTF primitive topology rendering" width="160"> | pixel‑perfect | pixel‑perfect | glTF Primitive Topology |
 | glTF-step-animation | <img src="images/scenes/regression-gltf-step-animation.png" alt="glTF STEP animation rendering" width="160"> | pixel‑perfect | pixel‑perfect | glTF STEP Animation |
 | glTF-node-transform-animation | <img src="images/scenes/regression-gltf-node-transform-animation.png" alt="glTF node transform animation rendering" width="160"> | pixel‑perfect | pixel‑perfect | glTF Node Transform Animation |
+| device-recovery-scenes | <img src="images/scenes/regression-device-recovery-scenes.png" alt="Device recovery scenes rendering" width="160"> | pixel‑perfect | pixel‑perfect | Device Recovery Scenes |
 | node-local-attributes | <img src="images/scenes/regression-node-local-attributes.png" alt="Node local attributes rendering" width="160"> | pixel‑perfect | pixel‑perfect | Node Local Attributes |
 | morph-ground | <img src="images/scenes/regression-morph-ground.png" alt="Morph storage ground rendering" width="160"> | pixel‑perfect | pixel‑perfect | Morph Storage Ground |
 | timer-callback-cells | <img src="images/scenes/regression-timer-callback-cells.png" alt="Timer callback cells rendering" width="160"> | pixel‑perfect | pixel‑perfect | Timer Callback Cells |

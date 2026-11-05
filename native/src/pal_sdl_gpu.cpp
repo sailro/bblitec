@@ -609,9 +609,11 @@ class SdlSceneRun {
         switch (draw.item.material_kind) {
 #if BBLITE_PBR_VARIANTS > 0
         case upstream::RenderMaterialKind::pbr: {
-            const auto variant = pinned_variant_for_draw(scene, engine, draw, shader);
+            pal::PinnedVariantKey key;
+            const auto variant = pinned_variant_for_draw(scene, engine, draw, shader, &key);
             if (variant == npos)
-                throw std::runtime_error("Startup PBR draw has no composed variant.");
+                throw std::runtime_error("Startup PBR draw has no composed variant: " +
+                                         pal::pinned_variant_request(key, shader));
             prepare([&state, variant, kind, geometry, shadow_pass, esm, samples, target] {
                 static_cast<void>(pinned_variant_pipeline(state, variant, kind, geometry,
                                                           shadow_pass, esm, samples, target));

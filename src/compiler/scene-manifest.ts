@@ -57,6 +57,7 @@ import type {
 
 interface SceneManifestContext extends Pick<
     LoweringServices,
+    | "admissions"
     | "assets"
     | "engineLifecycle"
     | "fail"
@@ -348,6 +349,17 @@ export class SceneManifestRecorder {
                 : {}),
             sceneMeshes: this.sceneMeshes,
             sceneLightKinds: this.sceneLights.map(({ kind }) => kind),
+            ...(this.context.admissions.temporalRegisteredScenes.length > 1
+                ? {
+                      registeredSceneLightKinds:
+                          this.context.admissions.temporalRegisteredScenes.map(
+                              (topology) =>
+                                  (topology?.lights ?? []).map(
+                                      ({ kind }) => kind,
+                                  ),
+                          ),
+                  }
+                : {}),
             dynamicSceneLights: this.dynamicSceneLights,
             mutableToneMappingEnabled: this.mutableToneMappingEnabled,
             ...(this.clusteredContainer
