@@ -143,6 +143,12 @@ const INITIALIZER_FACTS = [
     "packagedBodySource",
 ] as const satisfies readonly (keyof Value)[];
 
+/** A repeated body's answers per observation, by the binding's declared name. */
+interface RepeatedBodyAnswers {
+    readonly deep: Map<ts.Identifier, boolean>;
+    readonly "array-elements": Map<ts.Identifier, boolean>;
+}
+
 export class BindingScopes {
     private readonly transparentRebindingScopes = new EmissionWeakSet<
         Map<ts.Symbol, VariableBinding>
@@ -1851,24 +1857,31 @@ export class BindingScopes {
         visitor: (value: Value, elementsUnchanged: boolean) => void,
     ): void {
         const visited = new Set<ts.Symbol>();
-        let reached: Set<ts.Node> | undefined;
+        let answers: RepeatedBodyAnswers | undefined;
         const mayChange = (
-            bound: ts.Expression,
+            bound: ts.Identifier,
             observation: "deep" | "array-elements" = "deep",
         ): boolean => {
-            if (!reached) {
-                reached = new Set<ts.Node>();
+            if (!answers) {
+                const reached = new Set<ts.Node>();
                 walkReachedLoopNodes(this.context, body, (node) => {
-                    reached!.add(node);
+                    reached.add(node);
                 });
+                answers = this.repeatedBodyAnswers(body, reached);
             }
-            return loopBoundMayChange(
-                this.context,
-                body,
-                bound,
-                observation,
-                reached,
-            );
+            const known = answers[observation];
+            let changed = known.get(bound);
+            if (changed === undefined) {
+                changed = loopBoundMayChange(
+                    this.context,
+                    body,
+                    bound,
+                    observation,
+                    this.repeatedBodyChanges.get(body)!.reached,
+                );
+                known.set(bound, changed);
+            }
+            return changed;
         };
         for (let index = this.variableScopes.length - 1; index >= 0; index--) {
             for (const [symbol, binding] of this.variableScopes[index]!) {
@@ -1901,6 +1914,37 @@ export class BindingScopes {
                 }
             }
         }
+    }
+
+    /**
+     * @unjournaled Whether a repeated body may change a binding, per body:
+     * the answer is an aliased-mutation scan of the binding over the nodes
+     * the body reaches (`loopBoundMayChange`), a function of those nodes and
+     * the checked program, so it holds while the body reaches the same ones.
+     */
+    private readonly repeatedBodyChanges = new WeakMap<
+        ts.Node,
+        { reached: ReadonlySet<ts.Node>; answers: RepeatedBodyAnswers }
+    >();
+
+    /** The answers recorded for `body`, kept while it reaches the same nodes. */
+    private repeatedBodyAnswers(
+        body: ts.Node,
+        reached: ReadonlySet<ts.Node>,
+    ): RepeatedBodyAnswers {
+        const known = this.repeatedBodyChanges.get(body);
+        if (
+            known &&
+            known.reached.size === reached.size &&
+            [...reached].every((node) => known.reached.has(node))
+        )
+            return known.answers;
+        const answers: RepeatedBodyAnswers = {
+            deep: new Map(),
+            "array-elements": new Map(),
+        };
+        this.repeatedBodyChanges.set(body, { reached, answers });
+        return answers;
     }
 
     /** Invalidate one native array's complete snapshot through all aliases. */
