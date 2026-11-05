@@ -111,6 +111,30 @@ function enclosingFunctionName(statement: ts.Statement): string {
         : "<module>";
 }
 
+/**
+ * What stopped an attempt or a plan, and where: the site its storage
+ * demand rose at, else the statement lowering then.
+ */
+function describeStop(cause: unknown, lowering: ts.Node | undefined): string {
+    const text =
+        cause instanceof Error
+            ? `${cause.constructor.name}: ${cause.message}`
+            : String(cause);
+    const demanded =
+        cause instanceof StorageDemand
+            ? cause.requests.map(storageRequestSite).find(Boolean)
+            : undefined;
+    const node = typeof demanded === "object" ? demanded : lowering;
+    const site =
+        typeof demanded === "string"
+            ? demanded
+            : node &&
+              `${sourceLocation(node).file.fileName}:${sourceLocation(node).line}`;
+    return (
+        text.replace(/\s+/g, " ").slice(0, 160) + (site ? ` at ${site}` : "")
+    );
+}
+
 /** How a survey reports while it runs: a line at most every `intervalMs`. */
 export interface SurveyProgress {
     readonly report: (line: string) => void;
@@ -163,25 +187,26 @@ export class SurveyCollector {
      * storage demand rose, else the statement lowering then.
      */
     public restarted(cause: unknown): void {
-        const text =
-            cause instanceof Error
-                ? `${cause.constructor.name}: ${cause.message}`
-                : String(cause);
-        const demanded =
-            cause instanceof StorageDemand
-                ? cause.requests.map(storageRequestSite).find(Boolean)
-                : undefined;
-        const node = typeof demanded === "object" ? demanded : this.lowering;
-        const site =
-            typeof demanded === "string"
-                ? demanded
-                : node &&
-                  `${sourceLocation(node).file.fileName}:${sourceLocation(node).line}`;
-        this.restart =
-            text.replace(/\s+/g, " ").slice(0, 160) +
-            (site ? ` at ${site}` : "");
+        this.restart = describeStop(cause, this.lowering);
         this.progress?.report(
             `Survey restart after attempt ${this.attempts}: ${this.restart}`,
+        );
+    }
+
+    /**
+     * Reports a plan run between strict attempts: the demands it added,
+     * how long it lowered, and what ended it.
+     */
+    public planned(
+        added: number,
+        milliseconds: number,
+        ended: { cause: unknown; statement?: ts.Statement },
+    ): void {
+        this.progress?.report(
+            `Survey plan after attempt ${this.attempts}: ${added} demands added in ${Math.round(milliseconds / 1000)} s; ended by ` +
+                (ended.cause === undefined
+                    ? "the end of the program"
+                    : describeStop(ended.cause, ended.statement)),
         );
     }
 

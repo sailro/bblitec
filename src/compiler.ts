@@ -832,12 +832,14 @@ function lowerSourceApplication(
         // not read, so one attempt meets a run of them, and a plan that
         // lowered every statement is the compile. A plan that adds no demand
         // leaves the next attempt to strict lowering. A survey's attempts
-        // are always strict: there a second demand no plan foresaw starts a
-        // discarded plan, and a plan that found no more than the next strict
-        // attempt would doubles the demands the next one waits for.
+        // are always strict: a discarded plan runs between them, as far as
+        // it can, after each restart while plans pay -- each demand a plan
+        // adds saves a strict attempt as long as the last one; a plan that
+        // took longer than the attempts it saved doubles the restarts the
+        // next plan waits for.
         let planning = false;
         let unplanned = 0;
-        let interval = 2;
+        let interval = 1;
         for (;;) {
             const started = performance.now();
             if (planning) {
@@ -869,18 +871,18 @@ function lowerSourceApplication(
                 }
                 if (++unplanned < interval) continue;
                 unplanned = 0;
-                // A plan may lower as much as two strict attempts.
-                const planner = new StorageDemandPlanner(
-                    input.checker,
-                    2 * (performance.now() - started),
-                    true,
-                );
+                const planned = performance.now();
+                const planner = new StorageDemandPlanner(input.checker, true);
                 try {
                     planner.run(() => newCompiler(planner).compile());
                 } catch (planningError) {
                     if (!acceptReplay(planningError)) throw planningError;
                 }
-                interval = addPlanned(planner) > 1 ? 2 : 2 * interval;
+                const added = addPlanned(planner);
+                const planMs = performance.now() - planned;
+                survey.planned(added, planMs, planner.ended());
+                interval =
+                    added * (planned - started) > planMs ? 1 : 2 * interval;
             }
         }
     };

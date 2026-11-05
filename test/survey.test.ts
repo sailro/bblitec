@@ -138,9 +138,43 @@ test("a survey's progress names each restart's cause and where its demand rose",
     // Each restart is reported as it happens.
     assert.equal(
         lines.filter((line) =>
-            /^Survey restart after attempt 1: NativeRecordStorageRequired: /.test(line),
+            /^Survey restart after attempt 1: NativeRecordStorageRequired: /.test(
+                line,
+            ),
         ).length,
         1,
+    );
+});
+
+test("a survey reports each plan's demands and what ended it", () => {
+    // Three record types would each restart the program once; the plan
+    // after the first restart meets the other two and lowers to the end.
+    const lines: string[] = [];
+    const { report } = surveySource(
+        `
+        interface A { a: number }
+        interface B { b: number }
+        interface C { c: number }
+        function a(text: string): A { return JSON.parse(text); }
+        function b(text: string): B { return JSON.parse(text); }
+        function c(text: string): C { return JSON.parse(text); }
+        let first: A = { a: 1 };
+        first = a('{"a":2}');
+        let second: B = { b: 1 };
+        second = b('{"b":2}');
+        let third: C = { c: 1 };
+        third = c('{"c":2}');
+        console.log(first.a + second.b + third.c);
+    `,
+        { fileName: resolve("survey-plan.ts") },
+        { report: (line) => lines.push(line), intervalMs: 0 },
+    );
+    assert.equal(report.complete, true);
+    const plans = lines.filter((line) => line.startsWith("Survey plan"));
+    assert.equal(plans.length, 1, plans.join(" | "));
+    assert.match(
+        plans[0]!,
+        /^Survey plan after attempt 1: 2 demands added in \d+ s; ended by the end of the program$/,
     );
 });
 
