@@ -278,6 +278,39 @@ check(
 `,
 );
 
+// A gesture holding adapters of several state types as `Active<unknown>`
+// calls their methods with values it holds as `unknown`; each call returns
+// what the receiver's type arguments make of the declared result.
+check(
+    "erased-adapter-state",
+    `
+    interface Candidate<S> { readonly state: S; readonly finite: boolean }
+    interface Adapter<S> { current(): Candidate<S>; resolve(previous: Candidate<S>): Candidate<S> | null; cloneState(state: S): S; statesEqual(a: S, b: S): boolean }
+    interface Active<S> { readonly adapter: Adapter<S>; readonly initial: Candidate<S>; rejected: S | null }
+    let active: Active<unknown> | null = null;
+    function begin<S>(adapter: Adapter<S>): void { active = { adapter, initial: adapter.current(), rejected: null }; }
+    function step(): boolean {
+        const gesture = active;
+        if (!gesture) return false;
+        const next = gesture.adapter.resolve(gesture.initial);
+        if (!next || !next.finite) {
+            if (next) gesture.rejected = gesture.adapter.cloneState(next.state);
+            return false;
+        }
+        return !gesture.adapter.statesEqual(gesture.initial.state, next.state);
+    }
+    interface House { x: number }
+    interface Tower { h: number; name: string }
+    const house: House = { x: 1 };
+    begin<House>({ current: () => ({ state: house, finite: true }), resolve: (p) => ({ state: { x: p.state.x + 1 }, finite: p.state.x < 1 }), cloneState: (s) => ({ ...s }), statesEqual: (a, b) => a.x === b.x });
+    if (step()) throw new Error("house moved");
+    const rejected = active!.rejected as House;
+    if (rejected.x !== 2 || house.x !== 1) throw new Error("house clone " + rejected.x);
+    begin<Tower>({ current: () => ({ state: { h: 2, name: "t" }, finite: true }), resolve: (p) => ({ state: { h: 3, name: p.state.name }, finite: true }), cloneState: (s) => ({ ...s }), statesEqual: (a, b) => a.h === b.h && a.name === b.name });
+    if (!step()) throw new Error("tower moved");
+`,
+);
+
 test("Arguments object unsupported mutations and unconstrained storage refuse explicitly", () => {
     for (const mutation of [
         "arguments[0]=3;",

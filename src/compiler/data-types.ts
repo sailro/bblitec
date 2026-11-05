@@ -5409,6 +5409,24 @@ export class DataTypeRegistry {
             fields,
         });
         for (const demand of this.storage.genericFunctions.get(family)) {
+            // A call's callee type is the declaration as its receiver's type
+            // arguments instantiate it: a method of `Adapter<unknown>` returns
+            // what they make of its declared result, which no frame of the
+            // caller binds. A callee with type parameters of its own is bound
+            // by the demand.
+            const callee = ts.isCallExpression(demand.site)
+                ? callSignatures(
+                      this.checker,
+                      this.checker.getTypeAtLocation(demand.site.expression),
+                      "exact",
+                  )
+                : [];
+            const instantiated =
+                callee.length === 1 &&
+                callee[0]!.declaration === declaration &&
+                !callee[0]!.typeParameters?.length
+                    ? callee[0]
+                    : undefined;
             const type = this.withGenericFunctionArguments(
                 declaration,
                 demand,
@@ -5421,7 +5439,7 @@ export class DataTypeRegistry {
                         node,
                         false,
                         demand.parameters,
-                        undefined,
+                        instantiated,
                         demand.restArguments,
                     ),
             );
