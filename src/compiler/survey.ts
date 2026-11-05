@@ -180,6 +180,9 @@ export class SurveyCollector {
         this.restart =
             text.replace(/\s+/g, " ").slice(0, 160) +
             (site ? ` at ${site}` : "");
+        this.progress?.report(
+            `Survey restart after attempt ${this.attempts}: ${this.restart}`,
+        );
     }
 
     /** Runs one realm's compile attempt, replacing the census a previous attempt of that realm left. */

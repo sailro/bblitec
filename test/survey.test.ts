@@ -135,6 +135,13 @@ test("a survey's progress names each restart's cause and where its demand rose",
         lines.at(-1)!,
         /^Survey progress: attempt 2, .*; last restart: NativeRecordStorageRequired: .* at .*survey-restart\.ts:2$/,
     );
+    // Each restart is reported as it happens.
+    assert.equal(
+        lines.filter((line) =>
+            /^Survey restart after attempt 1: NativeRecordStorageRequired: /.test(line),
+        ).length,
+        1,
+    );
 });
 
 test("a member call through a refused binding is a cascade of its declaration", () => {
