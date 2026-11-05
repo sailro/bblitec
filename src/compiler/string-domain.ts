@@ -1075,6 +1075,20 @@ class StringDomain {
         this.graph = sourceGraph(context.checker, context.sourceFiles());
     }
 
+    /** Whether an object literal's type declares a member it always has. */
+    private requiredMember(
+        literal: ts.ObjectLiteralExpression,
+        key: string,
+    ): boolean {
+        const member = this.context.checker
+            .getTypeAtLocation(literal)
+            .getProperty(key);
+        return (
+            member !== undefined &&
+            (member.flags & ts.SymbolFlags.Optional) === 0
+        );
+    }
+
     private exceeded(): UnboundedDomain {
         return new UnboundedDomain(
             `${this.use.label} domain exceeds ${candidateLimit} candidates.`,
@@ -1700,9 +1714,11 @@ class StringDomain {
                       )
                     : // A record without the member reads undefined, so a
                       // read through it throws (or, spread, supplies nothing).
+                      // A member the record's type requires is a spread's.
                       this.spreadSource ||
                         (projection.length > 1 && !this.optionalProjection) ||
-                        this.nullishDepths.includes(projection.length - 1)
+                        this.nullishDepths.includes(projection.length - 1) ||
+                        (spreads.length > 0 && this.requiredMember(node, key))
                       ? nothing
                       : undefined;
             return spreads.length

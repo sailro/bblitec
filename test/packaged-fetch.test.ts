@@ -185,6 +185,41 @@ test("a generation-time fetch of a runtime-selected file reads its text and JSON
     runPackagedProgram(t, directory, result.cpp);
 });
 
+test("a URL member a record takes from a spread call result keeps that member's domain", (t) => {
+    const directory = resolve("artifacts/packaged-fetch-spread-member");
+    const publicDir = join(directory, "public");
+    mkdirSync(join(publicDir, "data"), { recursive: true });
+    writeFileSync(join(publicDir, "data", "a.json"), '{"name":"a"}');
+    writeFileSync(join(publicDir, "data", "b.json"), '{"name":"b"}');
+    // The record lacks `file` itself; its type requires it, so the spread
+    // source supplies it on every path.
+    const result = compileSource(
+        `
+        interface Options { dir?: string; file: string; size: number }
+        const FILES = { a: { file: "a.json" }, b: { file: "b.json" } } as const;
+        function preset(kind: "a" | "b") {
+            return { dir: "data", file: FILES[kind].file, size: 1 } as const;
+        }
+        async function load(options: Options): Promise<string> {
+            const url = \`/\${options.dir ?? "other"}/\${options.file}\`;
+            return ((await (await fetch(url)).json()) as { name: string }).name;
+        }
+        const kinds: ("a" | "b")[] = Date.now() < 0 ? ["b"] : ["a", "b"];
+        const names: string[] = [];
+        for (const kind of kinds) names.push(await load({ ...preset(kind), size: 2 }));
+        if (names.join() !== "a,b") throw new Error(names.join());
+    `,
+        { fileName: join(directory, "entry.ts"), publicDir },
+    );
+    assert.equal(result.manifest.assets.length, 2);
+    for (const asset of result.manifest.assets) {
+        const output = join(directory, asset.output);
+        mkdirSync(dirname(output), { recursive: true });
+        copyFileSync(resolve(directory, asset.source), output);
+    }
+    runPackagedProgram(t, directory, result.cpp);
+});
+
 function runPackagedProgram(
     t: test.TestContext,
     directory: string,
