@@ -252,7 +252,10 @@ function dependedSelectors(
                     withOutcomes(
                         context,
                         [...fixed, ...candidates],
-                        [...fixed.map((selector) => selector.outcomes[0]), ...outcomes],
+                        [
+                            ...fixed.map((selector) => selector.outcomes[0]),
+                            ...outcomes,
+                        ],
                         compile,
                     ),
                 () => false,
@@ -486,18 +489,31 @@ function splitCall(
         });
         return name;
     };
-    const tests = selectors.map((selector) => {
-        if (selector.kind !== "optional-boolean")
-            return { truth: pin(context.conditions.compileCondition(selector.test)) };
-        const value = context.compileValue(selector.test);
-        const present = presenceCpp(value);
-        const truth = context.dataLowerer.truthinessCondition(
-            context.dataLowerer.narrowOptional(value, selector.test, true),
-        );
-        if (present === undefined || truth === undefined) return undefined;
-        const presence = pin(present);
-        return { presence, truth: pin(`${presence} && ${truth}`) };
-    });
+    const tests = selectors.map(
+        (selector): { truth?: string; presence?: string } | undefined => {
+            if (selector.kind !== "optional-boolean")
+                return {
+                    truth: pin(
+                        context.conditions.compileCondition(selector.test),
+                    ),
+                };
+            const value = context.compileValue(selector.test);
+            const present = presenceCpp(value);
+            const truth = context.dataLowerer.truthinessCondition(
+                context.dataLowerer.narrowOptional(value, selector.test, true),
+            );
+            if (present === undefined || truth === undefined) return undefined;
+            const presence = pin(present);
+            // A falsy optional boolean's arms tell false from absent by
+            // presence alone.
+            return {
+                presence,
+                ...(selector.outcomes.includes(0)
+                    ? { truth: pin(`${presence} && ${truth}`) }
+                    : {}),
+            };
+        },
+    );
     if (tests.some((test) => test === undefined)) return undefined;
     const resultTsType = context.checker.getTypeAtLocation(call);
     const resultType = isVoid(resultTsType)
@@ -541,7 +557,7 @@ function splitCall(
         // Outcome 0 is the truth test; an optional boolean's 1 its presence
         // (after 0, false); the last outcome is the rest.
         const guard = (outcome: number): string =>
-            outcome === 0 ? test.truth : test.presence!;
+            outcome === 0 ? test.truth! : test.presence!;
         selector.outcomes.forEach((outcome, index) => {
             const last = index === selector.outcomes.length - 1;
             context.emit(
@@ -549,7 +565,10 @@ function splitCall(
                     ? { kind: "open", code: `if (${guard(outcome)}) {` }
                     : last
                       ? { kind: "branch", code: "} else {" }
-                      : { kind: "branch", code: `} else if (${guard(outcome)}) {` },
+                      : {
+                            kind: "branch",
+                            code: `} else if (${guard(outcome)}) {`,
+                        },
             );
             context.increaseIndent();
             branch(depth + 1, [...outcomes, outcome]);
