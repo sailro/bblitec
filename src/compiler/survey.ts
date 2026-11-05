@@ -109,11 +109,45 @@ function enclosingFunctionName(statement: ts.Statement): string {
         : "<module>";
 }
 
+/** How a survey reports while it runs: a line at most every `intervalMs`. */
+export interface SurveyProgress {
+    readonly report: (line: string) => void;
+    readonly intervalMs: number;
+}
+
 export class SurveyCollector {
     /** @unjournaled The census counts refusals a rollback discards too. */
     private readonly realms = new Map<string, Attempt>();
     /** @unjournaled The census counts refusals a rollback discards too. */
     private current: Attempt | undefined;
+    /** @unjournaled When the last progress line was reported. */
+    private reportedAt = Date.now();
+
+    public constructor(private readonly progress?: SurveyProgress) {}
+
+    /**
+     * A progress line once `intervalMs` passed: the lowerings and refused
+     * statements counted so far, and the statement starting to lower.
+     */
+    private reportProgress(statement: ts.Statement): void {
+        if (!this.progress) return;
+        const now = Date.now();
+        if (now - this.reportedAt < this.progress.intervalMs) return;
+        this.reportedAt = now;
+        let attempted = 0;
+        const refused = new Set<ts.Statement>();
+        for (const attempt of this.realms.values()) {
+            attempted += attempt.attempted;
+            for (const census of attempt.refusals.values())
+                for (const rolledBack of census.rolledBack)
+                    refused.add(rolledBack);
+        }
+        const location = sourceLocation(statement);
+        this.progress.report(
+            `Survey progress: ${attempted} statement lowerings, ${refused.size} refused; lowering ` +
+                `${location.file.fileName}:${location.line} (${enclosingFunctionName(statement)})`,
+        );
+    }
 
     /** Runs one realm's compile attempt, replacing the census a previous attempt of that realm left. */
     public attempt<T>(realm: string, run: () => T): T {
@@ -144,6 +178,7 @@ export class SurveyCollector {
             return;
         }
         attempt.attempted++;
+        this.reportProgress(statement);
         try {
             context.transaction(lower);
         } catch (error) {

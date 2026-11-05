@@ -83,6 +83,7 @@ import {
 import {
     activeSurvey,
     SurveyCollector,
+    type SurveyProgress,
     withSurvey,
     type SurveyReport,
 } from "./compiler/survey.js";
@@ -681,8 +682,9 @@ interface SurveyOutcome {
 export function surveySource(
     source: string,
     options: CompileOptions = {},
+    progress?: SurveyProgress,
 ): SurveyOutcome {
-    const collector = new SurveyCollector();
+    const collector = new SurveyCollector(progress);
     return withSurvey(collector, () => {
         try {
             const result = compileSourceApplication(source, options);

@@ -97,6 +97,25 @@ test("a survey records every refusal it reaches and continues past each", () => 
     for (const refusal of report.refusals) assert.equal(refusal.occurrences, 1);
 });
 
+test("a survey reports its progress and the statement it lowers", () => {
+    const lines: string[] = [];
+    const { report } = surveySource(
+        refusing,
+        { fileName: resolve("survey-progress.ts") },
+        { report: (line) => lines.push(line), intervalMs: 0 },
+    );
+    assert.equal(lines.length, report.statements.attempted);
+    // The last line counts every refusal recorded before that statement.
+    assert.match(
+        lines.at(-1)!,
+        /^Survey progress: \d+ statement lowerings, [0-3] refused; lowering .*survey-progress\.ts:\d+ \(.+\)$/,
+    );
+    assert.ok(
+        lines.some((line) => / \(second\)$/.test(line)),
+        lines.join(" | "),
+    );
+});
+
 test("a member call through a refused binding is a cascade of its declaration", () => {
     // `handle` is never bound: its member calls name it, not a gap of their own.
     // FinalizationRegistry is deliberately outside the supported runtime.
