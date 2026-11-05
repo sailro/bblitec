@@ -23,6 +23,27 @@ export function callTypeArguments(
     if (!parameters || parameters.length === 0) {
         return undefined;
     }
+    const bindings = determinedTypeArguments(checker, call, declaration);
+    for (const parameter of parameters)
+        if (!bindings.has(checker.getTypeAtLocation(parameter).symbol))
+            fail(
+                call,
+                `Type parameter '${parameter.name.text}' is not determined by this call's arguments; spell it explicitly.`,
+            );
+    return bindings;
+}
+
+/**
+ * The type parameters of `declaration` one call determines, each with the
+ * type it stands for there ({@link callTypeArguments}); one no argument
+ * determines is absent.
+ */
+export function determinedTypeArguments(
+    checker: ts.TypeChecker,
+    call: ts.CallExpression | ts.NewExpression,
+    declaration: ts.SignatureDeclaration,
+): ReadonlyMap<ts.Symbol, ts.Type> {
+    const parameters = declaration.typeParameters ?? [];
     const parameterSymbols = parameters.map(
         (parameter) => checker.getTypeAtLocation(parameter).symbol,
     );
@@ -64,12 +85,6 @@ export function callTypeArguments(
             !checker.isTypeAssignableTo(checker.getUnknownType(), constraint)
         )
             bindings.set(symbol, constraint);
-        if (!bindings.has(symbol)) {
-            fail(
-                call,
-                `Type parameter '${parameter.name.text}' is not determined by this call's arguments; spell it explicitly.`,
-            );
-        }
     });
     return bindings;
 }
