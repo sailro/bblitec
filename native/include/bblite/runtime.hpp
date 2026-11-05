@@ -1574,6 +1574,33 @@ struct RenderTargetLifecycle {
     virtual js::Callback<void()> subscribe(std::function<void()> callback) = 0;
 };
 
+enum class TextureFilter {
+    nearest,
+    linear,
+};
+
+enum class TextureMipmapMode {
+    nearest,
+    linear,
+};
+
+enum class TextureAddressMode {
+    repeat,
+    clamp,
+    mirror,
+};
+
+struct TextureSamplerState {
+    TextureFilter min_filter = TextureFilter::linear;
+    TextureFilter mag_filter = TextureFilter::linear;
+    TextureMipmapMode mipmap_mode = TextureMipmapMode::linear;
+    TextureAddressMode address_u = TextureAddressMode::repeat;
+    TextureAddressMode address_v = TextureAddressMode::repeat;
+    float max_anisotropy = 1.0f;
+    float max_lod = 1000.0f;
+    bool operator==(const TextureSamplerState&) const = default;
+};
+
 struct RenderTargetRecord {
     std::uint32_t samples = 1;
     bool has_color = true;
@@ -1624,6 +1651,12 @@ struct RenderTargetRecord {
     /** The CSM static cache copies this depth into another target, or out of one. */
     bool copy_source = false;
     bool copy_destination = false;
+    /**
+     * The sampler a material binds this target's texture, or its depth
+     * facade, through once `texture.sampler` was written; the backend's
+     * default otherwise.
+     */
+    std::optional<TextureSamplerState> sampler{}, depth_sampler{};
 };
 
 /** The pin's mixed cache tuple, named by its seven identity/value inputs. */
@@ -1767,33 +1800,6 @@ struct PbrMaterialOptions {
     bool use_physical_light_falloff;
     // Generation profile identity is independent of the runtime handle count.
     std::uint32_t composition_profile;
-};
-
-enum class TextureFilter {
-    nearest,
-    linear,
-};
-
-enum class TextureMipmapMode {
-    nearest,
-    linear,
-};
-
-enum class TextureAddressMode {
-    repeat,
-    clamp,
-    mirror,
-};
-
-struct TextureSamplerState {
-    TextureFilter min_filter = TextureFilter::linear;
-    TextureFilter mag_filter = TextureFilter::linear;
-    TextureMipmapMode mipmap_mode = TextureMipmapMode::linear;
-    TextureAddressMode address_u = TextureAddressMode::repeat;
-    TextureAddressMode address_v = TextureAddressMode::repeat;
-    float max_anisotropy = 1.0f;
-    float max_lod = 1000.0f;
-    bool operator==(const TextureSamplerState&) const = default;
 };
 
 /**
@@ -4536,6 +4542,16 @@ struct GpuTextureIdentity {
     std::uint64_t object = 0;
     friend bool operator==(const GpuTextureIdentity&, const GpuTextureIdentity&) = default;
 };
+/**
+ * A `getOrCreateSampler` sampler: the pool keeps one object per device and
+ * canonical descriptor, so a sampler is that pair and equal pairs are one
+ * object.
+ */
+struct GpuSampler {
+    GpuDeviceIdentity device{};
+    TextureSamplerState state{};
+    friend bool operator==(const GpuSampler&, const GpuSampler&) = default;
+};
 struct EnvironmentIdentity {
     Engine* engine = nullptr;
     std::shared_ptr<SceneState> scene;
@@ -5289,6 +5305,23 @@ inline GpuTextureIdentity publish_gpu_texture_identity(Engine& engine) {
 
 inline GpuDeviceIdentity gpu_device_identity(Engine& engine) {
     return {&engine, engine.device_generation};
+}
+/** `texture.sampler = sampler` on a render target's texture or depth facade. */
+inline void set_render_texture_sampler(Engine& engine, const RenderTextureRef& texture,
+                                       const GpuSampler& sampler) {
+    if (texture.source != RenderTextureSource::render_target)
+        throw std::runtime_error("A sampler is set only on a render target's texture.");
+    auto& target = handle_at(engine.render_targets, texture.target);
+    (texture.depth_only ? target.depth_sampler : target.sampler) = sampler.state;
+}
+/** The sampler `texture.sampler` set for a bound render texture, or none. */
+inline const TextureSamplerState* render_texture_sampler(const Engine& engine,
+                                                         const RenderTextureRef& texture) {
+    if (texture.source != RenderTextureSource::render_target)
+        return nullptr;
+    const auto& target = handle_at(engine.render_targets, texture.target);
+    const auto& sampler = texture.depth_only ? target.depth_sampler : target.sampler;
+    return sampler ? &*sampler : nullptr;
 }
 EnvironmentIdentity environment_identity(const Scene& scene);
 GpuTextureIdentity environment_texture_identity(const EnvironmentIdentity& environment);

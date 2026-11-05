@@ -150,6 +150,8 @@ struct DawnShaderBindings {
     DawnBuffer fragment_uniforms{};
     /** The render-target views the resource group was built from, by sampler slot. */
     std::vector<WGPUTextureView> render_views;
+    /** And the samplers a written `texture.sampler` chose for them. */
+    std::vector<WGPUSampler> render_samplers;
     std::optional<std::uint64_t> resource_version;
 };
 
@@ -1025,6 +1027,8 @@ struct DawnState : DawnDevice {
     WGPUSampler clamp_sampler = nullptr;
     WGPUSampler ground_sampler = nullptr;
     WGPUSampler nearest_sampler = nullptr;
+    /** One sampler per state a render target's written `texture.sampler` names. */
+    std::vector<std::pair<TextureSamplerState, WGPUSampler>> render_texture_samplers;
 #if BBLITE_HAS_EFFECT_TASK
     // One built pass per effect render task, keyed by task index and built
     // lazily against the target's own format and sample count -- the pin
@@ -1905,6 +1909,9 @@ struct DawnState : DawnDevice {
 #endif
         if (ground_sampler)
             wgpuSamplerRelease(ground_sampler);
+        for (const auto& [_, sampler] : render_texture_samplers)
+            wgpuSamplerRelease(sampler);
+        render_texture_samplers.clear();
         if (clamp_sampler)
             wgpuSamplerRelease(clamp_sampler);
         if (default_sampler)

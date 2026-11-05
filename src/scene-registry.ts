@@ -1319,6 +1319,23 @@ const sceneInputs: readonly SceneInput[] = [
         },
     },
     {
+        // Two 4x4 checker targets magnified through a shader material: the
+        // texture's own bilinear sampler on the left, a nearest one written
+        // to `texture.sampler` on the right.
+        id: "regression-render-target-sampler",
+        name: "Regression - Render Target Sampler",
+        source: "examples/regression-render-target-sampler.ts",
+        sourceOrigin: "bblitec-regression",
+        title: "Babylon Lite Native - Render Target Sampler",
+        parity: {
+            maxFullMad: 0.001,
+            maxForegroundMad: 0.001,
+            backgroundColor: [26, 26, 38],
+            backgroundThreshold: 30,
+            nativeEnvironment: fixedCaptureEnvironment(),
+        },
+    },
+    {
         // Scene 214 with enableCsmStaticCache: quiet casters demote into
         // the static cache, and a caster moved every frame stays dynamic
         // and draws over the copied cache layers.

@@ -265,6 +265,9 @@ void release(GpuState& state) {
         SDL_ReleaseGPUSampler(state.device, state.transmission_sampler);
     }
 #endif
+    for (const auto& [_, sampler] : state.render_texture_samplers)
+        SDL_ReleaseGPUSampler(state.device, sampler);
+    state.render_texture_samplers.clear();
     if (state.ground_sampler) {
         SDL_ReleaseGPUSampler(state.device, state.ground_sampler);
     }

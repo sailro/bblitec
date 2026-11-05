@@ -107,6 +107,10 @@ import {
 } from "./navigation.js";
 import { compileAudioIntrinsic, type AudioIntrinsicContext } from "./audio.js";
 import { compileVatIntrinsic, type VatIntrinsicContext } from "./vat.js";
+import {
+    compileSamplerIntrinsic,
+    type SamplerIntrinsicContext,
+} from "./sampler.js";
 import type { Value } from "../types.js";
 import { compileTextIntrinsic, type TextIntrinsicContext } from "./text.js";
 import {
@@ -143,6 +147,7 @@ interface IntrinsicContext
         SpriteIntrinsicContext,
         GizmoIntrinsicContext,
         VatIntrinsicContext,
+        SamplerIntrinsicContext,
         TextIntrinsicContext,
         EffectIntrinsicContext {}
 
@@ -268,6 +273,7 @@ const intrinsicCompilers: readonly IntrinsicCompiler[] = [
     compilePickingIntrinsic,
     compileGizmoIntrinsic,
     compileVatIntrinsic,
+    compileSamplerIntrinsic,
 ];
 
 export interface IntrinsicRoute {

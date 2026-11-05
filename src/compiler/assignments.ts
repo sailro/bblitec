@@ -4076,6 +4076,29 @@ function emitBoundMinAssignment(
     return false;
 }
 
+/**
+ * `texture.sampler = sampler` on a render target's texture or depth facade:
+ * the sampler a material binds it through from then on, as upstream binds
+ * `tex.sampler`.
+ */
+function emitSamplerAssignment(
+    context: AssignmentContext,
+    state: TargetPropertyAssignment,
+): boolean {
+    const { expression, target, property } = state;
+    if (property !== "sampler" || target.kind !== "render-texture")
+        return false;
+    requireSimpleAssignment(context, expression, "texture sampler");
+    const sampler = context.compileValue(expression.right);
+    context.expectKind(sampler, "gpu-sampler", expression.right);
+    context.expectSameEngine(target, sampler, expression);
+    context.emit({
+        kind: "expression",
+        code: `bbl::set_render_texture_sampler(${context.requireEngine(target, expression)}, ${target.cpp}, ${sampler.cpp});`,
+    });
+    return true;
+}
+
 function emitSkeletonAssignment(
     context: AssignmentContext,
     state: TargetPropertyAssignment,
@@ -4733,6 +4756,7 @@ const targetPropertyHandlers1 = new EmissionMap<
     ["boundMax", emitBoundMinAssignment],
     ["skeleton", emitSkeletonAssignment],
     ["morphTargets", emitMorphTargetsAssignment],
+    ["sampler", emitSamplerAssignment],
 ]);
 
 const targetPropertyHandlers2 = new EmissionMap<

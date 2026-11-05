@@ -1677,6 +1677,7 @@ export type ValueKind =
     // device operation is part of the compiled surface.
     | "gpu-device"
     | "gpu-texture"
+    | "gpu-sampler"
     | "device-recovery"
     | "gpu-environment"
     | "procedural-sky-environment"

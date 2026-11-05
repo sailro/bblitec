@@ -835,6 +835,8 @@ struct GpuState : SdlGpuDevice {
     SDL_GPUSampler* sampler = nullptr;
     SDL_GPUSampler* background_sampler = nullptr;
     SDL_GPUSampler* ground_sampler = nullptr;
+    /** One sampler per state a render target's written `texture.sampler` names. */
+    std::vector<std::pair<TextureSamplerState, SDL_GPUSampler*>> render_texture_samplers;
 #if BBLITE_GPU_MORPH_STORAGE
     // Shared zero-count pair bound for draws whose mesh has no morph
     // targets; the shader's storage loop then runs zero iterations.

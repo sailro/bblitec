@@ -8,6 +8,8 @@ const handleCppTypes: Record<HandleKind, string> = {
     asset: "bbl::AssetHandle",
     "gpu-device": "bbl::GpuDeviceIdentity",
     "gpu-texture": "bbl::GpuTextureIdentity",
+    // A pooled sampler is its device and canonical descriptor: equal ones are one object.
+    "gpu-sampler": "bbl::GpuSampler",
     "device-recovery": "std::shared_ptr<bbl::DeviceRecoveryRegistration>",
     "gpu-environment": "bbl::EnvironmentIdentity",
     "procedural-sky-environment":

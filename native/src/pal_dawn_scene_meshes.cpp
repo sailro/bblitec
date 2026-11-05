@@ -24,6 +24,18 @@ namespace bbl::pal {
 inline namespace dawn_scene {
 
 #if (BBLITE_HAS_DAWN && BBLITE_HAS_PBR_RENDERER)
+/** The device's one sampler for a state a render target's `texture.sampler` names. */
+WGPUSampler dawn_render_texture_sampler(DawnState& state, const TextureSamplerState& sampler) {
+    for (const auto& [kept, created] : state.render_texture_samplers)
+        if (kept == sampler)
+            return created;
+    WGPUSampler created = create_texture_sampler(state.device, sampler);
+    if (!created)
+        dawn_error("render texture sampler creation failed.");
+    state.render_texture_samplers.emplace_back(sampler, created);
+    return created;
+}
+
 void release_dawn_shader_bindings(DawnShaderBindings& bindings) {
     if (bindings.material)
         bindings.material.reset();
@@ -294,6 +306,9 @@ DawnShaderBindings& shader_bindings_for(DawnState& state, [[maybe_unused]] const
                                            reference->depth_only ||
                                                pal::render_target_samples_depth(target))
                     .second;
+            // The pin binds the texture's own sampler (`tex.sampler`).
+            if (const TextureSamplerState* sampler = render_texture_sampler(engine, *reference))
+                render_samplers[slot] = dawn_render_texture_sampler(state, *sampler);
         }
     }
     const auto existing = mesh.shader_bindings.find(key);
@@ -302,6 +317,7 @@ DawnShaderBindings& shader_bindings_for(DawnState& state, [[maybe_unused]] const
         if ((!info.vertex.present || existing->second.scene) &&
             (!info.fragment.present || existing->second.material) &&
             existing->second.render_views == render_views &&
+            existing->second.render_samplers == render_samplers &&
             existing->second.resource_version == material.shader_resource_version)
             return existing->second;
         bindings = std::move(existing->second);
@@ -453,6 +469,7 @@ DawnShaderBindings& shader_bindings_for(DawnState& state, [[maybe_unused]] const
         }
     }
     bindings.render_views = render_views;
+    bindings.render_samplers = render_samplers;
     bindings.resource_version = material.shader_resource_version;
     return mesh.shader_bindings.emplace(key, std::move(bindings)).first->second;
 }

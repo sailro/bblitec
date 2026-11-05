@@ -317,6 +317,7 @@ Repository fixtures against pinned Babylon Lite.
 | no-camera-floating-origin | <img src="images/scenes/regression-no-camera-floating-origin.png" alt="No camera floating origin rendering" width="160"> | pixel‑perfect | pixel‑perfect | No Camera Floating Origin |
 | texture-region-writes | <img src="images/scenes/regression-texture-region-writes.png" alt="Texture region writes rendering" width="160"> | pixel‑perfect | pixel‑perfect | Texture Region Writes |
 | vat-time | <img src="images/scenes/regression-vat-time.png" alt="VAT time rendering" width="160"> | pixel‑perfect | pixel‑perfect | VAT Time |
+| render-target-sampler | <img src="images/scenes/regression-render-target-sampler.png" alt="Render target sampler rendering" width="160"> | pixel‑perfect | pixel‑perfect | Render Target Sampler |
 | csm-static-cache | <img src="images/scenes/regression-csm-static-cache.png" alt="CSM static cache rendering" width="160"> | 0.000/0.000 | 0.000/0.000 | CSM Static Cache |
 | render-task-transmission | <img src="images/scenes/regression-render-task-transmission.png" alt="Render task transmission rendering" width="160"> | pixel‑perfect | pixel‑perfect | Render Task Transmission |
 | glTF-track-clamp | <img src="images/scenes/regression-track-clamp.png" alt="glTF track clamp rendering" width="160"> | pixel‑perfect | pixel‑perfect | glTF Track Clamp |

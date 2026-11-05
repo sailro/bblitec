@@ -204,8 +204,10 @@ texels a sprite atlas copied throw. Other runtime texture uploads and 3D texture
 
 `loadGltf` with a runtime URL, in runtime control flow or repeated out of order profiles its documents: each composes
 once and its containers announce their rows by path. A runtime URL skips documents missing a buffer or image.
-`loadTexture2D` address modes may be runtime members of a string-literal union. A clone of a glTF root held as a
-`SceneNode` (an async result field) checks at run time that it is an imported root for `createHierarchyInstancePool`.
+`loadTexture2D` address modes may be runtime members of a string-literal union. `getOrCreateSampler` keys samplers
+as the pool does (no comparison, LOD floor or W mode); a render target texture's `sampler` write binds in shader
+materials. A clone of a glTF root held as a `SceneNode` (an async result field) checks at run time that it is an
+imported root for `createHierarchyInstancePool`.
 
 `KHR_texture_basisu` images package from external URIs or embedded buffer views. Loaded albedo reads retain
 the pinned extension's texture identities; material extensions run as the pin's own features. Separate-image ORM
