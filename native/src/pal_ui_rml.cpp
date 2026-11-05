@@ -1414,6 +1414,7 @@ std::string ui_document_url(std::string url, std::string_view deployment) {
             return absolute.pathname() + absolute.search() + absolute.hash();
     } catch (const js::NamedError&) {
         // A relative URL is already the document's own.
+        return url;
     }
     return url;
 }

@@ -309,12 +309,7 @@ function compilePreparedVat(
             call,
             "createVatBakeResults returns VatBakeResult handles.",
         );
-    const results = context.allocateTemporaryCppName("vat_bakes");
-    context.emit(
-        `${context.dataTypes.cppType(resultType)} ${results} = ${created};`,
-    );
-    context.dataLowerer.registerLocal(results, "owned");
-    return { kind: "data", cpp: results, dataType: resultType };
+    return { kind: "data", cpp: created, dataType: resultType };
 }
 
 /**
