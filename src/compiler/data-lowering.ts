@@ -9407,9 +9407,14 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         );
     }
 
-    /** Promise-producing callbacks need retained invocation even inside a synchronous iterator. */
+    /**
+     * Promise-producing callbacks need retained invocation even inside a
+     * synchronous iterator; one the caller calls with values of its own
+     * takes their storage (`passed`).
+     */
     public promiseCallbackType(
         callback: ts.Expression,
+        passed?: readonly DataType[],
     ): DataType<"function"> | undefined {
         if (!this.context.options.workers) return undefined;
         const signature = callSignatures(
@@ -9424,7 +9429,13 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             ) !== "Promise"
         )
             return undefined;
-        const type = this.dataTypeAt(callback);
+        const type = passed
+            ? this.context.dataTypes.passedCallbackType(
+                  this.context.checker.getTypeAtLocation(callback),
+                  callback,
+                  passed,
+              )
+            : this.dataTypeAt(callback);
         if (type?.kind !== "function" || type.result?.kind !== "promise")
             return this.context.fail(
                 callback,
@@ -9439,6 +9450,8 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         label: string,
         /** The value of a non-local `callback` its caller already read. */
         read?: Value,
+        /** The storage of the values the caller calls an async `callback` with. */
+        passed?: readonly DataType[],
     ): Value | undefined {
         const boundary = this.context.nativeBindingCheckpoint();
         const local = localCallback(callback) !== undefined;
@@ -9450,7 +9463,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         const type =
             value?.dataType?.kind === "function"
                 ? value.dataType
-                : this.promiseCallbackType(callback);
+                : this.promiseCallbackType(callback, passed);
         if (!type) return undefined;
         if (value) this.context.useNativeValue(value);
         const cpp = value
@@ -9543,9 +9556,14 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             sourceType &&
                 `${!held && narrowed.readOnly ? "const " : ""}${sourceType}`,
         );
+        // The callback receives each element, its index and the receiver.
         const storedCallback = identity
             ? undefined
-            : this.prepareCallbackValue(callback, label);
+            : this.prepareCallbackValue(callback, label, undefined, [
+                  dataType.element,
+                  { kind: "number" },
+                  dataType,
+              ]);
         if (!local && !storedCallback && !identity)
             this.context.fail(
                 callback,

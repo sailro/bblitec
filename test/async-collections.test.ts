@@ -113,3 +113,45 @@ test("collection callbacks start independent async activations and keep promise 
         expectedOutput: "",
     });
 });
+
+test("an async collection callback takes the storage of the elements it receives", (t) => {
+    const directory = resolve("artifacts/async-collections-dynamic");
+    mkdirSync(directory, { recursive: true });
+    writeFileSync(join(directory, "worker.ts"), "self.close();");
+    // Parsed records hold their `unknown` member dynamically; the stored
+    // callback receives each such element as the receiver holds it.
+    const result = compileSource(
+        `
+        const worker=new Worker(new URL("./worker.ts",import.meta.url),{type:"module"});
+        worker.terminate();
+        interface Meta{family?:unknown}
+        function familyOf(metadata:Readonly<Meta>):string{return metadata.family===undefined?"none":String(metadata.family);}
+        interface Entry{id?:string;file?:string;family?:unknown}
+        void(async()=>{
+            const parsed=JSON.parse('{"items":[{"id":"a","file":"x","family":"f"},{"id":"b"},{"file":"y","family":2}]}') as {items?:Entry[]};
+            const entries=(parsed.items??[]).filter((entry):entry is Entry&{file:string}=>typeof entry.file==="string");
+            let started=0;
+            const pending=entries.map(async(entry,index)=>{
+                started++;
+                await Promise.resolve();
+                return (entry.id??entry.file)+":"+familyOf(entry)+":"+index;
+            });
+            if(started!==2)throw new Error("map scheduling");
+            const read=await Promise.all(pending);
+            if(read.join(",")!=="a:f:0,y:2:1")throw new Error("dynamic elements: "+read.join(","));
+            globalThis.close();
+        })();
+    `,
+        { fileName: join(directory, "entry.ts") },
+    );
+    const tools = optionalNativeFixtureTools(false);
+    if (!tools) {
+        t.skip("Native fixture compiler unavailable.");
+        return;
+    }
+    runGeneratedProgram(tools, "async-collections-dynamic", result.cpp, {
+        flags: ["/DBBLITE_WORKERS=1"],
+        timeoutMs: 10000,
+        expectedOutput: "",
+    });
+});

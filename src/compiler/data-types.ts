@@ -4797,6 +4797,28 @@ export class DataTypeRegistry {
     /** @unjournaled Scoped recursion guard, emptied by finally after each query. */
     private readonly finiteArraysInProgress = new Set<ts.Node>();
 
+    /**
+     * The function type of a callback a method calls with values of its own:
+     * each parameter the callback declares takes the storage of the value
+     * passed in its position, as an inline callback binds that value.
+     */
+    public passedCallbackType(
+        type: ts.Type,
+        node: ts.Node,
+        passed: readonly DataType[],
+    ): DataType<"function"> | undefined {
+        const mapped = this.fromFunctionType(
+            type,
+            node,
+            false,
+            undefined,
+            undefined,
+            undefined,
+            passed,
+        );
+        return mapped?.kind === "function" ? mapped : undefined;
+    }
+
     /** Unknown arrays acquire only layouts proven by their source writes. */
     private finiteArrayType(node: ts.Node): DataType<"vector"> | undefined {
         const sources = this.arraySources;
@@ -4987,7 +5009,10 @@ export class DataTypeRegistry {
         };
     }
 
-    /** A stored JavaScript function with a fully native data signature. */
+    /**
+     * A stored JavaScript function with a fully native data signature. A
+     * parameter in a position `passed` names takes that value's storage.
+     */
     private fromFunctionType(
         type: ts.Type,
         node: ts.Node,
@@ -4995,6 +5020,7 @@ export class DataTypeRegistry {
         parameterOverrides?: readonly (ts.Type | undefined)[],
         resultOverride?: ts.Signature,
         restArguments?: readonly ts.Type[],
+        passed?: readonly DataType[],
     ): DataType | undefined {
         const signatures = callSignatures(this.checker, type, "exact");
         if (signatures.length !== 1) return undefined;
@@ -5024,6 +5050,7 @@ export class DataTypeRegistry {
                 (parameter) => !this.substituteTypeParameter(parameter),
             ) ||
             (!parameterOverrides &&
+                !passed &&
                 signature
                     .getParameters()
                     .some(
@@ -5109,8 +5136,10 @@ export class DataTypeRegistry {
                 defaulted
             )
                 optionalParameters.push(index - erasedParameters.length);
+            const given = "symbol" in source ? passed?.[index] : undefined;
             const mapped =
-                restArguments &&
+                given ??
+                (restArguments &&
                 "symbol" in source &&
                 this.isUnknownRestParameter(source.symbol)
                     ? this.storedRestArray(restArguments, location)
@@ -5147,7 +5176,7 @@ export class DataTypeRegistry {
                         (declaredType.flags & ts.TypeFlags.Unknown) !== 0 &&
                         this.holdsOnlyDynamicValues(override)
                             ? { kind: "json" as const }
-                            : undefined));
+                            : undefined)));
             if (parameter?.dotDotDotToken) {
                 if (mapped?.kind !== "vector") return [undefined];
                 restParameter = index - erasedParameters.length;
