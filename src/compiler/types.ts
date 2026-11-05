@@ -1743,13 +1743,6 @@ export type ValueKind =
      * row read below.
      */
     | "vat-clip-map"
-    /**
-     * One `VatClip` -- a clip's first row, frame count and native rate. The
-     * row map is filled by the bake, so this is a native record read rather
-     * than a generation-time constant: deciding the layout here would be a
-     * second implementation of the bake's own frame arithmetic.
-     */
-    | "vat-clip"
     | "node-particle-graph"
     | "node-particle-set"
     | "node-particle-system"

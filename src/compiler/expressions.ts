@@ -4573,11 +4573,22 @@ export class ExpressionLowerer {
             name: row,
             initializer: `bbl::vat_clip_row(${engine}, ${map.cpp}, ${clip})`,
         });
+        // Its fields are the row's, so a record store copies them; a
+        // `VatClip` is readonly, so the copy cannot be written apart.
+        const number = (field: string): Value => ({
+            kind: "number",
+            cpp: `${row}.${field}`,
+        });
         return {
-            kind: "vat-clip",
+            kind: "record",
             cpp: row,
             engineCpp: engine,
             optionalFoundCpp: `(${row}.frame_count != 0.0)`,
+            recordProperties: {
+                fromRow: number("from_row"),
+                frameCount: number("frame_count"),
+                fps: number("fps"),
+            },
         };
     }
 

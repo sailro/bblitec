@@ -618,3 +618,34 @@ test("mesh.vat tests the attach record and its second influence pair is absent",
     assert.match(result.cpp, /\.has_vat/);
     assert.match(result.cpp, /position\.x = \(0\.0 \+ /);
 });
+
+test("a bake's clip stored as a record copies the row, and an absent clip stores none", () => {
+    const result = compileSource(`
+        import { addToScene, attachVat, createEngine, createSceneContext, createVatBakeResults, loadGltf, registerScene, startEngine, type Mesh, type PreparedVatBakeResult, type TransformNode, type VatClip } from "@babylonjs/lite";
+        function findSkinned(node: TransformNode): Mesh | null {
+            const m = node as unknown as Mesh;
+            if (m.skeleton) return m;
+            for (const c of (node.children ?? []) as TransformNode[]) { const hit = findSkinned(c); if (hit) return hit; }
+            return null;
+        }
+        const engine = await createEngine(document.getElementById("renderCanvas") as HTMLCanvasElement);
+        const scene = createSceneContext(engine);
+        const shark = await loadGltf(engine, "https://models.babylonjs.com/shark.glb");
+        addToScene(scene, shark);
+        const mesh = findSkinned(shark.entities[0] as TransformNode);
+        if (!mesh) throw new Error("skinned");
+        const prepared: PreparedVatBakeResult[] = [{ boneCount: 2, frameCount: 2, data: new Float32Array(64), clips: { swim: { fromRow: 0, frameCount: 2, fps: 30 } } }];
+        const baked = createVatBakeResults(engine, prepared)[0]!;
+        const slots: (string | undefined)[] = ["swim", undefined, "idle"];
+        let gait: (VatClip | undefined)[] = [];
+        gait = slots.map((n) => (n ? baked.clips[n] : undefined));
+        attachVat(engine, mesh, baked, "swim");
+        mesh.position.x = gait[2] ? 1 : gait[0] ? gait[0].fromRow + gait[0].frameCount : -1;
+        await registerScene(scene);
+        await startEngine(engine);
+    `);
+    assert.match(
+        result.cpp,
+        /if \(!\(\(\w+\.frame_count != 0\.0\)\)\) return \{\};\s+return bbl::js::make_ref<bblscene::VatClipData>/,
+    );
+});

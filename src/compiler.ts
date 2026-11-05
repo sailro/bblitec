@@ -483,26 +483,22 @@ const NULLABLE_RESOURCE_TYPES = new EmissionMap<
 ]);
 
 /**
- * The two VAT rows, kept in their own table because they are classified
- * AFTER the data model has been asked about the type.
+ * The VAT handle row, kept in its own table because it is classified AFTER
+ * the data model has been asked about the type.
  *
  * `fromTsType` is not a pure classifier -- reaching it can register a
- * native record for the type it is handed -- so moving these two names in
- * front of it would silently withdraw that call. They stay where they are.
+ * native record for the type it is handed -- so moving this name in front
+ * of it would silently withdraw that call. It stays where it is.
  *
  * `VatHandle`: `let handle: VatHandle | null = null` then a guarded
  * assignment inside the "did the asset carry a skinned mesh and clips" arm,
- * the shape both VAT scenes are written in. `VatClip`: `let swim: VatClip |
- * null = null` then the guarded row read, the per-instance scene's shape for
- * holding one clip's row block. Both are pinned types.
+ * the shape both VAT scenes are written in. A pinned type. A `VatClip` is a
+ * plain record: a bake's clip read is its row's three fields.
  */
 const NULLABLE_VAT_RESOURCE_TYPES = new EmissionMap<
     string,
     { kind: ValueKind; cppType: string }
->([
-    ["VatHandle", { kind: "vat-handle", cppType: "bbl::VatHandle" }],
-    ["VatClip", { kind: "vat-clip", cppType: "bbl::VatClipRow" }],
-]);
+>([["VatHandle", { kind: "vat-handle", cppType: "bbl::VatHandle" }]]);
 
 /** The two DOM types a drawing surface is declared as. */
 const CANVAS_TYPE_NAMES: ReadonlySet<string> = new EmissionSet([

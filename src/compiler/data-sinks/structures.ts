@@ -345,6 +345,30 @@ function valueStruct(
     const callable = callableRecordValue(lowerer, value, dataType, node);
     if (callable) return callable.cpp;
     value = lowerer.context.classLowerer.errorView(value, node) ?? value;
+    // A record an optional read may not have found (its found flag) stores
+    // as no object when absent, as JavaScript stores `undefined`.
+    if (
+        value.kind === "record" &&
+        value.optionalFoundCpp !== undefined &&
+        knownCondition(value.optionalFoundCpp) !== true &&
+        lowerer.context.dataTypes.isReferenceStruct(dataType.name)
+    ) {
+        const { optionalFoundCpp: found, ...present } = value;
+        let converted = "";
+        const lines = lowerer.context.captureEmittedLines(() => {
+            converted = lowerer.compileKnownValueForSink(
+                present,
+                dataType,
+                node,
+            );
+        });
+        return (
+            `([&]() -> ${lowerer.context.dataTypes.cppType(dataType)} {\n` +
+            `    if (!(${found})) return {};\n` +
+            lines.map((line) => `    ${line}\n`).join("") +
+            `    return ${converted};\n}())`
+        );
+    }
     const wrapped = value.dataType?.kind === "optional";
     const sourceType =
         value.dataType?.kind === "optional"
