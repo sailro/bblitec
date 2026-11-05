@@ -857,6 +857,7 @@ function lowerSourceApplication(
                     : lower();
             } catch (error) {
                 if (!acceptReplay(error)) throw error;
+                survey?.restarted(error);
                 if (
                     !(error instanceof StorageDemand) ||
                     !storageDemandPlanningEnabled()

@@ -122,6 +122,12 @@ export class SurveyCollector {
     private current: Attempt | undefined;
     /** @unjournaled When the last progress line was reported. */
     private reportedAt = Date.now();
+    /** @unjournaled Compile attempts so far: each restart replays the program. */
+    private attempts = 0;
+    /** @unjournaled What ended the last attempt that restarted, and where. */
+    private restart: string | undefined;
+    /** @unjournaled The statement lowering began last: where a restart's demand rose. */
+    private lowering: ts.Statement | undefined;
 
     public constructor(private readonly progress?: SurveyProgress) {}
 
@@ -144,13 +150,27 @@ export class SurveyCollector {
         }
         const location = sourceLocation(statement);
         this.progress.report(
-            `Survey progress: ${attempted} statement lowerings, ${refused.size} refused; lowering ` +
-                `${location.file.fileName}:${location.line} (${enclosingFunctionName(statement)})`,
+            `Survey progress: attempt ${this.attempts}, ${attempted} statement lowerings, ${refused.size} refused; lowering ` +
+                `${location.file.fileName}:${location.line} (${enclosingFunctionName(statement)})` +
+                (this.restart ? `; last restart: ${this.restart}` : ""),
         );
+    }
+
+    /** Records what ended an attempt that restarts the program, at the statement lowering then. */
+    public restarted(cause: unknown): void {
+        const text =
+            cause instanceof Error
+                ? `${cause.constructor.name}: ${cause.message}`
+                : String(cause);
+        const site = this.lowering && sourceLocation(this.lowering);
+        this.restart =
+            text.replace(/\s+/g, " ").slice(0, 160) +
+            (site ? ` at ${site.file.fileName}:${site.line}` : "");
     }
 
     /** Runs one realm's compile attempt, replacing the census a previous attempt of that realm left. */
     public attempt<T>(realm: string, run: () => T): T {
+        this.attempts++;
         const previous = this.current;
         const attempt: Attempt = {
             attempted: 0,
@@ -178,6 +198,7 @@ export class SurveyCollector {
             return;
         }
         attempt.attempted++;
+        this.lowering = statement;
         this.reportProgress(statement);
         try {
             context.transaction(lower);

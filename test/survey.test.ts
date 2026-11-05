@@ -108,11 +108,32 @@ test("a survey reports its progress and the statement it lowers", () => {
     // The last line counts every refusal recorded before that statement.
     assert.match(
         lines.at(-1)!,
-        /^Survey progress: \d+ statement lowerings, [0-3] refused; lowering .*survey-progress\.ts:\d+ \(.+\)$/,
+        /^Survey progress: attempt 1, \d+ statement lowerings, [0-3] refused; lowering .*survey-progress\.ts:\d+ \(.+\)$/,
     );
     assert.ok(
         lines.some((line) => / \(second\)$/.test(line)),
         lines.join(" | "),
+    );
+});
+
+test("a survey's progress names each restart's cause and the statement it rose at", () => {
+    // Rebinding a literal record to a parsed one restarts the program with
+    // shared record storage.
+    const lines: string[] = [];
+    surveySource(
+        `
+        interface Settings { gain: number }
+        function parsed(text: string): Settings { return JSON.parse(text); }
+        let active: Settings = { gain: 2 };
+        active = parsed('{"gain":3}');
+        console.log(active.gain);
+    `,
+        { fileName: resolve("survey-restart.ts") },
+        { report: (line) => lines.push(line), intervalMs: 0 },
+    );
+    assert.match(
+        lines.at(-1)!,
+        /^Survey progress: attempt 2, .*; last restart: NativeRecordStorageRequired: .* at .*survey-restart\.ts:5$/,
     );
 });
 
