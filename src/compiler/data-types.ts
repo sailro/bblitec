@@ -9899,8 +9899,10 @@ export class DataTypeRegistry {
             this.jsonBoxedEnums.add(type.name);
             return `bblscene::json_value(${cpp})`;
         }
-        // A Blob is held boxed: `instanceof Blob` reads the instance back.
-        if (type.kind === "blob")
+        // A Blob is held boxed: `instanceof Blob` reads the instance back;
+        // a function too, which a member call reads back with its declared
+        // signature (`json_call`).
+        if (type.kind === "blob" || type.kind === "function")
             return `bbl::js::JsonValue::from_native(${cpp})`;
         if (type.kind === "struct") this.markJsonBoxed(type, node);
         else if (type.kind === "vector") {

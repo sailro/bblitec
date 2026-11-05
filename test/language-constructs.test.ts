@@ -15167,15 +15167,21 @@ check(
 `,
 );
 
-test("a parsed document read as a record type with stored functions refuses", () => {
-    assert.throws(
-        () =>
-            compileSource(
-                "interface Handler { name: string; run(): number } function load(text: string): Handler { return JSON.parse(text) as Handler; } const loaders: Array<typeof load> = [load]; const handler: Handler = { name: 'a', run: () => 1 }; if (loaders.length !== 1 || handler.run() !== 1) throw new Error('x');",
-            ),
-        /Expression does not produce the expected data \{"kind":"struct","name":"Handler"\} value; received data \{"kind":"json"\}/,
-    );
-});
+// A record type with methods that parsed values reach is a document: a
+// literal's method stays callable, a parsed record's call throws TypeError.
+check(
+    "parsed-documents-read-as-record-types-with-stored-functions",
+    `
+    interface Handler { name: string; run(): number }
+    function load(text: string): Handler { return JSON.parse(text) as Handler; }
+    const loaders: Array<typeof load> = [load];
+    const handler: Handler = { name: 'a', run: () => 1 };
+    const parsed = loaders[0]!('{"name":"b"}');
+    let refused = false;
+    try { parsed.run(); } catch (error) { refused = error instanceof TypeError; }
+    if (handler.run() !== 1 || parsed.name !== "b" || !refused) throw new Error("handlers");
+`,
+);
 
 // instanceof Map, Set, WeakMap and WeakSet answer from the storage holding
 // the value; a dictionary or parsed document is none of them.
