@@ -70,12 +70,16 @@ export function isOpaqueReference(type: DataType | undefined): boolean {
     return type !== undefined && kinds[type.kind].opaqueReference === true;
 }
 
-/** Structural annotations can retain these existing native object carriers. */
+/**
+ * Structural annotations can retain these existing native object carriers;
+ * a DOM event target is the DOM object itself.
+ */
 export function isNativeStructuralView(type: DataType | undefined): boolean {
     return (
         isOpaqueReference(type) ||
         type?.kind === "borrowed-platform-event" ||
-        type?.kind === "handle"
+        type?.kind === "handle" ||
+        type?.kind === "event-target"
     );
 }
 

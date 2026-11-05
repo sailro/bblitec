@@ -2225,9 +2225,12 @@ export class DataTypeRegistry {
             this.checker.getTypeAtLocation(node),
         );
         const mapped = this.fromStoredTsType(checked, expression);
+        // A DOM event target is the object itself, whatever its declared
+        // interface maps to.
         if (
             !mapped ||
             (!dataTypesEqual(mapped, actual) &&
+                actual.kind !== "event-target" &&
                 !(
                     actual.kind === "handle" &&
                     (mapped.kind === "struct" ||

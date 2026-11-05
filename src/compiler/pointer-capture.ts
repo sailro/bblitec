@@ -1,9 +1,12 @@
 import ts from "typescript";
 import type { LoweringServices } from "./lowering-services.js";
 import { pinDetached } from "./dom-listeners.js";
+import { holdsDomTarget } from "./dom-targets.js";
 import { POINTER_CAPTURE_OPERATIONS } from "./dom-lowerings.js";
 import { resolvedDomApi, namedMember } from "./symbols.js";
 import { argumentAt } from "./syntax.js";
+import { nullability } from "./type-facts.js";
+import { optionalValueCpp } from "./values/model.js";
 import type { Value } from "./types.js";
 import type { UiProjection } from "./ui-projection.js";
 
@@ -50,9 +53,25 @@ function captureTarget(
                   );
                   return accept(candidate) ? candidate : undefined;
               });
+    // An optional target the checker narrowed past absence is present.
+    const narrowed = nullability(context.checker.getTypeAtLocation(receiver));
+    const present = (candidate: Value): Value | undefined =>
+        candidate.dataType?.kind === "event-target"
+            ? candidate
+            : candidate.dataType?.kind === "optional" &&
+                candidate.dataType.inner.kind === "event-target" &&
+                !narrowed.null &&
+                !narrowed.undefined
+              ? {
+                    ...candidate,
+                    cpp: optionalValueCpp(candidate.cpp),
+                    dataType: candidate.dataType.inner,
+                }
+              : undefined;
+    const stored = compiled((candidate) => present(candidate) !== undefined);
     const value =
         prepared ??
-        compiled((candidate) => candidate.dataType?.kind === "event-target") ??
+        (stored && present(stored)) ??
         ui.compileUiElementReceiver(receiver) ??
         compiled((candidate) => candidate.kind === "ui-element");
     if (!value) {
@@ -75,7 +94,9 @@ function captureTarget(
 /**
  * `element.setPointerCapture(id)`, `releasePointerCapture(id)` and
  * `hasPointerCapture(id)` on the document's capture state
- * (`pal_dom_events.hpp`), which targets the pointer's later input.
+ * (`pal_dom_events.hpp`), which targets the pointer's later input. A
+ * structural view's method of the same name (`{ setPointerCapture(id):
+ * void }`) called on a DOM target is that target's DOM method.
  */
 export function compilePointerCapture(
     context: Context,
@@ -87,8 +108,26 @@ export function compilePointerCapture(
         context.unwrap(call.expression),
     );
     if (!callee) return undefined;
+    const domApi = resolvedDomApi(context.checker, call);
+    const viewed = `Element.${callee.name}`;
+    // A structural view's method of a capture operation's name, called on
+    // a value that holds a DOM target.
+    const viewsTarget =
+        domApi === undefined &&
+        POINTER_CAPTURE_OPERATIONS.has(viewed) &&
+        (context.isCanvasElement(callee.expression) ||
+            context.probeEmission(
+                () =>
+                    holdsDomTarget(
+                        context.dataLowerer.narrowOptional(
+                            context.compileValue(callee.expression),
+                            callee.expression,
+                        ),
+                    ),
+                () => false,
+            ));
     const operation = POINTER_CAPTURE_OPERATIONS.get(
-        resolvedDomApi(context.checker, call) ?? "",
+        domApi ?? (viewsTarget ? viewed : ""),
     );
     if (!operation) return undefined;
     context.expectArgumentCount(call, 1, 1);

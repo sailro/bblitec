@@ -98,6 +98,7 @@ import {
     NAVIGATOR_GET_GAMEPADS,
     readsLoweredDomMethod,
 } from "./dom-lowerings.js";
+import { holdsDomTarget } from "./dom-targets.js";
 import {
     compileNumberPredicate,
     foldNumberFormat,
@@ -276,12 +277,20 @@ const URI_FUNCTIONS: ReadonlyMap<string, string> = new EmissionMap([
     ["atob", "string_from_base64"],
 ]);
 
+/** The methods every DOM event target has (the EventTarget interface's own). */
+const EVENT_TARGET_METHODS: ReadonlySet<string> = new Set([
+    "addEventListener",
+    "removeEventListener",
+    "dispatchEvent",
+]);
+
 export interface ExpressionContext
     extends
         PromiseLoweringContext,
         UserFunctionContext,
         Pick<
             LoweringServices,
+            | "isCanvasElement"
             | "noteImpureRead"
             | "expectStaticArrayElements"
             | "compileStaticString"
@@ -1753,6 +1762,28 @@ export class ExpressionLowerer {
                 readsLoweredDomMethod(this.context.checker, expression) &&
                 ts.isPropertyAccessExpression(expression) &&
                 !expressionHasEffects(expression.expression)
+            )
+                return staticStringValue("function", (text) =>
+                    this.context.cppString(text),
+                );
+            // So is an EventTarget method, which every DOM event target has,
+            // read off one through any view of it (`{ dispatchEvent?(event:
+            // Event): boolean }`); an optional chain may read no target.
+            if (
+                ts.isPropertyAccessExpression(expression) &&
+                !ts.isOptionalChain(expression) &&
+                EVENT_TARGET_METHODS.has(expression.name.text) &&
+                !expressionHasEffects(expression.expression) &&
+                this.context.probeEmission(
+                    () =>
+                        holdsDomTarget(
+                            this.context.dataLowerer.narrowOptional(
+                                this.compileValue(expression.expression),
+                                expression.expression,
+                            ),
+                        ),
+                    () => false,
+                )
             )
                 return staticStringValue("function", (text) =>
                     this.context.cppString(text),
@@ -5743,6 +5774,21 @@ export class ExpressionLowerer {
             ].includes(contextualType.kind)
                 ? contextualType
                 : undefined);
+        // The engine canvas has no element handle: an element selection
+        // holding it stores DOM event targets.
+        const element =
+            inferred?.kind === "optional" ? inferred.inner : inferred;
+        if (
+            element?.kind === "handle" &&
+            element.handle === "ui-element" &&
+            [unwrapped.whenTrue, unwrapped.whenFalse].some((arm) =>
+                this.context.isCanvasElement(arm),
+            )
+        )
+            inferred =
+                inferred?.kind === "optional"
+                    ? { ...inferred, inner: { kind: "event-target" } }
+                    : { kind: "event-target" };
         if (
             !inferred &&
             (callSignatures(

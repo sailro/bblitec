@@ -47,6 +47,24 @@ type Context = Pick<
     | "fail"
 >;
 
+/**
+ * Whether a value is a DOM event target, possibly optional: a retained
+ * element, a stored event target or the engine canvas.
+ */
+export function holdsDomTarget(value: Value): boolean {
+    const present =
+        value.dataType?.kind === "optional"
+            ? value.dataType.inner
+            : value.dataType;
+    return (
+        value.kind === "ui-element" ||
+        present?.kind === "event-target" ||
+        (present?.kind === "handle" && present.handle === "ui-element") ||
+        (value.browserValue?.kind === "object" &&
+            value.browserValue.primaryCanvas === true)
+    );
+}
+
 export function eventTargetCpp(
     context: Context,
     value: Value,

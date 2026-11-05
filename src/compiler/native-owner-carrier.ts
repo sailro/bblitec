@@ -9,6 +9,13 @@ import type { Value } from "./types.js";
 /** Resource producers may carry their owner on Value before acquiring data storage. */
 export function nativeStructuralViewType(value: Value): DataType | undefined {
     if (isNativeStructuralView(value.dataType)) return value.dataType;
+    // The engine canvas has no element handle: its native carrier is its
+    // DOM event target.
+    if (
+        value.browserValue?.kind === "object" &&
+        value.browserValue.primaryCanvas === true
+    )
+        return { kind: "event-target" };
     if (isHandleKind(value.kind)) return { kind: "handle", handle: value.kind };
     if (
         value.kind === "platform-keyboard-event" ||
