@@ -239,10 +239,10 @@ test("a runtime-selected KTX2 URL loads among its packaged containers", () => {
     `,
         { fileName: join(directory, "entry.ts"), publicDir },
     );
-    assert.deepEqual(
-        result.manifest.assets.map((asset) => asset.kind).sort(),
-        ["ktx2", "ktx2"],
-    );
+    assert.deepEqual(result.manifest.assets.map((asset) => asset.kind).sort(), [
+        "ktx2",
+        "ktx2",
+    ]);
     assert.match(
         result.cpp,
         /bbl::load_ktx2_texture\(v_engine, \(\[&\]\(const std::string& key\)/,

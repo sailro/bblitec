@@ -2872,7 +2872,9 @@ const absentAttributes: Readonly<Record<string, string>> = {
 };
 
 /** Whether a program reads the skinning lanes, which only deformed geometry carries. */
-export function readsSkinningAttributes(attributes: readonly string[]): boolean {
+export function readsSkinningAttributes(
+    attributes: readonly string[],
+): boolean {
     return attributes.some((name) => name === "joints" || name === "weights");
 }
 
@@ -2912,7 +2914,12 @@ function readAttributesAsDeclared(
             kind: "call",
             name: type,
             arguments: Object.hasOwn(absentAttributes, name)
-                ? [{ kind: "number", value: type === "vec4<u32>" ? "0u" : "0.0" }]
+                ? [
+                      {
+                          kind: "number",
+                          value: type === "vec4<u32>" ? "0u" : "0.0",
+                      },
+                  ]
                 : [{ kind: "path", parts: expression.parts.slice(0, 2) }],
         };
         for (const member of expression.parts.slice(2))

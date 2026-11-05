@@ -33,12 +33,14 @@ int run() {
         pal::UiRmlRuntime runtime(engine, window, 320, 240);
         pal::update_ui_rml_runtime(runtime, 320, 240);
         const auto decorator = [&](const char* id) {
-            auto* raw = runtime.projected_elements.at(ui_get_element_by_id(engine, id).value).element;
+            auto* raw =
+                runtime.projected_elements.at(ui_get_element_by_id(engine, id).value).element;
             return raw->GetProperty("decorator")->ToString();
         };
         // The explicit size is the layer's own box, the image filling it at its offsets.
         const auto sized = decorator("chevron");
-        if (sized.find("inline.svg") == std::string::npos || sized.find("fill") == std::string::npos)
+        if (sized.find("inline.svg") == std::string::npos ||
+            sized.find("fill") == std::string::npos)
             throw std::runtime_error("Sized SVG background: " + sized);
         const auto contained = decorator("cursor");
         if (contained.find("inline.svg") == std::string::npos ||
@@ -47,21 +49,23 @@ int run() {
         // Both SVG images rasterize: the chevron's stroke and the square's fill.
         const auto& frame = pal::record_ui_rml_frame(runtime, 320, 240);
         const auto drawn = [&](std::uint8_t red, std::uint8_t green, std::uint8_t blue) {
-            return std::any_of(frame.textures.begin(), frame.textures.end(), [&](const auto& texture) {
-                if (!texture.rgba)
-                    return false;
-                const auto& rgba = *texture.rgba;
-                for (std::size_t at = 0; at + 3 < rgba.size(); at += 4)
-                    if (rgba[at] == red && rgba[at + 1] == green && rgba[at + 2] == blue &&
-                        rgba[at + 3] == 255)
-                        return true;
-                return false;
-            });
+            return std::any_of(frame.textures.begin(), frame.textures.end(),
+                               [&](const auto& texture) {
+                                   if (!texture.rgba)
+                                       return false;
+                                   const auto& rgba = *texture.rgba;
+                                   for (std::size_t at = 0; at + 3 < rgba.size(); at += 4)
+                                       if (rgba[at] == red && rgba[at + 1] == green &&
+                                           rgba[at + 2] == blue && rgba[at + 3] == 255)
+                                           return true;
+                                   return false;
+                               });
         };
         assert(drawn(0x5a, 0x46, 0x30));
         assert(drawn(255, 0, 0));
-        const auto drawsTexture = std::count_if(frame.draws.begin(), frame.draws.end(),
-                                                [](const auto& draw) { return draw.texture_id != 0; });
+        const auto drawsTexture =
+            std::count_if(frame.draws.begin(), frame.draws.end(),
+                          [](const auto& draw) { return draw.texture_id != 0; });
         assert(drawsTexture >= 2);
     }
     SDL_DestroyWindow(window);

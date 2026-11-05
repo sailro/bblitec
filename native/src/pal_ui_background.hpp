@@ -88,8 +88,7 @@ inline Rml::String ui_background_offsets(std::string_view position) {
         throw std::runtime_error("Unrepresented UI background position: " + std::string(position));
     if (tokens.size() == 1)
         tokens.emplace_back("center");
-    if (tokens[0] == "top" || tokens[0] == "bottom" || tokens[1] == "left" ||
-        tokens[1] == "right")
+    if (tokens[0] == "top" || tokens[0] == "bottom" || tokens[1] == "left" || tokens[1] == "right")
         std::swap(tokens[0], tokens[1]);
     const auto offset = [](const std::string& token, std::string_view start,
                            std::string_view end) -> std::string {

@@ -39,10 +39,7 @@ test("a Texture2D built from a bake's GPU parts binds the view's texels through 
         /bbl::create_device_sampler\(v_device, bbl::TextureSamplerState\{bbl::TextureFilter::nearest, bbl::TextureFilter::nearest, bbl::TextureMipmapMode::nearest, bbl::TextureAddressMode::clamp, bbl::TextureAddressMode::clamp, 1\.0f, 32\.0f\}\)/,
     );
     assert.match(result.cpp, /bbl::create_texture_view\(v_engine, v_tex\)/);
-    assert.match(
-        result.cpp,
-        /bbl::gpu_texture_texels\(v_tex\)\.width/,
-    );
+    assert.match(result.cpp, /bbl::gpu_texture_texels\(v_tex\)\.width/);
     assert.match(
         result.cpp,
         /(v_bblite_shader_texture_\d+) = bbl::StoredTexture\{bbl::gpu_parts_texture\(v_engine, v_tex, v_bblite_resource_member_\d+, v_sampler, /,
@@ -66,7 +63,7 @@ test("a Texture2D's GPU parts convert only as the interface's five required fiel
         () =>
             compileSource(
                 program(
-                    '{ texture: tex, view: tex.createView({ mipLevelCount: 1 }), sampler, width: tex.width, height: tex.height } as unknown as Texture2D',
+                    "{ texture: tex, view: tex.createView({ mipLevelCount: 1 }), sampler, width: tex.width, height: tex.height } as unknown as Texture2D",
                 ),
             ),
         /argument/i,
@@ -133,6 +130,9 @@ int main() {
     }
 }
 `,
-        { timeoutMs: 10000, expectedOutput: "010 14x211 refused refused sizeless" },
+        {
+            timeoutMs: 10000,
+            expectedOutput: "010 14x211 refused refused sizeless",
+        },
     );
 });

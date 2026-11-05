@@ -1,3 +1,4 @@
+import { runInNewContext } from "node:vm";
 import assert from "node:assert/strict";
 import test from "node:test";
 import { compileSource } from "../src/compiler.js";
@@ -28,7 +29,7 @@ test("getOrCreateSampler keeps one sampler per pooled key, as the pin does", asy
     const pinned = descriptors.map((descriptor) =>
         pool.getOrCreateSampler(
             engine,
-            Function(`return ${descriptor};`)() as object,
+            runInNewContext(`(${descriptor})`) as object,
         ),
     );
     const result = compileSource(`

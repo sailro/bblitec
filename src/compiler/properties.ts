@@ -954,15 +954,13 @@ export const propertyRules: readonly PropertyRule[] = [
     },
     // A GPU texture's size, natively known for the textures the program
     // made from its own data: they carry their texels.
-    ...(["width", "height"] as const).map(
-        (property): PropertyRead => ({
-            owner: "gpu-texture",
-            property,
-            value: "number",
-            access: (texture) =>
-                `static_cast<double>(bbl::gpu_texture_texels(${texture}).${property})`,
-        }),
-    ),
+    ...(["width", "height"] as const).map((property): PropertyRead => ({
+        owner: "gpu-texture",
+        property,
+        value: "number",
+        access: (texture) =>
+            `static_cast<double>(bbl::gpu_texture_texels(${texture}).${property})`,
+    })),
     {
         owner: "gpu-device",
         property: "queue",

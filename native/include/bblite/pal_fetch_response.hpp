@@ -1146,7 +1146,6 @@ struct HttpResponseInit {
         init.status, std::string(), std::move(headers), body, true, std::move(init.status_text)});
 }
 
-
 inline bool http_response_ok(const HttpResponse& response) {
     return response->status >= 200 && response->status < 300;
 }

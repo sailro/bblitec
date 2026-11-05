@@ -2384,7 +2384,9 @@ export class UserFunctionLowerer {
                         // Capture at the return expression's evaluation, before
                         // mutable storage erases the facts. Only primitives are
                         // copied; every read still uses the real call's owner.
-                        const access = context.dataTypes.memberAccess(returnType.name);
+                        const access = context.dataTypes.memberAccess(
+                            returnType.name,
+                        );
                         writable(result).recordProperties = Object.fromEntries(
                             fields
                                 .filter((field) =>
@@ -7507,11 +7509,7 @@ export class UserFunctionLowerer {
         const parameters =
             calledDeclaration(this.checker, call)?.parameters ??
             ir.parameters.map((parameter) => parameter.declaration);
-        const minimum = requiredArgumentCount(
-            this.checker,
-            call,
-            parameters,
-        );
+        const minimum = requiredArgumentCount(this.checker, call, parameters);
         if (
             call.arguments.length < minimum &&
             !call.arguments.some(ts.isSpreadElement)

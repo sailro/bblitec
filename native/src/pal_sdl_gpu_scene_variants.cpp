@@ -587,8 +587,9 @@ void write_pinned_bone_texture(GpuState& state, GpuMesh& mesh, const MeshRecord&
             if (mesh.pinned_bone_texture) {
                 SDL_ReleaseGPUTexture(state.device, mesh.pinned_bone_texture);
             }
-            mesh.pinned_bone_texture = create_float_texture(
-                state.device, palette.width, palette.height, "SDL_CreateGPUTexture pinned bone palette");
+            mesh.pinned_bone_texture =
+                create_float_texture(state.device, palette.width, palette.height,
+                                     "SDL_CreateGPUTexture pinned bone palette");
         },
         [&](const float* floats, const BonePaletteLayout& palette) {
             upload_pinned_float_texture(state, mesh.pinned_bone_texture, floats, palette.width,
@@ -609,8 +610,8 @@ void write_pinned_vat_texture(GpuState& state, GpuMesh& mesh, const MeshRecord& 
             mesh.pinned_vat_texture = create_float_texture(
                 state.device, layout.width, layout.height, "SDL_CreateGPUTexture pinned VAT");
             upload_pinned_float_texture(state, mesh.pinned_vat_texture,
-                                        bake.texture.texels->rgba.data(),
-                                        layout.width, layout.height, layout.bytes);
+                                        bake.texture.texels->rgba.data(), layout.width,
+                                        layout.height, layout.bytes);
         },
         [](const VatData&) {},
 #if BBLITE_VAT_INSTANCES

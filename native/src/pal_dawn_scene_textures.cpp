@@ -105,9 +105,8 @@ void write_float_texture(WGPUQueue queue, WGPUTexture texture, const float* data
     copy.bytesPerRow = width * 16u;
     copy.rowsPerImage = height;
     WGPUExtent3D extent{width, height, 1};
-    DawnGpuDevice{queue}.write_texture(&destination, data,
-                                       static_cast<std::size_t>(width) * 16u * height, &copy,
-                                       &extent);
+    DawnGpuDevice{queue}.write_texture(
+        &destination, data, static_cast<std::size_t>(width) * 16u * height, &copy, &extent);
 }
 
 WGPUTexture upload_material_texture(WGPUDevice device, WGPUQueue queue, DawnMipGenerator& mips,

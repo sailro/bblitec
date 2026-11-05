@@ -5,7 +5,9 @@
 #include <cassert>
 
 namespace bbl {
-std::string asset_path(const std::string&) { throw std::runtime_error("Unexpected SVG asset read"); }
+std::string asset_path(const std::string&) {
+    throw std::runtime_error("Unexpected SVG asset read");
+}
 } // namespace bbl
 namespace bbl::pal {
 std::string asset_path(std::string_view) { throw std::runtime_error("Unexpected SVG asset read"); }

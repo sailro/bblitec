@@ -1417,8 +1417,7 @@ struct JsonProxyView final : JsonNativeObject {
     }
 };
 
-inline JsonValue JsonValue::from_proxy_view(JsonValue target,
-                                            Callback<JsonValue(std::string)> read,
+inline JsonValue JsonValue::from_proxy_view(JsonValue target, Callback<JsonValue(std::string)> read,
                                             Callback<bool(std::string, JsonValue)> write,
                                             Callback<bool(std::string)> erase) {
     JsonValue value;
@@ -1470,8 +1469,7 @@ inline void JsonValue::check_accessor_removal(std::string_view key) const {
 }
 
 inline void JsonValue::define_accessor(std::string_view key, Callback<JsonValue()> getter,
-                                       Callback<void(JsonValue)> setter,
-                                       bool configurable) const {
+                                       Callback<void(JsonValue)> setter, bool configurable) const {
     if (kind_ != Kind::object)
         throw std::runtime_error("Dynamic accessor definition requires an object.");
     JsonValue slot;
@@ -1719,7 +1717,8 @@ inline constexpr bool json_union_holds<T, std::variant<Members...>> =
  * source's typeof guard: the member the document's kind names. A kind the
  * union does not hold cannot be stored.
  */
-template <typename Variant> [[nodiscard]] inline Variant json_primitive_union(const JsonValue& value) {
+template <typename Variant>
+[[nodiscard]] inline Variant json_primitive_union(const JsonValue& value) {
     if constexpr (json_union_holds<double, Variant>)
         if (value.is_number())
             return Variant(std::in_place_type<double>, value.to_number());

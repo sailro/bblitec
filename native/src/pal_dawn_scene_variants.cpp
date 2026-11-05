@@ -440,8 +440,9 @@ void write_pinned_bone_texture(DawnState& state, DawnMesh& mesh, const MeshRecor
             if (mesh.pinned_bone_texture) {
                 wgpuTextureRelease(mesh.pinned_bone_texture);
             }
-            mesh.pinned_bone_texture = create_float_texture(
-                state.device, palette.width, palette.height, "pinned bone texture creation failed.");
+            mesh.pinned_bone_texture =
+                create_float_texture(state.device, palette.width, palette.height,
+                                     "pinned bone texture creation failed.");
             mesh.pinned_bone_view = create_dawn_texture_view(mesh.pinned_bone_texture, nullptr);
         },
         [&](const float* floats, const BonePaletteLayout& palette) {
@@ -492,8 +493,9 @@ void write_pinned_vat_texture(DawnState& state, DawnMesh& mesh, const MeshRecord
                 wgpuTextureViewRelease(mesh.pinned_vat_instance_view);
             if (mesh.pinned_vat_instance_texture)
                 wgpuTextureRelease(mesh.pinned_vat_instance_texture);
-            mesh.pinned_vat_instance_texture = create_float_texture(
-                state.device, vat.instance_texels, 1u, "pinned VAT instance texture creation failed.");
+            mesh.pinned_vat_instance_texture =
+                create_float_texture(state.device, vat.instance_texels, 1u,
+                                     "pinned VAT instance texture creation failed.");
             mesh.pinned_vat_instance_view =
                 create_dawn_texture_view(mesh.pinned_vat_instance_texture, nullptr);
             if (!mesh.pinned_vat_instance_view)

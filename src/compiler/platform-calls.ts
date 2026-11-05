@@ -42,7 +42,11 @@ import { compileFullscreenCall } from "./fullscreen.js";
 import { compileCanvasCaptureStream } from "./media-streams.js";
 import { timerCancellation } from "./workers.js";
 import { isDocumentReceiver } from "./dom-targets.js";
-import { isPinnedType, platformHandleKind, type DataType } from "./data-types.js";
+import {
+    isPinnedType,
+    platformHandleKind,
+    type DataType,
+} from "./data-types.js";
 import { compileDeviceSampler } from "./intrinsics/sampler.js";
 import {
     compileBooleanOptions,
@@ -542,7 +546,11 @@ export class PlatformCalls {
             if (kind === "gpu-texture" && callee.name === "createView") {
                 this.context.expectArgumentCount(call, 0, 0);
                 const texture = this.context.compileValue(callee.expression);
-                this.context.expectKind(texture, "gpu-texture", callee.expression);
+                this.context.expectKind(
+                    texture,
+                    "gpu-texture",
+                    callee.expression,
+                );
                 const engine = this.context.requireEngine(texture, call);
                 return {
                     kind: "gpu-texture-view",
