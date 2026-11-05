@@ -1781,6 +1781,8 @@ struct PbrMaterialOptions {
     float reflectance;
     bool unlit;
     bool double_sided;
+    /** The props' own `doubleSided`, when they name one. */
+    std::optional<bool> source_double_sided{};
     bool specular_aa;
     bool skybox_mode;
     float transmission_factor;
@@ -3233,6 +3235,12 @@ struct MaterialRecord {
     mutable std::unordered_map<std::size_t, std::shared_ptr<MaterialPluginUniformState>>
         plugin_uniform_states;
     bool double_sided = false;
+    /**
+     * `doubleSided` as the material's own property: a glTF material always
+     * has one, createPbrMaterial props only when they name it, other
+     * families none.
+     */
+    std::optional<bool> source_double_sided{};
     // The pin's opacityFromRGB (createStandardMaterial default false; the
     // .babylon loader sets it from opacityTexture.getAlphaFromRGB,
     // load-babylon.ts TEX_SLOTS opacity extra). Feeds OPACITY_FROM_RGB in
@@ -5991,6 +5999,12 @@ inline void resize_engine(Engine& engine) {
 inline MaterialHandle mark_shader_material_transmissive(Engine& engine, MaterialHandle material) {
     handle_at(engine.materials, material).shader_transmissive = true;
     return material;
+}
+
+/** A PBR material's own `doubleSided`; materials whose props never named it have none. */
+inline js::Nullable<bool> material_double_sided(const Engine& engine, MaterialHandle material) {
+    const auto& value = handle_at(engine.materials, material).source_double_sided;
+    return value ? js::Nullable<bool>{*value} : js::Nullable<bool>{};
 }
 
 /** The shader factory's authored alpha flag; other material families omit it. */

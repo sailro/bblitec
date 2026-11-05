@@ -698,6 +698,7 @@ function compileCreatePbrMaterial(
         reflectance,
         unlit,
         doubleSided,
+        doubleSidedProperty,
         enableSpecularAA,
         skyboxMode,
         transmission,
@@ -797,6 +798,9 @@ function compileCreatePbrMaterial(
         `.reflectance = ${reflectance}, ` +
         `.unlit = ${unlit}, ` +
         `.double_sided = ${doubleSided}, ` +
+        (doubleSidedProperty === undefined
+            ? ""
+            : `.source_double_sided = ${doubleSidedProperty}, `) +
         `.specular_aa = ${enableSpecularAA}, ` +
         `.skybox_mode = ${skyboxMode}, ` +
         `.transmission_factor = ${transmission}, ` +

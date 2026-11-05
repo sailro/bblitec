@@ -125,6 +125,8 @@ export interface CompiledPbrMaterialOptions {
     reflectance: string;
     unlit: string;
     doubleSided: string;
+    /** The option as written, when the props name it. */
+    doubleSidedProperty?: string;
     enableSpecularAA: string;
     skyboxMode: string;
     transmission: string;
@@ -732,6 +734,7 @@ export function compilePbrMaterialOptions(
         // the creation options carry neither.
         unlit: "false",
         doubleSided: doubleSidedCpp,
+        ...(doubleSided ? { doubleSidedProperty: doubleSidedCpp } : {}),
         enableSpecularAA: enableSpecularAACpp,
         skyboxMode: "false",
         transmission: transmission.cpp,

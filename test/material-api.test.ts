@@ -284,3 +284,43 @@ for(unsigned i=0;i<6;++i){assert(is_shader(engine,{i})==(i==2||i==5));assert(is_
         { expectedOutput: "" },
     );
 });
+
+test("a PBR material's doubleSided reads its own property: a glTF material's, named props', or none", () => {
+    const result = compileSource(`
+        import { addToScene, createEngine, createPbrMaterial, createSceneContext, loadGltf, registerScene, startEngine, type Mesh, type PbrMaterialProps, type TransformNode } from "@babylonjs/lite";
+        function firstMesh(node: TransformNode): Mesh | null {
+            const m = node as unknown as Mesh;
+            if (m.material) return m;
+            for (const c of (node.children ?? []) as TransformNode[]) { const hit = firstMesh(c); if (hit) return hit; }
+            return null;
+        }
+        const engine = await createEngine(document.getElementById("renderCanvas") as HTMLCanvasElement);
+        const scene = createSceneContext(engine);
+        const shark = await loadGltf(engine, "https://models.babylonjs.com/shark.glb");
+        addToScene(scene, shark);
+        const m = firstMesh(shark.entities[0] as TransformNode);
+        if (!m) throw new Error("mesh");
+        const source = m.material as unknown as (PbrMaterialProps & { name?: string }) | null;
+        const named = createPbrMaterial({ doubleSided: true });
+        const unnamed = createPbrMaterial({});
+        scene.clearColor = {
+            r: ((source?.doubleSided === true ? 1 : 0) + (named.doubleSided === true ? 2 : 0) + (unnamed.doubleSided === undefined ? 4 : 0)) / 8,
+            g: 0, b: 0, a: 1,
+        };
+        await registerScene(scene);
+        await startEngine(engine);
+    `);
+    assert.match(
+        result.cpp,
+        /\.double_sided = true, \.source_double_sided = true,/,
+    );
+    assert.match(result.cpp, /\.double_sided = false, \.specular_aa/);
+    assert.match(
+        result.cpp,
+        /bbl::material_double_sided\(v_engine, v_unnamed\)\.has_value\(\)/,
+    );
+    assert.match(
+        result.cpp,
+        /bbl::material_double_sided\(v_engine, \(\(\*v_source\)\)\.second\)/,
+    );
+});

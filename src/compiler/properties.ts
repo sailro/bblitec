@@ -1195,6 +1195,15 @@ export const propertyRules: readonly PropertyRule[] = [
     },
     {
         owner: "material",
+        property: "doubleSided",
+        value: "data",
+        dataType: { kind: "optional", inner: { kind: "boolean" } },
+        helper: "bbl::material_double_sided",
+        helperTakesEngine: true,
+        helperReturnsFreshData: true,
+    },
+    {
+        owner: "material",
         property: "needAlphaBlending",
         value: "data",
         dataType: { kind: "optional", inner: { kind: "boolean" } },
