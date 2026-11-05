@@ -2331,6 +2331,26 @@ export class DataTypeRegistry {
         return { ...source, document: true };
     }
 
+    /**
+     * The document layout for a plain record type its objects need (an
+     * accessor defined on one at run time), or undefined where the type has
+     * it or no plain record holds it.
+     */
+    public documentDemandOf(
+        type: ts.Type,
+        node: ts.Node,
+    ): NativeRecordStorageDemand | undefined {
+        const record = this.checker.getNonNullableType(
+            this.resolveTypeParameter(type),
+        );
+        if (
+            !isPlainRecord(this.checker, record) ||
+            this.documentRecords.has(this.structIdentity(record))
+        )
+            return undefined;
+        return { ...this.recordDemand(record, node), document: true };
+    }
+
     /** Scalar dictionary slots can share mutable storage with a document view. */
     public isScalarDocumentStorage(value: DataType): boolean {
         return value.kind === "optional" || value.kind === "tagged"
