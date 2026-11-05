@@ -116,9 +116,9 @@ test("a survey reports its progress and the statement it lowers", () => {
     );
 });
 
-test("a survey's progress names each restart's cause and the statement it rose at", () => {
+test("a survey's progress names each restart's cause and where its demand rose", () => {
     // Rebinding a literal record to a parsed one restarts the program with
-    // shared record storage.
+    // shared record storage for the record type (line 2).
     const lines: string[] = [];
     surveySource(
         `
@@ -133,7 +133,7 @@ test("a survey's progress names each restart's cause and the statement it rose a
     );
     assert.match(
         lines.at(-1)!,
-        /^Survey progress: attempt 2, .*; last restart: NativeRecordStorageRequired: .* at .*survey-restart\.ts:5$/,
+        /^Survey progress: attempt 2, .*; last restart: NativeRecordStorageRequired: .* at .*survey-restart\.ts:2$/,
     );
 });
 

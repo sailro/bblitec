@@ -20,6 +20,8 @@ import ts from "typescript";
 import { CompileError } from "./compile-error.js";
 import { declaredSymbol } from "./symbols.js";
 import { sourceLocation, syntaxKindName } from "../source-location.js";
+import { storageRequestSite } from "./replay-storage.js";
+import { StorageDemand } from "./storage-demand.js";
 import {
     rootExpression,
     sourceFunctionName,
@@ -156,16 +158,28 @@ export class SurveyCollector {
         );
     }
 
-    /** Records what ended an attempt that restarts the program, at the statement lowering then. */
+    /**
+     * Records what ended an attempt that restarts the program: where its
+     * storage demand rose, else the statement lowering then.
+     */
     public restarted(cause: unknown): void {
         const text =
             cause instanceof Error
                 ? `${cause.constructor.name}: ${cause.message}`
                 : String(cause);
-        const site = this.lowering && sourceLocation(this.lowering);
+        const demanded =
+            cause instanceof StorageDemand
+                ? cause.requests.map(storageRequestSite).find(Boolean)
+                : undefined;
+        const node = typeof demanded === "object" ? demanded : this.lowering;
+        const site =
+            typeof demanded === "string"
+                ? demanded
+                : node &&
+                  `${sourceLocation(node).file.fileName}:${sourceLocation(node).line}`;
         this.restart =
             text.replace(/\s+/g, " ").slice(0, 160) +
-            (site ? ` at ${site.file.fileName}:${site.line}` : "");
+            (site ? ` at ${site}` : "");
     }
 
     /** Runs one realm's compile attempt, replacing the census a previous attempt of that realm left. */
