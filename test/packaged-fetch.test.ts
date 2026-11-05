@@ -220,6 +220,35 @@ test("a URL member a record takes from a spread call result keeps that member's 
     runPackagedProgram(t, directory, result.cpp);
 });
 
+test("a runtime-selected KTX2 URL loads among its packaged containers", () => {
+    const directory = resolve("artifacts/packaged-ktx2-selection");
+    const publicDir = join(directory, "public");
+    mkdirSync(join(publicDir, "images"), { recursive: true });
+    writeFileSync(join(publicDir, "images", "a.ktx2"), "KTX2 a");
+    writeFileSync(join(publicDir, "images", "b.ktx2"), "KTX2 b");
+    const result = compileSource(
+        `
+        import { createEngine, loadKtx2Texture2D } from "@babylonjs/lite";
+        const engine = await createEngine(document.getElementById("renderCanvas") as HTMLCanvasElement);
+        const IMAGES = { a: { url: "/images/a.ktx2", srgb: true }, b: { url: "/images/b.ktx2", srgb: false } } as const;
+        const keys: ("a" | "b")[] = Date.now() < 0 ? ["b"] : ["a", "b"];
+        for (const key of keys) {
+            const image = IMAGES[key];
+            console.log((await loadKtx2Texture2D(engine, image.url, image.srgb)).width);
+        }
+    `,
+        { fileName: join(directory, "entry.ts"), publicDir },
+    );
+    assert.deepEqual(
+        result.manifest.assets.map((asset) => asset.kind).sort(),
+        ["ktx2", "ktx2"],
+    );
+    assert.match(
+        result.cpp,
+        /bbl::load_ktx2_texture\(v_engine, \(\[&\]\(const std::string& key\)/,
+    );
+});
+
 function runPackagedProgram(
     t: test.TestContext,
     directory: string,
