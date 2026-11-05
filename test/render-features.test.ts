@@ -591,3 +591,30 @@ test("a skeleton presence test reads the mesh record through a loose null test a
         /return !\(bbl::handle_at\(v_engine\.meshes, \w+\)\.skeleton_attached\);/,
     );
 });
+
+test("mesh.vat tests the attach record and its second influence pair is absent", () => {
+    const result = compileSource(`
+        import { addToScene, attachVat, bakeVat, createEngine, createSceneContext, loadGltf, registerScene, startEngine, type Mesh, type TransformNode } from "@babylonjs/lite";
+        function findSkinned(node: TransformNode): Mesh | null {
+            const m = node as unknown as Mesh;
+            if (m.skeleton) return m;
+            for (const c of (node.children ?? []) as TransformNode[]) { const hit = findSkinned(c); if (hit) return hit; }
+            return null;
+        }
+        const engine = await createEngine(document.getElementById("renderCanvas") as HTMLCanvasElement);
+        const scene = createSceneContext(engine);
+        const shark = await loadGltf(engine, "https://models.babylonjs.com/shark.glb");
+        addToScene(scene, shark);
+        const m = findSkinned(shark.entities[0] as TransformNode);
+        if (!m) throw new Error("skinned");
+        attachVat(engine, m, bakeVat(engine, m, shark.animationGroups ?? []), "swimming");
+        // Native vertices carry four influences (four-influence-skinning).
+        const has8Bones = (m as unknown as { vat?: { joints1Buffer?: unknown } }).vat?.joints1Buffer != null;
+        const hasVat = (m as unknown as { vat?: unknown }).vat != null;
+        m.position.x = (has8Bones ? 1 : 0) + (hasVat ? 2 : 0);
+        await registerScene(scene);
+        await startEngine(engine);
+    `);
+    assert.match(result.cpp, /\.has_vat/);
+    assert.match(result.cpp, /position\.x = \(0\.0 \+ /);
+});

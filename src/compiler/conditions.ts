@@ -210,6 +210,7 @@ export class ConditionLowerer {
      * Only the test is lowered: no other read of either member is. A loose
      * `== null` / `!= null` is the same test, both members being objects,
      * and a read through a cast of a native mesh is that mesh's member.
+     * `mesh.vat`, the record `attachVat` installs, is tested the same way.
      */
     private meshDeformationPresence(
         expression: ts.Expression,
@@ -231,13 +232,29 @@ export class ConditionLowerer {
             if (present === undefined) return undefined;
             return comparison.negated ? present : `!(${present})`;
         }
-        if (
-            !ts.isPropertyAccessExpression(expression) ||
-            expression.questionDotToken
-        )
-            return undefined;
+        if (!ts.isPropertyAccessExpression(expression)) return undefined;
         const property = expression.name.text;
-        if (property !== "skeleton" && property !== "morphTargets")
+        // `mesh.vat?.joints1Buffer`: attachVat's copy of the skeleton's
+        // second influence pair, which native vertices never carry (the
+        // four-influence-skinning adaptation), so it is absent on every mesh.
+        if (
+            expression.questionDotToken &&
+            (property === "joints1Buffer" || property === "weights1Buffer")
+        ) {
+            const vat = this.context.unwrap(expression.expression);
+            return ts.isPropertyAccessExpression(vat) &&
+                !vat.questionDotToken &&
+                vat.name.text === "vat" &&
+                this.nativeMesh(vat.expression)
+                ? "false"
+                : undefined;
+        }
+        if (
+            expression.questionDotToken ||
+            (property !== "skeleton" &&
+                property !== "morphTargets" &&
+                property !== "vat")
+        )
             return undefined;
         const member = resolvedSymbol(this.context.checker, expression);
         const owner = member?.declarations?.[0]?.parent;
@@ -248,15 +265,7 @@ export class ConditionLowerer {
             owner.name.text === "Mesh";
         const mesh = pinned
             ? this.context.compileValue(expression.expression)
-            : this.context.probeEmission(() =>
-                  unlessRefused(() => {
-                      // The object itself: a cast stores nothing.
-                      const value = this.context.compileValue(
-                          this.context.unwrap(expression.expression),
-                      );
-                      return value.kind === "mesh" ? value : undefined;
-                  }),
-              );
+            : this.nativeMesh(expression.expression);
         if (!mesh) return undefined;
         if (mesh.kind !== "mesh")
             return this.context.fail(
@@ -266,9 +275,25 @@ export class ConditionLowerer {
         const engine =
             mesh.engineCpp ?? this.context.requireDefaultEngine(expression);
         const record = recordAt(`${engine}.meshes`, mesh.cpp);
+        // `mesh.vat` is the record attachVat installs.
         return property === "skeleton"
             ? `${record}.skeleton_attached`
-            : `(${record}.morph_targets_attached || ${record}.scene_morph_targets)`;
+            : property === "vat"
+              ? `${record}.has_vat`
+              : `(${record}.morph_targets_attached || ${record}.scene_morph_targets)`;
+    }
+
+    /** The native mesh an expression names through any cast, or none. */
+    private nativeMesh(expression: ts.Expression): Value | undefined {
+        return this.context.probeEmission(() =>
+            unlessRefused(() => {
+                // The object itself: a cast stores nothing.
+                const value = this.context.compileValue(
+                    this.context.unwrap(expression),
+                );
+                return value.kind === "mesh" ? value : undefined;
+            }),
+        );
     }
 
     /**
