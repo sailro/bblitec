@@ -948,6 +948,12 @@ class Compiler implements LoweringServices {
      */
     public readonly conditionOverrides = new Map<ts.Node, boolean>();
     /**
+     * Runtime case split: the value an argument a split test reads takes in
+     * the arm being compiled. @unjournaled Set and cleared around one arm's
+     * compile.
+     */
+    public readonly valueOverrides = new Map<ts.Node, Value>();
+    /**
      * `stableLocalInitializer` answers, by declaration (`false`: none).
      * @unjournaled A function of the program's syntax.
      */

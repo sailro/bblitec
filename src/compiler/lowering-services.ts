@@ -378,6 +378,8 @@ export interface LoweringServices {
     isInRuntimeControlFlow(): boolean;
     /** Conditions a runtime case split settles inside one of its arms. */
     readonly conditionOverrides: Map<ts.Node, boolean>;
+    /** Argument values a runtime case split settles inside one of its arms. */
+    readonly valueOverrides: Map<ts.Node, Value>;
     executedInitializerElements(
         identifier: ts.Identifier,
     ): readonly Value[] | undefined;

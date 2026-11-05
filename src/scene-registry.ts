@@ -1353,6 +1353,23 @@ const sceneInputs: readonly SceneInput[] = [
         },
     },
     {
+        // Shader materials a factory composes from run-time options (a
+        // boolean, an optional boolean, an optional object): compiled once
+        // per outcome and selected at run time.
+        id: "regression-case-split-options",
+        name: "Regression - Case Split Options",
+        source: "examples/regression-case-split-options.ts",
+        sourceOrigin: "bblitec-regression",
+        title: "Babylon Lite Native - Case Split Options",
+        parity: {
+            maxFullMad: 0.001,
+            maxForegroundMad: 0.001,
+            backgroundColor: [26, 26, 38],
+            backgroundThreshold: 30,
+            nativeEnvironment: fixedCaptureEnvironment(),
+        },
+    },
+    {
         // Scene 214 with enableCsmStaticCache: quiet casters demote into
         // the static cache, and a caster moved every frame stays dynamic
         // and draws over the copied cache layers.

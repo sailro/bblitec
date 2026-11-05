@@ -299,6 +299,7 @@ export interface ExpressionContext
             | "dynamicBindings"
             | "parameterObjects"
             | "conditionOverrides"
+            | "valueOverrides"
             | "impureReadCount"
             | "compileWorkerValue"
             | "audioSessionCpp"
@@ -619,6 +620,11 @@ export class ExpressionLowerer {
     }
 
     public compileValue(expression: ts.Expression): Value {
+        const forced =
+            this.context.valueOverrides.size > 0
+                ? this.context.valueOverrides.get(expression)
+                : undefined;
+        if (forced) return forced;
         traceSourceNode(expression);
         requireObservedPromise(this.context, expression);
         // An operand already evaluated once (an assigned right side, a held
