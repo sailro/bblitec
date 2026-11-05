@@ -709,7 +709,7 @@ test("records stored into a document demand every element's document storage in 
             { file: "a", clips: { normal: ["w"] } }, { file: "b", clips: { normal: ["x"] } },
             { file: "c", clips: { normal: ["y"] } }, { file: "d", clips: { normal: ["z"] } },
         ];
-        const doc = JSON.parse('{"kind":"fish"}') as Record<string, unknown>;
+        const doc = JSON.parse('{"kind":"catalog"}') as Record<string, unknown>;
         doc.variants = [
             { id: "f1", ...BASE[0], scale: 1 },
             { id: "f2", ...BASE[1], scale: 2, weight: 1 },
@@ -747,7 +747,7 @@ test("records sharing one struct demand each element's document storage in one r
             { file: "a", clips: { normal: ["w"] } }, { file: "b", clips: { normal: ["x"] } },
             { file: "c", clips: { normal: ["y"] } }, { file: "d", clips: { normal: ["z"] } },
         ];
-        const doc = JSON.parse('{"kind":"fish"}') as Record<string, unknown>;
+        const doc = JSON.parse('{"kind":"catalog"}') as Record<string, unknown>;
         doc.variants = [
             { id: "f1", ...BASE[0], scale: 1, weight: 1 },
             { id: "f2", ...BASE[1], scale: 2, weight: 1 },

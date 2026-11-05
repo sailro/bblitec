@@ -95,25 +95,25 @@ test("an async result's array of owned resources is stored by its declared recor
     // back into it.
     const { cpp } = compileSource(`
             import {createBox, createEngine, type EngineContext, type Mesh} from '@babylonjs/lite';
-            interface Herd { readonly meshes: Mesh[]; readonly count: number; add(): number }
-            function build(engine: EngineContext, sizes: number[]): Herd {
+            interface Group { readonly meshes: Mesh[]; readonly count: number; add(): number }
+            function build(engine: EngineContext, sizes: number[]): Group {
                 let count = 0;
                 const parts = sizes.map((size) => ({ mesh: createBox(engine, { size }) }));
                 return { meshes: parts.map((part) => part.mesh), get count() { return count; }, add(): number { return count++; } };
             }
-            async function create(engine: EngineContext, sizes: number[]): Promise<Herd> {
+            async function create(engine: EngineContext, sizes: number[]): Promise<Group> {
                 await Promise.resolve(engine);
                 return build(engine, sizes);
             }
             const engine = await createEngine(document.getElementById("renderCanvas") as HTMLCanvasElement);
-            const herds = await Promise.all([[0.5, 0.8], [0.3]].map((sizes): Promise<Herd> => create(engine, sizes)));
-            for (const herd of herds) { herd.add(); for (const mesh of herd.meshes) mesh.position.y = herd.count; }
+            const groups = await Promise.all([[0.5, 0.8], [0.3]].map((sizes): Promise<Group> => create(engine, sizes)));
+            for (const group of groups) { group.add(); for (const mesh of group.meshes) mesh.position.y = group.count; }
         `);
     assert.match(
         cpp,
-        /struct HerdData \{\s*bbl::js::Array<std::pair<bbl::StoredEngine, bbl::MeshHandle>> meshes;/,
+        /struct GroupData \{\s*bbl::js::Array<std::pair<bbl::StoredEngine, bbl::MeshHandle>> meshes;/,
     );
-    assert.match(cpp, /bbl::js::Promise<bblscene::Herd> /);
+    assert.match(cpp, /bbl::js::Promise<bblscene::Group> /);
     assert.doesNotMatch(cpp, /bbl::js::Promise<bblscene::Record\d+>/);
 });
 
