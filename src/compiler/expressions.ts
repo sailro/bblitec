@@ -1689,6 +1689,16 @@ export class ExpressionLowerer {
                 unwrapped,
             );
         }
+        if (
+            ts.isBinaryExpression(unwrapped) &&
+            (unwrapped.operatorToken.kind === ts.SyntaxKind.BarBarToken ||
+                unwrapped.operatorToken.kind ===
+                    ts.SyntaxKind.AmpersandAmpersandToken)
+        ) {
+            const selected =
+                this.context.dataLowerer.compileUnionLogicalValue(unwrapped);
+            if (selected) return selected;
+        }
         if (this.context.evaluator.isNumberExpression(unwrapped)) {
             const staticNumber = ts.isNumericLiteral(unwrapped)
                 ? Number(unwrapped.text)

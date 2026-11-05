@@ -16021,6 +16021,35 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         return { kind: "string", cpp: result };
     }
 
+    /**
+     * `left || right` / `left && right` whose operands differ in kind (a
+     * string or a number, `name || index`): the expression's union storage,
+     * holding the left where its truth test selects it and the right, run
+     * only otherwise, where it does not.
+     */
+    public compileUnionLogicalValue(
+        expression: ts.BinaryExpression,
+    ): Value | undefined {
+        const type = this.dataTypeAt(expression);
+        if (type?.kind !== "union") return undefined;
+        const cppType = this.context.dataTypes.cppType(type);
+        const isAnd =
+            expression.operatorToken.kind ===
+            ts.SyntaxKind.AmpersandAmpersandToken;
+        const result = this.compileLogicalSelection(
+            expression,
+            type,
+            "logical_value",
+            (left, condition) =>
+                `${isAnd ? `!(${condition})` : condition} ? ${cppType}{${this.compileKnownValueForSink(
+                    isAnd ? left : this.narrowOptional(left, expression.left, true),
+                    type,
+                    expression.left,
+                )}} : ${cppType}{}`,
+        );
+        return this.leafValue(result, type);
+    }
+
     /** Logical accessor stores use one getter value and return the selected RHS. */
     private emitLogicalAccessorAssignment(
         expression: ts.BinaryExpression,

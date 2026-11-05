@@ -103,6 +103,8 @@ import {
     absenceKind,
     excludesObjectColour,
     fixedTupleElements,
+    holdsOnly,
+    isAnyTyped,
     isNullable,
     stringPlusOperands,
     valueKindOf,
@@ -1331,10 +1333,32 @@ export class StaticEvaluator {
                     // numeric fallback form compiled by compileNumber.
                     ts.SyntaxKind.BarBarToken,
                 ].includes(unwrapped.operatorToken.kind) &&
-                !this.isBooleanExpression(unwrapped)) ||
+                !this.isBooleanExpression(unwrapped) &&
+                (unwrapped.operatorToken.kind !== ts.SyntaxKind.BarBarToken ||
+                    !this.yieldsNonNumber(unwrapped))) ||
             mathConstantAccess(unwrapped, this.libraryGlobal, this.member) !==
                 undefined ||
             (mathCall?.name === "sqrt" && mathCall.call.arguments.length === 1)
+        );
+    }
+
+    /**
+     * Whether a value-position `a || b` can yield something other than a
+     * number: an operand the checker types as a string, bigint, object or
+     * symbol is the value the expression yields when it is truthy.
+     */
+    private yieldsNonNumber(expression: ts.BinaryExpression): boolean {
+        const type = this.checker.getTypeAtLocation(expression);
+        return (
+            !isAnyTyped(type) &&
+            !holdsOnly(type, [
+                "number",
+                "boolean",
+                "null",
+                "undefined",
+                "void",
+                "unknown",
+            ])
         );
     }
 
