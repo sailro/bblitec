@@ -3560,7 +3560,12 @@ export class DataTypeRegistry {
         );
     }
 
-    /** Shared records and arrays retain nested records through one dictionary or document view. */
+    /**
+     * Shared records and arrays retain nested records through one dictionary
+     * or document view. A field one record stores as a dynamic value and the
+     * other as an array or map holds one object in JavaScript: the record
+     * storing it typed takes the document layout, which holds that value.
+     */
     public requireSharedValueViews(source: DataType, target: DataType): void {
         const seen = new Set<string>();
         const compare = (a: DataType, b: DataType): void => {
@@ -3592,18 +3597,37 @@ export class DataTypeRegistry {
                 fields(
                     this.structsByName.get(left.name)?.fields ?? [],
                     this.structsByName.get(right.name)?.fields ?? [],
+                    left.name,
+                    right.name,
                 );
         };
+        const container = (type: DataType): boolean =>
+            type.kind === "vector" ||
+            type.kind === "span" ||
+            type.kind === "map";
         const fields = (
             left: readonly DataStructField[],
             right: readonly DataStructField[],
+            leftRecord: string,
+            rightRecord: string,
         ): void => {
             const sources = new Map(
                 left.map((field) => [field.sourceName, field]),
             );
             for (const field of right) {
                 const from = sources.get(field.sourceName);
-                if (from) compare(from.type, field.type);
+                if (!from) continue;
+                const held = fieldStorage(from.type);
+                const stored = fieldStorage(field.type);
+                const typed =
+                    held.kind === "json" && container(stored)
+                        ? rightRecord
+                        : stored.kind === "json" && container(held)
+                          ? leftRecord
+                          : undefined;
+                const demand = typed && this.documentRecordDemand(typed);
+                if (demand) throw new NativeRecordStorageRequired(demand);
+                compare(from.type, field.type);
             }
         };
         compare(source, target);
