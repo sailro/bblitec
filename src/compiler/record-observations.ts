@@ -818,6 +818,20 @@ function writesWhere(
  * Whether a value of type `holder` can be a record of one of `records`, one
  * answer per holder and record list.
  */
+/**
+ * `holderTest` under a generic instantiation: each type parameter the walk
+ * meets is first `resolve`d to the type the active call binds it to.
+ * Uncached, since the answer is the instantiation's.
+ */
+export function holdsRecordUnder(
+    checker: ts.TypeChecker,
+    holder: ts.Type,
+    records: readonly ts.Type[],
+    resolve: (type: ts.Type) => ts.Type,
+): boolean {
+    return holdsRecord(checker, holder, records, resolve);
+}
+
 export function holderTest(
     checker: ts.TypeChecker,
 ): (holder: ts.Type, records: readonly ts.Type[]) => boolean {
@@ -839,7 +853,9 @@ function holdsRecord(
     checker: ts.TypeChecker,
     holder: ts.Type,
     records: readonly ts.Type[],
+    resolve?: (type: ts.Type) => ts.Type,
 ): boolean {
+    if (resolve) holder = resolve(holder);
     // A type parameter holds whatever its constraint admits; an
     // unconstrained one holds anything.
     if ((holder.flags & ts.TypeFlags.TypeParameter) !== 0) {
@@ -847,14 +863,14 @@ function holdsRecord(
         return (
             constraint === undefined ||
             constraint === holder ||
-            holdsRecord(checker, constraint, records)
+            holdsRecord(checker, constraint, records, resolve)
         );
     }
     const open = OPEN_HOLDER_FLAGS;
     if ((holder.flags & open) !== 0) return true;
     if (holder.isUnion())
         return holder.types.some((member) =>
-            holdsRecord(checker, member, records),
+            holdsRecord(checker, member, records, resolve),
         );
     if (
         holder.isIntersection() &&

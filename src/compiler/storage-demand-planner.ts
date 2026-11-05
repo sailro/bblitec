@@ -26,7 +26,7 @@ import {
 } from "./replay-storage.js";
 import type { LoweringServices } from "./lowering-services.js";
 import { callSignatures } from "./type-facts.js";
-import { holderTest } from "./record-observations.js";
+import { holderTest, holdsRecordUnder } from "./record-observations.js";
 
 type StatementContext = Pick<
     LoweringServices,
@@ -172,6 +172,16 @@ function independentDemand(
     );
 }
 
+/** The body of the function a declaration is local to; undefined at module level. */
+function functionBodyOf(
+    declaration: ts.Declaration | undefined,
+): ts.Block | undefined {
+    const owner =
+        declaration && ts.findAncestor(declaration.parent, ts.isFunctionLike);
+    const body = owner && "body" in owner ? owner.body : undefined;
+    return body && ts.isBlock(body) ? body : undefined;
+}
+
 /**
  * The class whose instance a `this` keyword reads (its constructor, in a
  * static member): the class of the nearest member that binds `this`.
@@ -246,6 +256,11 @@ export class StorageDemandPlanner {
     private readonly collected: ReplayStorage;
     /** @unjournaled Source declarations removed by a planning rollback. */
     private readonly lostDeclarations = new Set<ts.Symbol>();
+    /**
+     * @unjournaled The lost declarations local to a function body, by body:
+     * the next activation of that body declares them afresh.
+     */
+    private readonly lostLocals = new Map<ts.Node, Set<ts.Symbol>>();
     /** @unjournaled Classes whose instances a planning rollback wrote through `this`. */
     private readonly lostClasses = new Set<ts.ClassLikeDeclaration>();
     /** @unjournaled Record types whose storage a survey's plan changed, one array per change. */
@@ -340,19 +355,24 @@ export class StorageDemandPlanner {
         lower: () => void,
     ): void {
         this.lowering = statement;
+        this.beginActivation(statement);
         if (this.demands.length >= 256)
             throw new PlanningLimit("the 256 demands one plan collects");
+        // Under a generic instantiation a statement reads the types the
+        // active call binds, so a check holds for that call alone.
+        const cached = !context.dataTypes.substitutesTypeParameters();
         if (
             (this.lostDeclarations.size > 0 ||
                 this.lostClasses.size > 0 ||
                 this.lostTypes.length > 0) &&
-            this.dependencyChecks.get(statement) !== this.lostGeneration
+            (!cached ||
+                this.dependencyChecks.get(statement) !== this.lostGeneration)
         ) {
             const checked: ts.Statement[] = [];
             const dependent = someAnalysisNode(
                 statement,
                 (node) => {
-                    if (ts.isStatement(node)) {
+                    if (ts.isStatement(node) && cached) {
                         if (
                             this.dependencyChecks.get(node) ===
                             this.lostGeneration
@@ -371,7 +391,7 @@ export class StorageDemandPlanner {
                     return (
                         (symbol !== undefined &&
                             this.lostDeclarations.has(symbol)) ||
-                        this.readsLostType(context.checker, node)
+                        this.readsLostType(context, node)
                     );
                 },
                 { types: "skip", names: "references" },
@@ -473,14 +493,19 @@ export class StorageDemandPlanner {
 
     /** Whether a reference's value can be a record of a type a survey's plan lost. */
     private readsLostType(
-        checker: ts.TypeChecker,
+        context: StatementContext,
         reference: ts.Identifier,
     ): boolean {
         if (this.lostTypes.length === 0) return false;
+        const checker = context.checker;
         const type = checker.getTypeAtLocation(reference);
         // An untyped value reads as anything; counting it would lose all.
         if ((type.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) !== 0)
             return false;
+        if (context.dataTypes.substitutesTypeParameters())
+            return holdsRecordUnder(checker, type, this.lostTypes, (held) =>
+                context.dataTypes.resolveTypeParameter(held),
+            );
         let reads = this.lostTypeReads.get(type);
         if (reads === undefined) {
             this.holds ??= holderTest(checker);
@@ -535,7 +560,32 @@ export class StorageDemandPlanner {
         if (symbol && !this.lostDeclarations.has(symbol)) {
             this.lostDeclarations.add(symbol);
             this.lostGeneration++;
+            const body = functionBodyOf(symbol.valueDeclaration);
+            if (body) {
+                let locals = this.lostLocals.get(body);
+                if (!locals) this.lostLocals.set(body, (locals = new Set()));
+                locals.add(symbol);
+            }
         }
+    }
+
+    /**
+     * A function body's first statement begins an activation, whose locals
+     * are not the ones an earlier activation's rollback lost.
+     */
+    private beginActivation(statement: ts.Statement): void {
+        const body = statement.parent;
+        if (
+            !ts.isBlock(body) ||
+            body.statements[0] !== statement ||
+            !ts.isFunctionLike(body.parent)
+        )
+            return;
+        const locals = this.lostLocals.get(body);
+        if (!locals) return;
+        for (const symbol of locals) this.lostDeclarations.delete(symbol);
+        this.lostLocals.delete(body);
+        this.lostGeneration++;
     }
 
     private collect(request: StorageRequest): void {

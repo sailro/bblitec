@@ -7079,6 +7079,11 @@ export class DataTypeRegistry {
     }
 
     /** A type with every type parameter in force replaced by its argument. */
+    /** Whether a generic call's type arguments are in force (`resolveTypeParameter`). */
+    public substitutesTypeParameters(): boolean {
+        return this.typeArgumentFrames().length > 0;
+    }
+
     public resolveTypeParameter(type: ts.Type): ts.Type {
         const seen = new Set<ts.Type>();
         while (!seen.has(type)) {
