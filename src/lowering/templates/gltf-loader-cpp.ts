@@ -758,11 +758,12 @@ ${options.cpuGeometry ? `            record.cpu_streams = read_gltf_cpu_streams(
                 nodeTransforms
                     ? `
             // Scene code writes node transforms, so the node's world is its
-            // transform node's, composed through the hierarchy live.
-            // Static skeleton palettes compose under the live mesh world;
-            // animation-owned worlds and morphs still require separate wiring.
-            if (animated || planned_morph)
-                throw std::runtime_error("An animated or morphed glTF primitive reached a node-carrying load.");
+            // transform node's, composed through the hierarchy live: a pose
+            // writes its channels into the scene nodes. Skeleton palettes
+            // compose under the live mesh world; morphs still require
+            // separate wiring.
+            if (planned_morph)
+                throw std::runtime_error("A morphed glTF primitive reached a node-carrying load.");
             record.parent_world.reset();`
                     : ""
             }

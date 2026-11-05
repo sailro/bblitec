@@ -4652,6 +4652,21 @@ const sceneInputs: readonly SceneInput[] = [
         },
     },
     {
+        id: "regression-gltf-node-transform-animation",
+        name: "Regression - glTF Node Transform Animation",
+        source: "examples/regression-gltf-node-transform-animation.ts",
+        sourceOrigin: "bblitec-regression",
+        title: "Babylon Lite Native - glTF Node Transform Animation",
+        parity: {
+            // Inside the second STEP span of every channel.
+            referenceTimeSeconds: 0.75,
+            maxFullMad: 0.001,
+            maxForegroundMad: 0.001,
+            backgroundColor: [10, 13, 20],
+            backgroundThreshold: 30,
+        },
+    },
+    {
         id: "regression-node-local-attributes",
         name: "Regression - Node Local Attributes",
         source: "examples/regression-node-local-attributes.ts",

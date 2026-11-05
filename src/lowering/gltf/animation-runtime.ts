@@ -180,7 +180,19 @@ struct GltfAnimationOverrideRows {
 };
 GltfAnimationOverrideRows gltf_animation_override_rows(const Engine& engine,std::size_t asset_index){
     return {asset_index<engine.assets.size()?&engine.assets[asset_index].bone_overrides:nullptr};
-}
+}${
+        options.nodeTransforms
+            ? `
+// Scene code writes node transforms, so the asset carries the pin's node
+// hierarchy (AssetRecord::nodes): glTF node \`index\`'s scene node, when the
+// scene reaches it.
+std::optional<TransformNodeHandle> gltf_animation_scene_node(const Engine& engine,std::size_t asset_index,std::size_t index){
+    const auto& nodes=engine.assets.at(asset_index).nodes;
+    if(index>=nodes.size()||nodes[index].value==invalid_handle)return std::nullopt;
+    return nodes[index];
+}`
+            : ""
+    }
 `;
 }
 
@@ -211,8 +223,26 @@ export function gltfAnimationPoseTransportCpp(
     light?: ReturnType<typeof gltfAnimatedLightCpp>,
 ): string {
     return `
-        const auto refresh_live_worlds=[animation_runtime=animation_runtime.get()${cameraRefresh || options.animationPointer ? ",&engine" : ""}]() {
-            for(auto& node:animation_runtime->nodes){node.computed=false;node.computing=false;}
+        const auto refresh_live_worlds=[animation_runtime=animation_runtime.get()${cameraRefresh || options.animationPointer || options.nodeTransforms ? ",&engine" : ""}]() {
+            for(auto& node:animation_runtime->nodes){node.computed=false;node.computing=false;}${
+                options.nodeTransforms
+                    ? `
+            // Each glTF node's local is its scene node's, which carries the
+            // scene's writes and the channels a pose wrote into it.
+            for(std::size_t index=0;index<animation_runtime->nodes.size();++index) {
+                const auto handle=gltf_animation_scene_node(engine,animation_runtime->asset_index,index);
+                if(!handle)continue;
+                const auto& record=${recordAt("engine.transform_nodes", "*handle")};
+                auto& node=animation_runtime->nodes[index];
+                node.has_matrix=true;
+                if(record.local_matrix) {
+                    for(std::size_t lane=0;lane<node.matrix.size();++lane)node.matrix[lane]=record.local_matrix->load(lane);
+                } else {
+                    node.matrix=upstream::trs_matrix(record);
+                }
+            }`
+                    : ""
+            }
             std::function<const Matrix&(std::size_t)> compute_animated_world=[&](std::size_t index)->const Matrix& {
                 auto& node=animation_runtime->nodes.at(index);
                 if(node.computed)return node.world;
@@ -248,7 +278,7 @@ ${cameraRefresh}
             auto& mesh=*found;
 ${options.vat ? `            if(mesh.has_vat)return;` : ""}
             publish_gltf_deformation(mesh,gltf_rooted_world(animation_runtime->nodes.at(binding.node).world),
-                binding.initial_joint_matrices,binding.skin<animation_runtime->skins.size(),binding.morph_default_weights);
+                binding.initial_joint_matrices,binding.skin<animation_runtime->skins.size(),binding.morph_default_weights${options.nodeTransforms ? ",true" : ""});
         };
         animation_runtime->publish_pose=[animation_runtime=animation_runtime.get(),refresh_live_worlds,publish_mesh]() {
             refresh_live_worlds();
@@ -274,17 +304,43 @@ ${options.vat ? `            if(mesh.has_vat)return;` : ""}
             auto apply_overrides=[&](auto& trs,double count,bool hidden_only) {
                 gltf_apply_animation_bone_overrides(overrides,trs,count,hidden_only);
             };
-            const auto write_translation=[&](std::size_t target,double x,double y,double z){
+${
+    options.nodeTransforms
+        ? `            // A channel moves the glTF node's scene node, as the pin's
+            // animation writes the TransformNode itself.
+            const auto scene_node=[&](std::size_t target){
+                return gltf_animation_scene_node(engine,animation_runtime->asset_index,target);
+            };
+`
+        : ""
+}            const auto write_translation=[&](std::size_t target,double x,double y,double z){
                 wrote_live_node=true;
-                auto& node=animation_runtime->nodes.at(target);node.translation={x,y,z};
+                auto& node=animation_runtime->nodes.at(target);node.translation={x,y,z};${
+                    options.nodeTransforms
+                        ? `
+                if(const auto handle=scene_node(target))set_transform_node_position(engine,*handle,{x,y,z});`
+                        : ""
+                }
             };
             const auto write_rotation=[&](std::size_t target,double x,double y,double z,double w){
                 wrote_live_node=true;
-                auto& node=animation_runtime->nodes.at(target);node.rotation={x,y,z,w};
+                auto& node=animation_runtime->nodes.at(target);node.rotation={x,y,z,w};${
+                    options.nodeTransforms
+                        ? `
+                if(const auto handle=scene_node(target))set_transform_node_rotation_quaternion(engine,*handle,
+                    {static_cast<float>(x),static_cast<float>(y),static_cast<float>(z),static_cast<float>(w)});`
+                        : ""
+                }
             };
             const auto write_scale=[&](std::size_t target,double x,double y,double z){
                 wrote_live_node=true;
-                auto& node=animation_runtime->nodes.at(target);node.scale={x,y,z};
+                auto& node=animation_runtime->nodes.at(target);node.scale={x,y,z};${
+                    options.nodeTransforms
+                        ? `
+                if(const auto handle=scene_node(target))set_transform_node_scaling(engine,*handle,
+                    {static_cast<float>(x),static_cast<float>(y),static_cast<float>(z)});`
+                        : ""
+                }
             };
             gltf_evaluate_animation_pose(pose,time,upload_gpu,
                 [](const auto& sampler,double t,double arity,bool quaternion,auto& output,double offset){

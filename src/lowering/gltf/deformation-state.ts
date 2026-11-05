@@ -4,13 +4,15 @@ export function gltfDeformationStateCpp(): string {
 // A skinned record carries the pin's palette, \`invMeshWorld * jointWorld *
 // IBM\`, under its node's world; an unskinned animated node carries its
 // live world as the record's parent world, as the pin's mesh child of that
-// node does.
+// node does -- unless the record hangs under the node's scene node
+// (\`scene_parent\`), which the pose moved itself.
 void publish_gltf_deformation(MeshRecord& mesh, const Matrix& node_world,
-    const std::vector<Matrix>& joint_matrices, bool skinned, const std::vector<float>& morph_weights) {
+    const std::vector<Matrix>& joint_matrices, bool skinned, const std::vector<float>& morph_weights,
+    bool scene_parent = false) {
     if (skinned) {
         mesh.bone_matrices = joint_matrices;
         ++mesh.bone_matrices_version;
-    } else {
+    } else if (!scene_parent) {
         mesh.parent_world = node_world;
     }
     mesh.morph_weights = {};
