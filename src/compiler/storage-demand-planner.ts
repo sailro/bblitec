@@ -287,9 +287,22 @@ export class StorageDemandPlanner {
     private stop: unknown;
 
     /** `survey`: whether the plan runs between a survey's strict attempts. */
+    /**
+     * @unjournaled The replays besides storage (a lazy module's activation,
+     * runtime query state) a survey's plan met: the compile applies them
+     * after the plan, as a strict attempt's restart would.
+     */
+    readonly replays: Error[] = [];
+
+    /**
+     * `survey`: whether the plan runs between a survey's strict attempts;
+     * `replayable`: the replays besides storage that a survey's plan
+     * records and goes on past, losing the statement that met one.
+     */
     public constructor(
         checker: ts.TypeChecker,
         private readonly survey = false,
+        private readonly replayable?: (error: unknown) => error is Error,
     ) {
         this.collected = new ReplayStorage(checker);
     }
@@ -417,6 +430,11 @@ export class StorageDemandPlanner {
                 // A survey's strict attempt rolls the refused statement
                 // back and goes on: so does its plan.
                 statistics.refused++;
+                this.lose(context.checker, statement);
+                return;
+            }
+            if (this.survey && this.replayable?.(error)) {
+                this.replays.push(error);
                 this.lose(context.checker, statement);
                 return;
             }

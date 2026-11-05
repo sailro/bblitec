@@ -875,12 +875,19 @@ function lowerSourceApplication(
                 const planned = performance.now();
                 owed -= planned - started;
                 if (owed > 0) continue;
-                const planner = new StorageDemandPlanner(input.checker, true);
+                const planner = new StorageDemandPlanner(
+                    input.checker,
+                    true,
+                    (replay): replay is Error =>
+                        replay instanceof ModuleActivationRequired ||
+                        replay instanceof RuntimeSearchParamsRequired,
+                );
                 try {
                     planner.run(() => newCompiler(planner).compile());
                 } catch (planningError) {
                     if (!acceptReplay(planningError)) throw planningError;
                 }
+                for (const replay of planner.replays) acceptReplay(replay);
                 const added = addPlanned(planner);
                 const planMs = performance.now() - planned;
                 survey.planned(added, planMs, planner.ended());

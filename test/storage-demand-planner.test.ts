@@ -453,6 +453,44 @@ test("a survey's plan loses a write through this by its class and goes on", () =
     assert.equal(after.writes - before.writes, 0);
 });
 
+test("a survey's plan records a replay besides storage and goes on", () => {
+    const { checker, statements } = plannedStatements(`
+        const state = { query: "a" };
+        let other = { gain: 1 };
+    `);
+    class QueryReplay extends Error {}
+    const planner = new StorageDemandPlanner(
+        checker,
+        true,
+        (error): error is Error => error instanceof QueryReplay,
+    );
+    const context = {
+        checker,
+        transaction: (work: () => void) => work(),
+        dataTypes: { substitutesTypeParameters: () => false },
+    } as unknown as Parameters<typeof planner.attemptStatement>[0];
+    planner.run(() => {
+        planner.attemptStatement(context, statements[0]!, () => {
+            throw new QueryReplay("query state");
+        });
+        planner.attemptStatement(context, statements[1]!, () => {
+            throw new DynamicBindingStorageRequired(
+                (statements[1] as ts.VariableStatement).declarationList
+                    .declarations[0]!,
+                undefined,
+            );
+        });
+    });
+    assert.deepEqual(
+        planner.replays.map((replay) => replay.message),
+        ["query state"],
+    );
+    assert.deepEqual(
+        planner.demands.map((request) => request.kind),
+        ["dynamic"],
+    );
+});
+
 test("a survey's plan forgets a function's lost locals when its body starts again", () => {
     // The first activation loses `seen`, so its read waits; the second
     // activation declares it afresh and its read lowers.
