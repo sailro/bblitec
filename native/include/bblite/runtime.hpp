@@ -5317,11 +5317,13 @@ inline void set_render_texture_sampler(Engine& engine, const RenderTextureRef& t
 /** The sampler `texture.sampler` set for a bound render texture, or none. */
 inline const TextureSamplerState* render_texture_sampler(const Engine& engine,
                                                          const RenderTextureRef& texture) {
-    if (texture.source != RenderTextureSource::render_target)
-        return nullptr;
-    const auto& target = handle_at(engine.render_targets, texture.target);
-    const auto& sampler = texture.depth_only ? target.depth_sampler : target.sampler;
-    return sampler ? &*sampler : nullptr;
+    const RenderTargetRecord* target =
+        texture.source == RenderTextureSource::render_target
+            ? handle_find(engine.render_targets, texture.target)
+            : nullptr;
+    const auto* sampler =
+        target ? &(texture.depth_only ? target->depth_sampler : target->sampler) : nullptr;
+    return sampler && *sampler ? &**sampler : nullptr;
 }
 EnvironmentIdentity environment_identity(const Scene& scene);
 GpuTextureIdentity environment_texture_identity(const EnvironmentIdentity& environment);

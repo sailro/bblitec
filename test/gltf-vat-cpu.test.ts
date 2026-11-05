@@ -306,7 +306,9 @@ test("VAT source CPU seeking preserves binding validation order and uploaded pal
         file,
         `#include <bblite/runtime.hpp>
 #include <bblite/js_data.hpp>
+// Before js_json.hpp, which would include it with implicit conversions off.
 #include <nlohmann/json.hpp>
+#include <bblite/js_json.hpp>
 #include <fstream>
 #include <iostream>
 using Json = nlohmann::json;

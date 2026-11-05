@@ -301,9 +301,10 @@ void bind_shader_material_textures(GpuState& state, SDL_GPURenderPass* pass,
                 reference.source == RenderTextureSource::transmission_depth)
                 return task_transmission_binding(state, engine, reference);
 #endif
+            SDL_GPUTexture* texture = sdl_shader_render_texture(state, engine, reference);
             // The pin binds the texture's own sampler (`tex.sampler`).
             const TextureSamplerState* written = render_texture_sampler(engine, reference);
-            return {sdl_shader_render_texture(state, engine, reference),
+            return {texture,
                     written ? sdl_render_texture_sampler(state, *written) : state.ground_sampler};
         }
         if (slot >= uploaded.size())
