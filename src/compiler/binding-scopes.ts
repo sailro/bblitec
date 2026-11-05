@@ -274,6 +274,37 @@ export class BindingScopes {
         return undefined;
     }
 
+    /**
+     * Single-use `const` selections their declarations left to the read
+     * (`deferredSelection` in declarations.ts): the conditional each name
+     * evaluates to where it is read.
+     */
+    private readonly deferredSelections = new EmissionMap<
+        ts.Symbol,
+        ts.ConditionalExpression
+    >();
+
+    public deferSelection(
+        name: ts.Identifier,
+        selection: ts.ConditionalExpression,
+    ): void {
+        const symbol = this.context.symbols.valueSymbol(name);
+        if (symbol) this.deferredSelections.set(symbol, selection);
+    }
+
+    /** The selection an identifier names when its declaration deferred it. */
+    public deferredSelection(
+        expression: ts.Expression,
+    ): ts.ConditionalExpression | undefined {
+        const name = unwrapExpression(expression);
+        const symbol = ts.isIdentifier(name)
+            ? this.context.symbols.valueSymbol(name)
+            : undefined;
+        return symbol && !this.lookupOptional(name as ts.Identifier)
+            ? this.deferredSelections.get(symbol)
+            : undefined;
+    }
+
     /** The innermost scope binding the variable an identifier names. */
     public scopeOf(identifier: ts.Identifier): object | undefined {
         const symbol = this.context.symbols.valueSymbol(identifier);

@@ -2,6 +2,8 @@
 // typed data declarations, recursive and forward callback bindings, and
 // array/object binding patterns, lowered into the scope stack's bindings.
 import ts from "typescript";
+import { bindingReferences } from "./binding-references.js";
+import { isRebound } from "./binding-rebinds.js";
 import {
     absenceOf,
     knownCondition,
@@ -897,6 +899,121 @@ export class DeclarationLowerer {
         return true;
     }
 
+    /**
+     * A `const` whose conditional initializer can be read where its one
+     * reference is, with the same result: the condition and both arms read
+     * only bindings nothing rebinds and build only plain literals (no call,
+     * member read, construction or write), and the reference is in the same
+     * function with no loop between them, so it is evaluated once there.
+     */
+    private deferrableSelection(
+        declaration: ts.VariableDeclaration,
+    ): ts.ConditionalExpression | undefined {
+        const selection =
+            declaration.initializer &&
+            this.context.unwrap(declaration.initializer);
+        if (
+            !selection ||
+            !ts.isConditionalExpression(selection) ||
+            !ts.isIdentifier(declaration.name) ||
+            !ts.isVariableDeclarationList(declaration.parent) ||
+            variableKind(declaration.parent) !== "const"
+        )
+            return undefined;
+        const checker = this.context.checker;
+        const files = this.context.program.getSourceFiles();
+        const unchanging = (identifier: ts.Identifier): boolean => {
+            const symbol = declaredSymbol(checker, identifier);
+            const declared = symbol?.valueDeclaration;
+            return (
+                !!symbol &&
+                !!declared &&
+                (ts.isParameter(declared) ||
+                    (ts.isVariableDeclaration(declared) &&
+                        ts.isVariableDeclarationList(declared.parent) &&
+                        variableKind(declared.parent) === "const")) &&
+                !isRebound(checker, files, symbol)
+            );
+        };
+        const plain = (node: ts.Expression): boolean => {
+            const current = this.context.unwrap(node);
+            if (
+                ts.isNumericLiteral(current) ||
+                ts.isStringLiteralLike(current) ||
+                current.kind === ts.SyntaxKind.TrueKeyword ||
+                current.kind === ts.SyntaxKind.FalseKeyword ||
+                current.kind === ts.SyntaxKind.NullKeyword
+            )
+                return true;
+            if (ts.isIdentifier(current)) return unchanging(current);
+            if (ts.isPrefixUnaryExpression(current))
+                return plain(current.operand);
+            if (ts.isBinaryExpression(current))
+                return (
+                    !isAssignmentExpression(current) &&
+                    plain(current.left) &&
+                    plain(current.right)
+                );
+            if (ts.isObjectLiteralExpression(current))
+                return current.properties.every(
+                    (property) =>
+                        (ts.isPropertyAssignment(property) &&
+                            !ts.isComputedPropertyName(property.name) &&
+                            plain(property.initializer)) ||
+                        (ts.isShorthandPropertyAssignment(property) &&
+                            unchanging(property.name)),
+                );
+            return false;
+        };
+        if (
+            !plain(selection.condition) ||
+            !plain(selection.whenTrue) ||
+            !plain(selection.whenFalse)
+        )
+            return undefined;
+        const symbol = declaredSymbol(checker, declaration.name);
+        const references = symbol
+            ? bindingReferences(this.context.program, checker, symbol)
+            : [];
+        const reference = references[0];
+        if (references.length !== 1 || !reference) return undefined;
+        const block = declaration.parent.parent.parent;
+        for (
+            let node: ts.Node = reference.parent;
+            node !== block;
+            node = node.parent
+        )
+            if (
+                !node.parent ||
+                ts.isFunctionLike(node) ||
+                ts.isIterationStatement(node, false)
+            )
+                return undefined;
+        return selection;
+    }
+
+    /** Whether a selection has no one native storage (its arms differ). */
+    private selectionRefuses(selection: ts.ConditionalExpression): boolean {
+        return (
+            this.context.probeEmission(
+                () => {
+                    try {
+                        this.context.compileValue(selection);
+                        return false;
+                    } catch (error) {
+                        return (
+                            error instanceof CompileError &&
+                            error.message.includes(
+                                "Conditional expressions require matching native value branches",
+                            )
+                        );
+                    }
+                },
+                () => false,
+            ) === true
+        );
+    }
+
     public emitVariableDeclaration(declaration: ts.VariableDeclaration): void {
         if (
             (ts.getCombinedModifierFlags(declaration) &
@@ -950,6 +1067,12 @@ export class DeclarationLowerer {
                 declaration.name,
                 "Only identifier variable declarations are supported.",
             );
+        }
+        // A selection no one native storage holds is read where it is used.
+        const selection = this.deferrableSelection(declaration);
+        if (selection && this.selectionRefuses(selection)) {
+            this.context.bindings.deferSelection(declaration.name, selection);
+            return;
         }
         // An empty `Mesh[]` and the entity loop that fills it are one
         // construct — the recursive-visitor spelling of a container

@@ -1051,6 +1051,8 @@ export class ExpressionLowerer {
                     unwrapped,
                     `Namespace object '${unwrapped.text}' is a value only as the receiver of a member read.`,
                 );
+            const deferred = this.context.bindings.deferredSelection(unwrapped);
+            if (deferred) return this.compileValue(deferred);
             return this.context.bindings.lookup(unwrapped);
         }
         if (ts.isPropertyAccessExpression(unwrapped)) {

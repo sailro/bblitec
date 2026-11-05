@@ -259,6 +259,13 @@ export function conditionalExpression(
     return ts.isConditionalExpression(node) ? node : undefined;
 }
 
+/** The two operands a `c ? a : b` selects between, in source order. */
+export function selectionArms(
+    selection: ts.ConditionalExpression,
+): readonly [ts.Expression, ts.Expression] {
+    return [selection.whenTrue, selection.whenFalse];
+}
+
 /** Whether a node yields one of its operands ({@link operandYield}) rather than a value of its own. */
 export function isOperandSelection(node: ts.Node): boolean {
     return (
