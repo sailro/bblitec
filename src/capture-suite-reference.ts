@@ -17,7 +17,10 @@ import {
     waitForCapturedEngines,
 } from "./capture-engine-frames.js";
 import ts from "typescript";
-import { moduleSpecifiers } from "./typescript-module-specifiers.js";
+import {
+    isPackageImportSpecifier,
+    moduleSpecifiers,
+} from "./typescript-module-specifiers.js";
 import { rewriteModuleSpecifiers } from "./module-specifier-rewrite.js";
 import { pinnedLabPublicFile, servedFile } from "./pinned-lab-materializers.js";
 import { packageImportTargets } from "./pinned-build-conditions.js";
@@ -264,27 +267,34 @@ export function pinnedBrowserModuleUrl(relativePath: string): string {
     return pinnedBrowserEntryUrl.replace(/index\.js$/, relativePath);
 }
 
+/** The served URL of the pinned package's root. */
+const pinnedPackageUrl = pinnedBrowserEntryUrl.replace(/lib\/index\.js$/, "");
+
 /**
- * The pinned package's own `#` imports as a served page resolves them: an
- * import map scoped to the package, each target the build conditions
- * select. A browser resolves a package's `imports` field only through one.
+ * A pinned package module as every realm loading it reads it: its own `#`
+ * imports (the package's `imports` field) rewritten to the served targets
+ * the build conditions select, as a bundler resolves them. A document's
+ * import map would not reach a module worker, whose own map is empty.
  */
-function pinnedPackageImportMapScript(
-    conditions: readonly string[] | undefined,
+function pinnedPackageModule(
+    path: string,
+    targets: ReadonlyMap<string, string>,
 ): string {
-    const packageUrl = pinnedBrowserEntryUrl.replace(/lib\/index\.js$/, "");
-    const imports = Object.fromEntries(
-        [
-            ...packageImportTargets(
-                upstreamSource().pinnedPackageRoot(),
-                conditions,
-            ),
-        ].map(([specifier, target]) => [
-            specifier,
-            packageUrl + target.replace(/^\.\//, ""),
-        ]),
+    return rewriteModuleSpecifiers(
+        readFileSync(path, "utf8"),
+        path,
+        ({ text }) => {
+            if (!isPackageImportSpecifier(text)) return undefined;
+            const target = targets.get(text);
+            if (target === undefined)
+                throw new Error(
+                    `${path}: the pinned package declares no '${text}' import.`,
+                );
+            return {
+                specifier: pinnedPackageUrl + target.replace(/^\.\//, ""),
+            };
+        },
     );
-    return `<script type="importmap">${JSON.stringify({ scopes: { [packageUrl]: imports } })}</script>\n`;
 }
 
 /**
@@ -662,7 +672,6 @@ export function createSuiteSceneServer(
         : "/scene.js";
     // Plain scripts that run before every page script.
     const startScripts =
-        pinnedPackageImportMapScript(options.conditions) +
         `<script>${engineCanvasRecorderScript}</script>\n` +
         (options.seededRandom
             ? `<script>${seededRandomScript}</script>\n`
@@ -698,6 +707,11 @@ ${startScripts}${fixedFrameScript}<script type="module" src="${entryPath}"></scr
         string,
         { bytes: Uint8Array; contentType: string }
     >();
+    const packageImports = packageImportTargets(
+        upstreamSource().pinnedPackageRoot(),
+        options.conditions,
+    );
+    const packageModules = new Map<string, string>();
     const handleRequest = async (
         request: IncomingMessage,
         response: ServerResponse,
@@ -834,6 +848,21 @@ ${startScripts}${fixedFrameScript}<script type="module" src="${entryPath}"></scr
                     );
                     return;
                 }
+            } else if (
+                url.pathname.startsWith(pinnedPackageUrl) &&
+                path.endsWith(".js") &&
+                url.search !== "?raw"
+            ) {
+                let source = packageModules.get(path);
+                if (source === undefined) {
+                    source = pinnedPackageModule(path, packageImports);
+                    packageModules.set(path, source);
+                }
+                response.writeHead(200, {
+                    "Content-Type": "text/javascript; charset=utf-8",
+                });
+                response.end(source);
+                return;
             } else {
                 serveLocalFile(
                     response,

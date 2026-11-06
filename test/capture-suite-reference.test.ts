@@ -260,6 +260,43 @@ test("a canvas-only screenshot keeps the host page's primary canvas in its wrapp
     }
 });
 
+// A module worker never sees its document's import map: the server resolves
+// the pinned package's own `#` imports into every module it serves.
+test("served pinned package modules resolve their # imports for every realm", async () => {
+    for (const [conditions, target] of [
+        [undefined, "coordinate-system.js"],
+        [["babylon-lite-rh"], "coordinate-system-rh.js"],
+    ] as const) {
+        const server = createSuiteSceneServer("export {};\n", {
+            ...(conditions ? { conditions } : {}),
+        });
+        try {
+            await new Promise<void>((done) =>
+                server.listen(0, "127.0.0.1", done),
+            );
+            const address = server.address();
+            assert.ok(address && typeof address !== "string");
+            const origin = `http://127.0.0.1:${address.port}`;
+            const module = await (
+                await fetch(
+                    `${origin}/node_modules/@babylonjs/lite/lib/camera/arc-rotate.js`,
+                )
+            ).text();
+            assert.doesNotMatch(module, /["']#coordinate-system["']/);
+            assert.match(
+                module,
+                new RegExp(
+                    `["']/node_modules/@babylonjs/lite/lib/engine/${regexText(target)}["']`,
+                ),
+            );
+            const html = await (await fetch(`${origin}/scene.html`)).text();
+            assert.doesNotMatch(html, /importmap/);
+        } finally {
+            await new Promise<void>((done) => server.close(() => done()));
+        }
+    }
+});
+
 test("a host page's inline loader imports the served scene module", async () => {
     const server = createSuiteSceneServer("export {};\n", {
         sourcePath: "examples/regression-host-page/src/main.ts",
