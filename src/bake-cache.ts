@@ -105,8 +105,15 @@ function pinIdentity(): string {
     const { readUpstreamPin } = requireModule(
         "./upstream-source.js",
     ) as typeof import("./upstream-source.js");
+    const { pinnedBuildConditions } = requireModule(
+        "./pinned-build-conditions.js",
+    ) as typeof import("./pinned-build-conditions.js");
     const pin = readUpstreamPin();
-    cachedPinIdentity = `${pin.package}@${pin.version}#${pin.sourceVersion}`;
+    // A bake executes the pin under the build conditions it was read with.
+    const conditions = pinnedBuildConditions();
+    cachedPinIdentity =
+        `${pin.package}@${pin.version}#${pin.sourceVersion}` +
+        (conditions.length > 0 ? `+${conditions.join(",")}` : "");
     return cachedPinIdentity;
 }
 

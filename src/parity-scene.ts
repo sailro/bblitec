@@ -1031,6 +1031,8 @@ async function runSceneParity(
         ...(config.referenceSettle !== undefined
             ? { settle: config.referenceSettle }
             : {}),
+        // The program the native side compiled under the same conditions.
+        conditions: scene.conditions ?? [],
     };
     await captureSuiteReference(
         scene.source,

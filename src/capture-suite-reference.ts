@@ -268,14 +268,18 @@ export function pinnedBrowserModuleUrl(relativePath: string): string {
  * import map scoped to the package, each target the build conditions
  * select. A browser resolves a package's `imports` field only through one.
  */
-function pinnedPackageImportMapScript(): string {
+function pinnedPackageImportMapScript(
+    conditions: readonly string[] | undefined,
+): string {
     const packageUrl = pinnedBrowserEntryUrl.replace(/lib\/index\.js$/, "");
     const { packageRoot } = upstreamSource().sharedUpstreamStore();
     const imports = Object.fromEntries(
-        [...packageImportTargets(packageRoot)].map(([specifier, target]) => [
-            specifier,
-            packageUrl + target.replace(/^\.\//, ""),
-        ]),
+        [...packageImportTargets(packageRoot, conditions)].map(
+            ([specifier, target]) => [
+                specifier,
+                packageUrl + target.replace(/^\.\//, ""),
+            ],
+        ),
     );
     return `<script type="importmap">${JSON.stringify({ scopes: { [packageUrl]: imports } })}</script>\n`;
 }
@@ -520,6 +524,11 @@ const engineCanvasRecorderScript =
     " engines.add(this); return transfer.call(this); }; })();";
 
 interface SuiteCaptureOptions {
+    /**
+     * The bundler conditions the page resolves the pin's `#` imports under
+     * (a right-handed twin's `babylon-lite-rh`); this process's own by default.
+     */
+    conditions?: readonly string[];
     /** Preserve browser scrollbars, including their layout width. */
     showScrollbars?: boolean;
     /** CSS canvas size for device-local diagnostics; canonical references use 1280x720. */
@@ -645,7 +654,7 @@ export function createSuiteSceneServer(
         : "/scene.js";
     // Plain scripts that run before every page script.
     const startScripts =
-        pinnedPackageImportMapScript() +
+        pinnedPackageImportMapScript(options.conditions) +
         `<script>${engineCanvasRecorderScript}</script>\n` +
         (options.seededRandom
             ? `<script>${seededRandomScript}</script>\n`

@@ -40,23 +40,24 @@ const CLIENT_CONDITIONS = ["import", "module", "browser", "production"];
 
 let extraConditions: readonly string[] | undefined;
 
-/** Selects the extra conditions; fixed by the first pinned read. */
-export function setPinnedBuildConditions(selected: readonly string[]): void {
-    const current = extraConditions;
-    if (
-        current !== undefined &&
-        (current.length !== selected.length ||
-            current.some((condition, index) => condition !== selected[index]))
-    )
-        throw new Error(
-            `Pinned build conditions are already [${current.join(", ")}]; select them before the first pinned read.`,
-        );
-    extraConditions = [...selected];
+/**
+ * The extra conditions this process builds under, from
+ * `BBLITE_BUILD_CONDITIONS` (comma-separated): the pin is read while the
+ * compiler's modules load, so the conditions are the process's own from its
+ * start.
+ */
+export function pinnedBuildConditions(): readonly string[] {
+    return (extraConditions ??= (process.env.BBLITE_BUILD_CONDITIONS ?? "")
+        .split(",")
+        .filter((condition) => condition !== ""));
 }
 
-/** The extra conditions this process builds under; reading fixes them. */
-export function pinnedBuildConditions(): readonly string[] {
-    return (extraConditions ??= []);
+/** A child process environment building under `conditions`. */
+export function buildConditionsEnvironment(
+    conditions: readonly string[],
+    environment: NodeJS.ProcessEnv = process.env,
+): NodeJS.ProcessEnv {
+    return { ...environment, BBLITE_BUILD_CONDITIONS: conditions.join(",") };
 }
 
 type ImportTarget =
@@ -84,11 +85,12 @@ function importsOf(
 /** Every `#` import the package declares, with the target the conditions select. */
 export function packageImportTargets(
     packageRoot: string,
+    conditions: readonly string[] = pinnedBuildConditions(),
 ): ReadonlyMap<string, string> {
     return new Map(
         Object.keys(importsOf(packageRoot)).map((specifier) => [
             specifier,
-            packageImportTarget(packageRoot, specifier),
+            packageImportTarget(packageRoot, specifier, conditions),
         ]),
     );
 }
@@ -100,9 +102,10 @@ export function packageImportTargets(
 export function packageImportTarget(
     packageRoot: string,
     specifier: string,
+    conditions: readonly string[] = pinnedBuildConditions(),
 ): string {
     const imports = importsOf(packageRoot);
-    const active = [...CLIENT_CONDITIONS, ...pinnedBuildConditions()];
+    const active = [...CLIENT_CONDITIONS, ...conditions];
     const target = Object.hasOwn(imports, specifier)
         ? selectedTarget(imports[specifier]!, active)
         : undefined;

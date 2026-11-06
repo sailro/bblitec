@@ -123,6 +123,13 @@ import {
     composeStandaloneTextPipelines,
 } from "./pinned-text-pipeline-cpp.js";
 import { holdDistLock } from "./dist-lock.js";
+import { isRelativeSpecifier } from "./typescript-module-specifiers.js";
+import { resolveRepositoryModuleFile } from "./bake-cache.js";
+import { spawnSync } from "node:child_process";
+import {
+    buildConditionsEnvironment,
+    pinnedBuildConditions,
+} from "./pinned-build-conditions.js";
 import {
     composeSplatModule,
     composeSplatShModule,
@@ -166,6 +173,8 @@ interface CliOptions {
     sourceProfile?: string[];
     coverage?: string;
     deferredCapabilities?: CompileOptions["deferredCapabilities"];
+    /** The bundler conditions the pin is read under (`pinned-build-conditions.ts`). */
+    conditions: string[];
 }
 
 /**
@@ -194,6 +203,7 @@ const OPTION_FLAGS: ReadonlyArray<{ flag: string; value?: string }> = [
     { flag: "--source-profile", value: "<function,...>" },
     { flag: "--coverage", value: "<coverage.json>" },
     { flag: "--deferred-capabilities", value: "runtime-throw" },
+    { flag: "--condition", value: "<name>" },
 ];
 
 function usage(): never {
@@ -240,6 +250,7 @@ function parseArguments(arguments_: string[]): CliOptions {
     let sourceProfile: string[] | undefined;
     let coverage: string | undefined;
     let deferredCapabilities: CompileOptions["deferredCapabilities"];
+    const conditions: string[] = [];
 
     for (let index = 1; index < arguments_.length; index += 1) {
         const flag = arguments_[index];
@@ -311,6 +322,11 @@ function parseArguments(arguments_: string[]): CliOptions {
                 publicDir = value;
                 index += 1;
                 break;
+            case "--condition":
+                if (!value) usage();
+                conditions.push(value);
+                index += 1;
+                break;
             case "--public-url":
                 if (!value) usage();
                 publicUrl = value;
@@ -378,6 +394,7 @@ function parseArguments(arguments_: string[]): CliOptions {
         ...(sourceProfile ? { sourceProfile } : {}),
         ...(coverage ? { coverage } : {}),
         ...(deferredCapabilities ? { deferredCapabilities } : {}),
+        conditions,
     };
 }
 
@@ -969,8 +986,63 @@ function withCoverage<T>(path: string | undefined, lower: () => T): T {
     }
 }
 
+/**
+ * The module an entry evaluates: itself, or -- when its one statement is a
+ * side-effect import of a sibling module (`import "./scene2";`) -- that
+ * module, which module evaluation runs in its place.
+ */
+function evaluatedEntryPath(path: string): string {
+    const [only, ...rest] = ts.createSourceFile(
+        path,
+        readFileSync(path, "utf8"),
+        ts.ScriptTarget.Latest,
+        false,
+    ).statements;
+    if (
+        !only ||
+        rest.length > 0 ||
+        !ts.isImportDeclaration(only) ||
+        only.importClause ||
+        !ts.isStringLiteral(only.moduleSpecifier) ||
+        !isRelativeSpecifier(only.moduleSpecifier.text)
+    )
+        return path;
+    const imported = resolveRepositoryModuleFile(
+        resolve(dirname(path), only.moduleSpecifier.text),
+    );
+    if (!imported)
+        throw new Error(
+            `${path} imports '${only.moduleSpecifier.text}', which resolves to no module.`,
+        );
+    return evaluatedEntryPath(imported);
+}
+
 async function main(): Promise<void> {
     const options = parseArguments(process.argv.slice(2));
+    // The pin is read as the modules load, under the environment's
+    // conditions; a `--condition` it does not carry restarts with them.
+    const conditions = pinnedBuildConditions();
+    if (
+        conditions.length !== options.conditions.length ||
+        conditions.some(
+            (condition, index) => condition !== options.conditions[index],
+        )
+    ) {
+        if (process.env.BBLITE_BUILD_CONDITIONS !== undefined)
+            throw new Error(
+                `--condition ${options.conditions.join(", ") || "(none)"} disagrees with BBLITE_BUILD_CONDITIONS=${process.env.BBLITE_BUILD_CONDITIONS}.`,
+            );
+        const restarted = spawnSync(
+            process.execPath,
+            [...process.execArgv, ...process.argv.slice(1)],
+            {
+                stdio: "inherit",
+                env: buildConditionsEnvironment(options.conditions),
+            },
+        );
+        process.exitCode = restarted.status ?? 1;
+        return;
+    }
     // This process runs out of `dist/` too, and an ad-hoc generation probe is
     // exactly what runs beside somebody else's `npm run build`. A `compile`
     // fan-out's children already run under their parent's lock and take
@@ -993,7 +1065,7 @@ async function main(): Promise<void> {
         throw new Error("--site-public-dir applies to an HTML page input.");
     if (!page && options.pageEntry)
         throw new Error("--page-entry applies to an HTML page input.");
-    const inputPath = resolve(page?.entry ?? options.input);
+    const inputPath = evaluatedEntryPath(resolve(page?.entry ?? options.input));
     const source = readFileSync(inputPath, "utf8");
     const compileOptions: CompileOptions = {
         ...(options.deferredCapabilities

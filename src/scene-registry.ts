@@ -102,6 +102,8 @@ export interface SceneDefinition {
     buildDirectory: string;
     /** Compile registered missing APIs the source reaches as throwing boundaries (docs/features.md). */
     deferredCapabilities?: CompileOptions["deferredCapabilities"];
+    /** The bundler conditions the program builds under (`babylon-lite-rh` for a right-handed twin). */
+    conditions?: readonly string[];
     /**
      * The HTML page hosting `source`, and its site: its markup is the native
      * host and the browser reference is captured from it.

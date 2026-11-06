@@ -3,6 +3,7 @@
 // First, so the modules evaluated after it are compiled through the cache.
 import "./tooling/compile-cache.js";
 import { spawn, spawnSync } from "node:child_process";
+import { buildConditionsEnvironment } from "./pinned-build-conditions.js";
 import {
     oldNativeCacheEntries,
     oldResultCacheEntries,
@@ -316,6 +317,8 @@ function compilerArguments(scene: SceneDefinition): string[] {
     if (scene.deferredCapabilities !== undefined) {
         arguments_.push("--deferred-capabilities", scene.deferredCapabilities);
     }
+    for (const condition of scene.conditions ?? [])
+        arguments_.push("--condition", condition);
     if (
         scene.parity?.attribution?.drawIds ||
         scene.parity?.attribution?.triangleClusters
@@ -394,10 +397,11 @@ async function compileScenes(
             runBuffered({ buffer: stale.length > 1 }, async (run) => {
                 const arguments_ = compilerArguments(scene);
                 const startedAt = Date.now();
-                await run(process.execPath, [
-                    ...COMPILER_NODE_FLAGS,
-                    ...arguments_,
-                ]);
+                await run(
+                    process.execPath,
+                    [...COMPILER_NODE_FLAGS, ...arguments_],
+                    buildConditionsEnvironment(scene.conditions ?? []),
+                );
                 generations.set(scene.id, {
                     startedAt,
                     durationMs: Date.now() - startedAt,
