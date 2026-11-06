@@ -33,6 +33,9 @@ const program = `
         .tones { --tone: #ff0000; }
         .tones .tone-initial { --tone: initial; color: var(--tone, #0000ff); }
         .tones .tone-inherit { --tone: inherit; color: var(--tone, #0000ff); }
+        .row { display: flex; }
+        .row .flex-item { display: inherit; }
+        .row .block-item { display: revert; }
         @keyframes take { from { border-radius: inherit; } to { border-radius: inherit; } }
         @keyframes clear { from { border-radius: initial; } to { border-radius: unset; } }
         @keyframes pad { from { padding: inherit; } to { padding: inherit; } }
@@ -108,6 +111,16 @@ const program = `
         element.className = className;
         parent.appendChild(element);
     }
+    const row = document.createElement("div");
+    row.className = "row";
+    panel.appendChild(row);
+    for (const className of ["flex-item", "block-item"]) {
+        const element = document.createElement("div");
+        element.id = className;
+        element.className = className;
+        element.textContent = "Go on";
+        row.appendChild(element);
+    }
     for (const className of ["tone-initial", "tone-inherit"]) {
         const element = document.createElement("div");
         element.id = className;
@@ -136,14 +149,10 @@ test("CSS-wide keywords lower as written", () => {
     );
     const sheet = (rules: string) =>
         `const sheet = document.createElement("style"); sheet.textContent = ${JSON.stringify(rules)}; document.head.appendChild(sheet);`;
-    assert.throws(
-        () => compileSource(sheet(".box { display: inherit; }")),
-        /'display' is not lowered: the value requires layout/,
-    );
     assert.doesNotThrow(() =>
         compileSource(
             sheet(
-                ".box { width: unset; padding: revert; margin: revert-layer; padding-top: initial; flex-grow: unset; color: initial; font: initial; border-top-color: unset; border-color: revert-layer; --tone: unset; font-size: revert; background-color: initial; background-clip: unset; } @keyframes grow { to { width: inherit; line-height: initial; } }",
+                ".box { display: inherit; width: unset; padding: revert; margin: revert-layer; padding-top: initial; flex-grow: unset; color: initial; font: initial; border-top-color: unset; border-color: revert-layer; --tone: unset; font-size: revert; background-color: initial; background-clip: unset; } @keyframes grow { to { width: inherit; line-height: initial; } }",
             ),
         ),
     );

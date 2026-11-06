@@ -2699,11 +2699,10 @@ export class UiProjection {
                         "only a nonnegative finite number or percentage, literal or through var() with an optional literal fallback, is represented",
                     );
             }
-            // RmlUi's cascade resolves the layout properties' CSS-wide keywords;
-            // the PAL wraps text by display's authored value.
+            // RmlUi's cascade resolves the layout properties' CSS-wide keywords.
             if (
                 supportedUiLayoutValue(property, literalValue) === false &&
-                (keyword === undefined || property === "display")
+                keyword === undefined
             ) {
                 this.uiStyleRefusal(
                     site,

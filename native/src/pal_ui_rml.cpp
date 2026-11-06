@@ -384,10 +384,6 @@ std::string rml_css_background_positions(std::string value) {
     return value;
 }
 
-std::string normalized_css_keyword(std::string_view value) {
-    return js::string_lower(std::string(trim_css_token(value)));
-}
-
 void replace_all(std::string& text, std::string_view needle, std::string_view replacement) {
     std::size_t position = 0;
     while ((position = text.find(needle, position)) != std::string::npos) {
@@ -4745,7 +4741,6 @@ void consider_cascaded_declaration(CascadedUiDeclaration& current, std::string_v
 
 struct ProjectedUiStyleSource {
     std::string private_declarations;
-    std::string display;
     bool declares_pointer_events = false;
 };
 
@@ -4754,7 +4749,6 @@ ProjectedUiStyleSource project_ui_style_source(std::string_view style) {
     result.private_declarations = filter_private_ui_declarations(style, true);
     std::string public_probe = filter_private_ui_declarations(style, false);
     result.declares_pointer_events = !take_css_declaration(public_probe, "pointer-events").empty();
-    result.display = normalized_css_keyword(take_css_declaration(public_probe, "display"));
     return result;
 }
 
@@ -6948,8 +6942,8 @@ struct UiRmlRuntime {
         return cascaded.value;
     }
 
-    std::string resolved_style_attribute(UiElementHandle handle, const UiElementRecord& record,
-                                         std::string* resolved_display = nullptr) const {
+    std::string resolved_style_attribute(UiElementHandle handle,
+                                         const UiElementRecord& record) const {
         std::string style;
         const auto append = [&style](std::string_view declaration) {
             if (declaration.empty())
@@ -6965,9 +6959,8 @@ struct UiRmlRuntime {
             std::string declarations;
         };
         std::vector<PrivateRule> private_rules;
-        CascadedUiDeclaration display;
         bool source_declares_pointer_events = false;
-        std::size_t source_order = for_each_matching_style_rule(
+        static_cast<void>(for_each_matching_style_rule(
             handle, [&](const UiStyleRule& rule, std::size_t rule_order) {
                 const std::uint32_t specificity = ui_style_rule_specificity(rule);
                 ProjectedUiStyleSource source = project_ui_style_source(rule.style);
@@ -6975,11 +6968,9 @@ struct UiRmlRuntime {
                     private_rules.push_back(
                         {specificity, rule_order, std::move(source.private_declarations)});
                 }
-                consider_cascaded_declaration(display, std::move(source.display), specificity,
-                                              rule_order);
                 source_declares_pointer_events =
                     source_declares_pointer_events || source.declares_pointer_events;
-            });
+            }));
         std::stable_sort(private_rules.begin(), private_rules.end(),
                          [](const PrivateRule& left, const PrivateRule& right) {
                              if (left.specificity != right.specificity) {
@@ -6990,23 +6981,9 @@ struct UiRmlRuntime {
         for (const PrivateRule& rule : private_rules) {
             append(rule.declarations);
         }
-        const auto inline_style = record.attributes.find("style");
-        if (inline_style != record.attributes.end()) {
-            ProjectedUiStyleSource source = project_ui_style_source(inline_style->second);
-            constexpr std::uint32_t inline_specificity = 0xffffffffu;
-            consider_cascaded_declaration(display, std::move(source.display), inline_specificity,
-                                          source_order);
+        if (const auto inline_style = record.attributes.find("style");
+            inline_style != record.attributes.end())
             append(inline_style->second);
-        }
-        constexpr std::uint32_t cssom_specificity = 0xffffffffu;
-        if (const auto dynamic_display = record.style_properties.find("display");
-            dynamic_display != record.style_properties.end()) {
-            consider_cascaded_declaration(display, normalized_css_keyword(dynamic_display->second),
-                                          cssom_specificity, source_order + 1);
-        }
-        if (resolved_display) {
-            *resolved_display = display.value;
-        }
 
         // The retained document covers the viewport, but browser overlays do
         // not replace the scene canvas as an input target. Keep ordinary UI
@@ -7029,10 +7006,32 @@ struct UiRmlRuntime {
         return projected_attribute_value("style", style);
     }
 
-    bool text_needs_flex_wrapper(std::string_view resolved_display) const {
-        const std::string display = normalized_css_keyword(resolved_display);
-        return display == "flex" || display == "inline-flex" || display == "grid" ||
-               display == "inline-grid";
+    /** Text in a box RmlUi computes as flex or grid is an anonymous wrapper item. */
+    static bool text_needs_flex_wrapper(const Rml::Element& element) {
+        const auto display = element.GetComputedValues().display();
+        return display == Rml::Style::Display::Flex || display == Rml::Style::Display::InlineFlex ||
+               display == Rml::Style::Display::Grid || display == Rml::Style::Display::InlineGrid;
+    }
+
+    /** Re-projects text whose wrapper no longer matches its box's computed display. */
+    bool sync_text_wrappers() {
+        bool changed = false;
+        for (std::uint32_t index = 0;
+             index < projected_elements.size() && index < engine.ui_elements.size(); ++index) {
+            const ProjectedUiElement& projected = projected_elements[index];
+            const UiElementRecord& record = engine.ui_elements[index];
+            if (!projected.element ||
+                (record.tag != "#text" && (record.text.empty() || !record.inner_rml.empty())))
+                continue;
+            const bool wrapped = record.tag == "#text"
+                                     ? text_node_wrapped(record)
+                                     : text_needs_flex_wrapper(*projected.element);
+            if (wrapped == projected.text_wrapped)
+                continue;
+            update_element(UiElementHandle{index});
+            changed = true;
+        }
+        return changed;
     }
 
     Rml::ElementPtr create_text_content(const std::string& text, bool wrapped) {
@@ -7160,11 +7159,11 @@ struct UiRmlRuntime {
     }
 
     bool text_node_wrapped(const UiElementRecord& record) const {
-        if (record.parent.value == invalid_handle)
+        if (record.parent.value == invalid_handle ||
+            record.parent.value >= projected_elements.size())
             return false;
-        std::string display;
-        resolved_style_attribute(record.parent, ui_element(engine, record.parent), &display);
-        return text_needs_flex_wrapper(display);
+        const Rml::Element* parent = handle_at(projected_elements, record.parent).element;
+        return parent && text_needs_flex_wrapper(*parent);
     }
 
     void attach_listeners(ProjectedUiElement& projected, UiElementHandle handle) {
@@ -7357,8 +7356,7 @@ struct UiRmlRuntime {
             else
                 raw->RemoveAttribute("selected");
         }
-        std::string resolved_display;
-        projected.resolved_style = resolved_style_attribute(handle, record, &resolved_display);
+        projected.resolved_style = resolved_style_attribute(handle, record);
         projected.intrinsic_min_width = take_intrinsic_min_width(projected.resolved_style);
         take_projected_outlines(projected.resolved_style);
         if (!projected.resolved_style.empty()) {
@@ -7377,7 +7375,7 @@ struct UiRmlRuntime {
                 throw std::runtime_error("RmlUi textarea lacks form control support.");
             control->SetValue(ui_get_form_value(engine, handle));
         } else if (!record.text.empty()) {
-            projected.text_wrapped = text_needs_flex_wrapper(resolved_display);
+            projected.text_wrapped = text_needs_flex_wrapper(*raw);
             append_text_content(*raw, record.text, projected.text_wrapped);
         }
         projected.text = record.text;
@@ -7577,8 +7575,7 @@ struct UiRmlRuntime {
             else
                 raw.RemoveAttribute("selected");
         }
-        std::string resolved_display;
-        std::string resolved_style = resolved_style_attribute(handle, record, &resolved_display);
+        std::string resolved_style = resolved_style_attribute(handle, record);
         const std::string intrinsic_min_width = take_intrinsic_min_width(resolved_style);
         take_projected_outlines(resolved_style);
         const bool resolved_style_changed =
@@ -7649,7 +7646,7 @@ struct UiRmlRuntime {
             return;
         }
 
-        const bool text_wrapped = !record.text.empty() && text_needs_flex_wrapper(resolved_display);
+        const bool text_wrapped = !record.text.empty() && text_needs_flex_wrapper(raw);
         if (projected.text != record.text || projected.inner_rml != record.inner_rml ||
             markup_content_changed || projected.text_wrapped != text_wrapped) {
             // Updating the text prefix or its anonymous flex wrapper must not
@@ -9299,6 +9296,8 @@ void update_ui_rml_runtime(UiRmlRuntime& runtime, std::uint32_t width, std::uint
                 runtime.context->Update();
         }
     }
+    if (runtime.sync_text_wrappers())
+        runtime.context->Update();
     if (runtime.sync_control_states())
         runtime.context->Update();
     if (runtime.select_top_layer.sync(*runtime.context))

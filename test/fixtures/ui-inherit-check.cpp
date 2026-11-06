@@ -98,6 +98,14 @@ int main() try {
               "a custom property's initial is the guaranteed-invalid value");
         check(element("tone-inherit")->GetComputedValues().color() == Rml::Colourb(255, 0, 0),
               "a custom property's inherit takes the parent's value");
+        const auto* flex_item = element("flex-item");
+        check(flex_item->GetComputedValues().display() == Rml::Style::Display::Flex &&
+                  flex_item->GetChild(0)->GetTagName() == "span",
+              "text in a box whose display inherits flex is an anonymous flex item");
+        const auto* block_item = element("block-item");
+        check(block_item->GetComputedValues().display() == Rml::Style::Display::Block &&
+                  block_item->GetChild(0)->GetTagName() == "#text",
+              "text in a box whose display reverts to block stays inline");
         check(close_to(radius("taken"), 12.f, "taken"),
               "a keyframe's inherit takes the parent's value");
         check(close_to(radius("cleared"), 0.f, "cleared"),

@@ -9573,24 +9573,14 @@ test("resolves flex text wrappers through specificity, inline, and hover cascade
         projection.indexOf("std::string resolved_style_attribute"),
         projection.indexOf("void append_text_content"),
     );
-    assert.match(
-        resolver,
-        /resolved_style_attribute\([\s\S]*std::string\* resolved_display/,
-    );
     assert.match(resolver, /ui_style_rule_specificity\(rule\)/);
-    assert.match(
-        resolver,
-        /inline_specificity[\s\S]*consider_cascaded_declaration\(\s*display/,
-    );
-    assert.match(resolver, /\*resolved_display = display\.value/);
-    const wrapper = resolver.slice(
-        resolver.indexOf("bool text_needs_flex_wrapper"),
-    );
+    // Text wrapping follows the display RmlUi computes, re-projected when it moves.
+    const wrapper = cppFunction(projection, "bool text_needs_flex_wrapper(");
     assert.doesNotMatch(wrapper, /for_each_active_style_rule/);
-    assert.match(wrapper, /normalized_css_keyword\(resolved_display\)/);
+    assert.match(wrapper, /element\.GetComputedValues\(\)\.display\(\)/);
     assert.match(
-        projection,
-        /resolved_style_attribute\(handle, record, &resolved_display\)(?:(?!\n {4}void ).)*text_needs_flex_wrapper\(\s*resolved_display\)/s,
+        cppFunction(projection, "bool sync_text_wrappers("),
+        /update_element\(UiElementHandle\{index\}\)/,
     );
 });
 
@@ -10165,13 +10155,11 @@ test("resolves fixed-grid activation and alignment through the complete cascade"
     `);
     assert.match(aligned.cpp, /ui_add_id_style[^\n]*justify-content:end/);
 
-    const projection = palUiRmlSource;
-    const resolver = projection.slice(
-        projection.indexOf("std::string resolved_style_attribute"),
-        projection.indexOf("bool text_needs_flex_wrapper"),
+    // The grid's display is RmlUi's cascade, which text wrapping reads.
+    assert.match(
+        cppFunction(palUiRmlSource, "bool text_needs_flex_wrapper("),
+        /Rml::Style::Display::Grid/,
     );
-    assert.match(resolver, /CascadedUiDeclaration display/);
-    assert.match(resolver, /record\.style_properties\.find\("display"\)/);
 
     const inheritedAlignment = compileSource(`
         import { createEngine } from "@babylonjs/lite";
