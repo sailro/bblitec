@@ -213,6 +213,8 @@ inline const std::string& gpu_timing_task_name(const FrameTaskRecord& task) {
         return task.post_process.name;
     case FrameTaskKind::effect:
         return task.effect.name;
+    case FrameTaskKind::ssao:
+        return task.ssao.name;
     case FrameTaskKind::compute:
         throw std::logic_error("Compute timing is recorded with its source command list.");
     }

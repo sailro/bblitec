@@ -263,6 +263,7 @@ export interface CompileManifest {
     postProcessTasks: PostProcessTaskManifest[];
     postProcessComposites: PostProcessCompositeManifest[];
     screenSpaceTasks: ScreenSpaceTaskManifest[];
+    ssaoTasks: SsaoTaskManifest[];
     adaptations: CompileAdaptation[];
     scenePbrMaterials: ScenePbrMaterialManifest[];
     /**
@@ -755,6 +756,8 @@ export interface PbrMaterialStateWrites {
     readonly alphaBelowOne: readonly boolean[];
     /** Whether a `baseColorFactor` is written (its presence composes). */
     readonly baseColorFactor: boolean;
+    /** Whether a `bentNormalTexture` is written (its presence composes under `enableBentNormals`). */
+    readonly bentNormalTexture: boolean;
     /** The plugin lists written, by PBR plugin signature (from one). */
     readonly pluginSignatures: readonly number[];
     /** The plugins appended to the list a material holds, by PBR plugin id. */
@@ -876,6 +879,12 @@ export interface ScenePbrMaterialManifest {
      * `pow(baseColorSample.rgb, 2.2)`.
      */
     readonly gammaAlbedo?: boolean;
+    /**
+     * Stamped by the pin's `setPbrAlphaCutoff`: `mat._alphaCutOff`, whose
+     * positive value the alpha-test extension's `detect` turns into
+     * `PBR_HAS_ALPHA_TEST`.
+     */
+    readonly alphaCutOff?: number;
     readonly shadowOnly?: {
         color: readonly [number, number, number];
         opacity: number;
@@ -1394,6 +1403,10 @@ export interface GeometryOutputTaskManifest {
     shaderIndex: number;
     attachments: GeometryTextureTypeName[];
     emitColor: boolean;
+    /** The LINEAR_VELOCITY attachment's format, when the task has one. */
+    velocityFormat?: string;
+    /** `enableGeometryVelocity`'s contract, when the task reached it. */
+    velocity?: { previousDepth: boolean };
 }
 
 /**
@@ -1494,6 +1507,44 @@ export interface ScreenSpaceTaskManifest {
     /** Whether the scene named a depth source apart from the colour source. */
     hasDepthTexture: boolean;
 }
+
+/**
+ * One reached `createSsaoTask` task, in reach order. Composition runs the
+ * pinned factory and its reached enablers over these settings.
+ */
+export interface SsaoTaskManifest {
+    taskIndex: number;
+    name?: string;
+    /** Every setting the scene wrote, statically resolved and forwarded whole. */
+    options: Record<string, PostProcessOptionValue>;
+    /** The normal input's geometry attachment, when one is supplied at creation or later. */
+    normalAttachment?: GeometryTextureTypeName;
+    /** The normal input is supplied at creation (a runtime choice records it live). */
+    initialNormal: boolean;
+    /** `temporal.velocityTexture`'s geometry attachment and `velocityHasPreviousDepth`. */
+    velocity?: { attachment: GeometryTextureTypeName; previousDepth: boolean };
+    /** `enableSsaoHalfResolution` reaches the task. */
+    halfResolution: boolean;
+    /** `enablePbrSsao` reaches the task. */
+    pbr: boolean;
+    /** `enableSsaoMotionPruning` reaches the task. */
+    motionPruning: boolean;
+    /** The program-selecting settings the program writes after creation. */
+    live: SsaoLiveSetting[];
+}
+
+/**
+ * A setting the program writes after creation whose every value selects
+ * other SSAO programs or passes (`pinned-ssao.ts` composes each): the quality
+ * preset, the normal input's presence, temporal reconstruction, pruning.
+ */
+export const SSAO_LIVE_SETTINGS = [
+    "quality",
+    "normal",
+    "temporal",
+    "pruning",
+] as const;
+export type SsaoLiveSetting = (typeof SSAO_LIVE_SETTINGS)[number];
 
 export interface CompileResult {
     /** Standalone inspection/fixture projection; generation writes cppFiles. */
@@ -1722,6 +1773,12 @@ export type ValueKind =
     | "compute-dispatch"
     | "compute-task"
     | "compute-one-shot"
+    /** A `createSsaoTask` task's `temporal` settings record, by its task. */
+    | "ssao-temporal"
+    /** `enableSsaoHalfResolution`'s settings record, by its task. */
+    | "ssao-half-resolution"
+    /** `enableSsaoMotionPruning`'s settings record, by its task. */
+    | "ssao-motion-pruning"
     | "uniform-buffer"
     | "compute-uniform-arena"
     | "compute-uniform-writer"
@@ -2468,6 +2525,8 @@ export interface ValueFields {
     surfaceCanvas?: true;
     /** The scene was created on its engine's primary surface. */
     scenePrimarySurface?: true;
+    /** `createOverlayScene` made this scene: it composites over its base. */
+    overlayScene?: true;
     environmentAsset?: CompileAsset;
     localCubemap?: {
         readonly plan: LocalCubemapPlan;
@@ -2953,6 +3012,8 @@ export interface ValueFields {
         readonly bound?: true;
     };
     geometryTask?: GeometryOutputTaskManifest;
+    /** A geometry task attachment's pinned type, on the render texture naming it. */
+    geometryAttachment?: GeometryTextureTypeName;
     /**
      * Set on a `render-texture` or `render-target-texture` whose texture is
      * a depth attachment rather than a colour one. Two things make one: a
@@ -2971,7 +3032,11 @@ export interface ValueFields {
      * than leaving a backend to fail a binding at run time.
      */
     renderTextureSource?:
-        "render-target" | "geometry" | "geometry-output" | "geometry-depth";
+        | "render-target"
+        | "geometry"
+        | "geometry-output"
+        | "geometry-depth"
+        | "ssao-output";
     /**
      * Which post-process pass a `task` value names. `outputTexture` reads it
      * to resolve the internal target the pin's `prepareOutputTarget` creates,
@@ -2989,6 +3054,8 @@ export interface ValueFields {
     renderTask?: true;
     /** Proven `createEffectRenderTask` result. */
     effectTask?: true;
+    /** Proven `createCopyToTextureTask` result. */
+    copyTask?: true;
     /** Proven target descriptor retained by aliases for pass-signature admission. */
     renderTargetSignature?: {
         readonly surfaceFormat: boolean;
@@ -3002,6 +3069,11 @@ export interface ValueFields {
      * settings are live record fields a scene may write.
      */
     screenSpaceTask?: ScreenSpaceTaskManifest;
+    /**
+     * Set when a `task`, `ssao-temporal`, `ssao-half-resolution` or `ssao-motion-pruning` value
+     * names a `createSsaoTask` task, or the settings it publishes.
+     */
+    ssaoTask?: SsaoTaskManifest;
     lightKind?: LightKind;
     /**
      * A camera's own construction, as static numbers, and the scene's
@@ -3322,8 +3394,13 @@ export type Feature =
     | "material:sheen-albedo-scaling"
     | "material:clearcoat-f0-remap"
     | "material:pbr-gamma-albedo"
+    | "material:pbr-alpha-cutoff"
+    // `createPbrMaterial({ baseColorTexture })` over a pixels texture.
+    | "material:pbr-base-color-pixels"
     | "material:iridescence"
     | "material:lightmap"
+    // `enableBentNormals`: the IBL extension's bent-normal arm.
+    | "material:bent-normal"
     | "material:local-cubemap"
     | "renderer:surface"
     | "material:anisotropy"
@@ -3377,6 +3454,8 @@ export type Feature =
     | "mesh:clone"
     | "mesh:geometry-access"
     | "mesh:visible"
+    // `setMeshOpacity`/`getMeshOpacity` (src/mesh/opacity/).
+    | "mesh:opacity"
     | "mesh:pickable"
     // Baked vertex animation. `bakeVat` is the pin's own opt-in trigger --
     // the whole subsystem is a dynamic-import chunk behind it -- and the
@@ -3432,6 +3511,8 @@ export type Feature =
     | "physics:thin-instances"
     | "scene:remove"
     | "scene:node-transforms"
+    // `src/scene/overlay-scene.ts`: scenes that composite over a base scene.
+    | "scene:overlay"
     // `src/math/normalize-vec3.ts`, which a scene calls directly and the
     // pin's detailed picking imports. Its own row because the header
     // carrying the translated declaration is emitted only where one of the
@@ -3557,12 +3638,22 @@ export type Feature =
     | "renderer:geometry-output"
     | "renderer:post-process"
     /**
-     * The pin's screen-space contact-shadow and global-illumination tasks:
-     * two dedicated pipelines over a depth-only view plus the ordinary
-     * post-process passes they build, which is why reaching one also reaches
-     * `renderer:post-process`.
+     * The pin's screen-space contact-shadow, global-illumination and
+     * ambient-occlusion tasks: dedicated pipelines over a depth-only view
+     * plus the ordinary post-process passes they build, which is why
+     * reaching one also reaches `renderer:post-process`.
      */
     | "renderer:screen-space"
+    /**
+     * `createSsaoTask`: XeGTAO estimation and temporal reconstruction as the
+     * pin's own compute and render passes over its owned textures.
+     */
+    | "renderer:ssao"
+    /**
+     * `enableGeometryVelocity`: per-mesh previous-world and previous-pose
+     * velocity in a geometry task's PBR views.
+     */
+    | "renderer:geometry-velocity"
     /**
      * A glTF asset carries `KHR_interactivity` graphs: the pin's flow-graph
      * runtime, lowered per graph from its block definitions, plus the scene

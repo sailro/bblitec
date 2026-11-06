@@ -10,6 +10,7 @@
 #include <bblite/features/has_material_plugin_textures.hpp>
 #include <bblite/features/has_pbr_renderer.hpp>
 #include <bblite/features/has_standard_uv_transform.hpp>
+#include <bblite/features/mesh_opacity.hpp>
 
 #include "pal_dawn_scene.hpp"
 
@@ -231,7 +232,8 @@ WGPUBindGroup overlay_frame_group(DawnState& state, DawnState::OverlayFrame& ove
 }
 
 void write_pinned_geometry_prologue(DawnState& state, const Scene& scene, const Engine& engine,
-                                    const CameraRecord& camera, DawnGeometryTask& geometry,
+                                    const CameraRecord& camera, const GeometryTaskOptions& task,
+                                    DawnGeometryTask& geometry,
                                     const std::array<float, 16>& geometry_matrix) {
     pinned_geometry_frame_group(state);
     const upstream::SceneUniforms scene_block =
@@ -251,19 +253,91 @@ void write_pinned_geometry_prologue(DawnState& state, const Scene& scene, const 
         geometry.previous_view_projection = geometry_matrix;
         geometry.has_previous_view_projection = true;
     }
-    const PinnedGeometryParams params{
-        geometry.previous_view_projection,
-        {
-            static_cast<float>(camera.near_plane),
-            static_cast<float>(camera.far_plane),
-            0.0f,
-            0.0f,
-        },
-    };
+    const PinnedGeometryParams params =
+        pinned_geometry_params(geometry.previous_view_projection, camera, task);
     DawnGpuDevice{state.queue}.write_buffer(geometry.pinned_geometry_params, 0, &params,
                                             sizeof(params));
     geometry.previous_view_projection = geometry_matrix;
 }
+#endif
+
+#if BBLITE_HAS_DAWN && BBLITE_GEOMETRY_VELOCITY
+DawnPbrVelocity& DawnPbrVelocitySink::resources(MeshHandle mesh) {
+    if (task.pbr_velocity.size() <= mesh.value)
+        task.pbr_velocity.resize(static_cast<std::size_t>(mesh.value) + 1u);
+    return task.pbr_velocity[mesh.value];
+}
+
+void DawnPbrVelocitySink::block(MeshHandle mesh, std::span<const float> floats) {
+    DawnPbrVelocity& velocity = resources(mesh);
+    if (!velocity.block) {
+        WGPUBufferDescriptor descriptor = WGPU_BUFFER_DESCRIPTOR_INIT;
+        descriptor.size = floats.size_bytes();
+        descriptor.usage = WGPUBufferUsage_Uniform | WGPUBufferUsage_CopyDst;
+        velocity.block = wgpuDeviceCreateBuffer(state.device, &descriptor);
+        if (!velocity.block)
+            dawn_error("geometry velocity block creation failed.");
+        ++velocity.generation;
+    }
+    DawnGpuDevice{state.queue}.write_buffer(velocity.block, 0, floats.data(), floats.size_bytes());
+}
+
+void DawnPbrVelocitySink::bones(MeshHandle mesh, std::span<const float> floats) {
+    DawnPbrVelocity& velocity = resources(mesh);
+    const auto texels = static_cast<std::uint32_t>(floats.size() / 4u);
+    if (velocity.bone_texels != texels) {
+        velocity.bones = create_float_texture(state.device, texels, 1u,
+                                              "geometry previous bones creation failed.");
+        velocity.bones_view = create_dawn_texture_view(velocity.bones, nullptr);
+        velocity.bone_texels = texels;
+        ++velocity.generation;
+    }
+    write_float_texture(state.queue, velocity.bones, floats.data(), texels, 1u);
+}
+
+void DawnPbrVelocitySink::morph(MeshHandle mesh, std::span<const float> floats) {
+    DawnPbrVelocity& velocity = resources(mesh);
+    if (velocity.morph_bytes != floats.size_bytes()) {
+        WGPUBufferDescriptor descriptor = WGPU_BUFFER_DESCRIPTOR_INIT;
+        descriptor.size = floats.size_bytes();
+        descriptor.usage = WGPUBufferUsage_Storage | WGPUBufferUsage_CopyDst;
+        velocity.morph = wgpuDeviceCreateBuffer(state.device, &descriptor);
+        if (!velocity.morph)
+            dawn_error("geometry previous morph weights creation failed.");
+        velocity.morph_bytes = floats.size_bytes();
+        ++velocity.generation;
+    }
+    DawnGpuDevice{state.queue}.write_buffer(velocity.morph, 0, floats.data(), floats.size_bytes());
+}
+
+namespace {
+/**
+ * `bindPbrGeometryVelocity`'s entries: the renderable's `gm` block and the
+ * deformation's previous palette and weights. False for any other binding.
+ */
+bool bind_pbr_velocity(const DawnPbrVelocity* velocity,
+                       const upstream::PinnedVariantBinding& binding, WGPUBindGroupEntry& entry) {
+    if (binding.name != "gm" && binding.name != "previousBoneSampler" &&
+        binding.name != "previousMorph")
+        return false;
+    if (!velocity)
+        dawn_error("a geometry velocity view was bound outside its velocity task.");
+    if (binding.name == "gm") {
+        entry.buffer = velocity->block;
+        entry.size = WGPU_WHOLE_SIZE;
+    } else if (binding.name == "previousMorph") {
+        entry.buffer = velocity->morph;
+        entry.size = WGPU_WHOLE_SIZE;
+    } else {
+        entry.textureView = velocity->bones_view;
+    }
+    if (!entry.buffer && !entry.textureView)
+        dawn_error(("a geometry velocity view binds '" + std::string(binding.name) +
+                    "' before its velocity update wrote it.")
+                       .c_str());
+    return true;
+}
+} // namespace
 #endif
 
 #if (BBLITE_HAS_DAWN && BBLITE_HAS_PBR_RENDERER) && BBLITE_RECT_AREA_EMISSION
@@ -316,7 +390,8 @@ state_resource_for(const DawnState& state, upstream::MaterialTextureSource sourc
     BBLITE_PBR_VARIANTS > 0
 PinnedResource pinned_resource_for(DawnState& state, const DawnMesh& mesh, std::string_view name,
                                    const DawnAreaLightEmission* area_light_emission,
-                                   [[maybe_unused]] const MaterialRecord* material) {
+                                   [[maybe_unused]] const MaterialRecord* material,
+                                   [[maybe_unused]] const ShaderPassMatrices* pass) {
 #if BBLITE_HAS_MATERIAL_PLUGIN_TEXTURES
     if (material && mesh.shared_plugin_textures) {
         for (std::size_t index = 0; index < material->plugin_textures.size(); ++index) {
@@ -327,6 +402,13 @@ PinnedResource pinned_resource_for(DawnState& state, const DawnMesh& mesh, std::
                     if (source->engine_lifetime.expired())
                         throw std::runtime_error("Render texture engine has expired.");
                     const auto& reference = source->reference;
+#if BBLITE_HAS_SSAO
+                    if (reference.source == RenderTextureSource::ssao_output) {
+                        const SsaoPbrBinding ao =
+                            ssao_pbr_binding(state, *source->engine, reference.task, pass);
+                        return {ao.view, ao.sampler};
+                    }
+#endif
                     const auto& target = handle_at(state.render_targets, reference.target);
                     if (target.color || target.depth) {
                         const auto [texture, view] = dawn_render_target_texture(
@@ -512,16 +594,42 @@ void write_pinned_vat_texture(DawnState& state, DawnMesh& mesh, const MeshRecord
 }
 #endif
 
+#if BBLITE_HAS_DAWN && BBLITE_HAS_PBR_RENDERER && BBLITE_MESH_OPACITY
+void bind_mesh_opacity(WGPUBuffer mesh_opacity_uniforms, WGPUBindGroupEntry& entry) {
+    if (!mesh_opacity_uniforms)
+        dawn_error("a mesh opacity draw reached its bind group with no meshOpacity block.");
+    entry.buffer = mesh_opacity_uniforms;
+    entry.size = sizeof(upstream::MeshOpacityUniforms);
+}
+
+void write_mesh_opacity_block(DawnState& state, const Engine& engine,
+                              const upstream::RenderItem& item, DawnDrawResources& draw) {
+    // Every binding reads the mesh's live value, a task's resolved binding
+    // at 1 included.
+    if (!draw.mesh_opacity_uniforms)
+        return;
+    const upstream::MeshOpacityUniforms block = mesh_opacity_block(engine, item);
+    const std::array<float, 2> written{block.value, block.policy};
+    if (draw.mesh_opacity_written == written)
+        return;
+    DawnGpuDevice{state.queue}.write_buffer(draw.mesh_opacity_uniforms, 0, &block, sizeof(block));
+    draw.mesh_opacity_written = written;
+}
+#endif
+
 #if (BBLITE_HAS_DAWN && BBLITE_HAS_PBR_RENDERER) && BBLITE_PINNED_MATERIALS &&                     \
     BBLITE_PBR_VARIANTS > 0
 WGPUBindGroup
 build_pinned_draw_group(DawnState& state, DawnMesh& mesh, std::size_t variant,
                         WGPUBuffer mesh_uniforms, WGPUBuffer material_uniforms,
                         WGPUBuffer geometry_params,
+                        [[maybe_unused]] WGPUBuffer mesh_opacity_uniforms,
                         const DawnAreaLightEmission* area_light_emission,
                         // The material this group is built for, whose ESM caster view names the
                         // generator its `shadowParams` block belongs to.
-                        [[maybe_unused]] const MaterialRecord* material) {
+                        [[maybe_unused]] const MaterialRecord* material,
+                        [[maybe_unused]] const ShaderPassMatrices* pass,
+                        [[maybe_unused]] const DawnPbrVelocity* velocity) {
 #if BBLITE_LOCAL_CUBEMAP
     const auto* local_cubemap = ensure_local_cubemap(state, material);
 #endif
@@ -541,6 +649,12 @@ build_pinned_draw_group(DawnState& state, DawnMesh& mesh, std::size_t variant,
     for (const upstream::PinnedVariantBinding& binding : rows) {
         WGPUBindGroupEntry group_entry = WGPU_BIND_GROUP_ENTRY_INIT;
         group_entry.binding = binding.binding;
+#if BBLITE_GEOMETRY_VELOCITY
+        if (bind_pbr_velocity(velocity, binding, group_entry)) {
+            entries.push_back(group_entry);
+            continue;
+        }
+#endif
 #if BBLITE_LOCAL_CUBEMAP
         if (local_cubemap &&
             (binding.name == "localProbeData" || binding.name == "localProbeGrid")) {
@@ -588,6 +702,13 @@ build_pinned_draw_group(DawnState& state, DawnMesh& mesh, std::size_t variant,
             // rather than from this material.
             if (binding.name == upstream::rect_area_emission_slots_block) {
                 bind_area_light_emission_slots(area_light_emission, group_entry);
+                entries.push_back(group_entry);
+                continue;
+            }
+#endif
+#if BBLITE_MESH_OPACITY
+            if (binding.name == mesh_opacity_block_name) {
+                bind_mesh_opacity(mesh_opacity_uniforms, group_entry);
                 entries.push_back(group_entry);
                 continue;
             }
@@ -640,7 +761,7 @@ build_pinned_draw_group(DawnState& state, DawnMesh& mesh, std::size_t variant,
             continue;
         }
         const PinnedResource resource =
-            pinned_resource_for(state, mesh, binding.name, area_light_emission, material);
+            pinned_resource_for(state, mesh, binding.name, area_light_emission, material, pass);
         if (binding.kind == upstream::PinnedBindingKind::sampler ||
             binding.kind == upstream::PinnedBindingKind::samplerComparison) {
             group_entry.sampler = resource.sampler;
@@ -662,7 +783,8 @@ build_pinned_draw_group(DawnState& state, DawnMesh& mesh, std::size_t variant,
 
 DawnDrawState& ensure_pinned_draw_bindings(DawnState& state, DawnMesh& mesh, std::uint32_t material,
                                            std::size_t variant, const MaterialRecord* record,
-                                           bool build_group, [[maybe_unused]] const Scene& scene) {
+                                           bool build_group, [[maybe_unused]] const Scene& scene,
+                                           [[maybe_unused]] const ShaderPassMatrices* pass) {
     DawnDrawState& draw_state = mesh.pinned_states.try_emplace(material, state).first->second;
     auto& allocations = draw_state.plugin_texture_allocations;
     std::size_t allocation_count = 0;
@@ -671,8 +793,18 @@ DawnDrawState& ensure_pinned_draw_bindings(DawnState& state, DawnMesh& mesh, std
     if (record)
         for (const auto& binding : record->plugin_textures) {
             if (const auto& source = binding.data.render_source) {
+#if BBLITE_HAS_SSAO
+                // What the pass selects, which a held group may no longer bind.
+                const auto allocation =
+                    source->reference.source == RenderTextureSource::ssao_output
+                        ? static_cast<std::uint32_t>(
+                              ssao_pbr_binding(state, *source->engine, source->reference.task, pass)
+                                  .key)
+                        : state.render_targets.at(source->reference.target.value).allocation;
+#else
                 const auto allocation =
                     state.render_targets.at(source->reference.target.value).allocation;
+#endif
                 if (allocation_count == allocations.size()) {
                     allocations.push_back(allocation);
                     allocations_changed = true;
@@ -709,6 +841,11 @@ DawnDrawState& ensure_pinned_draw_bindings(DawnState& state, DawnMesh& mesh, std
     if (!draw_state.mesh_uniforms) {
         draw_state.mesh_uniforms = uniform_buffer(sizeof(upstream::MeshUniforms));
     }
+#if BBLITE_MESH_OPACITY
+    if (!draw_state.mesh_opacity_uniforms) {
+        draw_state.mesh_opacity_uniforms = uniform_buffer(sizeof(upstream::MeshOpacityUniforms));
+    }
+#endif
     // Sized by the variant, so a swap to one with more fields reallocates.
     if (!draw_state.material_uniforms || draw_state.group_key != variant) {
         if (WGPUBuffer old = std::exchange(draw_state.material_uniforms,
@@ -719,24 +856,34 @@ DawnDrawState& ensure_pinned_draw_bindings(DawnState& state, DawnMesh& mesh, std
     }
     draw_state.group_key = variant;
     if (build_group)
-        draw_state.group = build_pinned_draw_group(state, mesh, variant, draw_state.mesh_uniforms,
-                                                   draw_state.material_uniforms, nullptr,
-                                                   area_light_emission_of(draw_state), record);
+        draw_state.group = build_pinned_draw_group(
+            state, mesh, variant, draw_state.mesh_uniforms, draw_state.material_uniforms, nullptr,
+            draw_state.mesh_opacity_uniforms, area_light_emission_of(draw_state), record, pass);
     return draw_state;
 }
 
 DawnDrawState& ensure_pinned_geometry_bindings(DawnState& state, DawnMesh& mesh,
                                                std::size_t variant, WGPUBuffer geometry_params,
-                                               [[maybe_unused]] const Scene& scene) {
+                                               [[maybe_unused]] const Scene& scene,
+                                               [[maybe_unused]] const DawnPbrVelocity* velocity) {
     auto existing = mesh.pinned_geometry_states.find(variant);
     if (existing != mesh.pinned_geometry_states.end()) {
-        // A new emission snapshot of the draw's scene stales the held group.
-        if (refresh_area_light_group(state, existing->second, scene)) {
+        // A new emission snapshot of the draw's scene, or a replaced velocity
+        // resource, stales the held group.
+        bool stale = refresh_area_light_group(state, existing->second, scene);
+#if BBLITE_GEOMETRY_VELOCITY
+        if (velocity && existing->second.velocity_generation != velocity->generation) {
+            existing->second.velocity_generation = velocity->generation;
+            stale = true;
+        }
+#endif
+        if (stale) {
             wgpuBindGroupRelease(existing->second.group);
-            existing->second.group =
-                build_pinned_draw_group(state, mesh, variant, existing->second.mesh_uniforms,
-                                        existing->second.material_uniforms, geometry_params,
-                                        area_light_emission_of(existing->second));
+            existing->second.group = build_pinned_draw_group(
+                state, mesh, variant, existing->second.mesh_uniforms,
+                existing->second.material_uniforms, geometry_params,
+                existing->second.mesh_opacity_uniforms, area_light_emission_of(existing->second),
+                nullptr, nullptr, velocity);
         }
         return existing->second;
     }
@@ -754,9 +901,17 @@ DawnDrawState& ensure_pinned_geometry_bindings(DawnState& state, DawnMesh& mesh,
     };
     draw_state.mesh_uniforms = uniform_buffer(sizeof(upstream::MeshUniforms));
     draw_state.material_uniforms = uniform_buffer(entry.material_ubo_bytes);
-    draw_state.group = build_pinned_draw_group(state, mesh, variant, draw_state.mesh_uniforms,
-                                               draw_state.material_uniforms, geometry_params,
-                                               area_light_emission_of(draw_state));
+#if BBLITE_MESH_OPACITY
+    draw_state.mesh_opacity_uniforms = uniform_buffer(sizeof(upstream::MeshOpacityUniforms));
+#endif
+#if BBLITE_GEOMETRY_VELOCITY
+    if (velocity)
+        draw_state.velocity_generation = velocity->generation;
+#endif
+    draw_state.group = build_pinned_draw_group(
+        state, mesh, variant, draw_state.mesh_uniforms, draw_state.material_uniforms,
+        geometry_params, draw_state.mesh_opacity_uniforms, area_light_emission_of(draw_state),
+        nullptr, nullptr, velocity);
     return mesh.pinned_geometry_states.emplace(variant, std::move(draw_state)).first->second;
 }
 
@@ -767,6 +922,9 @@ void write_pinned_draw_blocks(DawnState& state, const Scene& scene, const Engine
     const upstream::MeshUniforms mesh_block = pinned_mesh_block(scene, engine, draw.item.mesh);
     DawnGpuDevice{state.queue}.write_buffer(draw_state.mesh_uniforms, 0, &mesh_block,
                                             sizeof(mesh_block));
+#if BBLITE_MESH_OPACITY
+    write_mesh_opacity_block(state, engine, draw.item, draw_state);
+#endif
     const auto& material = handle_at(engine.materials, draw.item.material);
     const auto upload =
         std::tuple(state.material_upload_frame, material_ubo_version(engine, &material), variant,
@@ -804,8 +962,25 @@ void write_pinned_geometry_task(DawnState& state, const Scene& scene, const Engi
                                .c_str());
             }
             DawnMesh& mesh = state.meshes[draw.item_index];
+            // The palettes the variant's vertex stage reads, streamed before its
+            // group is built, as the colour pass streams them: a task may draw
+            // a deforming mesh no colour pass does.
+            const MeshRecord& record = handle_at(engine.meshes, draw.item.mesh);
+            if (pinned_variant_skeleton(variant))
+                write_pinned_bone_texture(state, mesh, record);
+#if BBLITE_VAT
+            if (pinned_variant_vat(variant))
+                write_pinned_vat_texture(state, mesh, record, engine);
+#endif
+            const DawnPbrVelocity* velocity = nullptr;
+#if BBLITE_GEOMETRY_VELOCITY
+            // The renderable's velocity resources, which this frame's update
+            // (run before this writer) made.
+            if (task.geometry.velocity_previous_depth)
+                velocity = &DawnPbrVelocitySink{state, geometry}.resources(draw.item.mesh);
+#endif
             DawnDrawState& draw_state = ensure_pinned_geometry_bindings(
-                state, mesh, variant, geometry.pinned_geometry_params, scene);
+                state, mesh, variant, geometry.pinned_geometry_params, scene, velocity);
             write_pinned_draw_blocks(state, scene, engine, draw, variant, draw_state);
         }
     }
@@ -918,7 +1093,8 @@ WGPUBindGroup build_standard_draw_group(
     // Bound only when the composed variant declares the extension's block,
     // which is a reflected binding name rather than a compile-time fact --
     // the same shape `geometry_params` takes below.
-    [[maybe_unused]] WGPUBuffer uv_transform_uniforms, WGPUBuffer geometry_params,
+    [[maybe_unused]] WGPUBuffer uv_transform_uniforms,
+    [[maybe_unused]] WGPUBuffer mesh_opacity_uniforms, WGPUBuffer geometry_params,
     StandardRenderViews render_views, const DawnAreaLightEmission* area_light_emission) {
     const WGPUTextureView emissive_render_view = render_views.emissive;
     const WGPUTextureView diffuse_render_view = render_views.diffuse;
@@ -952,6 +1128,10 @@ WGPUBindGroup build_standard_draw_group(
             } else if (binding.name == "gp" && geometry_params) {
                 group_entry.buffer = geometry_params;
                 group_entry.size = sizeof(PinnedGeometryParams);
+#if BBLITE_MESH_OPACITY
+            } else if (binding.name == mesh_opacity_block_name) {
+                bind_mesh_opacity(mesh_opacity_uniforms, group_entry);
+#endif
 #if BBLITE_RECT_AREA_EMISSION
             } else if (binding.name == upstream::rect_area_emission_slots_block) {
                 // The scene's emission slot block, as the PBR family binds it.
@@ -1131,6 +1311,11 @@ DawnDrawState& ensure_standard_draw_buffers(DawnState& state, DawnMesh& mesh,
         draw_state.uv_transform_uniforms = uniform_buffer(sizeof(upstream::StandardUvTxUniforms));
     }
 #endif
+#if BBLITE_MESH_OPACITY
+    if (!draw_state.mesh_opacity_uniforms) {
+        draw_state.mesh_opacity_uniforms = uniform_buffer(sizeof(upstream::MeshOpacityUniforms));
+    }
+#endif
     return draw_state;
 }
 
@@ -1160,6 +1345,9 @@ void write_standard_draw_blocks(DawnState& state, const Scene& scene, const Engi
     const upstream::MeshUniforms mesh_block =
         pinned_mesh_block(scene, engine, draw.item.mesh, velocity_history);
     DawnGpuDevice{state.queue}.write_buffer(mesh_uniforms, 0, &mesh_block, sizeof(mesh_block));
+#if BBLITE_MESH_OPACITY
+    write_mesh_opacity_block(state, engine, draw.item, material_state);
+#endif
     std::uint32_t features = material ? upstream::standard_material_features(*material) : 0u;
     if (material && material->no_color) {
         features |= upstream::standard_no_color_output_flag;
@@ -1241,7 +1429,8 @@ void write_standard_geometry_task(DawnState& state, const Scene& scene, const En
                 draw_state.group = build_standard_draw_group(
                     state, mesh, material, variant, draw_state.mesh_uniforms,
                     colour_state.material_uniforms, colour_state.uv_uniforms,
-                    colour_state.uv_transform_uniforms, geometry.pinned_geometry_params,
+                    colour_state.uv_transform_uniforms, colour_state.mesh_opacity_uniforms,
+                    geometry.pinned_geometry_params,
                     // A geometry task writes the MRT attachments and
                     // samples neither slot, and its layout arm is the
                     // filterable one, so it binds neither view.
@@ -1361,10 +1550,11 @@ pinned_variant_pipeline(DawnState& state, std::size_t variant, upstream::RenderP
                         // Which ESM generator's map this pass writes, when it writes one. The
                         // colour format is that generator's own recorded row, so two generators
                         // whose factories returned different formats build different pipelines.
-                        std::uint32_t esm_shadow_index, std::optional<DawnTaskTarget> target) {
+                        std::uint32_t esm_shadow_index, std::optional<DawnTaskTarget> target,
+                        bool alpha_to_coverage) {
     const auto variant_key = pal::variant_pipeline_key(
         pal::esm_keyed_variant(variant, upstream::pbr_variants.size(), esm_shadow_index), kind,
-        {shadow_pass, has_depth});
+        {shadow_pass, has_depth, alpha_to_coverage});
     const auto color_format = target ? target->color : state.frame_color_format;
     const auto depth_format = target ? target->depth
                                      : (shadow_pass ? WGPUTextureFormat_Depth32Float
@@ -1435,6 +1625,10 @@ pinned_variant_pipeline(DawnState& state, std::size_t variant, upstream::RenderP
     descriptor.depthStencil = has_depth ? &depth_stencil : nullptr;
     descriptor.multisample.count = samples;
     descriptor.multisample.mask = ~0u;
+    // The pin's pipeline owners enable coverage for a flagged material on a
+    // multisampled target (`sig._sampleCount > 1 && resolver(material)`).
+    descriptor.multisample.alphaToCoverageEnabled =
+        alpha_to_coverage_enabled(alpha_to_coverage, samples);
     WGPUColorTargetState color_target = WGPU_COLOR_TARGET_STATE_INIT;
     color_target.format = color_format;
 #if BBLITE_SHADOWS_ESM
@@ -1478,21 +1672,20 @@ pinned_variant_pipeline(DawnState& state, std::size_t variant, upstream::RenderP
 #endif
 
 #if (BBLITE_HAS_DAWN && BBLITE_HAS_PBR_RENDERER) && BBLITE_STANDARD_VARIANTS > 0
-WGPURenderPipeline
-standard_variant_pipeline(DawnState& state, std::size_t variant, upstream::RenderPipelineKind kind,
-                          std::uint32_t samples, bool has_depth, bool unfilterable_emissive,
-                          const FrameTaskRecord* geometry_task,
-                          // The pin's one exception to this port's depth convention: a shadow
-                          // caster pass renders standard-Z into the generator's own
-                          // `depth32float` map.
-                          bool shadow_pass,
-                          // Which ESM generator's map this pass writes, when it writes one. The
-                          // colour format is that generator's own recorded row, so two generators
-                          // whose factories returned different formats build different pipelines.
-                          std::uint32_t esm_shadow_index, std::optional<DawnTaskTarget> target) {
+WGPURenderPipeline standard_variant_pipeline(
+    DawnState& state, std::size_t variant, upstream::RenderPipelineKind kind, std::uint32_t samples,
+    bool has_depth, bool unfilterable_emissive, const FrameTaskRecord* geometry_task,
+    // The pin's one exception to this port's depth convention: a shadow
+    // caster pass renders standard-Z into the generator's own
+    // `depth32float` map.
+    bool shadow_pass,
+    // Which ESM generator's map this pass writes, when it writes one. The
+    // colour format is that generator's own recorded row, so two generators
+    // whose factories returned different formats build different pipelines.
+    std::uint32_t esm_shadow_index, std::optional<DawnTaskTarget> target, bool alpha_to_coverage) {
     const auto variant_key = pal::variant_pipeline_key(
         pal::esm_keyed_variant(variant, upstream::standard_variants.size(), esm_shadow_index), kind,
-        {shadow_pass, has_depth, unfilterable_emissive});
+        {shadow_pass, has_depth, unfilterable_emissive, alpha_to_coverage});
     const auto color_format = target ? target->color : state.frame_color_format;
     const auto depth_format = target ? target->depth
                                      : (shadow_pass ? WGPUTextureFormat_Depth32Float
@@ -1554,6 +1747,10 @@ standard_variant_pipeline(DawnState& state, std::size_t variant, upstream::Rende
     descriptor.depthStencil = has_depth ? &depth_stencil : nullptr;
     descriptor.multisample.count = samples;
     descriptor.multisample.mask = ~0u;
+    // The pin's pipeline owners enable coverage for a flagged material on a
+    // multisampled target (`sig._sampleCount > 1 && resolver(material)`).
+    descriptor.multisample.alphaToCoverageEnabled =
+        alpha_to_coverage_enabled(alpha_to_coverage, samples);
     WGPUColorTargetState color_target = WGPU_COLOR_TARGET_STATE_INIT;
     color_target.format = color_format;
 #if BBLITE_SHADOWS_ESM
@@ -1786,8 +1983,9 @@ node_variant_pipeline(DawnState& state, std::size_t variant, upstream::RenderPip
     descriptor.vertex.bufferCount = vertex_buffer_count;
     descriptor.vertex.buffers = vertex_layouts.data();
     descriptor.primitive.topology = WGPUPrimitiveTopology_TriangleList;
-    descriptor.primitive.frontFace = WGPUFrontFace_CCW;
     const RenderPipelineKindTraits traits = pipeline_kind_traits(kind);
+    descriptor.primitive.frontFace =
+        traits.clockwise_front_face ? WGPUFrontFace_CW : WGPUFrontFace_CCW;
     // A geometry view is compiled at the pin's alpha mode 0 whatever the
     // graph's own blending says (`ensureGeometryCompile` passes it), so its
     // pipeline neither blends nor drops depth writes.

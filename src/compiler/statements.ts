@@ -499,6 +499,17 @@ export class StatementLowerer {
     private readonly neverTerminators = new EmissionWeakSet<ts.Statement>();
     /** The constructs jumps can bind, innermost last. */
     private readonly jumpTargets = emissionArray<JumpTarget>([]);
+    /** Where each native function body's own jump targets begin. */
+    private readonly functionTargetBases = emissionArray<number>([]);
+
+    /** A native function body starts: its loops are its own. */
+    public enterFunctionBody(): void {
+        this.functionTargetBases.push(this.jumpTargets.length);
+    }
+
+    public leaveFunctionBody(): void {
+        this.functionTargetBases.pop();
+    }
     /** Runtime branches being emitted: an exit below one is not settled. */
     @journaled private accessor runtimeBranchDepth = 0;
 
@@ -1857,7 +1868,13 @@ export class StatementLowerer {
                 this.loweredBreakTerminators.add(statement);
             return;
         }
-        if (this.jumpTargets.some(({ iteration }) => iteration)) {
+        // A static loop of this body: one around the function that created
+        // a callback does not run the callback's statements.
+        if (
+            this.jumpTargets
+                .slice(this.functionTargetBases.at(-1) ?? 0)
+                .some(({ iteration }) => iteration)
+        ) {
             if (
                 firstReturn([statement.thenStatement]) ||
                 (statement.elseStatement &&
@@ -3245,7 +3262,7 @@ export class StatementLowerer {
         if (
             dataType?.kind === "map" &&
             dataType.dictionary &&
-            dataType.key.kind === "string"
+            (dataType.key.kind === "string" || dataType.key.kind === "number")
         ) {
             // The dictionary is read in place, as the loop body writes it.
             const object = context.bindings.pinValueToTemporary(
@@ -3256,7 +3273,10 @@ export class StatementLowerer {
             context.reachJson();
             return {
                 keysCpp: `bbl::js::property_names(${object})`,
-                presentCpp: (key) => `${object}.has(${key})`,
+                presentCpp: (key) =>
+                    dataType.key.kind === "string"
+                        ? `${object}.has(${key})`
+                        : `bbl::js::has_number_property(${object}, ${key})`,
             };
         }
         if (dataType?.kind === "struct") {
@@ -4831,11 +4851,21 @@ export class StatementLowerer {
             }
             if (ts.isIdentifier(unwrapped.operand)) {
                 const target = context.bindings.lookup(unwrapped.operand);
-                context.expectKind(target, "number", unwrapped.operand);
                 const operator =
                     unwrapped.operator === ts.SyntaxKind.PlusPlusToken
                         ? "++"
                         : "--";
+                // A parsed document's binding holds the number its
+                // update computes from the value's ToNumber.
+                if (isJsonValue(target)) {
+                    context.reachJson();
+                    context.emit({
+                        kind: "expression",
+                        code: `${target.cpp} = bbl::js::json_value(${target.cpp}.to_number() ${operator[0]} 1.0);`,
+                    });
+                    return;
+                }
+                context.expectKind(target, "number", unwrapped.operand);
                 context.emit({
                     kind: "expression",
                     code: ts.isPrefixUnaryExpression(unwrapped)

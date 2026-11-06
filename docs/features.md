@@ -17,7 +17,7 @@ Other thrown values are unsupported.
 
 | Area         | Admitted                                                                                                                                                              | Refuses                                                                                                                                                                                                                                                          |
 | ------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Modules      | Named/namespace imports, re-exports, local TS/JS, `?raw`, `namespace` bodies, literal `import()`, ordered initialization                                              | Runtime-selected modules, top-level await, `var` in lazily imported modules, writes through `N.member`, namespace/enum objects as values, dependencies on the entry                                                                                              |
+| Modules      | Named/namespace imports, re-exports, local TS/JS, `?raw`, `namespace` bodies, literal `import()`, ordered initialization                                              | Runtime-selected modules, top-level await, a read `var` in lazily imported modules, writes through `N.member`, namespace/enum objects as values, dependencies on the entry                                                                                       |
 | Control flow | All statements, labels, switch fallthrough, try/catch/finally (also suspending), function-scoped `var`, for-in/of into existing targets and assignment patterns       | Cleanup across `startEngine`; labeled jumps out of statically unrolled loops; a `var` read while it may be undefined and its type excludes undefined; a `var` redeclaring a parameter                                                                            |
 | Functions    | Generics, defaults, rest, destructuring, recursion, `call`/`apply`/`bind`, function objects with properties, extra arguments ignored                                  | Unresolved type arguments, stored generic `this`, Arguments mutation, narrowing a stored function's signature, unions with several function arms, method values (`c.m`, `c.m.bind(c)`)                                                                           |
 | Classes      | Fields, accessors, private names, generics, local inheritance (`super`, abstract, `instanceof`), Error subclasses, static fields/blocks, generator methods, `#x in v` | Non-local bases, static accessors, private names redeclared in subclasses, inherited static writes through a subclass, generic or mixed-type fields in a stored hierarchy, an instance in an interface-typed element or field whose copy the program can observe |
@@ -81,6 +81,16 @@ Rules:
 - `import.meta.env`: `MODE="production"`, `PROD=true`, `DEV=false`, `SSR=false`, `BASE_URL` from deployment; custom
   strings via `--env NAME=value` or `CompileOptions.environment`. No dotenv or host variables.
 - Without a realm, timers and microtasks need no engine; RAF needs a Window repaint source.
+- A lazily imported module's `let` without an initializer holds undefined. A binding of such a module that no
+  evaluated module, effectful statement or kept declaration names, and whose initializer has no effect, is never
+  evaluated (a bundler's tree shaking). A reflective read of a namespace (spread, `for...in`, `Object.*`,
+  `JSON.stringify`, a run-time string key) keeps its module's bindings; one of an `any` value keeps every module's.
+- A module namespace in a record slot calls its exports after a presence check; `(await import(x)).f()` calls the
+  settled namespace's.
+- `for...in` over a number-keyed dictionary yields names in property order; reading it by such a name finds the
+  number the name spells. A parsed document's binding takes `++`/`--` as its number.
+- A write to a represented Error's property that no reached source reads back evaluates its value and stores nothing.
+- A tuple parameter the function writes through (`out[0] = x`, or a callee that does) is its argument's storage.
 
 ## Standard library
 
@@ -167,10 +177,13 @@ cancel })` is a program source; `new Response(stream, { status, statusText, head
   strategy recovers; a loss with sprite, text, effect or frame-graph contexts refuses with the pin's message.
 - Recovery registers before `startEngine` in the entry, anywhere in an application realm.
 - `engine._renderFn` (the pin's frame function) can be wrapped; a wrapper that never calls it ends the native run.
+- After `stopEngine` no frame renders: the canvas keeps its last image, which a pending capture reads.
 - GPU task timing refuses TAA, screen-space and pass-less copy tasks, and on SDL_GPU colour/post-process tasks in TAA builds.
 - `setGpuTimingEnabled` times each frame's commands on the task-timing device (application realm).
 - Compute: generation-known WGSL, f32/u32/i32 writers (no f16), uniform/storage buffers, textures and samplers. Six-layer
   storage views with cube sampling need Dawn or patched SDL D3D12/Vulkan/Metal.
+- Right-handed programs (`babylon-lite-rh`) build the pin's right-handed variant; `BBLITE_RIGHT_HANDED` reverses every
+  scene pipeline's winding. A right-handed ShaderMaterial on a glTF-wound or mirrored mesh refuses at run time.
 
 ## Cameras and input
 
@@ -202,6 +215,9 @@ Backends per platform: [backends](backends.md#backend-comparison). Commands: [An
 `queue.writeTexture` write `createTexture2DFromPixels` textures; other sources, fractional or out-of-bounds regions, and
 texels a sprite atlas copied throw. Other runtime texture uploads and 3D textures are unsupported.
 
+A function returning `loadGltf(engine, new Blob(...))` over closed data (typed arrays, `JSON.stringify`, `btoa`), its
+engine read nowhere else, runs at generation; its call loads the document it built, packaged.
+
 `loadGltf` with a runtime URL, in runtime control flow or repeated out of order profiles its documents: each composes
 once and its containers announce their rows by path. A runtime URL skips documents missing a buffer or image.
 `loadTexture2D` address modes may be runtime members of a string-literal union. `getOrCreateSampler` keys samplers
@@ -217,7 +233,8 @@ composition and source albedo reads with `KHR_texture_transform` refuse.
 
 - Data mesh creation and replacement accept numeric buffer views; retained CPU streams preserve their aliases.
 - Position, normal, colour, tangent and UV attribute uploads accept runtime mesh loops; they update GPU buffers only.
-- Reached builders, data factories, lines, CSG and thin instances with admitted options.
+- Reached builders, data factories, lines, CSG and thin instances with admitted options. `createLines` and
+  `createLineSystem` take static or run-time `Vec3` points (colours need static rows) and construct at run time.
 - `updateMeshGeometry`/`updateMeshGeometryCapacity`: owned, unshared, packed Float32/Uint32 geometry; imported geometry
   updates refuse. Device recovery re-uploads CPU arrays and drops GPU-only writes.
 - Thin-instance pools with compute tasks or geometry-output tasks refuse. Device recovery fails explicitly when thin-instance GPU buffers remain owned; recovery registration is admitted.
@@ -227,6 +244,10 @@ composition and source albedo reads with `KHR_texture_transform` refuse.
   the pin's glTF node hierarchy; animated/morphed assets, punctual lights and cameras then refuse.
 - Transform-node `worldMatrix` retains the pin's local/world buffer identity and lazy subtree invalidation,
   including reads through stored `SceneNode` handles.
+- `setMeshOpacity`/`getMeshOpacity` on Standard and PBR meshes: below 1 the mesh draws in the transparent pass under
+  the pin's per-binding alpha policy; at 0 its colour draws skip and its shadows still cast. A crossing of 1 rebuilds
+  the render plan; an explicit task keeps the binding it resolved unless `enableRenderTaskMeshRefresh` follows the
+  mesh (no override). Node/shader materials below 1 throw the pin's errors; a MeshLoD or other target refuses.
 - A mesh removed from its last scene or passed to `disposeMeshGpu` retires
   ([fidelity](fidelity.md#semantic-contract)); re-adding or cloning it refuses. `disposeMeshGpu` of a mesh a scene or
   live render task still lists refuses.
@@ -249,7 +270,11 @@ composition and source albedo reads with `KHR_texture_transform` refuse.
 - Standard, PBR (clearcoat, sheen, iridescence, anisotropy, transmission), Grid, shader and node materials.
   PBR field writes accept a material narrowed by `isPbrMaterial`; `baseColorTexture` replacement takes a loaded, solid
   or stored file texture before scene registration.
-  `createPbrMaterial()` accepts omitted options and uses the pinned texture/factor defaults.
+  Bent normals: `enableBentNormals()` is an unconditional call before scene registration; `bentNormalTexture` writes
+  on loaded or created PBR materials precede registration and refuse without it.
+  `createPbrMaterial()` accepts omitted options and uses the pinned texture/factor defaults; `baseColorTexture` may
+  be a pixels texture. `setPbrAlphaCutoff` takes a static cutoff on a created material before registration and refuses
+  on an `alphaBlend` one.
 - Rebuild/replacement after binding refuses; direct factor-array writes do not bump UBO versions, except Standard
   `diffuseColor` after `enableMaterialTracking` (re-read each frame).
 - Shader materials: up to 16 vertex/fragment 2D/array sampler pairs, storage buffers, `get/setShaderUniform` by runtime name,
@@ -273,7 +298,7 @@ composition and source albedo reads with `KHR_texture_transform` refuse.
   Unused scene-local shader materials retain their IDs and resource slots without compiling stages; task overrides
   participate in mesh-layout discovery and retain their own texture bindings, including runtime replacements.
   `needAlphaBlending` reads the shader factory's flag; other material families yield `undefined`.
-  Alpha-to-coverage only on shader materials. Storage uploads preserve typed-array, DataView and ArrayBufferView byte ranges.
+  Alpha-to-coverage on Standard, PBR and shader materials; NodeMaterial refuses. Storage uploads preserve typed-array, DataView and ArrayBufferView byte ranges.
   `_shadowCasterMaterial` reads preserve the optional caster handle; writes bind an alternate shader caster during
   unconditional setup before scene registration. PCF/CSM creates cached shader no-color views and follows caster
   override chains; shader ESM views are unsupported.
@@ -359,6 +384,8 @@ InvalidStateError), moving its playback into the graph. Other members and attrib
   into the map before dynamic casters draw; refit gate and per-frame cascade budget as pinned. `cascadeCoveragePadding` refuses.
 - Recast/Detour solo and obstacle tile-cache builds, crowds, obstacles. Tiled builds without obstacles and off-mesh
   connections in tile caches refuse.
+- Navcat runs as program code: the pin's `navcat*.ts` modules and the vendored navcat/mathcat TypeScript compile
+  with the program ([architecture](architecture.md#lowering-invariants)).
 
 ## Frame graph and post-process
 
@@ -367,23 +394,38 @@ InvalidStateError), moving its playback into the graph. Other members and attrib
   task name takes another task. A render task's `rst` held as optional data is absent when unset; other target options
   refuse it.
 - A scene-less `FrameGraphContext` refuses in an application realm: the engine holds it by address.
+- Overlay scenes (`createOverlayScene`, `createUtilityLayer`) draw as layers after their root's whole frame graph.
+  Refused: a base on an auxiliary surface, an overlay with frame-graph tasks of its own, an overlay over a transmission
+  scene at one sample (run time), and overlays with GPU task timing or TAA. `moveRenderingContext` refuses.
 - Render targets accept explicit pinned-default `depthCompare` and `depthClearValue`; other values refuse.
   Explicit `depthCompare` overrides ShaderMaterial depth state. `scene.surface` reads require a known primary-surface scene.
 - `buildFrameGraphTask(getFrameGraph(scene), task)` records a render or effect render task added to a live scene, which
-  refuses to execute until then; the private `FrameGraph._tasks` list refuses (its native indices differ), so a live task
-  cannot be removed.
+  refuses to execute until then, an SSAO task (settings and working resolution) or a copy task (its source resolves at
+  every execute); the private `FrameGraph._tasks` list refuses (its native indices differ), so a live task cannot be
+  removed.
 - Render and effect render task `dispose()` releases owned targets (not the swapchain's); executing a disposed task refuses.
   An effect task's `record`/`dispose` can be read, bound and replaced; the frame graph calls the replacements.
 - `disposeRenderTargetTexture`: a later executed task or material using the target refuses; material plugin textures
   keep the image they bound. `disposeEffectWrapper`: a registered EffectRenderer drawing a wrapper with a uniform
   binding refuses.
 - TAA: one scene, explicit Standard color tasks, engine-format color, depth24plus-stencil8, single-sample inputs.
+- `enableGeometryVelocity(task, { previousDepth })`, unconditional before scene registration: the task's PBR views write
+  material-point velocity (previous world, bones and morph weights; previous view depth in Z). A transform write that
+  leaves the packed world unchanged moves nothing. Standard materials in a LINEAR_VELOCITY task of such a program refuse.
 - `enableRenderTaskTransmission` with `linear: false` on a single-sample, non-swapchain render task: the pass breaks
   before transmissive transparent draws (`copyCount`) to grab colour, and with `grabDepth` depth (set before recording);
   `grab.texture`/`depthTexture` read live for `setShaderTexture`. The linear arm and multisampled targets refuse.
-- Contact shadows, one-bounce GI, EffectWrapper/EffectRenderer with bounded layouts; custom vertices refuse.
+- Contact shadows, one-bounce GI, screen-space ambient occlusion
+  (`createScreenSpaceAmbientOcclusionPostProcessTask`), EffectWrapper/EffectRenderer with bounded layouts; custom
+  vertices refuse.
   Effect textures come from solid/pixel factories or render targets, with 2D float or depth layouts;
   scene frame graphs sample depth through `textureLoad`. Effect samplers use the `filtering` binding type.
+- `createSsaoTask` (XeGTAO): every quality, view normals from a geometry task or reconstructed from depth, temporal
+  reconstruction with a geometry `velocityTexture` (and `velocityHasPreviousDepth`), `resetSsaoTemporal`,
+  `enableSsaoHalfResolution`, `enableSsaoMotionPruning`, live `enabled`/`radius`/`intensity`/`historySamples`.
+  Live `quality`, `normalTexture` (one attachment, or none), `temporal.enabled` and pruning `enabled` writes, and a
+  normal input chosen at run time, compose every mode they select. `enablePbrSsao` feeds PBR diffuse IBL in passes of
+  the task camera (neutral elsewhere). A setting written by a computed key needs a string-literal-typed key.
 - `setEffectTexture` takes solid, pixel or render-target textures by binding name or number, including cached pixel
   textures and live changes between these kinds. Pixel bindings preserve sampler/sRGB settings, replacement identities
   and live region writes. Render targets bind in frame-graph effect tasks only.

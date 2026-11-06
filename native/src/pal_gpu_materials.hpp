@@ -6,6 +6,7 @@
 #include "pal_gpu_vertex.hpp"
 #include <bblite/features/has_pbr_renderer.hpp>
 #include <bblite/features/has_standard_uv_transform.hpp>
+#include <bblite/features/mesh_opacity.hpp>
 
 #include <bblite/runtime.hpp>
 #include <bblite/upstream/render_capabilities.hpp>
@@ -25,8 +26,24 @@
 #include <bblite/upstream/renderer_plan.hpp>
 #include <bblite/upstream/material_texture_slots.hpp>
 #endif
+#if BBLITE_MESH_OPACITY
+#include <bblite/upstream/mesh_opacity.hpp>
+#endif
 
 namespace bbl::pal {
+
+#if BBLITE_MESH_OPACITY
+/** The composed blocks' name for mesh opacity's binding. */
+inline constexpr std::string_view mesh_opacity_block_name = "meshOpacity";
+
+/**
+ * The `meshOpacity` block one draw of `item` binds: the mesh's opacity and
+ * its binding's policy -- `meshOpacityPbrExt.bind`'s over the drawn PBR
+ * material, the default 0 Standard's binding passes.
+ */
+upstream::MeshOpacityUniforms mesh_opacity_block(const Engine& engine,
+                                                 const upstream::RenderItem& item);
+#endif
 
 /** Shader views inherit resource bindings from their source material. */
 inline const MaterialRecord& shader_resource_material(const Engine& engine,

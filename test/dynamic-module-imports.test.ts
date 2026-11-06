@@ -73,7 +73,8 @@ test("finite imports retain namespace identity, live exports and asynchronous re
 test("unrepresented lazy initialization remains an explicit refusal", () => {
     const directory = resolve("artifacts/dynamic-module-refusals");
     mkdirSync(directory, { recursive: true });
-    const entry = `export {}; async function run(){await import("./lazy");} run();`;
+    // The spread reads every binding: one nothing reads is never evaluated.
+    const entry = `export {}; async function run(){return {...(await import("./lazy"))};} run();`;
     writeFileSync(join(directory, "entry.ts"), entry);
     for (const source of [
         `function fail(){throw "failure";} const {ignored=fail()}={}; export const result=1;`,

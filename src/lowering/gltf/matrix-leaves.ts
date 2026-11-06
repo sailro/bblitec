@@ -240,10 +240,21 @@ export function lowerMatrixComposeCpp(
  * `computeNodeWorldMatrix` parents every hierarchy root on that diagonal,
  * so a node world the port composes from the root down (an animated
  * node's live chain) takes it on the left, through the pinned multiply,
- * exactly as the pin's own world does.
+ * exactly as the pin's own world does. A right-handed build's root is the
+ * identity, which leaves the world as it is.
  */
-export function lowerRootedWorldCpp(file: ts.SourceFile): string {
-    const { lane, sign } = pinnedRootFlip(file);
+export function lowerRootedWorldCpp(
+    file: ts.SourceFile,
+    rightHanded: boolean,
+): string {
+    const flip = pinnedRootFlip(file, rightHanded);
+    if (!flip)
+        return [
+            "Matrix gltf_rooted_world(const Matrix& world) {",
+            "    return world;",
+            "}",
+        ].join("\n");
+    const { lane, sign } = flip;
     const lanes = Array.from({ length: 16 }, (_, index) =>
         floatLiteral(index === lane * 5 ? sign : index % 5 === 0 ? 1 : 0),
     );

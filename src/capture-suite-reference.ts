@@ -21,6 +21,7 @@ import { moduleSpecifiers } from "./typescript-module-specifiers.js";
 import { rewriteModuleSpecifiers } from "./module-specifier-rewrite.js";
 import { pinnedLabPublicFile, servedFile } from "./pinned-lab-materializers.js";
 import { packageImportTargets } from "./pinned-build-conditions.js";
+import { evaluatedEntryPath } from "./bake-cache.js";
 
 // ---------------------------------------------------------------------------
 // Lazy module loads
@@ -323,7 +324,9 @@ export function suiteBrowserModule(
                 "Applied animation capture requires one local scene engine.",
             );
     }
-    const input = readFileSync(resolve(sourcePath), "utf8");
+    // A side-effect entry (`import "./scene2";`) runs the module it imports.
+    const entryPath = evaluatedEntryPath(resolve(sourcePath));
+    const input = readFileSync(entryPath, "utf8");
     const transformed = transform ? transform(input) : input;
     if (
         animationPoseProtocol !== undefined &&
@@ -402,7 +405,7 @@ export function suiteBrowserModule(
         fixedAnimationFrame === undefined || independentEngines !== undefined
             ? readySource
             : markFixedEngineStart(readySource, documentMarkers);
-    return browserHarness().transpileForBrowser(fixedFrameSource, sourcePath);
+    return browserHarness().transpileForBrowser(fixedFrameSource, entryPath);
 }
 
 /**
@@ -647,7 +650,10 @@ export function createSuiteSceneServer(
         );
     }
     const entryPath = options.sourcePath
-        ? `/${relative(siteRoot, resolve(options.sourcePath))
+        ? `/${relative(
+              siteRoot,
+              evaluatedEntryPath(resolve(options.sourcePath)),
+          )
               .split(sep)
               .join("/")
               .replace(/\.ts$/, ".js")}`

@@ -946,6 +946,53 @@ function compileSetMeshVisible(
     };
 }
 
+/**
+ * src/mesh/opacity/mesh-opacity.ts `setMeshOpacity`: the per-mesh opacity
+ * and its zero-opacity draw skip, lowered whole (`lowering/mesh-opacity.ts`)
+ * -- the clamp, the material check, the crossing-1 rebuild and the throws.
+ * The pin's `assertMesh` refuses any other target, a MeshLoD instance the
+ * one it names.
+ */
+function compileMeshOpacityTarget(
+    context: MeshIntrinsicContext,
+    call: ts.CallExpression,
+    api: "setMeshOpacity" | "getMeshOpacity",
+): Value {
+    const mesh = context.compileValue(argumentAt(call, 0));
+    if (mesh.kind !== "mesh")
+        context.fail(
+            argumentAt(call, 0),
+            `${api}: the target is not a Lite Mesh (for example a MeshLoD instance); per-mesh opacity is not supported on MeshLoD in this release.`,
+        );
+    context.reachFeature("mesh:opacity", call);
+    return mesh;
+}
+
+function compileSetMeshOpacity(
+    context: MeshIntrinsicContext,
+    call: ts.CallExpression,
+): Value | undefined {
+    context.expectArgumentCount(call, 2, 2);
+    const mesh = compileMeshOpacityTarget(context, call, "setMeshOpacity");
+    const opacity = context.compileNumber(argumentAt(call, 1), "double");
+    return {
+        kind: "void",
+        cpp: `bbl::set_mesh_opacity(${context.requireEngine(mesh, call)}, ${mesh.cpp}, ${opacity})`,
+    };
+}
+
+function compileGetMeshOpacity(
+    context: MeshIntrinsicContext,
+    call: ts.CallExpression,
+): Value | undefined {
+    context.expectArgumentCount(call, 1, 1);
+    const mesh = compileMeshOpacityTarget(context, call, "getMeshOpacity");
+    return {
+        kind: "number",
+        cpp: `bbl::get_mesh_opacity(${context.requireEngine(mesh, call)}, ${mesh.cpp})`,
+    };
+}
+
 function compileMat4Invert(
     context: MeshIntrinsicContext,
     call: ts.CallExpression,
@@ -3451,6 +3498,8 @@ const meshIntrinsicHandlers = new EmissionMap<
     ["dotVec3", compileDotVec3],
     ["setMeshVisible", compileSetMeshVisible],
     ["setSubtreeVisible", compileSetMeshVisible],
+    ["setMeshOpacity", compileSetMeshOpacity],
+    ["getMeshOpacity", compileGetMeshOpacity],
     ["invertMat4", compileMat4Invert],
     ["composeMat4", compileMat4Compose],
     ["normalizeVec3TupleOrUp", compileNormalizeVec3],

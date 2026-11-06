@@ -1,6 +1,10 @@
 import { lowerSceneBeforeRenderDispatch } from "./camera-control-attachment.js";
 import { lowerHierarchyInstanceOperations } from "./hierarchy-instance-lowerer.js";
 import { renderingContextKind } from "./rendering-context-kind.js";
+import {
+    assertOverlayComposition,
+    lowerOverlayScenes,
+} from "./overlay-scene-lowerer.js";
 import ts from "typescript";
 import { assetRootTransformSource } from "./asset-root-transform.js";
 import { LoweredSource, LoweringContext } from "./context.js";
@@ -139,6 +143,8 @@ interface SceneCoreOptions {
     meshGpuDisposal?: boolean;
     /** The scene reaches `buildFrameGraphTask`. */
     taskBuild?: boolean;
+    /** The scene reaches `createSsaoTask`. */
+    ssaoTasks?: boolean;
     /** The scene reaches `createEffectRenderTask`. */
     effectTasks?: boolean;
     /** A task may be added to a registered scene. */
@@ -151,6 +157,10 @@ interface SceneCoreOptions {
     deformedPosition?: boolean;
     /** A CSM generator keeps a static cache target (`enableCsmStaticCache`). */
     csmStaticCache?: boolean;
+    /** The program builds an overlay scene (`scene:overlay`). */
+    overlayScenes?: boolean;
+    /** `setMeshOpacity`: its material validator joins the material setter. */
+    meshOpacity?: boolean;
 }
 
 export class SceneLowerer {
@@ -823,6 +833,7 @@ export class SceneLowerer {
         // and register_scene is the first point that runs after every bake.
         const vatSeek = this.vatSeek(options);
         const managerSeek = this.managerSeek(options);
+        assertOverlayComposition(this.context);
         return {
             modulePath,
             symbolName: `${createName},${addName},cloneTransformNode,removeFromScene,${beforeName},${disposeName},${registerName}${options.fog ? `,${fogName}` : ""}${options.clipPlane ? `,${clipPlaneName}` : ""}`,
@@ -837,6 +848,7 @@ ${options.geometryAccess ? "#include <bblite/mesh_cpu_streams.hpp>" : ""}
 #include <bblite/features/has_shadows.hpp>
 #include <bblite/features/has_sprites.hpp>
 ${options.text ? "#include <bblite/upstream_text_records.hpp>" : ""}
+${options.taskBuild && options.ssaoTasks ? "#include <bblite/upstream/frame_graph_ssao.hpp>" : ""}
 #include <bblite/upstream/pinned_matrix.hpp>
 #include <bblite/upstream/render_task_removal.hpp>
 ${options.pbrSceneHooks ? "#include <bblite/upstream/pinned_mesh_features.hpp>" : ""}
@@ -896,8 +908,8 @@ std::uint32_t scene_material_families(const Scene& scene) {
 
 } // namespace
 
-${lowerMeshMaterialSetter(this.context)}
-${this.sceneCreationSource(callbackDelta, value, clear, options)}${options.pbrSceneHooks ? lowerPbrMaterialGroups(this.context, options.gltfSceneHooks ?? options.pbrSceneHooks, options.thinBindings, options.pbrMaterials) : ""}${this.meshMembershipSource(options)}${this.assetCloneSource(cloneSuffix, nodeHierarchy)}${this.assetRootSource(nodeHierarchy, options.lightChildren === true)}${this.assetMembershipSource(options)}${this.eventRegistrationSource()}${this.sceneLifecycleSource(managerSeek, vatSeek, options)}void enable_scene_transmission(Scene& scene) {
+${lowerMeshMaterialSetter(this.context, options.meshOpacity === true)}
+${this.sceneCreationSource(callbackDelta, value, clear, options)}${options.pbrSceneHooks ? lowerPbrMaterialGroups(this.context, options.gltfSceneHooks ?? options.pbrSceneHooks, options.thinBindings, options.pbrMaterials) : ""}${this.meshMembershipSource(options)}${this.assetCloneSource(cloneSuffix, nodeHierarchy)}${this.assetRootSource(nodeHierarchy, options.lightChildren === true)}${this.assetMembershipSource(options)}${this.eventRegistrationSource()}${this.sceneLifecycleSource(managerSeek, vatSeek, options)}${options.overlayScenes ? lowerOverlayScenes(this.context) : ""}void enable_scene_transmission(Scene& scene) {
     require_scene_engine(scene);
     scene.transmission_enabled = true;
 }
@@ -2773,6 +2785,7 @@ void add_live_task(Scene& scene, TaskHandle task, bool at_start) {
                 entry.shader_packet = std::make_shared<std::shared_ptr<ShaderPacketSystemState>>();
 ${options.thinBindings ? "            entry.thin_binding = create_thin_material_binding(*scene.engine, entry.mesh, material);" : ""}
         }
+${options.meshOpacity ? "        resolve_render_task_mesh_extras(*scene.engine, task);\n" : ""}\
         task.shader_packet_scene_version = static_cast<double>(task_scene.state->renderable_version);
         task.record_state = FrameTaskRecordState::recorded;`;
     }
@@ -2913,6 +2926,7 @@ ${
 }\
     scene.engine->rendering_contexts.push_back(${renderingContextKind(this.context, "src/scene/scene-core.ts")},
         std::make_shared<Scene>(scene));
+${options.overlayScenes ? "    move_swapchain_overlays_after_base(scene);\n" : ""}\
 }
 
 void unregister_scene(Scene& scene) {
@@ -3037,7 +3051,7 @@ ${
 
 ${
     options.taskBuild
-        ? `${lowerFrameGraphTaskBuild(this.context, this.renderTaskRecordSource(options), options.effectTasks ?? false, options.taskMethodSlots ?? false)}
+        ? `${lowerFrameGraphTaskBuild(this.context, this.renderTaskRecordSource(options), options.effectTasks ?? false, options.taskMethodSlots ?? false, options.ssaoTasks ?? false)}
 `
         : ""
 }${options.liveTaskAdd ? this.liveTaskAddSource() : ""}${

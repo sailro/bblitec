@@ -47,17 +47,62 @@ let extraConditions: readonly string[] | undefined;
  * start.
  */
 export function pinnedBuildConditions(): readonly string[] {
-    return (extraConditions ??= (process.env.BBLITE_BUILD_CONDITIONS ?? "")
+    if (extraConditions) return extraConditions;
+    const conditions = (process.env.BBLITE_BUILD_CONDITIONS ?? "")
         .split(",")
-        .filter((condition) => condition !== ""));
+        .filter((condition) => condition !== "");
+    // A pinned module the compiler imports is resolved by Node itself, so
+    // Node has to select the same `#` targets.
+    const resolved = nodeResolveConditions();
+    const missing = conditions.filter(
+        (condition) => !resolved.includes(condition),
+    );
+    if (missing.length > 0)
+        throw new Error(
+            `BBLITE_BUILD_CONDITIONS names ${missing.join(", ")}, which this Node process does not resolve imports under; start it with buildConditionsEnvironment.`,
+        );
+    return (extraConditions = conditions);
 }
 
-/** A child process environment building under `conditions`. */
+/** The `--conditions` Node resolves imports under, from its flags and `NODE_OPTIONS`. */
+function nodeResolveConditions(): string[] {
+    const flags = [
+        ...process.execArgv,
+        ...(process.env.NODE_OPTIONS ?? "")
+            .split(/\s+/)
+            .filter((option) => option !== ""),
+    ];
+    return flags.flatMap((flag, index) => {
+        const inline = /^(?:--conditions|-C)=(.+)$/.exec(flag);
+        if (inline) return [inline[1]!];
+        return (flag === "--conditions" || flag === "-C") &&
+            flags[index + 1] !== undefined
+            ? [flags[index + 1]!]
+            : [];
+    });
+}
+
+/**
+ * A child process environment building under `conditions`: the compiler
+ * reads them, and Node resolves the pin's `#` imports under them.
+ */
 export function buildConditionsEnvironment(
     conditions: readonly string[],
     environment: NodeJS.ProcessEnv = process.env,
 ): NodeJS.ProcessEnv {
-    return { ...environment, BBLITE_BUILD_CONDITIONS: conditions.join(",") };
+    const options = (environment.NODE_OPTIONS ?? "")
+        .split(/\s+/)
+        .filter(
+            (option) => option !== "" && !option.startsWith("--conditions="),
+        );
+    return {
+        ...environment,
+        BBLITE_BUILD_CONDITIONS: conditions.join(","),
+        NODE_OPTIONS: [
+            ...options,
+            ...conditions.map((condition) => `--conditions=${condition}`),
+        ].join(" "),
+    };
 }
 
 type ImportTarget =

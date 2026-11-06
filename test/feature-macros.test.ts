@@ -13,11 +13,13 @@ import { listFiles } from "../src/tooling/records.js";
 function values(
     features: readonly string[],
     imageCodecs: readonly string[] = [],
+    rightHanded = false,
 ): Map<string, number> {
     const result = new Map<string, number>();
     for (const [include, text] of featureMacroHeaders({
         features,
         imageCodecs,
+        rightHanded,
     })) {
         const definition = /^#define (BBLITE_\w+) ([01])$/m.exec(text);
         assert.ok(definition, `${include} defines no 0/1 macro`);
@@ -35,12 +37,16 @@ test("every feature macro is a header of its own, 0 until its row is reached", (
     // Equal facts are equal bytes: a header does not depend on anything
     // else the scene reaches.
     assert.equal(
-        featureMacroHeaders({ features: ["ui:rml"], imageCodecs: [] }).get(
-            featureMacroInclude("BBLITE_WORKERS"),
-        ),
-        featureMacroHeaders({ features: [], imageCodecs: [] }).get(
-            featureMacroInclude("BBLITE_WORKERS"),
-        ),
+        featureMacroHeaders({
+            features: ["ui:rml"],
+            imageCodecs: [],
+            rightHanded: false,
+        }).get(featureMacroInclude("BBLITE_WORKERS")),
+        featureMacroHeaders({
+            features: [],
+            imageCodecs: [],
+            rightHanded: false,
+        }).get(featureMacroInclude("BBLITE_WORKERS")),
     );
 });
 
@@ -88,6 +94,9 @@ test("each macro follows the features its row names", () => {
     // The image decoder follows the packaged assets' codecs.
     assert.equal(values([]).get("BBLITE_HAS_IMAGE_DECODER"), 0);
     assert.equal(values([], ["jpeg"]).get("BBLITE_HAS_IMAGE_DECODER"), 1);
+    // The handedness follows the build conditions alone.
+    assert.equal(values([]).get("BBLITE_RIGHT_HANDED"), 0);
+    assert.equal(values([], [], true).get("BBLITE_RIGHT_HANDED"), 1);
 });
 
 test("each native file includes exactly the macro headers it tests", () => {

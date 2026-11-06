@@ -173,6 +173,96 @@ export class CameraLowerer {
     }
 
     /**
+     * What each camera factory's `cameraLocalWorldMatrix` does to its
+     * look-at matrix before returning it: nothing left-handed; a
+     * right-handed build negates its X and Z basis columns. Every reached
+     * factory states the same statements (asserted), lowered once over
+     * `out` at the width the world is kept at.
+     */
+    private lowerLocalWorldHandedness(
+        highPrecisionMatrix: boolean,
+        geospatial: boolean,
+    ): string {
+        const factories = [
+            ["src/camera/arc-rotate.ts", "createArcRotateCamera"],
+            ["src/camera/free-camera.ts", "_createFreeCamera"],
+            ...(geospatial
+                ? [
+                      [
+                          "src/camera/geospatial-camera.ts",
+                          "createGeospatialCamera",
+                      ],
+                  ]
+                : []),
+        ] as const;
+        const bodies = factories.map(([module, symbol]) => {
+            const { file, declaration } = this.context.functionDeclaration(
+                module,
+                symbol,
+            );
+            const local = this.context.findNodes(
+                declaration,
+                (node): node is ts.FunctionDeclaration =>
+                    ts.isFunctionDeclaration(node) &&
+                    node.name?.text === "cameraLocalWorldMatrix",
+            )[0];
+            const statements = local?.body?.statements ?? [];
+            const writer = statements.findIndex(
+                (statement) =>
+                    ts.isExpressionStatement(statement) &&
+                    ts.isCallExpression(statement.expression) &&
+                    this.context.expressionMatchesShape(
+                        statement.expression.expression,
+                        "writeLookAtWorldMat4LHIntoBuffer",
+                    ),
+            );
+            const last = statements.at(-1);
+            if (
+                !local ||
+                writer < 0 ||
+                !last ||
+                !ts.isReturnStatement(last) ||
+                !last.expression
+            )
+                return this.context.contractError(
+                    declaration,
+                    `Expected ${symbol}'s cameraLocalWorldMatrix to write a look-at matrix and return it.`,
+                );
+            this.context.assertExpressionShape(
+                last.expression,
+                "_localMat",
+                `${symbol} local world return`,
+            );
+            return {
+                file,
+                statements: statements.slice(writer + 1, -1),
+            };
+        });
+        const [first, ...others] = bodies;
+        const text = (statements: readonly ts.Statement[]): string =>
+            statements.map((statement) => statement.getText()).join("\n");
+        for (const [index, other] of others.entries())
+            if (text(other.statements) !== text(first!.statements))
+                this.context.contractError(
+                    other.file,
+                    `${factories[index + 1]![1]}'s cameraLocalWorldMatrix no longer edits its look-at matrix as createArcRotateCamera's does.`,
+                );
+        if (first!.statements.length === 0) return "";
+        return `${lowerPinnedBody(first!.file, first!.statements, {
+            bindings: new Map<string, PinnedBinding>([
+                [
+                    "_localMat",
+                    {
+                        cpp: "out",
+                        type: highPrecisionMatrix ? "f64-buffer" : "f32",
+                    },
+                ],
+            ]),
+            calls: new Map(),
+        })}\n`;
+    }
+
+    /**
      * The ArcRotate's eye, translated whole from the `localEyePosition`
      * the pinned factory declares inside itself over the record it closes
      * over: the pole fallback, the trigonometry and the target offset all
@@ -333,7 +423,7 @@ std::array<CameraMatrixScalar, 16> ${gltfCameras ? "camera_local_matrix" : "came
     std::array<CameraMatrixScalar, 16> out{};
     mat4_look_at_world_lh_to_ref(
         out, arc_rotate_eye_position(camera), camera.target, camera.up_vector);
-    return out;
+${this.lowerLocalWorldHandedness(highPrecisionMatrix, geospatial)}    return out;
 }
 ${
     gltfCameras

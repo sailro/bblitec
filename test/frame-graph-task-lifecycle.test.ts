@@ -138,16 +138,25 @@ test("the live outline build lowers in strict mode and other task kinds refuse p
             ?.length,
         2,
     );
+    // A copy task's record binds its source's current texture, which a
+    // native copy resolves at every execute: its build records nothing else.
+    const copied = compileSource(
+        `${prefix}const t=createRenderTargetTexture(engine,{lbl:"c",format:"rgba8unorm",samples:1,size:{width:4,height:4}});
+        const u=createRenderTargetTexture(engine,{lbl:"d",format:"rgba8unorm",samples:1,size:{width:4,height:4}});
+        const copy=createCopyToTextureTask({name:"copy",sourceTexture:t.texture,targetTexture:u.rt},engine,scene);
+        addTask(scene,copy);
+        buildFrameGraphTask(getFrameGraph(scene),copy);`,
+    );
+    assert.match(copied.cpp, /bbl::build_frame_graph_task\(/);
     assert.throws(
         () =>
             compileSource(
-                `${prefix}const t=createRenderTargetTexture(engine,{lbl:"c",format:"rgba8unorm",samples:1,size:{width:4,height:4}});
-                const u=createRenderTargetTexture(engine,{lbl:"d",format:"rgba8unorm",samples:1,size:{width:4,height:4}});
-                const copy=createCopyToTextureTask({name:"copy",sourceTexture:t.texture,targetTexture:u.rt},engine,scene);
-                addTask(scene,copy);
-                buildFrameGraphTask(getFrameGraph(scene),copy);`,
+                `${prefix}import {createGeometryRendererTask,GeometryTextureType} from "@babylonjs/lite";
+                const geometry=createGeometryRendererTask({name:"g",samples:1,textureDescriptions:[{type:GeometryTextureType.VIEW_DEPTH}]},engine,scene);
+                addTask(scene,geometry);
+                buildFrameGraphTask(getFrameGraph(scene),geometry);`,
             ),
-        /buildFrameGraphTask lowers render tasks and effect render tasks\./,
+        /buildFrameGraphTask lowers render, effect render, SSAO and copy tasks\./,
     );
     // The application's removal of a half-built task: no view of the native
     // list keeps the pin's indices, so the private read refuses.

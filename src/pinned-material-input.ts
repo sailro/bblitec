@@ -628,6 +628,9 @@ export function pinnedMaterialInputFromGltf(
         // beside it.
         emissiveTexture: asObject(material["emissiveTexture"]),
         normalTexture: asObject(material["normalTexture"]),
+        // The executed assembly's ORM carrier (an image or the factor
+        // texel), as presence: the bent-normal `detect` reads it.
+        ...(props["ormTexture"] ? { ormTexture: {} } : {}),
         doubleSided: props["doubleSided"] as boolean,
         // `assemblePbrPropsExt` sets this unconditionally: every glTF PBR
         // material composes the specular-AA block that derives `alphaG` from

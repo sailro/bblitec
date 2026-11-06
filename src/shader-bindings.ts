@@ -117,6 +117,8 @@ export function demotableUniformBlocks(wgsl: string): string[] {
             // area-light-emission-wgsl.ts's packed-slot layer block, which a
             // textured area fragment adds past scene, lights, mesh and mat.
             "areaEmissionSlots",
+            // Mesh opacity's per-mesh block, likewise past the four.
+            "meshOpacity",
         ].filter((name) => blocks.includes(name)),
         // The shadow receivers' per-light blocks: `shadowInfo_<light>` and
         // `csmInfo_<light>`, as `createShadowFragment` names them.

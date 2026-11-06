@@ -5,8 +5,15 @@ import { absentBinding, type PinnedBinding } from "./pinned-numeric-lowerer.js";
 import { recordAt } from "../compiler/record-access.js";
 import { sameSource } from "../compiler/syntax.js";
 
-/** Native handles use an engine-local map; weak owners follow SceneState lifetime. */
-export function lowerMeshMaterialSetter(context: LoweringContext): string {
+/**
+ * Native handles use an engine-local map; weak owners follow SceneState lifetime.
+ * `meshOpacity`: the program reaches `setMeshOpacity`, whose installation
+ * chains the material validator both callers run.
+ */
+export function lowerMeshMaterialSetter(
+    context: LoweringContext,
+    meshOpacity = false,
+): string {
     const module = "src/scene/mesh-scene-registry.ts";
     const source = context.sourceFile(module);
     context.assertExpressionShape(
@@ -14,8 +21,11 @@ export function lowerMeshMaterialSetter(context: LoweringContext): string {
         "null",
         "Initial mesh owner registry",
     );
-    // Only `_installMeshMaterialValidator` writes the validator, and only
-    // setMeshIndexedIndirect, which no program reaches, installs it.
+    // Only `_installMeshMaterialValidator` writes the validator. Two opt-ins
+    // install one: setMeshIndexedIndirect, which no program reaches, and
+    // mesh opacity's `ensureInstalled`, whose validator
+    // (`validate_mesh_opacity_material` over the mesh's live opacity) is the
+    // whole chain where a program reaches `setMeshOpacity`.
     context.assertExpressionShape(
         context.variableInitializer(source, "_materialValidator"),
         "null",
@@ -57,7 +67,10 @@ export function lowerMeshMaterialSetter(context: LoweringContext): string {
             "scene._meshMaterialChange",
             { cpp: "nullptr", type: "opaque", staticallyAbsent: true },
         ],
-        ["_materialValidator", absentBinding("null")],
+        // Reached, the call is the opacity validator (`expression` below).
+        ...(meshOpacity
+            ? []
+            : ([["_materialValidator", absentBinding("null")]] as const)),
         ["v", { cpp: "material.value", type: "scalar" }],
         [
             "_mat",
@@ -77,6 +90,32 @@ export function lowerMeshMaterialSetter(context: LoweringContext): string {
             bindings: new Map(bindings),
             calls: new Map(),
             expression(node, lowerer) {
+                if (
+                    meshOpacity &&
+                    ts.isCallExpression(node) &&
+                    context.expressionMatchesShape(
+                        node.expression,
+                        "_materialValidator",
+                    ) &&
+                    node.arguments.length === 2
+                ) {
+                    context.assertExpressionShape(
+                        node.arguments[0]!,
+                        "mesh",
+                        "Validated mesh",
+                    );
+                    const material = node.arguments[1]!;
+                    return `validate_mesh_opacity_material(engine, mesh, ${
+                        context.expressionMatchesShape(material, "v")
+                            ? "material"
+                            : (context.assertExpressionShape(
+                                  material,
+                                  "mesh.material",
+                                  "Registered mesh material",
+                              ),
+                              `${recordAt("engine.meshes", "mesh")}.material`)
+                    }, get_mesh_opacity(engine, mesh))`;
+                }
                 if (
                     ts.isNewExpression(node) &&
                     context.expressionMatchesShape(node, "new Set()")

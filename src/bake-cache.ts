@@ -52,7 +52,10 @@ import { createRequire } from "node:module";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import ts from "typescript";
-import { moduleSpecifiers } from "./typescript-module-specifiers.js";
+import {
+    isRelativeSpecifier,
+    moduleSpecifiers,
+} from "./typescript-module-specifiers.js";
 
 const cacheRoot = join("artifacts", "bake-cache");
 const moduleIdentities = new Map<string, string>();
@@ -381,6 +384,37 @@ export function moduleClosureBytes(
         Buffer.from(`${path}\n`, "utf8"),
         source,
     ]);
+}
+
+/**
+ * The module an entry evaluates: itself, or -- when its one statement is a
+ * side-effect import of a sibling module (`import "./scene2";`) -- that
+ * module, which module evaluation runs in its place.
+ */
+export function evaluatedEntryPath(path: string): string {
+    const [only, ...rest] = ts.createSourceFile(
+        path,
+        readFileSync(path, "utf8"),
+        ts.ScriptTarget.Latest,
+        false,
+    ).statements;
+    if (
+        !only ||
+        rest.length > 0 ||
+        !ts.isImportDeclaration(only) ||
+        only.importClause ||
+        !ts.isStringLiteral(only.moduleSpecifier) ||
+        !isRelativeSpecifier(only.moduleSpecifier.text)
+    )
+        return path;
+    const imported = resolveRepositoryModuleFile(
+        resolve(dirname(path), only.moduleSpecifier.text),
+    );
+    if (!imported)
+        throw new Error(
+            `${path} imports '${only.moduleSpecifier.text}', which resolves to no module.`,
+        );
+    return evaluatedEntryPath(imported);
 }
 
 /** Resolve a specifier target the way the suite server serves it: the

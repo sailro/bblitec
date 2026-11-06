@@ -602,6 +602,7 @@ test("Node instance layout without a pool does not reach thin synchronization", 
         const headers = featureMacroHeaders({
             features: result.manifest.features,
             imageCodecs: [],
+            rightHanded: false,
         });
         assert.match(
             headers.get("bblite/features/thin_instances.hpp")!,

@@ -131,10 +131,19 @@ export function pbrAlphaBlendFeatures(context: LoweringContext): string {
  * Transmission is not a bucket: the pin lists a transmissive renderable
  * with the transparent ones (`isTransparent || _transmissive`), which is
  * `item.transmissive` on the list side.
+ *
+ * Mesh opacity reaches both words through the mesh's own bit
+ * (`pinned_mesh_feature_extra`): the Standard extension's mesh-phase bits
+ * and the PBR renderable's blend bit, each from its own lowered pinned
+ * expression (`mesh_opacity.hpp`).
  */
 export function lowerRenderBucket(
     context: LoweringContext,
-    options: { standardVertexAlpha?: boolean; standardVertexColors?: boolean },
+    options: {
+        standardVertexAlpha?: boolean;
+        standardVertexColors?: boolean;
+        meshOpacity?: boolean;
+    },
 ): string {
     const standard = isTransparentInitializer(context, STANDARD_RENDERABLE);
     const standardTransparent = lowerCondition(
@@ -142,10 +151,16 @@ export function lowerRenderBucket(
         standard.initializer,
         [
             ["shadowOutput", { cpp: "shadow_output", type: "bool" }],
-            // The pin's word holds the mesh's colour alpha bits by then.
+            // The pin's word holds the mesh's colour alpha bits and the
+            // mesh-phase extensions' bits by then.
             [
                 "features",
-                { cpp: "(features | color_alpha_features)", type: "scalar" },
+                {
+                    cpp: options.meshOpacity
+                        ? "(features | color_alpha_features | opacity_features)"
+                        : "(features | color_alpha_features)",
+                    type: "scalar",
+                },
             ],
             [
                 "mat.alpha",
@@ -159,7 +174,15 @@ export function lowerRenderBucket(
     );
     const pbr = isTransparentInitializer(context, PBR_RENDERABLE);
     const pbrTransparent = lowerCondition(pbr.file, pbr.initializer, [
-        ["features", { cpp: "features", type: "scalar" }],
+        [
+            "features",
+            {
+                cpp: options.meshOpacity
+                    ? "pbr_renderable_features(features, features2, mesh_extra)"
+                    : "features",
+                type: "scalar",
+            },
+        ],
         ["features2", { cpp: "features2", type: "scalar" }],
         ...flagBindings(context, PBR_FLAGS, [
             "PBR_HAS_ALPHA_BLEND",
@@ -183,13 +206,27 @@ export function lowerRenderBucket(
                 has_instance_colors(mesh));
         }`
         : "const std::uint32_t color_alpha_features = 0u;";
+    // The installed-encoder bits the binding resolved, and the Standard
+    // extension's mesh-phase bits over the drawn material's word (pass bits
+    // included).
+    const meshExtra = options.meshOpacity
+        ? `
+    const std::uint32_t mesh_extra = item.mesh_feature_extra;`
+        : "";
+    const opacityFeatures = options.meshOpacity
+        ? `
+        const std::uint32_t opacity_features = standard_mesh_opacity_features(
+            mesh_extra,
+            features | (material.no_color ? standard_no_color_output_flag : 0u) |
+                (material.esm_shadow ? standard_esm_shadow_output_flag : 0u));`
+        : "";
     return `    // ${context.provenance(STANDARD_RENDERABLE, "isTransparent", `${PBR_RENDERABLE}#isTransparent, ${PBR_FEATURES}#_computePbrMaterialFeatures`)}
-    bool transparent = material.alpha_mode == MaterialAlphaMode::blend;
+    bool transparent = material.alpha_mode == MaterialAlphaMode::blend;${meshExtra}
     if (item.material_kind == RenderMaterialKind::standard) {
 #if BBLITE_STANDARD_VARIANTS > 0
         const bool shadow_output = material.no_color || material.esm_shadow;
         const std::uint32_t features = standard_material_features(material);
-        ${colorAlphaFeatures}
+        ${colorAlphaFeatures}${opacityFeatures}
         transparent = ${standardTransparent};
 #else
         throw std::runtime_error(

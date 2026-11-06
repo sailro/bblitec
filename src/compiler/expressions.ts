@@ -145,6 +145,7 @@ import {
     localCallback,
     propertyKey,
     selectionArms,
+    unwrapExpression,
 } from "./syntax.js";
 import {
     compileErrorConstruction,
@@ -395,6 +396,7 @@ export interface ExpressionContext
             | "compileBrowserTextureFunctionCall"
             | "compileExecutedUrlFunctionCall"
             | "compileExecutedVideoFunctionCall"
+            | "compileExecutedGltfFunctionCall"
             | "compileStaticFetchMethod"
             | "compilePlatformCall"
             | "reachJson"
@@ -4414,6 +4416,13 @@ export class ExpressionLowerer {
         if (executedVideo) {
             return executedVideo;
         }
+        const executedGltf = this.context.compileExecutedGltfFunctionCall(
+            call,
+            callee,
+        );
+        if (executedGltf) {
+            return executedGltf;
+        }
         const userFunction = compileWithRuntimeCaseSplit(
             this.context,
             call,
@@ -7869,6 +7878,9 @@ export class ExpressionLowerer {
             // `new C().method()`: the temporary instance is the receiver.
             ts.isNewExpression(receiver)
         ) {
+            // `(await import("./m.js")).f()`: the settled value is the
+            // receiver, which the unwrapped operand only promises.
+            const awaited = unwrapExpression(callee.expression);
             const receiverValue = ts.isIdentifier(receiver)
                 ? (this.context.bindings.lookupOptional(receiver) ??
                   this.compileModuleNamespace(receiver))
@@ -7876,7 +7888,9 @@ export class ExpressionLowerer {
                   ? this.context.activeThis()
                   : voidReceiver(
                         this.context,
-                        this.compileValue(receiver),
+                        this.compileValue(
+                            ts.isAwaitExpression(awaited) ? awaited : receiver,
+                        ),
                         receiver,
                     );
             const instance = receiverValue

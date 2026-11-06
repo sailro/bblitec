@@ -25,6 +25,7 @@ import {
     sourceInstanceLanes,
 } from "./shader-material.js";
 import { lowerWgslShaderProgram } from "../shader-ir.js";
+import { SSAO_LIVE_SETTINGS } from "./types.js";
 import type {
     ClusteredContainerState,
     CompileManifest,
@@ -34,6 +35,7 @@ import type {
     CompiledShaderProgram,
     EffectManifest,
     GeometryOutputTaskManifest,
+    GeometryTextureTypeName,
     LightKind,
     PostProcessCompositeManifest,
     PostProcessTaskManifest,
@@ -49,6 +51,8 @@ import type {
     ScenePbrSubsurfaceManifest,
     ScreenSpaceTaskManifest,
     ShadowCasterMeshManifest,
+    SsaoLiveSetting,
+    SsaoTaskManifest,
     ShadowGeneratorManifest,
     SplatFragmentManifest,
     SpriteCustomShaderManifest,
@@ -127,6 +131,8 @@ export class SceneManifestRecorder {
         });
     public readonly geometryOutputTasks: GeometryOutputTaskManifest[] =
         emissionArray([]);
+    /** `enableGeometryVelocity`'s previous-depth contract, by task shader index. */
+    private readonly geometryVelocity = new EmissionMap<number, boolean>();
     private readonly copyTasks: string[] = emissionArray([]);
     /** The pinned audio functions the program calls (`upstream_static_sound.hpp`). */
     private readonly audioLibraryRoots = new EmissionSet<string>();
@@ -138,6 +144,14 @@ export class SceneManifestRecorder {
     public readonly screenSpaceTasks: ScreenSpaceTaskManifest[] = emissionArray(
         [],
     );
+    public readonly ssaoTasks: SsaoTaskManifest[] = emissionArray([]);
+    /** `half:<task>` and `pbr:<task>`: the SSAO enablers each task reached. */
+    private readonly ssaoEnablers = new EmissionSet<string>();
+    /** A later `normalTexture` write's attachment, by task, for a task created without one. */
+    private readonly ssaoNormalAttachments = new EmissionMap<
+        number,
+        GeometryTextureTypeName
+    >();
     /** The clustered container this scene added, if it added one. */
     @journaled private accessor clusteredContainer:
         ClusteredContainerState | undefined;
@@ -297,7 +311,14 @@ export class SceneManifestRecorder {
             ...(this.selectedToneMapping
                 ? { toneMapping: this.selectedToneMapping }
                 : {}),
-            geometryOutputTasks: this.geometryOutputTasks,
+            geometryOutputTasks: this.geometryOutputTasks.map((task) => {
+                const previousDepth = this.geometryVelocity.get(
+                    task.shaderIndex,
+                );
+                return previousDepth === undefined
+                    ? task
+                    : { ...task, velocity: { previousDepth } };
+            }),
             ...(this.copyTasks.length > 0 ? { copyTasks: this.copyTasks } : {}),
             ...(this.audioLibraryRoots.size > 0
                 ? { audioLibraryRoots: [...this.audioLibraryRoots] }
@@ -305,6 +326,27 @@ export class SceneManifestRecorder {
             postProcessTasks: this.postProcessTasks,
             postProcessComposites: this.postProcessComposites,
             screenSpaceTasks: this.screenSpaceTasks,
+            ssaoTasks: this.ssaoTasks.map((task) => {
+                const normalAttachment = this.ssaoNormalAttachment(task);
+                return {
+                    ...task,
+                    ...(normalAttachment !== undefined
+                        ? { normalAttachment }
+                        : {}),
+                    halfResolution: this.ssaoEnablers.has(
+                        `half:${task.taskIndex}`,
+                    ),
+                    pbr: this.ssaoEnablers.has(`pbr:${task.taskIndex}`),
+                    motionPruning: this.ssaoEnablers.has(
+                        `motion-pruning:${task.taskIndex}`,
+                    ),
+                    live: SSAO_LIVE_SETTINGS.filter((setting) =>
+                        this.ssaoEnablers.has(
+                            `live-${setting}:${task.taskIndex}`,
+                        ),
+                    ),
+                };
+            }),
             adaptations,
             scenePbrMaterials: this.scenePbrMaterials.map(
                 (material, index) => ({
@@ -825,6 +867,13 @@ export class SceneManifestRecorder {
 
     public recordScenePbrGammaAlbedo(index: number | undefined): void {
         this.sceneMaterials.recordScenePbrGammaAlbedo(index);
+    }
+
+    public recordScenePbrAlphaCutoff(
+        index: number | undefined,
+        cutoff: number,
+    ): Readonly<ScenePbrMaterialManifest> {
+        return this.sceneMaterials.recordScenePbrAlphaCutoff(index, cutoff);
     }
 
     public recordScenePbrShadowOnly(
@@ -1674,6 +1723,25 @@ export class SceneManifestRecorder {
         this.geometryOutputTasks.push(manifest);
     }
 
+    /**
+     * `enableGeometryVelocity(task, options)`: the contract its first call
+     * installs, which a later call must restate (the pin's `WeakMap`).
+     */
+    public recordGeometryVelocity(
+        manifest: GeometryOutputTaskManifest,
+        previousDepth: boolean,
+        site: ts.Node,
+    ): void {
+        const enabled = this.geometryVelocity.get(manifest.shaderIndex);
+        if (enabled !== undefined && enabled !== previousDepth) {
+            this.context.fail(
+                site,
+                "Geometry velocity was already enabled with a different previous-depth contract.",
+            );
+        }
+        this.geometryVelocity.set(manifest.shaderIndex, previousDepth);
+    }
+
     public recordCopyTask(name: string): void {
         this.copyTasks.push(name);
     }
@@ -1714,5 +1782,43 @@ export class SceneManifestRecorder {
 
     public recordScreenSpaceTask(manifest: ScreenSpaceTaskManifest): void {
         this.screenSpaceTasks.push(manifest);
+    }
+
+    public recordSsaoTask(manifest: SsaoTaskManifest): void {
+        this.ssaoTasks.push(manifest);
+    }
+
+    /** An SSAO enabler the program reached for one task. */
+    public recordSsaoEnabler(
+        enabler: "half" | "pbr" | "motion-pruning",
+        manifest: SsaoTaskManifest,
+    ): void {
+        this.ssaoEnablers.add(`${enabler}:${manifest.taskIndex}`);
+    }
+
+    /** A program-selecting SSAO setting the program writes after creation. */
+    public recordSsaoLiveSetting(
+        setting: SsaoLiveSetting,
+        manifest: SsaoTaskManifest,
+    ): void {
+        this.ssaoEnablers.add(`live-${setting}:${manifest.taskIndex}`);
+    }
+
+    /** The geometry attachment a later `normalTexture` write supplies. */
+    public recordSsaoNormalAttachment(
+        attachment: GeometryTextureTypeName,
+        manifest: SsaoTaskManifest,
+    ): void {
+        this.ssaoNormalAttachments.set(manifest.taskIndex, attachment);
+    }
+
+    /** The task's normal input attachment: its creation's, else a later write's. */
+    public ssaoNormalAttachment(
+        manifest: SsaoTaskManifest,
+    ): GeometryTextureTypeName | undefined {
+        return (
+            manifest.normalAttachment ??
+            this.ssaoNormalAttachments.get(manifest.taskIndex)
+        );
     }
 }

@@ -25,6 +25,30 @@ import {
 } from "./module-initializers.js";
 import { callSignatures } from "./type-facts.js";
 import { emitSharedCell } from "./shared-cells.js";
+import { readableLazyBindings } from "./lazy-module-reach.js";
+
+/**
+ * Whether evaluating a declaration-only module needs no implementation:
+ * the pin's own (its calls lower natively), or one that exports no value
+ * (a module of types a re-export names, whose emitted module is empty).
+ */
+function declarationEvaluatesNothing(
+    checker: ts.TypeChecker,
+    file: ts.SourceFile,
+): boolean {
+    const symbol = declaredSymbol(checker, file);
+    return (
+        declaredIn(symbol, "babylon") ||
+        (symbol !== undefined &&
+            checker.getExportsOfModule(symbol).every((exported) => {
+                const target =
+                    (exported.flags & ts.SymbolFlags.Alias) !== 0
+                        ? checker.getAliasedSymbol(exported)
+                        : exported;
+                return (target.flags & ts.SymbolFlags.Value) === 0;
+            }))
+    );
+}
 
 /** A reached lazy module needs its lexical homes before entry emission. */
 export class ModuleActivationRequired extends Error {
@@ -90,10 +114,7 @@ export class ModuleNamespaces {
             if (this.evaluatedModules().has(file) || this.activations.has(file))
                 return;
             if (file.isDeclarationFile) {
-                if (
-                    declaredIn(declaredSymbol(context.checker, file), "babylon")
-                )
-                    return;
+                if (declarationEvaluatesNothing(context.checker, file)) return;
                 return context.fail(
                     file,
                     "Dynamic import of a declaration-only module has no native implementation.",
@@ -125,6 +146,7 @@ export class ModuleNamespaces {
             });
             context.registerNativeBinding(cpp);
         }
+        const readable = this.readableBindings();
         for (const [file, { prefix }] of this.activations) {
             context.bindings.pushScope(prefix);
             const scope = context.bindings.variableScopes.at(-1)!;
@@ -133,9 +155,10 @@ export class ModuleNamespaces {
                     if (ts.isVariableStatement(statement)) {
                         for (const declaration of statement.declarationList
                             .declarations)
-                            context.declarations.prepareModuleBinding(
-                                declaration,
-                            );
+                            if (readable === "all" || readable.has(declaration))
+                                context.declarations.prepareModuleBinding(
+                                    declaration,
+                                );
                     } else if (
                         ts.isModuleDeclaration(statement) ||
                         ts.isClassDeclaration(statement)
@@ -167,6 +190,17 @@ export class ModuleNamespaces {
         }
     }
 
+    /** The lazy modules' bindings the program can read (`readableLazyBindings`). */
+    private readableBindings(): ReadonlySet<ts.VariableDeclaration> | "all" {
+        return readableLazyBindings(
+            this.context.program,
+            this.context.checker,
+            this.context.evaluationOrder,
+            new Set(this.activations.keys()),
+            this.evaluatedModules(),
+        );
+    }
+
     /** Initializer closures share predeclared homes, including cyclic dependencies. */
     public defineInitializers(): void {
         const context = this.context;
@@ -191,13 +225,21 @@ export class ModuleNamespaces {
                                 code: `${activation.cpp}->evaluate();`,
                             });
                         }
+                        const readable = this.readableBindings();
                         emitReachableStatements(
                             context,
-                            file.statements.filter((statement) =>
-                                isModuleInitializerStatement(
-                                    statement,
-                                    context.checker,
-                                ),
+                            file.statements.filter(
+                                (statement) =>
+                                    isModuleInitializerStatement(
+                                        statement,
+                                        context.checker,
+                                    ) &&
+                                    (readable === "all" ||
+                                        !ts.isVariableStatement(statement) ||
+                                        statement.declarationList.declarations.some(
+                                            (declaration) =>
+                                                readable.has(declaration),
+                                        )),
                             ),
                         );
                     } finally {
@@ -263,9 +305,26 @@ export class ModuleNamespaces {
         name: string,
         node: ts.Node,
     ): Value | undefined {
-        if (owner.dataType?.kind !== "module-namespace") return undefined;
-        this.context.emitDiscardedValue(owner);
-        const exported = this.exports(owner.dataType).get(name);
+        // A namespace an optional slot holds is the module's own: reading
+        // a member through it needs only its presence.
+        const optional =
+            owner.dataType?.kind === "optional" &&
+            owner.dataType.inner.kind === "module-namespace"
+                ? owner.dataType.inner
+                : undefined;
+        const type =
+            owner.dataType?.kind === "module-namespace"
+                ? owner.dataType
+                : optional;
+        if (!type) return undefined;
+        if (optional) {
+            this.context.reachJsData();
+            this.context.emit({
+                kind: "expression",
+                code: `static_cast<void>(bbl::js::present(${owner.cpp}));`,
+            });
+        } else this.context.emitDiscardedValue(owner);
+        const exported = this.exports(type).get(name);
         if (!exported) return undefined;
         const target = aliasTarget(this.context.checker, exported);
         if (declaredIn(target, "babylon")) {
@@ -413,8 +472,8 @@ export class ModuleNamespaces {
                 return;
             visited.add(current);
             if (current.isDeclarationFile) {
-                const symbol = declaredSymbol(this.context.checker, current);
-                if (declaredIn(symbol, "babylon")) return;
+                if (declarationEvaluatesNothing(this.context.checker, current))
+                    return;
                 this.context.fail(
                     node,
                     "Dynamic import of a declaration-only module has no native implementation.",

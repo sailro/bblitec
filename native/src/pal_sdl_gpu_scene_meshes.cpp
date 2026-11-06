@@ -140,6 +140,10 @@ GpuMeshSlotMembers mesh_slot_members(upstream::MaterialTextureSource source) {
     case Source::lightmap:
         return {&GpuMesh::lightmap, &GpuMesh::lightmap_sampler};
 #endif
+#if BBLITE_MATERIAL_BENT_NORMAL
+    case Source::bent_normal:
+        return {&GpuMesh::bent_normal, &GpuMesh::bent_normal_sampler};
+#endif
 #if BBLITE_MATERIAL_METALLIC_REFLECTANCE_MAP
     case Source::metallic_reflectance:
         return {&GpuMesh::metallic_reflectance, &GpuMesh::metallic_reflectance_sampler};
@@ -377,6 +381,10 @@ void release_gpu_mesh_resources([[maybe_unused]] GpuState* state, GpuMeshResourc
         state->kept_buffers.release(state->device, mesh.morph_deltas);
         state->kept_buffers.release(state->device, mesh.morph_weights);
     }
+#endif
+#if BBLITE_MESH_OPACITY
+    for (SDL_GPUBuffer*& block : mesh.mesh_opacity)
+        state->kept_buffers.release(state->device, block);
 #endif
     if (mesh.shared_composed_textures) {
         release_shared_user(mesh.shared_composed_textures,

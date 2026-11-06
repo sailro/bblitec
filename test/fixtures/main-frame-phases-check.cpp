@@ -240,6 +240,8 @@ template <typename Data> struct Context {
     explicit Context(Engine& engine) : data_(engine) { frame_.emplace(); }
     bool keep_running() const { return true; }
     FramePreparation prepare() { return FramePreparation::ready; }
+    // These engines never stop (frame-conductor-check covers a frozen frame).
+    bool freeze() { return false; }
     // These frames never replace `engine._renderFn` (render-function-conductor-check does).
     bool begin_animation_turn() { return true; }
     void synchronize() { events.push_back("upload"); }

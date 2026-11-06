@@ -30,6 +30,7 @@ import {
 } from "./typescript-module-specifiers.js";
 import { packageImportTarget } from "./pinned-build-conditions.js";
 import { existsSync, readFileSync } from "node:fs";
+import { createRequire } from "node:module";
 import { pathToFileURL } from "node:url";
 import { dirname, join, resolve, relative } from "node:path";
 import {
@@ -411,6 +412,18 @@ export async function importPinnedModule<T>(relativePath: string): Promise<T> {
     );
     pinnedModules.set(relativePath, pending);
     return (await pending) as T;
+}
+
+const requireModule = createRequire(import.meta.url);
+
+/**
+ * The same module instance {@link importPinnedModule} imports, loaded
+ * synchronously, for a lowering that executes the pin while it compiles.
+ * Node's synchronous `require` of an ES module shares the instance its
+ * `import()` loads; a module graph with top-level await refuses.
+ */
+export function requirePinnedModule<T>(relativePath: string): T {
+    return requireModule(join(pinnedLibraryRoot(), relativePath)) as T;
 }
 
 /**

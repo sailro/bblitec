@@ -13,15 +13,18 @@ const effectModule = "src/effect/effect-renderer.ts";
  * graph membership is the scene's task list. A render task records as
  * registration records it (`renderTaskRecord`, the queued renderables'
  * construction); an effect task's record builds the wrapper's bind group,
- * which throws for an unset slot. Target allocation, pipelines and pass
- * initialization belong to each backend's next draw-list build, which the
- * epoch moves.
+ * which throws for an unset slot; an SSAO task's validates its settings and
+ * decides its working resolution (`ssao_task_record`). A copy task's record
+ * binds its source's current texture, which a native copy resolves at every
+ * execute. Target allocation, pipelines and pass initialization belong to
+ * each backend's next draw-list build, which the epoch moves.
  */
 export function lowerFrameGraphTaskBuild(
     context: LoweringContext,
     renderTaskRecord: string,
     effectTasks: boolean,
     taskMethodSlots = false,
+    ssaoTasks = false,
 ): string {
     const { file, declaration: build } = context.functionDeclaration(
         graphModule,
@@ -139,8 +142,14 @@ export function lowerFrameGraphTaskBuild(
                                     ]),
                           ]
                         : []),
-                    `${indent}} else {`,
-                    `${indent}    throw std::runtime_error("buildFrameGraphTask lowers render tasks and effect render tasks.");`,
+                    ...(ssaoTasks
+                        ? [
+                              `${indent}} else if (task.kind == FrameTaskKind::ssao) {`,
+                              `${indent}    upstream::ssao_task_record(task.ssao);`,
+                          ]
+                        : []),
+                    `${indent}} else if (task.kind != FrameTaskKind::copy) {`,
+                    `${indent}    throw std::runtime_error("buildFrameGraphTask lowers render, effect render, SSAO and copy tasks.");`,
                     `${indent}}`,
                 ];
             if (node === initialize)
@@ -159,6 +168,8 @@ ${renderTaskRecord}
 static std::string frame_task_name(const FrameTaskRecord& task) {
     if (task.kind == FrameTaskKind::render) return task.render.name;
 ${effectTasks ? "    if (task.kind == FrameTaskKind::effect) return task.effect.name;\n" : ""}\
+${ssaoTasks ? "    if (task.kind == FrameTaskKind::ssao) return task.ssao.name;\n" : ""}\
+    if (task.kind == FrameTaskKind::copy) return task.copy.name;
     return {};
 }
 

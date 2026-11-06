@@ -84,6 +84,13 @@ Paths are relative to `generated/<id>/`.
   a survey records it against the site's statement and continues.
 - Namespace member calls (`N.f`) are rewritten only in `compileCall`. Never in the shared `unwrap`: it would silently
   admit writes and rewrite library namespaces (`Intl.*`).
+- Pinned modules whose imports reach a vendored package (`lib/_chunks/vendor/`) that is source-available (the exact
+  version installed, byte-identical, its maps carrying TypeScript: `vendored-package-sources.ts`), and nothing that is
+  not, compile as program code (`pinned-program-sources.ts`): a program importing one of their exports reads those
+  exports and their modules' types from the pinned sources, which join the program as virtual files with the
+  package's TypeScript; their type-only reads of other pinned modules read `index.d.ts`. Whether a program imports one
+  is decided from its own import names against those exports' names, which the bake cache keeps per package lock, pin
+  and corpus type sources.
 - Pinned functions use `lowerPinnedFunction`, selected bodies `lowerPinnedBody`. Plain-record pinned modules and whole
   libraries (text, splat stream, MeshLoD) use `PinnedRecordModel`; `pinned-record-transport.ts` rebuilds generation-time
   records; shapes live in `record-shapes.ts`. A lowered library is one `LoweredLibrary` (`library-runtime.ts`).

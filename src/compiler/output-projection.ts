@@ -139,8 +139,11 @@ export const featureSources: Record<Feature, string[]> = {
     "material:sheen-albedo-scaling": [],
     "material:clearcoat-f0-remap": [],
     "material:pbr-gamma-albedo": [],
+    "material:pbr-alpha-cutoff": [],
+    "material:pbr-base-color-pixels": [],
     "material:iridescence": [],
     "material:lightmap": [],
+    "material:bent-normal": [],
     "material:local-cubemap": [],
     "renderer:surface": [],
     "material:anisotropy": [],
@@ -187,6 +190,7 @@ export const featureSources: Record<Feature, string[]> = {
     "mesh:lines": [],
     "mesh:morph-targets": [],
     "mesh:visible": [],
+    "mesh:opacity": [],
     "mesh:pickable": [],
     "mesh:vat": [],
     "mesh:vat-instances": [],
@@ -239,6 +243,7 @@ export const featureSources: Record<Feature, string[]> = {
     "gizmo:bounding-box": [],
     "scene:remove": [],
     "scene:node-transforms": [],
+    "scene:overlay": [],
     "shadow:esm": [],
     "shadow:pcf": [],
     "shadow:pcf-directional": [],
@@ -367,6 +372,8 @@ export const featureSources: Record<Feature, string[]> = {
     "renderer:geometry-output": [],
     "renderer:post-process": [],
     "renderer:screen-space": [],
+    "renderer:ssao": [],
+    "renderer:geometry-velocity": [],
     "flow-graph:interactivity": [],
     "renderer:high-precision-matrix": [],
     "renderer:floating-origin": [],
@@ -958,6 +965,12 @@ export function renderMainCpp(projection: MainCppProjection): ApplicationCpp {
             : "") +
         (screenSpaceTaskCount > 0
             ? "#include <bblite/upstream/frame_graph_screen_space.hpp>\n"
+            : "") +
+        (features.includes("renderer:ssao")
+            ? "#include <bblite/upstream/frame_graph_ssao.hpp>\n"
+            : "") +
+        (features.includes("renderer:geometry-velocity")
+            ? "#include <bblite/upstream/geometry_velocity.hpp>\n"
             : "");
     const preambleSections: string[] = [];
     if (staticNativeDeclarations.length > 0) {

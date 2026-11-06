@@ -1286,9 +1286,38 @@ export class PinnedNumericLowerer {
         const element = ts.isIdentifier(binding)
             ? binding.text
             : `[${(names ?? []).join(", ")}]`;
+        // A literal list of numbers walks those numbers in order.
+        const listed = unwrapExpression(statement.expression);
+        if (
+            !names &&
+            ts.isArrayLiteralExpression(listed) &&
+            listed.elements.length > 0 &&
+            listed.elements.every((entry) =>
+                ts.isNumericLiteral(unwrapExpression(entry)),
+            )
+        ) {
+            this.bindPorts(
+                [[element, { cpp: element, type: "scalar" }]],
+                statement.statement,
+            );
+            return {
+                header: `const double ${element} : std::array<double, ${listed.elements.length}>{${listed.elements
+                    .map((entry) => this.expression(entry))
+                    .join(", ")}}`,
+            };
+        }
         // What the iterated expression holds is its binding's to say, as
         // for any other read; an unbound or non-collection one refuses.
         const collection = this.binding(statement.expression);
+        // A list of `{x, y, z}` records yields each record itself, which
+        // the loop may write through.
+        if (!names && collection?.type === "vec3-list") {
+            this.bindPorts(
+                [[element, { cpp: element, type: "vec3" }]],
+                statement.statement,
+            );
+            return { header: `auto& ${element} : ${collection.cpp}` };
+        }
         const elements = collection && this.elementsOf(collection);
         const tuple = elements?.tuple;
         const bindings = !names
@@ -3157,6 +3186,22 @@ export class PinnedNumericLowerer {
                 }
                 const argument = node.arguments[index]!;
                 const unwrapped = unwrapExpression(argument);
+                // A typed array the call names is that same array inside
+                // the helper -- ambient occlusion's `blurUniforms(data, ...)`
+                // fills whichever block it is handed -- so its binding
+                // carries over whole rather than as a scalar value.
+                const named = ts.isIdentifier(unwrapped)
+                    ? this.binding(unwrapped)
+                    : undefined;
+                if (
+                    named &&
+                    (named.type === "f32" ||
+                        named.type === "u32" ||
+                        named.type === "u16" ||
+                        named.type === "u8")
+                ) {
+                    return [parameter.name, named];
+                }
                 const isBoolean =
                     unwrapped.kind === ts.SyntaxKind.TrueKeyword ||
                     unwrapped.kind === ts.SyntaxKind.FalseKeyword;

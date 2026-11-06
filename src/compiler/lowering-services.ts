@@ -323,12 +323,14 @@ export interface LoweringServices {
     ): readonly ts.ObjectLiteralElementLike[];
     /**
      * An application function run once at generation per declaration and
-     * arguments; its plain-data result.
+     * arguments; its plain-data result. `pinnedStandIn` binds pinned imports
+     * the run may reach (`executeApplicationFunction`).
      */
     runGenerationFunction(
         declaration: ts.FunctionLikeDeclaration,
         args: readonly (ExecutedArgument | undefined)[],
         label: string,
+        pinnedStandIn?: (name: string) => unknown,
     ): unknown;
     compileShaderSource(expression: ts.Expression): {
         source: string;
@@ -578,6 +580,10 @@ export interface LoweringServices {
         callee: ts.Identifier,
     ): Value | undefined;
     compileExecutedVideoFunctionCall(
+        call: ts.CallExpression,
+        callee: ts.Identifier,
+    ): Value | undefined;
+    compileExecutedGltfFunctionCall(
         call: ts.CallExpression,
         callee: ts.Identifier,
     ): Value | undefined;

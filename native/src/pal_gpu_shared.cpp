@@ -14,6 +14,8 @@
 #include <bblite/features/has_sprites.hpp>
 #include <bblite/features/has_standard_uv_transform.hpp>
 #include <bblite/features/has_ui.hpp>
+#include <bblite/features/mesh_opacity.hpp>
+#include <bblite/features/right_handed.hpp>
 #include <bblite/features/shadow_morph_bounds.hpp>
 #include <bblite/features/shadow_skeleton_bounds.hpp>
 #include <bblite/features/shadows_csm.hpp>
@@ -45,6 +47,9 @@
 #include <bblite/upstream/light_kinds.hpp>
 #include <bblite/upstream/pinned_rgbd.hpp>
 #include <bblite/upstream/pinned_matrix.hpp>
+#endif
+#if BBLITE_MESH_OPACITY
+#include <bblite/upstream/mesh_opacity.hpp>
 #endif
 #if BBLITE_GPU_MORPH_STORAGE
 #include <bblite/upstream/morph_targets.hpp>
@@ -136,7 +141,7 @@ std::optional<PixelViewport> equal_surface_pane(const Engine& engine, const Scen
                                                 std::uint32_t target_width,
                                                 std::uint32_t target_height) {
 #if BBLITE_HAS_UI
-    const auto scenes = engine.scenes();
+    const auto scenes = composited_scenes(engine);
     if (scenes.empty())
         return std::nullopt;
     std::size_t pane_count = 1;
@@ -757,6 +762,8 @@ const TextureData* material_slot_texture(const MaterialRecord& material,
         return standard_material ? nullptr : &material.iridescence_thickness_texture;
     case Source::lightmap:
         return &material.lightmap_texture;
+    case Source::bent_normal:
+        return standard_material ? nullptr : &material.bent_normal_texture;
     case Source::metallic_reflectance:
         return standard_material ? nullptr : &material.metallic_reflectance_texture;
     case Source::reflectance:
@@ -1028,12 +1035,13 @@ PinnedPbrMaterialRow pinned_pbr_material_row(const Engine& engine, MaterialHandl
         const auto composed = std::find_if(states.begin(), states.end(), [&](const auto& state) {
             return of_row(state) && state.blend == blends &&
                    state.plugin_signature == drawn.plugin_signature_index &&
-                   state.base_color_factor_written == drawn.base_color_factor_written;
+                   state.base_color_factor_written == drawn.base_color_factor_written &&
+                   state.bent_normal_texture == drawn.bent_normal_texture.has_image();
         });
         if (composed == states.end()) {
-            row.refusal =
-                "material " + std::to_string(row.index) +
-                " is drawn in a blend, plugin or base-colour state generation did not compose";
+            row.refusal = "material " + std::to_string(row.index) +
+                          " is drawn in a blend, plugin, base-colour or bent-normal state "
+                          "generation did not compose";
             return row;
         }
         row.index = composed->row;
@@ -1110,6 +1118,12 @@ PinnedVariantKey pinned_variant_key(const Scene& scene, const Engine& engine,
         key.mesh_features |=
             upstream::pinned_mesh_features(false, false, false, pinned_record_instanced(record),
                                            pinned_record_instance_colored(record));
+#if BBLITE_MESH_OPACITY
+        // `_meshFeatureExtra`: the installed encoders' bits the binding
+        // resolved. Mesh opacity's rides the word; the mirrored opt-in's
+        // rides the winding.
+        key.mesh_features |= draw.item.mesh_feature_extra;
+#endif
         const std::size_t receive_shadows =
             static_cast<std::size_t>(upstream::pinned_msh_receive_shadows);
         if (upstream::pinned_material_receives_shadows(
@@ -1233,6 +1247,17 @@ std::string shader_sampler_shortfall(const upstream::ShaderVariantInfo& info, st
 }
 #endif
 
+#if BBLITE_MESH_OPACITY
+upstream::MeshOpacityUniforms mesh_opacity_block(const Engine& engine,
+                                                 const upstream::RenderItem& item) {
+    const double policy =
+        item.material_kind == upstream::RenderMaterialKind::pbr
+            ? upstream::pbr_mesh_opacity_policy(pinned_pbr_material_features(engine, item.material))
+            : 0.0;
+    return upstream::mesh_opacity_uniforms(handle_at(engine.meshes, item.mesh), policy);
+}
+#endif
+
 #if BBLITE_STANDARD_VARIANTS > 0
 StandardVariantKey standard_variant_key(const Scene& scene, const Engine& engine,
                                         const upstream::RenderDrawCommand& draw) {
@@ -1275,6 +1300,12 @@ StandardVariantKey standard_variant_key(const Scene& scene, const Engine& engine
         key.mesh_features |=
             upstream::pinned_mesh_features(false, false, false, pinned_record_instanced(record),
                                            pinned_record_instance_colored(record));
+#if BBLITE_MESH_OPACITY
+        // `_meshFeatureExtra`: the installed encoders' bits the binding
+        // resolved. Mesh opacity's rides the word; the mirrored opt-in's
+        // rides the winding.
+        key.mesh_features |= draw.item.mesh_feature_extra;
+#endif
         const std::size_t receive_shadows =
             static_cast<std::size_t>(upstream::pinned_msh_receive_shadows);
         if (upstream::pinned_material_receives_shadows(
@@ -1317,6 +1348,12 @@ StandardVariantKey standard_variant_key(const Scene& scene, const Engine& engine
                 engine.geometries[draw.item.geometry].has_vertex_colors,
             has_instance_colors(record));
     }
+#endif
+#if BBLITE_MESH_OPACITY
+    // `meshOpacityStandardExt._meshFeatures` over the drawn material's word,
+    // a caster view's pass bit included.
+    key.features |= upstream::standard_mesh_opacity_features(
+        static_cast<std::uint32_t>(key.mesh_features), key.features);
 #endif
     key.resolved = true;
     return key;
@@ -2058,6 +2095,17 @@ bool geometry_depth_is_borrowed(const Engine& engine, std::size_t task) {
             return true;
         }
     }
+    return geometry_depth_is_sampled(engine, task);
+}
+
+bool geometry_depth_is_sampled(const Engine& engine, std::size_t task) {
+    for (const FrameTaskRecord& record : engine.frame_tasks) {
+        if (record.kind == FrameTaskKind::ssao &&
+            record.ssao.depth.source == RenderTextureSource::geometry_depth &&
+            record.ssao.depth.task.value == task) {
+            return true;
+        }
+    }
     return false;
 }
 
@@ -2133,7 +2181,10 @@ TextureFormatClass geometry_format_class(const GeometryTextureDescription& descr
 // Pipelines and diagnostics (pal_gpu_pipeline.hpp)
 
 #if BBLITE_HAS_PBR_RENDERER
-RenderPipelineKindTraits pipeline_kind_traits(upstream::RenderPipelineKind kind) {
+namespace {
+
+/** A kind's facts with the left-handed winding its family's pinned pipeline states. */
+RenderPipelineKindTraits left_handed_kind_traits(upstream::RenderPipelineKind kind) {
     using Kind = upstream::RenderPipelineKind;
     using Family = upstream::RenderMaterialKind;
     using Cull = upstream::RenderCullMode;
@@ -2201,9 +2252,27 @@ RenderPipelineKindTraits pipeline_kind_traits(upstream::RenderPipelineKind kind)
         return {Family::node, true, Cull::back, false};
     case Kind::node_transparent_none:
         return {Family::node, true, Cull::none, false};
+    // A right-handed graph's arms for a glTF-wound or mirrored mesh
+    // (`_pipelineForCcwMesh`).
+    case Kind::node_opaque_back_clockwise:
+        return {Family::node, false, Cull::back, true};
+    case Kind::node_opaque_none_clockwise:
+        return {Family::node, false, Cull::none, true};
+    case Kind::node_transparent_back_clockwise:
+        return {Family::node, true, Cull::back, true};
+    case Kind::node_transparent_none_clockwise:
+        return {Family::node, true, Cull::none, true};
     }
     throw std::runtime_error("render pipeline kind " + std::to_string(static_cast<int>(kind)) +
                              " is not implemented yet.");
+}
+
+} // namespace
+
+RenderPipelineKindTraits pipeline_kind_traits(upstream::RenderPipelineKind kind) {
+    RenderPipelineKindTraits traits = left_handed_kind_traits(kind);
+    traits.clockwise_front_face = scene_pass_clockwise(traits.clockwise_front_face);
+    return traits;
 }
 
 void validate_render_plan_items(const upstream::RenderPlan& plan) {
@@ -2531,6 +2600,9 @@ void shader_stage_block_floats(const upstream::ShaderVariantStageBlock& block,
             break;
         }
     }
+#if BBLITE_RIGHT_HANDED
+    upstream::to_right_handed_shader_system_uniforms(floats, block.system_uniforms);
+#endif
     const auto& uniform_values = material.shader_uniform_snapshot
                                      ? material.shader_uniform_snapshot(material)
                                      : material.shader_uniform_values;

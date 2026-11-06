@@ -38,6 +38,11 @@ namespace bbl::pal {
  * textures rather than re-scanned per frame.
  */
 bool geometry_depth_is_borrowed(const Engine& engine, std::size_t task);
+/**
+ * Whether an SSAO task samples a geometry task's depth through a depth-only
+ * view: the attachment is then the pin's `depth32float` and is stored.
+ */
+bool geometry_depth_is_sampled(const Engine& engine, std::size_t task);
 
 /**
  * Whether a render target hands samplers its depth attachment.
@@ -292,25 +297,56 @@ plan_render_targets(const Engine& engine, std::uint32_t width, std::uint32_t hei
 }
 
 #if BBLITE_HAS_SCREEN_SPACE
+/**
+ * One screen-space decision in the pin's encoding order: the identity
+ * clear, then the plan's dedicated passes (each with its row of the
+ * decision's blocks) and the history copy when the effect ran, then the
+ * composite whenever the task has one.
+ */
 template <class Clear, class Stage, class PostProcess>
-void record_screen_space_decision(const ScreenSpaceFrameDecision& decision, bool composite,
-                                  Clear&& clear, Stage&& stage, PostProcess&& post_process) {
+void record_screen_space_decision(const ScreenSpaceFrameDecision& decision, std::size_t passes,
+                                  bool composite, Clear&& clear, Stage&& stage,
+                                  PostProcess&& post_process) {
     if (decision.clear_identity) {
         clear(false);
         clear(true);
     }
     if (decision.run_effect) {
-        stage(true, decision.producer_uniforms.data());
-        stage(false, decision.temporal_uniforms.data());
+        if (passes > decision.stage_uniforms.size()) {
+            throw std::runtime_error("A screen-space plan encodes more passes than a decision "
+                                     "carries blocks for.");
+        }
+        for (std::size_t pass = 0; pass < passes; ++pass)
+            stage(pass, decision.stage_uniforms[pass].data());
         post_process(0u);
     }
     if (composite)
         post_process(1u);
 }
 
+/** The frame-graph target a plan's texture reference names on its task. */
+inline RenderTargetHandle screen_space_target(const ScreenSpaceTaskOptions& task,
+                                              upstream::ScreenSpaceTextureRef texture) {
+    switch (texture.role) {
+    case upstream::ScreenSpaceTextureRole::depth:
+        return task.depth;
+    case upstream::ScreenSpaceTextureRole::source_color:
+        return task.source;
+    case upstream::ScreenSpaceTextureRole::intermediate:
+        return task.intermediates.at(texture.index);
+    case upstream::ScreenSpaceTextureRole::history:
+        return task.history;
+    case upstream::ScreenSpaceTextureRole::stable:
+        return task.stable;
+    case upstream::ScreenSpaceTextureRole::none:
+        break;
+    }
+    throw std::runtime_error("A screen-space pass binds a texture it names no target for.");
+}
+
 /**
  * What the generated screen-space frame function reads off a backend's
- * targets: the depth source's and the raw target's extents, and the
+ * targets: the depth source's and the first intermediate's extents, and the
  * allocation identities its texture-identity tests compare (docs/fidelity.md).
  * Both backends keep those three fields on their target rows under the same
  * names, so one reader serves both.
@@ -320,17 +356,17 @@ ScreenSpaceFrameInputs screen_space_frame_inputs(const RenderTargets& targets,
                                                  const ScreenSpaceTaskOptions& task) {
     const auto& depth = targets.at(task.depth.value);
     const auto& source = targets.at(task.source.value);
-    const auto& raw = targets.at(task.raw.value);
+    const auto& intermediate = targets.at(task.intermediates.at(0).value);
     const auto& stable = targets.at(task.stable.value);
     const auto& history = targets.at(task.history.value);
     ScreenSpaceFrameInputs inputs;
     inputs.depth_width = depth.width;
     inputs.depth_height = depth.height;
-    inputs.effect_width = raw.width;
-    inputs.effect_height = raw.height;
+    inputs.effect_width = intermediate.width;
+    inputs.effect_height = intermediate.height;
     inputs.depth_allocation = depth.allocation;
     inputs.color_allocation = source.allocation;
-    inputs.raw_allocation = raw.allocation;
+    inputs.intermediate_allocation = intermediate.allocation;
     inputs.stable_allocation = stable.allocation;
     inputs.history_allocation = history.allocation;
     return inputs;

@@ -4901,6 +4901,33 @@ void attach_camera_gizmo_to_camera(
      */
     private lightGizmoSource(): { helpers: string; source: string } {
         const lightFile = this.context.sourceFile(LIGHT_MODULE);
+        // The emitted follow restates the pin's transform sync.
+        this.context.assertFunctionContract(
+            LIGHT_MODULE,
+            "_syncLightGizmoTransform",
+            `
+export function _syncLightGizmoTransform(root: SceneNode, light: LightBase): void {
+    const world = light.worldMatrix;
+    root.position.set(world[12]!, world[13]!, world[14]!);
+    const dir = (light as unknown as { direction?: { x: number; y: number; z: number } }).direction;
+    if (dir) {
+        const q = directionToQuat({
+            x: world[0]! * dir.x + world[4]! * dir.y + world[8]! * dir.z,
+            y: world[1]! * dir.x + world[5]! * dir.y + world[9]! * dir.z,
+            z: world[2]! * dir.x + world[6]! * dir.y + world[10]! * dir.z,
+        });
+        root.rotationQuaternion.set(q[0], q[1], q[2], q[3]);
+    }
+}
+`,
+            "light-gizmo._syncLightGizmoTransform native contract",
+        );
+        this.context.expectShapeCount(
+            this.context.functionDeclaration(LIGHT_MODULE, "createLightGizmo")
+                .declaration,
+            "_syncLightGizmoTransform(root, light)",
+            "Light gizmo follow",
+        );
         const lineDeclaration = this.context.functionDeclaration(
             LIGHT_MODULE,
             "buildLightLines",
@@ -5122,30 +5149,28 @@ void build_light_lines(
         LightGizmoRecord& g = ${recordAt("e.light_gizmos", "handle")};
         if (g.attached_light.value >= e.lights.size()) return;
         const LightRecord& light = ${recordAt("e.lights", "g.attached_light")};
-        // The pin tests \`if (pos)\` and \`if (dir)\` on the light OBJECT,
-        // and which of the two a light carries is decided by the factory
-        // that made it: hemispheric declares only a direction, point only
-        // a position, directional and spot both.
-        const bool has_position =
-            light.kind == LightKind::point ||
+        // _syncLightGizmoTransform: the root at the light's world
+        // translation, every light being a scene node; turned along the
+        // world direction of a light whose factory declares one
+        // (hemispheric, spot and directional).
+        const std::array<float, 16> world = upstream::light_world_matrix(light);
+        set_transform_node_position(
+            e,
+            g.root,
+            Vec3d{
+                static_cast<double>(world[12]),
+                static_cast<double>(world[13]),
+                static_cast<double>(world[14])});
+        if (light.kind == LightKind::hemispheric ||
             light.kind == LightKind::spot ||
-            light.kind == LightKind::directional;
-        const bool has_direction =
-            light.kind == LightKind::hemispheric ||
-            light.kind == LightKind::spot ||
-            light.kind == LightKind::directional;
-        if (has_position) {
-            set_transform_node_position(
-                e,
-                g.root,
-                Vec3d{
-                    static_cast<double>(light.position.x),
-                    static_cast<double>(light.position.y),
-                    static_cast<double>(light.position.z)});
-        }
-        if (has_direction) {
+            light.kind == LightKind::directional) {
+            const auto column = [&world, &light](std::size_t row) {
+                return static_cast<double>(world[row]) * static_cast<double>(light.direction.x) +
+                    static_cast<double>(world[row + 4u]) * static_cast<double>(light.direction.y) +
+                    static_cast<double>(world[row + 8u]) * static_cast<double>(light.direction.z);
+            };
             const std::array<double, 4> q =
-                direction_to_quat(light.direction);
+                direction_to_quat(Vec3d{column(0u), column(1u), column(2u)});
             set_transform_node_rotation_quaternion(
                 e,
                 g.root,
@@ -5392,6 +5417,29 @@ void attach_light_gizmo_to_light(
             UTILITY_MODULE,
             "createUtilityLayer",
         );
+        this.context.assertParameterNames(
+            utility.declaration,
+            ["mainScene", "options?"],
+            "createUtilityLayer parameters",
+        );
+        this.context.assertExpressionShape(
+            this.context.variableInitializer(utility.declaration, "scene"),
+            "createOverlayScene(mainScene)",
+            "Utility layer scene",
+        );
+        this.context.assertFunctionContract(
+            UTILITY_MODULE,
+            "registerUtilityLayer",
+            `
+export async function registerUtilityLayer(utility: UtilityLayer): Promise<void> {
+    await registerScene(utility.scene);
+    if (isRenderingContextRegistered(utility.scene.surface, utility.scene)) {
+        moveSwapchainOverlaysAfterBase(utility.mainScene);
+    }
+}
+`,
+            "utility-layer.registerUtilityLayer native contract",
+        );
         // The pin's own default light: a hemispheric light pointing up,
         // whose intensity and ground colour are the two literals the
         // factory writes.
@@ -5431,6 +5479,7 @@ void attach_light_gizmo_to_light(
 #include <bblite/upstream/camera_math.hpp>
 #include <bblite/upstream/renderer_plan.hpp>
 #include <bblite/upstream/pinned_matrix.hpp>
+#include <bblite/upstream/pinned_world_transform.hpp>
 
 #include <algorithm>
 #include <array>
@@ -5511,13 +5560,11 @@ ${boundingBox ? boundingBox.helpers : ""}
 
 } // namespace
 
-UtilityLayerHandle create_utility_layer(
-    Engine& engine,
-    Scene& main_scene) {
+UtilityLayerHandle create_utility_layer(Scene& main_scene) {
     auto record = std::make_unique<UtilityLayerRecord>();
-    record->scene = create_scene_context(engine);
+    record->scene = create_overlay_scene(main_scene);
+    Engine& engine = *main_scene.engine;
     record->main_scene = std::make_shared<Scene>(main_scene);
-    record->scene.clear_color = Color4{0.0f, 0.0f, 0.0f, 0.0f};
     record->scene.camera = main_scene.camera;
     UtilityLayerRecord* live = record.get();
     on_before_render(record->scene, [live](double) {
@@ -5541,7 +5588,13 @@ Scene& utility_layer_scene(Engine& engine, UtilityLayerHandle layer) {
 }
 
 void register_utility_layer(Engine& engine, UtilityLayerHandle layer) {
-    register_scene(layer_record(engine, layer).scene);
+    UtilityLayerRecord& record = layer_record(engine, layer);
+    register_scene(record.scene);
+    const auto scenes = engine.scenes();
+    if (std::any_of(scenes.begin(), scenes.end(), [&record](const std::shared_ptr<Scene>& registered) {
+            return registered && registered->shares_identity(record.scene);
+        }))
+        move_swapchain_overlays_after_base(*record.main_scene);
 }
 
 void dispose_utility_layer(Engine& engine, UtilityLayerHandle layer) {

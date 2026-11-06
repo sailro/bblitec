@@ -73,10 +73,10 @@ struct FrameSession {
         if (frame_options.benchmarking())
             report_benchmark(std::move(samples_ms), backend, driver);
     }
-    /** Whether this frame is the requested screenshot. */
+    /** Whether this frame is the requested screenshot, or a stopped engine's final frame. */
     [[nodiscard]] bool screenshot_due() const {
-        return frame >= frame_options.screenshot_frame && !captures.screenshot_saved &&
-               !frame_options.screenshot_path.empty();
+        return (frame >= frame_options.screenshot_frame || engine.stopped) &&
+               !captures.screenshot_saved && !frame_options.screenshot_path.empty();
     }
 };
 
@@ -112,7 +112,9 @@ public:
             const FrameOutcome outcome = conduct_frame(renderer, engine);
             if (outcome == FrameOutcome::stopped)
                 break;
-            co_yield outcome == FrameOutcome::rendered;
+            // A frozen frame completes its animation frame as a drawn one
+            // would: the canvas's last frame stands for it.
+            co_yield outcome == FrameOutcome::rendered || outcome == FrameOutcome::frozen;
         }
         renderer.finish_run();
         co_return true;
@@ -131,6 +133,20 @@ public:
     bool begin_animation_turn() {
         return pal::begin_animation_turn(engine, frame_clock, frame_options.frame_delta_ms)
             .has_value();
+    }
+
+    /**
+     * A frozen frame (`conduct_frame`). These hosts keep no image of their
+     * own, so a capture still waiting draws the frame once more; they hold
+     * no frame-to-frame state, so it is the frame they last drew.
+     */
+    bool freeze() {
+        if (offscreen)
+            offscreen->freeze();
+        if (captures.pending())
+            return false;
+        ++frame;
+        return true;
     }
 
     FramePreparation update() {

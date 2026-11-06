@@ -6625,10 +6625,24 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             );
         }
         if (dataType.kind === "map") {
-            const key = this.compileForSink(
-                access.argumentExpression,
-                dataType.key,
-            );
+            // A number-keyed dictionary read by property name (a `for...in`
+            // key) finds the number that name spells.
+            const key =
+                dataType.dictionary &&
+                dataType.key.kind === "number" &&
+                (this.context.checker.getTypeAtLocation(
+                    access.argumentExpression,
+                ).flags &
+                    ts.TypeFlags.StringLike) !==
+                    0
+                    ? `bbl::js::number_property_key(${this.compileForSink(
+                          access.argumentExpression,
+                          { kind: "string" },
+                      )})`
+                    : this.compileForSink(
+                          access.argumentExpression,
+                          dataType.key,
+                      );
             return this.mapPropertyValue(owner.cpp, key, dataType.value);
         }
         if (dataType.kind === "enummap") {

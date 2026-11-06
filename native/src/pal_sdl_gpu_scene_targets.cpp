@@ -243,6 +243,9 @@ void release_frame_graph_textures(GpuState& state, const Engine* preserve) {
             SDL_ReleaseGPUTexture(state.device, task.depth);
         if (task.params)
             SDL_ReleaseGPUBuffer(state.device, task.params);
+#if BBLITE_GEOMETRY_VELOCITY
+        release_pbr_velocity(state, task);
+#endif
         task.colors.clear();
         task.sampled_colors.clear();
         task.depth = nullptr;
@@ -454,8 +457,10 @@ void create_frame_graph_textures(GpuState& state, const Engine& engine,
                           state.device, format, SDL_GPU_SAMPLECOUNT_1, width, height,
                           SDL_GPU_TEXTUREUSAGE_COLOR_TARGET | SDL_GPU_TEXTUREUSAGE_SAMPLER));
         }
-        task.depth = create_frame_texture(state.device, state.depth_format, samples, width, height,
-                                          SDL_GPU_TEXTUREUSAGE_DEPTH_STENCIL_TARGET);
+        task.depth = create_frame_texture(
+            state.device, state.depth_format, samples, width, height,
+            SDL_GPU_TEXTUREUSAGE_DEPTH_STENCIL_TARGET |
+                (geometry_depth_is_sampled(engine, index) ? SDL_GPU_TEXTUREUSAGE_SAMPLER : 0));
     }
     state.frame_graph_width = width;
     state.render_targets_version = engine.render_targets_version;

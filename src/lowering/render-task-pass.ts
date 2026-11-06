@@ -476,3 +476,61 @@ export function transparentSortSkipCpp(context: LoweringContext): string {
         calls: new Map(),
     }).expression(guard.expression);
 }
+
+/**
+ * `drawList`'s skip for a transparent list (`transparent` true): a hidden
+ * mesh, or one whose opacity is zero (`_skipColorDraw`). Every native
+ * transparent list -- the scene's, a task's, transmission's -- is refreshed
+ * through `sort_transparent_draws`, so this is where the draw loop's test
+ * runs; the opaque and direct lists pass no `transparent`.
+ */
+export function transparentDrawSkipCpp(
+    context: LoweringContext,
+    mesh: string,
+): string {
+    const { file, declaration } = context.functionDeclaration(
+        renderTaskModule,
+        "drawList",
+    );
+    const skips = context.findNodes(
+        declaration,
+        (node): node is ts.IfStatement =>
+            ts.isIfStatement(node) &&
+            context.expressionMatchesShape(
+                node.expression,
+                "mesh && (mesh.visible === false || (transparent && mesh._skipColorDraw))",
+            ),
+    );
+    if (skips.length !== 1)
+        context.contractError(
+            declaration,
+            "Expected drawList's one draw-time visibility skip.",
+        );
+    // The list holds mesh draws only, and it is a transparent one, so both
+    // guards hold: the skip is its two tests, hidden or colour-omitted.
+    const operand = (node: ts.Expression): ts.Expression => {
+        const unwrapped = context.unwrapExpression(node);
+        return ts.isBinaryExpression(unwrapped)
+            ? context.unwrapExpression(unwrapped.right)
+            : unwrapped;
+    };
+    const tests = operand(skips[0]!.expression);
+    if (!ts.isBinaryExpression(tests))
+        context.contractError(tests, "Expected drawList's two skip tests.");
+    const lowerer = new PinnedNumericLowerer(file, {
+        bindings: new Map<string, PinnedBinding>([
+            [
+                "mesh._skipColorDraw",
+                { cpp: `${mesh}.skip_color_draw`, type: "bool" },
+            ],
+        ]),
+        calls: new Map(),
+        // `visible?: boolean` skips only at false, which is `mesh_draws`'s
+        // own answer negated.
+        expression: (node) =>
+            context.expressionMatchesShape(node, "mesh.visible === false")
+                ? `!mesh_draws(${mesh})`
+                : undefined,
+    });
+    return `${lowerer.expression(tests.left)} || ${lowerer.expression(operand(tests.right))}`;
+}

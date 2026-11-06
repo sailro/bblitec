@@ -90,6 +90,7 @@ export interface MaterialOptionContext
             | "compileColor4"
             | "compileVec3"
             | "evaluator"
+            | "dataLowerer"
         > {}
 
 /**
@@ -801,6 +802,12 @@ function compilePbrBaseColorFactor(
         };
     }
     let channels: readonly ts.Expression[] | undefined;
+    if (
+        ts.isArrayLiteralExpression(resolved) &&
+        resolved.elements.some(ts.isSpreadElement)
+    ) {
+        return spreadPbrBaseColorFactor(context, expression, resolved);
+    }
     if (ts.isArrayLiteralExpression(resolved)) {
         if (resolved.elements.length !== 4)
             context.fail(
@@ -839,6 +846,65 @@ function compilePbrBaseColorFactor(
         storageCpp: retainedStorage(),
         value: tuple,
     };
+}
+
+/**
+ * `[...rgb, a]`: a fresh array whose lanes the spread tuples supply, in
+ * source order. Each lane is evaluated once, into both the retained array
+ * and the factor.
+ */
+function spreadPbrBaseColorFactor(
+    context: MaterialOptionContext,
+    expression: ts.Expression,
+    literal: ts.ArrayLiteralExpression,
+): {
+    cpp: string;
+    storageCpp: string;
+    value?: readonly [number, number, number, number];
+} {
+    const refusal =
+        "PBR baseColorFactor requires a four-channel numeric array.";
+    const pin = (value: Value, node: ts.Expression): Value =>
+        context.bindings.pinValueToTemporary(value, "color_lane", node);
+    const lanes = context.dataLowerer.spreadLaneValues(
+        literal.elements,
+        (element) => pin(context.compileValue(element), element),
+        refusal,
+        pin,
+    );
+    if (lanes.length !== 4) context.fail(expression, refusal);
+    const storageCpp = `(${context.dataLowerer.compileKnownValueForSink(
+        {
+            kind: "tuple",
+            cpp: "",
+            tupleElements: lanes.map(({ value }) => value),
+        },
+        { kind: "vector", element: { kind: "number" } },
+        expression,
+    )}).retained_storage()`;
+    const values = lanes.map(({ value }) => value.staticNumber);
+    if (
+        values.every(
+            (channel): channel is number =>
+                channel !== undefined && Number.isFinite(channel),
+        )
+    ) {
+        const value = values as [number, number, number, number];
+        return {
+            cpp: `bbl::Color4{${value.map(floatLiteral).join(", ")}}`,
+            storageCpp,
+            value,
+        };
+    }
+    const channels = lanes.map(
+        ({ value, node }) =>
+            `static_cast<float>(${context.dataLowerer.compileKnownValueForSink(
+                value,
+                { kind: "number" },
+                node,
+            )})`,
+    );
+    return { cpp: `bbl::Color4{${channels.join(", ")}}`, storageCpp };
 }
 
 /** A setter option that is absent through an inlined optional record field. */

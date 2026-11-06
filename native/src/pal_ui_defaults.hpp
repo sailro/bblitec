@@ -33,6 +33,7 @@ inline constexpr std::string_view ui_user_agent_css =
     "h5{display:block;font-size:0.83em;font-weight:bold;margin:1.67em 0;}\n"
     "h6{display:block;font-size:0.67em;font-weight:bold;margin:2.33em 0;}\n"
     "p{display:block;margin:1em 0;}\n"
+    "pre{display:block;font-family:monospace;white-space:pre;margin:1em 0;}\n"
     "code,kbd,samp,tt{font-family:monospace;}\n"
     "b,strong{font-weight:bold;}\n"
     // :where keeps the attribute test from outranking an author class.

@@ -218,7 +218,7 @@ test("scene replacement restarts both backends without retaining a dead root", (
     for (const backend of backends) {
         assert.match(
             backend,
-            /const std::vector<std::shared_ptr<Scene>> active_registered_scenes =\s*engine\.scenes\(\);/,
+            /const std::vector<std::shared_ptr<Scene>> active_registered_scenes =\s*composited_scenes\(engine\);/,
         );
         assert.match(
             backend,
@@ -231,7 +231,7 @@ test("scene replacement restarts both backends without retaining a dead root", (
             shared,
             "bool request_renderer_restart_if_scene_set_changed(",
         ),
-        /engine\.renderer_restart_requested = !engine\.scenes\(\)\.empty\(\) \|\| engine\.offscreen_run != nullptr;/,
+        /engine\.renderer_restart_requested =\s*!composited_scenes\(engine\)\.empty\(\) \|\| engine\.offscreen_run != nullptr;/,
     );
 });
 
@@ -254,15 +254,19 @@ test("diagnostic input resumes across renderer restarts", () => {
 
 test("frame dispatch survives a callback disposing its own scene", () => {
     const shared = sharedGpuSource();
-    assert.match(shared, /run_scene_before_render\(scene, scene_delta_ms\);/);
-    assert.match(shared, /const auto registered_scenes = engine\.scenes\(\);/);
-    assert.match(
+    const advance = cppFunction(
         shared,
-        /for \(const std::shared_ptr<Scene>& registered : registered_scenes\)/,
+        "double advance_frame(Engine& engine, Scene& scene,",
+    );
+    assert.match(advance, /update_scene\(scene, scene_delta_ms\);/);
+    // The scenes after the root come from a snapshot taken after its callbacks.
+    assert.match(
+        advance,
+        /update_scene\(scene, scene_delta_ms\);[\s\S]*const auto registered_scenes = engine\.scenes\(\);\s*for \(const std::shared_ptr<Scene>& registered : registered_scenes\)[\s\S]*update_scene\(\*registered, scene_callback_delta\(\*registered, delta_ms\)\);/,
     );
     assert.match(
-        shared,
-        /run_scene_before_render\(\*registered, scene_callback_delta\(\*registered, delta_ms\)\);/,
+        cppFunction(shared, "void update_scene("),
+        /run_scene_before_render\(scene, delta_ms\);/,
     );
     const context = new LoweringContext();
     assert.match(

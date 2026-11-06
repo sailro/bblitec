@@ -204,12 +204,18 @@ export function identifierText(expression: ts.Expression): string | undefined {
  * parent `computeNodeWorldMatrix` multiplies onto hierarchy roots. The
  * record folds this diagonal into its consumption sites instead of
  * multiplying it at the root — see the round-3 notes in
- * `matrix-leaves.ts`.
+ * `matrix-leaves.ts`. A right-handed build keeps glTF's own space: its
+ * root is the identity, verified as such, and there is no flip.
  */
-export function pinnedRootFlip(file: ts.SourceFile): {
-    lane: number;
-    sign: number;
-} {
+export function pinnedRootFlip(
+    file: ts.SourceFile,
+    rightHanded: boolean,
+):
+    | {
+          lane: number;
+          sign: number;
+      }
+    | undefined {
     const symbol = "GLTF_ROOT";
     const candidates: { name: string; values: number[] }[] = [];
     for (const statement of file.statements) {
@@ -260,8 +266,17 @@ export function pinnedRootFlip(file: ts.SourceFile): {
         refuseModule(symbol, "no longer keeps a unit homogeneous lane");
     }
     const flips = [0, 1, 2].filter((lane) => root.values[lane * 5] !== 1);
-    if (flips.length !== 1 || root.values[flips[0]! * 5] !== -1) {
-        refuseModule(symbol, "no longer flips exactly one axis by -1");
+    if (
+        rightHanded
+            ? flips.length !== 0
+            : flips.length !== 1 || root.values[flips[0]! * 5] !== -1
+    ) {
+        refuseModule(
+            symbol,
+            rightHanded
+                ? "is no longer the identity in a right-handed build"
+                : "no longer flips exactly one axis by -1",
+        );
     }
     const compute = topLevelFunction(file, "computeNodeWorldMatrix");
     const usedAsRoot =
@@ -279,7 +294,7 @@ export function pinnedRootFlip(file: ts.SourceFile): {
             "no longer parents hierarchy roots on the RH→LH conversion",
         );
     }
-    return { lane: flips[0]!, sign: -1 };
+    return rightHanded ? undefined : { lane: flips[0]!, sign: -1 };
 }
 
 /**

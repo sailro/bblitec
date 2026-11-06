@@ -45,6 +45,7 @@ import {
 import { composeEsmShadow } from "./pinned-esm-shadow.js";
 import { composeComposite, composePostProcess } from "./pinned-post-process.js";
 import { composeScreenSpaceTask } from "./pinned-screen-space.js";
+import { composeSsaoTaskManifest } from "./pinned-ssao.js";
 import {
     hostPageCompileOptions,
     isHostPagePath,
@@ -65,7 +66,7 @@ import { reachedImageCodecs } from "./image-codecs.js";
 // import makes every compile pay for asset kinds it never packages.
 import { compressedTextureLowerer } from "./compiler/compressed-texture.js";
 import { isKtx1, packageKtx1 } from "./compressed-texture-package.js";
-import { parseDataUrl } from "./data-url.js";
+import { isDataUrl, parseDataUrl } from "./data-url.js";
 import { localAssetPath } from "./asset-source.js";
 import { generateIblBrdfLutRgba16f } from "./ibl-brdf-lut.js";
 import {
@@ -93,6 +94,7 @@ import {
     findRepositoryRoot,
     readUpstreamPin,
     repositoryRelativePath,
+    sharedUpstreamStore,
 } from "./upstream-source.js";
 import { GeneratedTree } from "./generated-tree.js";
 import { asFeatures, projectFeatures } from "./compiler/output-projection.js";
@@ -123,8 +125,7 @@ import {
     composeStandaloneTextPipelines,
 } from "./pinned-text-pipeline-cpp.js";
 import { holdDistLock } from "./dist-lock.js";
-import { isRelativeSpecifier } from "./typescript-module-specifiers.js";
-import { resolveRepositoryModuleFile } from "./bake-cache.js";
+import { evaluatedEntryPath } from "./bake-cache.js";
 import { spawnSync } from "node:child_process";
 import {
     buildConditionsEnvironment,
@@ -533,6 +534,7 @@ async function materializeAsset(
     if (
         asset.kind === "gltf" &&
         (/\.(?:gltf|glb)(?:[?#]|$)/i.test(source) ||
+            isDataUrl(source) ||
             (asset.meshWalks?.length ?? 0) > 0)
     ) {
         writeFileSync(
@@ -984,37 +986,6 @@ function withCoverage<T>(path: string | undefined, lower: () => T): T {
     } finally {
         writeJsonRecord(resolve(path), coverage.report());
     }
-}
-
-/**
- * The module an entry evaluates: itself, or -- when its one statement is a
- * side-effect import of a sibling module (`import "./scene2";`) -- that
- * module, which module evaluation runs in its place.
- */
-function evaluatedEntryPath(path: string): string {
-    const [only, ...rest] = ts.createSourceFile(
-        path,
-        readFileSync(path, "utf8"),
-        ts.ScriptTarget.Latest,
-        false,
-    ).statements;
-    if (
-        !only ||
-        rest.length > 0 ||
-        !ts.isImportDeclaration(only) ||
-        only.importClause ||
-        !ts.isStringLiteral(only.moduleSpecifier) ||
-        !isRelativeSpecifier(only.moduleSpecifier.text)
-    )
-        return path;
-    const imported = resolveRepositoryModuleFile(
-        resolve(dirname(path), only.moduleSpecifier.text),
-    );
-    if (!imported)
-        throw new Error(
-            `${path} imports '${only.moduleSpecifier.text}', which resolves to no module.`,
-        );
-    return evaluatedEntryPath(imported);
 }
 
 async function main(): Promise<void> {
@@ -1713,6 +1684,13 @@ async function main(): Promise<void> {
             }),
         ),
     );
+    // An SSAO task runs its own factory and reached enablers the same way.
+    const ssaoTasks = await Promise.all(
+        result.manifest.ssaoTasks.map(async (manifest) => ({
+            manifest,
+            composed: await composeSsaoTaskManifest(manifest),
+        })),
+    );
     const screenSpaceTasks = await Promise.all(
         result.manifest.screenSpaceTasks.map(async (manifest) => ({
             manifest,
@@ -1831,6 +1809,7 @@ async function main(): Promise<void> {
         ...(pickingShaders !== undefined ? { pickingShaders } : {}),
         postProcessComposites,
         ...(screenSpaceTasks.length > 0 ? { screenSpaceTasks } : {}),
+        ...(ssaoTasks.length > 0 ? { ssaoTasks } : {}),
         ...(nodeParticles.length > 0 ? { nodeParticles } : {}),
         ...(nodeParticleSprite2d.length > 0 ? { nodeParticleSprite2d } : {}),
         ...(nodeParticleRegistrations.length > 0
@@ -1962,6 +1941,7 @@ ${imageCodecLines || '    ""'}
     for (const [include, text] of featureMacroHeaders({
         features: result.manifest.features,
         imageCodecs,
+        rightHanded: sharedUpstreamStore().rightHanded(),
     }))
         tree.write(`upstream/include/${include}`, text);
     // The reached-file list: the program's files (recorded by the

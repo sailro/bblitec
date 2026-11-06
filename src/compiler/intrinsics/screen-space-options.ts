@@ -1,7 +1,8 @@
 // Screen-space effect task option lowering.
 //
-// `createScreenSpaceContactShadowsPostProcessTask` and
-// `createScreenSpaceGlobalIlluminationPostProcessTask` take one config each:
+// `createScreenSpaceContactShadowsPostProcessTask`,
+// `createScreenSpaceGlobalIlluminationPostProcessTask` and
+// `createScreenSpaceAmbientOcclusionPostProcessTask` take one config each:
 // the textures and camera the task reads, a light direction for the contact
 // producer, and the effect's own settings. The textures, camera and light are
 // compiled here as handles; every setting is resolved statically and
@@ -11,7 +12,10 @@
 import { EmissionSet } from "../emission-transaction.js";
 import ts from "typescript";
 import { handleCppType } from "../data-types.js";
-import { screenSpaceFacts } from "../../pinned-screen-space.js";
+import {
+    screenSpaceFacts,
+    screenSpaceReadsLightDirection,
+} from "../../pinned-screen-space.js";
 import { doubleLiteral } from "../../cpp-literals.js";
 import { compileStaticNumber } from "../option-helpers.js";
 import type { ScreenSpaceTaskManifest } from "../types.js";
@@ -43,7 +47,7 @@ export function compileScreenSpaceTaskOptions(
     expression: ts.Expression,
     taskIndex: number,
 ): CompiledScreenSpaceTask {
-    const { kind, module } = screenSpaceFacts(intrinsic);
+    const { module } = screenSpaceFacts(intrinsic);
     const object = context.expectObjectLiteral(expression);
     const nameExpression = context.objectProperty(object, "name");
     const name = nameExpression
@@ -69,12 +73,7 @@ export function compileScreenSpaceTaskOptions(
     const camera = context.compileValue(cameraExpression);
     context.expectKind(camera, "camera", cameraExpression);
 
-    const lightDirection = compileLightDirection(
-        context,
-        object,
-        intrinsic,
-        kind,
-    );
+    const lightDirection = compileLightDirection(context, object, intrinsic);
     const options = compileDescriptorOptions(
         context,
         object,
@@ -100,16 +99,16 @@ export function compileScreenSpaceTaskOptions(
 /**
  * The contact producer's `lightDirection`: the pin keeps the object it was
  * handed and normalizes it every frame. A light's own `direction` is that
- * light's record, read live; a literal is kept as the value it spells.
+ * light's record, read live; a literal is kept as the value it spells. An
+ * effect whose config declares none reads none.
  */
 function compileLightDirection(
     context: EngineOptionContext,
     object: ts.ObjectLiteralExpression,
     intrinsic: string,
-    kind: "scalar" | "color",
 ): string {
     const expression = context.objectProperty(object, "lightDirection");
-    if (kind === "color") {
+    if (!screenSpaceReadsLightDirection(intrinsic)) {
         if (expression) {
             context.fail(expression, `${intrinsic} reads no lightDirection.`);
         }

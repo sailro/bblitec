@@ -82,6 +82,10 @@ import {
     type ShadowLightSlot,
 } from "./pinned-shadow-slots.js";
 import { refuseGeneration } from "./generation-refusal.js";
+import {
+    meshOpacityFeatureBit,
+    registerPinnedMeshOpacity,
+} from "./lowering/mesh-opacity.js";
 
 /** What the moved orchestration reads from `main`, under `main`'s names. */
 interface ComposePipelineContext {
@@ -578,6 +582,14 @@ export async function composeScenePipeline({
     const instanceColorBit = hasRuntimeThinInstanceColors
         ? await pinnedInstanceColorBit()
         : 0;
+    // Mesh opacity is another runtime arm: `setMeshOpacity` below 1 sets the
+    // encoder's bit on any mesh, whenever it runs, and both PALs OR it from
+    // the record at the draw (`pinned_mesh_feature_extra`). Its two
+    // extensions compose for that bit alone, so registering them is what the
+    // scene's own `ensureInstalled` does.
+    const meshOpacityBits = result.manifest.features.includes("mesh:opacity")
+        ? (await registerPinnedMeshOpacity(), [meshOpacityFeatureBit()])
+        : [];
     // `_computeMeshFeatures` nests the colour test under `mesh.thinInstances`:
     // 32 never exists by itself. Treat the coloured pool as a composite
     // runtime mask so the generic product below emits {plain, TI, TI+colour}
@@ -587,6 +599,7 @@ export async function composeScenePipeline({
         ...(instanceColorBit !== 0
             ? [thinInstancesBit | instanceColorBit]
             : []),
+        ...meshOpacityBits,
     ];
     // A baked mesh composes under MSH_VAT where its own attributes say
     // MSH_HAS_SKELETON: `_computeMeshFeatures` writes the two as one
@@ -627,6 +640,7 @@ export async function composeScenePipeline({
             index,
             attachments: task.attachments,
             emitColor: task.emitColor,
+            ...(task.velocity ? { velocity: true } : {}),
         }),
     );
     const dynamicCasterViews = new Set<"no-color" | "esm-shadow">();
@@ -729,6 +743,20 @@ export async function composeScenePipeline({
     };
     for (const writes of result.manifest.pbrMaterialStates ?? []) {
         const { target } = writes;
+        // Without the opt-in the pin's IBL extension has no `detect` and the
+        // texture composes nothing; this port composes the texture's state
+        // only for a program that installs the hooks.
+        if (
+            writes.bentNormalTexture &&
+            !result.manifest.features.includes("material:bent-normal")
+        )
+            refuseGeneration(
+                "material:bent-normal",
+                "bentNormalTexture is written but enableBentNormals() is " +
+                    "never reached; the pin then ignores the texture, which " +
+                    "this port does not represent.",
+                result.manifest.featureSites,
+            );
         if (target.kind === "scene") {
             reachStateRow(
                 absoluteScenePbrMaterials[target.index]!.materialsBefore,
@@ -977,9 +1005,10 @@ export async function composeScenePipeline({
         }
         return {
             ...material,
-            meshFeatureSets: [...featureSets].sort(
-                (left, right) => left - right,
-            ),
+            meshFeatureSets: expandRuntimeMeshFeatureSets(
+                [...featureSets],
+                meshOpacityBits,
+            ).sort((left, right) => left - right),
         };
     });
     const scenePbrMaterials = [...exactScenePbrMaterials, ...casterViews];
@@ -1011,6 +1040,7 @@ export async function composeScenePipeline({
                           }
                         : {}),
                 },
+                geometryTasks,
             )),
         );
     }
@@ -1121,6 +1151,9 @@ export async function composeScenePipeline({
                     ),
                 thinInstances: hasRuntimeThinInstances,
                 thinInstanceColors: hasRuntimeThinInstanceColors,
+                ...(meshOpacityBits.length > 0
+                    ? { meshOpacityBit: meshOpacityBits[0]! }
+                    : {}),
                 morphTargets:
                     result.manifest.features.includes("mesh:morph-targets"),
                 sceneMaterials: sceneStandardMaterials,
@@ -1140,6 +1173,7 @@ export async function composeScenePipeline({
                         index,
                         attachments: task.attachments,
                         emitColor: task.emitColor,
+                        ...(task.velocity ? { velocity: true } : {}),
                     }),
                 ),
             },

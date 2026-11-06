@@ -11,6 +11,7 @@ import { UpstreamSourceStore } from "../src/upstream-source.js";
  */
 export class DoctoredStore extends UpstreamSourceStore {
     private edits: ReadonlyMap<string, readonly [string, string]> | undefined;
+    private conditions: readonly string[] | undefined;
     private readonly doctoredFiles = new Map<string, ts.SourceFile>();
 
     public withEdits(
@@ -20,8 +21,21 @@ export class DoctoredStore extends UpstreamSourceStore {
         return this;
     }
 
-    public override getSource(modulePath: string): string {
-        const source = super.getSource(modulePath);
+    /** Read the pin as a program built under `conditions` reads it. */
+    public underConditions(conditions: readonly string[]): this {
+        this.conditions = conditions;
+        return this;
+    }
+
+    public override rightHanded(conditions = this.conditions): boolean {
+        return super.rightHanded(conditions);
+    }
+
+    public override getSource(
+        modulePath: string,
+        conditions = this.conditions,
+    ): string {
+        const source = super.getSource(modulePath, conditions);
         const edit = this.edits?.get(modulePath.replace(/\\/g, "/"));
         if (!edit) return source;
         assert.ok(
@@ -60,5 +74,19 @@ export function doctoredContext(
         new DoctoredStore().withEdits(
             new Map([[modulePath, [needle, replacement]]]),
         ),
+    );
+}
+
+/**
+ * A lowering context over the pin as a right-handed program
+ * (`babylon-lite-rh`) reads it, with any exact edits applied.
+ */
+export function rightHandedContext(
+    edits: ReadonlyMap<string, readonly [string, string]> = new Map(),
+): LoweringContext {
+    return new LoweringContext(
+        new DoctoredStore()
+            .underConditions(["babylon-lite-rh"])
+            .withEdits(edits),
     );
 }

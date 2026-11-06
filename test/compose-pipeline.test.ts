@@ -202,6 +202,7 @@ test("a copied loaded PBR material composes the blend state its write reaches", 
             blend: false,
             pluginSignature: 0,
             baseColorFactorWritten: false,
+            bentNormalTexture: false,
             row: 0,
         },
         {
@@ -209,6 +210,7 @@ test("a copied loaded PBR material composes the blend state its write reaches", 
             blend: true,
             pluginSignature: 0,
             baseColorFactorWritten: false,
+            bentNormalTexture: false,
             row: 1,
         },
     ]);
@@ -285,6 +287,59 @@ test("a PBR material's grown plugin list and alpha compose every state they reac
         variantsOfRow(composed, 1).every(
             (variant) => !/baseColor \* 0\.5/.test(variant.fragmentWgsl),
         ),
+    );
+});
+
+/** Scene 230's shape: one document loaded twice, the second given a bent normal map. */
+const bentNormalProgram = (enable: boolean) => `
+        import {createEngine, enableBentNormals, getContainerMeshes, loadGltf, loadTexture2D} from "@babylonjs/lite";
+        import type {PbrMaterialProps} from "@babylonjs/lite";
+        const engine = await createEngine({});
+        await loadGltf(engine, "level.glb");
+        const right = await loadGltf(engine, "level.glb");
+        const bent = await loadTexture2D(engine, "bent.png", {invertY: false});
+        for (const mesh of getContainerMeshes(right)) {
+            const material = mesh.material as PbrMaterialProps;
+            material.bentNormalTexture = bent;
+            material.bentNormalStrength = 0.5;
+        }
+        ${enable ? "enableBentNormals();" : ""}
+    `;
+
+test("a bent normal write composes both texture states of every container's material", async () => {
+    const outputPath = resolve("artifacts/pbr-bent-normal-states");
+    writeImportedMeshFixture(outputPath);
+    const { result, composed } = await composeImportedMesh(
+        outputPath,
+        bentNormalProgram(true),
+    );
+    assert.ok(result.manifest.features.includes("material:bent-normal"));
+    assert.match(result.cpp, /bbl::set_pbr_bent_normal_texture\(/);
+    assert.match(result.cpp, /\.bent_normal_strength = 0\.5f;/);
+    // Each container's row selects its bent state by the record's texture,
+    // so the unwritten left copy keeps its own row.
+    assert.deepEqual(
+        composed.pbrMaterialStateRows.map((state) => [
+            state.sourceRow,
+            state.bentNormalTexture,
+            state.row,
+        ]),
+        [
+            [0, false, 0],
+            [0, true, 2],
+            [1, false, 1],
+            [1, true, 3],
+        ],
+    );
+    assert.equal(composed.pinnedMaterialCount, 4);
+});
+
+test("a bent normal write without enableBentNormals refuses", async () => {
+    const outputPath = resolve("artifacts/pbr-bent-normal-disabled");
+    writeImportedMeshFixture(outputPath);
+    await assert.rejects(
+        composeImportedMesh(outputPath, bentNormalProgram(false)),
+        /enableBentNormals\(\) is never reached/,
     );
 });
 

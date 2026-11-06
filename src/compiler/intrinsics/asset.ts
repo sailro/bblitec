@@ -440,6 +440,37 @@ function gltfLoadValue(
         : result;
 }
 
+/**
+ * `loadGltf(engine, blob)` over a document generation built (`data:` URL),
+ * parsed as the pin parses raw data: with no base URL, so it must be
+ * self-contained.
+ */
+export function compileGeneratedGltfLoad(
+    context: AssetIntrinsicContext,
+    call: ts.CallExpression,
+    engine: Value,
+    document: string,
+): Value {
+    const external = externalGltfResourceUri(
+        readAssetBytesSync(document, context.options.fileName),
+    );
+    if (external !== undefined) {
+        context.fail(
+            call,
+            `The glTF document built at generation has no base URL to resolve '${external}'; ` +
+                "it must be a GLB or use data: URIs.",
+        );
+    }
+    const asset = registerGltfContainer(context, call, document);
+    return gltfLoadValue(
+        context,
+        call,
+        engine,
+        `bbl::asset_path(${context.cppString(asset.output)})`,
+        { asset },
+    );
+}
+
 function compileLoadGltf(
     context: AssetIntrinsicContext,
     call: ts.CallExpression,

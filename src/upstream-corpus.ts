@@ -60,6 +60,12 @@ export interface BabylonLiteCorpusManifest {
      * says why); they ride the git-blob pin like every other row.
      */
     tooling?: CorpusFile[];
+    /**
+     * Package modules the published package empties: modules of types only,
+     * whose source no package source map carries. The source store reads
+     * them as the pinned modules' own (`upstream-source.ts`).
+     */
+    packageSources?: CorpusFile[];
     applications: CorpusApplication[];
 }
 

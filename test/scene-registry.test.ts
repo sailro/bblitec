@@ -100,6 +100,10 @@ test("registers unique generated scene targets", () => {
             "regression-case-split-options",
             "regression-csm-static-cache",
             "regression-render-task-transmission",
+            "regression-mesh-opacity-runtime",
+            "regression-mesh-opacity-geometry",
+            "regression-geometry-velocity",
+            "regression-mesh-opacity-transmission",
             "scene168",
             "scene176",
             "scene213",
@@ -272,6 +276,8 @@ test("registers unique generated scene targets", () => {
             "scene318",
             "scene319",
             "scene320",
+            "scene348",
+            "scene354",
             "scene282",
             "scene218",
             "scene219",
@@ -283,6 +289,7 @@ test("registers unique generated scene targets", () => {
             "scene225",
             "scene211",
             "scene229",
+            "scene230",
             "scene25",
             "scene36",
             "scene251",
@@ -305,6 +312,9 @@ test("registers unique generated scene targets", () => {
             "regression-gltf-topology",
             "regression-gltf-step-animation",
             "regression-device-recovery-scenes",
+            "regression-overlay-swapchain-tasks",
+            "regression-overlay-post-process",
+            "regression-overlay-post-process-single-sample",
             "regression-gltf-node-transform-animation",
             "regression-node-local-attributes",
             "scene144",
@@ -328,8 +338,26 @@ test("registers unique generated scene targets", () => {
             "scene112",
             "scene167",
             "regression-timer-callback-cells",
+            ...[
+                321, 322, 323, 324, 325, 326, 327, 328, 329, 330, 331, 332, 333,
+                334, 335, 336, 337, 338, 339, 340, 341, 342, 343, 344, 345, 346,
+                347, 353,
+            ].map((twin) => `scene${twin}`),
         ],
     );
+    // A right-handed twin builds its base scene's program under the pin's
+    // right-handed condition, with the base entry's pose and gates.
+    const twin = getScene("scene322");
+    assert.deepEqual(twin.conditions, ["babylon-lite-rh"]);
+    assert.equal(
+        twin.name,
+        "Scene 322 - Alien Morph and Skeleton (Right-Handed)",
+    );
+    assert.equal(
+        twin.parity?.referenceTimeSeconds,
+        getScene("scene5").parity?.referenceTimeSeconds,
+    );
+    assert.equal(getScene("scene323").parity?.attribution, undefined);
     assert.deepEqual(
         scenes
             .filter(
@@ -360,6 +388,8 @@ test("registers unique generated scene targets", () => {
             "calculator",
             "trogir-streaming",
             "mesh-lod",
+            "navcat",
+            "ambient-occlusion",
         ],
     );
     assert.equal(

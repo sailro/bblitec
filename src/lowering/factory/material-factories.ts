@@ -6,7 +6,10 @@ import {
 import { LoweredSource } from "../context.js";
 import { MeshBuilderLowerer } from "./mesh-builders.js";
 import { assertAsyncSceneBuilder } from "../scene-deferred.js";
-import { lowerPbrGammaAlbedo } from "../pbr-scene-hooks.js";
+import {
+    lowerPbrAlphaCutoff,
+    lowerPbrGammaAlbedo,
+} from "../pbr-scene-hooks.js";
 import { materialGroupIdentity } from "../material-group-identity.js";
 import { recordAt } from "../../compiler/record-access.js";
 import { pbrMaterialRecordSeedCpp } from "../pinned-material-defaults.js";
@@ -1107,7 +1110,13 @@ FileTexture solid_texture_file(const SolidTexture& texture) {
         };
     }
 
-    public lowerPbrMaterialFactory(): LoweredSource {
+    /**
+     * `alphaCutoff`: the scene reaches `setPbrAlphaCutoff`; `pixelsBaseColor`:
+     * a created material's base colour is a pixels texture.
+     */
+    public lowerPbrMaterialFactory(
+        options: { alphaCutoff?: boolean; pixelsBaseColor?: boolean } = {},
+    ): LoweredSource {
         const pbrModule = "src/material/pbr/pbr-material.ts";
         // The opt-in setters replaced the unlit/skyboxMode options. Each is
         // one stamp plus an unconditional extension registration, and the
@@ -1204,7 +1213,8 @@ FileTexture solid_texture_file(const SolidTexture& texture) {
         return {
             modulePath: pbrModule,
             symbolName:
-                "createPbrMaterial,setPbrUnlit,setPbrSkybox,setPbrEmissive,setPbrIridescence,setPbrLightmap,setPbrMetallicReflectance,setPbrSubsurface",
+                "createPbrMaterial,setPbrUnlit,setPbrSkybox,setPbrEmissive,setPbrIridescence,setPbrLightmap,setPbrMetallicReflectance,setPbrSubsurface" +
+                (options.alphaCutoff ? ",setPbrAlphaCutoff" : ""),
             header: "",
             source: `// ${this.context.provenance(pbrModule, "createPbrMaterial")}
 #include <bblite/runtime.hpp>
@@ -1216,7 +1226,7 @@ FileTexture solid_texture_file(const SolidTexture& texture) {
 
 namespace bbl {
 
-${lowerPbrGammaAlbedo(this.context)}
+${lowerPbrGammaAlbedo(this.context)}${options.alphaCutoff ? lowerPbrAlphaCutoff(this.context) : ""}
 // Attaches a loaded base-color image to a created PBR material. The slot's
 // encoding travels with the image (TextureData::srgb), because upstream
 // keeps the format on the Texture2D its caller loaded: loadTexture2D's own
@@ -1232,7 +1242,23 @@ void set_material_base_color_file(
     record.base_color_texture = std::move(texture.data);
     record.has_public_base_color_texture = true;
 }
-
+${
+    options.pixelsBaseColor
+        ? `
+// The same slot, filled by a createTexture2DFromPixels texture: the record
+// takes its texels, sampler and texture-object properties.
+void set_material_base_color_pixels(
+    Engine& engine,
+    MaterialHandle material,
+    const PixelsTexture& texture) {
+    MaterialRecord& record = ${recordAt("engine.materials", "material")};
+    record.source_albedo_texture = texture;
+    record.base_color_texture = pixels_texture_data(texture);
+    record.has_public_base_color_texture = true;
+}
+`
+        : ""
+}
 // createPbrMaterial preserves its Texture2D props, and the pinned PBR
 // collector binds ormTexture itself. Keep the loaded image's TextureData
 // whole so its sampler and upload flip reach the linear ORM slot unchanged.
@@ -1426,6 +1452,16 @@ void set_pbr_lightmap(
     MaterialRecord& record = ${recordAt("engine.materials", "material")};
     record.lightmap_texture = std::move(texture.data);
     record.lightmap_level = level;
+}
+
+// src/material/pbr/fragments/bent-normal-fragment.ts: the texture the IBL
+// extension's bind hook binds; its presence selected the composed state.
+void set_pbr_bent_normal_texture(
+    Engine& engine,
+    MaterialHandle material,
+    FileTexture texture) {
+    ${recordAt("engine.materials", "material")}.bent_normal_texture =
+        std::move(texture.data);
 }
 
 // src/material/pbr/fragments/anisotropy-fragment.ts#pbrExt.writeUbo: the

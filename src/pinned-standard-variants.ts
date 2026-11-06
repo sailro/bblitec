@@ -388,14 +388,35 @@ async function pinnedStandardRenderableFeatures(
     material: PinnedStandardMaterialInput,
     meshFeatures: number,
     skeleton = false,
+    // A caster view's pass bits, which ride the view's own word.
+    passFeatures = 0,
 ): Promise<number> {
     const features = await pinnedStandardMaterialFeatures(material);
     let word = features;
     for (const ext of await standardExtensions(skeleton)) {
         word |=
-            ext._meshFeatures?.(meshFeatures, pinnedOptInSlots(material)) ?? 0;
+            ext._meshFeatures?.(
+                meshFeatures,
+                standardHookMaterial(material, features | passFeatures),
+            ) ?? 0;
     }
     return word;
+}
+
+/**
+ * The material a hook receives, as `rebuildSingle` hands it: the opt-in
+ * slots, and the `_renderFeatures` word the drawn material carries -- a
+ * caster view's own, pass bit included, which mesh opacity's
+ * `_meshFeatures` tests.
+ */
+function standardHookMaterial(
+    material: PinnedStandardMaterialInput,
+    renderFeatures: number,
+): Record<string, unknown> {
+    return {
+        ...pinnedOptInSlots(material),
+        _renderFeatures: { features: renderFeatures },
+    };
 }
 
 /**
@@ -615,7 +636,10 @@ export async function composePinnedStandardVariant(
         // transform reads `material._hasUvTx` from it. Passing what the pin
         // passes keeps a hook that reads it from seeing `undefined`.
         features |=
-            ext._meshFeatures?.(meshFeatures, pinnedOptInSlots(material)) ?? 0;
+            ext._meshFeatures?.(
+                meshFeatures,
+                standardHookMaterial(material, features | passFeatures),
+            ) ?? 0;
         if (features & ext._feature) {
             const fragment = ext._frag(
                 features,
@@ -1548,6 +1572,11 @@ export interface StandardSceneCompositionInput {
     thinInstanceColors: boolean;
     /** Morph storage/deformation reached for scene meshes. */
     morphTargets: boolean;
+    /**
+     * `setMeshOpacity` reached: its encoder's mesh-feature bit, which any
+     * mesh can carry at run time (`meshOpacityFeatureBit`).
+     */
+    meshOpacityBit?: number;
     /** Whether the scene creates Standard materials from scene code. */
     sceneMaterials: boolean;
     /** Distinct mesh-feature values of the scene-code meshes. */
@@ -1562,6 +1591,7 @@ export interface StandardSceneCompositionInput {
         index: number;
         attachments: readonly string[];
         emitColor: boolean;
+        velocity?: boolean;
     }[];
 }
 
@@ -1866,6 +1896,11 @@ export async function composeSceneStandardVariants(
                 add(bits | meshBits.MSH_HAS_MORPH_TARGETS);
             }
         }
+        if (input.meshOpacityBit !== undefined) {
+            for (const bits of [...values]) {
+                add(bits | input.meshOpacityBit);
+            }
+        }
         return values;
     };
     const meshValues = expandMeshValues([
@@ -1876,7 +1911,18 @@ export async function composeSceneStandardVariants(
     const pluginMeshValues = (
         input.standardMaterialPluginMeshFeatureValues ??
         input.standardMaterialPlugins.map(() => [])
-    ).map((values) => [...new Set(values)]);
+    ).map((values) =>
+        input.meshOpacityBit === undefined
+            ? [...new Set(values)]
+            : [
+                  ...new Set(
+                      values.flatMap((bits) => [
+                          bits,
+                          bits | input.meshOpacityBit!,
+                      ]),
+                  ),
+              ],
+    );
     // Compose, deduplicating by composed text.
     const variants: PinnedStandardVariantManifestEntry[] = [];
     const byText = new Map<string, number>();
@@ -2010,10 +2056,18 @@ export async function composeSceneStandardVariants(
                 ];
                 for (const view of casterViews) {
                     if (!view.reached || !input.sceneMaterials) continue;
+                    // The view's own word reaches the mesh-phase hooks.
+                    const viewFeatures =
+                        (await pinnedStandardRenderableFeatures(
+                            material,
+                            meshFeatures,
+                            input.skeleton,
+                            view.set,
+                        )) | sceneMaterialFeatures;
                     await add(
                         material,
                         meshFeatures & ~meshBits.MSH_RECEIVE_SHADOWS,
-                        (features & ~view.clear) | view.set,
+                        (viewFeatures & ~view.clear) | view.set,
                         {
                             ...baseOptions,
                             fog: false,
@@ -2022,6 +2076,20 @@ export async function composeSceneStandardVariants(
                     );
                 }
                 for (const task of input.geometryTasks) {
+                    // `enableGeometryVelocity` installs the material-point
+                    // output every Standard LINEAR_VELOCITY view composes
+                    // from once any task reaches it; the Standard
+                    // renderables here keep the camera-only history.
+                    if (
+                        task.attachments.includes("LINEAR_VELOCITY") &&
+                        input.geometryTasks.some((each) => each.velocity)
+                    ) {
+                        refuseGeneration(
+                            "renderer:geometry-velocity",
+                            "A Standard material drawn into a LINEAR_VELOCITY geometry task " +
+                                "of a program reaching enableGeometryVelocity is not lowered.",
+                        );
+                    }
                     const geometryOptions = {
                         ...baseOptions,
                         geometry: {

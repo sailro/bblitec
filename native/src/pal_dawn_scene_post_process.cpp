@@ -156,24 +156,12 @@ std::size_t screen_space_program(DawnState& state, std::uint32_t stage) {
 
 WGPUTextureView screen_space_binding_view(DawnState& state, const Engine& engine,
                                           const ScreenSpaceTaskOptions& task,
-                                          upstream::ScreenSpaceTextureRole role) {
+                                          upstream::ScreenSpaceTextureRef texture) {
     const pal::TargetUser user{"Screen-space task", task.name};
-    const auto target = [&](RenderTargetHandle handle) -> const DawnRenderTarget& {
-        return pal::resolve_gpu_target(engine, state.render_targets, handle, user);
-    };
-    switch (role) {
-    case upstream::ScreenSpaceTextureRole::depth:
-        return target(task.depth).depth_sampled_view;
-    case upstream::ScreenSpaceTextureRole::source_color:
-        return target(task.source).sampled_color_view;
-    case upstream::ScreenSpaceTextureRole::raw:
-        return target(task.raw).sampled_color_view;
-    case upstream::ScreenSpaceTextureRole::history:
-        return target(task.history).sampled_color_view;
-    default:
-        dawn_error("A screen-space stage binds a texture role this backend "
-                   "does not serve.");
-    }
+    const DawnRenderTarget& target = pal::resolve_gpu_target(
+        engine, state.render_targets, pal::screen_space_target(task, texture), user);
+    return texture.role == upstream::ScreenSpaceTextureRole::depth ? target.depth_sampled_view
+                                                                   : target.sampled_color_view;
 }
 
 WGPURenderPassEncoder begin_screen_space_pass(WGPUCommandEncoder encoder, WGPUTextureView target) {
@@ -189,10 +177,10 @@ WGPURenderPassEncoder begin_screen_space_pass(WGPUCommandEncoder encoder, WGPUTe
 
 void record_screen_space_stage(DawnState& state, const Engine& engine,
                                const ScreenSpaceTaskOptions& task, DawnScreenSpaceStage& stage,
-                               std::uint32_t stage_index, WGPUCommandEncoder encoder,
-                               WGPUTextureView target, const float* uniforms) {
+                               const upstream::ScreenSpacePassInfo& pass,
+                               WGPUCommandEncoder encoder, const float* uniforms) {
     if (stage.program == npos) {
-        stage.program = screen_space_program(state, stage_index);
+        stage.program = screen_space_program(state, pass.stage);
     }
     const DawnScreenSpaceProgram& program = state.screen_space_programs[stage.program];
     const upstream::ScreenSpaceShaderInfo& info =
@@ -213,7 +201,8 @@ void record_screen_space_stage(DawnState& state, const Engine& engine,
             switch (binding.kind) {
             case upstream::ScreenSpaceBindingKind::depth_texture:
             case upstream::ScreenSpaceBindingKind::texture:
-                entry.textureView = screen_space_binding_view(state, engine, task, binding.role);
+                entry.textureView =
+                    screen_space_binding_view(state, engine, task, pass.textures[index]);
                 break;
             case upstream::ScreenSpaceBindingKind::sampler:
                 // The pin's one bilinear sampler wherever it samples.
@@ -232,12 +221,16 @@ void record_screen_space_stage(DawnState& state, const Engine& engine,
         group_descriptor.entries = entries.data();
         stage.group = wgpuDeviceCreateBindGroup(state.device, &group_descriptor);
     }
-    DawnRenderPass pass{begin_screen_space_pass(encoder, target)};
-    wgpuRenderPassEncoderSetPipeline(pass, program.pipeline);
-    wgpuRenderPassEncoderSetBindGroup(pass, 0, stage.group, 0, nullptr);
-    count_gpu_draw(wgpuRenderPassEncoderDraw, pass, 3, 1, 0, 0);
-    wgpuRenderPassEncoderEnd(pass);
-    pass.reset();
+    const DawnRenderTarget& target =
+        pal::resolve_gpu_target(engine, state.render_targets,
+                                pal::screen_space_target(task, pass.target),
+                                pal::TargetUser{"Screen-space task", task.name});
+    DawnRenderPass encoded{begin_screen_space_pass(encoder, target.color_view)};
+    wgpuRenderPassEncoderSetPipeline(encoded, program.pipeline);
+    wgpuRenderPassEncoderSetBindGroup(encoded, 0, stage.group, 0, nullptr);
+    count_gpu_draw(wgpuRenderPassEncoderDraw, encoded, 3, 1, 0, 0);
+    wgpuRenderPassEncoderEnd(encoded);
+    encoded.reset();
 }
 
 void clear_screen_space_target(WGPUCommandEncoder encoder, WGPUTextureView view) {

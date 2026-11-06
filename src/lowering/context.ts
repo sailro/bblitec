@@ -818,14 +818,16 @@ export class LoweringContext {
     }
 
     /**
-     * A function-like the pin assigns to a property of an object literal built
-     * inside a named function.
+     * A function-like the pin assigns to a property inside a named function:
+     * a member of an object literal built there, or a property assignment.
      *
      * The light factories are shaped that way: `createPointLight` hands a
      * factory an object carrying `_writeLightUbo: (data, offset) => { ... }`, so
      * the writer is neither top-level nor a member of a module-level literal.
-     * Searches the whole declaration, because which object literal holds it is
-     * the pin's business rather than a contract worth pinning.
+     * `enableBentNormals` installs `ext.writeUbo = (data, mat, offsets) => { ... }`
+     * on an existing extension. Searches the whole declaration, because which
+     * object holds it is the pin's business rather than a contract worth
+     * pinning.
      */
     public propertyFunction(
         modulePath: string,
@@ -847,18 +849,32 @@ export class LoweringContext {
             [];
         const visit = (node: ts.Node): void => {
             if (found.length > 0 && !options.unique) return;
+            const assigned =
+                ts.isBinaryExpression(node) &&
+                node.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
+                ts.isPropertyAccessExpression(node.left) &&
+                node.left.name.text === propertyName
+                    ? this.unwrapExpression(node.right)
+                    : undefined;
             if (
-                (ts.isPropertyAssignment(node) ||
+                assigned ||
+                ((ts.isPropertyAssignment(node) ||
                     ts.isMethodDeclaration(node)) &&
-                node.name &&
-                ts.isIdentifier(node.name) &&
-                node.name.text === propertyName
+                    node.name &&
+                    ts.isIdentifier(node.name) &&
+                    node.name.text === propertyName)
             ) {
+                const initializer =
+                    assigned ??
+                    (ts.isPropertyAssignment(node)
+                        ? node.initializer
+                        : undefined);
                 const candidate = ts.isMethodDeclaration(node)
                     ? node
-                    : ts.isFunctionExpression(node.initializer) ||
-                        ts.isArrowFunction(node.initializer)
-                      ? node.initializer
+                    : initializer &&
+                        (ts.isFunctionExpression(initializer) ||
+                            ts.isArrowFunction(initializer))
+                      ? initializer
                       : undefined;
                 if (candidate?.body && ts.isBlock(candidate.body)) {
                     found.push(

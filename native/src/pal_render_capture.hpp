@@ -545,6 +545,14 @@ inline const char* pipeline_name(upstream::RenderPipelineKind kind) {
         return "node_transparent_back";
     case upstream::RenderPipelineKind::node_transparent_none:
         return "node_transparent_none";
+    case upstream::RenderPipelineKind::node_opaque_back_clockwise:
+        return "node_opaque_back_clockwise";
+    case upstream::RenderPipelineKind::node_opaque_none_clockwise:
+        return "node_opaque_none_clockwise";
+    case upstream::RenderPipelineKind::node_transparent_back_clockwise:
+        return "node_transparent_back_clockwise";
+    case upstream::RenderPipelineKind::node_transparent_none_clockwise:
+        return "node_transparent_none_clockwise";
     }
     return "unknown";
 }

@@ -7,6 +7,7 @@ import { importPinnedModule } from "../src/pinned-shader-composer.js";
 import { LoweringContext } from "../src/lowering/context.js";
 import { materialShadowReceiverCpp } from "../src/lowering/material-shadow-receiver.js";
 import { lowerMeshFeatures } from "../src/lowering/mesh-attribute-features.js";
+import { rightHandedContext } from "./doctored-store.js";
 import { pbrMaterialBlendsCpp } from "../src/pinned-pbr-variant-cpp.js";
 import {
     cppFunction,
@@ -17,6 +18,32 @@ import {
 } from "./native-fixture.js";
 
 const native = optionalNativeFixtureTools(false);
+
+test("a right-handed build's winding bit stays out of the native mesh feature word", () => {
+    // `_computeMeshFeatures` ORs in the loader's winding bit right-handed;
+    // the mesh's front face carries it natively, as for the mirrored opt-in.
+    assert.equal(
+        lowerMeshFeatures(rightHandedContext()),
+        lowerMeshFeatures(new LoweringContext()),
+    );
+    assert.throws(
+        () =>
+            lowerMeshFeatures(
+                rightHandedContext(
+                    new Map([
+                        [
+                            "src/material/mesh-features.ts",
+                            [
+                                "._primitiveFeatures ?? 0) & (1 << 11);",
+                                "._primitiveFeatures ?? 0) & (1 << 12);",
+                            ],
+                        ],
+                    ]),
+                ),
+            ),
+        /_primitiveFeatures/,
+    );
+});
 
 test(
     "material variant keys follow live shadow receivers, caster views and instance streams",
@@ -55,12 +82,14 @@ struct RenderDrawCommand { struct Item {
     RenderMaterialKind material_kind = RenderMaterialKind::pbr;
     MaterialHandle material{0}; MeshHandle mesh{0}; std::uint32_t geometry = invalid_handle;
 } item; };
-constexpr unsigned pbr_variant_material_count = 3;
+constexpr unsigned pbr_variant_material_count = 4;
 constexpr std::array<std::uint32_t, 1> pbr_scene_material_indices{0};
-struct PbrMaterialStateRow { std::uint32_t source_row; bool blend; std::uint8_t plugin_signature; bool base_color_factor_written; std::uint32_t row; };
-// Row 0's own state, its blending state, and its state holding plugin list 1.
-constexpr std::array<PbrMaterialStateRow, 3> pbr_material_state_rows{{
-    {0u, false, 0u, false, 0u}, {0u, true, 0u, false, 1u}, {0u, false, 1u, false, 2u}}};
+struct PbrMaterialStateRow { std::uint32_t source_row; bool blend; std::uint8_t plugin_signature; bool base_color_factor_written; bool bent_normal_texture; std::uint32_t row; };
+// Row 0's own state, its blending state, its state holding plugin list 1
+// and its state holding a bent normal texture.
+constexpr std::array<PbrMaterialStateRow, 4> pbr_material_state_rows{{
+    {0u, false, 0u, false, false, 0u}, {0u, true, 0u, false, false, 1u}, {0u, false, 1u, false, false, 2u},
+    {0u, false, 0u, false, true, 3u}}};
 ${pbrMaterialBlendsCpp(new LoweringContext())}
 constexpr std::size_t pinned_msh_receive_shadows = ${bits.MSH_RECEIVE_SHADOWS};
 constexpr std::size_t pinned_msh_has_skeleton = ${bits.MSH_HAS_SKELETON};
@@ -76,6 +105,8 @@ constexpr unsigned standard_no_color_output_flag = 1, standard_alpha_blend_flag 
 unsigned standard_material_features(const MaterialRecord&) { return 0; }
 bool light_affects_mesh(const LightRecord&, MeshHandle) { return false; }
 std::string_view pinned_light_type(LightKind) { return {}; }
+struct MeshLightSelection { std::uint32_t count = 0; std::string_view single_type; };
+MeshLightSelection mesh_light_selection(const Engine&, const Scene&, MeshHandle) { return {}; }
 unsigned pinned_pbr_light_mode(unsigned, bool) { return 0; }
 }
 namespace bbl::pal {
@@ -182,6 +213,10 @@ int main() {
     assert(!row_of(12).resolved);
     engine.materials[8].alpha_mode = MaterialAlphaMode::opaque;
     assert(row_of(8).material_index == 1);
+    engine.materials.resize(14);
+    engine.materials[13].composition_source = {0};
+    engine.materials[13].bent_normal_texture.bytes = SharedTextureBytes::Storage{0};
+    assert(row_of(13).material_index == 3);
 }
 `,
         );

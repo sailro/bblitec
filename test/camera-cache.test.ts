@@ -11,6 +11,7 @@ import { CameraMutationLowerer } from "../src/lowering/camera-mutation-lowerer.j
 import { AnimationLowerer } from "../src/lowering/animation-lowerer.js";
 import {
     lowerShaderSystemDependencyConstants,
+    lowerShaderSystemRightHanded,
     lowerShaderSystemWriter,
 } from "../src/lowering/shader-system-cache.js";
 import { lowerCameraMatrixCaches } from "../src/lowering/camera-matrix-cache.js";
@@ -18,7 +19,7 @@ import { pinnedMatrixHeader } from "../src/lowering/pinned-matrix.js";
 import { RendererLowerer } from "../src/lowering/renderer-lowerer.js";
 import { SceneUboLowerer } from "../src/lowering/scene-ubo-lowerer.js";
 import { importPinnedModule } from "../src/pinned-shader-composer.js";
-import { doctoredContext } from "./doctored-store.js";
+import { doctoredContext, rightHandedContext } from "./doctored-store.js";
 import {
     cppFunction,
     cppRecord,
@@ -511,4 +512,22 @@ test("camera cache math and cache conditions remain source-derived", () => {
             ),
         /initially absent camera stamp/,
     );
+});
+
+test("a right-handed build converts the shader system block and keeps the view cache's Z mirror", () => {
+    assert.equal(lowerShaderSystemRightHanded(new LoweringContext()), "");
+    const converted = lowerShaderSystemRightHanded(rightHandedContext());
+    for (const name of ["view", "world_view", "projection"])
+        assert.ok(
+            converted.includes(`(name == ShaderSystemMatrix::${name})`),
+            name,
+        );
+    const cache = lowerCameraMatrixCaches(rightHandedContext(), false);
+    for (const lane of [2, 6, 10, 14])
+        assert.ok(
+            cache.includes(
+                `(*camera.view_cache)[static_cast<std::size_t>(${lane}.0)] = static_cast<float>((-static_cast<double>((*camera.view_cache)[static_cast<std::size_t>(${lane}.0)])));`,
+            ),
+            `v[${lane}]`,
+        );
 });

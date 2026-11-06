@@ -1,12 +1,14 @@
 // Device-loss recovery with two registered scenes, one per half of the
-// canvas: the loss is forced once the reference frame is captured, and both
-// scenes must render again from their retained CPU owners.
+// canvas, the right an overlay of the left: the loss is forced once the
+// reference frame is captured, and both scenes must render again from their
+// retained CPU owners.
 import {
     addToScene,
     createArcRotateCamera,
     createBox,
     createEngine,
     createHemisphericLight,
+    createOverlayScene,
     createPbrMaterial,
     createSceneContext,
     createSphere,
@@ -39,12 +41,11 @@ function waitFor(predicate: () => boolean, timeoutMs = 30_000): Promise<void> {
 
 function half(
     engine: EngineContext,
+    scene: SceneContext,
     x: number,
     color: [number, number, number],
     sphere: boolean,
-): SceneContext {
-    const scene = createSceneContext(engine);
-    scene.clearColor = { r: 0.08, g: 0.09, b: 0.14, a: 1 };
+): void {
     scene.camera = createArcRotateCamera(-Math.PI / 2, 1.1, 4, { x: 0, y: 0, z: 0 });
     scene.camera.viewport = { x, y: 0, width: 0.5, height: 1 };
     addToScene(scene, createHemisphericLight([0, 1, 0], 1.0));
@@ -53,7 +54,6 @@ function half(
     const material = createPbrMaterial({ baseColorFactor: [color[0], color[1], color[2], 1], roughnessFactor: 0.6, metallicFactor: 0 });
     mesh.material = material;
     addToScene(scene, mesh);
-    return scene;
 }
 
 async function main(): Promise<void> {
@@ -73,8 +73,12 @@ async function main(): Promise<void> {
         },
     });
 
-    const left = half(engine, 0, [0.85, 0.3, 0.2], false);
-    const right = half(engine, 0.5, [0.2, 0.7, 0.35], true);
+    const left = createSceneContext(engine);
+    // The right half composites over the left scene; a second ordinary scene would clear the whole canvas.
+    const right = createOverlayScene(left);
+    left.clearColor = { r: 0.08, g: 0.09, b: 0.14, a: 1 };
+    half(engine, left, 0, [0.85, 0.3, 0.2], false);
+    half(engine, right, 0.5, [0.2, 0.7, 0.35], true);
 
     let frames = 0;
     let recoveredFrames = 0;

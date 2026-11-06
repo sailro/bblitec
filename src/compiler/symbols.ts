@@ -1412,7 +1412,13 @@ export class CompilerSymbols {
                     ts.isStringLiteral(module) &&
                     isBabylonModule(module.text)
                 )
-                    return { name: specifierSourceName(declaration), typeOnly };
+                    // An export the program compiles from its pinned source
+                    // is program code (`pinned-program-sources.ts`).
+                    return aliasTarget(this.checker, symbol).declarations?.some(
+                        (target) => !target.getSourceFile().isDeclarationFile,
+                    )
+                        ? undefined
+                        : { name: specifierSourceName(declaration), typeOnly };
             }
             symbol = this.checker.getImmediateAliasedSymbol(symbol);
         }

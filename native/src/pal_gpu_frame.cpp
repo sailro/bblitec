@@ -19,7 +19,7 @@ namespace bbl::pal {
 bool registered_scene_set_changed(const Engine& engine,
                                   const std::vector<std::shared_ptr<Scene>>& planned) {
     std::size_t i = 0;
-    for (const auto& current : engine.scenes()) {
+    for (const auto& current : composited_scenes(engine)) {
         if (i == planned.size())
             return true;
         if (static_cast<bool>(current) != static_cast<bool>(planned[i])) {
@@ -42,7 +42,8 @@ bool request_renderer_restart_if_scene_set_changed(
         return false;
     // A realm's animation loop outlives a mode's last scene: an asynchronous replacement
     // can register after this frame. Standalone runs retain their empty-scene exit.
-    engine.renderer_restart_requested = !engine.scenes().empty() || engine.offscreen_run != nullptr;
+    engine.renderer_restart_requested =
+        !composited_scenes(engine).empty() || engine.offscreen_run != nullptr;
     return true;
 }
 
@@ -117,6 +118,13 @@ void begin_profiled_frame() {
     profile::begin_frame();
 #endif
 }
+
+/** One scene's `_update`: its before-render callbacks, then its material-group drain. */
+void update_scene(Scene& scene, double delta_ms) {
+    run_scene_before_render(scene, delta_ms);
+    if (scene.state->process_material_groups)
+        scene.state->process_material_groups(scene);
+}
 } // namespace
 
 std::optional<double> begin_animation_turn(Engine& engine, FrameClock& frame_clock,
@@ -140,22 +148,31 @@ double advance_frame(Engine& engine, Scene& scene, FrameClock& frame_clock, doub
     if (!turn)
         return 0.0;
     const double delta_ms = *turn;
+    // Every registered scene's own callbacks, as the pin's frame runs each
+    // context's `_update` in registration order: an overlay layer's -- the
+    // utility layer's camera forwarding and each gizmo's follow -- and those
+    // of the scenes ahead of the root, which the root's clear hides. An
+    // overlay whose base chain is unregistered skips its update (`isSuspended`).
+    std::vector<const SceneState*> updated;
+    for (const std::shared_ptr<Scene>& registered : engine.scenes()) {
+        if (registered && registered->shares_identity(scene))
+            break;
+        if (!registered || overlay_scene_suspended(engine, *registered))
+            continue;
+        updated.push_back(registered->identity());
+        update_scene(*registered, scene_callback_delta(*registered, delta_ms));
+    }
     const double scene_delta_ms = scene_callback_delta(scene, delta_ms);
-    run_scene_before_render(scene, scene_delta_ms);
-    if (scene.state->process_material_groups)
-        scene.state->process_material_groups(scene);
-    // Every other registered scene's own callbacks. A swapchain overlay
-    // layer is a second SceneContext with its own `_beforeRender` list --
-    // the utility layer's camera forwarding and each gizmo's follow live
-    // there -- and upstream runs a scene's callbacks as part of rendering
-    // it, so a layer that is drawn is a layer whose callbacks ran.
+    update_scene(scene, scene_delta_ms);
+    // A fresh snapshot: the root's callbacks may have disposed it or
+    // registered another scene.
     const auto registered_scenes = engine.scenes();
     for (const std::shared_ptr<Scene>& registered : registered_scenes) {
-        if (!registered || registered->shares_identity(scene))
+        if (!registered || registered->shares_identity(scene) ||
+            std::ranges::find(updated, registered->identity()) != updated.end() ||
+            overlay_scene_suspended(engine, *registered))
             continue;
-        run_scene_before_render(*registered, scene_callback_delta(*registered, delta_ms));
-        if (registered->state->process_material_groups)
-            registered->state->process_material_groups(*registered);
+        update_scene(*registered, scene_callback_delta(*registered, delta_ms));
     }
     project_tracked_material_colors(engine);
     refresh_world_matrix_providers(engine);

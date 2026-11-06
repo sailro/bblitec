@@ -146,9 +146,11 @@ import {
     stringLiteral,
 } from "./cpp-literals.js";
 import { jsonToValue, type JsonValuePolicy } from "./compiler/json-value.js";
+import { overlayRefusals } from "./lowering/overlay-scene-lowerer.js";
 import { compileAdaptations } from "./compiler/adaptations.js";
 import {
     emitPropertyAssignment,
+    emitUnobservedErrorPropertyWrite,
     emitStructuralPropertyAssignment,
 } from "./compiler/assignments.js";
 import {
@@ -176,6 +178,7 @@ import { browserGeneratedString } from "./compiler/browser-generated-string.js";
 import { compileBrowserTextureFunctionCall } from "./compiler/browser-texture-function.js";
 import { compileExecutedUrlFunctionCall } from "./compiler/executed-url-function.js";
 import { compileExecutedVideoFunctionCall } from "./compiler/executed-video-function.js";
+import { compileExecutedGltfFunctionCall } from "./compiler/executed-gltf-function.js";
 import {
     compileEnginePixelRatioCap,
     compileEnginePrecisionPolicy,
@@ -2631,6 +2634,7 @@ class Compiler implements LoweringServices {
             emitPropertyAssignment(this, expression);
             return;
         }
+        if (emitUnobservedErrorPropertyWrite(this, expression)) return;
         if (this.dataLowerer.emitAssignment(expression)) {
             return;
         }
@@ -5411,16 +5415,18 @@ class Compiler implements LoweringServices {
         declaration: ExecutedTarget,
         args: readonly (ExecutedArgument | undefined)[],
         label: string,
+        pinnedStandIn?: (name: string) => unknown,
     ): unknown {
-        const key = JSON.stringify(
-            args.map((value) =>
+        const key = JSON.stringify([
+            pinnedStandIn !== undefined,
+            ...args.map((value) =>
                 value === undefined
                     ? ["undefined"]
                     : typeof value === "number"
                       ? ["number", Object.is(value, -0) ? "-0" : String(value)]
                       : ["value", value],
             ),
-        );
+        ]);
         let runs = this.generationRuns.get(declaration);
         if (!runs) {
             runs = new Map();
@@ -5441,6 +5447,7 @@ class Compiler implements LoweringServices {
                 },
                 deploymentValue: (expression) =>
                     browserDeploymentValue(this, expression),
+                ...(pinnedStandIn ? { pinnedStandIn } : {}),
                 ...(ts.isVariableDeclaration(declaration) ||
                 ts.isCallExpression(declaration)
                     ? {
@@ -7099,7 +7106,22 @@ class Compiler implements LoweringServices {
         emitBody: () => void,
         options?: { functionBody?: true },
     ): string[] {
-        if (!options?.functionBody || this.options.workers)
+        if (options?.functionBody) {
+            // A function body's loops are its own.
+            this.statements.enterFunctionBody();
+            try {
+                return this.captureFunctionBodyLines(emitBody);
+            } finally {
+                this.statements.leaveFunctionBody();
+            }
+        }
+        return this.captureEmittedStatements(emitBody).map(
+            renderNativeEmission,
+        );
+    }
+
+    private captureFunctionBodyLines(emitBody: () => void): string[] {
+        if (this.options.workers)
             return this.captureEmittedStatements(emitBody).map(
                 renderNativeEmission,
             );
@@ -8743,6 +8765,18 @@ class Compiler implements LoweringServices {
         return compileExecutedVideoFunctionCall(this, call, callee);
     }
 
+    /**
+     * A function returning `loadGltf(engine, new Blob(...))` over closed data
+     * runs at generation (`executed-gltf-function.ts`); its call loads the
+     * document it built.
+     */
+    public compileExecutedGltfFunctionCall(
+        call: ts.CallExpression,
+        callee: ts.Identifier,
+    ): Value | undefined {
+        return compileExecutedGltfFunctionCall(this, call, callee);
+    }
+
     public registerSpriteAtlasAsset(expression: ts.Expression): string {
         return registerSpriteAtlasAsset(this, expression);
     }
@@ -10354,6 +10388,7 @@ class Compiler implements LoweringServices {
         scene: Value,
         node: ts.Node,
     ): DefaultRenderTaskEmission {
+        if (scene.overlayScene) this.fail(node, overlayRefusals.frameGraph);
         this.reachFeature("renderer:scene", node);
         this.reachFeature("renderer:geometry-output", node);
         this.reachFeature("frame-graph:resources", node);
@@ -10364,6 +10399,7 @@ class Compiler implements LoweringServices {
                 [
                     "void bbl_ensure_default_render_task(bbl::Scene& scene) {",
                     '    if (!scene.engine) throw std::runtime_error("A scene render task requires its owning engine.");',
+                    `    if (scene.state->overlay_base) throw std::runtime_error(${stringLiteral(overlayRefusals.frameGraph)});`,
                     "    if (scene.state->default_render_task && !scene.state->default_render_task_created) {",
                     "        auto& engine = *scene.engine;",
                     "        auto target = bbl::create_render_target(engine, " +

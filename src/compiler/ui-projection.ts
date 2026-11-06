@@ -2559,6 +2559,19 @@ export class UiProjection {
                     );
                 return;
             }
+            // RmlUi resolves `inherit` on every property (patch 0066); the
+            // background longhands resolve `initial` and `unset` too, through
+            // the PAL's own cascade.
+            if (
+                /^(?:revert|revert-layer)$/.test(literalValue) ||
+                (/^(?:initial|unset)$/.test(literalValue) &&
+                    !/^background(?:-color|-clip)?$/.test(property))
+            )
+                this.uiStyleRefusal(
+                    site,
+                    property,
+                    `the CSS-wide ${literalValue} keyword is not represented`,
+                );
             if (property === "accent-color") {
                 if (!UiProjection.UI_ACCENT_COLOR.test(literalValue))
                     this.uiStyleRefusal(

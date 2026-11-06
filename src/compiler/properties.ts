@@ -127,6 +127,7 @@ import {
     valueForKind,
     type Feature,
     type GeometryOutputTaskManifest,
+    type SsaoTaskManifest,
     type GeometryTextureTypeName,
     type Value,
     type ValueKind,
@@ -4421,6 +4422,7 @@ export class PropertyAccessLowerer {
                 kind: "scene",
                 cpp: `bbl::utility_layer_scene(${engine}, ${owner.cpp})`,
                 engineCpp: engine,
+                overlayScene: true,
                 sceneEnvironmentState: {
                     rotationSet: false,
                     hasTexturedSkybox: false,
@@ -4710,6 +4712,9 @@ export class PropertyAccessLowerer {
                 ...(owner.engineCpp ? { engineCpp: owner.engineCpp } : {}),
             };
         }
+        if (owner.ssaoTask) {
+            return this.readSsaoProperty(owner, owner.ssaoTask, expression);
+        }
         if (owner.kind === "task" && owner.screenSpaceTask) {
             // The pin publishes three targets on a screen-space task: its
             // output (the composite's, or the stable effect target when it
@@ -4747,6 +4752,86 @@ export class PropertyAccessLowerer {
             cpp: `bbl::effect_task_method(${this.context.requireEngine(owner, expression)}, ${owner.cpp}, ${dispose})`,
             dataType: { kind: "function", parameters: [], identity: true },
         };
+    }
+
+    /**
+     * An SSAO task's published records and the settings they hold, read live
+     * off the task the generated factory created.
+     */
+    private readSsaoProperty(
+        owner: Value,
+        manifest: SsaoTaskManifest,
+        expression: ts.PropertyAccessExpression,
+    ): Value | undefined {
+        const property = expression.name.text;
+        const engine = this.context.requireEngine(owner, expression);
+        const engineCpp = owner.engineCpp ? { engineCpp: owner.engineCpp } : {};
+        if (owner.kind === "task") {
+            if (property === "temporal") {
+                return {
+                    kind: "ssao-temporal",
+                    cpp: `bbl::SsaoTemporalRef{${owner.cpp}}`,
+                    ssaoTask: manifest,
+                    ...engineCpp,
+                };
+            }
+            if (property === "outputTexture") {
+                // The pin's output target aliases the texture its last pass
+                // writes, which the backend resolves per frame.
+                return {
+                    kind: "render-texture",
+                    cpp: `bbl::ssao_output_texture(${owner.cpp})`,
+                    renderTextureSource: "ssao-output",
+                    ...engineCpp,
+                };
+            }
+            const record = `${recordAt(`${engine}.frame_tasks`, owner.cpp)}.ssao`;
+            if (property === "enabled")
+                return { kind: "boolean", cpp: `${record}.enabled` };
+            if (property === "radius" || property === "intensity") {
+                return { kind: "number", cpp: `${record}.${property}` };
+            }
+            if (property === "quality")
+                return { kind: "string", cpp: `${record}.quality` };
+            if (property === "normalTexture") {
+                // The task's normal input, or null: the attachment it holds.
+                return {
+                    kind: "render-texture",
+                    cpp: `${record}.normal.value()`,
+                    renderTextureSource: "geometry",
+                    optionalStorageCpp: `${record}.normal`,
+                    truthinessCpp: `${record}.normal.has_value()`,
+                    ...engineCpp,
+                };
+            }
+            return undefined;
+        }
+        if (owner.kind === "ssao-temporal") {
+            const settings = `bbl::ssao_temporal_settings(${engine}, ${owner.cpp})`;
+            if (property === "enabled")
+                return { kind: "boolean", cpp: `${settings}.enabled` };
+            if (property === "historySamples")
+                return { kind: "number", cpp: `${settings}.history_samples` };
+            if (property === "resetVersion")
+                return { kind: "number", cpp: `${settings}.reset_version` };
+            return undefined;
+        }
+        if (owner.kind === "ssao-motion-pruning") {
+            if (property === "enabled")
+                return {
+                    kind: "boolean",
+                    cpp: `bbl::ssao_motion_pruning_settings(${engine}, ${owner.cpp}).enabled`,
+                };
+            return undefined;
+        }
+        if (owner.kind === "ssao-half-resolution") {
+            const settings = `bbl::ssao_half_resolution_settings(${engine}, ${owner.cpp})`;
+            if (property === "enabled")
+                return { kind: "boolean", cpp: `${settings}.enabled` };
+            if (property === "active")
+                return { kind: "boolean", cpp: `${settings}.active` };
+        }
+        return undefined;
     }
 
     /**
@@ -4812,6 +4897,7 @@ export class PropertyAccessLowerer {
             kind: "render-texture",
             cpp: `bbl::geometry_task_texture(${owner.cpp}, bbl::GeometryTextureType::${geometryEnumMember(type)})`,
             renderTextureSource: "geometry",
+            geometryAttachment: type,
             ...engineCpp,
         };
     }

@@ -50,6 +50,8 @@ inline TargetUser task_target_user(const FrameTaskRecord& task) {
         return {"Screen-space task", task.screen_space.name};
     case FrameTaskKind::effect:
         return {"Effect task", task.effect.name};
+    case FrameTaskKind::ssao:
+        return {"SSAO task", task.ssao.name};
     case FrameTaskKind::compute:
         break;
     }
@@ -151,14 +153,23 @@ template <class Visit> void visit_task_targets(const FrameTaskRecord& task, Visi
         return;
     case FrameTaskKind::screen_space:
         for (const RenderTargetHandle target :
-             {task.screen_space.source, task.screen_space.depth, task.screen_space.target,
-              task.screen_space.raw, task.screen_space.stable, task.screen_space.history,
-              task.screen_space.output_target})
+             {task.screen_space.source, task.screen_space.depth, task.screen_space.target})
+            visit(target);
+        for (const RenderTargetHandle target : task.screen_space.intermediates)
+            visit(target);
+        for (const RenderTargetHandle target : {task.screen_space.stable,
+                                                task.screen_space.history,
+                                                task.screen_space.output_target})
             visit(target);
         passes(task.post_process);
         return;
     case FrameTaskKind::effect:
         visit(task.effect.target);
+        return;
+    case FrameTaskKind::ssao:
+        texture(task.ssao.depth);
+        if (task.ssao.normal)
+            texture(*task.ssao.normal);
         return;
     case FrameTaskKind::compute:
         return;

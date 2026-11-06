@@ -214,6 +214,19 @@ public:
         return presenting_;
     }
 
+    /**
+     * The producer's engine stopped (`stopEngine`): the frame it last
+     * published is final, as the pin's canvas keeps what it last drew, so
+     * nothing waits on a later one. A new publication thaws it.
+     */
+    bool frozen() const {
+        std::lock_guard lock(mutex_);
+        return frozen_;
+    }
+
+    /** The source's readiness now, for a frozen frame published before it was set. */
+    bool capture_ready_now() const { return !capture_ready_ || capture_ready_->load(); }
+
 private:
     friend class OffscreenRun;
     static Extent checked_extent(std::uint32_t width, std::uint32_t height) {
@@ -240,6 +253,7 @@ private:
                 return false;
             next->sequence = sequence;
             frame_.swap(next);
+            frozen_ = false;
         }
         // Release a superseded frame outside the mailbox lock.
         return ready;
@@ -249,6 +263,7 @@ private:
     Extent extent_;
     std::optional<OffscreenFrame> frame_;
     bool closed_ = false;
+    bool frozen_ = false;
     bool producer_active_ = false;
     bool presenting_ = true;
     const std::shared_ptr<AnimationFrameSource> animation_frames_;
@@ -369,6 +384,17 @@ public:
         for (const auto& view : views_)
             if (view.destination)
                 view.destination->discard_pending();
+    }
+
+    /** The engine stopped: every surface this run publishes to keeps its last frame for good. */
+    void freeze() {
+        {
+            std::lock_guard lock(surface_.mutex_);
+            surface_.frozen_ = true;
+        }
+        for (const auto& view : views_)
+            if (view.destination)
+                view.destination->freeze();
     }
 
 private:

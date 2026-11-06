@@ -5,6 +5,7 @@ import { compilerRepositoryRoot } from "./repository-root.js";
 import { asObject, type JsonObject } from "./json-fields.js";
 import { PinnedProgram, registerPinnedSource } from "./pinned-program.js";
 import { listFiles } from "./tooling/records.js";
+import type { BabylonLiteCorpusManifest } from "./upstream-corpus.js";
 export { findRepositoryRoot } from "./repository-root.js";
 
 import {
@@ -178,9 +179,16 @@ export class UpstreamSourceStore {
         assertPinnedWgslTagIsIdentity(this.getSourceFile("src/shader/wgsl.ts"));
     }
 
-    public getSource(modulePath: string): string {
+    /**
+     * A module's text as a program built under `conditions` reads it, the
+     * process's own by default.
+     */
+    public getSource(
+        modulePath: string,
+        conditions: readonly string[] = pinnedBuildConditions(),
+    ): string {
         const normalized = modulePath.replace(/\\/g, "/");
-        const key = `${this.packageRoot}\0${pinnedBuildConditions().join(",")}\0${normalized}`;
+        const key = `${this.packageRoot}\0${conditions.join(",")}\0${normalized}`;
         const built = UpstreamSourceStore.builtSources.get(key);
         if (built !== undefined) return built;
         const source = this.sources.get(normalized);
@@ -192,7 +200,7 @@ export class UpstreamSourceStore {
             pinnedTaggedWgslTransform(this.repositoryRoot)(source, normalized)
                 ?.code ?? source,
             normalized,
-            (specifier) => this.packageImportConstants(specifier),
+            (specifier) => this.packageImportConstants(specifier, conditions),
         );
         UpstreamSourceStore.builtSources.set(key, text);
         return text;
@@ -205,9 +213,12 @@ export class UpstreamSourceStore {
      */
     private packageImportConstants(
         specifier: string,
+        conditions: readonly string[],
     ): ReadonlyMap<string, PinnedConstant> | undefined {
         const emitted = posix
-            .normalize(packageImportTarget(this.packageRoot, specifier))
+            .normalize(
+                packageImportTarget(this.packageRoot, specifier, conditions),
+            )
             .replace(/^lib\//, "");
         const source = [...this.packagedModules].find(
             ([, module]) => module === emitted,
@@ -224,6 +235,25 @@ export class UpstreamSourceStore {
                 false,
             ),
         );
+    }
+
+    /**
+     * Whether the program is right-handed: the `_rightHanded` the pin's
+     * `#coordinate-system` import selects under the build conditions,
+     * `true` in the right-handed variant and `null` in the default one.
+     */
+    public rightHanded(
+        conditions: readonly string[] = pinnedBuildConditions(),
+    ): boolean {
+        const value = this.packageImportConstants(
+            "#coordinate-system",
+            conditions,
+        )?.get("_rightHanded");
+        if (value !== true && value !== null)
+            throw new Error(
+                "The pinned '#coordinate-system' import no longer selects a `_rightHanded` of `true` or `null`.",
+            );
+        return value === true;
     }
 
     public hasSource(modulePath: string): boolean {
@@ -353,6 +383,38 @@ export class UpstreamSourceStore {
                 this.sources.set(source, text);
                 this.packagedModules.set(source, emitted);
             }
+        }
+        // A module of types only is emitted empty and no source map carries
+        // it: the corpus pins its source at the pin's commit.
+        const corpus = readPinFile(
+            "upstream/babylon-lite-corpus.json",
+            this.repositoryRoot,
+        ) as Partial<BabylonLiteCorpusManifest>;
+        for (const file of corpus.packageSources ?? []) {
+            const source = file.upstreamPath.replace(
+                /^packages\/babylon-lite\//,
+                "",
+            );
+            const emitted = `${source.replace(/^src\//, "").replace(/\.ts$/, "")}.js`;
+            const module = join(libRoot, emitted);
+            if (
+                this.sources.has(source) ||
+                !existsSync(module) ||
+                ts.createSourceFile(
+                    emitted,
+                    readFileSync(module, "utf8"),
+                    ts.ScriptTarget.Latest,
+                    false,
+                ).statements.length > 0
+            )
+                throw new Error(
+                    `Corpus package source ${file.upstreamPath} must be a module the package emits empty.`,
+                );
+            this.sources.set(
+                source,
+                readFileSync(resolve(this.repositoryRoot, file.source), "utf8"),
+            );
+            this.packagedModules.set(source, emitted);
         }
     }
 

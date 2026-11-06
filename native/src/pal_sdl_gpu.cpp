@@ -31,6 +31,7 @@
 #include <bblite/features/has_picking.hpp>
 #include <bblite/features/has_post_process.hpp>
 #include <bblite/features/has_screen_space.hpp>
+#include <bblite/features/has_ssao.hpp>
 #include <bblite/features/external_renderables.hpp>
 #include <bblite/features/has_splats.hpp>
 #include <bblite/features/has_sprite_renderer.hpp>
@@ -122,6 +123,9 @@ void release(GpuState& state) {
     // formats, so they outlive every frame-graph rebuild and go with the
     // device.
     state.screen_space_programs.clear();
+#endif
+#if BBLITE_HAS_SSAO
+    state.ssao.reset();
 #endif
     for (GpuState::StorageBuffer& storage : state.storage_buffers) {
         if (storage.buffer && !storage.borrowed_owner) {
@@ -414,7 +418,8 @@ class SdlSceneRun {
         const bool cpu_profile = environment_variable("BBLITE_CPU_PROFILE") == "1";
         const MemoryProfile mem_profile;
         CpuStartupMark cpu_startup_mark{cpu_profile, "sdl"};
-        const std::vector<std::shared_ptr<Scene>> active_registered_scenes = engine.scenes();
+        const std::vector<std::shared_ptr<Scene>> active_registered_scenes =
+            composited_scenes(engine);
         const std::shared_ptr<Scene> active_scene = active_registered_scenes.front();
         Scene& scene = *active_scene;
         Resources resources;
@@ -465,8 +470,10 @@ class SdlSceneRun {
         SDL_GPUTexture* swapchain = nullptr;
         Uint32 width = 0, height = 0;
         double start = 0, delta_ms = 0, updated = 0, uploaded = 0, acquired = 0;
-        bool capture_ready = false, capture_frame = false, capture_ids = false,
-             capture_clusters = false;
+        // `capture_frame` renders the frame readable, which every frame does
+        // while a screenshot waits; `capture_save` saves it.
+        bool capture_ready = false, capture_frame = false, capture_save = false,
+             capture_ids = false, capture_clusters = false;
         PixelViewport surface_extent{};
         CameraPassMatrices frame_camera{};
         ShaderPassMatrices frame_pass_matrices{};
@@ -477,6 +484,11 @@ class SdlSceneRun {
 #endif
     };
     std::optional<Frame> frame_;
+    /** The last frame's readable image while a screenshot waits: what a stopped engine hands it. */
+    struct FrozenCapture {
+        SDL_GPUTexture* texture = nullptr;
+        Uint32 width = 0, height = 0;
+    } frozen_capture_;
 
     /** The frame `prepare` opened; every later stage records into it. */
     Frame& current_frame() {
@@ -614,9 +626,10 @@ class SdlSceneRun {
             if (variant == npos)
                 throw std::runtime_error("Startup PBR draw has no composed variant: " +
                                          pal::pinned_variant_request(key, shader));
-            prepare([&state, variant, kind, geometry, shadow_pass, esm, samples, target] {
+            prepare([&state, variant, kind, geometry, shadow_pass, esm, samples, target,
+                     a2c = draw.item.alpha_to_coverage] {
                 static_cast<void>(pinned_variant_pipeline(state, variant, kind, geometry,
-                                                          shadow_pass, esm, samples, target));
+                                                          shadow_pass, esm, samples, target, a2c));
             });
             break;
         }
@@ -626,9 +639,10 @@ class SdlSceneRun {
             const auto variant = standard_variant_for_draw(scene, engine, draw, shader);
             if (variant == npos)
                 throw std::runtime_error("Startup Standard draw has no composed variant.");
-            prepare([&state, variant, kind, geometry, shadow_pass, esm, samples, target] {
-                static_cast<void>(standard_variant_pipeline(state, variant, kind, geometry,
-                                                            shadow_pass, esm, samples, target));
+            prepare([&state, variant, kind, geometry, shadow_pass, esm, samples, target,
+                     a2c = draw.item.alpha_to_coverage] {
+                static_cast<void>(standard_variant_pipeline(
+                    state, variant, kind, geometry, shadow_pass, esm, samples, target, a2c));
             });
             break;
         }
@@ -684,6 +698,38 @@ public:
             frame_->post_submit->unsubmitted();
 #endif
         frame_.reset();
+    }
+    /**
+     * A frozen frame (`conduct_frame`): the last frame's readable image is
+     * the screenshot still waiting on it. Another capture, or a screenshot
+     * with no frame drawn yet, draws the frame once more.
+     */
+    bool freeze() {
+        auto& captures = data_.captures;
+        const FrameOptions& options = data_.frame_options;
+#if BBLITE_OFFSCREEN_SURFACES
+        if (data_.offscreen)
+            data_.offscreen->freeze();
+#endif
+        if (!options.screenshot_path.empty() && !captures.screenshot_saved &&
+            captures.drains_resolved()) {
+            if (!frozen_capture_.texture)
+                return false;
+            auto& state = data_.resources.state;
+            SdlGpuCommand command{SDL_AcquireGPUCommandBuffer(state.device)};
+            if (!command)
+                gpu_error("SDL_AcquireGPUCommandBuffer frozen capture");
+            save_texture_png(state.device, command, frozen_capture_.texture, data_.swapchain_format,
+                             frozen_capture_.width, frozen_capture_.height,
+                             options.screenshot_path);
+            captures.screenshot_saved = true;
+        }
+        if ((!options.id_buffer_path.empty() && !captures.id_buffer_saved) ||
+            (!options.cluster_buffer_path.empty() && !captures.cluster_buffer_saved) ||
+            (!options.render_capture_path.empty() && !captures.render_capture_saved))
+            return false;
+        ++data_.frame;
+        return true;
     }
     bool yield_when_skipped() const { return frame_ && frame_->yield_when_skipped; }
 
@@ -1038,7 +1084,7 @@ public:
         pipeline_info.primitive_type = SDL_GPU_PRIMITIVETYPE_TRIANGLELIST;
         pipeline_info.rasterizer_state.fill_mode = SDL_GPU_FILLMODE_FILL;
         pipeline_info.rasterizer_state.cull_mode = SDL_GPU_CULLMODE_BACK;
-        pipeline_info.rasterizer_state.front_face = SDL_GPU_FRONTFACE_COUNTER_CLOCKWISE;
+        pipeline_info.rasterizer_state.front_face = gpu_front_face(scene_pass_clockwise(false));
         pipeline_info.rasterizer_state.enable_depth_clip = true;
         pipeline_info.depth_stencil_state.compare_op =
             gpu_depth_compare(upstream::pinned_depth_compare);
@@ -1710,8 +1756,14 @@ public:
         GpuState& state;
         GpuBufferUploadBatch& uploads;
 
-        void write_mesh_blocks(const Scene&, const upstream::RenderItem&, const MeshRecord&,
-                               GpuMesh&) {}
+        void write_mesh_blocks([[maybe_unused]] const Scene& scene,
+                               [[maybe_unused]] const upstream::RenderItem& item, const MeshRecord&,
+                               [[maybe_unused]] GpuMesh& gpu) {
+#if BBLITE_MESH_OPACITY
+            // The one block a draw binds as storage rather than pushes.
+            sync_mesh_opacity(state, uploads, *scene.engine, item, gpu);
+#endif
+        }
 
 #if BBLITE_MESH_ATTRIBUTE_UPDATE || BBLITE_MESH_GEOMETRY_UPDATE
         void upload_vertices(GpuMesh& gpu, const std::vector<GpuVertex>& vertices) {
@@ -1942,10 +1994,12 @@ public:
             auto& data = run.data_;
             const FrameOptions& options = data.frame_options;
             Frame& frame = run.current_frame();
-            frame.capture_ready = data.frame >= options.screenshot_frame && !topology_updated &&
-                                  data.captures.drains_resolved();
-            frame.capture_frame = frame.capture_ready && !data.captures.screenshot_saved &&
-                                  !options.screenshot_path.empty();
+            // A stopped engine's frame is its last (`conduct_frame`).
+            frame.capture_ready = (data.frame >= options.screenshot_frame || data.engine.stopped) &&
+                                  !topology_updated && data.captures.drains_resolved();
+            frame.capture_frame =
+                !data.captures.screenshot_saved && !options.screenshot_path.empty();
+            frame.capture_save = frame.capture_ready && frame.capture_frame;
             frame.capture_ids = frame.capture_ready && !data.captures.id_buffer_saved &&
                                 !options.id_buffer_path.empty();
             frame.capture_clusters = frame.capture_ready && !data.captures.cluster_buffer_saved &&
@@ -2031,6 +2085,7 @@ public:
         SceneSync hooks{*this, MeshRowUploads{data.resources.state, *data.frame_buffer_uploads}};
         SceneSyncState<GpuMesh> sync{data.engine,
                                      data.scene,
+                                     data.active_registered_scenes,
                                      data.frame,
                                      frame.delta_ms,
                                      frame.width,
@@ -2114,12 +2169,8 @@ public:
             ui_frame_reads_target(*current_frame().ui_frame) &&
                 !(capture_frame && data_.frame_options.capture_ui));
 #endif
-        if (!engine.render_targets.empty()) {
-#if BBLITE_HAS_TAA
-            if (!engine.stopped)
-#endif
-                create_frame_graph_textures(state, engine, swapchain_format, width, height);
-        }
+        if (!engine.render_targets.empty())
+            create_frame_graph_textures(state, engine, swapchain_format, width, height);
         // Every registered scene's frame graph (`whole_frame`), or, after a
         // direct scene pass, the graphs of the scenes that run their own.
         const auto encode_frame_graphs = [&](bool whole_frame) {
@@ -2131,7 +2182,7 @@ public:
             // No draw is encoded if a later logical hook throws.
             std::vector<std::variant<PreparedSdlScenePass, PreparedSdlPostProcessPass>>
                 temporal_passes;
-            if (!engine.stopped) {
+            {
 #endif
                 // Each registered context owns its tasks, camera and draw indices.
                 // Finish its graph before composing the next context's surface.
@@ -2220,6 +2271,10 @@ public:
                         if (source.source == RenderTextureSource::render_target) {
                             return target_texture(source.target, true, source.depth_only);
                         }
+#if BBLITE_HAS_SSAO
+                        if (source.source == RenderTextureSource::ssao_output)
+                            return ssao_output_texture(state, engine, source.task);
+#endif
                         const FrameTaskRecord& task = handle_at(engine.frame_tasks, source.task);
                         if (task.kind != FrameTaskKind::geometry) {
                             throw std::runtime_error("Frame graph source task is not geometry.");
@@ -2527,7 +2582,10 @@ public:
                                         invalid_handle
 #endif
                                         ,
-                                        task_samples, shader_target);
+                                        task_samples, shader_target, &draw_pass_matrices,
+                                        geometry_task && pass_task
+                                            ? &handle_at(state.geometry_tasks, *pass_task)
+                                            : nullptr);
                                     continue;
                                 }
 #endif
@@ -2800,9 +2858,101 @@ public:
                         }
                     };
 
+                    // The root's overlay layers after its whole graph
+                    // (`root_frame_passes`): one pass each with a FRESH depth
+                    // buffer on the root swapchain task's colour attachment,
+                    // resolved into the swapchain again, at MSAA; on the
+                    // swapchain at one sample. A capture composes them into
+                    // the texture it reads, as the native UI does.
+                    const auto encode_overlay_layers = [&](const OverlayComposition& overlays) {
+                        SDL_GPUTexture* const surface =
+                            capture_frame && capture_texture ? capture_texture : swapchain;
+                        SDL_GPUColorTargetInfo color{};
+                        color.texture = surface;
+                        color.load_op = SDL_GPU_LOADOP_LOAD;
+                        color.store_op = SDL_GPU_STOREOP_STORE;
+                        std::uint32_t target_width = width, target_height = height;
+                        create_depth(state, width, height);
+                        SDL_GPUTexture* depth_texture = state.depth;
+                        if (overlays.mode == OverlayComposite::root_attachment) {
+                            const FrameTaskRecord& task =
+                                handle_at(engine.frame_tasks, overlays.task);
+                            const RenderTargetRecord& record =
+                                pal::resolve_render_target(engine, task.render.target, target_user);
+                            const GpuRenderTarget& target = pal::resolve_gpu_target(
+                                engine, state.render_targets, task.render.target, target_user);
+                            if (target.color_format != swapchain_format ||
+                                target_sample_count(state, record) != state.sample_count)
+                                throw std::runtime_error(
+                                    "Overlay layers composite into a root swapchain task whose "
+                                    "target has the frame's own colour format and sample count "
+                                    "only.");
+                            color.texture = target.color;
+                            // The compiler's scene pass resolves through its
+                            // own copies, which follow the layers.
+                            if (!task.render.scene_stages) {
+                                color.store_op = SDL_GPU_STOREOP_RESOLVE_AND_STORE;
+                                color.resolve_texture = surface;
+                            }
+                            target_width = target.width;
+                            target_height = target.height;
+                            // A target the surface's depth does not fit lends
+                            // its own, which its task clears again before
+                            // drawing.
+                            if (target_width != width || target_height != height) {
+                                if (!target.depth || !task.render.depth_clear ||
+                                    target.depth_format != state.depth_format)
+                                    throw std::runtime_error(
+                                        "Overlay layers composite into a root swapchain task "
+                                        "whose target has neither the surface's size nor a "
+                                        "cleared depth of its own in the frame's depth format.");
+                                depth_texture = target.depth;
+                            }
+                        }
+                        for (std::size_t layer = 0; layer < overlay_plans.size(); ++layer) {
+                            const Scene& utility = *data_.active_registered_scenes[layer + 1];
+                            if (scene_runs_own_graph(utility))
+                                continue;
+                            // The layer's own scene pass: its camera, with no
+                            // fallback to the base scene's.
+                            const PassCamera utility_pass_camera = build_kept_pass_camera(
+                                utility, engine, scene_pass_camera(engine, utility), target_width,
+                                target_height, pass_blocks.scene(utility));
+                            const std::array<float, 16>& utility_matrix =
+                                utility_pass_camera.matrices.view_projection;
+                            SDL_GPUDepthStencilTargetInfo depth{};
+                            depth.texture = depth_texture;
+                            depth.clear_depth = upstream::pinned_depth_clear;
+                            depth.load_op = SDL_GPU_LOADOP_CLEAR;
+                            depth.store_op = SDL_GPU_STOREOP_DONT_CARE;
+                            depth.stencil_load_op = SDL_GPU_LOADOP_CLEAR;
+                            depth.stencil_store_op = SDL_GPU_STOREOP_DONT_CARE;
+                            SdlRenderPass utility_pass{
+                                SDL_BeginGPURenderPass(command, &color, 1, &depth)};
+                            set_pass_camera_viewport(utility_pass, utility, engine,
+                                                     utility_pass_camera.camera, target_width,
+                                                     target_height);
+                            SdlGpuWriteDevice{}.write_vertex_uniform(
+                                command, 0, utility_matrix.data(), sizeof(utility_matrix));
+                            upstream::sort_transparent_draws(
+                                overlay_plans[layer].draw_lists.transparent, engine,
+                                utility_pass_camera.camera);
+                            draw_scene(utility, state.overlay_meshes[layer], utility_pass,
+                                       state.shader_pipelines, state.shader_a2c_pipelines,
+                                       utility_matrix, utility_pass_camera.camera,
+                                       utility_pass_camera.pass(), std::nullopt,
+                                       overlay_plans[layer].draw_lists, nullptr, nullptr, nullptr,
+                                       nullptr);
+                            utility_pass.end();
+                        }
+                        // The graph's own matrix, which the slot-zero push
+                        // carries between its tasks.
+                        SdlGpuWriteDevice{}.write_vertex_uniform(command, 0, graph_matrix.data(),
+                                                                 sizeof(graph_matrix));
+                    };
 #if BBLITE_HAS_TAA
                     if (graph_layer == 0) {
-                        for (const auto& registered : engine.scenes()) {
+                        for (const auto& registered : data_.active_registered_scenes) {
                             for (const TaskHandle recorded_handle : registered->frame_passes()) {
                                 auto& recorded = handle_at(engine.frame_tasks, recorded_handle);
                                 if (!recorded.post_process.taa)
@@ -2826,7 +2976,17 @@ public:
                     }
 #endif
                     GpuTaskTimingSequence timing_sequence(engine, &graph_scene);
-                    for (const TaskHandle handle : graph_scene.frame_passes()) {
+                    const OverlayComposition overlays =
+                        graph_layer == 0 && composites_overlays(data_.active_registered_scenes)
+                            ? overlay_composition(engine, graph_scene,
+                                                  state.sample_count != SDL_GPU_SAMPLECOUNT_1)
+                            : OverlayComposition{};
+                    for (const TaskHandle handle :
+                         root_frame_passes(engine, graph_scene, overlays)) {
+                        if (handle == overlay_layers_pass) {
+                            encode_overlay_layers(overlays);
+                            continue;
+                        }
                         [[maybe_unused]] FrameTaskRecord& task =
                             handle_at(engine.frame_tasks, handle);
                         if (!frame_task_executes(task))
@@ -3308,43 +3468,6 @@ public:
                             // The utility layer below is its own rendering
                             // context in the source, outside this task.
                             color_timing.run();
-                            if (graph_layer == 0 && task.render.scene_stages) {
-                                // Utility layers share the primary surface's MSAA
-                                // attachment, before its resolve/present tasks run.
-                                for (std::size_t layer = 0; layer < overlay_plans.size(); ++layer) {
-                                    const Scene& utility =
-                                        *data_.active_registered_scenes[layer + 1];
-                                    if (scene_runs_own_graph(utility))
-                                        continue;
-                                    // The layer's own scene pass: its camera,
-                                    // with no fallback to the base scene's.
-                                    const PassCamera utility_pass_camera = build_kept_pass_camera(
-                                        utility, engine, scene_pass_camera(engine, utility),
-                                        target.width, target.height, pass_blocks.scene(utility));
-                                    const std::array<float, 16>& utility_matrix =
-                                        utility_pass_camera.matrices.view_projection;
-                                    target_info.load_op = SDL_GPU_LOADOP_LOAD;
-                                    if (task_depth_pointer)
-                                        task_depth.load_op = SDL_GPU_LOADOP_CLEAR;
-                                    SdlRenderPass utility_pass{SDL_BeginGPURenderPass(
-                                        command, &target_info, 1, task_depth_pointer)};
-                                    set_pass_camera_viewport(utility_pass, utility, engine,
-                                                             utility_pass_camera.camera,
-                                                             target.width, target.height);
-                                    SdlGpuWriteDevice{}.write_vertex_uniform(
-                                        command, 0, utility_matrix.data(), sizeof(utility_matrix));
-                                    upstream::sort_transparent_draws(
-                                        overlay_plans[layer].draw_lists.transparent, engine,
-                                        utility_pass_camera.camera);
-                                    draw_scene(utility, state.overlay_meshes[layer], utility_pass,
-                                               state.shader_pipelines, state.shader_a2c_pipelines,
-                                               utility_matrix, utility_pass_camera.camera,
-                                               utility_pass_camera.pass(), std::nullopt,
-                                               overlay_plans[layer].draw_lists, nullptr, nullptr,
-                                               nullptr, nullptr);
-                                    utility_pass.end();
-                                }
-                            }
                             continue;
                         }
                         if (task.kind == FrameTaskKind::geometry) {
@@ -3354,6 +3477,10 @@ public:
                                 timing_sequence.passless();
                                 continue;
                             }
+#if BBLITE_GEOMETRY_VELOCITY
+                            upstream::validate_geometry_velocity_camera(task.geometry,
+                                                                        *geometry_pass.camera);
+#endif
                             const std::array<float, 16>& geometry_matrix =
                                 geometry_pass.matrices.view_projection;
                             GpuGeometryTask& geometry = handle_at(state.geometry_tasks, handle);
@@ -3410,15 +3537,9 @@ public:
                                 geometry.previous_view_projection = geometry_matrix;
                                 geometry.has_previous_view_projection = true;
                             }
-                            const PinnedGeometryParams geometry_params{
-                                geometry.previous_view_projection,
-                                {
-                                    static_cast<float>(geometry_pass.camera->near_plane),
-                                    static_cast<float>(geometry_pass.camera->far_plane),
-                                    0.0f,
-                                    0.0f,
-                                },
-                            };
+                            const PinnedGeometryParams geometry_params =
+                                pinned_geometry_params(geometry.previous_view_projection,
+                                                       *geometry_pass.camera, task.geometry);
 #if BBLITE_PINNED_MATERIALS
                             // The same block as a real buffer, for a composed
                             // geometry fragment whose gp the shader compile
@@ -3447,6 +3568,18 @@ public:
                                                       : SDL_GPU_STOREOP_DONT_CARE;
                             task_depth.stencil_load_op = SDL_GPU_LOADOP_DONT_CARE;
                             task_depth.stencil_store_op = SDL_GPU_STOREOP_DONT_CARE;
+#if BBLITE_STANDARD_VARIANTS > 0 || BBLITE_GEOMETRY_VELOCITY
+                            // Each renderable's update, before the pass: a
+                            // velocity renderable uploads its previous pose.
+                            update_pinned_velocity_frame(geometry.velocity, graph_scene, engine,
+                                                         graph_plan.scene_items(),
+                                                         geometry_pass.camera, task.geometry
+#if BBLITE_GEOMETRY_VELOCITY
+                                                         ,
+                                                         SdlPbrVelocitySink{state, geometry}
+#endif
+                            );
+#endif
                             const auto geometry_timing =
                                 sdl_timed_pass(command, timing_sequence.pass());
                             SdlRenderPass task_pass{SDL_BeginGPURenderPass(
@@ -3461,11 +3594,6 @@ public:
                             upstream::sort_transparent_draws(
                                 handle_at(task_draw_lists, handle).transparent, engine,
                                 geometry_pass.camera);
-#if BBLITE_STANDARD_VARIANTS > 0
-                            update_pinned_velocity_frame(geometry.velocity, graph_scene, engine,
-                                                         graph_plan.scene_items(),
-                                                         geometry_pass.camera);
-#endif
                             draw_scene(graph_scene, graph_meshes, task_pass, {}, {},
                                        geometry_matrix, geometry_pass.camera, geometry_pass.pass(),
                                        handle, handle_at(task_draw_lists, handle), &task,
@@ -3603,6 +3731,18 @@ public:
                             record_screen_space_task(
                                 state, engine, handle, command, swapchain, swapchain_format, width,
                                 height, capture_texture, source_texture, target_texture);
+                            continue;
+                        }
+#endif
+#if BBLITE_HAS_SSAO
+                        if (task.kind == FrameTaskKind::ssao) {
+                            // Geometry attachments are built at the task's
+                            // extent, which its depth source shares.
+                            record_ssao_task(
+                                state, engine, handle, command, task_depth_texture(task.ssao.depth),
+                                task.ssao.normal ? source_texture(*task.ssao.normal) : nullptr,
+                                task.ssao.velocity ? source_texture(*task.ssao.velocity) : nullptr,
+                                width, height, width, height, timing_sequence);
                             continue;
                         }
 #endif
@@ -3805,23 +3945,6 @@ public:
                                                  capture_texture);
                     }
                 }
-            } else if (whole_frame && state.post_process_present) {
-                // stopEngine clears the pin's render callback. Keep presenting
-                // its final image without executing history or jitter again.
-                SDL_GPUBlitInfo present{};
-                const bool resized =
-                    width != state.frame_graph_width || height != state.frame_graph_height;
-                if (resized)
-                    create_color(state, swapchain_format, width, height, true);
-                present.source = SDL_GPUBlitRegion{
-                    state.post_process_present, 0, 0, 0, 0, state.frame_graph_width,
-                    state.frame_graph_height};
-                present.destination =
-                    SDL_GPUBlitRegion{resized ? state.color : swapchain, 0, 0, 0, 0, width, height};
-                present.load_op = SDL_GPU_LOADOP_DONT_CARE;
-                present.filter = SDL_GPU_FILTER_NEAREST;
-                SDL_BlitGPUTexture(command, &present);
-                capture_texture = resized ? state.color : state.post_process_present;
             }
 #endif
 #if BBLITE_HAS_TAA || BBLITE_HAS_TEXT || BBLITE_NODE_GEOMETRY_VARIANTS > 0
@@ -3881,10 +4004,9 @@ public:
             // Transmission reads the multisampled attachment itself (its
             // grab and its per-sample image processing load each sample), so
             // that frame stores the samples and resolves nothing. An overlay
-            // layer preserves them for the same reason the pin's own overlay
-            // does: "both scenes must use the base task's MSAA colour texture
-            // before the overlay can load its pixels and resolve the
-            // composited result" (scene/swapchain-overlay.ts).
+            // layer preserves them too: "every overlay in a chain composites
+            // into the root scene's MSAA colour texture"
+            // (scene/swapchain-overlay.ts).
             const bool resolves = multisampled && !transmission_enabled;
             color_info.store_op = !resolves                ? SDL_GPU_STOREOP_STORE
                                   : !overlay_plans.empty() ? SDL_GPU_STOREOP_RESOLVE_AND_STORE
@@ -3971,13 +4093,11 @@ public:
                     kind, shader_variant, "main dispatch");
             };
             // Which scene the pass being recorded belongs to. The base
-            // scene records first and a swapchain overlay layer repoints
-            // these before its own pass: the draw walk is the same one,
-            // and what changes is the scene it reads its light selection,
-            // its plan and its uploaded meshes from.
-            // Which scene the pass being recorded belongs to: the base
-            // scene, or the overlay layer whose own plan is being drawn.
-            // Every reader is a material-variant draw, so a build that
+            // scene records first and an overlay layer repoints these
+            // before its own pass: the draw walk is the same one, and what
+            // changes is the scene it reads its light selection, its plan
+            // and its uploaded meshes from. Every reader is a
+            // material-variant draw, so a build that
             // composes no variants at all -- a splat-only scene, say --
             // sets it and never reads it.
             [[maybe_unused]] const Scene* pass_scene = &scene;
@@ -4094,7 +4214,9 @@ public:
                     if (pinned_variant != npos) {
                         draw_pinned_variant(state, command, pass, *pass_scene, engine,
                                             pass_scene_block, pass_lights_block, draw, mesh,
-                                            material, pinned_variant, bound_pipeline);
+                                            material, pinned_variant, bound_pipeline, nullptr,
+                                            nullptr, nullptr, false, invalid_handle, {}, {},
+                                            &active_shader_pass);
                         continue;
                     }
 #else
@@ -4364,14 +4486,21 @@ public:
 #if BBLITE_HAS_TEXT || BBLITE_NODE_GEOMETRY_VARIANTS > 0
             capture_render_state();
 #endif
-            // The swapchain overlay layers. Each is its own render pass on
-            // the same colour attachment with a FRESH depth buffer, which is
-            // what `createUtilityLayer` documents: the overlay scene keeps
-            // normal depth testing among its own meshes and never tests
-            // against the base scene's, so a gizmo body occludes its own
-            // back faces while sitting in front of everything below it.
-            for (std::size_t layer = 0;
-                 layer < overlay_plans.size() && layer < state.overlay_meshes.size(); ++layer) {
+            // The overlay layers (`overlay_composite`). Each is its own render
+            // pass on this pass's colour attachment -- the root's multisample
+            // texture, resolved again, at MSAA; the swapchain at one sample --
+            // with a FRESH depth buffer, which is what `createUtilityLayer`
+            // documents: the overlay scene keeps normal depth testing among
+            // its own meshes and never tests against the base scene's, so a
+            // gizmo body occludes its own back faces while sitting in front
+            // of everything below it.
+            const bool layers_composite =
+                composites_overlays(data_.active_registered_scenes) &&
+                overlay_composition(engine, scene, state.sample_count != SDL_GPU_SAMPLECOUNT_1)
+                        .mode != OverlayComposite::skipped;
+            for (std::size_t layer = 0; layers_composite && layer < overlay_plans.size() &&
+                                        layer < state.overlay_meshes.size();
+                 ++layer) {
                 Scene* overlay_scene = data_.active_registered_scenes[layer + 1u].get();
                 // A scene with its own graph runs it after this pass.
                 if (!overlay_scene || scene_runs_own_graph(*overlay_scene))
@@ -4583,16 +4712,17 @@ public:
             if (const auto frame_timer = gpu_frame_timer_end(engine))
                 encode_sdl_gpu_timestamp(command, *frame_timer);
             present_readable_surface();
-            if (capture_frame) {
-                if (!capture_texture) {
-                    throw std::runtime_error("Frame graph did not present a capture source.");
-                }
+            if (current_frame().capture_save && !capture_texture) {
+                throw std::runtime_error("Frame graph did not present a capture source.");
+            }
+            if (current_frame().capture_save) {
                 save_texture_png(state.device, command, capture_texture, swapchain_format, width,
                                  height, screenshot_path);
                 captures.screenshot_saved = true;
             } else if (!data_.presentation.submit(command, offscreen)) {
                 gpu_error("SDL_SubmitGPUCommandBuffer frame graph");
             }
+            frozen_capture_ = {capture_frame ? capture_texture : nullptr, width, height};
         } else {
 #if BBLITE_HAS_UI && !BBLITE_WORKERS
             if (capture_frame && capture_ui) {
@@ -4625,13 +4755,14 @@ public:
             if (const auto frame_timer = gpu_frame_timer_end(engine))
                 encode_sdl_gpu_timestamp(command, *frame_timer);
             present_readable_surface();
-            if (capture_frame) {
+            if (current_frame().capture_save) {
                 save_texture_png(state.device, command, visible_color, swapchain_format, width,
                                  height, screenshot_path);
                 captures.screenshot_saved = true;
             } else if (!data_.presentation.submit(command, offscreen)) {
                 gpu_error("SDL_SubmitGPUCommandBuffer");
             }
+            frozen_capture_ = {capture_frame ? visible_color : nullptr, width, height};
         }
         flush_frame_gpu_retirements(engine);
         finish_gpu_task_timing_frame(engine);
@@ -4734,7 +4865,7 @@ public:
 
 SceneRun run_gpu_engine(Engine& engine) {
 #if BBLITE_HAS_PBR_RENDERER
-    if (engine.scenes().empty() || !engine.scenes().front())
+    if (composited_scenes(engine).empty())
         throw std::runtime_error("GPU renderer requires a registered scene.");
     SdlSceneRun renderer(engine);
     auto initialization = renderer.setup();
@@ -4745,10 +4876,12 @@ SceneRun run_gpu_engine(Engine& engine) {
         const FrameOutcome outcome = renderer.conduct_staged_frame();
         if (outcome == FrameOutcome::stopped || outcome == FrameOutcome::restart)
             break;
+        // A frozen frame completes its animation frame as a drawn one would.
+        const bool drawn = outcome == FrameOutcome::rendered || outcome == FrameOutcome::frozen;
 #if BBLITE_WORKERS
-        if (outcome == FrameOutcome::rendered || renderer.yield_when_skipped())
+        if (drawn || renderer.yield_when_skipped())
 #endif
-            co_yield outcome == FrameOutcome::rendered;
+            co_yield drawn;
     }
     renderer.discard_frame();
     renderer.finish_run();

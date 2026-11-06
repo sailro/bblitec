@@ -4,10 +4,6 @@ import type { LoweringServices } from "../lowering-services.js";
 // Explicit pointer-drag registration reaches native axis/plane translation,
 // including source-defined canvas proxies; other editing families retain the
 // documented display-only adaptation. Camera deferral callbacks remain live.
-// Utility layers host display and editing gizmos over a shared camera.
-// Explicit pointer-drag registration reaches native axis/plane translation,
-// including source-defined canvas proxies; other editing families retain the
-// documented display-only adaptation. Camera deferral callbacks remain live.
 import ts from "typescript";
 import { argumentAt } from "../syntax.js";
 import {
@@ -17,6 +13,7 @@ import {
 import type { Feature, Value, ValueKind } from "../types.js";
 import { handleCppType } from "../data-types.js";
 import type { IntrinsicCallContext } from "./context.js";
+import { compileOverlayBase } from "./engine.js";
 import {
     compilePointerDragRegistration,
     pointerDispatcherCpp,
@@ -70,9 +67,10 @@ function refuseOptions(
     context: GizmoIntrinsicContext,
     call: ts.CallExpression,
     factory: string,
+    index = 2,
 ): void {
-    // Every reached factory takes its options bag as its third argument.
-    const options = call.arguments[2];
+    // The gizmo factories take their options bag third; createUtilityLayer, second.
+    const options = call.arguments[index];
     if (options) {
         context.fail(
             options,
@@ -736,12 +734,10 @@ export function compileGizmoIntrinsic(
             return compileBoundingBoxAttach(context, call);
 
         case "createUtilityLayer": {
-            context.expectArgumentCount(call, 2, 3);
-            refuseOptions(context, call, "createUtilityLayer");
-            const engine = context.compileValue(argumentAt(call, 0));
-            const scene = context.compileValue(argumentAt(call, 1));
-            context.expectKind(engine, "engine", argumentAt(call, 0));
-            context.expectKind(scene, "scene", argumentAt(call, 1));
+            context.expectArgumentCount(call, 1, 2);
+            // `createOverlayScene(mainScene)`.
+            const scene = compileOverlayBase(context, argumentAt(call, 0));
+            refuseOptions(context, call, "createUtilityLayer", 1);
             context.reachFeature("gizmo:utility-layer", call);
             // The pin's own default light, created by this factory.
             context.reachFeature("light:hemispheric", call);
@@ -751,10 +747,8 @@ export function compileGizmoIntrinsic(
             context.reachFeature("mesh:parenting", call);
             return {
                 kind: "utility-layer",
-                cpp:
-                    `bbl::create_utility_layer(` +
-                    `${engine.cpp}, ${scene.cpp})`,
-                engineCpp: engine.cpp,
+                cpp: `bbl::create_utility_layer(${scene.cpp})`,
+                engineCpp: context.requireEngine(scene, call),
             };
         }
 
@@ -762,13 +756,6 @@ export function compileGizmoIntrinsic(
             context.expectArgumentCount(call, 1, 1);
             const layer = context.compileValue(argumentAt(call, 0));
             context.expectKind(layer, "utility-layer", argumentAt(call, 0));
-            // Registration order is what makes the layer an overlay: the
-            // pin's `configureSwapchainOverlayScene` reads the surface's
-            // LAST rendering context as the base. A scene registering the
-            // layer before its main scene would make the main scene the
-            // overlay, which is a different picture -- and one this port
-            // would render, so the order is left to the scene exactly as
-            // upstream leaves it.
             return {
                 kind: "void",
                 cpp:

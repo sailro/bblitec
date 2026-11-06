@@ -183,6 +183,7 @@ import {
 } from "./lowering/geometry-output-lowerer.js";
 import { renderTaskRemovalHeader } from "./lowering/render-task-removal.js";
 import { meshFeaturesHeader } from "./lowering/mesh-attribute-features.js";
+import { lowerMeshOpacity } from "./lowering/mesh-opacity.js";
 import { backgroundFactories } from "./pinned-background-factories.js";
 import { subtreeVisibilityHeader } from "./lowering/subtree-visibility.js";
 import { SplatLowerer } from "./lowering/splat-lowerer.js";
@@ -190,10 +191,16 @@ import { PostProcessLowerer } from "./lowering/post-process-lowerer.js";
 import {
     ScreenSpaceLowerer,
     screenSpaceShadersHeader,
+    type ScreenSpacePlanRow,
     type ScreenSpaceStageRow,
     type ScreenSpaceLoweringInput,
 } from "./lowering/screen-space-lowerer.js";
 import { FlowGraphLowerer } from "./lowering/flow-graph-lowerer.js";
+import {
+    SsaoLowerer,
+    type SsaoLoweringInput,
+} from "./lowering/ssao-lowerer.js";
+import { GeometryVelocityLowerer } from "./lowering/geometry-velocity-lowerer.js";
 import type { FlowGraphAssetPrograms } from "./pinned-flow-graph.js";
 import type {
     ComposedScreenSpaceStage,
@@ -458,6 +465,8 @@ export interface UpstreamEmitOptions {
         manifest: ScreenSpaceTaskManifest;
         composed: ComposedScreenSpaceTask;
     }[];
+    /** Each reached `createSsaoTask` with what running its factory built. */
+    ssaoTasks?: readonly SsaoLoweringInput[];
     gpuDeformation: boolean;
     morphStorage: boolean;
     nonTrianglePrimitives: boolean;
@@ -867,6 +876,7 @@ interface ComposedShader {
     /** Additional entry-point stems compiled from this deployed module. */
     alsoStages?: ShaderModuleDeclaration["alsoStages"];
     constants?: ShaderModuleDeclaration["constants"];
+    namedConstants?: ShaderModuleDeclaration["namedConstants"];
     entryPoint?: string;
     positionFirst?: boolean;
 }
@@ -1179,6 +1189,7 @@ class GeneratedSourceWriter {
                     sheen: options.sheen,
                     iridescence: options.iridescence,
                     lightmap: composedMaterials.lightmap,
+                    bentNormal: composedMaterials.bentNormal,
                     metallicReflectanceMap:
                         composedMaterials.metallicReflectanceMap,
                     reflectanceMap: composedMaterials.reflectanceMap,
@@ -1399,6 +1410,7 @@ ${lowerThinInstanceSync(context)}
                 thinBindings: options.gpuInstancing,
                 meshGpuDisposal: features.includes("mesh:dispose-gpu"),
                 taskBuild: features.includes("frame-graph:task-build"),
+                ssaoTasks: features.includes("renderer:ssao"),
                 effectTasks: features.includes("effect:task"),
                 liveTaskAdd: features.includes("frame-graph:live-task-add"),
                 taskDisposal: features.includes("frame-graph:task-disposal"),
@@ -1407,7 +1419,14 @@ ${lowerThinInstanceSync(context)}
                 ),
                 deformedPosition: features.includes("mesh:deformed-position"),
                 csmStaticCache: features.includes("shadow:csm-static-cache"),
+                overlayScenes: features.includes("scene:overlay"),
+                meshOpacity: features.includes("mesh:opacity"),
             }),
+        );
+        emitReached(
+            "upstream/src/mesh_opacity.cpp",
+            () => lowerMeshOpacity(context),
+            "upstream/include/bblite/upstream/mesh_opacity.hpp",
         );
         this.emitTextData(features, context, options, generated);
         emitReached("upstream/src/frame_graph_resources.cpp", () =>
@@ -1748,7 +1767,28 @@ ${lowerThinInstanceSync(context)}
                 features.includes("frame-graph:task-mesh-refresh") &&
                 features.includes("frame-graph:task-material-override"),
             taskDisposal: features.includes("frame-graph:task-disposal"),
+            meshOpacity: features.includes("mesh:opacity"),
         });
+        if (features.includes("renderer:geometry-velocity")) {
+            this.writeVariantModule(
+                "upstream/include/bblite/upstream/geometry_velocity.hpp",
+                new GeometryVelocityLowerer(context).header(),
+            );
+            generated.push(
+                {
+                    modulePath: "src/frame-graph/enable-geometry-velocity.ts",
+                    symbolName: "enableGeometryVelocity",
+                },
+                {
+                    modulePath: "src/material/pbr/pbr-geometry-velocity.ts",
+                    symbolName: "createPbrGeometryVelocity",
+                },
+                {
+                    modulePath: "src/material/geometry-deformation-velocity.ts",
+                    symbolName: "createGeometryDeformationVelocity",
+                },
+            );
+        }
         this.emitRendererPostProcess(
             features,
             options,
@@ -1756,12 +1796,18 @@ ${lowerThinInstanceSync(context)}
             generated,
             composedShaders,
         );
+        this.emitSsao(options, context, generated, composedShaders);
         const factories = new FactoryLowerer(context);
         emitReached("upstream/src/material_standard.cpp", () =>
             factories.lowerStandardMaterialFactory(),
         );
         emitReached("upstream/src/material_pbr.cpp", () =>
-            factories.lowerPbrMaterialFactory(),
+            factories.lowerPbrMaterialFactory({
+                alphaCutoff: features.includes("material:pbr-alpha-cutoff"),
+                pixelsBaseColor: features.includes(
+                    "material:pbr-base-color-pixels",
+                ),
+            }),
         );
         emitReached("upstream/src/local_cubemap.cpp", () =>
             lowerLocalCubemap(context),
@@ -2129,6 +2175,7 @@ ${lowerThinInstanceSync(context)}
 #define BBLITE_MATERIAL_IRIDESCENCE ${options.iridescence ? 1 : 0}
 // The lightmap slot serves composed PBR lmTexture and Standard lT bindings.
 #define BBLITE_MATERIAL_LIGHTMAP ${composedMaterials.lightmap ? 1 : 0}
+#define BBLITE_MATERIAL_BENT_NORMAL ${composedMaterials.bentNormal ? 1 : 0}
 ${metallicReflectanceCapabilityDefines(pbrBindingNames)}
 #define BBLITE_MATERIAL_SPEC_GLOSS ${options.specularGlossiness ? 1 : 0}
 #define BBLITE_MATERIAL_OCCLUSION_UV2 ${options.occlusionUv2 ? 1 : 0}
@@ -3127,6 +3174,7 @@ ${wgsl}`,
                 "upstream/src/renderer_plan.cpp",
                 renderer.lowerRenderPlan({
                     standardVertexAlpha: features.includes("mesh:vertex-alpha"),
+                    meshOpacity: features.includes("mesh:opacity"),
                     standardVertexColors: features.includes(
                         "material:standard-vertex-colors",
                     ),
@@ -3306,6 +3354,60 @@ ${wgsl}`,
         }
     }
 
+    /**
+     * The SSAO tasks: their frame function, their plan table and each
+     * program's module, deployed under its stem with the constants the pin
+     * built its pipeline with.
+     */
+    private emitSsao(
+        options: UpstreamEmitOptions,
+        context: LoweringContext,
+        generated: { modulePath: string; symbolName: string }[],
+        composedShaders: ComposedShader[],
+    ): void {
+        if (!this.reaches("upstream/src/frame_graph_ssao.cpp")) return;
+        const tasks = options.ssaoTasks ?? [];
+        if (tasks.length === 0) {
+            refuseGeneration(
+                "renderer:ssao",
+                "renderer:ssao was reached without a composed createSsaoTask.",
+            );
+        }
+        const lowerer = new SsaoLowerer(context, tasks);
+        this.writeSource(
+            "upstream/src/frame_graph_ssao.cpp",
+            lowerer.lowerTaskRecords(),
+            generated,
+            "upstream/include/bblite/upstream/frame_graph_ssao.hpp",
+        );
+        this.writeVariantModule(
+            "upstream/include/bblite/upstream/ssao_plan.hpp",
+            lowerer.planHeader(),
+        );
+        for (const module of lowerer.shaderModules()) {
+            composedShaders.push({
+                output: module.output,
+                data: module.data,
+                family: "pinnedModule",
+                entryPoint: module.entryPoint,
+                ...(module.namedConstants.length
+                    ? { namedConstants: module.namedConstants }
+                    : {}),
+                ...(module.alsoStages
+                    ? {
+                          alsoStages: module.alsoStages.map((stage) => ({
+                              stem: stage.stem,
+                              entryPoint: stage.entryPoint,
+                              ...(stage.namedConstants.length
+                                  ? { namedConstants: stage.namedConstants }
+                                  : {}),
+                          })),
+                      }
+                    : {}),
+            });
+        }
+    }
+
     private emitRendererPostProcess(
         features: string[],
         options: UpstreamEmitOptions,
@@ -3330,14 +3432,20 @@ ${wgsl}`,
                 ),
             ];
             // The screen-space effects' dedicated stages, deduplicated by
-            // text like every other module: two contact-shadow tasks share
-            // one producer, and both kinds of task share nothing.
+            // text and entry points like every other module: two
+            // contact-shadow tasks share one producer, ambient occlusion's
+            // two blur passes share one stage, and the scalar effects share
+            // the temporal owner's scalar resolve.
             const screenSpaceStages: ScreenSpaceStageRow[] = [];
             const screenSpaceStage = (
                 stage: ComposedScreenSpaceStage,
             ): number => {
                 const found = screenSpaceStages.findIndex(
-                    (candidate) => candidate.wgsl === stage.wgsl,
+                    (candidate) =>
+                        candidate.wgsl === stage.wgsl &&
+                        candidate.vertexEntry === stage.vertexEntry &&
+                        candidate.fragmentEntry === stage.fragmentEntry &&
+                        candidate.targetFormat === stage.targetFormat,
                 );
                 if (found >= 0) return found;
                 screenSpaceStages.push({
@@ -3351,6 +3459,8 @@ ${wgsl}`,
                 });
                 return screenSpaceStages.length - 1;
             };
+            // Each task's frame plan: its dedicated passes over those rows.
+            const screenSpacePlans: ScreenSpacePlanRow[] = [];
             const screenSpaceInputs: ScreenSpaceLoweringInput[] = [];
             for (const task of options.screenSpaceTasks ?? []) {
                 const historyCopyShader = postProcessStages.length;
@@ -3360,11 +3470,18 @@ ${wgsl}`,
                     compositeShader = postProcessStages.length;
                     postProcessStages.push(task.composed.composite);
                 }
+                screenSpacePlans.push({
+                    passes: task.composed.passes.map((pass) => ({
+                        stage: screenSpaceStage(pass.stage),
+                        target: pass.target,
+                        textures: pass.textures,
+                    })),
+                    intermediateCount: task.composed.intermediates.length,
+                });
                 screenSpaceInputs.push({
                     manifest: task.manifest,
                     composed: task.composed,
-                    producerStage: screenSpaceStage(task.composed.producer),
-                    resolveStage: screenSpaceStage(task.composed.resolve),
+                    plan: screenSpacePlans.length - 1,
                     historyCopyShader,
                     compositeShader,
                 });
@@ -3423,6 +3540,7 @@ ${stage.wgsl}`,
                     screenSpaceShadersHeader(
                         screenSpaceProvenance,
                         screenSpaceStages,
+                        screenSpacePlans,
                     ),
                 );
             }
@@ -4216,6 +4334,7 @@ ${shadow.blurFragmentWgsl}`,
                                     alsoStages,
                                     entryPoint,
                                     constants,
+                                    namedConstants,
                                     positionFirst,
                                 }): ShaderModuleDeclaration & {
                                     sha256: string;
@@ -4231,6 +4350,9 @@ ${shadow.blurFragmentWgsl}`,
                                     ),
                                     ...(alsoStages ? { alsoStages } : {}),
                                     ...(constants ? { constants } : {}),
+                                    ...(namedConstants?.length
+                                        ? { namedConstants }
+                                        : {}),
                                     ...(positionFirst === undefined
                                         ? {}
                                         : { positionFirst }),

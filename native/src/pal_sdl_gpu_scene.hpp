@@ -14,6 +14,7 @@
 #include <bblite/features/has_picking.hpp>
 #include <bblite/features/has_post_process.hpp>
 #include <bblite/features/has_screen_space.hpp>
+#include <bblite/features/has_ssao.hpp>
 #include <bblite/features/external_renderables.hpp>
 #include <bblite/features/has_splats.hpp>
 #include <bblite/features/has_sprite_renderer.hpp>
@@ -21,6 +22,7 @@
 #include <bblite/features/has_ui.hpp>
 #include <bblite/features/render_task_transmission.hpp>
 #include <bblite/features/mesh_geometry_update.hpp>
+#include <bblite/features/mesh_opacity.hpp>
 #include <bblite/features/offscreen_surfaces.hpp>
 #include <bblite/features/workers.hpp>
 
@@ -132,6 +134,8 @@
 
 namespace bbl::pal {
 
+struct ShaderPassMatrices;
+
 #if BBLITE_HAS_PBR_RENDERER
 inline namespace sdl_scene {
 
@@ -220,6 +224,14 @@ struct GpuMeshResources {
     std::uint64_t morph_weights_version = 0;
     bool owns_morph_buffers = false;
 #endif
+#if BBLITE_MESH_OPACITY
+    // The `meshOpacity` block as read-only storage, for a fragment whose
+    // shader compile demoted it out of the four uniform slots: one per
+    // binding policy, so a task drawing the mesh through another material
+    // binds its own, and the value and policy each holds.
+    std::array<SDL_GPUBuffer*, 2> mesh_opacity{};
+    std::array<std::array<float, 2>, 2> mesh_opacity_written{};
+#endif
     SDL_GPUTexture* base_color = nullptr;
     SDL_GPUTexture* metallic_roughness = nullptr;
     SDL_GPUTexture* normal = nullptr;
@@ -245,6 +257,9 @@ struct GpuMeshResources {
 #endif
 #if BBLITE_MATERIAL_LIGHTMAP
     SDL_GPUTexture* lightmap = nullptr;
+#endif
+#if BBLITE_MATERIAL_BENT_NORMAL
+    SDL_GPUTexture* bent_normal = nullptr;
 #endif
 #if BBLITE_MATERIAL_METALLIC_REFLECTANCE_MAP
     SDL_GPUTexture* metallic_reflectance = nullptr;
@@ -303,6 +318,9 @@ struct GpuMeshResources {
 #if BBLITE_MATERIAL_LIGHTMAP
     SDL_GPUSampler* lightmap_sampler = nullptr;
 #endif
+#if BBLITE_MATERIAL_BENT_NORMAL
+    SDL_GPUSampler* bent_normal_sampler = nullptr;
+#endif
 #if BBLITE_MATERIAL_METALLIC_REFLECTANCE_MAP
     SDL_GPUSampler* metallic_reflectance_sampler = nullptr;
 #endif
@@ -353,6 +371,9 @@ struct GpuMeshResources {
 #endif
 };
 struct GpuState;
+#if BBLITE_HAS_SSAO
+struct GpuSsaoState;
+#endif
 void release_gpu_mesh_resources(GpuState*, GpuMeshResources&) noexcept;
 using GpuMesh =
     OwnedGpuRecord<GpuMeshResources, std::remove_pointer_t<GpuState*>, release_gpu_mesh_resources>;
@@ -656,10 +677,10 @@ struct GpuPostProcessTask {
 
 #if BBLITE_HAS_SCREEN_SPACE
 /**
- * A screen-space producer or temporal resolve: the pin's own dedicated
- * pipeline (`ensureProducerPipeline`, `ensurePipeline`), built from the
- * deployed stage the generated table names and shared by every task that
- * draws the same stage.
+ * A screen-space producer, blur or temporal resolve: the pin's own
+ * dedicated pipeline (`ensureProducerPipeline`, `ensurePipeline`), built
+ * from the deployed stage the generated table names and shared by every
+ * pass that draws the same stage.
  */
 struct GpuScreenSpaceProgram {
     std::uint32_t stage = 0;
@@ -667,10 +688,27 @@ struct GpuScreenSpaceProgram {
     PinnedStageSlots vertex_slots;
     PinnedStageSlots fragment_slots;
     /**
-     * Which frame-graph texture each fragment sampler slot reads, resolved
-     * once from the sidecar's names against the stage's binding table.
+     * Which of the stage's bindings each fragment sampler slot is, resolved
+     * once from the sidecar's names against the stage's binding table; a
+     * pass's plan row says what each binding reads.
      */
-    std::vector<upstream::ScreenSpaceTextureRole> fragment_roles;
+    std::vector<std::size_t> fragment_bindings;
+};
+#endif
+
+#if BBLITE_GEOMETRY_VELOCITY
+/**
+ * A PBR velocity renderable's GPU state, by mesh slot: the previous bone
+ * palette and morph weights its deformation snapshots, and its `gm` block
+ * as a buffer for a vertex stage the shader compile demoted it in (a stage
+ * keeping it in a uniform slot reads the history's block directly).
+ */
+struct GpuPbrVelocity {
+    SDL_GPUTexture* bones = nullptr;
+    std::uint32_t bone_texels = 0;
+    SDL_GPUBuffer* morph = nullptr;
+    std::uint32_t morph_bytes = 0;
+    SDL_GPUBuffer* block = nullptr;
 };
 #endif
 
@@ -688,8 +726,11 @@ struct GpuGeometryTask {
     // shader compile demotes their gp block to a read-only storage
     // buffer and the encode uploads its contents here each frame.
     SDL_GPUBuffer* params = nullptr;
-    /** The task's Standard renderables' previous worlds. */
+    /** The task's Standard renderables' previous worlds, and its PBR ones' velocity. */
     PinnedVelocityHistory velocity;
+#if BBLITE_GEOMETRY_VELOCITY
+    std::vector<GpuPbrVelocity> pbr_velocity;
+#endif
     /** Set with the textures: another task binds this task's depth. */
     bool depth_borrowed = false;
 };
@@ -1164,6 +1205,10 @@ struct GpuState : SdlGpuDevice {
      */
     std::vector<GpuScreenSpaceProgram> screen_space_programs;
 #endif
+#if BBLITE_HAS_SSAO
+    /** The SSAO plan programs and each task's owned textures (pal_sdl_gpu_scene_ssao.cpp). */
+    std::shared_ptr<GpuSsaoState> ssao;
+#endif
 #if BBLITE_PINNED_BACKGROUNDS
     // The arms this run draws (`select_pinned_backgrounds`), one each.
     pal::PinnedBackgroundDraws background_draws;
@@ -1492,7 +1537,9 @@ pinned_resource_for(GpuState& state, const GpuMesh& mesh, const std::string& nam
                     // Which stage's texture list the name came from, and its index there:
                     // the pair that makes the group-2 fallback below a cached-row index.
                     [[maybe_unused]] bool fragment, [[maybe_unused]] std::size_t stage_slot,
-                    [[maybe_unused]] const MaterialRecord* material = nullptr);
+                    [[maybe_unused]] const MaterialRecord* material = nullptr,
+                    // The pass the draw belongs to, which a pass-dependent plugin texture reads.
+                    [[maybe_unused]] const ShaderPassMatrices* pass = nullptr);
 
 /**
  * Load a variant's slot maps if they are not loaded.
@@ -1534,7 +1581,9 @@ pinned_variant_pipeline(GpuState& state, std::size_t variant, upstream::RenderPi
                         // caster's colour target is that generator's own recorded row.
                         std::uint32_t esm_shadow_index = invalid_handle,
                         std::optional<SDL_GPUSampleCount> task_samples = {},
-                        std::optional<ShaderTaskTarget> target = {});
+                        std::optional<ShaderTaskTarget> target = {},
+                        // `setAlphaToCoverage` on the drawn material (`RenderItem`).
+                        bool alpha_to_coverage = false);
 
 #endif
 
@@ -1542,6 +1591,11 @@ pinned_variant_pipeline(GpuState& state, std::size_t variant, upstream::RenderPi
 /** Publish the same dirty pose before a visible draw or a same-turn pick. */
 void sync_morph_weights(GpuBufferUploadBatch& uploads, GpuMesh& mesh, const ModelGeometry& geometry,
                         const MeshRecord& record);
+#endif
+#if BBLITE_MESH_OPACITY
+/** Publish a mesh's `meshOpacity` storage blocks, one per binding policy. */
+void sync_mesh_opacity(GpuState& state, GpuBufferUploadBatch& uploads, const Engine& engine,
+                       const upstream::RenderItem& item, GpuMesh& mesh);
 #endif
 
 /** The shared vertex stage's world and optional skin/morph uniforms. */
@@ -1581,6 +1635,30 @@ void ensure_pinned_bone_sampler(GpuState& state);
  */
 void write_pinned_bone_texture(GpuState& state, GpuMesh& mesh, const MeshRecord& record);
 
+#endif
+
+#if BBLITE_GEOMETRY_VELOCITY
+/**
+ * The uploads of a geometry task's PBR velocity renderables
+ * (`PbrVelocitySink`), each on its own submission ahead of the frame's: the
+ * previous palette into an rgba32float row, the previous weights into a
+ * storage buffer, and the `gm` block into its buffer once a demoted stage
+ * asked for one (`pbr_velocity_block_buffer`).
+ */
+struct SdlPbrVelocitySink {
+    GpuState& state;
+    GpuGeometryTask& task;
+    GpuPbrVelocity& resources(MeshHandle mesh);
+    void block(MeshHandle mesh, std::span<const float> floats);
+    void bones(MeshHandle mesh, std::span<const float> floats);
+    void morph(MeshHandle mesh, std::span<const float> floats);
+};
+
+/** The `gm` block buffer a demoted vertex stage binds, made from the history's block. */
+SDL_GPUBuffer* pbr_velocity_block_buffer(GpuState& state, GpuGeometryTask& task, MeshHandle mesh);
+
+/** Drops a task's velocity GPU state; the next update rewrites what a draw binds. */
+void release_pbr_velocity(GpuState& state, GpuGeometryTask& task);
 #endif
 
 #if BBLITE_PBR_VARIANTS > 0
@@ -1630,7 +1708,11 @@ void draw_pinned_variant(GpuState& state, SDL_GPUCommandBuffer* command, SDL_GPU
                          // The generator whose map that pass writes, when it writes one.
                          std::uint32_t esm_shadow_index = invalid_handle,
                          std::optional<SDL_GPUSampleCount> task_samples = {},
-                         std::optional<ShaderTaskTarget> target = {});
+                         std::optional<ShaderTaskTarget> target = {},
+                         // The pass's camera and extent, for a pass-dependent plugin texture.
+                         const ShaderPassMatrices* pass_matrices = nullptr,
+                         // The geometry task's own state, whose velocity a velocity view binds.
+                         GpuGeometryTask* geometry_state = nullptr);
 #endif
 
 #if BBLITE_NODE_VARIANTS > 0
@@ -1767,7 +1849,9 @@ standard_variant_pipeline(GpuState& state, std::size_t variant, upstream::Render
                           // Which ESM generator's map this pass writes, when it writes one.
                           std::uint32_t esm_shadow_index = invalid_handle,
                           std::optional<SDL_GPUSampleCount> task_samples = {},
-                          std::optional<ShaderTaskTarget> target = {});
+                          std::optional<ShaderTaskTarget> target = {},
+                          // `setAlphaToCoverage` on the drawn material (`RenderItem`).
+                          bool alpha_to_coverage = false);
 
 /**
  * Draws one Standard command through the pin's own composed stages — the
@@ -2173,13 +2257,13 @@ GpuScreenSpaceProgram build_screen_space_program(GpuState& state, std::uint32_t 
 std::size_t screen_space_program(GpuState& state, std::uint32_t stage);
 
 /**
- * The texture a stage binding reads, by the role the pin bound there: the
- * depth attachment itself (a depth-only view in the pin, the depth texture's
- * own SRV here), the lit source colour, or one of the task's owned targets.
+ * The texture a pass binding reads, by what the pin bound there: the depth
+ * attachment itself (a depth-only view in the pin, the depth texture's own
+ * SRV here), the lit source colour, or one of the task's owned targets.
  */
 SDL_GPUTexture* screen_space_binding_texture(GpuState& state, const Engine& engine,
                                              const ScreenSpaceTaskOptions& task,
-                                             upstream::ScreenSpaceTextureRole role);
+                                             upstream::ScreenSpaceTextureRef texture);
 
 /**
  * A pass over one temporal target, cleared to zero: what every dedicated
@@ -2188,16 +2272,16 @@ SDL_GPUTexture* screen_space_binding_texture(GpuState& state, const Engine& engi
 SDL_GPURenderPass* begin_screen_space_pass(SDL_GPUCommandBuffer* command, SDL_GPUTexture* target);
 
 /**
- * One dedicated stage: the pin's clear-and-draw over a fullscreen triangle,
- * with the block pushed as the stage's one uniform and every texture the
- * compaction kept bound by the role its program resolved for the slot. The
- * pin binds one bilinear sampler wherever it samples; each SRV here pairs
- * with it.
+ * One dedicated pass: the pin's clear-and-draw over a fullscreen triangle
+ * into the pass's target, with the block pushed as the stage's one uniform
+ * and every texture the compaction kept bound to what the pass's plan row
+ * names for that binding. The pin binds one bilinear sampler wherever it
+ * samples; each SRV here pairs with it.
  */
 void record_screen_space_stage(GpuState& state, const Engine& engine,
-                               const ScreenSpaceTaskOptions& task, std::size_t program_index,
-                               SDL_GPUCommandBuffer* command, SDL_GPUTexture* target,
-                               const float* uniforms);
+                               const ScreenSpaceTaskOptions& task,
+                               const upstream::ScreenSpacePassInfo& pass,
+                               SDL_GPUCommandBuffer* command, const float* uniforms);
 
 /** The pin's `clearIdentity`: one clear-only pass over a temporal target. */
 inline void clear_screen_space_target(SDL_GPUCommandBuffer* command, SDL_GPUTexture* texture) {
@@ -2209,8 +2293,8 @@ inline void clear_screen_space_target(SDL_GPUCommandBuffer* command, SDL_GPUText
  * frame function samples the task's live settings and advances its temporal
  * state, and what it decided is encoded here -- the identity clear on the
  * enabled-to-disabled transition or a singular view-projection inverse,
- * then producer, resolve and history copy when the effect runs, then the
- * composite whenever the task has one.
+ * then the plan's dedicated passes and the history copy when the effect
+ * runs, then the composite whenever the task has one.
  */
 template <typename SourceTexture, typename TargetTexture>
 void record_screen_space_task(GpuState& state, Engine& engine, TaskHandle handle,
@@ -2220,9 +2304,11 @@ void record_screen_space_task(GpuState& state, Engine& engine, TaskHandle handle
                               SourceTexture source_texture, TargetTexture target_texture) {
     FrameTaskRecord& record = handle_at(engine.frame_tasks, handle);
     const ScreenSpaceTaskOptions& task = record.screen_space;
+    const upstream::ScreenSpacePlanInfo& plan = upstream::screen_space_plan_infos.at(task.plan);
     const pal::TargetUser user = pal::task_target_user(record);
-    const GpuRenderTarget& raw =
-        pal::resolve_gpu_target(engine, state.render_targets, task.raw, user);
+    for (const RenderTargetHandle intermediate : task.intermediates) {
+        pal::resolve_gpu_target(engine, state.render_targets, intermediate, user);
+    }
     const GpuRenderTarget& stable =
         pal::resolve_gpu_target(engine, state.render_targets, task.stable, user);
     const GpuRenderTarget& history =
@@ -2230,15 +2316,12 @@ void record_screen_space_task(GpuState& state, Engine& engine, TaskHandle handle
     const ScreenSpaceFrameDecision decision = upstream::screen_space_frame(
         engine, handle, screen_space_frame_inputs(state.render_targets, task));
     record_screen_space_decision(
-        decision, record.post_process.passes.size() > 1,
+        decision, plan.pass_count, record.post_process.passes.size() > 1,
         [&](bool previous) {
             clear_screen_space_target(command, previous ? history.color : stable.color);
         },
-        [&](bool producer, const float* uniforms) {
-            record_screen_space_stage(
-                state, engine, task,
-                screen_space_program(state, producer ? task.producer_shader : task.resolve_shader),
-                command, producer ? raw.color : stable.color, uniforms);
+        [&](std::size_t pass, const float* uniforms) {
+            record_screen_space_stage(state, engine, task, plan.passes[pass], command, uniforms);
         },
         [&](std::size_t child) {
             record_post_process_pass(state, engine, handle, command, swapchain, swapchain_format,
@@ -2246,6 +2329,23 @@ void record_screen_space_task(GpuState& state, Engine& engine, TaskHandle handle
                                      target_texture);
         });
 }
+#endif
+
+#if BBLITE_HAS_SSAO
+/**
+ * One `createSsaoTask` frame: the generated decision, encoded from the plan.
+ * `velocity` is the temporal velocity input with its built extent, or null.
+ */
+void record_ssao_task(GpuState& state, Engine& engine, TaskHandle handle,
+                      SDL_GPUCommandBuffer* command, SDL_GPUTexture* depth, SDL_GPUTexture* normal,
+                      SDL_GPUTexture* velocity, std::uint32_t velocity_width,
+                      std::uint32_t velocity_height, std::uint32_t width, std::uint32_t height,
+                      GpuTaskTimingSequence& timing);
+/** The texture a task publishes as `outputTexture`, once it executed. */
+SDL_GPUTexture* ssao_output_texture(GpuState& state, const Engine& engine, TaskHandle handle);
+/** What `enablePbrSsao`'s plugin samples in a pass (`ssao_pbr_sampling`). */
+SDL_GPUTextureSamplerBinding ssao_pbr_binding(GpuState& state, const Engine& engine,
+                                              TaskHandle handle, const ShaderPassMatrices* pass);
 #endif
 
 } // namespace sdl_scene

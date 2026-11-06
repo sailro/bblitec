@@ -56,7 +56,7 @@ int main() {
     std::vector<upstream::RenderItem> items{{mesh}, {mesh}};
     for (auto& item : items)
         item.source_identity = 7;
-    update_pinned_velocity_frame(history, scene, engine, items, nullptr);
+    update_pinned_velocity_frame(history, scene, engine, items, nullptr, GeometryTaskOptions{});
 #if !FIXTURE_VELOCITY
     check(history.frame == 0 && history.renderables.empty() && world_compositions == 0,
           "a block without a velocity tail never builds history or composes worlds");

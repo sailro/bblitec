@@ -440,15 +440,16 @@ class ModuleInitializerPlanner implements ModuleConstantWrites {
         const ordered: ts.SourceFile[] = [];
         const visited = new Set<ts.SourceFile>();
         const visit = (file: ts.SourceFile): void => {
-            if (
-                visited.has(file) ||
-                file.isDeclarationFile ||
-                this.program.isSourceFileFromExternalLibrary(file)
-            )
-                return;
+            if (visited.has(file)) return;
             visited.add(file);
+            const declared =
+                file.isDeclarationFile ||
+                this.program.isSourceFileFromExternalLibrary(file);
+            // A package's declarations evaluate nothing, but the program
+            // modules they re-export run (`pinned-program-sources.ts`).
+            if (declared && !file.isDeclarationFile) return;
             runtimeModuleDependencies(this.checker, file).forEach(visit);
-            ordered.push(file);
+            if (!declared) ordered.push(file);
         };
         visit(this.sourceFile);
         return (this.runtimeModuleCache = ordered);

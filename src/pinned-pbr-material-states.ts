@@ -3,11 +3,12 @@
  *
  * The pin computes a material's features on its first render and keeps them
  * (`_renderFeatures`), so a material whose `alphaBlend`, `alpha`,
- * `baseColorFactor` or `plugins` the program writes composes from whatever
- * it holds when it is first drawn. Generation composes one row for every
- * state those writes can reach, and `pbr_material_state_rows` names each by
- * the key the native record reaches it by: the pin's blend bit, the record's
- * plugin signature, and whether a base colour factor was written.
+ * `baseColorFactor`, `bentNormalTexture` or `plugins` the program writes
+ * composes from whatever it holds when it is first drawn. Generation composes
+ * one row for every state those writes can reach, and
+ * `pbr_material_state_rows` names each by the key the native record reaches
+ * it by: the pin's blend bit, the record's plugin signature, whether a base
+ * colour factor was written and whether it holds a bent normal texture.
  */
 import type {
     PbrMaterialStateWrites,
@@ -119,41 +120,58 @@ export class PbrMaterialStates {
             for (const factorWritten of writes.baseColorFactor
                 ? [false, true]
                 : [false])
-                for (const alphaBlend of blends)
-                    for (const alpha of alphas) {
-                        const candidate = this.stateInput(
-                            input,
-                            { alphaBlend, alpha, factorWritten },
-                            own ? undefined : held,
-                        );
-                        // The pin's own blend term decides which states
-                        // share a row, so no restatement of it can drift.
-                        const blend =
-                            ((await pinnedMaterialFeatures({ ...candidate }))
-                                .features &
-                                PBR_HAS_ALPHA_BLEND) !==
-                            0;
-                        const key = `${blend}:${signature}:${factorWritten}`;
-                        if (reached.has(key)) continue;
-                        reached.add(key);
-                        let row = rows.get(key);
-                        if (row === undefined) {
-                            row = rows.size === 0 ? sourceRow : this.nextRow++;
-                            rows.set(key, row);
-                            this.entries.push({
-                                sourceRow,
-                                blend,
-                                pluginSignature: signature,
-                                baseColorFactorWritten: factorWritten,
+                for (const bentNormalTexture of writes.bentNormalTexture
+                    ? [false, true]
+                    : [false])
+                    for (const alphaBlend of blends)
+                        for (const alpha of alphas) {
+                            const candidate = this.stateInput(
+                                input,
+                                {
+                                    alphaBlend,
+                                    alpha,
+                                    factorWritten,
+                                    bentNormalTexture,
+                                },
+                                own ? undefined : held,
+                            );
+                            // The pin's own blend term decides which states
+                            // share a row, so no restatement of it can drift.
+                            const blend =
+                                ((
+                                    await pinnedMaterialFeatures({
+                                        ...candidate,
+                                    })
+                                ).features &
+                                    PBR_HAS_ALPHA_BLEND) !==
+                                0;
+                            const key = `${blend}:${signature}:${factorWritten}:${bentNormalTexture}`;
+                            if (reached.has(key)) continue;
+                            reached.add(key);
+                            let row = rows.get(key);
+                            if (row === undefined) {
+                                row =
+                                    rows.size === 0
+                                        ? sourceRow
+                                        : this.nextRow++;
+                                rows.set(key, row);
+                                this.entries.push({
+                                    sourceRow,
+                                    blend,
+                                    pluginSignature: signature,
+                                    baseColorFactorWritten: factorWritten,
+                                    bentNormalTexture,
+                                    row,
+                                });
+                            }
+                            states.push({
                                 row,
+                                input: candidate,
+                                ...(statePlugins
+                                    ? { plugins: statePlugins }
+                                    : {}),
                             });
                         }
-                        states.push({
-                            row,
-                            input: candidate,
-                            ...(statePlugins ? { plugins: statePlugins } : {}),
-                        });
-                    }
         }
         return states;
     }
@@ -164,6 +182,7 @@ export class PbrMaterialStates {
             alphaBlend: boolean | undefined;
             alpha: number | undefined;
             factorWritten: boolean;
+            bentNormalTexture: boolean;
         },
         /** The plugin list, when the state holds another than the input's. */
         held: readonly MaterialPluginManifest[] | undefined,
@@ -178,6 +197,8 @@ export class PbrMaterialStates {
         };
         // A written factor composes through its presence alone.
         if (state.factorWritten) candidate.baseColorFactor ??= [1, 1, 1, 1];
+        // So does a written bent normal texture.
+        if (state.bentNormalTexture) candidate["bentNormalTexture"] = {};
         if (held !== undefined) {
             if (held.length > 0) candidate["plugins"] = pinnedPlugins(held);
             else delete candidate["plugins"];

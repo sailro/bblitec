@@ -15,6 +15,8 @@ export interface TaskRecordOptions {
     readonly meshRemoval?: boolean;
     readonly refreshedOverrides?: boolean;
     readonly taskDisposal?: boolean;
+    /** `setMeshOpacity`: an add after the record resolves its binding then. */
+    readonly meshOpacity?: boolean;
 }
 
 export class GeometryOutputLowerer {
@@ -25,6 +27,7 @@ export class GeometryOutputLowerer {
         meshRemoval = false,
         refreshedOverrides = false,
         taskDisposal = false,
+        meshOpacity = false,
     }: TaskRecordOptions = {}): LoweredSource {
         const geometryModule = "src/frame-graph/geometry-renderer-task.ts";
         const copyModule = "src/frame-graph/copy-to-texture-task.ts";
@@ -509,6 +512,7 @@ ${taskDisposal ? '        // queueMesh: a disposed task throws.\n        if (rec
         const bool recorded = record.record_state == FrameTaskRecordState::recorded;
         if (recorded) initialize_render_task_shader_material(engine, record, entry);
         record.render_meshes.push_back(std::move(entry));
+${meshOpacity ? "        if (recorded) resolve_render_task_mesh_extras(engine, record);\n" : ""}\
         if (recorded) ++engine.draw_list_epoch;
     }
 }

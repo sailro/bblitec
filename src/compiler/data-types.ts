@@ -233,11 +233,11 @@ function literalTagValue(
     if ((type.flags & ts.TypeFlags.StringLiteral) !== 0) {
         return (type as ts.StringLiteralType).value;
     }
-    if (
-        (type.flags &
-            (ts.TypeFlags.NumberLiteral | ts.TypeFlags.BooleanLiteral)) !==
-        0
-    ) {
+    // A numeric enum member's literal is its number, not its name.
+    if ((type.flags & ts.TypeFlags.NumberLiteral) !== 0) {
+        return String((type as ts.NumberLiteralType).value);
+    }
+    if ((type.flags & ts.TypeFlags.BooleanLiteral) !== 0) {
         return checker.typeToString(type);
     }
     return undefined;

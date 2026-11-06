@@ -6,7 +6,11 @@ import {
     type PinnedBinding,
     type PinnedCallSpelling,
 } from "./pinned-numeric-lowerer.js";
-import { isShaderSystemMatrix, shaderSystemMatrixTable } from "../shader-ir.js";
+import {
+    isShaderSystemMatrix,
+    shaderSystemMatrixEnumerator,
+    shaderSystemMatrixTable,
+} from "../shader-ir.js";
 import { sameSource, propertyPath } from "../compiler/syntax.js";
 
 const rendererModule = "src/material/shader/shader-renderable.ts";
@@ -370,6 +374,19 @@ export function lowerShaderSystemCache(context: LoweringContext): string {
                 );
                 return [];
             }
+            // A right-handed build converts the written block's matrices;
+            // the native block packing applies the same conversion
+            // (`to_right_handed_shader_system_uniforms`) to what this
+            // publishes.
+            if (
+                context.store.rightHanded() &&
+                ts.isExpressionStatement(statement) &&
+                context.expressionMatchesShape(
+                    statement.expression,
+                    "_toRightHandedShaderSystemUniforms(packet.systemData, state._shaderBindings!.systemSpec._offsets)",
+                )
+            )
+                return [];
             if (
                 ts.isExpressionStatement(statement) &&
                 ts.isCallExpression(statement.expression) &&
@@ -602,6 +619,81 @@ void write_shader_packet_system(const CameraRecord* camera, std::span<const std:
     std::optional<std::array<float, 16>> view;
     std::optional<std::array<float, 16>> viewProjection;
     for (const std::uint32_t dependency : layout) {
+${body.replace(/^/gm, "    ")}
+    }
+}
+`;
+}
+
+/**
+ * `_toRightHandedShaderSystemUniforms` over a packed system block: a
+ * right-handed build hands user shaders Babylon.js's right-handed `view`,
+ * `worldView` and `projection`, converted after the block is written.
+ * Nothing in a left-handed build, which never calls it.
+ */
+export function lowerShaderSystemRightHanded(context: LoweringContext): string {
+    if (!context.store.rightHanded()) return "";
+    const symbol = "_toRightHandedShaderSystemUniforms";
+    const { file, declaration } = context.functionDeclaration(
+        rendererModule,
+        symbol,
+    );
+    const [loop, ...after] = declaration.body!.statements;
+    if (
+        !loop ||
+        after.length !== 0 ||
+        !ts.isForOfStatement(loop) ||
+        !ts.isBlock(loop.statement) ||
+        !ts.isVariableDeclarationList(loop.initializer) ||
+        !loop.initializer.declarations[0] ||
+        !sameSource(loop.initializer.declarations[0].name, "[name, offset]")
+    )
+        return context.contractError(
+            declaration,
+            "Expected one loop over the block's named offsets.",
+        );
+    context.assertExpressionShape(loop.expression, "offsets", "System layout");
+    const [offset, ...arms] = loop.statement.statements;
+    if (!offset)
+        return context.contractError(loop, "Expected the slot's offset.");
+    context.assertStatementShapes(
+        loop,
+        [offset],
+        "const f = offset / 4;",
+        "System slot float offset",
+    );
+    const body = lowerPinnedBody(file, arms, {
+        bindings: new Map<string, PinnedBinding>([
+            ["data", { cpp: "data", type: "f32" }],
+            ["f", { cpp: "f", type: "scalar" }],
+        ]),
+        calls: new Map(),
+        // `name === "<system uniform>"`: the slot's generated enumerator.
+        expression(node) {
+            if (
+                ts.isBinaryExpression(node) &&
+                node.operatorToken.kind ===
+                    ts.SyntaxKind.EqualsEqualsEqualsToken &&
+                sameSource(node.left, "name") &&
+                ts.isStringLiteral(node.right)
+            ) {
+                const name = node.right.text;
+                if (!isShaderSystemMatrix(name))
+                    return context.contractError(
+                        node,
+                        `'${name}' is not a system uniform.`,
+                    );
+                return `(name == ShaderSystemMatrix::${shaderSystemMatrixEnumerator(name)})`;
+            }
+            return undefined;
+        },
+    });
+    return `// ${context.provenance(rendererModule, symbol)}
+inline void to_right_handed_shader_system_uniforms(std::vector<float>& data,
+    const std::vector<ShaderSystemUniform>& offsets) {
+    for (const ShaderSystemUniform& slot : offsets) {
+        const ShaderSystemMatrix name = slot.source;
+        const double f = static_cast<double>(slot.float_offset);
 ${body.replace(/^/gm, "    ")}
     }
 }

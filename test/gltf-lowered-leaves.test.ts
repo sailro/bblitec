@@ -252,8 +252,37 @@ test("lowers the pinned TRS compose byte-identically to the shipped loader text"
 
 test("lowers the RH-to-LH root multiply byte-identically to the shipped loader text", () => {
     assert.equal(
-        lowerRootedWorldCpp(pinnedFile(parserModule)),
+        lowerRootedWorldCpp(pinnedFile(parserModule), false),
         expectedRootedWorld,
+    );
+});
+
+/** A pinned module as a right-handed program (`babylon-lite-rh`) reads it. */
+function rightHandedFile(modulePath: string): ts.SourceFile {
+    return ts.createSourceFile(
+        modulePath,
+        store.getSource(modulePath, ["babylon-lite-rh"]),
+        ts.ScriptTarget.Latest,
+        true,
+        ts.ScriptKind.TS,
+    );
+}
+
+test("a right-handed build's identity root leaves a rooted world as it is", () => {
+    assert.ok(store.rightHanded(["babylon-lite-rh"]));
+    assert.ok(!store.rightHanded([]));
+    assert.equal(
+        lowerRootedWorldCpp(rightHandedFile(parserModule), true),
+        "Matrix gltf_rooted_world(const Matrix& world) {\n    return world;\n}",
+    );
+    // Each build accepts only its own root.
+    assert.throws(
+        () => lowerRootedWorldCpp(rightHandedFile(parserModule), false),
+        /no longer flips exactly one axis/,
+    );
+    assert.throws(
+        () => lowerRootedWorldCpp(pinnedFile(parserModule), true),
+        /is no longer the identity in a right-handed build/,
     );
 });
 
@@ -329,7 +358,7 @@ test("a moved RH-to-LH flip axis flows into the matrix adapter", () => {
         "new F32([-1, 0, 0, 0,  0, 1, 0, 0,",
         "new F32([1, 0, 0, 0,  0, -1, 0, 0,",
     );
-    const rooted = lowerRootedWorldCpp(doctored);
+    const rooted = lowerRootedWorldCpp(doctored, false);
     assert.match(
         rooted,
         /gltf_rh_to_lh_root\{\n {4}1\.0f, 0\.0f, 0\.0f, 0\.0f, 0\.0f, -1\.0f,/,
@@ -345,6 +374,7 @@ test("a root that stops flipping exactly one axis refuses", () => {
                     "F32([-1, 0, 0, 0,  0, 1,",
                     "F32([1, 0, 0, 0,  0, 1,",
                 ),
+                false,
             ),
         /no longer flips exactly one axis/,
     );

@@ -5,6 +5,8 @@ import type { ShaderStageConstant } from "./shader-ir.js";
 interface ShaderStageDeclaration {
     entryPoint: string;
     constants?: readonly ShaderStageConstant[];
+    /** Pipeline-overridable constants a module declares without an `@id`, by name. */
+    namedConstants?: readonly { name: string; value: number }[];
     /** Matching HLSL signature order for a linked vertex/fragment pair. */
     positionFirst?: boolean;
 }
@@ -49,6 +51,8 @@ function stageDeclaration(
         value.positionFirst === undefined
             ? {}
             : { positionFirst: value.positionFirst };
+    const named = namedConstantDeclarations(value.namedConstants);
+    if (named) Object.assign(position, { namedConstants: named });
     if (value.constants === undefined || value.constants === null)
         return { entryPoint, ...position };
     if (!Array.isArray(value.constants))
@@ -84,11 +88,42 @@ function stageDeclaration(
     };
 }
 
+/** `namedConstants`, validated: WGSL identifiers with finite values, each once. */
+function namedConstantDeclarations(
+    value: unknown,
+): { name: string; value: number }[] | undefined {
+    if (value === undefined || value === null) return undefined;
+    if (!Array.isArray(value))
+        throw new Error("Shader namedConstants must be an array.");
+    const names = new Set<string>();
+    return value.map((item) => {
+        const constant = object(item, "Shader named constant");
+        const name = text(constant.name, "Shader named constant name");
+        if (!/^[A-Za-z_]\w*$/.test(name) || names.has(name))
+            throw new Error(`Invalid or duplicate shader constant '${name}'.`);
+        names.add(name);
+        if (
+            typeof constant.value !== "number" ||
+            !Number.isFinite(constant.value)
+        )
+            throw new Error(
+                "Shader constant value must be a finite JSON number.",
+            );
+        return { name, value: constant.value };
+    });
+}
+
 export function shaderStageConstants(stage: ShaderStageDeclaration): string {
-    return [...(stage.constants ?? [])]
-        .sort((left, right) => left.id - right.id)
-        .map(({ id, value }) => `${id}=${Object.is(value, -0) ? "-0" : value}`)
-        .join(",");
+    const value = (amount: number): string =>
+        Object.is(amount, -0) ? "-0" : String(amount);
+    return [
+        ...[...(stage.constants ?? [])]
+            .sort((left, right) => left.id - right.id)
+            .map(({ id, value: amount }) => `${id}=${value(amount)}`),
+        ...[...(stage.namedConstants ?? [])]
+            .sort((left, right) => (left.name < right.name ? -1 : 1))
+            .map(({ name, value: amount }) => `${name}=${value(amount)}`),
+    ].join(",");
 }
 
 /** A module may deploy once and declare multiple compiled stage stems. */

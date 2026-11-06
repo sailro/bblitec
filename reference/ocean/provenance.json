@@ -3,8 +3,8 @@
   "scene": "ocean",
   "pin": {
     "package": "@babylonjs/lite",
-    "version": "1.37.2",
-    "sourceVersion": "a05fc292912d3475ec600cea57c76fce2ee9f7f4"
+    "version": "1.38.2",
+    "sourceVersion": "bc317f91a55b2af616abf487812ac6d4888151f7"
   },
   "reference": {
     "source": "reference/ocean/babylon-lite-golden.png",
@@ -126,7 +126,7 @@
     }
   ],
   "browser": {
-    "version": "156.0.8078.79",
+    "version": "156.0.8078.80",
     "arguments": [
       "--force-color-profile=srgb",
       "--enable-unsafe-webgpu",
@@ -178,5 +178,5 @@
     }
   ],
   "canvasSha256": "31f18e7d4e424fea5249fd99d221b3e3054dc053f536cedce5092e1c943a4582",
-  "capturedAt": "2026-10-30T16:02:53.484Z"
+  "capturedAt": "2026-11-06T11:10:25.272Z"
 }

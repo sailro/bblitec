@@ -114,6 +114,7 @@ export class AdmissionRecorder {
                     "Numeric material-color reads currently support one registered scene; independent material-group UBO snapshots are not represented.",
                 );
         }
+        if (this.context.features.has("scene:overlay")) this.enforceOverlays();
         if (this.context.features.has("text:renderable")) {
             const camera =
                 this.textCameraMutation ??
@@ -308,6 +309,33 @@ export class AdmissionRecorder {
                 node: site,
                 reason: "an observable camera vector cannot be copied into a plain data aggregate",
             });
+    }
+
+    /**
+     * swapchain-overlay.ts composites an overlay after its root's frame:
+     * into the root's swapchain task at MSAA, over the swapchain at one
+     * sample. Natively the layers draw after the root's graph, so a program
+     * building an overlay refuses the shapes that order does not stand for.
+     */
+    private enforceOverlays(): void {
+        for (const [refused, shape] of [
+            [
+                this.context.features.has("engine:gpu-task-timing"),
+                "GPU task timing: it times each registered scene's own scene task, and an overlay draws through its root's",
+            ],
+            [
+                this.context.sceneManifest.postProcessComposites.some(
+                    (composite) =>
+                        composite.intrinsic === "createTaaPostProcessTask",
+                ),
+                "TAA: its temporal pass is encoded after every scene's frame graph, past the root's overlay layers",
+            ],
+        ] as const)
+            if (refused)
+                this.context.fail(
+                    this.context.sourceFile,
+                    `Overlay scenes are not supported with ${shape}.`,
+                );
     }
 
     public noteTemporalAdmissionFailure(node: ts.Node, message: string): void {

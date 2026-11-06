@@ -875,8 +875,8 @@ void tick_document() {
 void dispatch_camera_input(Engine& engine, const SDL_Event& event,
                            WindowDocument::InputTarget& target) {
     CameraRecord* primary = nullptr;
-    if (!engine.scenes().empty() && engine.scenes().front()) {
-        const auto camera = engine.scenes().front()->camera;
+    if (const auto scenes = composited_scenes(engine); !scenes.empty()) {
+        const auto camera = scenes.front()->camera;
         if (camera.value < engine.cameras.size())
             primary = &handle_at(engine.cameras, camera);
     }
@@ -2246,6 +2246,14 @@ static Iteration<int> window_application_iterations(WorkerEntry initialize, Engi
                         if (const auto found = latest.find(index);
                             found != latest.end() && index < layout->elements.size()) {
                             frames.push_back({UiElementHandle{index}, found->second});
+                            WindowCanvasFrame& entry = frames.back();
+                            // A frozen canvas draws no later frame, so its
+                            // source readiness is read now rather than at
+                            // the publication it may predate.
+                            if (canvas->surface->frozen()) {
+                                entry.frozen = true;
+                                entry.frame.capture_ready = canvas->surface->capture_ready_now();
+                            }
                         }
                     }
                     canvases_ready = services->completed > 0 && frames.size() == presenting;
@@ -2268,9 +2276,15 @@ static Iteration<int> window_application_iterations(WorkerEntry initialize, Engi
                                            })
                               ->frame.sequence
                         : 0;
+                // Every canvas whose engine stopped has drawn its last frame,
+                // which is the one the capture waits for.
+                const bool frozen = !frames.empty() &&
+                                    std::all_of(frames.begin(), frames.end(),
+                                                [](const auto& canvas) { return canvas.frozen; });
                 const auto frame_reached = [&](long frame) {
-                    return engine_count ? engine_frames > static_cast<std::uint64_t>(frame)
-                                        : presented >= frame;
+                    return engine_count
+                               ? frozen || engine_frames > static_cast<std::uint64_t>(frame)
+                               : presented >= frame;
                 };
                 const bool capture_ready = !final_screenshot_saved && frame_reached(final_frame);
                 const bool checkpoint_ready = next_checkpoint != screenshot_checkpoints.end() &&

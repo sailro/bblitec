@@ -8014,6 +8014,11 @@ struct UiRmlRuntime {
 
     bool has_active_authored_width(UiElementHandle handle, const UiElementRecord& record) const {
         const std::string width = cascaded_declaration(handle, record, "width");
+        // inherit is the parent's width (RmlUi patch 0066).
+        if (normalized_css_keyword(width) == "inherit")
+            return record.parent.value != invalid_handle &&
+                   has_active_authored_width(record.parent,
+                                             handle_at(engine.ui_elements, record.parent));
         return !width.empty() && is_concrete_authored_width(width);
     }
 

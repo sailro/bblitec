@@ -125,19 +125,19 @@ GpuScreenSpaceProgram build_screen_space_program(GpuState& state, std::uint32_t 
         throw std::runtime_error("A screen-space stage exceeds 8 textures.");
     }
     for (const std::string& name : program.fragment_slots.textures) {
-        const upstream::ScreenSpaceStageBinding* declared = nullptr;
+        std::size_t declared = info.binding_count;
         for (std::size_t index = 0; index < info.binding_count; ++index) {
             if (name == info.bindings[index].name) {
-                declared = &info.bindings[index];
+                declared = index;
                 break;
             }
         }
-        if (!declared) {
+        if (declared == info.binding_count) {
             throw std::runtime_error("Screen-space stage declares a texture the pin did not "
                                      "bind: " +
                                      name);
         }
-        program.fragment_roles.push_back(declared->role);
+        program.fragment_bindings.push_back(declared);
     }
     return program;
 }
@@ -151,24 +151,12 @@ std::size_t screen_space_program(GpuState& state, std::uint32_t stage) {
 
 SDL_GPUTexture* screen_space_binding_texture(GpuState& state, const Engine& engine,
                                              const ScreenSpaceTaskOptions& task,
-                                             upstream::ScreenSpaceTextureRole role) {
+                                             upstream::ScreenSpaceTextureRef texture) {
     const pal::TargetUser user{"Screen-space task", task.name};
-    const auto target = [&](RenderTargetHandle handle) -> const GpuRenderTarget& {
-        return pal::resolve_gpu_target(engine, state.render_targets, handle, user);
-    };
-    switch (role) {
-    case upstream::ScreenSpaceTextureRole::depth:
-        return target(task.depth).depth;
-    case upstream::ScreenSpaceTextureRole::source_color:
-        return target(task.source).sampled_color;
-    case upstream::ScreenSpaceTextureRole::raw:
-        return target(task.raw).sampled_color;
-    case upstream::ScreenSpaceTextureRole::history:
-        return target(task.history).sampled_color;
-    default:
-        throw std::runtime_error("A screen-space stage binds a texture role this backend "
-                                 "does not serve.");
-    }
+    const GpuRenderTarget& target = pal::resolve_gpu_target(
+        engine, state.render_targets, pal::screen_space_target(task, texture), user);
+    return texture.role == upstream::ScreenSpaceTextureRole::depth ? target.depth
+                                                                   : target.sampled_color;
 }
 
 SDL_GPURenderPass* begin_screen_space_pass(SDL_GPUCommandBuffer* command, SDL_GPUTexture* target) {
@@ -181,10 +169,11 @@ SDL_GPURenderPass* begin_screen_space_pass(SDL_GPUCommandBuffer* command, SDL_GP
 }
 
 void record_screen_space_stage(GpuState& state, const Engine& engine,
-                               const ScreenSpaceTaskOptions& task, std::size_t program_index,
-                               SDL_GPUCommandBuffer* command, SDL_GPUTexture* target,
-                               const float* uniforms) {
-    const GpuScreenSpaceProgram& program = state.screen_space_programs[program_index];
+                               const ScreenSpaceTaskOptions& task,
+                               const upstream::ScreenSpacePassInfo& pass,
+                               SDL_GPUCommandBuffer* command, const float* uniforms) {
+    const GpuScreenSpaceProgram& program =
+        state.screen_space_programs[screen_space_program(state, pass.stage)];
     const upstream::ScreenSpaceShaderInfo& info =
         upstream::screen_space_shader_infos[program.stage];
     if (!program.vertex_slots.uniforms.empty()) {
@@ -195,20 +184,24 @@ void record_screen_space_stage(GpuState& state, const Engine& engine,
         SdlGpuWriteDevice{}.write_fragment_uniform(command, 0, uniforms,
                                                    static_cast<Uint32>(info.uniform_bytes));
     }
-    SdlRenderPass pass{begin_screen_space_pass(command, target)};
-    SDL_BindGPUGraphicsPipeline(pass, program.pipeline.get());
+    const GpuRenderTarget& target = pal::resolve_gpu_target(
+        engine, state.render_targets, pal::screen_space_target(task, pass.target),
+        pal::TargetUser{"Screen-space task", task.name});
+    SdlRenderPass encoded{begin_screen_space_pass(command, target.color)};
+    SDL_BindGPUGraphicsPipeline(encoded, program.pipeline.get());
     std::array<SDL_GPUTextureSamplerBinding, max_post_process_textures> bindings{};
-    for (std::size_t slot = 0; slot < program.fragment_roles.size(); ++slot) {
+    for (std::size_t slot = 0; slot < program.fragment_bindings.size(); ++slot) {
         bindings[slot] = SDL_GPUTextureSamplerBinding{
-            screen_space_binding_texture(state, engine, task, program.fragment_roles[slot]),
+            screen_space_binding_texture(state, engine, task,
+                                         pass.textures[program.fragment_bindings[slot]]),
             state.post_process_bilinear_sampler};
     }
-    if (!program.fragment_roles.empty()) {
-        SDL_BindGPUFragmentSamplers(pass, 0, bindings.data(),
-                                    static_cast<Uint32>(program.fragment_roles.size()));
+    if (!program.fragment_bindings.empty()) {
+        SDL_BindGPUFragmentSamplers(encoded, 0, bindings.data(),
+                                    static_cast<Uint32>(program.fragment_bindings.size()));
     }
-    count_gpu_draw(SDL_DrawGPUPrimitives, pass, 3, 1, 0, 0);
-    pass.end();
+    count_gpu_draw(SDL_DrawGPUPrimitives, encoded, 3, 1, 0, 0);
+    encoded.end();
 }
 #endif
 

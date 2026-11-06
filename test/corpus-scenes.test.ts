@@ -115,12 +115,33 @@ test("keeps pinned build tooling byte-identical to the pin", () => {
     }
 });
 
+test("keeps pinned package sources byte-identical to the pin", () => {
+    // Modules of types only, which the package emits empty and no source map
+    // carries; the source store reads them as the pin's own modules.
+    for (const file of readBabylonLiteCorpus().packageSources ?? []) {
+        assert.match(
+            file.upstreamPath,
+            /^packages\/babylon-lite\/src\/.+\.ts$/,
+        );
+        assert.equal(file.source, `corpus/babylon-lite/${file.upstreamPath}`);
+        const digest = createHash("sha256")
+            .update(readFileSync(file.source))
+            .digest("hex");
+        assert.equal(
+            digest,
+            file.sha256,
+            `${file.upstreamPath} input differs from pinned upstream evidence.`,
+        );
+    }
+});
+
 test("keeps staged corpus files byte-identical to the pin", () => {
     const manifest = readBabylonLiteCorpus();
     const pinnedElsewhere = new Set([
         ...manifest.scenes.map(({ source }) => source),
         ...(manifest.modules ?? []).map(({ source }) => source),
         ...(manifest.tooling ?? []).map(({ source }) => source),
+        ...(manifest.packageSources ?? []).map(({ source }) => source),
         ...manifest.applications.flatMap(({ files }) =>
             files.map(({ source }) => source),
         ),
@@ -166,6 +187,7 @@ test("lists every corpus file in the pinned manifest", () => {
         ...(manifest.modules ?? []).map(({ source }) => source),
         ...(manifest.staged ?? []).map(({ source }) => source),
         ...(manifest.tooling ?? []).map(({ source }) => source),
+        ...(manifest.packageSources ?? []).map(({ source }) => source),
         ...manifest.applications.flatMap(({ files }) =>
             files.map(({ source }) => source),
         ),

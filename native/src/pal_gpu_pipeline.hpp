@@ -4,6 +4,7 @@
 #pragma once
 #include "pal_gpu_frame.hpp"
 #include <bblite/features/has_pbr_renderer.hpp>
+#include <bblite/features/right_handed.hpp>
 
 #include <bblite/runtime.hpp>
 #include <bblite/upstream/render_capabilities.hpp>
@@ -20,6 +21,13 @@
 #endif
 
 namespace bbl::pal {
+
+/**
+ * A scene pipeline's front face for geometry its family winds `clockwise`
+ * left-handed: a right-handed build's view matrix mirrors Z, which reverses
+ * it (`#coordinate-system`).
+ */
+inline bool scene_pass_clockwise(bool clockwise) { return clockwise != (BBLITE_RIGHT_HANDED != 0); }
 
 /**
  * The three blend-factor tuples the corpus reaches, stated once. A

@@ -44,7 +44,11 @@ type QueueMethod =
     "writeBuffer" | "writeTexture" | "copyExternalImageToTexture" | "submit";
 
 type EncoderMethod =
-    "beginRenderPass" | "beginComputePass" | "copyTextureToTexture" | "finish";
+    | "beginRenderPass"
+    | "beginComputePass"
+    | "copyTextureToTexture"
+    | "clearBuffer"
+    | "finish";
 type ComputePassMethod =
     "setPipeline" | "setBindGroup" | "dispatchWorkgroups" | "end";
 
@@ -55,6 +59,7 @@ type RenderPassMethod =
     | "setIndexBuffer"
     | "draw"
     | "drawIndexed"
+    | "drawIndirect"
     | "setViewport"
     | "setScissorRect"
     | "end";
@@ -322,10 +327,16 @@ export interface RecordedRenderPass<S extends DescriptorShapes> {
     indexBuffer?: { readonly buffer: RecordedBuffer; readonly format: string };
     /** Each `drawIndexed` call's arguments, as passed. */
     readonly indexedDraws: (readonly number[])[];
+    /** Each `drawIndirect` call's buffer and offset. */
+    readonly indirectDraws: {
+        readonly buffer: RecordedBuffer;
+        readonly offset: number;
+    }[];
     ended: boolean;
 }
 
 interface RecordedComputePipelineDescriptor {
+    readonly label?: string;
     readonly layout: unknown;
     readonly compute: {
         readonly module: object;
@@ -355,6 +366,25 @@ export interface RecordedComputeDispatch<S extends DescriptorShapes> {
     readonly bindGroups: ReadonlyMap<number, S["bindGroup"]>;
     readonly workgroups: readonly number[];
 }
+
+/**
+ * One pass the encoder began, in encoding order: compute passes with the
+ * dispatches they carried and render passes, interleaved as the pin
+ * encoded them, which neither per-kind list above can say.
+ */
+export type RecordedPass<S extends DescriptorShapes> =
+    | {
+          readonly kind: "compute";
+          readonly label: string;
+          readonly dispatches: RecordedComputeDispatch<S>[];
+      }
+    | { readonly kind: "render"; readonly pass: RecordedRenderPass<S> }
+    | {
+          readonly kind: "clearBuffer";
+          readonly buffer: RecordedBuffer;
+          readonly offset: number;
+          readonly size: number;
+      };
 
 /** GPU calls in recording order, including transfers between reused textures. */
 type RecordedTextureOperation<S extends DescriptorShapes> =
@@ -400,6 +430,8 @@ export interface Recorder<S extends DescriptorShapes> {
     readonly bufferWrites: readonly RecordedBufferWrite[];
     readonly textureCopies: readonly RecordedTextureCopy[];
     readonly renderPasses: readonly RecordedRenderPass<S>[];
+    /** Every pass the encoder began, compute and render, in encoding order. */
+    readonly passes: readonly RecordedPass<S>[];
     readonly textureOperations: readonly RecordedTextureOperation<S>[];
     /** How many command buffers `queue.submit` received. */
     readonly submitted: number;
@@ -545,6 +577,7 @@ export function createRecordingDevice<
     const bufferWrites: RecordedBufferWrite[] = [];
     const textureCopies: RecordedTextureCopy[] = [];
     const renderPasses: RecordedRenderPass<S>[] = [];
+    const passes: RecordedPass<S>[] = [];
     const textureOperations: RecordedTextureOperation<S>[] = [];
     const commandBuffers = new WeakMap<object, RecordedTextureOperation<S>[]>();
     let submitted = 0;
@@ -639,6 +672,12 @@ export function createRecordingDevice<
             drawIndexed: (...counts: number[]) => {
                 pass.indexedDraws.push(counts);
             },
+            drawIndirect: (buffer: unknown, offset: number) => {
+                pass.indirectDraws.push({
+                    buffer: recordedBuffer(buffer, "an indirect draw's buffer"),
+                    offset,
+                });
+            },
             setViewport: () => undefined,
             setScissorRect: () => undefined,
             end: () => {
@@ -666,9 +705,17 @@ export function createRecordingDevice<
             "command encoder",
             contract.encoder ?? [],
             {
-                beginComputePass: () => {
+                beginComputePass: (descriptor?: {
+                    readonly label?: string;
+                }) => {
                     let pipeline: RecordedComputePipeline | undefined;
                     const groups = new Map<number, S["bindGroup"]>();
+                    const dispatches: RecordedComputeDispatch<S>[] = [];
+                    passes.push({
+                        kind: "compute",
+                        label: descriptor?.label ?? "",
+                        dispatches,
+                    });
                     return strictSurface(
                         producer,
                         "compute pass",
@@ -701,14 +748,16 @@ export function createRecordingDevice<
                                         `Recording device for '${producer}': compute dispatch has no pipeline.`,
                                     );
                                 }
+                                const dispatch = {
+                                    pipeline,
+                                    bindGroups: new Map(groups),
+                                    workgroups,
+                                };
+                                dispatches.push(dispatch);
                                 if (contract.textureOperations)
                                     recordCommand({
                                         kind: "compute",
-                                        dispatch: {
-                                            pipeline,
-                                            bindGroups: new Map(groups),
-                                            workgroups,
-                                        },
+                                        dispatch,
                                     });
                             },
                             end: () => undefined,
@@ -730,10 +779,24 @@ export function createRecordingDevice<
                         draws: [],
                         vertexBuffers: new Map(),
                         indexedDraws: [],
+                        indirectDraws: [],
                         ended: false,
                     };
                     renderPasses.push(pass);
+                    passes.push({ kind: "render", pass });
                     return renderPassSurface(pass);
+                },
+                clearBuffer: (buffer: unknown, offset = 0, size?: number) => {
+                    const target = recordedBuffer(
+                        buffer,
+                        "a buffer clear's buffer",
+                    );
+                    passes.push({
+                        kind: "clearBuffer",
+                        buffer: target,
+                        offset,
+                        size: size ?? target.size - offset,
+                    });
                 },
                 copyTextureToTexture: (
                     source: {
@@ -914,13 +977,40 @@ export function createRecordingDevice<
                 descriptor,
                 "createPipelineLayout",
             ),
-        createRenderPipeline: (descriptor: S["renderPipeline"]) =>
-            copied(
+        createRenderPipeline: (descriptor: S["renderPipeline"]) => {
+            const pipeline = copied(
                 "renderPipeline",
                 renderPipelines,
                 descriptor,
                 "createRenderPipeline",
-            ),
+            );
+            // `getBindGroupLayout(i)` of an explicit layout is that layout's
+            // group; kept off the copy's enumerable members, which producers
+            // read back as the descriptor.
+            Object.defineProperty(pipeline, "getBindGroupLayout", {
+                enumerable: false,
+                value: (index: number): unknown => {
+                    const layout = (descriptor as { layout?: unknown }).layout;
+                    const groups =
+                        typeof layout === "object" && layout !== null
+                            ? (layout as { bindGroupLayouts?: unknown })
+                                  .bindGroupLayouts
+                            : undefined;
+                    const group = Array.isArray(groups)
+                        ? (groups as unknown[])[index]
+                        : undefined;
+                    if (group === undefined) {
+                        throw new Error(
+                            `Recording device for '${producer}': ` +
+                                `getBindGroupLayout(${index}) of a render ` +
+                                "pipeline without that explicit group.",
+                        );
+                    }
+                    return group;
+                },
+            });
+            return pipeline;
+        },
         createComputePipeline: (
             descriptor: RecordedComputePipelineDescriptor,
         ) => {
@@ -968,6 +1058,7 @@ export function createRecordingDevice<
             bufferWrites,
             textureCopies,
             renderPasses,
+            passes,
             textureOperations,
             get submitted() {
                 return submitted;
@@ -986,6 +1077,7 @@ export function createRecordingDevice<
                     bufferWrites,
                     textureCopies,
                     renderPasses,
+                    passes,
                     textureOperations,
                 ])
                     entries.length = 0;

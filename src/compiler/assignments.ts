@@ -214,6 +214,24 @@ const recordFieldAssignments: readonly RecordFieldAssignment[] = [
         field: "direct_intensity",
         value: "number",
     },
+    // `_writeMaterialData`'s `metallicFactor ?? 1` and `roughnessFactor ?? 1`:
+    // uniform-only factors, read from the record each upload.
+    {
+        kind: "material",
+        materialFamily: "pbr",
+        property: "metallicFactor",
+        collection: "materials",
+        field: "metallic_factor",
+        value: "number",
+    },
+    {
+        kind: "material",
+        materialFamily: "pbr",
+        property: "roughnessFactor",
+        collection: "materials",
+        field: "roughness_factor",
+        value: "number",
+    },
     {
         // The pin's `uvScale: [number, number]`, which
         // `writeStandardUvTransformData` reads into the material's own UV
@@ -311,6 +329,17 @@ const recordFieldAssignments: readonly RecordFieldAssignment[] = [
         field: "use_physical_light_falloff",
         value: "boolean",
         simpleOnly: true,
+    },
+    {
+        // bent-normal-fragment.ts: its writer reads `bentNormalStrength ?? 1`
+        // into `bentNormalParams.x` and the fragment saturates it; the
+        // value composes nothing.
+        kind: "material",
+        materialFamily: "pbr",
+        property: "bentNormalStrength",
+        collection: "materials",
+        field: "bent_normal_strength",
+        value: "number",
     },
     {
         // src/camera/orthographic.ts: the bounds stay live, and its setter
@@ -624,6 +653,11 @@ export interface AssignmentContext
             | "callbacks"
             | "compileNumber"
             | "compileBoolean"
+            | "conditions"
+            | "increaseIndent"
+            | "decreaseIndent"
+            | "enterRuntimeControlFlow"
+            | "leaveRuntimeControlFlow"
             | "compileColor3"
             | "captureNativeExpression"
             | "compileColor4"
@@ -966,6 +1000,201 @@ function emitScreenSpaceSettingAssignment(
     return true;
 }
 
+/**
+ * Writes an SSAO task's live settings, or its temporal, half-resolution and
+ * motion-pruning records'. The pin samples each inside `execute`, so a write
+ * is the record field the generated frame function reads; a write of a
+ * setting that selects programs (quality, normal input, temporal
+ * reconstruction, pruning) makes composition build every value's mode.
+ */
+function emitSsaoSettingAssignment(
+    context: AssignmentContext,
+    expression: ts.BinaryExpression,
+    setting: string,
+    left: ts.Expression,
+    owner: Value,
+): boolean {
+    const manifest = owner.ssaoTask;
+    if (
+        !manifest ||
+        (owner.kind !== "task" &&
+            owner.kind !== "ssao-temporal" &&
+            owner.kind !== "ssao-half-resolution" &&
+            owner.kind !== "ssao-motion-pruning")
+    ) {
+        return false;
+    }
+    const engine = context.requireEngine(owner, expression);
+    requireSimpleAssignment(context, expression, "SSAO setting");
+    const refuse = (why: string): never =>
+        context.fail(
+            left,
+            `SSAO ${owner.kind === "task" ? "task" : owner.kind} '${setting}' write is not lowered: ${why}.`,
+        );
+    if (owner.kind === "task") {
+        const record = `${recordAt(`${engine}.frame_tasks`, owner.cpp)}.ssao`;
+        if (setting === "enabled") {
+            context.emit({
+                kind: "expression",
+                code: `${record}.enabled = ${context.conditions.compileCondition(expression.right)};`,
+            });
+            return true;
+        }
+        if (setting === "radius" || setting === "intensity") {
+            context.emit({
+                kind: "expression",
+                code: `${record}.${setting} = ${context.compileNumber(expression.right, "double")};`,
+            });
+            return true;
+        }
+        if (setting === "quality") {
+            context.sceneManifest.recordSsaoLiveSetting("quality", manifest);
+            context.emit({
+                kind: "expression",
+                code: `${record}.quality = ${context.dataLowerer.compileForSink(expression.right, { kind: "string" })};`,
+            });
+            return true;
+        }
+        if (setting === "normalTexture") {
+            const right = context.unwrap(expression.right);
+            const cleared =
+                right.kind === ts.SyntaxKind.NullKeyword ||
+                (ts.isIdentifier(right) && right.text === "undefined");
+            const normal = cleared
+                ? undefined
+                : compileNormalInput(
+                      context,
+                      expression.right,
+                      "SSAO task normalTexture",
+                  );
+            if (normal) {
+                const known =
+                    context.sceneManifest.ssaoNormalAttachment(manifest);
+                if (known !== undefined && known !== normal.attachment) {
+                    return refuse(
+                        `the task's normal input is its ${known} attachment, and one plan composes one normal format`,
+                    );
+                }
+                context.sceneManifest.recordSsaoNormalAttachment(
+                    normal.attachment,
+                    manifest,
+                );
+            }
+            context.sceneManifest.recordSsaoLiveSetting("normal", manifest);
+            context.emit({
+                kind: "expression",
+                code: `${record}.normal = ${normal ? normal.cpp : "std::nullopt"};`,
+            });
+            return true;
+        }
+        return refuse("the task publishes no such setting");
+    }
+    if (owner.kind === "ssao-temporal") {
+        if (setting === "historySamples") {
+            context.emit({
+                kind: "expression",
+                code: `bbl::ssao_temporal_settings(${engine}, ${owner.cpp}).history_samples = ${context.compileNumber(expression.right, "double")};`,
+            });
+            return true;
+        }
+        if (setting === "enabled") {
+            context.sceneManifest.recordSsaoLiveSetting("temporal", manifest);
+            context.emit({
+                kind: "expression",
+                code: `bbl::ssao_temporal_settings(${engine}, ${owner.cpp}).enabled = ${context.conditions.compileCondition(expression.right)};`,
+            });
+            return true;
+        }
+        return refuse("the record publishes no such setting");
+    }
+    if (owner.kind === "ssao-motion-pruning") {
+        if (setting === "enabled") {
+            context.sceneManifest.recordSsaoLiveSetting("pruning", manifest);
+            context.emit({
+                kind: "expression",
+                code: `bbl::ssao_motion_pruning_settings(${engine}, ${owner.cpp}).enabled = ${context.conditions.compileCondition(expression.right)};`,
+            });
+            return true;
+        }
+        return refuse("the record publishes no such setting");
+    }
+    if (setting === "enabled") {
+        context.emit({
+            kind: "expression",
+            code: `bbl::ssao_half_resolution_settings(${engine}, ${owner.cpp}).enabled = ${context.conditions.compileCondition(expression.right)};`,
+        });
+        return true;
+    }
+    return refuse("the record publishes no such setting");
+}
+
+/**
+ * `task[key] = value` on an SSAO task's records: the setting write its
+ * property spelling makes, for a key generation knows, or for each name of
+ * the key's string-literal type (`for (const name of ["radius",
+ * "intensity"] as const)`), selected by the key at run time. The key
+ * evaluates once, before the value.
+ */
+function emitStaticKeySsaoSettingAssignment(
+    context: AssignmentContext,
+    expression: ts.BinaryExpression,
+): boolean {
+    const left = context.unwrap(expression.left);
+    if (
+        !ts.isElementAccessExpression(left) ||
+        !ts.isIdentifier(left.expression)
+    )
+        return false;
+    const owner = context.bindings.lookupOptional(left.expression);
+    if (!owner?.ssaoTask) return false;
+    const known = context.compileValue(left.argumentExpression).staticString;
+    if (known !== undefined)
+        return emitSsaoSettingAssignment(
+            context,
+            expression,
+            known,
+            left,
+            owner,
+        );
+    const type = context.checker.getTypeAtLocation(left.argumentExpression);
+    const names = (type.isUnion() ? type.types : [type]).map((member) =>
+        member.isStringLiteral() ? member.value : undefined,
+    );
+    if (names.length === 0 || names.some((name) => name === undefined)) {
+        return context.fail(
+            left.argumentExpression,
+            "An SSAO setting written by a computed key needs a key of string-literal type.",
+        );
+    }
+    const key = context.allocateTemporaryCppName("ssao_setting");
+    context.emit({
+        kind: "declaration",
+        type: "const std::string",
+        name: key,
+        initializer: context.dataLowerer.compileForSink(
+            left.argumentExpression,
+            { kind: "string" },
+        ),
+    });
+    context.enterRuntimeControlFlow();
+    try {
+        // The names are distinct, so at most one arm runs.
+        for (const name of names) {
+            context.emit({
+                kind: "open",
+                code: `if (${key} == ${context.cppString(name!)}) {`,
+            });
+            context.increaseIndent();
+            emitSsaoSettingAssignment(context, expression, name!, left, owner);
+            context.decreaseIndent();
+            context.emit({ kind: "close", code: "}" });
+        }
+    } finally {
+        context.leaveRuntimeControlFlow();
+    }
+    return true;
+}
+
 /** Writes the mutable view fields exposed by `Sprite2DLayer.view`. */
 function emitSpriteLayerViewAssignment(
     context: AssignmentContext,
@@ -1223,6 +1452,32 @@ function emitBridgeOriginWrite(
     return true;
 }
 
+/**
+ * `error.code = value` on a represented Error, for a property no reached
+ * source can read back (`propertyNeverRead`): nothing needs its
+ * storage, so the write is its value's evaluation.
+ */
+export function emitUnobservedErrorPropertyWrite(
+    context: AssignmentContext,
+    expression: ts.BinaryExpression,
+): boolean {
+    const left = context.unwrap(expression.left);
+    if (
+        expression.operatorToken.kind !== ts.SyntaxKind.EqualsToken ||
+        !ts.isPropertyAccessExpression(left) ||
+        // The receiver evaluates first; this write reads it for nothing.
+        expressionHasEffects(left.expression) ||
+        !propertyNeverRead(context.program, context.checker, left.name.text)
+    )
+        return false;
+    const owner = unlessRefused(() =>
+        context.probeEmission(() => context.compileValue(left.expression)),
+    );
+    if (!owner?.nativeError && owner?.dataType?.kind !== "error") return false;
+    context.emitDiscardedValue(context.compileValue(expression.right));
+    return true;
+}
+
 export function emitPropertyAssignment(
     context: AssignmentContext,
     expression: ts.BinaryExpression,
@@ -1283,6 +1538,7 @@ export function emitPropertyAssignment(
         // A retained element's member by a static key (`el.dataset["k"]`)
         // is the UI owner's, as its property spelling is.
         if (context.emitUiPropertyAssignment(expression)) return;
+        if (emitStaticKeySsaoSettingAssignment(context, expression)) return;
         context.fail(
             expression.left,
             "Only property assignments are supported.",
@@ -1625,6 +1881,18 @@ export function emitPropertyAssignment(
         emitScreenSpaceSettingAssignment(
             context,
             expression,
+            left,
+            context.bindings.lookup(left.expression),
+        )
+    ) {
+        return;
+    }
+    if (
+        ts.isIdentifier(left.expression) &&
+        emitSsaoSettingAssignment(
+            context,
+            expression,
+            left.name.text,
             left,
             context.bindings.lookup(left.expression),
         )
@@ -2529,6 +2797,8 @@ import {
 import { emitFrozenParticleSheetAssignment } from "./particle-sheet.js";
 import { staticNumberValue } from "./option-helpers.js";
 import { staticTableEntry, type TableOption } from "./table-options.js";
+import { propertyNeverRead } from "./unread-properties.js";
+import { unlessRefused } from "./compile-error.js";
 
 /**
  * A mesh's primitive state fields: the topology's native name, and the
@@ -2579,6 +2849,7 @@ import {
 import { noteCameraRecordWrite } from "./intrinsics/camera.js";
 import { absentReceiverMessage, cameraRecordField } from "./properties.js";
 import { compileRenderTextureValue } from "./intrinsics/engine-options.js";
+import { compileNormalInput } from "./intrinsics/ssao-options.js";
 import { postProcessEffect } from "../post-process-effects.js";
 import {
     SCREEN_SPACE_SCALAR_SETTINGS,
@@ -4271,6 +4542,87 @@ function emitPbrAlphaBlendAssignment(
 }
 
 /**
+ * The `bbl::FileTexture` a PBR texture-slot write stores: a loaded, solid or
+ * stored texture. A pixels texture refuses rather than binding a slot the
+ * setter cannot fill.
+ */
+function pbrFileTexture(
+    context: AssignmentContext,
+    target: Value,
+    expression: ts.BinaryExpression,
+    property: string,
+): { texture: Value; file: string } {
+    const texture = context.compileValue(expression.right);
+    context.expectKind(texture, "texture", expression.right);
+    context.expectSameEngine(target, texture, expression);
+    // A texture stored as data is the `StoredTexture` variant.
+    const stored =
+        texture.dataType?.kind === "handle" &&
+        texture.dataType.handle === "texture" &&
+        texture.textureStorage === undefined &&
+        !texture.textureFile;
+    const file =
+        texture.textureStorage === "solid"
+            ? `bbl::solid_texture_file(${texture.cpp})`
+            : texture.textureFile || texture.textureStorage === "file"
+              ? texture.cpp
+              : stored
+                ? `std::get<bbl::FileTexture>(${texture.cpp})`
+                : context.fail(
+                      expression.right,
+                      `PBR ${property} takes a loaded or solid texture; received ${texture.textureStorage ?? "an unknown"} storage.`,
+                  );
+    return { texture, file };
+}
+
+/**
+ * `pbr.bentNormalTexture = texture` before scene registration
+ * (bent-normal-fragment.ts). The texture's presence is composition input:
+ * the IBL extension's `detect` reads it when the material is first built,
+ * so each write reaches composition as a state of the materials it can
+ * reach, and the record holds the texture the extension's `bind` binds.
+ */
+function emitBentNormalTextureAssignment(
+    context: AssignmentContext,
+    state: TargetPropertyAssignment,
+): boolean {
+    const { expression, left, target, property } = state;
+    if (target.kind !== "material" || property !== "bentNormalTexture")
+        return false;
+    requireSimpleAssignment(context, expression, "PBR bentNormalTexture");
+    if (
+        context.hasRegisteredScene() ||
+        context.engineLifecycle.engineHasStarted()
+    ) {
+        context.fail(
+            expression,
+            "PBR bentNormalTexture requires static setup before scene registration: the pin composes it when the material is first built.",
+        );
+    }
+    if (materialFamily(context, target, left.expression) !== "pbr")
+        context.fail(left, "bentNormalTexture requires a known PBR material.");
+    // The setter is emitted into the PBR material factory's unit.
+    context.reachFeature("material:pbr", expression);
+    const { texture, file } = pbrFileTexture(
+        context,
+        target,
+        expression,
+        property,
+    );
+    // The record takes a copy, so a later write to the texture object
+    // would not reach the bound one.
+    context.boundPixelsTextures.add(texture.cpp);
+    context.sceneManifest.recordPbrStateWrite(target, {
+        bentNormalTexture: true,
+    });
+    context.emit({
+        kind: "expression",
+        code: `bbl::set_pbr_bent_normal_texture(${context.requireEngine(target, expression)}, ${target.cpp}, ${file});`,
+    });
+    return true;
+}
+
+/**
  * `pbr.baseColorTexture = texture` before scene registration. Every PBR
  * variant binds the base-color slot (an absent texture binds the factor's
  * fallback texel), so the swap composes nothing; registration binds the
@@ -4295,29 +4647,9 @@ function emitBaseColorTextureAssignment(
     }
     if (materialFamily(context, target, left.expression) !== "pbr")
         context.fail(left, "baseColorTexture requires a known PBR material.");
-    const texture = context.compileValue(expression.right);
-    context.expectKind(texture, "texture", expression.right);
-    context.expectSameEngine(target, texture, expression);
     // The setter is the PBR factory's own (createPbrMaterial's texture props).
     context.reachFeature("material:pbr", expression);
-    // A texture stored as data is the `StoredTexture` variant; a pixels
-    // texture there throws rather than binding a slot this setter cannot fill.
-    const stored =
-        texture.dataType?.kind === "handle" &&
-        texture.dataType.handle === "texture" &&
-        texture.textureStorage === undefined &&
-        !texture.textureFile;
-    const file =
-        texture.textureStorage === "solid"
-            ? `bbl::solid_texture_file(${texture.cpp})`
-            : texture.textureFile || texture.textureStorage === "file"
-              ? texture.cpp
-              : stored
-                ? `std::get<bbl::FileTexture>(${texture.cpp})`
-                : context.fail(
-                      expression.right,
-                      `PBR baseColorTexture replacement takes a loaded or solid texture; received ${texture.textureStorage ?? "an unknown"} storage.`,
-                  );
+    const { file } = pbrFileTexture(context, target, expression, property);
     const engine = context.requireEngine(target, expression);
     if (isPbrMaterialValue(target)) {
         context.emit({
@@ -4766,6 +5098,7 @@ const targetPropertyHandlers2 = new EmissionMap<
     ["ormTexture", emitOrmTextureAssignment],
     ["alphaBlend", emitPbrAlphaBlendAssignment],
     ["baseColorTexture", emitBaseColorTextureAssignment],
+    ["bentNormalTexture", emitBentNormalTextureAssignment],
     ["occlusionTexture", emitOcclusionTextureAssignment],
     ["diffuseTexture", emitDiffuseTextureAssignment],
     ["parent", emitParentAssignment],

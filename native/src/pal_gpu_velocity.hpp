@@ -1,17 +1,23 @@
-// Per-geometry-task Standard mesh velocity snapshots, shared by both renderers.
+// Per-geometry-task mesh velocity snapshots, shared by both renderers.
 #pragma once
 
+#include <bblite/features/geometry_velocity.hpp>
 #include <bblite/runtime.hpp>
 #include <bblite/upstream/render_capabilities.hpp>
 #include <array>
 #include <cstdint>
 #include <optional>
+#include <span>
 #include <stdexcept>
 #include <vector>
 #if BBLITE_PINNED_MATERIALS && BBLITE_PINNED_MATERIAL_VARIANTS
 #include <bblite/upstream/renderer_plan.hpp>
 #include "pal_gpu_surface.hpp"
 #include "pal_gpu_variants.hpp"
+#endif
+#if BBLITE_GEOMETRY_VELOCITY
+#include <bblite/upstream/geometry_velocity.hpp>
+#include "pal_gpu_vertex.hpp"
 #endif
 
 namespace bbl::pal {
@@ -56,6 +62,17 @@ struct PinnedVelocityHistory {
         std::uint64_t updated_frame = 0;
         std::array<float, 16> written_previous_world{};
         float written_velocity_enabled = 0.0f;
+#if BBLITE_GEOMETRY_VELOCITY
+        /**
+         * A PBR renderable's `createPbrGeometryVelocity` state, made with
+         * the renderable, and its deformation's previous pose when the mesh
+         * deforms. `packed_world` is the world its mesh block last packed:
+         * the update's `worldChanged` is a change of it.
+         */
+        std::optional<upstream::PbrGeometryVelocity> pbr;
+        std::optional<upstream::GeometryDeformationVelocity> deformation;
+        std::array<float, 16> packed_world{};
+#endif
     };
     /**
      * The pin's `_cfg` stamp, published with each sync: the device and the
@@ -119,9 +136,14 @@ inline void clear_pinned_velocity_stamp(PinnedVelocityHistory& history,
         history.stamp.reset();
 }
 
-inline const PinnedVelocityHistory::Renderable&
-update_pinned_velocity(PinnedVelocityHistory& history, MeshHandle mesh,
-                       std::uint64_t source_identity, const std::array<float, 16>& world) {
+/**
+ * The renderable a mesh's frame update reaches: carried, or rebuilt (reset
+ * to a new renderable of `mesh`, which `rebuilt` reports).
+ */
+inline PinnedVelocityHistory::Renderable& sync_pinned_velocity(PinnedVelocityHistory& history,
+                                                               MeshHandle mesh,
+                                                               std::uint64_t source_identity,
+                                                               bool& rebuilt) {
     if (history.renderables.size() <= mesh.value) {
         history.renderables.resize(static_cast<std::size_t>(mesh.value) + 1u);
     }
@@ -131,12 +153,23 @@ update_pinned_velocity(PinnedVelocityHistory& history, MeshHandle mesh,
     // without one of its own.
     const bool synced = renderable.updated_frame < history.synced_frame;
     const bool carried = source_identity != 0 && renderable.source_identity == source_identity;
-    if (!(renderable.mesh == mesh) || (synced && !carried)) {
+    rebuilt = !(renderable.mesh == mesh) || (synced && !carried);
+    if (rebuilt) {
         renderable = {};
         renderable.mesh = mesh;
         renderable.source_identity = source_identity;
-        renderable.previous_world = world;
     }
+    return renderable;
+}
+
+inline const PinnedVelocityHistory::Renderable&
+update_pinned_velocity(PinnedVelocityHistory& history, MeshHandle mesh,
+                       std::uint64_t source_identity, const std::array<float, 16>& world) {
+    bool rebuilt = false;
+    PinnedVelocityHistory::Renderable& renderable =
+        sync_pinned_velocity(history, mesh, source_identity, rebuilt);
+    if (rebuilt)
+        renderable.previous_world = world;
     if (renderable.updated_frame != history.frame) {
         renderable.written_previous_world = renderable.previous_world;
         renderable.written_velocity_enabled = renderable.velocity_ready ? 1.0f : 0.0f;
@@ -148,11 +181,98 @@ update_pinned_velocity(PinnedVelocityHistory& history, MeshHandle mesh,
 }
 
 #if BBLITE_PINNED_MATERIALS && BBLITE_PINNED_MATERIAL_VARIANTS
+/**
+ * What a backend uploads for a PBR velocity renderable
+ * (`createPbrGeometryVelocity`): its `gm` block when made and at each
+ * `write()`, and its deformation's previous bones and morph weights.
+ */
+template <typename Sink>
+concept PbrVelocitySink = requires(Sink sink, MeshHandle mesh, std::span<const float> floats) {
+    sink.block(mesh, floats);
+    sink.bones(mesh, floats);
+    sink.morph(mesh, floats);
+};
+
+/** The sink of a task without `enableGeometryVelocity`, which uploads nothing. */
+struct NoPbrVelocitySink {
+    void block(MeshHandle, std::span<const float>) const {}
+    void bones(MeshHandle, std::span<const float>) const {}
+    void morph(MeshHandle, std::span<const float>) const {}
+};
+
+#if BBLITE_GEOMETRY_VELOCITY
+/**
+ * One PBR renderable's frame (`pbr-geometry-renderable.ts` update): the
+ * velocity state is made with the renderable from the world its mesh block
+ * packs, and `_update(worldChanged)` runs after the block repacks a changed
+ * world. `tracked` is `mesh.visible !== false`: no reached program excludes
+ * a mesh from velocity.
+ */
+template <PbrVelocitySink Sink>
+inline void update_pbr_geometry_velocity(PinnedVelocityHistory& history, const Scene& scene,
+                                         const Engine& engine, const upstream::RenderItem& item,
+                                         Sink& sink) {
+    const MeshRecord& record = handle_at(engine.meshes, item.mesh);
+    const std::array<float, 16> world = mesh_block_world(scene, engine, record);
+    const bool tracked = !(record.visible == false);
+    const std::span<const float> bones =
+        record.bone_matrices.empty() ? std::span<const float>{}
+                                     : std::span<const float>(record.bone_matrices.data()->data(),
+                                                              record.bone_matrices.size() * 16u);
+    std::vector<float> weights;
+#if BBLITE_GPU_MORPH_STORAGE
+    if (record.morph_targets_attached && record.geometry < engine.geometries.size())
+        weights = morph_weight_values(engine.geometries[record.geometry], record);
+#endif
+    bool rebuilt = false;
+    PinnedVelocityHistory::Renderable& renderable =
+        sync_pinned_velocity(history, item.mesh, item.source_identity, rebuilt);
+    if (rebuilt || !renderable.pbr) {
+        renderable.pbr = upstream::create_pbr_geometry_velocity(world, tracked);
+        renderable.packed_world = world;
+        // `needsDeformation`: a skeleton or morph set on a mesh neither
+        // instanced nor baked.
+        if (!record.thin_instances && !record.has_vat && (!bones.empty() || !weights.empty()))
+            renderable.deformation = upstream::create_geometry_deformation_velocity(bones, weights);
+        sink.block(item.mesh, renderable.pbr->data);
+    }
+    const bool world_changed = renderable.packed_world != world;
+    if (world_changed)
+        renderable.packed_world = world;
+    upstream::update_pbr_geometry_velocity(
+        *renderable.pbr, renderable.packed_world, world_changed, tracked,
+        [&](bool neutral) {
+            if (!renderable.deformation)
+                return;
+            upstream::update_geometry_deformation_velocity(
+                *renderable.deformation, neutral, bones, weights,
+                [&](std::span<const float> snapshot) { sink.bones(item.mesh, snapshot); },
+                [&](std::span<const float> snapshot) { sink.morph(item.mesh, snapshot); });
+        },
+        [&] { sink.block(item.mesh, renderable.pbr->data); });
+    renderable.updated_frame = history.frame;
+}
+#endif
+
+/**
+ * A geometry task's renderables, updated once a frame before any draw: the
+ * Standard ones' camera history, and under `enableGeometryVelocity`
+ * (`task.velocity_previous_depth`) the PBR ones' material-point velocity.
+ */
+template <PbrVelocitySink Sink = NoPbrVelocitySink>
 inline void update_pinned_velocity_frame(PinnedVelocityHistory& history, const Scene& scene,
                                          const Engine& engine,
                                          std::span<const upstream::RenderItem> items,
-                                         const CameraRecord* camera) {
-    if constexpr (!PinnedVelocityBlock<upstream::MeshUniforms>) {
+                                         const CameraRecord* camera,
+                                         [[maybe_unused]] const GeometryTaskOptions& task,
+                                         [[maybe_unused]] Sink&& sink = {}) {
+    constexpr bool standard = PinnedVelocityBlock<upstream::MeshUniforms>;
+#if BBLITE_GEOMETRY_VELOCITY
+    const bool pbr = task.velocity_previous_depth.has_value();
+#else
+    constexpr bool pbr = false;
+#endif
+    if (!standard && !pbr) {
         return;
     }
     begin_pinned_velocity_frame(history, scene, {engine.device_generation, camera});
@@ -162,7 +282,10 @@ inline void update_pinned_velocity_frame(PinnedVelocityHistory& history, const S
     for (const upstream::RenderItem& source : items) {
         const upstream::RenderItem item =
             upstream::bind_render_item(source, engine, source.material);
-        if (item.material_kind != upstream::RenderMaterialKind::standard) {
+        const bool standard_item =
+            standard && item.material_kind == upstream::RenderMaterialKind::standard;
+        const bool pbr_item = pbr && item.material_kind == upstream::RenderMaterialKind::pbr;
+        if (!standard_item && !pbr_item) {
             continue;
         }
         if (item.mesh.value < history.renderables.size()) {
@@ -170,11 +293,32 @@ inline void update_pinned_velocity_frame(PinnedVelocityHistory& history, const S
             if (renderable.mesh == item.mesh && renderable.updated_frame == history.frame)
                 continue;
         }
+#if BBLITE_GEOMETRY_VELOCITY
+        if (pbr_item) {
+            update_pbr_geometry_velocity(history, scene, engine, item, sink);
+            continue;
+        }
+#endif
         update_pinned_velocity(
             history, item.mesh, item.source_identity,
             mesh_block_world(scene, engine, handle_at(engine.meshes, item.mesh)));
     }
 }
+
+#if BBLITE_GEOMETRY_VELOCITY
+/** The velocity state of the PBR renderable a geometry draw binds, updated this frame. */
+inline const upstream::PbrGeometryVelocity& pbr_velocity_state(const PinnedVelocityHistory& history,
+                                                               MeshHandle mesh) {
+    const PinnedVelocityHistory::Renderable* renderable =
+        mesh.value < history.renderables.size() ? &history.renderables[mesh.value] : nullptr;
+    if (!renderable || !(renderable->mesh == mesh) || renderable->updated_frame != history.frame ||
+        !renderable->pbr) {
+        throw std::logic_error("A geometry task drew a PBR mesh its frame's velocity update "
+                               "did not reach.");
+    }
+    return *renderable->pbr;
+}
+#endif
 
 inline void write_pinned_velocity_tail(const PinnedVelocityHistory& history, MeshHandle mesh,
                                        upstream::MeshUniforms& block) {

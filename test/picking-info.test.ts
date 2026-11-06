@@ -21,7 +21,7 @@ import {createEngine,createSceneContext,createUtilityLayer,createGpuPicker,pickA
  type EngineContext,type SceneContext,type PickingInfo,type Mesh} from "@babylonjs/lite";
 async function directPicks(engine:EngineContext):Promise<void> {
  const scene=createSceneContext(engine);
- const layer=createUtilityLayer(engine,scene);
+ const layer=createUtilityLayer(scene);
  const picker=createGpuPicker(layer.scene);
  let calls=0;
  const run=async():Promise<void>=>{
@@ -216,8 +216,8 @@ test("pinned result identity, nullable helpers and engine provenance satisfy the
         return info;
     };
     // Graphics factories expose only engine/scene association at this seam.
-    const createUtilityLayer = (engine: Host) => ({
-        scene: createSceneContext(engine),
+    const createUtilityLayer = (mainScene: { engine: Host }) => ({
+        scene: createSceneContext(mainScene.engine),
     });
     const run = createJavaScriptFunction(
         "createEngine",

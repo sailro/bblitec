@@ -1186,6 +1186,8 @@ enum class RenderTextureSource {
     transmission_color,
     /** The same grab's single-sample `r32float` depth snapshot (`grabDepth`). */
     transmission_depth,
+    /** A `createSsaoTask` task's published AO visibility (`outputTexture`). */
+    ssao_output,
 };
 
 struct RenderTextureRef {
@@ -1284,6 +1286,9 @@ struct RenderTaskMesh {
     MeshHandle mesh{};
     MaterialHandle material{};
     bool follows_material = false;
+    // The installed mesh-feature encoders' bits the entry's binding resolved
+    // (`resolvePendingTaskMeshes`), unset until the task resolves it.
+    mutable std::optional<std::uint32_t> mesh_feature_extra{};
     mutable ShaderPacketSystemOwner shader_packet{};
     mutable ThinMaterialBindingOwner thin_binding{};
 };
@@ -1296,6 +1301,8 @@ struct GeometryTaskOptions {
     RenderTargetHandle target{};
     bool clear_target = false;
     Color4 target_clear_color{};
+    /** `enableGeometryVelocity`'s contract: present once enabled, its previous-depth flag. */
+    std::optional<bool> velocity_previous_depth;
 };
 
 struct CopyTaskOptions {
@@ -1443,10 +1450,11 @@ struct EffectTaskOptions {
     Color4 clear_color{};
 };
 
-/** Which of the pin's two screen-space producers a task runs. */
+/** Which of the pin's screen-space effects a task runs. */
 enum class ScreenSpaceEffectKind {
     contact_shadows,
     global_illumination,
+    ambient_occlusion,
 };
 
 /**
@@ -1489,19 +1497,22 @@ struct ScreenSpaceTemporalState {
     std::uint32_t last_depth_allocation = 0;
     std::uint32_t last_color_allocation = 0;
     /** The owned targets' identities the pin's `record` compared sizes by. */
-    std::uint32_t seen_raw_allocation = 0;
+    std::uint32_t seen_intermediate_allocation = 0;
     std::uint32_t seen_stable_allocation = 0;
     std::uint32_t seen_history_allocation = 0;
 };
 
 /**
- * A screen-space contact-shadow or global-illumination task
- * (`screen-space-contact-shadows.ts`, `screen-space-global-illumination.ts`).
+ * A screen-space contact-shadow, global-illumination or ambient-occlusion
+ * task (`screen-space-contact-shadows.ts`,
+ * `screen-space-global-illumination.ts`, `screen-space-ambient-occlusion.ts`).
  *
- * The pin builds two dedicated pipelines -- a producer that raymarches the
- * depth attachment through a depth-only view, and the shared temporal
- * resolve -- and two ordinary post-process passes, the history copy and the
- * optional composite. The ordinary passes live in the owning
+ * The pin builds dedicated pipelines -- a producer that raymarches the depth
+ * attachment through a depth-only view, ambient occlusion's bilateral blur,
+ * and the shared temporal resolve -- and two ordinary post-process passes,
+ * the history copy and the optional composite. The generated plan table
+ * (`screen_space_plan_infos`) names the dedicated passes of a frame in the
+ * pin's order and what each binds. The ordinary passes live in the owning
  * `FrameTaskRecord::post_process`; this record holds what the pin keeps on
  * the task object itself: its settings, its owned targets and its temporal
  * state. Settings marked live are sampled every frame, as the pin samples
@@ -1520,7 +1531,7 @@ struct ScreenSpaceTaskOptions {
     /** The pin's clamped `params`, fixed at creation. */
     double resolution_scale = 1.0;
     double temporal_samples = 32.0;
-    /** Live settings shared by both kinds. */
+    /** Live settings the effects share. */
     bool enabled = true;
     double intensity = 0.0;
     double step_count = 0.0;
@@ -1541,11 +1552,18 @@ struct ScreenSpaceTaskOptions {
     double edge_fade = 0.0;
     double color_bleed_gain = 0.0;
     double color_bleed_max = 0.0;
-    /** The deployed producer and resolve stages, by generated table index. */
-    std::uint32_t producer_shader = 0;
-    std::uint32_t resolve_shader = 0;
-    /** The targets the task owns, created and sized from `depth`. */
-    RenderTargetHandle raw{};
+    /** Live ambient-occlusion settings. */
+    double radius = 0.0;
+    double power = 0.0;
+    double slice_count = 0.0;
+    /** The task's row in the generated `screen_space_plan_infos` table. */
+    std::uint32_t plan = 0;
+    /**
+     * The targets the task owns, created and sized from `depth`: those its
+     * dedicated passes draw into before the resolve (`raw`, then ambient
+     * occlusion's two blur targets), and the temporal pair.
+     */
+    std::vector<RenderTargetHandle> intermediates;
     RenderTargetHandle stable{};
     RenderTargetHandle history{};
     /** `composite ? composite.outputTexture : owner.stableTexture`. */
@@ -1568,24 +1586,205 @@ struct ScreenSpaceFrameInputs {
     std::uint32_t effect_height = 0;
     std::uint32_t depth_allocation = 0;
     std::uint32_t color_allocation = 0;
-    std::uint32_t raw_allocation = 0;
+    /**
+     * The first intermediate's identity: the pin resizes every
+     * intermediate in the one branch, and a backend rebuild reallocates
+     * them together, so it stands for all of them.
+     */
+    std::uint32_t intermediate_allocation = 0;
     std::uint32_t stable_allocation = 0;
     std::uint32_t history_allocation = 0;
 };
 
 /**
+ * The most dedicated passes one screen-space task encodes per frame
+ * (ambient occlusion's producer, two blurs and the resolve) and the largest
+ * block one of them uploads (the temporal resolve's). Generation asserts
+ * every reached task fits both.
+ */
+inline constexpr std::size_t screen_space_max_passes = 4;
+inline constexpr std::size_t screen_space_max_block_floats = 72;
+
+/**
  * What the generated frame function decided, which the backend encodes in
  * the pin's own order: the identity clear (both temporal targets zeroed
  * once on the enabled-to-disabled transition or a singular view-projection
- * inverse), then the producer, resolve and history-copy passes when the
- * effect runs, then the composite pass whenever the task has one. The two
- * blocks are sized by the pin's constants, which generation asserts.
+ * inverse), then the task's dedicated passes ending in the resolve and the
+ * history copy when the effect runs, then the composite pass whenever the
+ * task has one. Row k of `stage_uniforms` is pass k's block, of which the
+ * backend uploads the stage's own byte count.
  */
 struct ScreenSpaceFrameDecision {
     bool clear_identity = false;
     bool run_effect = false;
-    std::array<float, 48> producer_uniforms{};
-    std::array<float, 72> temporal_uniforms{};
+    std::array<std::array<float, screen_space_max_block_floats>, screen_space_max_passes>
+        stage_uniforms{};
+};
+
+/** `SsaoTemporalSettings`: the plain state a `createSsaoTask` task publishes as `temporal`. */
+struct SsaoTemporalSettings {
+    bool enabled = true;
+    double history_samples = 16.0;
+    double reset_version = 0.0;
+};
+
+/** `SsaoHalfResolutionSettings`: what `enableSsaoHalfResolution` returns. */
+struct SsaoHalfResolutionSettings {
+    bool enabled = true;
+    /** Whether Half is active this frame; set by the generated frame function. */
+    bool active = false;
+};
+
+/** A task's `temporal` record, by its task: the task owns it, as the pin's does. */
+struct SsaoTemporalRef {
+    TaskHandle task{};
+    [[nodiscard]] bool operator==(const SsaoTemporalRef&) const = default;
+};
+
+/** A task's half-resolution settings, by its task. */
+struct SsaoHalfResolutionRef {
+    TaskHandle task{};
+    [[nodiscard]] bool operator==(const SsaoHalfResolutionRef&) const = default;
+};
+
+/** `SsaoMotionPruningSettings`: what `enableSsaoMotionPruning` returns. */
+struct SsaoMotionPruningSettings {
+    bool enabled = true;
+};
+
+/** A task's motion-pruning settings, by its task. */
+struct SsaoMotionPruningRef {
+    TaskHandle task{};
+    [[nodiscard]] bool operator==(const SsaoMotionPruningRef&) const = default;
+};
+
+/**
+ * The XeGTAO temporal owner (`XegtaoTemporalGpu`) as the generated frame
+ * function sees it: the identities it was bound to, its ping-pong index and
+ * its parameter block, which persists across frames as the pin's
+ * `Float32Array(96)` does. The backend owns its textures.
+ */
+struct SsaoTemporalOwner {
+    bool present = false;
+    std::uint64_t owner = 0;
+    std::uint64_t source_depth = 0;
+    std::uint64_t source_normal = 0;
+    std::uint64_t source_velocity = 0;
+    std::uint32_t index = 0;
+    std::array<float, 96> data{};
+};
+
+/**
+ * `createSsaoTask`'s closure state and its temporal filter's
+ * (`initializeSsaoTemporal`), each member one of the pin's `let`s and
+ * asserted against its initializer by the generated frame function's
+ * lowering. Matrices start at `createIdentityMat4()`.
+ */
+struct SsaoTaskState {
+    bool was_enabled = false;
+    bool neutral = false;
+    std::array<float, 16> inverse{1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
+    std::array<float, 16> current_view{1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
+    std::array<float, 16> previous_view{1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
+    std::array<float, 16> previous_projection{1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
+    std::array<float, 16> previous_inverse{1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
+    std::array<float, 16> inverse_projection{1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
+    std::array<float, 16> previous_inverse_projection{1, 0, 0, 0, 0, 1, 0, 0,
+                                                      0, 0, 1, 0, 0, 0, 0, 1};
+    bool valid = false;
+    double phase = 0.0;
+    double reset_version = -1.0;
+    double history_samples = 0.0;
+    double radius = 0.0;
+    double intensity = 0.0;
+    double tan_x = 0.0;
+    double tan_y = 0.0;
+    double near_plane = 0.0;
+    double far_plane = 0.0;
+    std::string quality;
+    bool view_changed = true;
+    SsaoTemporalOwner owner{};
+    /** `enableSsaoHalfResolution`'s `active`. */
+    bool half_active = false;
+};
+
+/**
+ * A `createSsaoTask` task (`post-process/ssao.ts`): XeGTAO estimation and
+ * temporal reconstruction over textures the task owns, read from the
+ * generated plan (`ssao_plan_infos`) the pin's own factory was run to
+ * build. Settings are sampled every frame, as the pin samples `task.*`.
+ */
+struct SsaoTaskOptions {
+    std::string name;
+    RenderTextureRef depth{};
+    std::optional<RenderTextureRef> normal{};
+    CameraHandle camera{};
+    /** `temporal.velocityTexture`, and what the temporal closure derives from it. */
+    std::optional<RenderTextureRef> velocity{};
+    bool velocity_previous_depth = false;
+    bool velocity_half = false;
+    bool enabled = true;
+    std::string quality;
+    double radius = 0.0;
+    double intensity = 0.0;
+    SsaoTemporalSettings temporal{};
+    /** Installed by `enableSsaoHalfResolution`. */
+    std::optional<SsaoHalfResolutionSettings> half{};
+    /** Installed by `enableSsaoMotionPruning`. */
+    std::optional<SsaoMotionPruningSettings> pruning{};
+    /** The task's row in the generated `ssao_plan_infos` table. */
+    std::uint32_t plan = 0;
+    SsaoTaskState state{};
+    /** The depth source's extent at the task's last frame; zero before one. */
+    std::uint32_t source_width = 0;
+    std::uint32_t source_height = 0;
+    /** `enablePbrSsao`'s scene, by identity, and the materials it appended its plugin to. */
+    const SceneState* pbr_scene = nullptr;
+    std::vector<MaterialHandle> pbr_materials{};
+};
+
+/**
+ * What a backend tells the generated SSAO frame function: the source and
+ * working extents, and the identities of the objects the pin compares --
+ * its working owner (`SsaoGpu`) and the source views it bound -- numbered
+ * by the backend when it creates them. Zero is null.
+ */
+struct SsaoFrameInputs {
+    std::uint32_t depth_width = 0;
+    std::uint32_t depth_height = 0;
+    std::uint32_t working_width = 0;
+    std::uint32_t working_height = 0;
+    std::uint32_t output_width = 0;
+    std::uint32_t output_height = 0;
+    std::uint64_t gpu = 0;
+    std::uint64_t source_depth = 0;
+    std::uint64_t source_normal = 0;
+    /** The velocity view the owner binds: the half adapter's reduced copy, else the source's. */
+    std::uint64_t source_velocity = 0;
+    /** The velocity source's built extent; zero without one. */
+    std::uint32_t velocity_width = 0;
+    std::uint32_t velocity_height = 0;
+    /** The half-resolution adapter created its pipeline this frame. */
+    bool pipeline_created = false;
+    /** The half-resolution adapter rebound changed sources this frame. */
+    bool sources_rebound = false;
+    /** The working owner's `samplingFootprint`, which the plan's mode states. */
+    std::optional<double> sampling_footprint{};
+};
+
+/**
+ * What the generated SSAO frame function decided: whether the task cleared
+ * its output to the AO identity or ran, which history parity the backend
+ * encodes, and the uniform blocks it uploads, each by the buffer the pin
+ * writes it to.
+ */
+struct SsaoFrameDecision {
+    bool clear_output = false;
+    bool run = false;
+    std::uint32_t history_index = 0;
+    std::array<float, 44> params{};
+    std::array<float, 44> full_params{};
+    std::array<float, 96> temporal{};
 };
 
 enum class FrameTaskKind {
@@ -1596,6 +1795,7 @@ enum class FrameTaskKind {
     screen_space,
     post_process,
     effect,
+    ssao,
 };
 
 /** GPU attachment ownership bridges to the source-generated resize protocol. */
@@ -1755,6 +1955,7 @@ struct FrameTaskRecord {
     PostProcessTaskOptions post_process;
     EffectTaskOptions effect;
     ScreenSpaceTaskOptions screen_space;
+    SsaoTaskOptions ssao;
     /** The task retains the scene passed to its factory, independent of registration. */
     std::shared_ptr<SceneState> source_scene{};
     /** Allocated only for a source whose retained UBO is reached by TAA. */
@@ -2788,6 +2989,11 @@ struct MeshRecord {
     // Mesh.renderOnTop: the transparent draw list keeps a flagged mesh after
     // every other, whatever its camera distance.
     bool render_on_top = false;
+    // `setMeshOpacity`'s clamped value (`_opacity ?? 1`) and its zero-opacity
+    // `_skipColorDraw`, which the transparent and geometry draw loops test
+    // beside visibility.
+    double opacity = 1.0;
+    bool skip_color_draw = false;
     // Self-visibility (scene-node.ts `visible?: boolean`, undefined = true).
     // No PICK path consults it -- `gpu-picker.ts` filters on `pickable`
     // alone -- which is the mirror of `pickable` below, and why the render
@@ -3185,6 +3391,9 @@ struct MaterialRecord {
     float lightmap_level = 1.0f;
     float lightmap_coord_index = 1.0f;
     bool lightmap_shadowmap = false;
+    // `bentNormalStrength`, which the bent-normal writer reads as
+    // `?? 1`; the fragment saturates it.
+    float bent_normal_strength = 1.0f;
     bool has_iridescence = false;
     float iridescence_intensity{};
     float iridescence_index_of_refraction{};
@@ -3423,6 +3632,15 @@ inline std::uint32_t material_family_bit(const MaterialRecord& record) {
     if (record.standard_material)
         return material_family_standard;
     return material_family_pbr;
+}
+
+/** The pin's `material._buildGroup._materialFamily` for a record. */
+inline std::string_view material_family_name(const MaterialRecord& record) {
+    if (record.shader_material)
+        return "shader";
+    if (record.node_material)
+        return "node";
+    return record.standard_material ? "standard" : "pbr";
 }
 
 struct LightRecord {
@@ -6433,6 +6651,12 @@ struct SceneState {
     std::uint32_t default_render_task_samples = 4;
     /** Canvas identity when this scene belongs to an auxiliary surface. */
     std::optional<UiElementHandle> surface_canvas;
+    /**
+     * overlay-scene.ts `_overlayBase`: the scene whose output this overlay
+     * composites onto, set only by `createOverlayScene`. A scene without one
+     * clears its surface.
+     */
+    std::shared_ptr<SceneState> overlay_base;
     /** `disposeScene` is idempotent in the pinned scene lifecycle. */
     bool disposed = false;
     /**
@@ -6583,6 +6807,7 @@ struct SceneState {
      */
     Vec4 clip_plane{};
     void gc_trace(const js::TraceVisitor& visitor) const {
+        visitor(overlay_base);
         visitor(before_render);
         visitor(disposables);
         visitor(animation_seekers);
@@ -6799,9 +7024,161 @@ inline Scene configure_scene_render_defaults(Scene scene, bool enabled, std::uin
     return scene;
 }
 
+/** `surface._renderingContexts.indexOf(scene)` over the engine's one list. */
+[[nodiscard]] inline std::optional<std::size_t> rendering_context_index(const Engine& engine,
+                                                                        const SceneState& scene) {
+    for (std::size_t index = 0; index < engine.rendering_contexts.size(); ++index) {
+        const auto* registered =
+            std::get_if<std::shared_ptr<Scene>>(&engine.rendering_contexts[index].context);
+        if (registered && *registered && (*registered)->identity() == &scene)
+            return index;
+    }
+    return std::nullopt;
+}
+
 /**
- * `UtilityLayer` (src/gizmo/utility-layer.ts): a second SceneContext over
- * the same engine, sharing the main scene's camera by reference and
+ * overlay-scene.ts `isSuspended`, a native seam whose pinned shape
+ * overlay-scene-lowerer.ts asserts: a scene in the overlay's base chain is
+ * unregistered.
+ */
+[[nodiscard]] inline bool overlay_scene_suspended(const Engine& engine, const Scene& scene) {
+    const SceneState* base = scene.state->overlay_base.get();
+    while (base && rendering_context_index(engine, *base))
+        base = base->overlay_base.get();
+    return base != nullptr;
+}
+
+/**
+ * The registered scenes whose pixels a frame keeps, in rendering-context
+ * order. registerScene leaves a scene clearing its surface unless
+ * `createOverlayScene` made it, so each surface keeps its last such scene
+ * and the overlays after it that are not suspended. Renderers draw the first
+ * as their root and the rest as its layers.
+ */
+[[nodiscard]] inline std::vector<std::shared_ptr<Scene>> composited_scenes(const Engine& engine) {
+    const auto same_surface = [](const Scene& left, const Scene& right) {
+        return left.surface_canvas.has_value() == right.surface_canvas.has_value() &&
+               (!left.surface_canvas || left.surface_canvas->value == right.surface_canvas->value);
+    };
+    std::vector<std::shared_ptr<Scene>> shown;
+    for (const std::shared_ptr<Scene>& scene : engine.scenes()) {
+        if (!scene)
+            continue;
+        if (!scene->state->overlay_base) {
+            std::erase_if(shown, [&](const std::shared_ptr<Scene>& earlier) {
+                return same_surface(*earlier, *scene);
+            });
+            shown.push_back(scene);
+        } else if (!overlay_scene_suspended(engine, *scene)) {
+            shown.push_back(scene);
+        }
+    }
+    return shown;
+}
+
+/** How an overlay layer composites in one frame. */
+enum class OverlayComposite {
+    /** MSAA: the root's swapchain task did not render or resolves elsewhere. */
+    skipped,
+    /** MSAA: into the root's swapchain task's colour attachment, resolved again. */
+    root_attachment,
+    /** One sample: loading the swapchain. */
+    swapchain,
+};
+
+/** An overlay layer's composite and the root task it composites into. */
+struct OverlayComposition {
+    OverlayComposite mode = OverlayComposite::skipped;
+    /** `root_attachment` over a root with a frame graph: its swapchain task. */
+    TaskHandle task{};
+};
+
+/** Whether `target` names the swapchain's render target. */
+[[nodiscard]] inline bool is_swapchain_target(const Engine& engine, RenderTargetHandle target) {
+    const RenderTargetRecord* record = handle_find(engine.render_targets, target);
+    return record && record->swapchain;
+}
+
+/**
+ * swapchain-overlay.ts `configureSwapchainOverlayScene`'s record over the
+ * overlays of `root`, a native seam whose pinned shape
+ * overlay-scene-lowerer.ts asserts. The root's swapchain task is its first
+ * render task drawing or resolving into the swapchain (`getDefaultSwapchainTask`
+ * reads RenderTasks only): for a root without a frame graph, the renderer's
+ * own scene pass, which always runs and resolves unless the root has no
+ * default render task; else a task of its graph, the compiler's scene pass
+ * resolving through its own copies. Transmission retargets the scene pass to
+ * a linear target that resolves nowhere; at one sample the pin's overlay then
+ * loads the swapchain its image processing wrote, which the renderers' scene
+ * pass does not leave before drawing layers, so that shape refuses.
+ */
+[[nodiscard]] inline OverlayComposition overlay_composition(const Engine& engine, const Scene& root,
+                                                            bool multisampled) {
+    if (!multisampled) {
+        if (root.transmission_enabled)
+            throw std::runtime_error(
+                "Overlay layers over a transmission scene at one sample are not supported: the "
+                "pin's overlay loads the swapchain the scene's image processing wrote.");
+        return {OverlayComposite::swapchain};
+    }
+    if (!root.has_frame_passes())
+        return {root.state->default_render_task && !root.transmission_enabled
+                    ? OverlayComposite::root_attachment
+                    : OverlayComposite::skipped};
+    for (const TaskHandle handle : root.tasks) {
+        const FrameTaskRecord* task = handle_find(engine.frame_tasks, handle);
+        if (!task || task->kind != FrameTaskKind::render)
+            continue;
+        const bool resolves = (task->render.scene_stages && !root.transmission_enabled) ||
+                              is_swapchain_target(engine, task->render.resolve_target);
+        if (!resolves && !is_swapchain_target(engine, task->render.target))
+            continue;
+        if (resolves && frame_task_executes(*task))
+            return {OverlayComposite::root_attachment, handle};
+        return {};
+    }
+    return {};
+}
+
+/** Whether a run's composited scenes draw overlay layers over their root. */
+[[nodiscard]] inline bool composites_overlays(const std::vector<std::shared_ptr<Scene>>& scenes) {
+    return std::ranges::any_of(scenes, [](const std::shared_ptr<Scene>& scene) {
+        return scene->state->overlay_base != nullptr;
+    });
+}
+
+/** Where a root's frame passes draw its overlay layers; no task has this handle. */
+inline constexpr TaskHandle overlay_layers_pass{};
+
+/**
+ * A root's frame passes with `overlay_layers_pass` after its whole graph, as
+ * an overlay records after its base. Over the compiler's scene pass the
+ * layers precede that pass's resolve and present copies, which is the pass
+ * resolving into the swapchain again after them.
+ */
+[[nodiscard]] inline std::vector<TaskHandle>
+root_frame_passes(const Engine& engine, const Scene& root, const OverlayComposition& overlays) {
+    std::vector<TaskHandle> passes = root.frame_passes();
+    if (overlays.mode == OverlayComposite::skipped || !root.has_frame_passes())
+        return passes;
+    std::vector<TaskHandle> resolves;
+    const FrameTaskRecord* task = handle_find(engine.frame_tasks, overlays.task);
+    if (task && task->render.scene_stages) {
+        for (const SceneInternalPass& pass : root.state->internal_passes)
+            if (pass.after == overlays.task)
+                resolves.push_back(pass.task);
+        std::erase_if(passes, [&resolves](TaskHandle pass) {
+            return std::ranges::find(resolves, pass) != resolves.end();
+        });
+    }
+    passes.push_back(overlay_layers_pass);
+    passes.insert(passes.end(), resolves.begin(), resolves.end());
+    return passes;
+}
+
+/**
+ * `UtilityLayer` (src/gizmo/utility-layer.ts): an overlay scene of the main
+ * scene, sharing its camera by reference and
  * carrying its own light so gizmo materials are lit independently of the
  * scene beneath them. Held by pointer-stable storage because the scene's
  * address is what `registerScene` publishes.
@@ -7500,6 +7877,8 @@ void set_pbr_metallic_reflectance(Engine& engine, MaterialHandle material, bool 
 // already settled: what reaches the record is the texture the extension's
 // own `bind` hook binds and the level its `writeUbo` reads.
 void set_pbr_lightmap(Engine& engine, MaterialHandle material, FileTexture texture, float level);
+// `bentNormalTexture`, bound by the IBL extension's bent-normal arm.
+void set_pbr_bent_normal_texture(Engine& engine, MaterialHandle material, FileTexture texture);
 void set_standard_lightmap_texture(Engine& engine, MaterialHandle material,
                                    const FileTexture& texture);
 void set_pbr_subsurface(Engine& engine, MaterialHandle material, float intensity, Color3 color,
@@ -7519,6 +7898,8 @@ FileTexture load_ktx2_texture(Engine& engine, const std::string& path, bool srgb
 FileTexture load_compressed_texture_variants(Engine& engine, const std::vector<std::string>& paths,
                                              bool invert_y);
 void set_material_base_color_file(Engine& engine, MaterialHandle material, FileTexture texture);
+void set_material_base_color_pixels(Engine& engine, MaterialHandle material,
+                                    const PixelsTexture& texture);
 void set_material_orm_file(Engine& engine, MaterialHandle material, FileTexture texture);
 void set_material_normal_file(Engine& engine, MaterialHandle material, FileTexture texture,
                               float scale);
@@ -7714,7 +8095,7 @@ void push_transform_node_child(Engine& engine, TransformNodeHandle node, MeshHan
 void push_transform_node_child(Engine& engine, TransformNodeHandle node, TransformNodeHandle child);
 // src/gizmo/*: the display-gizmo family. Every one of these is generated
 // into upstream/src/gizmo.cpp from the pinned modules that declare it.
-UtilityLayerHandle create_utility_layer(Engine& engine, Scene& main_scene);
+UtilityLayerHandle create_utility_layer(Scene& main_scene);
 void register_utility_layer(Engine& engine, UtilityLayerHandle layer);
 Scene& utility_layer_scene(Engine& engine, UtilityLayerHandle layer);
 void dispose_utility_layer(Engine& engine, UtilityLayerHandle layer);
@@ -8386,6 +8767,10 @@ void register_scene(Scene& scene);
 void unregister_scene(Scene& scene);
 void dispose_scene(Scene& scene);
 void rebuild_scene_renderables(Scene& scene);
+/** overlay-scene.ts `createOverlayScene`. */
+Scene create_overlay_scene(const Scene& base_scene);
+/** overlay-scene.ts `moveSwapchainOverlaysAfterBase`. */
+void move_swapchain_overlays_after_base(const Scene& scene);
 void on_frame_graph_update(FrameGraphContext& context, js::Callback<void(float)> callback);
 void register_frame_graph_context(FrameGraphContext& context);
 /**
@@ -8405,6 +8790,13 @@ std::uint32_t pinned_pbr_material_features(const Engine& engine, MaterialHandle 
 void set_mesh_material(Engine& engine, MeshHandle mesh, MaterialHandle material);
 void mark_mesh_renderable_dirty(Engine& engine, MeshHandle mesh);
 void set_pbr_gamma_albedo(Engine& engine, MaterialHandle material);
+void set_pbr_alpha_cutoff(Engine& engine, MaterialHandle material, double alpha_cut_off);
+void set_mesh_opacity(Engine& engine, MeshHandle mesh, double opacity);
+double get_mesh_opacity(const Engine& engine, MeshHandle mesh);
+void validate_mesh_opacity_material(const Engine& engine, MeshHandle mesh, MaterialHandle material,
+                                    double opacity);
+/** Resolve the encoder bits of a task's entries that have none yet. */
+void resolve_render_task_mesh_extras(const Engine& engine, const FrameTaskRecord& task);
 void load_image_skybox(Scene& scene, std::array<std::string, 6> face_paths, double size);
 void set_scene_fog(Scene& scene, float mode, float density, float start, float end, Color3 color);
 void set_scene_clip_plane(Scene& scene, Vec4 plane);

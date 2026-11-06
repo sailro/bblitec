@@ -10,6 +10,7 @@ import { lowerPhysicsMesh } from "../src/lowering/physics-mesh-lowerer.js";
 import { importPinnedModuleWithExports } from "../src/pinned-shader-composer.js";
 import { emitUpstreamGenerated } from "../src/upstream-lower.js";
 import { UpstreamSourceStore } from "../src/upstream-source.js";
+import { rightHandedContext } from "./doctored-store.js";
 import {
     optionalNativeFixtureTools,
     runNativeFixtureCompiler,
@@ -75,6 +76,37 @@ test("physics mesh source contracts reject traversal, defaults, buffer and index
             /changed|exactly|Expected/,
         );
     }
+});
+
+test("a right-handed build hands Havok each triangle in its own order", () => {
+    assert.ok(
+        lowerPhysicsMesh(new LoweringContext(store)).helpers.includes(
+            "indices.push_back(c); indices.push_back(b); indices.push_back(a);",
+        ),
+    );
+    assert.ok(
+        lowerPhysicsMesh(rightHandedContext()).helpers.includes(
+            "indices.push_back(a); indices.push_back(b); indices.push_back(c);",
+        ),
+    );
+    // A right-handed build asserts the right-handed order.
+    assert.throws(
+        () =>
+            lowerPhysicsMesh(
+                rightHandedContext(
+                    new Map([
+                        [
+                            module,
+                            [
+                                "this._indices.push(a, b, c)",
+                                "this._indices.push(c, b, a)",
+                            ],
+                        ],
+                    ]),
+                ),
+            ),
+        /changed|exactly|Expected/,
+    );
 });
 
 const tools = optionalNativeFixtureTools(false);

@@ -43,6 +43,34 @@ ${body}
 `;
 }
 
+/**
+ * `setPbrAlphaCutoff`: the stamp and the alpha-test registration. The record
+ * holds `_alphaCutOff` as its authored mask mode and the cutoff lane the
+ * alpha-test UBO writer reads; the compiler refuses the stamp on a blended
+ * material, whose mode the record cannot hold beside it. The registration is
+ * composition, done at generation.
+ */
+export function lowerPbrAlphaCutoff(context: LoweringContext): string {
+    const module = "src/material/pbr/set-alpha-cutoff.ts";
+    const { declaration } = context.functionDeclaration(
+        module,
+        "setPbrAlphaCutoff",
+    );
+    context.assertStatementShapes(
+        declaration,
+        declaration.body!.statements,
+        "mat._alphaCutOff = alphaCutOff;\n_registerPbrExt(pbrExt);",
+        "PBR alpha-cutoff stamp",
+    );
+    return `// ${context.provenance(module, "setPbrAlphaCutoff")}
+void set_pbr_alpha_cutoff(Engine& engine, MaterialHandle material, double alpha_cut_off) {
+    MaterialRecord& record = ${recordAt("engine.materials", "material")};
+    record.alpha_mode = MaterialAlphaMode::mask;
+    record.alpha_cutoff = static_cast<float>(alpha_cut_off);
+}
+`;
+}
+
 /** Source-owned selection; frame-graph activation remains a separate adapter. */
 export function lowerPbrTransmissionSelection(
     context: LoweringContext,

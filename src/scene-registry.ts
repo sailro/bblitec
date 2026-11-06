@@ -238,7 +238,7 @@ const loaderOverlaySettle: ReferenceSettle = {
     settleMilliseconds: 1000,
 };
 
-const sceneInputs: readonly SceneInput[] = [
+const authoredInputs: readonly SceneInput[] = [
     {
         id: "primitives",
         name: "Primitives",
@@ -1406,6 +1406,82 @@ const sceneInputs: readonly SceneInput[] = [
             maxFullMad: 0.001,
             maxForegroundMad: 0.001,
             backgroundColor: [51, 51, 77],
+            backgroundThreshold: 30,
+            nativeEnvironment: fixedCaptureEnvironment(),
+        },
+    },
+    {
+        // setMeshOpacity from a frame callback: crossings of 1 in the scene's
+        // pass, and two explicit tasks, one retained and one refreshed.
+        id: "regression-mesh-opacity-runtime",
+        name: "Regression - Mesh Opacity at Run Time",
+        source: "examples/regression-mesh-opacity-runtime.ts",
+        sourceOrigin: "bblitec-regression",
+        title: "Babylon Lite Native - Mesh Opacity at Run Time",
+        parity: {
+            // The writes land at frames 3 and 6; one fixed frame past both
+            // pins either side.
+            referenceFrame: 12,
+            maxFullMad: 0.001,
+            maxForegroundMad: 0.001,
+            // The scene clears to (0.1, 0.11, 0.16): 26, 28, 41 in 8-bit.
+            backgroundColor: [26, 28, 41],
+            backgroundThreshold: 30,
+            nativeEnvironment: fixedCaptureEnvironment(),
+        },
+    },
+    {
+        // Faded meshes in a geometry renderer task's colour and albedo.
+        id: "regression-mesh-opacity-geometry",
+        name: "Regression - Mesh Opacity in a Geometry Task",
+        source: "examples/regression-mesh-opacity-geometry.ts",
+        sourceOrigin: "bblitec-regression",
+        title: "Babylon Lite Native - Mesh Opacity in a Geometry Task",
+        parity: {
+            // One plane crosses back to 1 at frame 3.
+            referenceFrame: 12,
+            maxFullMad: 0.001,
+            maxForegroundMad: 0.001,
+            // The scene clears to (0.12, 0.12, 0.18): 31, 31, 46 in 8-bit.
+            backgroundColor: [31, 31, 46],
+            backgroundThreshold: 30,
+            nativeEnvironment: fixedCaptureEnvironment(),
+        },
+    },
+    {
+        // Material-point velocity of moving, skinned and morphed PBR meshes.
+        id: "regression-geometry-velocity",
+        name: "Regression - Geometry Velocity",
+        source: "examples/regression-geometry-velocity.ts",
+        sourceOrigin: "bblitec-regression",
+        title: "Babylon Lite Native - Geometry Velocity",
+        parity: {
+            // The box slides and the beams bend and swell every frame. Five
+            // pixels of the velocity lanes differ by one level on both
+            // backends, which agree exactly: the x60 scale lifts the
+            // half-float rounding of the shader's float evaluation.
+            referenceFrame: 40,
+            maxFullMad: 0.001,
+            maxForegroundMad: 0.001,
+            // Zero velocity shows as (0.5, 0.5, 0): 128, 128, 0 in 8-bit.
+            backgroundColor: [128, 128, 0],
+            backgroundThreshold: 8,
+            nativeEnvironment: fixedCaptureEnvironment(),
+        },
+    },
+    {
+        // Faded meshes in the scene's transmission pass.
+        id: "regression-mesh-opacity-transmission",
+        name: "Regression - Mesh Opacity with Transmission",
+        source: "examples/regression-mesh-opacity-transmission.ts",
+        sourceOrigin: "bblitec-regression",
+        title: "Babylon Lite Native - Mesh Opacity with Transmission",
+        parity: {
+            // One plane crosses back to 1 at frame 3.
+            referenceFrame: 12,
+            maxFullMad: 0.001,
+            maxForegroundMad: 0.002,
+            backgroundColor: [51, 51, 76],
             backgroundThreshold: 30,
             nativeEnvironment: fixedCaptureEnvironment(),
         },
@@ -3932,13 +4008,10 @@ const sceneInputs: readonly SceneInput[] = [
         title: "Babylon Lite Native - Split-Viewport NME Comparison",
         // One wheel twice on one canvas, through two SceneContexts split by
         // camera viewport: the glTF's own PBR clearcoat on the left, a
-        // checked-in NME graph on the right. The second scene was already
-        // free -- registered scenes past the first have rendered as
-        // swapchain-overlay passes since the gizmo family -- so what this
-        // adds is the pin's optional NormalizedViewport and the
-        // `getEffectiveAspectRatio` half `docs/features.md` said no scene
-        // reached, both lowered from their own pinned bodies and routed
-        // through every projection.
+        // checked-in NME graph on the right in an overlay scene of the left.
+        // It reaches the pin's optional NormalizedViewport and the
+        // `getEffectiveAspectRatio` half, both lowered from their own pinned
+        // bodies and routed through every projection.
         //
         // MEASURED at this registered pose: full 0.003, region 0.012 over a
         // 209,011-px mask, 96.32% of pixels exact and 100% within one count,
@@ -4149,6 +4222,39 @@ const sceneInputs: readonly SceneInput[] = [
         },
     },
     {
+        id: "scene348",
+        name: "Scene 348 - Screen-Space Ambient Occlusion",
+        source: "corpus/babylon-lite/lab/lite/src/lite/scene348.ts",
+        title: "Babylon Lite Native - Screen-Space Ambient Occlusion",
+        parity: {
+            // The scene stops its own engine on its 144th frame, after a
+            // temporal history reset on its 16th, and presents that frame
+            // for good: the browser capture waits on the same `ready` the
+            // scene then sets, and the native one takes that frame.
+            nativeEnvironment: {
+                BBLITE_SCREENSHOT_FRAME: "144",
+            },
+            maxFullMad: 0.001,
+            maxForegroundMad: 0.001,
+            backgroundColor: [0, 0, 0],
+            backgroundThreshold: 30,
+        },
+    },
+    {
+        id: "scene354",
+        name: "Scene 354 - Mesh Opacity",
+        source: "corpus/babylon-lite/lab/lite/src/lite/scene354.ts",
+        title: "Babylon Lite Native - Mesh Opacity",
+        parity: {
+            // MEASURED 0.000/0.000 on both backends, max 1.
+            maxFullMad: 0.001,
+            maxForegroundMad: 0.001,
+            // The scene clears to (0.08, 0.1, 0.14): 20, 26, 36 in 8-bit.
+            backgroundColor: [20, 26, 36],
+            backgroundThreshold: 30,
+        },
+    },
+    {
         id: "scene282",
         name: "Scene 282 - Standard UV Transform",
         source: "corpus/babylon-lite/lab/lite/src/lite/scene282.ts",
@@ -4272,8 +4378,8 @@ const sceneInputs: readonly SceneInput[] = [
         source: "corpus/babylon-lite/lab/lite/src/lite/scene223.ts",
         title: "Babylon Lite Native - Camera And Light Gizmos",
         parity: {
-            // The display-gizmo family's gate: a utility layer registered
-            // as a swapchain overlay, one widget per light type, and a
+            // The display-gizmo family's gate: a utility layer (an overlay
+            // scene of the main scene), one widget per light type, and a
             // camera gizmo whose frustum is sized from its subject. Exact
             // on both backends, which is what says the overlay's own depth
             // clear, its own light set and every quaternion the pinned
@@ -4360,6 +4466,18 @@ const sceneInputs: readonly SceneInput[] = [
             maxFullMad: 0.001,
             maxForegroundMad: 0.001,
             backgroundColor: [51, 51, 77],
+            backgroundThreshold: 30,
+        },
+    },
+    {
+        id: "scene230",
+        name: "Scene 230 - Bent Normals",
+        source: "corpus/babylon-lite/lab/lite/src/lite/scene230.ts",
+        title: "Babylon Lite Native - Bent Normals",
+        parity: {
+            maxFullMad: 0.001,
+            maxForegroundMad: 0.001,
+            backgroundColor: [31, 31, 31],
             backgroundThreshold: 30,
         },
     },
@@ -4670,6 +4788,52 @@ const sceneInputs: readonly SceneInput[] = [
                 BBLITE_INPUT_REPLAY: "Dataset@captured=true",
                 BBLITE_SCREENSHOT_FRAME: "50",
             },
+        },
+    },
+    {
+        id: "regression-overlay-swapchain-tasks",
+        name: "Regression - Overlay Over Swapchain Tasks",
+        source: "examples/regression-overlay-swapchain-tasks.ts",
+        sourceOrigin: "bblitec-regression",
+        title: "Babylon Lite Native - Overlay Over Swapchain Tasks",
+        parity: {
+            // At MSAA the overlay composites into the root task that
+            // resolves into the swapchain, after the post-process that
+            // rewrote half of it.
+            maxFullMad: 0.001,
+            maxForegroundMad: 0.002,
+            backgroundColor: [26, 31, 51],
+            backgroundThreshold: 30,
+        },
+    },
+    {
+        id: "regression-overlay-post-process",
+        name: "Regression - Overlay Over Post-Process",
+        source: "examples/regression-overlay-post-process.ts",
+        sourceOrigin: "bblitec-regression",
+        title: "Babylon Lite Native - Overlay Over Post-Process",
+        parity: {
+            // At MSAA no root render task reaches the swapchain, so the
+            // overlay is skipped.
+            maxFullMad: 0.001,
+            maxForegroundMad: 0.002,
+            backgroundColor: [29, 29, 29],
+            backgroundThreshold: 30,
+        },
+    },
+    {
+        id: "regression-overlay-post-process-single-sample",
+        name: "Regression - Overlay Over Post-Process, One Sample",
+        source: "examples/regression-overlay-post-process-single-sample.ts",
+        sourceOrigin: "bblitec-regression",
+        title: "Babylon Lite Native - Overlay Over Post-Process, One Sample",
+        parity: {
+            // At one sample the overlay loads the swapchain the root's
+            // post-process wrote.
+            maxFullMad: 0.001,
+            maxForegroundMad: 0.002,
+            backgroundColor: [29, 29, 29],
+            backgroundThreshold: 30,
         },
     },
     {
@@ -5368,13 +5532,13 @@ const sceneInputs: readonly SceneInput[] = [
         sourceOrigin: "babylon-lite-application",
         title: "Babylon Lite Native - Screen-Space Effects",
         parity: {
-            // Both temporal effects accumulate 64 samples from a stable
-            // view, so the convention's frame 180 is well past convergence
-            // and the producer phase is the same on both sides. The
-            // canvas is byte-exact on both backends; the 0.076 / 0.092
-            // full-page residual is the three retained-UI toggle buttons
-            // (glyph rasterization, docs/ui.md), where the two backends
-            // agree to a thousandth, so one gate pair covers both.
+            // The three temporal effects accumulate 64 samples from a
+            // stable view, so the convention's frame 180 is well past
+            // convergence and each producer's phase is the same on both
+            // sides. The canvas is byte-exact on both backends; the
+            // 0.082 / 0.100 full-page residual is the four retained-UI
+            // toggle buttons (glyph rasterization, docs/ui.md), where the
+            // two backends agree exactly, so one gate pair covers both.
             referenceFrame: 180,
             maxFullMad: 0.41,
             maxForegroundMad: 0.5,
@@ -5535,16 +5699,83 @@ const sceneInputs: readonly SceneInput[] = [
                 settleMilliseconds: 8000,
             },
             // The canvas matches the settled browser frame (0.000 on both
-            // backends); the full-page residual is the HUD (2.964 / 4.809
+            // backends); the full-page residual is the HUD (1.107 / 1.785
             // measured): glyph rasterization, the live GPU timing, and the
-            // panels' 2px accent top border, which RmlUi loses because it
-            // expands the rule's earlier `border` shorthand over var() after
-            // the later `border-top` declaration.
-            maxFullMad: 3,
-            maxForegroundMad: 4.85,
+            // left panel's rows, which sit up to 3 px higher from its first
+            // range slider down.
+            maxFullMad: 1.15,
+            maxForegroundMad: 1.85,
             canvasThresholds: { maxFullMad: 0.01, maxForegroundMad: 0.01 },
             backgroundColor: [51, 51, 77],
             backgroundThreshold: 30,
+        },
+    },
+    {
+        id: "navcat",
+        name: "Navcat Navigation",
+        // The lab page around the demo: its control panel and status line.
+        ...labDemo("navcat"),
+        sourceOrigin: "babylon-lite-application",
+        title: "Babylon Lite Native - Navcat Navigation",
+        parity: {
+            // The route and its debug overlays are drawn once, before the
+            // engine starts and the page signals ready.
+            referenceSettle: {
+                key: "ready",
+                values: ["true"],
+                settleMilliseconds: 1000,
+            },
+            // The canvas matches the settled browser frame (0.000 on both
+            // backends); the full-page residual is the control panel's
+            // glyph and rounded-corner rasterization (0.060 / 0.182 measured
+            // on both, docs/ui.md).
+            maxFullMad: 0.07,
+            maxForegroundMad: 0.2,
+            canvasThresholds: { maxFullMad: 0.01, maxForegroundMad: 0.01 },
+            // The demo clears to (0.06, 0.11, 0.17): 15, 28, 43 in 8-bit.
+            backgroundColor: [15, 28, 43],
+            backgroundThreshold: 30,
+        },
+    },
+    {
+        id: "ambient-occlusion",
+        name: "Ambient Occlusion",
+        // The lab page around the demo: its control panel, GPU timing
+        // panel and status line.
+        ...labDemo("ambient-occlusion"),
+        sourceOrigin: "babylon-lite-application",
+        title: "Babylon Lite Native - Ambient Occlusion",
+        parity: {
+            neutralityPartition: {
+                width: 1280,
+                height: 720,
+                // The GPU timing panel's values: live measurements.
+                regions: [
+                    {
+                        name: "GPU timings",
+                        x: 998,
+                        y: 58,
+                        width: 250,
+                        height: 72,
+                    },
+                ],
+            },
+            // The skin and morph animation and the temporal AO history are
+            // a frame count from the fixed clock; frame 180 is past the
+            // history's 16-sample convergence. The canvas matches the
+            // browser frame; the full-page residual is the control panel
+            // (glyph rasterization, and each label's text sitting lower
+            // beside its select and checkbox than Chromium's flex rows
+            // centre it, docs/ui.md) and the live GPU timing values, which
+            // move it by up to 0.02 between runs.
+            referenceFrame: 180,
+            maxFullMad: 3.8,
+            maxForegroundMad: 5,
+            canvasThresholds: { maxFullMad: 0.01, maxForegroundMad: 0.01 },
+            // The demo clears to (0.045, 0.055, 0.075): 11, 14, 19 in 8-bit.
+            backgroundColor: [11, 14, 19],
+            backgroundThreshold: 8,
+            nativeEnvironment: fixedCaptureEnvironment(),
         },
     },
     {
@@ -5566,6 +5797,90 @@ const sceneInputs: readonly SceneInput[] = [
             nativeEnvironment: fixedCaptureEnvironment(),
         },
     },
+];
+
+/**
+ * The pin's right-handed twins: each lab file only imports its base scene,
+ * and the program builds under `babylon-lite-rh`. A twin takes its base
+ * entry's pose and gates, with its own id, source and conditions.
+ */
+const rightHandedTwins: readonly (readonly [
+    twin: number,
+    base: number,
+    gates?: Pick<
+        SceneParityDefinition,
+        "maxFullMad" | "maxForegroundMad" | "dawnThresholds"
+    >,
+])[] = [
+    [321, 2],
+    [322, 5],
+    [323, 13],
+    [324, 28],
+    [325, 38],
+    [326, 11],
+    [327, 25],
+    [328, 250],
+    [329, 266],
+    [330, 268],
+    [331, 270],
+    [332, 4],
+    [333, 214],
+    [334, 72],
+    [335, 60],
+    [336, 159],
+    [337, 54],
+    [338, 94],
+    [339, 223],
+    [340, 225],
+    [341, 91],
+    [342, 265],
+    // MEASURED: SDL_GPU 0.0005/0.0005 (71 px on the steps behind the bench,
+    // max 34), Dawn exact; the base scene's SDL_GPU residual is the same
+    // backend-only class (25 px, max 10).
+    [
+        343,
+        24,
+        {
+            maxFullMad: 0.001,
+            maxForegroundMad: 0.001,
+            dawnThresholds: { maxFullMad: 0.0002, maxForegroundMad: 0.0002 },
+        },
+    ],
+    [344, 143],
+    [345, 103],
+    [346, 149],
+    [347, 9],
+    [353, 230],
+];
+
+function rightHandedTwin(
+    twin: number,
+    base: number,
+    gates: (typeof rightHandedTwins)[number][2],
+): SceneInput {
+    const source = authoredInputs.find(({ id }) => id === `scene${base}`);
+    const prefix = `Scene ${base} - `;
+    if (!source?.parity || !source.name.startsWith(prefix))
+        throw new Error(
+            `Right-handed twin ${twin} names no base scene ${base}.`,
+        );
+    // Draw-id attribution is the base scene's own diagnostic.
+    const { attribution: _attribution, ...parity } = source.parity;
+    return {
+        id: `scene${twin}`,
+        name: `Scene ${twin} - ${source.name.slice(prefix.length)} (Right-Handed)`,
+        source: `corpus/babylon-lite/lab/lite/src/lite/scene${twin}.ts`,
+        title: `${source.title} (Right-Handed)`,
+        conditions: ["babylon-lite-rh"],
+        parity: { ...parity, ...gates },
+    };
+}
+
+const sceneInputs: readonly SceneInput[] = [
+    ...authoredInputs,
+    ...rightHandedTwins.map(([twin, base, gates]) =>
+        rightHandedTwin(twin, base, gates),
+    ),
 ];
 
 /**

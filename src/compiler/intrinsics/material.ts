@@ -21,7 +21,11 @@ import {
 import type { LoweringServices } from "../lowering-services.js";
 import ts from "typescript";
 import { argumentAt, unwrapExpression } from "../syntax.js";
-import { float32Literal, floatLiteral } from "../../cpp-literals.js";
+import {
+    doubleLiteral,
+    float32Literal,
+    floatLiteral,
+} from "../../cpp-literals.js";
 import {
     compileLocalCubemapIntrinsic,
     type LocalCubemapIntrinsicContext,
@@ -749,6 +753,16 @@ function compileCreatePbrMaterial(
         return texture.textureFile ? texture.cpp : undefined;
     };
     const baseColorFile = fileTexture(baseColor);
+    // A `createTexture2DFromPixels` texture is a C++ value rather than a
+    // handle: the record takes a copy of its texels and sampler after
+    // creation, the way a loaded image attaches.
+    const baseColorPixels =
+        baseColor.kind === "texture" && baseColor.textureStorage === "pixels";
+    if (orm.kind === "texture" && orm.textureStorage === "pixels")
+        context.fail(
+            call,
+            "A created PBR material's ormTexture from createTexture2DFromPixels is not supported.",
+        );
     const ormFile = fileTexture(orm);
     // The normal slot has no creation fallback: an absent texture composes
     // no normal-map arm, and a present one is a loaded image the pinned
@@ -765,9 +779,10 @@ function compileCreatePbrMaterial(
     // encoding: upstream keeps the sRGB/linear choice on the
     // `Texture2D` `loadTexture2D` built, so the slot samples what
     // the scene asked for rather than what the family assumes.
-    const baseColorCpp = baseColorFile
-        ? "bbl::SolidTexture{bbl::Color4{1.0f, 1.0f, 1.0f, 1.0f}}"
-        : baseColor.cpp;
+    const baseColorCpp =
+        baseColorFile || baseColorPixels
+            ? "bbl::SolidTexture{bbl::Color4{1.0f, 1.0f, 1.0f, 1.0f}}"
+            : baseColor.cpp;
     // The pinned PBR fragment always samples its ORM texture. A
     // loaded image therefore uses the same neutral white creation
     // fallback as a missing image, then replaces that slot after the
@@ -816,7 +831,7 @@ function compileCreatePbrMaterial(
         `.use_physical_light_falloff = ` +
         `${usePhysicalLightFalloff}, ` +
         `.composition_profile = ${scenePbrMaterialIndex}u})`;
-    if (baseColorFile || ormFile || normalFile || plugins) {
+    if (baseColorFile || baseColorPixels || ormFile || normalFile || plugins) {
         const temporary = context.allocateTemporaryCppName("material");
         context.emit({
             kind: "declaration",
@@ -828,6 +843,14 @@ function compileCreatePbrMaterial(
             context.emit({
                 kind: "expression",
                 code: `bbl::set_material_base_color_file(${engine}, ${temporary}, ${baseColorFile});`,
+            });
+        }
+        if (baseColorPixels) {
+            context.reachFeature("material:pbr-base-color-pixels", call);
+            context.boundPixelsTextures.add(baseColor.cpp);
+            context.emit({
+                kind: "expression",
+                code: `bbl::set_material_base_color_pixels(${engine}, ${temporary}, ${baseColor.cpp});`,
             });
         }
         if (ormFile) {
@@ -1558,6 +1581,54 @@ function compileSetPbrGammaAlbedo(
     };
 }
 
+function compileSetPbrAlphaCutoff(
+    context: MaterialIntrinsicContext,
+    call: ts.CallExpression,
+): Value | undefined {
+    // src/material/pbr/set-alpha-cutoff.ts stamps `mat._alphaCutOff` and
+    // registers the alpha-test extension, whose `detect` turns a positive
+    // cutoff into PBR_HAS_ALPHA_TEST. The stamp is read when the scene first
+    // builds the material, so the call composes only ahead of registration.
+    context.expectArgumentCount(call, 2, 2);
+    const material = context.compileValue(argumentAt(call, 0));
+    context.expectKind(material, "material", argumentAt(call, 0));
+    if (
+        context.engineLifecycle.engineHasStarted() ||
+        context.hasRegisteredScene() ||
+        context.isRuntimeResourceConstruction()
+    )
+        context.fail(
+            call,
+            "setPbrAlphaCutoff composes the alpha-test arm, so it requires unconditional construction before scene registration.",
+        );
+    const cutoff = compileStaticNumber(
+        context,
+        argumentAt(call, 1),
+        "setPbrAlphaCutoff's cutoff",
+    );
+    if (!Number.isFinite(cutoff))
+        context.fail(
+            argumentAt(call, 1),
+            "setPbrAlphaCutoff's cutoff must be a finite number.",
+        );
+    const entry = context.sceneManifest.recordScenePbrAlphaCutoff(
+        material.scenePbrMaterialIndex,
+        cutoff,
+    );
+    // The record keeps one authored alpha mode, blend or mask: a blended
+    // material that also tests its alpha has no row to compose under.
+    if (entry.alphaBlend)
+        context.fail(
+            call,
+            "setPbrAlphaCutoff on an alphaBlend material is not supported: the material record holds one authored alpha mode.",
+        );
+    context.reachFeature("material:pbr-alpha-cutoff", call);
+    return {
+        kind: "void",
+        cpp: `bbl::set_pbr_alpha_cutoff(${context.requireEngine(material, call)}, ${material.cpp}, ${doubleLiteral(cutoff)})`,
+    };
+}
+
 function compileSetShadowOnly(
     context: MaterialIntrinsicContext,
     call: ts.CallExpression,
@@ -1854,6 +1925,33 @@ function compileEnablePbrLightmap(
     return { kind: "void", cpp: "" };
 }
 
+function compileEnableBentNormals(
+    context: MaterialIntrinsicContext,
+    call: ts.CallExpression,
+): Value | undefined {
+    // src/material/pbr/fragments/bent-normal-fragment.ts: the global opt-in
+    // that installs the bent-normal hooks on the IBL extension. Generation
+    // installs them before it composes (`src/pinned-pbr-variants.ts`), and a
+    // material composes the arm from its `bentNormalTexture` state, so
+    // nothing is emitted. The pin reads the hooks when a material is first
+    // built, which composition here settles for the whole program.
+    context.expectArgumentCount(call, 0, 0);
+    if (
+        context.engineLifecycle.engineHasStarted() ||
+        context.hasRegisteredScene() ||
+        context.isRuntimeResourceConstruction()
+    )
+        context.fail(
+            call,
+            "enableBentNormals is lowered as an unconditional call before " +
+                "scene registration: a material built before it composes " +
+                "without the bent-normal arm.",
+        );
+    context.reachFeature("material:pbr", call);
+    context.reachFeature("material:bent-normal", call);
+    return { kind: "void", cpp: "" };
+}
+
 function compileSetPbrLightmap(
     context: MaterialIntrinsicContext,
     call: ts.CallExpression,
@@ -2105,20 +2203,31 @@ function compileSetAlphaToCoverage(
         // turn, so yielding is how a shared name reaches it.
         return undefined;
     }
-    // Every reached shader-material program takes the flag at its pipeline;
-    // the Standard/PBR targets the pin also accepts are not reached here.
+    const enabled = context.compileBoolean(argumentAt(call, 1));
+    // src/render/alpha-to-coverage.ts: the pin's target set is a WeakSet the
+    // pipeline owners consult when they build; the record's flag is that
+    // membership, which the render plan copies onto each draw. The Standard
+    // and PBR pipelines read it beside the shader ones.
     if (!material.shaderVariant) {
-        context.fail(
-            argumentAt(call, 0),
-            "setAlphaToCoverage reaches shader materials; a Standard or " +
-                "PBR target is not supported.",
-        );
+        if (material.nodeMaterialIndex !== undefined)
+            context.fail(
+                argumentAt(call, 0),
+                "Alpha-to-coverage is not supported for NodeMaterial.",
+            );
+        if (!material.standardMaterial && !isPbrMaterialValue(material))
+            context.fail(
+                argumentAt(call, 0),
+                "setAlphaToCoverage reaches Standard, PBR and shader materials.",
+            );
+        return {
+            kind: "void",
+            cpp: `${recordAt(`${context.requireEngine(material, call)}.materials`, material.cpp)}.alpha_to_coverage = ${enabled}`,
+        };
     }
     context.sceneManifest.reachedShaderProgram(
         material.shaderVariant,
         argumentAt(call, 0),
     );
-    const enabled = context.compileBoolean(argumentAt(call, 1));
     return {
         kind: "void",
         cpp:
@@ -2388,6 +2497,7 @@ const materialIntrinsicHandlers = new EmissionMap<
     ["setShaderMatrix", compileSetShaderMatrix],
     ["setPbrEmissive", compileSetPbrEmissive],
     ["setPbrGammaAlbedo", compileSetPbrGammaAlbedo],
+    ["setPbrAlphaCutoff", compileSetPbrAlphaCutoff],
     ["setShadowOnly", compileSetShadowOnly],
     ["setPbrUnlit", compileSetPbrUnlit],
     ["setPbrSkybox", compileSetPbrSkybox],
@@ -2397,6 +2507,7 @@ const materialIntrinsicHandlers = new EmissionMap<
     ["setPbrIridescence", compileSetPbrIridescence],
     ["enablePbrLightmap", compileEnablePbrLightmap],
     ["setPbrLightmap", compileSetPbrLightmap],
+    ["enableBentNormals", compileEnableBentNormals],
     ["setPbrAnisotropy", compileSetPbrAnisotropy],
     ["installPbrTracking", compileInstallPbrTracking],
     ["installStdTracking", compileInstallPbrTracking],

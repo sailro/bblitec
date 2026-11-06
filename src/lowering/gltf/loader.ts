@@ -421,9 +421,10 @@ ParsedGlbContainer parse_glb_container(const ts::ArrayBuffer& buffer) {
         );
         const matrixLocal = gltfMatrixReaderCpp();
         const matrixCompose = lowerMatrixComposeCpp(composeFile, true);
-        const rootedWorld = lowerRootedWorldCpp(parserFile);
+        const rightHanded = this.context.store.rightHanded();
+        const rootedWorld = lowerRootedWorldCpp(parserFile, rightHanded);
         const gltfCameras = options.gltfCameras
-            ? lowerGltfCamerasCpp(parserFile)
+            ? lowerGltfCamerasCpp(parserFile, rightHanded)
             : { parentWriter: "", loading: "", poseRefresh: "" };
         const boneControl = options.boneControl
             ? lowerBoneControl(this.context)

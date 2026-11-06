@@ -313,11 +313,11 @@ public:
      * Whether the engine's own `stopEngine` has ended the run.
      *
      * The pin cancels its animation frame and clears `_renderFn`, so no
-     * further frame submits and the canvas keeps what it last drew. Here
-     * the loop keeps presenting that unchanged frame only while a capture
-     * is still pending, so a screenshot lands on the frozen frame exactly
-     * as the browser harness takes one off the frozen canvas -- and stops
-     * the moment nothing is waiting for it.
+     * further frame submits and the canvas keeps what it last drew. Here a
+     * frame that begins stopped draws nothing (`conduct_frame`) and hands a
+     * capture still pending the frozen image, exactly as the browser harness
+     * takes one off the frozen canvas; the loop stops the moment nothing is
+     * waiting for it.
      *
      * It lives here rather than at each call site for the reason this
      * class exists at all: there are six frame loops, and a rule spelled
@@ -355,9 +355,7 @@ public:
         // A measured run ends the moment a stopped engine has nothing
         // left to capture. An INTERACTIVE one does not: the browser's
         // `stopEngine` freezes the canvas and leaves the page up, so the
-        // window stays, input keeps working and the frozen scene can
-        // still be orbited -- which is the manual check every integration
-        // owes before it is called done.
+        // window stays and keeps its events while showing the frozen frame.
         if (engine_stopped() && requested() && !pending()) {
             return false;
         }

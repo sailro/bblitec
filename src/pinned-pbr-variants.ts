@@ -31,6 +31,8 @@ import {
 } from "./pinned-rect-area-lights.js";
 import type { PinnedToneMapping } from "./pinned-tone-mapping.js";
 import { sharedPinnedContext } from "./lowering/context.js";
+import { pinnedPbrRenderableFeatures } from "./lowering/mesh-opacity.js";
+import { pinnedGeometryVelocityScope } from "./pinned-geometry-velocity.js";
 
 /** The pinned interface naming everything `createPbrComposer` reads. */
 const composerDepsModule = "src/material/pbr/pbr-compose.ts";
@@ -168,6 +170,18 @@ async function registerPbrExtensions(): Promise<void> {
             }>(path);
             if (module.pbrExt) flags._registerPbrExt(module.pbrExt);
         }
+        // `enableBentNormals` installs its hooks on the registered IBL
+        // extension in place. Installed unconditionally for the reason the
+        // environment extension is: its `detect` answers zero for a material
+        // with no `bentNormalTexture`, its `frag` returns the IBL fragment
+        // unchanged without that bit, and only a program reaching
+        // `material:bent-normal` writes the texture into composition
+        // (`compose-pipeline.ts`).
+        (
+            await importPinnedModule<{ enableBentNormals: () => void }>(
+                "material/pbr/fragments/bent-normal-fragment.js",
+            )
+        ).enableBentNormals();
         // Transmission has no `pbrExt` export: `set-transmission.ts` registers a
         // scene hook instead, because enabling it retargets the frame graph's
         // colour buffer, and the hook builds the extension from a factory. Only
@@ -330,6 +344,8 @@ export interface PinnedComposeOptions {
     geometry?: {
         attachments: readonly string[];
         emitColor: boolean;
+        /** The task reached `enableGeometryVelocity` (`pinned-geometry-velocity.ts`). */
+        velocity?: boolean;
     };
     /**
      * The scene's shadow-casting lights, in `scene.lights` order.
@@ -560,24 +576,30 @@ export async function composePinnedPbrVariant(
         const attachments = await geometryAttachmentTypes(
             options.geometry.attachments,
         );
+        const { emitColor, velocity: velocityTask } = options.geometry;
+        const velocity = velocityTask
+            ? await pinnedGeometryVelocityScope()
+            : <T>(compose: () => T): T => compose();
         const previous = activeGeometryAttachments;
         activeGeometryAttachments = attachments;
         try {
-            const composed = geometry.composePbrGeometryShader(
-                composer,
-                features | (options.passFeatures ?? 0),
-                features2 | (options.passFeatures2 ?? 0),
-                options.meshFeatures ?? 0,
-                options.sceneFeatures ?? 0,
-                options.lightMode ?? 0,
-                options.singleLightType ?? "",
-                "",
-                undefined,
-                "",
-                attachments,
-                options.geometry.emitColor,
-                options.uv2Mask ?? 0,
-                pluginIndex,
+            const composed = velocity(() =>
+                geometry.composePbrGeometryShader(
+                    composer,
+                    features | (options.passFeatures ?? 0),
+                    features2 | (options.passFeatures2 ?? 0),
+                    options.meshFeatures ?? 0,
+                    options.sceneFeatures ?? 0,
+                    options.lightMode ?? 0,
+                    options.singleLightType ?? "",
+                    "",
+                    undefined,
+                    "",
+                    attachments,
+                    emitColor,
+                    options.uv2Mask ?? 0,
+                    pluginIndex,
+                ),
             );
             return {
                 fragmentKey: composed._fragmentKey,
@@ -592,8 +614,16 @@ export async function composePinnedPbrVariant(
             activeGeometryAttachments = previous;
         }
     }
+    // `buildPbrRenderables` composes the renderable's word: the material's
+    // own, which the variant keeps, with mesh opacity's blend bit ORed out
+    // of the mesh word outside the caster views.
+    const renderableFeatures = (await pinnedPbrRenderableFeatures())(
+        features,
+        features2 | (options.passFeatures2 ?? 0),
+        options.meshFeatures ?? 0,
+    );
     const composed = composer(
-        features | (options.passFeatures ?? 0),
+        renderableFeatures | (options.passFeatures ?? 0),
         features2 | (options.passFeatures2 ?? 0),
         options.meshFeatures ?? 0,
         options.sceneFeatures ?? 0,
