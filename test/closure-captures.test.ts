@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { ClosureCaptures } from "../src/compiler/closure-captures.js";
-import { cppIdentifiers } from "../src/compiler/cpp-identifiers.js";
+import {
+    cppIdentifiers,
+    cppOuterReads,
+} from "../src/compiler/cpp-identifiers.js";
 import { compileSource } from "../src/compiler.js";
 import { NativeCaptureCache } from "../src/compiler/native-capture-cache.js";
 import type { Value } from "../src/compiler/types.js";
@@ -47,6 +50,24 @@ test("cached captures follow nested writes, native aliases and speculative rollb
     assert.deepEqual(cache.bindingsOf(root), [first]);
     names.set(first.name, second);
     assert.deepEqual(cache.bindingsOf(root), [second]);
+});
+
+test("outer reads skip a lambda body whose return type spells a function type", () => {
+    const reads = cppOuterReads(
+        "([&]() -> bbl::js::Callback<void()> { bbl::js::Callback<void()> local = make(ready); return local; })()",
+    );
+    assert.ok(!reads.has("local"));
+    assert.ok(!reads.has("ready"));
+    assert.ok(
+        cppOuterReads("[&]() -> double { return inner; }() + outer").has(
+            "outer",
+        ),
+    );
+    assert.ok(
+        !cppOuterReads("[&]() -> double { return inner; }() + outer").has(
+            "inner",
+        ),
+    );
 });
 
 test("capture reads exclude comments, strings, characters and raw strings", () => {

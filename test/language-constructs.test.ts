@@ -3194,6 +3194,52 @@ check(
 `,
 );
 
+test("Object.is reads a static NaN or infinite operand beside a call", async (t) => {
+    const source = `
+        const missing = NaN;
+        let calls = 0;
+        function read(): number { calls++; return Number("x" + calls); }
+        if (!Object.is(read(), missing)) throw new Error("NaN is NaN");
+        if (Object.is(missing, 0) || !Object.is(-Infinity, -1 / 0)) throw new Error("static operands");
+        if (calls !== 1) throw new Error("operand order");
+    `;
+    runInNewContext(
+        ts.transpileModule(source, {
+            compilerOptions: { target: ts.ScriptTarget.ES2022 },
+        }).outputText,
+    );
+    const result = compileSource(source);
+    assert.match(result.cpp, /quiet_NaN/);
+    await executeGeneratedAssertions(t, "object-is-nan", result.cpp);
+});
+
+test("arms that type one field with records of their own each hold their record", async (t) => {
+    // Two arms give `host` different records and a third lacks it; values
+    // come back through a reassigned function slot, whose signature needs
+    // the union's storage.
+    const source = `
+        interface A { readonly kind: "a"; readonly host: { readonly id: number; readonly x: number } }
+        interface B { readonly kind: "b"; readonly host: { readonly id: number; readonly y: string } }
+        interface C { readonly kind: "c"; readonly r: number }
+        type U = A | B | C;
+        const late = { f: (() => []) as () => readonly U[] };
+        late.f = () => [{ kind: "a", host: { id: 1, x: 7 } }, { kind: "b", host: { id: 2, y: "q" } }, { kind: "c", r: 3 }];
+        const list = late.f();
+        const text = list.map((v) => v.kind === "a" ? "a" + v.host.x : v.kind === "b" ? "b" + v.host.y : "c" + v.r).join(",");
+        if (text !== "a7,bq,c3") throw new Error("arm fields " + text);
+        let ids = 0;
+        for (const v of list) if (v.kind !== "c") ids += v.host.id;
+        if (ids !== 3) throw new Error("shared field " + ids);
+    `;
+    runInNewContext(
+        ts.transpileModule(source, {
+            compilerOptions: { target: ts.ScriptTarget.ES2022 },
+        }).outputText,
+    );
+    const result = compileSource(source);
+    await executeGeneratedAssertions(t, "arm-record-fields", result.cpp);
+});
+
 test("overlapping nullable union membership refuses unrepresented arm fields", () => {
     const source = `
         type R = { ok: false; a: string | null } | { ok: false; b: number } | { ok: true };
@@ -3315,6 +3361,96 @@ check(
     created.show(first);
     poll();
     if (changes !== 3 || scope !== first || hint.context()?.label !== "x") throw new Error("changes " + changes);
+`,
+);
+
+check(
+    "dynamic-objects-hold-and-call-their-functions",
+    `
+    interface Handle { get: () => number; set: (radius: number) => void; min: number; max: number }
+    interface Config { left: string; brush?: Handle }
+    interface Context { scope: object; label: string }
+    function create() {
+        let brush: Handle | null = null;
+        let current: Config | null = null;
+        let seen = 0;
+        const poll = (): void => { if (brush) { seen += brush.get(); brush.set(brush.get() + 1); } };
+        return {
+            show(config: Config) { current = config; brush = config.brush ?? null; poll(); },
+            context(): Context | null { return current ? { scope: current, label: current.left } : null; },
+            nudge(to: number): number | undefined { brush?.set(to); return brush?.get(); },
+            seen: () => seen,
+        };
+    }
+    let radius = 3;
+    const hint = create();
+    const config: Config = { left: "a", brush: { get: () => radius, set: (value: number) => { radius = value; }, min: 0, max: 5 } };
+    hint.show(config);
+    const context = hint.context();
+    if (hint.seen() !== 3 || radius !== 4) throw new Error("calls");
+    if (!context || context.scope !== config || context.label !== "a") throw new Error("scope");
+    if (typeof config.brush?.get !== "function" || typeof config.brush.min !== "number") throw new Error("typeof");
+    if (JSON.stringify(config) !== '{"left":"a","brush":{"min":0,"max":5}}') throw new Error("stringify " + JSON.stringify(config));
+    if (hint.nudge(7) !== 7 || radius !== 7) throw new Error("optional calls");
+    hint.show({ left: "b" });
+    if (hint.seen() !== 3 || radius !== 7 || hint.nudge(9) !== undefined || radius !== 7) throw new Error("no brush");
+`,
+);
+
+checkInRealm(
+    "loops-start-async-activations-per-iteration",
+    `
+    const log: string[] = [];
+    async function settle(name: string): Promise<void> {
+        await Promise.resolve();
+        log.push(name);
+    }
+    const handlers: Array<() => Promise<void>> = [];
+    function fill(): void {
+        for (const name of ["a", "b", "c"]) {
+            handlers.push(async () => { await settle("late " + name); });
+            void settle(name);
+        }
+    }
+    fill();
+    setTimeout(async () => {
+        for (const handler of handlers) await handler();
+        if (log.join(",") !== "a,b,c,late a,late b,late c") throw new Error("log " + log.join(","));
+        globalThis.close();
+    }, 0);
+`,
+);
+
+checkInRealm(
+    "function-fields-return-dynamic-members-through-promises",
+    `
+    interface Entry { label: string; view?: unknown }
+    interface Follower { follow(dirty?: number | null): boolean }
+    interface Field { outline: (from: number) => Entry[]; first: () => Entry; follow: (dirty?: number | null) => boolean }
+    const followers = new Set<Follower>();
+    async function createField(view: object): Promise<Field> {
+        await Promise.resolve();
+        const entries: Entry[] = [{ label: "first", view }, { label: "second" }];
+        let follows = 0;
+        return {
+            outline: (from: number) => entries.slice(from),
+            first: () => entries[0]!,
+            follow: (dirty?: number | null) => ++follows > 0 && dirty !== undefined,
+        };
+    }
+    void (async () => {
+        const view = { id: 7 };
+        const field = await createField(view);
+        followers.add(field);
+        for (const follower of followers) if (follower !== field || !follower.follow(null)) throw new Error("follower");
+        const all = field.outline(0);
+        if (all.length !== 2 || all[0]!.view !== view || all[1]!.view !== undefined) throw new Error("outline");
+        const first = field.first();
+        if (first !== all[0] || first.label !== "first") throw new Error("identity");
+        first.view = 3;
+        if (field.outline(0)[0]!.view !== 3 || field.outline(1)[0]!.label !== "second") throw new Error("shared entry");
+        globalThis.close();
+    })();
 `,
 );
 
@@ -13118,6 +13254,130 @@ check(
 `,
 );
 
+check(
+    "array-or-resolver-fields-and-unknown-fields",
+    `
+    interface Entry { id: number; view?: unknown }
+    interface Request { outline?: readonly Entry[] | (() => readonly Entry[]) }
+    // A stored closure reads the handler before its declaration runs.
+    let registered: ((request: Request) => number) | undefined;
+    const handlers: (() => void)[] = [() => { registered = count; }];
+    let live = 7;
+    const count = (request: Request): number => {
+        const o = request.outline;
+        const entries = typeof o === "function" ? o() : (o ?? []);
+        return entries.length * 10 + (entries[0]?.id ?? 0);
+    };
+    handlers[0]!();
+    const requests: Request[] = [{ outline: [{ id: 1, view: "a" }] }, { outline: () => [{ id: live }, { id: 2 }] }, {}];
+    live = 8;
+    const counts = requests.map((request) => registered!(request));
+    if (counts.join(",") !== "11,28,0") throw new Error("array or resolver " + counts.join(","));
+    const view = (requests[0]!.outline as readonly Entry[])[0]!.view;
+    if (typeof view !== "string" || view !== "a") throw new Error("unknown field");
+`,
+);
+
+check(
+    "shared-body-record-argument-members",
+    `
+    // A shared body specialized on a static key and a record argument reads
+    // the record's runtime members from the caller.
+    const EN: Record<string, string> = { "status.ready": "Ready {count}", "status.paused": "Paused" };
+    const FR: Record<string, string> = { "status.ready": "Pret {count}", "status.paused": "Pause" };
+    type Lang = "en" | "fr";
+    const TABLES: Record<Lang, Record<string, string>> = { en: EN, fr: FR };
+    let current: Lang = "en";
+    function translate(lang: Lang, key: string, params?: Record<string, string>): string {
+        let s = TABLES[lang][key] ?? EN[key] ?? key;
+        if (params) for (const [k, v] of Object.entries(params)) s = s.split("{" + k + "}").join(v);
+        return s;
+    }
+    function t(key: string, params?: Record<string, string>): string { return translate(current, key, params); }
+    interface Path { points: number[] }
+    interface Snapshot { path?: Path }
+    const enum Phase { Paused, Ready }
+    function status(snapshot: Snapshot, phase: Phase): string {
+        switch (phase) {
+            case Phase.Paused: return t("status.paused");
+            case Phase.Ready: return t("status.ready", { count: String(snapshot.path?.points.length ?? 0) });
+        }
+    }
+    const statuses: Array<typeof status> = [status];
+    if (statuses[0]!({ path: { points: [1, 2, 3] } }, Phase.Ready) !== "Ready 3") throw new Error("ready");
+    current = "fr";
+    if (statuses[0]!({}, Phase.Ready) !== "Pret 0") throw new Error("ready without a path");
+    if (statuses[0]!({}, Phase.Paused) !== "Pause") throw new Error("paused");
+`,
+);
+
+check(
+    "spread-of-a-literal-factory-typed-wider",
+    `
+    // The factory's one literal decides the own keys, not the optional
+    // fields its declared intersection adds.
+    interface Init { a?: number; target?: { id: number } | null; flag?: boolean }
+    const pressed = { value: 0 };
+    const init = (): Init & { kind: string } => ({ a: 1, kind: "pointer", flag: pressed.value > 0 });
+    const make = (b: number) => ({ ...init(), b });
+    const makers: Array<typeof make> = [make];
+    pressed.value = 1;
+    const rows = [makers[0]!(2), makers[0]!(3)];
+    const text = rows.map((row) => row.a + ":" + row.kind + ":" + row.flag + ":" + row.b + ":" + ("target" in row)).join(",");
+    if (text !== "1:pointer:true:2:false,1:pointer:true:3:false") throw new Error("own keys " + text);
+`,
+);
+
+check(
+    "spread-of-nullable-optional-fields",
+    `
+    // A spread reads whether each optional field is own; one admitting null
+    // keeps its absence apart from null.
+    interface Init { a?: number; target?: { id: number } | null; flag?: boolean }
+    const make = (extra: Init = {}) => {
+        const full: Init & { kind: string } = { kind: "p", ...extra };
+        return full;
+    };
+    const makers: Array<typeof make> = [make];
+    const rows = [makers[0]!(), makers[0]!({ a: 5, target: null }), makers[0]!({ target: { id: 2 } })];
+    const text = rows.map((r) => ("target" in r) + ":" + r.a + ":" + (r.target === null ? "null" : r.target?.id)).join(",");
+    if (text !== "false:undefined:undefined,true:5:null,true:undefined:2") throw new Error("presence " + text);
+`,
+);
+
+check(
+    "discriminated-union-with-an-intersection-arm",
+    `
+    interface Moved { created?: readonly number[]; anchors?: readonly (readonly [number, number, number])[] }
+    type Outcome = ({ committed: true } & Moved) | { committed: false; refusal: { owner: string; reason: "a" | "b" } };
+    const done = (ids: number[]): Outcome => ({ committed: true, created: ids });
+    const refused = (owner: string): Outcome => ({ committed: false, refusal: { owner, reason: "a" } });
+    const results: Array<() => Outcome> = [() => done([1, 2]), () => refused("x")];
+    const text = results
+        .map((result) => {
+            const outcome = result();
+            return outcome.committed ? "c" + (outcome.created?.length ?? 0) : "r" + outcome.refusal.owner;
+        })
+        .join(",");
+    if (text !== "c2,rx") throw new Error("outcomes " + text);
+`,
+);
+
+check(
+    "destructured-record-function-and-getter-members",
+    `
+    interface Deps { height(x: number): number; scale: number; field: { at(x: number): number }; readonly doubled: number }
+    let reads = 0;
+    function make(deps: Deps): (x: number) => number {
+        const { height, scale, field, doubled } = deps;
+        return (x) => height(x) * scale + field.at(x) + doubled;
+    }
+    function h(x: number): number { return x * 2; }
+    const f = make({ height: h, scale: 3, field: { at: (x: number) => x + 1 }, get doubled() { reads++; return 10; } });
+    if (f(2) !== 25 || reads !== 1) throw new Error("members " + f(2) + " " + reads);
+`,
+);
+
 test("a union with several function arms refuses a function value", () => {
     assert.throws(
         () =>
@@ -14907,15 +15167,21 @@ check(
 `,
 );
 
-test("a parsed document read as a record type with stored functions refuses", () => {
-    assert.throws(
-        () =>
-            compileSource(
-                "interface Handler { name: string; run(): number } function load(text: string): Handler { return JSON.parse(text) as Handler; } const loaders: Array<typeof load> = [load]; const handler: Handler = { name: 'a', run: () => 1 }; if (loaders.length !== 1 || handler.run() !== 1) throw new Error('x');",
-            ),
-        /Expression does not produce the expected data \{"kind":"struct","name":"Handler"\} value; received data \{"kind":"json"\}/,
-    );
-});
+// A record type with methods that parsed values reach is a document: a
+// literal's method stays callable, a parsed record's call throws TypeError.
+check(
+    "parsed-documents-read-as-record-types-with-stored-functions",
+    `
+    interface Handler { name: string; run(): number }
+    function load(text: string): Handler { return JSON.parse(text) as Handler; }
+    const loaders: Array<typeof load> = [load];
+    const handler: Handler = { name: 'a', run: () => 1 };
+    const parsed = loaders[0]!('{"name":"b"}');
+    let refused = false;
+    try { parsed.run(); } catch (error) { refused = error instanceof TypeError; }
+    if (handler.run() !== 1 || parsed.name !== "b" || !refused) throw new Error("handlers");
+`,
+);
 
 // instanceof Map, Set, WeakMap and WeakSet answer from the storage holding
 // the value; a dictionary or parsed document is none of them.
@@ -16473,6 +16739,20 @@ check(
     const s = String.fromCodePoint(97, Math.floor(Math.random() * 0) + 0x1f600, 98);
     const parts = s.split("");
     if (parts.length !== 4 || parts[1]!.charCodeAt(0) !== 0xd83d || parts[1]! + parts[2]! !== s.slice(1, 3)) throw new Error("split " + parts.length);
+    `,
+);
+check(
+    "a coalesce chain reads a key missing from a dictionary as absent",
+    `
+    type Dict = Record<string, string>;
+    const EN: Dict = { greet: "Hello", bye: "Bye" };
+    const FR: Dict = { greet: "Bonjour" };
+    const TABLES: Record<"en" | "fr", Dict> = { en: EN, fr: FR };
+    let lang: "en" | "fr" = "en";
+    lang = Math.random() > 2 ? "en" : "fr";
+    function t(key: string): string { return TABLES[lang][key] ?? EN[key] ?? key; }
+    if (t("greet") !== "Bonjour" || t("bye") !== "Bye" || t("missing") !== "missing")
+        throw new Error("chain " + t("bye") + " " + t("missing"));
     `,
 );
 check(

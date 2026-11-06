@@ -214,7 +214,7 @@ test("source replay ordinals resolve runtime identities independently of their o
         );
 });
 
-test("static skeletons retain source bindings and live node hierarchies only when reached", async () => {
+test("node-carrying loads retain source bindings and live node hierarchies", async () => {
     const input = fixture();
     input.document.animations = [];
     for (const mesh of asRecords(input.document.meshes))
@@ -242,23 +242,26 @@ test("static skeletons retain source bindings and live node hierarchies only whe
     );
     assert.equal(controlled.hierarchy.nodes[1]?.parent, 0);
     assert.deepEqual(controlled.hierarchy.root.scaling, [-1, 1, 1]);
+    // Morphed and animated assets keep the pin's hierarchy too: a pose
+    // writes its channels into the scene nodes.
     const morphed = fixture();
     morphed.document.animations = [];
-    await assert.rejects(
-        gltfMeshPlan(morphed.document, morphed.bin, undefined, {
-            nodeTransforms: true,
-            boneControl: true,
-        }),
-        /morphed primitives/,
+    const morphedPlan = await gltfMeshPlan(
+        morphed.document,
+        morphed.bin,
+        undefined,
+        { nodeTransforms: true, boneControl: true },
     );
+    assert(morphedPlan.hierarchy);
     const animated = fixture();
-    await assert.rejects(
-        gltfMeshPlan(animated.document, animated.bin, undefined, {
-            nodeTransforms: true,
-            boneControl: true,
-        }),
-        /animations/,
+    const animatedPlan = await gltfMeshPlan(
+        animated.document,
+        animated.bin,
+        undefined,
+        { nodeTransforms: true, boneControl: true },
     );
+    assert(animatedPlan.hierarchy);
+    assert(animatedPlan.animation);
 });
 
 test("packaged binding matrices preserve source Float32 products and refuse invalid receipt references", async () => {

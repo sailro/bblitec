@@ -8,6 +8,10 @@ const handleCppTypes: Record<HandleKind, string> = {
     asset: "bbl::AssetHandle",
     "gpu-device": "bbl::GpuDeviceIdentity",
     "gpu-texture": "bbl::GpuTextureIdentity",
+    "gpu-texture-view": "bbl::GpuTextureView",
+    // A pooled sampler is its device and canonical descriptor: equal ones are
+    // one object. A device-made one carries an ordinal of its own.
+    "gpu-sampler": "bbl::GpuSampler",
     "device-recovery": "std::shared_ptr<bbl::DeviceRecoveryRegistration>",
     "gpu-environment": "bbl::EnvironmentIdentity",
     "procedural-sky-environment":
@@ -35,6 +39,7 @@ const handleCppTypes: Record<HandleKind, string> = {
     "worker-mutation-observer": "std::shared_ptr<bbl::pal::MutationObserver>",
     mesh: "bbl::MeshHandle",
     "animation-group": "bbl::AnimationGroupHandle",
+    "vat-bake": "bbl::VatBake",
     "flow-graph": "bbl::FlowGraphHandle",
     "flow-graph-runtime": "std::shared_ptr<bbl::FlowGraphRuntime>",
     "audio-buffer": "bbl::pal::AudioBufferHandle",
@@ -130,6 +135,7 @@ const engineScopedHandleKinds = new Set<HandleKind>([
     "clustered-light",
     "clustered-light-container",
     "animation-group",
+    "vat-bake",
     "transform-node",
     "scene-node",
     "hierarchy-instance-pool",
@@ -185,6 +191,15 @@ export function isWindowHandleKind(kind: HandleKind): boolean {
  */
 export function isInputSnapshotHandleKind(kind: HandleKind): boolean {
     return kind === "gamepad" || kind === "gamepad-button" || kind === "touch";
+}
+
+/**
+ * A handle whose value is its runtime identity alone, nothing generation-
+ * known: an input snapshot, or a decoded audio buffer. A shared body takes
+ * one as a native parameter instead of specializing on its value.
+ */
+export function isRuntimeIdentityHandleKind(kind: HandleKind): boolean {
+    return isInputSnapshotHandleKind(kind) || kind === "audio-buffer";
 }
 
 /** Whether a data type lists input snapshots, as a TouchEvent's TouchList does. */

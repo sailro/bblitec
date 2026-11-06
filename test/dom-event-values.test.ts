@@ -218,13 +218,23 @@ test("owned DOM events retain payload, routing, identity and listener cleanup", 
 });
 
 test("synthetic event options reject fields without native ownership", () => {
+    // A member the event's dictionary declares but the native event does not
+    // represent refuses where it is set, and at run time when an init typed
+    // as the dictionary may hold it; one the dictionary lacks is ignored, as
+    // the dictionary conversion ignores it.
     assert.throws(
-        () =>
-            compileSource(
-                `new PointerEvent("pointerdown", {relatedTarget:document.body});`,
-            ),
-        /option 'relatedTarget' is not represented/,
+        () => compileSource(`new PointerEvent("pointerdown", {tiltX: 5});`),
+        /option 'tiltX' is not represented/,
     );
+    const typed = compileSource(
+        `const init: PointerEventInit = { bubbles: true }; const extra = { bubbles: true, ignored: 1 };
+        new PointerEvent("pointerdown", init); new PointerEvent("pointerup", extra);`,
+    ).cpp;
+    assert.match(
+        typed,
+        /bbl::require_event_options\([^;]*"PointerEvent", \{[^}]*"tiltX"[^}]*\}\)/,
+    );
+    assert.doesNotMatch(typed, /require_event_options\([^;]*"ignored"/);
     assert.throws(
         () =>
             compileSource(

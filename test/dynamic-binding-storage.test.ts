@@ -66,3 +66,32 @@ test("typed module bindings retain dynamic replacements and the aliases of earli
         expectedOutput: "",
     });
 });
+
+test("a struct local's right side lowers once and still takes dynamic storage for JSON", (t) => {
+    const result = compileSource(`
+        interface Settings { gain:number; }
+        let created=0;
+        function make():Settings {created++;return {gain:2};}
+        function parsed(text:string):Settings {created++;return JSON.parse(text);}
+        function rebind(value:Settings,text:string):number {value=parsed(text);return value.gain;}
+        let active:Settings=make();
+        active=make();
+        if(created!==2||active.gain!==2)throw new Error("factory evaluated "+created+" times");
+        active=parsed('{"gain":7}');
+        if(created!==3||active.gain!==7)throw new Error("parsed replacement");
+        if(rebind(active,'{"gain":5}')!==5||created!==4)throw new Error("parameter rebinding evaluated "+created+" times");
+    `);
+    const tools = optionalNativeFixtureTools();
+    if (!tools) {
+        t.skip("Native fixture compiler unavailable.");
+        return;
+    }
+    runGeneratedProgram(
+        tools,
+        "dynamic-binding-storage/struct-local",
+        result.cpp,
+        {
+            expectedOutput: "",
+        },
+    );
+});

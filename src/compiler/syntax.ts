@@ -88,7 +88,7 @@ interface UnwrapOptions {
  */
 export function isExpressionWrapper(
     node: ts.Node,
-    options: UnwrapOptions = {},
+    options?: UnwrapOptions,
 ): node is
     | ts.ParenthesizedExpression
     | ts.AsExpression
@@ -96,14 +96,18 @@ export function isExpressionWrapper(
     | ts.NonNullExpression
     | ts.SatisfiesExpression
     | ts.AwaitExpression {
-    return (
-        ts.isParenthesizedExpression(node) ||
-        ts.isAsExpression(node) ||
-        ts.isTypeAssertionExpression(node) ||
-        ts.isNonNullExpression(node) ||
-        ts.isSatisfiesExpression(node) ||
-        (options.await === true && ts.isAwaitExpression(node))
-    );
+    switch (node.kind) {
+        case ts.SyntaxKind.ParenthesizedExpression:
+        case ts.SyntaxKind.AsExpression:
+        case ts.SyntaxKind.TypeAssertionExpression:
+        case ts.SyntaxKind.NonNullExpression:
+        case ts.SyntaxKind.SatisfiesExpression:
+            return true;
+        case ts.SyntaxKind.AwaitExpression:
+            return options?.await === true;
+        default:
+            return false;
+    }
 }
 
 /**
@@ -147,7 +151,7 @@ export function isTypeAssertion(
 /** The wrappers under an expression, outermost first, down to the value they wrap. */
 export function wrappersUnder(
     expression: ts.Expression,
-    options: UnwrapOptions = {},
+    options?: UnwrapOptions,
 ): readonly ts.Expression[] {
     const wrappers: ts.Expression[] = [];
     for (
@@ -162,7 +166,7 @@ export function wrappersUnder(
 /** The wrappers around a node, innermost first, up to its consumer. */
 export function wrappersAround(
     node: ts.Node,
-    options: UnwrapOptions = {},
+    options?: UnwrapOptions,
 ): readonly ts.Expression[] {
     const wrappers: ts.Expression[] = [];
     for (
@@ -177,11 +181,11 @@ export function wrappersAround(
 /** Strip the type-only and grouping wrappers around an expression. */
 export function unwrapExpression(
     expression: ts.Expression,
-    options: UnwrapOptions = {},
+    options?: UnwrapOptions,
 ): ts.Expression {
     let current = expression;
     while (isExpressionWrapper(current, options)) {
-        if (ts.isAwaitExpression(current)) options.onAwait?.(current);
+        if (ts.isAwaitExpression(current)) options?.onAwait?.(current);
         current = current.expression;
     }
     return current;
@@ -253,6 +257,13 @@ export function conditionalExpression(
 ): ts.ConditionalExpression | undefined {
     const node = unwrapExpression(expression);
     return ts.isConditionalExpression(node) ? node : undefined;
+}
+
+/** The two operands a `c ? a : b` selects between, in source order. */
+export function selectionArms(
+    selection: ts.ConditionalExpression,
+): readonly [ts.Expression, ts.Expression] {
+    return [selection.whenTrue, selection.whenFalse];
 }
 
 /** Whether a node yields one of its operands ({@link operandYield}) rather than a value of its own. */
@@ -705,6 +716,20 @@ export function referenceBases(
     );
 }
 
+/**
+ * The call `reference` is the callee of, past the wrappers around it
+ * (`(f)(x)`, `f!(x)`); undefined where it is used otherwise.
+ */
+export function directCallOf(
+    reference: ts.Expression,
+): ts.CallExpression | undefined {
+    const callee = outermostWrapper(reference);
+    const call = callee.parent;
+    return ts.isCallExpression(call) && call.expression === callee
+        ? call
+        : undefined;
+}
+
 /** The identifier a property/element-access chain is rooted at, if any. */
 export function rootIdentifier(
     expression: ts.Expression,
@@ -954,7 +979,7 @@ export type ParameterInput =
  */
 export function argumentForParameter(
     call: ts.CallExpression | ts.NewExpression,
-    declaration: Pick<ts.SignatureDeclarationBase, "parameters">,
+    declaration: { readonly parameters: readonly ts.ParameterDeclaration[] },
     parameterIndex: number,
 ): ParameterInput {
     const parameter = declaration.parameters[parameterIndex];
@@ -971,6 +996,16 @@ export function argumentForParameter(
     return ts.isSpreadElement(argument)
         ? { kind: "unknown" }
         : { kind: "argument", argument };
+}
+
+/** A function's own parameters: a TypeScript `this` parameter types its receiver and takes no argument. */
+export function ownParameters(
+    declaration: Pick<ts.SignatureDeclarationBase, "parameters">,
+): readonly ts.ParameterDeclaration[] {
+    const first = declaration.parameters[0];
+    return first && ts.isIdentifier(first.name) && first.name.text === "this"
+        ? declaration.parameters.slice(1)
+        : declaration.parameters;
 }
 
 /**

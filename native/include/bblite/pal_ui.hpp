@@ -142,6 +142,11 @@ void ui_set_boolean_attribute(Engine& engine, UiElementHandle element, std::stri
 bool ui_toggle_attribute(Engine& engine, UiElementHandle element, std::string name,
                          std::optional<bool> force = std::nullopt);
 std::string ui_escape_rml(std::string_view text);
+/**
+ * A URL as a packaged document names its file: an absolute URL on `deployment`'s origin is its
+ * root-relative path, as the browser loads the same file for both; any other URL is itself.
+ */
+std::string ui_document_url(std::string url, std::string_view deployment);
 void ui_set_attribute(Engine& engine, UiElementHandle element, std::string name, std::string value);
 /**
  * A reflected `property` write through an element of statically unknown tag: its content attribute

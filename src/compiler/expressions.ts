@@ -39,6 +39,7 @@ import {
     ownKeysKnown,
     staticKeyOf,
     undefinedValue,
+    nullValue,
     valueDataType,
 } from "./values/model.js";
 import { isEffectTaskMethodName } from "./effect-task-methods.js";
@@ -96,7 +97,9 @@ import {
 import {
     CRYPTO_GET_RANDOM_VALUES,
     NAVIGATOR_GET_GAMEPADS,
+    readsLoweredDomMethod,
 } from "./dom-lowerings.js";
+import { probedDomTarget } from "./dom-targets.js";
 import {
     compileNumberPredicate,
     foldNumberFormat,
@@ -140,6 +143,8 @@ import {
     variableKind,
     isMemberAccess,
     localCallback,
+    propertyKey,
+    selectionArms,
 } from "./syntax.js";
 import {
     compileErrorConstruction,
@@ -174,7 +179,11 @@ import {
     compileMediaStreamMethodCall,
     mediaStreamTypeof,
 } from "./media-streams.js";
-import { CompileError, unlessRuntimeValue } from "./compile-error.js";
+import {
+    CompileError,
+    unlessRefused,
+    unlessRuntimeValue,
+} from "./compile-error.js";
 import { retainedStaticText } from "./static-evaluator.js";
 import { finalReturn, firstReturn } from "./loop-control.js";
 import {
@@ -203,7 +212,11 @@ import {
     compileCompressedJsonPromiseThen,
 } from "./compressed-json.js";
 import { compileArrayPredicateOverData } from "./data-methods.js";
-import { dataTypesEqual, type DataType } from "./data-types.js";
+import {
+    dataTypesEqual,
+    presentDataType,
+    type DataType,
+} from "./data-types.js";
 import { isBinaryDataType } from "./data-types/typed-arrays.js";
 import { readCallableProperty } from "./properties.js";
 import {
@@ -256,11 +269,12 @@ import {
     presenceFlagCpp,
     staticStringValue,
     withNativeMetadata,
+    recordMethodValue,
 } from "./types.js";
 import { recordAt } from "./record-access.js";
 import { pinOperand } from "./evaluation-order.js";
 import { someAnalysisNode } from "./analysis-walk.js";
-import type { NativeExpression } from "./closure-captures.js";
+import { renderClosure, type NativeExpression } from "./closure-captures.js";
 import { compileWithRuntimeCaseSplit } from "./runtime-case-split.js";
 import { numberToStringCpp } from "../cpp-expressions.js";
 
@@ -274,12 +288,20 @@ const URI_FUNCTIONS: ReadonlyMap<string, string> = new EmissionMap([
     ["atob", "string_from_base64"],
 ]);
 
+/** The methods every DOM event target has (the EventTarget interface's own). */
+const EVENT_TARGET_METHODS: ReadonlySet<string> = new Set([
+    "addEventListener",
+    "removeEventListener",
+    "dispatchEvent",
+]);
+
 export interface ExpressionContext
     extends
         PromiseLoweringContext,
         UserFunctionContext,
         Pick<
             LoweringServices,
+            | "isCanvasElement"
             | "noteImpureRead"
             | "expectStaticArrayElements"
             | "compileStaticString"
@@ -287,11 +309,13 @@ export interface ExpressionContext
             | "dynamicBindings"
             | "parameterObjects"
             | "conditionOverrides"
+            | "valueOverrides"
             | "impureReadCount"
             | "compileWorkerValue"
             | "audioSessionCpp"
             | "staticAssetUrlCandidates"
             | "sourceFiles"
+            | "inlinedCallArgument"
             | "checker"
             | "program"
             | "sourceFile"
@@ -606,6 +630,11 @@ export class ExpressionLowerer {
     }
 
     public compileValue(expression: ts.Expression): Value {
+        const forced =
+            this.context.valueOverrides.size > 0
+                ? this.context.valueOverrides.get(expression)
+                : undefined;
+        if (forced) return forced;
         traceSourceNode(expression);
         requireObservedPromise(this.context, expression);
         // An operand already evaluated once (an assigned right side, a held
@@ -725,9 +754,7 @@ export class ExpressionLowerer {
                 );
         }
 
-        if (unwrapped.kind === ts.SyntaxKind.NullKeyword) {
-            return { kind: "json-null", cpp: "" };
-        }
+        if (unwrapped.kind === ts.SyntaxKind.NullKeyword) return nullValue();
         const bigint = compileBigIntValue(this.context, unwrapped);
         if (bigint) return bigint;
 
@@ -1038,6 +1065,8 @@ export class ExpressionLowerer {
                     unwrapped,
                     `Namespace object '${unwrapped.text}' is a value only as the receiver of a member read.`,
                 );
+            const deferred = this.context.bindings.deferredSelection(unwrapped);
+            if (deferred) return this.compileValue(deferred);
             return this.context.bindings.lookup(unwrapped);
         }
         if (ts.isPropertyAccessExpression(unwrapped)) {
@@ -1674,6 +1703,16 @@ export class ExpressionLowerer {
                 unwrapped,
             );
         }
+        if (
+            ts.isBinaryExpression(unwrapped) &&
+            (unwrapped.operatorToken.kind === ts.SyntaxKind.BarBarToken ||
+                unwrapped.operatorToken.kind ===
+                    ts.SyntaxKind.AmpersandAmpersandToken)
+        ) {
+            const selected =
+                this.context.dataLowerer.compileUnionLogicalValue(unwrapped);
+            if (selected) return selected;
+        }
         if (this.context.evaluator.isNumberExpression(unwrapped)) {
             const staticNumber = ts.isNumericLiteral(unwrapped)
                 ? Number(unwrapped.text)
@@ -1729,19 +1768,9 @@ export class ExpressionLowerer {
                     staticString: "undefined",
                 };
             }
-            // A platform class or function the program does not shadow is a
-            // function, whether or not the native platform holds it (a use
-            // of it is its own question).
-            if (
-                ts.isIdentifier(expression) &&
-                !this.context.bindings.lookupOptional(expression) &&
-                declaredGlobalTypeof(this.context.checker, expression, [
-                    "default-lib",
-                    "dom",
-                    "webgpu",
-                ]) === "function"
-            )
-                return staticStringValue("function", (text) =>
+            const tag = this.staticMemberTypeof(expression);
+            if (tag)
+                return staticStringValue(tag, (text) =>
                     this.context.cppString(text),
                 );
             // typeof observes an element past the end as undefined.
@@ -2441,7 +2470,7 @@ export class ExpressionLowerer {
                     staticString: value.browserValue.value,
                 };
             case "null":
-                return { kind: "json-null", cpp: "" };
+                return nullValue();
             case "undefined":
                 return undefinedValue();
             case "dom-rect":
@@ -3390,6 +3419,7 @@ export class ExpressionLowerer {
                 "Conditional expressions require matching native value branches " +
                     `(received ${whenTrue.kind}${whenTrue.cpp.length === 0 ? " without native storage" : ""} ` +
                     `and ${whenFalse.kind}${whenFalse.cpp.length === 0 ? " without native storage" : ""}).`,
+                "mismatched-branches",
             );
         }
         let conditional = commonResourceValue(
@@ -4534,33 +4564,48 @@ export class ExpressionLowerer {
     }
 
     /**
-     * One row of a bake's clip map, by name.
+     * One row of a bake's clip map, by name, static or computed.
      *
-     * The name is static in both reached scenes, and the row it selects is
-     * the bake's answer rather than generation's -- so this emits the
-     * native lookup and reports a miss the way every optional read in this
-     * port does. A zero frame count is that miss: no baked clip has one.
+     * The row it selects is the bake's answer rather than generation's --
+     * so this emits the native lookup and reports a miss the way every
+     * optional read in this port does. A zero frame count is that miss: no
+     * baked clip has one.
      */
     private compileVatClipRow(
         map: Value,
         access: ts.ElementAccessExpression,
     ): Value {
-        const clip = this.context.compileStringLiteral(
-            access.argumentExpression,
-        );
+        const name = this.compileValue(access.argumentExpression);
+        if (name.staticString === undefined)
+            this.context.expectKind(name, "string", access.argumentExpression);
+        const clip =
+            name.staticString !== undefined
+                ? this.context.cppString(name.staticString)
+                : name.cpp;
         const engine = this.context.requireEngine(map, access);
         const row = this.context.allocateTemporaryCppName("vat_clip");
         this.context.emit({
             kind: "declaration",
             type: "const bbl::VatClipRow",
             name: row,
-            initializer: `bbl::vat_clip_row(${engine}, ${map.cpp}, ${this.context.cppString(clip)})`,
+            initializer: `bbl::vat_clip_row(${engine}, ${map.cpp}, ${clip})`,
+        });
+        // Its fields are the row's, so a record store copies them; a
+        // `VatClip` is readonly, so the copy cannot be written apart.
+        const number = (field: string): Value => ({
+            kind: "number",
+            cpp: `${row}.${field}`,
         });
         return {
-            kind: "vat-clip",
+            kind: "record",
             cpp: row,
             engineCpp: engine,
             optionalFoundCpp: `(${row}.frame_count != 0.0)`,
+            recordProperties: {
+                fromRow: number("from_row"),
+                frameCount: number("frame_count"),
+                fps: number("fps"),
+            },
         };
     }
 
@@ -4673,6 +4718,16 @@ export class ExpressionLowerer {
         if (ts.isArrayLiteralExpression(unwrapped)) {
             return this.staticContainer(this.compileValue(unwrapped));
         }
+        // `(await fetch(url)).text()`: the awaited response, unnamed.
+        const fetched = ts.isAwaitExpression(unwrapped)
+            ? this.context.unwrap(unwrapped.expression)
+            : unwrapped;
+        if (
+            ts.isCallExpression(fetched) &&
+            ts.isIdentifier(fetched.expression) &&
+            this.context.libraryGlobal(fetched.expression) === "fetch"
+        )
+            return this.staticContainer(this.compileValue(unwrapped));
         if (ts.isIdentifier(unwrapped)) {
             const bound = this.staticContainer(
                 this.context.bindings.lookupOptional(unwrapped),
@@ -4987,28 +5042,6 @@ export class ExpressionLowerer {
         }
     }
 
-    private readIndexedProperty(
-        owner: Value,
-        key: Value,
-        access: ts.ElementAccessExpression,
-    ): Value | undefined {
-        if (key.staticString === undefined) return undefined;
-        const property = ts.factory.createPropertyAccessExpression(
-            access.expression,
-            key.staticString,
-        );
-        ts.setTextRange(property, access);
-        ts.setOriginalNode(property, access);
-        ts.setTextRange(property.name, access.argumentExpression);
-        ts.setOriginalNode(property.name, access.argumentExpression);
-        const value = this.context.propertyAccess.readResolvedProperty(
-            owner,
-            property,
-        );
-        if (value) this.context.emitDiscardedValue(key);
-        return value;
-    }
-
     /**
      * An index of an absent (null or undefined) receiver: an optional chain
      * short-circuits to undefined without evaluating the key; any other read
@@ -5069,7 +5102,11 @@ export class ExpressionLowerer {
                 const key = this.compileValue(unwrapped.argumentExpression);
                 // Select a known field before materializing a runtime enum
                 // table would discard the field's constant facts.
-                return this.readIndexedProperty(owner, key, unwrapped);
+                return this.context.propertyAccess.readIndexedProperty(
+                    owner,
+                    key,
+                    unwrapped,
+                );
             });
             if (constant) return constant;
         }
@@ -5165,7 +5202,11 @@ export class ExpressionLowerer {
                 : dataElement;
         }
         const key = this.compileValue(unwrapped.argumentExpression);
-        const resolved = this.readIndexedProperty(owner, key, unwrapped);
+        const resolved = this.context.propertyAccess.readIndexedProperty(
+            owner,
+            key,
+            unwrapped,
+        );
         if (resolved) return resolved;
         if (owner.kind === "camera-world-matrix") {
             const index = this.compileValue(unwrapped.argumentExpression);
@@ -5509,13 +5550,7 @@ export class ExpressionLowerer {
             const value = owner.recordProperties?.[property];
             if (!value) {
                 const method = owner.recordMethods?.[property];
-                if (method)
-                    return {
-                        kind: "callback",
-                        cpp: "",
-                        callbackDeclaration: method,
-                        callbackRecordOwner: owner,
-                    };
+                if (method) return recordMethodValue(owner, method);
                 if (
                     this.context.dataLowerer.declaredAsDictionary(
                         unwrapped.expression,
@@ -5725,6 +5760,20 @@ export class ExpressionLowerer {
             ].includes(contextualType.kind)
                 ? contextualType
                 : undefined);
+        // The engine canvas has no element handle: an element selection
+        // holding it stores DOM event targets.
+        const element = presentDataType(inferred);
+        if (
+            element?.kind === "handle" &&
+            element.handle === "ui-element" &&
+            selectionArms(unwrapped).some((arm) =>
+                this.context.isCanvasElement(arm),
+            )
+        )
+            inferred =
+                inferred?.kind === "optional"
+                    ? { ...inferred, inner: { kind: "event-target" } }
+                    : { kind: "event-target" };
         if (
             !inferred &&
             (callSignatures(
@@ -5866,6 +5915,7 @@ export class ExpressionLowerer {
             conditionalType?.kind === "set" ||
             conditionalType?.kind === "map" ||
             conditionalType?.kind === "json" ||
+            conditionalType?.kind === "event-target" ||
             (conditionalType?.kind === "struct" &&
                 this.context.dataTypes.isReferenceStruct(conditionalType.name))
         ) {
@@ -6208,6 +6258,8 @@ export class ExpressionLowerer {
                               value: { kind: "json" },
                               dictionary: true,
                           };
+                if (unwrapped.properties.some(ts.isGetAccessorDeclaration))
+                    return this.documentWithGetters(unwrapped, dictionary);
                 return this.context.dataLowerer.leafValue(
                     this.context.dataLowerer.compileForSink(
                         unwrapped,
@@ -6224,6 +6276,167 @@ export class ExpressionLowerer {
             }
         }
         return this.compileStaticObjectValue(unwrapped);
+    }
+
+    /**
+     * A literal whose data members a dictionary holds and that declares
+     * getters: a document of those members (`json_value` of the dictionary)
+     * with each getter an own accessor slot, defined after the data as the
+     * literal defines it. Only getters after every spread and data member of
+     * their key, and that read no `this`, keep the literal's order and
+     * receiver; a setter has no stored form here.
+     */
+    private documentWithGetters(
+        literal: ts.ObjectLiteralExpression,
+        dictionary: DataType<"map">,
+    ): Value {
+        const members = literal.properties;
+        const getters = members.filter(ts.isGetAccessorDeclaration);
+        const json: DataType = { kind: "json" };
+        if (
+            dictionary.value.kind !== "json" ||
+            members.some(ts.isSetAccessorDeclaration)
+        )
+            this.context.fail(
+                literal,
+                "A dynamic literal with accessors stores getters into a document only.",
+            );
+        for (const getter of getters) {
+            const key = propertyKey(getter.name);
+            const later = members.slice(members.indexOf(getter) + 1);
+            if (
+                key === undefined ||
+                functionUsesDynamicThis(getter) ||
+                later.some(
+                    (member) =>
+                        ts.isSpreadAssignment(member) ||
+                        (!ts.isGetAccessorDeclaration(member) &&
+                            member.name !== undefined &&
+                            propertyKey(member.name) === key),
+                )
+            )
+                this.context.fail(
+                    getter,
+                    "A dynamic literal's getter needs a literal key, no 'this', and no later spread or data member of its key.",
+                );
+        }
+        const data = this.context.dataLowerer.openRecordLiteral(
+            literal,
+            dictionary,
+            new Set(getters),
+        );
+        const document =
+            this.context.allocateTemporaryCppName("accessor_document");
+        this.context.reachJson();
+        this.context.emit({
+            kind: "declaration",
+            type: "bbl::js::JsonValue",
+            name: document,
+            initializer: `bbl::js::json_value(${data})`,
+        });
+        const owner: Value = { kind: "record", cpp: "" };
+        for (const getter of getters) {
+            const body = this.context.captureManagedClosureLines(() =>
+                this.context.emit(
+                    `return ${this.context.dataLowerer.compileKnownValueForSink(
+                        this.context.compileRecordGetter(owner, getter),
+                        json,
+                        getter,
+                    )};`,
+                ),
+            );
+            this.context.emit({
+                kind: "expression",
+                code: `${document}.define_accessor(${this.context.cppString(propertyKey(getter.name)!)}, bbl::js::Callback<bbl::js::JsonValue()>(${renderClosure(body, "", "bbl::js::JsonValue")}), bbl::js::Callback<void(bbl::js::JsonValue)>{}, true);`,
+            });
+        }
+        return {
+            ...this.context.dataLowerer.leafValue(document, json),
+            nativeCaptures: [
+                this.context.registerNativeBinding(
+                    document,
+                    false,
+                    false,
+                    "bbl::js::JsonValue",
+                ),
+            ],
+        };
+    }
+
+    /**
+     * A `typeof` generation knows without lowering the operand:
+     * - "function" for a platform class or function the program does not
+     *   shadow, whether or not the native platform holds it (a use of it is
+     *   its own question), and for a platform method native lowers, read
+     *   off an operand with no effects;
+     * - "function" for an EventTarget method, which every DOM event target
+     *   has, read off one through any view of it (`{ dispatchEvent?(event:
+     *   Event): boolean }`);
+     * - for a member of a number, string or boolean read without effects,
+     *   its wrapper prototype's: "undefined" for a name it lacks (`typeof
+     *   (5).then`, which a thenable test reads off a value held as a
+     *   number), "function" for one of its methods.
+     * Undefined for any other operand.
+     */
+    private staticMemberTypeof(
+        expression: ts.Expression,
+    ): "undefined" | "function" | undefined {
+        const checker = this.context.checker;
+        if (
+            ts.isIdentifier(expression) &&
+            !this.context.bindings.lookupOptional(expression) &&
+            declaredGlobalTypeof(checker, expression, [
+                "default-lib",
+                "dom",
+                "webgpu",
+            ]) === "function"
+        )
+            return "function";
+        if (
+            !ts.isPropertyAccessExpression(expression) ||
+            expressionHasEffects(expression.expression)
+        )
+            return undefined;
+        if (readsLoweredDomMethod(checker, expression)) return "function";
+        // An optional chain may read no owner.
+        if (ts.isOptionalChain(expression)) return undefined;
+        const receiver = expression.expression;
+        if (
+            EVENT_TARGET_METHODS.has(expression.name.text) &&
+            probedDomTarget(this.context, receiver)
+        )
+            return "function";
+        // An owner's storage, not its type (a cast may name an object type
+        // for a value held as a number), decides; a receiver that does not
+        // lower here is the ordinary path's.
+        const owner = this.context.probeEmission(
+            () => unlessRefused(() => this.compileValue(receiver)),
+            () => false,
+        );
+        const kind =
+            owner?.dataType?.kind === "number" ||
+            owner?.dataType?.kind === "string" ||
+            owner?.dataType?.kind === "boolean"
+                ? owner.dataType.kind
+                : owner?.kind === "number" ||
+                    owner?.kind === "string" ||
+                    owner?.kind === "boolean"
+                  ? owner.kind
+                  : undefined;
+        if (!kind) return undefined;
+        const primitive =
+            kind === "number"
+                ? checker.getNumberType()
+                : kind === "string"
+                  ? checker.getStringType()
+                  : checker.getBooleanType();
+        const member = checker
+            .getApparentType(primitive)
+            .getProperty(expression.name.text);
+        if (!member) return "undefined";
+        return (member.flags & ts.SymbolFlags.Method) !== 0
+            ? "function"
+            : undefined;
     }
 
     /** Whether a spread source is a struct whose `?` fields decide its keys at run time. */
@@ -7573,6 +7786,7 @@ export class ExpressionLowerer {
         // has no native intermediate array for that probe to lower.
         const found =
             this.context.handleCollections.compileFind(call, member) ??
+            this.context.handleCollections.compileSome(call, member) ??
             this.context.handleCollections.compileFilter(call, member);
         if (found) {
             return found;

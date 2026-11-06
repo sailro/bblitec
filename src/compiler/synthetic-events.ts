@@ -5,6 +5,7 @@ import type { Value } from "./types.js";
 import { domTargetIdentity } from "./dom-targets.js";
 import { jsonAbsenceCpp } from "./values/model.js";
 import { namedMember } from "./symbols.js";
+import { recordDocumentSnapshot } from "./data-sinks/scalars.js";
 
 type Context = Pick<
     LoweringServices,
@@ -21,6 +22,7 @@ type Context = Pick<
     | "requireDefaultEngine"
     | "defaultEngine"
     | "options"
+    | "cppString"
 >;
 
 const options = {
@@ -38,6 +40,7 @@ const options = {
         "shiftKey",
         "altKey",
         "metaKey",
+        "relatedTarget",
     ],
     PointerEvent: ["pointerId", "pointerType", "isPrimary", "pressure"],
     InputEvent: ["data", "inputType", "isComposing"],
@@ -65,6 +68,11 @@ export function compileSyntheticEventConstructor(
     if (name !== "Event") for (const key of options[name]) allowed.add(key);
     if (name === "PointerEvent")
         for (const key of options.MouseEvent) allowed.add(key);
+    // The constructor converts its init as its own dictionary
+    // (`MouseEventInit`): a member that dictionary does not declare is
+    // ignored; one it declares but the native event does not represent
+    // refuses, at run time when present if it may be absent.
+    const unrepresented: string[] = [];
     if (args[1]) {
         const type = context.checker.getNonNullableType(
             context.checker.getTypeAtLocation(args[1]),
@@ -74,7 +82,23 @@ export function compileSyntheticEventConstructor(
                 args[1],
                 "Synthetic event options require represented named fields.",
             );
+        const contextual = context.checker.getContextualType(args[1]);
+        const dictionary =
+            contextual && context.checker.getNonNullableType(contextual);
         for (const property of type.getProperties()) {
+            if (
+                !allowed.has(property.name) &&
+                dictionary &&
+                !dictionary.getProperty(property.name)
+            )
+                continue;
+            if (
+                !allowed.has(property.name) &&
+                (property.flags & ts.SymbolFlags.Optional) !== 0
+            ) {
+                unrepresented.push(property.name);
+                continue;
+            }
             if (!allowed.has(property.name))
                 context.fail(
                     args[1],
@@ -104,9 +128,33 @@ export function compileSyntheticEventConstructor(
             kind: "string",
         }),
     });
-    const init = args[1]
-        ? context.dataLowerer.compileForSink(args[1], { kind: "json" })
+    // The init dictionary is read once, as the constructor converts it: a
+    // record's own properties as they are now, no alias kept.
+    const dictionary = args[1] && context.compileValue(args[1]);
+    const compiled = dictionary
+        ? ((dictionary.kind === "record" && !dictionary.cpp
+              ? recordDocumentSnapshot(
+                    context.dataLowerer,
+                    dictionary,
+                    args[1]!,
+                )
+              : undefined) ??
+          context.dataLowerer.compileKnownValueForSink(
+              dictionary,
+              { kind: "json" },
+              args[1]!,
+          ))
         : jsonAbsenceCpp("undefined");
+    let init = compiled;
+    if (unrepresented.length > 0) {
+        init = context.allocateTemporaryCppName("event_init");
+        context.emit({
+            kind: "declaration",
+            type: "const auto",
+            name: init,
+            initializer: `bbl::require_event_options(${compiled}, ${context.cppString(name)}, {${unrepresented.map((key) => context.cppString(key)).join(", ")}})`,
+        });
+    }
     const kind = name === "Event" ? "Event" : name.slice(0, -5);
     return {
         kind: "dom-event",

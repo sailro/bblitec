@@ -982,7 +982,6 @@ function compileCreateSpriteAtlasFromFrames(
         );
     }
     const sourceType = sources.dataType.element;
-    const arrow = context.dataTypes.isReferenceStruct(sourceType.name);
     const source = context.allocateTemporaryCppName("atlas_source");
     const sourceList = context.allocateTemporaryCppName("atlas_sources");
     const normalized = context.allocateTemporaryCppName("atlas_frames");
@@ -992,7 +991,7 @@ function compileCreateSpriteAtlasFromFrames(
             name,
             argumentAt(call, 1),
         );
-        return `${source}${arrow ? "->" : "."}${field.name}`;
+        return `${source}${context.dataTypes.memberAccess(sourceType.name)}${field.name}`;
     };
     const optionalNumber = (name: string): string => {
         const value = access(name);

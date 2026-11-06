@@ -24,7 +24,9 @@ export class CompileError extends Error {
             | "unsupported"
             | "static-value-required"
             | "entry-scope-required"
-            | "dynamic-storage-required" = "unsupported",
+            | "dynamic-storage-required"
+            // A selection whose arms have no one native storage.
+            | "mismatched-branches" = "unsupported",
         subject?: ts.Node,
     ) {
         super(`${fileName}:${line}:${column}: ${message}`);

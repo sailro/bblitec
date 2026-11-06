@@ -38,6 +38,11 @@ int main() {
     // The later option write cannot change the earlier focusVisible value.
     assert(engine.ui_focus_visible);
     // Each step's child count and text, as the program recorded them.
-    assert(ui_element(engine, ui_get_element_by_id(engine, "log")).text == "3|1x3|1|S|4|F");
+    assert(ui_element(engine, ui_get_element_by_id(engine, "log")).text == "3|1x3|1|S|4|F|O");
+    // The spread appended the engine-owned elements' handles, in order.
+    std::string owned;
+    for (const auto child : ui_element(engine, ui_get_element_by_id(engine, "owned")).children)
+        owned += ui_get_attribute(engine, child, "id") + ";";
+    assert(owned == "p;q;");
     return 0;
 }

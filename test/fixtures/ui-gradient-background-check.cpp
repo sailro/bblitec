@@ -105,6 +105,30 @@ int main() try {
             "calc(100% - 4px) 0px;");
         update();
         bounds(pal::record_ui_rml_frame(runtime, 640, 480), 0, 136, 30, 40, 10);
+        // A repeating layer tiles its paint box from its placed position (columns from 10 - 40 =
+        // -30 to 130, rows 0 to 40): 5 x 3 tiles, the edge ones cut by the paint box.
+        ui_set_attribute(
+            engine, owner, "style",
+            "position:absolute;left:20px;top:30px;width:160px;height:60px;"
+            "--bbl-background-image:linear-gradient(red,blue) padding-box repeat / 40px 20px / "
+            "10px 0px;");
+        update();
+        {
+            const auto& tiled = pal::record_ui_rml_frame(runtime, 640, 480);
+            std::size_t tiles = 0;
+            for (const auto& draw : tiled.draws) {
+                if (!draw.texture_id)
+                    continue;
+                ++tiles;
+                for (std::uint32_t i = 0; i < draw.index_count; ++i) {
+                    const auto& vertex = tiled.vertices.at(tiled.indices.at(draw.first_index + i));
+                    check(vertex.x > 19.9f && vertex.x < 180.1f && vertex.y > 29.9f &&
+                              vertex.y < 90.1f,
+                          "Repeated tiles stay inside the paint box");
+                }
+            }
+            check(tiles == 15, "A repeating layer draws one tile per covered cell");
+        }
         // Placed in the padding box and clipped to the rounded border box (CSS background-origin
         // and background-clip): the layer reaches under the border and loses its corners.
         ui_set_attribute(
@@ -154,6 +178,10 @@ int main() try {
         const auto& colored = pal::record_ui_rml_frame(runtime, 640, 480);
         check(colored.draws.size() == 2 && colored.draws.front().texture_id == 0,
               "A written colour replaces the layers");
+        ui_set_background(engine, owner, " None ");
+        update();
+        check(pal::record_ui_rml_frame(runtime, 640, 480).draws.size() == 1,
+              "A written none paints no background");
         // A padding-box clip is the plain layer's own paint box; a content-box clip refuses.
         ui_set_attribute(
             engine, owner, "style",

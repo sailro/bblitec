@@ -97,6 +97,87 @@ test("a survey records every refusal it reaches and continues past each", () => 
     for (const refusal of report.refusals) assert.equal(refusal.occurrences, 1);
 });
 
+test("a survey reports its progress and the statement it lowers", () => {
+    const lines: string[] = [];
+    const { report } = surveySource(
+        refusing,
+        { fileName: resolve("survey-progress.ts") },
+        { report: (line) => lines.push(line), intervalMs: 0 },
+    );
+    assert.equal(lines.length, report.statements.attempted);
+    // The last line counts every refusal recorded before that statement.
+    assert.match(
+        lines.at(-1)!,
+        /^Survey progress: attempt 1, \d+ statement lowerings, [0-3] refused; lowering .*survey-progress\.ts:\d+ \(.+\)$/,
+    );
+    assert.ok(
+        lines.some((line) => / \(second\)$/.test(line)),
+        lines.join(" | "),
+    );
+});
+
+test("a survey's progress names each restart's cause and where its demand rose", () => {
+    // Rebinding a literal record to a parsed one restarts the program with
+    // shared record storage for the record type (line 2).
+    const lines: string[] = [];
+    surveySource(
+        `
+        interface Settings { gain: number }
+        function parsed(text: string): Settings { return JSON.parse(text); }
+        let active: Settings = { gain: 2 };
+        active = parsed('{"gain":3}');
+        console.log(active.gain);
+    `,
+        { fileName: resolve("survey-restart.ts") },
+        { report: (line) => lines.push(line), intervalMs: 0 },
+    );
+    assert.match(
+        lines.at(-1)!,
+        /^Survey progress: attempt 2, .*; last restart: NativeRecordStorageRequired: .* at .*survey-restart\.ts:2$/,
+    );
+    // Each restart is reported as it happens.
+    assert.equal(
+        lines.filter((line) =>
+            /^Survey restart after attempt 1: NativeRecordStorageRequired: /.test(
+                line,
+            ),
+        ).length,
+        1,
+    );
+});
+
+test("a survey reports each plan's demands and what ended it", () => {
+    // Three record types would each restart the program once; the plan
+    // after the first restart meets the other two and lowers to the end.
+    const lines: string[] = [];
+    const { report } = surveySource(
+        `
+        interface A { a: number }
+        interface B { b: number }
+        interface C { c: number }
+        function a(text: string): A { return JSON.parse(text); }
+        function b(text: string): B { return JSON.parse(text); }
+        function c(text: string): C { return JSON.parse(text); }
+        let first: A = { a: 1 };
+        first = a('{"a":2}');
+        let second: B = { b: 1 };
+        second = b('{"b":2}');
+        let third: C = { c: 1 };
+        third = c('{"c":2}');
+        console.log(first.a + second.b + third.c);
+    `,
+        { fileName: resolve("survey-plan.ts") },
+        { report: (line) => lines.push(line), intervalMs: 0 },
+    );
+    assert.equal(report.complete, true);
+    const plans = lines.filter((line) => line.startsWith("Survey plan"));
+    assert.equal(plans.length, 1, plans.join(" | "));
+    assert.match(
+        plans[0]!,
+        /^Survey plan after attempt 1: 2 demands added in \d+ s; ended by the end of the program$/,
+    );
+});
+
 test("a member call through a refused binding is a cascade of its declaration", () => {
     // `handle` is never bound: its member calls name it, not a gap of their own.
     // FinalizationRegistry is deliberately outside the supported runtime.
@@ -247,6 +328,10 @@ test("an error outside statement lowering ends the survey as incomplete", () => 
     assert.equal(result, undefined);
     assert.match(report.terminal ?? "", /built-in/);
     assert.deepEqual(report.refusals, []);
+    // The frames name the raiser of a refusal that carries no source location.
+    const frames = report.terminalStack ?? [];
+    assert.ok(frames.length > 0 && frames.length <= 12);
+    assert.ok(frames.every((frame) => frame.startsWith("at ")));
 });
 
 test("a site refusal decided after lowering is recorded against its statement", () => {

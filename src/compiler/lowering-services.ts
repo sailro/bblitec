@@ -378,6 +378,8 @@ export interface LoweringServices {
     isInRuntimeControlFlow(): boolean;
     /** Conditions a runtime case split settles inside one of its arms. */
     readonly conditionOverrides: Map<ts.Node, boolean>;
+    /** Argument values a runtime case split settles inside one of its arms. */
+    readonly valueOverrides: Map<ts.Node, Value>;
     executedInitializerElements(
         identifier: ts.Identifier,
     ): readonly Value[] | undefined;
@@ -607,6 +609,8 @@ export interface LoweringServices {
     readonly unwrap: (expression: ts.Expression) => ts.Expression;
     /** As unwrap, but an await that suspends (a worker realm's) is kept. */
     readonly unwrapValue: (expression: ts.Expression) => ts.Expression;
+    /** Whether an inlined call's parameter reads, through every inlined call, a call's result. */
+    inlinedCallArgument(identifier: ts.Identifier): boolean;
     /** Whether a caught value bound to `binding` is only reported by `body`, so it needs no native representation. */
     catchBindingIsErased(binding: ts.Identifier, body: ts.Node): boolean;
     bindClassParameterValue(

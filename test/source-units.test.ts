@@ -12,6 +12,7 @@ import {
     buildNativeFixture,
     optionalNativeFixtureTools,
 } from "./native-fixture.js";
+import { TINT_PLUGIN } from "./program-snippets.js";
 
 test("source units link shared types, tables and calls across equal module basenames", (t) => {
     const directory = resolve("artifacts/test-source-units");
@@ -97,6 +98,53 @@ test("source units link shared types, tables and calls across equal module basen
         execFileSync(executable, { encoding: "utf8", timeout: 10000 }),
         "",
     );
+});
+
+test("a module growing a PBR plugin list carries the plugin signature algebra", () => {
+    const directory = resolve("artifacts/test-source-units-plugins");
+    const files = {
+        "tint.ts": `
+            import type { MaterialPlugin, createPbrMaterial } from "@babylonjs/lite";
+            ${TINT_PLUGIN}
+            export function addTint(material: ReturnType<typeof createPbrMaterial>): void {
+                if (!material.plugins?.includes(tint)) material.plugins = [...(material.plugins ?? []), tint];
+            }
+        `,
+    };
+    for (const [path, source] of Object.entries(files)) {
+        const full = resolve(directory, path);
+        mkdirSync(dirname(full), { recursive: true });
+        writeFileSync(full, source);
+    }
+    const result = compileSource(
+        `
+        import { addToScene, createBox, createEngine, createPbrMaterial, createSceneContext, enableMaterialPlugins, registerScene } from "@babylonjs/lite";
+        import { addTint } from "../tint.js";
+        const engine = await createEngine({});
+        const scene = createSceneContext(engine);
+        const material = createPbrMaterial({});
+        const box = createBox(engine);
+        box.material = material;
+        addToScene(scene, box);
+        addTint(material);
+        enableMaterialPlugins(scene);
+        await registerScene(scene);
+    `,
+        { fileName: resolve(directory, "app/entry.ts") },
+    );
+    const calling = [...result.cppFiles].filter(([, cpp]) =>
+        /bblscene::pbr_plugin_signature_append\(/.test(cpp),
+    );
+    assert.deepEqual(
+        calling.map(([path]) => path),
+        ["sources/tint.cpp"],
+    );
+    for (const [path, cpp] of calling)
+        assert.match(
+            cpp,
+            /inline std::uint8_t pbr_plugin_signature_append\(/,
+            path,
+        );
 });
 
 test("a single source keeps its standalone entry without an application header", () => {

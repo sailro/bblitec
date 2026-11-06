@@ -176,6 +176,7 @@ import {
     type VcpkgManifestInstall,
 } from "./vcpkg-install.js";
 import { runConcurrently } from "./run-concurrently.js";
+import { COMPILER_NODE_FLAGS } from "./compiler-node-flags.js";
 import { pinnedLabPublicUrl } from "./pinned-lab-public.js";
 import {
     historicalBuildCostMs,
@@ -393,7 +394,10 @@ async function compileScenes(
             runBuffered({ buffer: stale.length > 1 }, async (run) => {
                 const arguments_ = compilerArguments(scene);
                 const startedAt = Date.now();
-                await run(process.execPath, arguments_);
+                await run(process.execPath, [
+                    ...COMPILER_NODE_FLAGS,
+                    ...arguments_,
+                ]);
                 generations.set(scene.id, {
                     startedAt,
                     durationMs: Date.now() - startedAt,
@@ -2678,6 +2682,7 @@ async function runSurvey(entry: string): Promise<boolean> {
     let completed = true;
     try {
         run(process.execPath, [
+            ...COMPILER_NODE_FLAGS,
             resolve("dist/src/cli.js"),
             entryPath,
             "--survey",
@@ -3225,7 +3230,7 @@ const COMMANDS: readonly CommandSpec[] = [
     {
         name: "status",
         argument: SCENE_ARGUMENT,
-        flags: { boolean: ["--run"] },
+        flags: { value: AD_HOC_SOURCE_FLAGS, boolean: ["--run"] },
         summary:
             "generation record current, payload deployed, binary carries the tree's stamp (from its bytes); --run renders one frame under the identity gate",
         lock: false,

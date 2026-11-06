@@ -16,6 +16,7 @@ import type { LoweringServices } from "../lowering-services.js";
 // by reach order. The intrinsic lowerer in engine.ts calls these
 // through its context.
 import ts from "typescript";
+import { selectionArms } from "../syntax.js";
 import { ApplicationRealmRequired } from "../worker-modules.js";
 import { handleCppType } from "../data-types.js";
 import type {
@@ -116,6 +117,8 @@ export interface EngineOptionContext
             | "compileColor4"
             | "compileStringLiteral"
             | "cppString"
+            | "bindings"
+            | "conditions"
         > {}
 
 /**
@@ -140,6 +143,115 @@ function compileRenderTargetDimension(
     if (staticNumberValue(context, expression) !== undefined)
         return compilePositiveInteger(context, expression);
     return `bbl::render_target_dimension(${context.compileNumber(expression, "double")})`;
+}
+
+/** One size a render-target descriptor states: fixed extents, or a surface and its scale. */
+interface RenderTargetSize {
+    width: string;
+    height: string;
+    surface?: Value;
+    scale?: string;
+}
+
+function renderTargetSize(
+    context: EngineOptionContext,
+    size: ts.Expression,
+): RenderTargetSize {
+    let width = "0u";
+    let height = "0u";
+    let surface: Value | undefined;
+    let scale: string | undefined;
+    const unwrappedSize = context.unwrap(size);
+    if (ts.isObjectLiteralExpression(unwrappedSize)) {
+        const surfaceExpression = context.objectProperty(
+            unwrappedSize,
+            "surface",
+        );
+        if (surfaceExpression) {
+            validateObjectProperties(
+                context,
+                unwrappedSize,
+                ["surface", "scale"],
+                "Surface render target size supports surface and scale.",
+            );
+            const scaleExpression = context.objectProperty(
+                unwrappedSize,
+                "scale",
+            );
+            if (!scaleExpression)
+                context.fail(
+                    unwrappedSize,
+                    "Surface render target size requires scale.",
+                );
+            surface = context.compileValue(surfaceExpression);
+            context.expectKind(surface, "engine", surfaceExpression);
+            scale = context.compileNumber(scaleExpression, "double");
+        } else {
+            validateObjectProperties(
+                context,
+                unwrappedSize,
+                ["width", "height"],
+                "Fixed render target size supports width and height.",
+            );
+            const widthExpression = context.objectProperty(
+                unwrappedSize,
+                "width",
+            );
+            const heightExpression = context.objectProperty(
+                unwrappedSize,
+                "height",
+            );
+            if (!widthExpression || !heightExpression) {
+                context.fail(
+                    unwrappedSize,
+                    "Fixed render target size requires width and height.",
+                );
+            }
+            width = compileRenderTargetDimension(context, widthExpression);
+            height = compileRenderTargetDimension(context, heightExpression);
+        }
+    } else {
+        // A surface size the program built before the call reads the
+        // surface and scale it was written with.
+        const value = context.compileValue(unwrappedSize);
+        const built =
+            value.kind === "record" && !value.cpp
+                ? value.recordProperties
+                : undefined;
+        if (built && "surface" in built) {
+            if (
+                !built.scale ||
+                Object.keys(built).some(
+                    (key) => key !== "surface" && key !== "scale",
+                )
+            )
+                context.fail(
+                    unwrappedSize,
+                    "Surface render target size supports surface and scale.",
+                );
+            surface = built.surface!;
+            context.expectKind(surface, "engine", unwrappedSize);
+            scale = context.dataLowerer.compileKnownValueForSink(
+                built.scale,
+                { kind: "number" },
+                unwrappedSize,
+            );
+        } else {
+            surface = value;
+            context.expectKind(surface, "engine", unwrappedSize);
+        }
+    }
+    return {
+        width,
+        height,
+        ...(surface ? { surface } : {}),
+        ...(scale !== undefined ? { scale } : {}),
+    };
+}
+
+/** The descriptor fields a surface scale sets, after validating it as the pin does. */
+function surfaceScaleCpp(surface: Value, scale: string): string {
+    return `const double scale = ${scale}; (void)bbl::resolve_surface_render_target_size(1.0, 1.0, scale); options.scale_source = bbl::swapchain_render_target(${surface.cpp}); options.width_ratio = scale; options.height_ratio = scale; options.resolve_surface_size = bbl::resolve_surface_render_target_size;`;
 }
 
 export function compileRenderTargetOptions(
@@ -179,70 +291,36 @@ export function compileRenderTargetOptions(
     const colorFormat = context.objectProperty(object, "format");
     const depthFormat = context.objectProperty(object, "dFormat");
     const size = context.objectProperty(object, "size");
-    let width = "0u";
-    let height = "0u";
-    let surface: Value | undefined;
-    let scale: string | undefined;
-    if (size) {
-        const unwrappedSize = context.unwrap(size);
-        if (ts.isObjectLiteralExpression(unwrappedSize)) {
-            const surfaceExpression = context.objectProperty(
-                unwrappedSize,
-                "surface",
+    if (!size) context.fail(object, "Render target descriptor requires size.");
+    // A size a deferred selection names (`const size = c ? { surface,
+    // scale } : surface`, whose arms read only unchanging bindings) keeps
+    // each arm's own sizing: the pin scales a `{ surface, scale }` and reads
+    // a surface's canvas directly.
+    const selection = context.bindings.deferredSelection(size);
+    let sized: RenderTargetSize;
+    let selectedScale: string | undefined;
+    if (selection) {
+        const [whenTrue, whenFalse] = selectionArms(selection);
+        const first = renderTargetSize(context, whenTrue);
+        const second = renderTargetSize(context, whenFalse);
+        if (
+            !first.surface ||
+            !second.surface ||
+            [first, second].some(
+                (arm) => arm.width !== "0u" || arm.height !== "0u",
+            )
+        )
+            return context.fail(
+                selection,
+                "A selected render target size selects between surface sizes.",
             );
-            if (surfaceExpression) {
-                validateObjectProperties(
-                    context,
-                    unwrappedSize,
-                    ["surface", "scale"],
-                    "Surface render target size supports surface and scale.",
-                );
-                const scaleExpression = context.objectProperty(
-                    unwrappedSize,
-                    "scale",
-                );
-                if (!scaleExpression)
-                    context.fail(
-                        unwrappedSize,
-                        "Surface render target size requires scale.",
-                    );
-                surface = context.compileValue(surfaceExpression);
-                context.expectKind(surface, "engine", surfaceExpression);
-                scale = context.compileNumber(scaleExpression, "double");
-            } else {
-                validateObjectProperties(
-                    context,
-                    unwrappedSize,
-                    ["width", "height"],
-                    "Fixed render target size supports width and height.",
-                );
-                const widthExpression = context.objectProperty(
-                    unwrappedSize,
-                    "width",
-                );
-                const heightExpression = context.objectProperty(
-                    unwrappedSize,
-                    "height",
-                );
-                if (!widthExpression || !heightExpression) {
-                    context.fail(
-                        unwrappedSize,
-                        "Fixed render target size requires width and height.",
-                    );
-                }
-                width = compileRenderTargetDimension(context, widthExpression);
-                height = compileRenderTargetDimension(
-                    context,
-                    heightExpression,
-                );
-            }
-        } else {
-            surface = context.compileValue(unwrappedSize);
-            context.expectKind(surface, "engine", unwrappedSize);
-        }
-    } else {
-        context.fail(object, "Render target descriptor requires size.");
-    }
+        context.expectSameEngine(first.surface, second.surface, selection);
+        const armScale = (arm: RenderTargetSize, surface: Value): string =>
+            arm.scale !== undefined ? surfaceScaleCpp(surface, arm.scale) : "";
+        sized = { width: "0u", height: "0u", surface: first.surface };
+        selectedScale = `if (${context.conditions.compileCondition(selection.condition)}) { ${armScale(first, first.surface)} } else { ${armScale(second, second.surface)} }`;
+    } else sized = renderTargetSize(context, size);
+    const { width, height, surface, scale } = sized;
     const sampleCount = samples
         ? compilePositiveInteger(context, samples)
         : "1u";
@@ -270,9 +348,10 @@ export function compileRenderTargetOptions(
     if (colorClass || depthClass) {
         cpp = `[&]() { auto options = ${cpp}; ${colorClass ? `options.format = ${colorClass}; options.has_format = true;` : ""} ${depthClass ? `options.depth_format = ${depthClass};` : ""} return options; }()`;
     }
-    if (scale !== undefined && surface) {
-        cpp = `[&]() { auto options = ${cpp}; const double scale = ${scale}; (void)bbl::resolve_surface_render_target_size(1.0, 1.0, scale); options.scale_source = bbl::swapchain_render_target(${surface.cpp}); options.width_ratio = scale; options.height_ratio = scale; options.resolve_surface_size = bbl::resolve_surface_render_target_size; return options; }()`;
-    }
+    if (selectedScale)
+        cpp = `[&]() { auto options = ${cpp}; ${selectedScale} return options; }()`;
+    else if (scale !== undefined && surface)
+        cpp = `[&]() { auto options = ${cpp}; ${surfaceScaleCpp(surface, scale)} return options; }()`;
     return {
         cpp,
         hasColor: colorFormat !== undefined,

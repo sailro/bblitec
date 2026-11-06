@@ -152,6 +152,36 @@ test("Object.fromEntries converts represented numeric keys without changing Map 
     );
 });
 
+test("Object.fromEntries reads a mapped string key out of pairs sharing one carrier", (t) => {
+    // `[slot, bucket]` is a (Slot | Bucket)[]: the key is read as the string
+    // the callback returns, so the record value needs no dynamic view (a
+    // Map<number, ...> field has none).
+    const source = `
+        type Slot = "left" | "right";
+        const SLOTS: readonly Slot[] = ["left", "right"];
+        interface Bucket { readonly ids: Map<number, string>; readonly size: number }
+        const buckets: Bucket[] = SLOTS.map((slot, index) => ({ ids: new Map<number, string>([[index, slot]]), size: index + 1 }));
+        const bySlot = Object.fromEntries(SLOTS.filter((slot) => slot.length > 0).map((slot, index) => [slot, buckets[index]!])) as Record<Slot, Bucket>;
+        if (bySlot.right.ids.get(1) !== "right" || bySlot.left.size !== 1 || Object.keys(bySlot).join() !== "left,right")
+            throw new Error("buckets");
+        bySlot.left.ids.set(7, "seven");
+        if (buckets[0]!.ids.get(7) !== "seven") throw new Error("shared bucket");
+    `;
+    runInNewContext(
+        ts.transpileModule(source, {
+            compilerOptions: { target: ts.ScriptTarget.ES2022 },
+        }).outputText,
+    );
+    const result = compileSource(source);
+    const native = optionalNativeFixtureTools(false);
+    if (!native) return t.skip("Native fixture compiler unavailable.");
+    runGeneratedProgram(
+        native,
+        "collection-entry-iterables/mapped-string-keys",
+        result.cpp,
+    );
+});
+
 test("entry collections refuse asynchronous and nonpair iterables", () => {
     for (const source of [
         `new Map(new Set([1,2]) as unknown as Iterable<[number,number]>);`,

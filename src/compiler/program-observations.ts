@@ -2,6 +2,7 @@ import ts from "typescript";
 import { forEachAnalysisNode } from "./analysis-walk.js";
 import { engineArgumentWritten } from "./parameter-effects.js";
 import { constObjectLiteral, yieldsNewArray } from "./fresh-records.js";
+import { writtenHolders } from "./written-holders.js";
 import {
     declarationOrigin,
     declaredSymbol,
@@ -22,6 +23,8 @@ import {
     accessKey,
     patternSlots,
     equalityOperator,
+    operandYield,
+    testsTruthinessOnly,
 } from "./syntax.js";
 import { valueKindOf, arrayShape, unionMembers } from "./type-facts.js";
 
@@ -80,7 +83,7 @@ export interface ProgramObservations {
     readonly writes: ReadonlyMap<ts.Type, readonly ObservedWrite[]>;
     readonly arrayWrites: ReadonlyMap<ts.Type, readonly ObservedWrite[]>;
     readonly identities: ReadonlySet<ts.Type>;
-    /** Operand/key types at identity or typeof uses, consulted only when reached. */
+    /** Operand/key types at identity, typeof or truthiness uses, consulted only when reached. */
     readonly identityConsumers: ReadonlyMap<ts.Node, ReadonlySet<ts.Type>>;
     readonly enumerations: ReadonlySet<ts.Type>;
     readonly assertions: readonly {
@@ -237,15 +240,42 @@ function observe(program: ts.Program): ProgramObservations {
     const wholesaleReads: ts.Node[] = [];
     const typeOf = (node: ts.Node): ts.Type => checker.getTypeAtLocation(node);
     let order = 0;
+    const place = (
+        index: Map<ts.Type, ObservedWrite[]>,
+        type: ts.Type,
+        placed: ObservedWrite,
+    ): void => {
+        const list = index.get(type);
+        if (list) list.push(placed);
+        else index.set(type, [placed]);
+    };
     const add = (
         index: Map<ts.Type, ObservedWrite[]>,
         type: ts.Type,
         write: Omit<ObservedWrite, "order">,
+    ): void => place(index, type, { ...write, order: order++ });
+    // A write through an open holder lands where the parameters and type
+    // parameters it is read through narrow it (`writtenHolders`), one write
+    // in program order under each type it can reach.
+    const addWrite = (
+        object: ts.Expression,
+        write: Omit<ObservedWrite, "order">,
+        key?: ts.Expression,
     ): void => {
-        const placed = { ...write, order: order++ };
-        const list = index.get(type);
-        if (list) list.push(placed);
-        else index.set(type, [placed]);
+        const holders = writtenHolders(
+            program,
+            checker,
+            object,
+            write.property === undefined ? key : undefined,
+        );
+        if (!holders) return add(writes, typeOf(object), write);
+        const placed = order++;
+        for (const { type, property } of holders)
+            place(writes, type, {
+                ...write,
+                ...(property === undefined ? {} : { property }),
+                order: placed,
+            });
     };
     const arrayLike = (node: ts.Node): boolean =>
         checker.isArrayLikeType(typeOf(node));
@@ -344,7 +374,7 @@ function observe(program: ts.Program): ProgramObservations {
                 ...freshObject,
             });
         if (ts.isPropertyAccessExpression(unwrapped))
-            add(writes, typeOf(unwrapped.expression), {
+            addWrite(unwrapped.expression, {
                 node: unwrapped,
                 property: unwrapped.name.text,
                 ...freshObject,
@@ -358,11 +388,15 @@ function observe(program: ts.Program): ProgramObservations {
             )
                 return;
             const property = accessKey(unwrapped);
-            add(writes, typeOf(unwrapped.expression), {
-                node: unwrapped,
-                ...(property === undefined ? {} : { property }),
-                ...freshObject,
-            });
+            addWrite(
+                unwrapped.expression,
+                {
+                    node: unwrapped,
+                    ...(property === undefined ? {} : { property }),
+                    ...freshObject,
+                },
+                unwrapped.argumentExpression,
+            );
         }
     };
     // A new array, or an assignment of one (`bucket = []`), is that array.
@@ -434,8 +468,11 @@ function observe(program: ts.Program): ProgramObservations {
                         objectLike(type) &&
                         (origin !== "babylon" ||
                             engineArgumentWritten(checker, node, position))
-                    )
-                        add(writes, type, { node });
+                    ) {
+                        if (ts.isSpreadElement(argument))
+                            add(writes, type, { node });
+                        else addWrite(argument, { node });
+                    }
                 });
         }
         if (
@@ -452,6 +489,18 @@ function observe(program: ts.Program): ProgramObservations {
                 if (slot.kind === "member" && slot.key !== undefined)
                     read(slot.key, element, node);
                 else wholesaleReads.push(node);
+        }
+        // A truthiness test reads the object itself, never what it holds or
+        // settles to: `!x`, a condition, an operand yielded only when truthy
+        // (`||`) or only when falsy (`&&`).
+        if (ts.isExpression(node)) {
+            const yielded = operandYield(node.parent, node);
+            if (
+                testsTruthinessOnly(node) ||
+                (yielded !== undefined &&
+                    yielded.has("truthy") !== yielded.has("falsy"))
+            )
+                observesObject(node, node);
         }
         for (const { target } of writeSites(node)) written(target);
         if (isAssignmentExpression(node)) {
@@ -536,7 +585,7 @@ function observe(program: ts.Program): ProgramObservations {
             );
         if (owner === "Object") {
             if (method === "assign" && first) {
-                add(writes, typeOf(first), { node });
+                addWrite(first, { node });
                 node.arguments.slice(1).forEach(enumerated);
             } else if (
                 (method === "defineProperty" ||
@@ -547,18 +596,22 @@ function observe(program: ts.Program): ProgramObservations {
                     method === "defineProperty" && node.arguments[1]
                         ? unwrapExpression(node.arguments[1])
                         : undefined;
-                add(writes, typeOf(first), {
-                    node,
-                    ...(key && ts.isStringLiteralLike(key)
-                        ? { property: key.text }
-                        : {}),
-                });
+                addWrite(
+                    first,
+                    {
+                        node,
+                        ...(key && ts.isStringLiteralLike(key)
+                            ? { property: key.text }
+                            : {}),
+                    },
+                    key,
+                );
             } else if (method === "is" && first && node.arguments[1])
                 identityComparison(first, node.arguments[1]);
             else if (ENUMERATING_STATICS.has(method) && first)
                 enumerated(first);
         } else if (owner === "Reflect") {
-            if (first) add(writes, typeOf(first), { node });
+            if (first) addWrite(first, { node });
         } else if (owner === "JSON") {
             if (method === "stringify" && first) enumerated(first);
         } else if (

@@ -65,3 +65,32 @@ test("spreads a numeric tuple into a uniform default lane by lane", () => {
         /std::array<float, 4> values\{static_cast<float>\(v_bblite_spread_lane_\d+\), static_cast<float>\(v_bblite_spread_lane_\d+\), static_cast<float>\(v_bblite_spread_lane_\d+\), 1\.0f\}; bbl::initialize_shader_uniform_values/,
     );
 });
+
+test("reads a parsed config array into a uniform default after the length check", () => {
+    // A config deep-merged over its defaults is a parsed document; its
+    // colour field is the ArrayLike the pinned writer reads.
+    const parsed = source
+        .replace(
+            "async function main() {",
+            `interface Look { tint: [number, number, number] }
+    const DEFAULTS: Look = { tint: [0.25, 0.5, 0.75] };
+    function merge<T>(base: T, over: unknown): T {
+        if (over === null || typeof over !== "object" || Array.isArray(over)) return base;
+        const out: Record<string, unknown> = { ...(base as Record<string, unknown>) };
+        for (const [key, value] of Object.entries(over as Record<string, unknown>)) out[key] = value;
+        return out as T;
+    }
+    async function main() {
+        const look = merge(DEFAULTS, JSON.parse(localStorage.getItem("look") ?? "{}") as unknown);`,
+        )
+        .replace(
+            '{ name: "uTint", type: "vec4<f32>", defaultValue: [0.25, 0.5, 0.75, 1] }',
+            '{ name: "uTint", type: "vec3<f32>", defaultValue: [...look.tint] }',
+        );
+    const { cpp } = compileSource(parsed);
+    assert.match(
+        cpp,
+        /bbl::js::json_number_array\(v_look\.read_property\("tint"\)\)/,
+    );
+    assert.match(cpp, /\.size\(\) != 3u\) throw std::runtime_error/);
+});

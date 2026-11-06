@@ -27,6 +27,7 @@ import {
 import {
     absenceOf,
     knownCondition,
+    ownKeysKnown,
     undefinedValue,
     valueDataType,
 } from "./values/model.js";
@@ -43,6 +44,7 @@ import {
     holdsNoPayload,
     valueKindOf,
     unionMembers,
+    boundedTupleElements,
     fixedTupleElements,
 } from "./type-facts.js";
 import {
@@ -72,7 +74,7 @@ import {
 import type { Value } from "./types.js";
 import {
     isEngineScopedHandleKind,
-    isInputSnapshotHandleKind,
+    isRuntimeIdentityHandleKind,
 } from "./data-types/handles.js";
 import { dataTypeKey } from "./data-types/operations.js";
 import { nativeStructuralViewType } from "./native-owner-carrier.js";
@@ -124,6 +126,7 @@ import {
     mutatingCallTarget,
     outermostWrapper,
     requiredParameterCount,
+    ownParameters,
     restParameterIndex,
     rootIdentifier,
     sourceFunctionName,
@@ -156,7 +159,12 @@ import {
     FunctionSpecializations,
     functionDependencies,
 } from "./function-specializations.js";
-import { callTypeArguments, mentionsTypeParameter } from "./type-arguments.js";
+import {
+    callTypeArguments,
+    mentionsTypeParameter,
+    requiredArgumentCount,
+    acceptsOmittedVoid,
+} from "./type-arguments.js";
 import { emitSharedCell, sharedCellCpp } from "./shared-cells.js";
 import { isStaticMember } from "./class-members.js";
 
@@ -360,6 +368,39 @@ function storesReturnedOwners(
         default:
             return false;
     }
+}
+
+/**
+ * Whether a function only spreads its rest parameter as the last argument
+ * of calls: its length, which native lanes do not carry, is then never
+ * read, and each lane lands where the argument it stands for would.
+ */
+function restOnlyForwarded(
+    checker: ts.TypeChecker,
+    parameter: ts.ParameterDeclaration,
+    declaration: ts.SignatureDeclaration,
+): boolean {
+    if (!ts.isIdentifier(parameter.name)) return false;
+    const symbol = declaredSymbol(checker, parameter.name);
+    const body = "body" in declaration ? declaration.body : undefined;
+    return (
+        !!symbol &&
+        !!body &&
+        !someAnalysisNode(body, (node) => {
+            if (
+                !ts.isIdentifier(node) ||
+                declaredSymbol(checker, node) !== symbol
+            )
+                return false;
+            const spread = node.parent;
+            const call = spread.parent;
+            return !(
+                ts.isSpreadElement(spread) &&
+                ts.isCallExpression(call) &&
+                call.arguments.at(-1) === spread
+            );
+        })
+    );
 }
 
 /** Plain-data field reads cannot invoke accessors; preserve real getter effects. */
@@ -754,6 +795,28 @@ function reachedByFile(
 }
 
 /**
+ * Visits, innermost first, each node enclosing one of `alias`'s names that
+ * `seen` has not; true when `visit` answers true for one.
+ */
+function visitEnclosing(
+    named: ReadonlyMap<ts.Symbol, readonly ts.Node[]>,
+    alias: ts.Symbol,
+    seen: Set<ts.Node>,
+    visit: (node: ts.Node) => boolean,
+): boolean {
+    for (const occurrence of named.get(alias) ?? [])
+        for (
+            let node: ts.Node | undefined = occurrence;
+            node && !seen.has(node);
+            node = node.parent
+        ) {
+            seen.add(node);
+            if (visit(node)) return true;
+        }
+    return false;
+}
+
+/**
  * The alias-set + fixed-point skeleton every inferred-mutation walk shares.
  *
  * Seeds the tracked set with the declared identifier's symbol, then rewalks
@@ -769,9 +832,10 @@ function reachedByFile(
  * `[, s] = values`) holds one. A cross-file walk names its `files` and the
  * files each new alias adds; `aliasingReturn` makes a named function whose
  * `return` carries an alias one more alias (its calls hold the identity).
- * A walk whose `mutates` accepts only `reached` nodes and adds no alias
- * settles the aliases from the alias sites alone, then tests just those
- * nodes: mutation is monotone in the alias set, so the answer is the same.
+ * A walk whose `mutates` accepts only `reached` nodes, or only nodes naming
+ * an alias (`occurrences`), and adds no alias settles the aliases from the
+ * alias sites alone, then tests just those nodes: mutation is monotone in
+ * the alias set, so the answer is the same.
  * When its aliasing clauses read only the program, `programAliases` names
  * them and the settled aliases are kept for the program's later scans.
  */
@@ -811,6 +875,16 @@ export function aliasedMutationScan(
         ) => boolean;
         /** The only nodes `mutates` accepts; it then adds no alias. */
         readonly reached?: ReadonlySet<ts.Node>;
+        /**
+         * The nodes naming each symbol in a file, for a walk whose `mutates`
+         * accepts only a node whose subtree names an alias and adds no alias,
+         * and whose aliasing clauses accept only a source naming one: the
+         * aliases settle from the sites enclosing their names, then only the
+         * nodes enclosing them are tested.
+         */
+        readonly occurrences?: (
+            file: ts.SourceFile,
+        ) => ReadonlyMap<ts.Symbol, readonly ts.Node[]>;
         /** Names aliasing clauses that read only the program (`reached` walks). */
         readonly programAliases?: string;
     },
@@ -854,8 +928,9 @@ export function aliasedMutationScan(
             if (aliasing) scan.addAlias(valueSymbol(name));
         }
     };
-    const reached = walk.reached;
-    if (reached) {
+    const { reached } = walk;
+    const occurrences = reached ? undefined : walk.occurrences;
+    if (reached || occurrences) {
         const key =
             walk.programAliases === undefined
                 ? undefined
@@ -873,11 +948,34 @@ export function aliasedMutationScan(
             walked = known.walked;
         } else {
             const files = new Set<ts.SourceFile>();
+            // With `occurrences`, the sites read are those enclosing each
+            // alias's names, once per alias and file; iterating the set
+            // reaches the aliases its sites add.
+            const read = new Map<ts.SourceFile, Set<ts.Symbol>>();
+            const settleNamed = (
+                file: ts.SourceFile,
+                named: ReadonlyMap<ts.Symbol, readonly ts.Node[]>,
+            ): void => {
+                const { byNode } = aliasSitesOf(file);
+                let done = read.get(file);
+                if (!done) read.set(file, (done = new Set()));
+                for (const alias of aliases) {
+                    if (done.has(alias)) continue;
+                    done.add(alias);
+                    visitEnclosing(named, alias, new Set(), (node) => {
+                        const sites = byNode.get(node);
+                        if (sites) extend(sites);
+                        return false;
+                    });
+                }
+            };
             while (pending.size > 0) {
                 for (const file of pending) {
                     files.add(file);
-                    for (const [, sites] of aliasSitesOf(file).ordered)
-                        extend(sites);
+                    if (occurrences) settleNamed(file, occurrences(file));
+                    else
+                        for (const [, sites] of aliasSitesOf(file).ordered)
+                            extend(sites);
                 }
                 pending = next;
                 next = new Set();
@@ -894,10 +992,28 @@ export function aliasedMutationScan(
             }
         }
         settled = true;
-        const byFile = reachedByFile(reached);
-        for (const file of walked)
-            for (const node of byFile.get(file) ?? [])
-                if (walk.mutates(node, scan)) return true;
+        if (reached) {
+            const byFile = reachedByFile(reached);
+            for (const file of walked)
+                for (const node of byFile.get(file) ?? [])
+                    if (walk.mutates(node, scan)) return true;
+            return false;
+        }
+        for (const file of walked) {
+            const scanned = sourceFileNodeSet(file);
+            const named = occurrences!(file);
+            const tested = new Set<ts.Node>();
+            for (const alias of aliases)
+                if (
+                    visitEnclosing(
+                        named,
+                        alias,
+                        tested,
+                        (node) => scanned.has(node) && walk.mutates(node, scan),
+                    )
+                )
+                    return true;
+        }
         return false;
     }
     while (pending.size > 0) {
@@ -1089,20 +1205,35 @@ export function resolveFunctionDeclaration(
 }
 
 /**
- * Whether a function literal's final parameter is a rest parameter of a
- * fixed tuple type: its lanes are ordinary parameters of a signature that
- * spells them, rather than a packed array.
+ * The lanes a function's tuple rest parameter is, each an ordinary
+ * trailing parameter of a signature that spells them rather than a packed
+ * array: a fixed tuple's elements always, one with optional elements' when
+ * the body only forwards it (`restOnlyForwarded`). Undefined for any other
+ * final parameter.
  */
-export function hasFixedTupleRest(
+function tupleRestLanes(
+    checker: ts.TypeChecker,
+    declaration: ts.SignatureDeclaration,
+): readonly unknown[] | undefined {
+    const last = declaration.parameters.at(-1);
+    if (!last?.dotDotDotToken) return undefined;
+    const type = checker.getTypeAtLocation(last);
+    return (
+        fixedTupleElements(checker, type) ??
+        (restOnlyForwarded(checker, last, declaration)
+            ? boundedTupleElements(checker, type)
+            : undefined)
+    );
+}
+
+/** Whether a function literal's final parameter is a rest parameter of tuple lanes (`tupleRestLanes`). */
+export function hasTupleRestLanes(
     checker: ts.TypeChecker,
     declaration: ts.Node,
 ): boolean {
-    if (!isSupportedFunction(declaration)) return false;
-    const last = declaration.parameters.at(-1);
     return (
-        last?.dotDotDotToken !== undefined &&
-        fixedTupleElements(checker, checker.getTypeAtLocation(last)) !==
-            undefined
+        isSupportedFunction(declaration) &&
+        tupleRestLanes(checker, declaration) !== undefined
     );
 }
 
@@ -2269,11 +2400,9 @@ export class UserFunctionLowerer {
                         // Capture at the return expression's evaluation, before
                         // mutable storage erases the facts. Only primitives are
                         // copied; every read still uses the real call's owner.
-                        const access = context.dataTypes.isReferenceStruct(
+                        const access = context.dataTypes.memberAccess(
                             returnType.name,
-                        )
-                            ? "->"
-                            : ".";
+                        );
                         writable(result).recordProperties = Object.fromEntries(
                             fields
                                 .filter((field) =>
@@ -2308,11 +2437,7 @@ export class UserFunctionLowerer {
                     call,
                     "accessors",
                 );
-                const access = context.dataTypes.isReferenceStruct(
-                    returnType.name,
-                )
-                    ? "->"
-                    : ".";
+                const access = context.dataTypes.memberAccess(returnType.name);
                 const presentProperties: Record<string, Value> = {};
                 for (const key of presentLiteralKeys(
                     this.checker,
@@ -3025,9 +3150,7 @@ export class UserFunctionLowerer {
             call,
             "accessors",
         );
-        const member = context.dataTypes.isReferenceStruct(struct.name)
-            ? "->"
-            : ".";
+        const member = context.dataTypes.memberAccess(struct.name);
         const refreshed: Array<[string, Value]> = [];
         for (const [key, value] of Object.entries(properties)) {
             const stable =
@@ -3780,13 +3903,13 @@ export class UserFunctionLowerer {
                             kind: "handle",
                             handle: "scene-node",
                         } as const;
-                    const platformHandle =
+                    const identityHandle =
                         inner?.kind === "handle" &&
-                        isInputSnapshotHandleKind(inner.handle);
+                        isRuntimeIdentityHandleKind(inner.handle);
                     return mapped &&
                         mapped.kind !== "function" &&
                         (!context.dataTypes.carriesHandle(mapped) ||
-                            platformHandle)
+                            identityHandle)
                         ? mapped
                         : undefined;
                 },
@@ -4370,16 +4493,14 @@ export class UserFunctionLowerer {
                 optionalFoundCpp: "true",
             });
         if (metadata.recordProperties && result.dataType?.kind === "struct") {
+            if (metadata.recordOwnKeys)
+                projected.recordOwnKeys = metadata.recordOwnKeys;
             const fields = context.dataTypes.structFields(
                 result.dataType.name,
                 call,
                 "accessors",
             );
-            const member = context.dataTypes.isReferenceStruct(
-                result.dataType.name,
-            )
-                ? "->"
-                : ".";
+            const member = context.dataTypes.memberAccess(result.dataType.name);
             projected.recordProperties = Object.fromEntries(
                 Object.keys(metadata.recordProperties).map((key) => {
                     const field = fields.find(
@@ -4870,6 +4991,19 @@ export class UserFunctionLowerer {
                                           },
                                       ),
                                   ),
+                                  // Records every return builds with these
+                                  // keys own are the caller's own keys too.
+                                  ...(returnedValues.every(
+                                      (value) =>
+                                          value.kind === "record" &&
+                                          ownKeysKnown(
+                                              context,
+                                              value,
+                                              entry.declaration,
+                                          ),
+                                  )
+                                      ? { recordOwnKeys: keys }
+                                      : {}),
                               }
                             : {}),
                     };
@@ -5383,7 +5517,10 @@ export class UserFunctionLowerer {
             context.fail(node, message),
         );
         const runtimeParameters = ir.parameters.filter(
-            (parameter) => !holdsNoPayload(parameter.type),
+            (parameter) =>
+                !holdsNoPayload(
+                    context.dataTypes.resolveTypeParameter(parameter.type),
+                ),
         );
         if (
             runtimeParameters
@@ -5409,13 +5546,12 @@ export class UserFunctionLowerer {
                 "reads",
                 declaration,
             );
-        // A rest parameter of a fixed tuple type is the signature's
-        // trailing parameters, one lane each.
+        // A rest parameter of a tuple type is the signature's trailing
+        // parameters, one lane each.
         const restParameter = runtimeParameters.at(-1);
         const restLanes =
-            dataType.restParameter === undefined &&
-            restParameter?.declaration.dotDotDotToken
-                ? fixedTupleElements(this.checker, restParameter.type)?.length
+            dataType.restParameter === undefined
+                ? tupleRestLanes(this.checker, declaration)?.length
                 : undefined;
         const tupleRest =
             restLanes !== undefined &&
@@ -5431,7 +5567,7 @@ export class UserFunctionLowerer {
         )
             context.fail(
                 declaration,
-                "A stored function's tuple rest parameter is bound from lanes only when every element is required and the signature passes each one.",
+                "A stored function's tuple rest parameter is bound from lanes only when every element is required, or the body only forwards it as the last spread argument of calls, and the signature passes each one.",
             );
         const prefix = context.allocateUserFunctionPrefix();
         const cppName = `${prefix}stored_callback`;
@@ -6935,20 +7071,15 @@ export class UserFunctionLowerer {
         if (cached) {
             return cached;
         }
-        // A `this` parameter types the receiver; it takes no argument.
-        const parameters = declaration.parameters
-            .filter(
-                (parameter) =>
-                    !ts.isIdentifier(parameter.name) ||
-                    parameter.name.text !== "this",
-            )
-            .map((parameter): UserFunctionParameterIr => {
+        const parameters = ownParameters(declaration).map(
+            (parameter): UserFunctionParameterIr => {
                 return {
                     declaration: parameter,
                     name: parameter.name,
                     type: this.checker.getTypeAtLocation(parameter),
                 };
-            });
+            },
+        );
         const body = declaration.body;
         if (!body) {
             fail(declaration, "Reached user functions require a body.");
@@ -7375,15 +7506,23 @@ export class UserFunctionLowerer {
         const parameters =
             calledDeclaration(this.checker, call)?.parameters ??
             ir.parameters.map((parameter) => parameter.declaration);
-        const minimum = requiredParameterCount(parameters);
+        // Only a call short of the declared required parameters resolves
+        // its signature for the trailing ones it may omit.
         if (
-            call.arguments.length < minimum &&
+            call.arguments.length < requiredParameterCount(parameters) &&
             !call.arguments.some(ts.isSpreadElement)
         ) {
-            fail(
+            const minimum = requiredArgumentCount(
+                this.checker,
                 call,
-                `Function '${refusalName(ir)}' expects ${minimum}-${ir.parameters.length} arguments, received ${call.arguments.length}.`,
+                parameters,
+                (type) => context.dataTypes.resolveTypeParameter(type),
             );
+            if (call.arguments.length < minimum)
+                fail(
+                    call,
+                    `Function '${refusalName(ir)}' expects ${minimum}-${ir.parameters.length} arguments, received ${call.arguments.length}.`,
+                );
         }
         // A returned callback can mention its factory's type parameters
         // without declaring any itself. The source call's signature carries
@@ -7672,7 +7811,12 @@ export class UserFunctionLowerer {
                 (argument &&
                     this.taggedAbsence(context, parameter, argument, source)) ??
                 argument ??
-                (parameter.declaration.questionToken
+                // An omitted optional, or one whose type at this call
+                // accepts `void`, which TypeScript lets a call omit.
+                (parameter.declaration.questionToken ||
+                acceptsOmittedVoid(parameter.type, (type) =>
+                    context.dataTypes.resolveTypeParameter(type),
+                )
                     ? undefinedValue()
                     : context.fail(
                           parameter.declaration,

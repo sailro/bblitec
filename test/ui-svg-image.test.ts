@@ -113,3 +113,38 @@ test("SVG images refuse unrepresented sources, attributes and tinting", () => {
         /requires static attribute 'href'/,
     );
 });
+
+test("a percentage root viewport stretches its viewBox to an author size", () => {
+    const flag =
+        '<svg viewBox="0 0 60 30" width="100%" height="100%" preserveAspectRatio="none"><rect width="60" height="10" fill="#c00"/></svg>';
+    const cpp = compile(JSON.stringify(flag)).cpp;
+    assert.match(
+        cpp,
+        /data-bbl-viewport-width=\\"100%\\" data-bbl-viewport-height=\\"100%\\" preserveAspectRatio=\\"none\\"/,
+    );
+    assert.doesNotMatch(cpp, / width=\\"100%\\"/);
+    assert.throws(
+        () =>
+            compile(
+                JSON.stringify(
+                    '<svg viewBox="0 0 60 30" width="100%"><rect width="60" height="10"/></svg>',
+                ),
+            ),
+        /percentage viewport requires preserveAspectRatio none/,
+    );
+});
+
+test("markup metadata attributes are admitted on SVG as on HTML; reserved names refuse", () => {
+    const icon =
+        '<svg viewBox="0 0 24 24" aria-hidden="true" data-icon="bolt"><path aria-label="bolt" d="M13.5 2 4.5 14h6l-1 8 10-13h-6z"/></svg>';
+    assert.match(compile(JSON.stringify(icon)).cpp, /aria-hidden=\\"true\\"/);
+    for (const markup of [
+        '<svg viewBox="0 0 24 24" data-bbl-node="1"><path d="M0 0L1 1"/></svg>',
+        '<label data-bbl-node="1">Name <input type="text"/></label>',
+    ])
+        assert.throws(
+            () => compile(JSON.stringify(markup)),
+            /attribute 'data-bbl-node' is not supported/,
+            markup,
+        );
+});

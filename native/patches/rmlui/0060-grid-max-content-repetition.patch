@@ -1,0 +1,78 @@
+A grid formatted under the shrink-to-fit max-content constraint, whose auto inline size and every ancestor's up
+to the constraint root stretch from its stand-in width, counts automatic repetitions from an indefinite size (CSS
+Grid 7.2.3.2): the tracks repeat once, or as the grid's min and max widths ask. Nested grid items no longer add the
+stand-in width level by level into hundreds of tracks.
+
+diff --git a/Source/Core/Layout/ContainerBox.h b/Source/Core/Layout/ContainerBox.h
+index f425137..6cb0a42 100644
+--- a/Source/Core/Layout/ContainerBox.h
++++ b/Source/Core/Layout/ContainerBox.h
+@@ -87,14 +87,19 @@ private:
+ */
+ class RootBox final : public ContainerBox {
+ public:
+-	RootBox(Vector2f containing_block) : ContainerBox(Type::Root, nullptr, nullptr), box(containing_block) {}
++	RootBox(Vector2f containing_block, bool max_content_constraint = false) :
++		ContainerBox(Type::Root, nullptr, nullptr), box(containing_block), max_content_constraint(max_content_constraint)
++	{}
+ 	RootBox(const Box& box) : ContainerBox(Type::Root, nullptr, nullptr), box(box) {}
+ 
+ 	const Box* GetIfBox() const override { return &box; }
++	// Its element is formatted at a large stand-in width for a max-content constraint (LayoutDetails::GetShrinkToFitWidth).
++	bool IsMaxContentConstraint() const { return max_content_constraint; }
+ 	String DebugDumpTree(int depth) const override;
+ 
+ private:
+ 	Box box;
++	bool max_content_constraint = false;
+ };
+ 
+ /**
+diff --git a/Source/Core/Layout/FlexFormattingContext.cpp b/Source/Core/Layout/FlexFormattingContext.cpp
+index ea9c8a4..b21ae08 100644
+--- a/Source/Core/Layout/FlexFormattingContext.cpp
++++ b/Source/Core/Layout/FlexFormattingContext.cpp
+@@ -210,6 +210,20 @@ static void GetItemSizing(FlexItem::Size& destination, const ComputedAxisSize& c
+ 	}
+ }
+ 
++// A grid whose auto inline size, and every ancestor's up to a max-content constraint root, stretches from the
++// constraint's stand-in width: that size is indefinite (CSS Grid 7.2.3.2), so automatic repetitions count
++// from the grid's min and max widths alone.
++static bool StretchesFromMaxContentConstraint(ContainerBox* box)
++{
++	for (; box; box = box->GetParent()) {
++		if (box->GetType() == LayoutBox::Type::Root)
++			return static_cast<RootBox*>(box)->IsMaxContentConstraint();
++		if (box->GetElement() && box->GetElement()->GetComputedValues().width().type == Style::Width::Type::Length)
++			return false;
++	}
++	return false;
++}
++
+ static float GetInnerUsedMainSize(const FlexItem& item)
+ {
+ 	// Due to floating-point precision the outer size may be smaller than `sum_edges`, so clamp the result to zero.
+@@ -265,7 +279,8 @@ void FlexFormattingContext::Format(Vector2f& flex_resulting_content_size, Vector
+ 			const float size = available >= 0.f ? Math::Clamp(available, minimum, maximum) : maximum < FLT_MAX ? maximum : minimum > 0.f ? minimum : -1.f;
+ 			return GridTrackParser::Parse(element_flex->GetProperty<String>(name), *element_flex, size, gap, available < 0.f && maximum == FLT_MAX && minimum > 0.f);
+ 		};
+-		grid_columns = parse_tracks("grid-template-columns", main_available_size, main_min_size, main_max_size, main_gap_size);
++		grid_columns = parse_tracks("grid-template-columns",
++			StretchesFromMaxContentConstraint(flex_container_box) ? -1.f : main_available_size, main_min_size, main_max_size, main_gap_size);
+ 		grid_rows = parse_tracks("grid-template-rows", cross_available_size, cross_min_size, cross_max_size, cross_gap_size);
+ 		// CSS Grid 7.1: the explicit grid spans the larger of the sized tracks and the area grid.
+ 		const auto areas = ParseGridTemplateAreas(element_flex->GetProperty<String>("grid-template-areas"));
+diff --git a/Source/Core/Layout/LayoutDetails.cpp b/Source/Core/Layout/LayoutDetails.cpp
+index 601831a..2b4b422 100644
+--- a/Source/Core/Layout/LayoutDetails.cpp
++++ b/Source/Core/Layout/LayoutDetails.cpp
+@@ -426,7 +426,7 @@ float LayoutDetails::GetShrinkToFitWidth(Element* element, Vector2f containing_b
+ 	// width. For block containers, this is essentially its largest line or child box.
+ 	// @performance. Some formatting can be simplified, e.g. absolute elements do not contribute to the shrink-to-fit
+ 	// width. Also, children of elements with a fixed width and height don't need to be formatted further.
+-	RootBox root(Math::Max(containing_block, Vector2f(0.f)));
++	RootBox root(Math::Max(containing_block, Vector2f(0.f)), true);
+ 	UniquePtr<LayoutBox> layout_box = FormattingContext::FormatIndependent(&root, element, &box, FormattingContextType::Block);
+ 
+ 	float shrink_to_fit_width = layout_box->GetShrinkToFitWidth();

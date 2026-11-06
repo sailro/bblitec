@@ -119,7 +119,10 @@ export interface UiRuleConditions extends UiMediaConditions {
 const UI_RULE_CONDITION_KEYS: {
     readonly [Key in keyof UiRuleConditions]-?: Key;
 } = {
+    minWidth: "minWidth",
     maxWidth: "maxWidth",
+    minHeight: "minHeight",
+    maxHeight: "maxHeight",
     reducedMotion: "reducedMotion",
     orientation: "orientation",
     mediaHover: "mediaHover",

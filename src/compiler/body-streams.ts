@@ -2,7 +2,7 @@ import ts from "typescript";
 import type { DataLowerer } from "./data-lowering.js";
 import type { DataType } from "./data-types.js";
 import { ApplicationRealmRequired } from "./worker-modules.js";
-import type { Value } from "./types.js";
+import { recordMethodValue, type Value } from "./types.js";
 
 /**
  * A response's Headers and byte ReadableStreams (`bblite/pal_fetch_response.hpp`):
@@ -239,12 +239,7 @@ function pullStream(lowerer: DataLowerer, node: ts.NewExpression): Value {
         const method = methods[name];
         return method
             ? lowerer.compileKnownValueForSink(
-                  {
-                      kind: "callback",
-                      cpp: "",
-                      callbackDeclaration: method,
-                      callbackRecordOwner: source,
-                  },
+                  recordMethodValue(source, method),
                   SOURCE_ALGORITHMS[name],
                   sourceNode,
               )

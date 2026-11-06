@@ -153,6 +153,43 @@ export function cppIdentifiers(
     return names;
 }
 
+/**
+ * The unqualified identifiers an expression reads from its surroundings:
+ * those outside the bodies of the lambdas it spells (`[&]() -> T { ... }`),
+ * whose own locals are no reads. A brace initializer (`T{...}`) is read.
+ */
+export function cppOuterReads(source: string): ReadonlySet<string> {
+    const names = new Set<string>();
+    let depth = 0;
+    let lambdaHead = false;
+    let returnType = false;
+    for (const token of cppTokens(source)) {
+        if (depth > 0) {
+            if (token.text === "{") depth++;
+            else if (token.text === "}") depth--;
+            continue;
+        }
+        if (token.text === "{" && (lambdaHead || returnType)) {
+            depth = 1;
+            lambdaHead = returnType = false;
+            continue;
+        }
+        if (token.kind === "identifier" && !token.qualified)
+            names.add(token.text);
+        // A return type may spell a function type (`Callback<void()>`).
+        if (returnType)
+            returnType =
+                token.kind === "identifier" ||
+                ["::", "<", ">", ",", "*", "&", "(", ")"].includes(token.text);
+        else if (lambdaHead && token.text === "->") returnType = true;
+        lambdaHead =
+            token.text === ")" ||
+            token.text === "]" ||
+            (lambdaHead && token.text === "mutable");
+    }
+    return names;
+}
+
 /** Rename explicit bindings without touching comments, strings or numeric suffixes. */
 export function renameCppIdentifiers(
     source: string,

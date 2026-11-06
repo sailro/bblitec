@@ -592,9 +592,7 @@ function compileTextures(
     const record = context.compileValue(expression);
     if (record.kind === "data" && record.dataType?.kind === "struct") {
         context.useNativeValue(record);
-        const access = context.dataTypes.isReferenceStruct(record.dataType.name)
-            ? "->"
-            : ".";
+        const access = context.dataTypes.memberAccess(record.dataType.name);
         return context.dataTypes
             .structFields(record.dataType.name, expression)
             .map((field) => {

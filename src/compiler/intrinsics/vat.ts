@@ -3,6 +3,7 @@ import ts from "typescript";
 import { argumentAt } from "../syntax.js";
 import type { NamedMember } from "../symbols.js";
 import { presenceFlagCpp, type Value } from "../types.js";
+import type { DataStructField, DataType } from "../data-types.js";
 import type { IntrinsicCallContext } from "./context.js";
 
 /** What the handle's own methods need. The expression compiler satisfies it. */
@@ -23,13 +24,29 @@ interface VatMethodContext extends Pick<
     | "fail"
 > {}
 
+/**
+ * The per-bone captures a prepared VAT payload carries, by the pin's name,
+ * as the native bake record's fields.
+ */
+export const VAT_BONE_CAPTURE_FIELDS: Readonly<Record<string, string>> = {
+    boneOrigins: "bone_origins",
+    boneMatrices: "bone_matrices",
+};
+
 export interface VatIntrinsicContext
     extends
         IntrinsicCallContext,
         VatMethodContext,
         Pick<
             LoweringServices,
-            "allocateTemporaryCppName" | "expectSameEngine"
+            | "allocateTemporaryCppName"
+            | "expectSameEngine"
+            | "dataLowerer"
+            | "dataTypes"
+            | "reachJsData"
+            | "reachJson"
+            | "compileForDataSink"
+            | "checker"
         > {}
 
 /**
@@ -97,8 +114,17 @@ export function compileVatIntrinsic(
                 kind: "vat-bake",
                 cpp: baked,
                 engineCpp: engine.cpp,
+                dataType: { kind: "handle", handle: "vat-bake" },
             };
         }
+
+        case "createVatBakeResult":
+        case "createVatBakeResults":
+            return compilePreparedVat(
+                context,
+                call,
+                importedName === "createVatBakeResults",
+            );
 
         case "attachVat": {
             // `attachVat(engine, mesh, baked, clip?)`: sets `mesh.vat`,
@@ -113,11 +139,14 @@ export function compileVatIntrinsic(
             context.expectSameEngine(engine, mesh, call);
             const baked = context.compileValue(argumentAt(call, 2));
             context.expectKind(baked, "vat-bake", argumentAt(call, 2));
+            // `clip ?? Object.keys(baked.clips)[0]`: an absent clip, or an
+            // optional one at run time, takes the first natively.
             const clip = call.arguments[3]
-                ? context.cppString(
-                      context.compileStringLiteral(call.arguments[3]),
-                  )
-                : "std::string{}";
+                ? context.compileForDataSink(call.arguments[3], {
+                      kind: "optional",
+                      inner: { kind: "string" },
+                  })
+                : "std::nullopt";
             context.reachFeature("mesh:vat", call);
             const handle = context.allocateTemporaryCppName("vat_handle");
             context.emit({
@@ -184,6 +213,196 @@ export function compileVatIntrinsic(
         default:
             return undefined;
     }
+}
+
+/**
+ * `createVatBakeResult(s)(engine, prepared)`: offline-prepared payloads
+ * become bakes without evaluating a clip. Each program record is copied
+ * into the native payload field by field: counts, the matrix data, the
+ * clip rows in property order, and the optional bone captures, which keep
+ * their typed arrays (the pin's result holds the very arrays passed in).
+ * An absent record or clip leaves NaN counts, which the pin's own checks
+ * refuse as they refuse `undefined`.
+ */
+function compilePreparedVat(
+    context: VatIntrinsicContext,
+    call: ts.CallExpression,
+    many: boolean,
+): Value {
+    context.expectArgumentCount(call, 2, 2);
+    const engine = context.compileValue(argumentAt(call, 0));
+    context.expectKind(engine, "engine", argumentAt(call, 0));
+    const argument = argumentAt(call, 1);
+    // The payload stores as the parameter's declared type, as an argument
+    // does: an inline literal's own type names its clips as fields.
+    const declared = context.checker.getContextualType(argument);
+    const sink = declared
+        ? context.dataTypes.fromTsType(declared, argument)
+        : context.dataLowerer.dataTypeAt(argument);
+    const record = many
+        ? sink?.kind === "vector" || sink?.kind === "span"
+            ? sink.element
+            : undefined
+        : sink;
+    if (!sink || record?.kind !== "struct")
+        return context.fail(
+            argument,
+            "createVatBakeResults takes PreparedVatBakeResult records.",
+        );
+    const names = {
+        entry: context.allocateTemporaryCppName("vat_prepared_entry"),
+        payload: context.allocateTemporaryCppName("vat_payload"),
+        clip: context.allocateTemporaryCppName("vat_clip"),
+        name: context.allocateTemporaryCppName("vat_clip_name"),
+    };
+    const fields = preparedVatFields(context, record, argument, names);
+    context.reachJsData();
+    // Object.entries' property order is the json header's.
+    context.reachJson();
+    context.reachFeature("mesh:vat", call);
+    context.reachFeature("mesh:vat-prepared", call);
+    const prepared = context.allocateTemporaryCppName("vat_prepared");
+    context.emit({
+        kind: "declaration",
+        type: "const auto&",
+        name: prepared,
+        initializer: context.dataLowerer.compileForSink(argument, sink),
+    });
+    const payloads = context.allocateTemporaryCppName("vat_payloads");
+    context.emit(`std::vector<bbl::PreparedVatPayload> ${payloads};`);
+    context.emit({
+        kind: "open",
+        code: many
+            ? `for (const auto& ${names.entry} : ${prepared}) {`
+            : `{ const auto& ${names.entry} = ${prepared};`,
+    });
+    context.increaseIndent();
+    context.emit(
+        `bbl::PreparedVatPayload& ${names.payload} = ${payloads}.emplace_back();`,
+    );
+    for (const line of fields) context.emit(line);
+    context.decreaseIndent();
+    context.emit({ kind: "close", code: "}" });
+    const created = `bbl::create_vat_bakes(${engine.cpp}, ${payloads})`;
+    if (!many) {
+        const baked = context.allocateTemporaryCppName("vat_bake");
+        context.emit({
+            kind: "declaration",
+            type: "const bbl::VatBake",
+            name: baked,
+            initializer: `${created}[0]`,
+        });
+        return {
+            kind: "vat-bake",
+            cpp: baked,
+            engineCpp: engine.cpp,
+            dataType: { kind: "handle", handle: "vat-bake" },
+        };
+    }
+    const resultType = context.dataLowerer.dataTypeAt(call);
+    if (
+        resultType?.kind !== "vector" ||
+        resultType.element.kind !== "handle" ||
+        resultType.element.handle !== "vat-bake"
+    )
+        return context.fail(
+            call,
+            "createVatBakeResults returns VatBakeResult handles.",
+        );
+    return { kind: "data", cpp: created, dataType: resultType };
+}
+
+/**
+ * The statements filling the payload from one program record of the pin's
+ * `PreparedVatBakeResult` shape; a field stored any other way than the
+ * native payload's refuses.
+ */
+function preparedVatFields(
+    context: VatIntrinsicContext,
+    record: DataType<"struct">,
+    node: ts.Node,
+    names: { entry: string; payload: string; clip: string; name: string },
+): string[] {
+    const { entry, payload, clip: clipName, name } = names;
+    const read = structReader(context, record, node);
+    const required = (name: string, kind: DataType["kind"]): string => {
+        const field = read.field(name);
+        if (field?.type.kind !== kind)
+            context.fail(
+                node,
+                `A prepared VAT record stores '${name}' as ${kind}.`,
+            );
+        return read.cpp(entry, field);
+    };
+    const clipsField = read.field("clips");
+    const clip =
+        clipsField?.type.kind === "map" &&
+        clipsField.type.key.kind === "string" &&
+        clipsField.type.value.kind === "struct"
+            ? clipsField.type.value
+            : undefined;
+    if (!clipsField || !clip)
+        context.fail(
+            node,
+            "A prepared VAT record stores its clips as named clip records.",
+        );
+    const readClip = structReader(context, clip, node);
+    const clipNumber = (name: string): string => {
+        const field = readClip.field(name);
+        if (field?.type.kind !== "number")
+            context.fail(node, `A VAT clip stores '${name}' as a number.`);
+        return readClip.cpp(clipName, field);
+    };
+    const row = `bbl::VatClipRow{${name}, ${clipNumber("fromRow")}, ${clipNumber("frameCount")}, ${clipNumber("fps")}}`;
+    const lines = [
+        `${payload}.bone_count = ${required("boneCount", "number")};`,
+        `${payload}.frame_count = ${required("frameCount", "number")};`,
+        `${payload}.data = ${required("data", "f32array")};`,
+        `bbl::js::for_each_property_entry(${read.cpp(entry, clipsField)}, [&](const std::string& ${name}, const auto& ${clipName}) { ${payload}.clips.push_back(${
+            readClip.reference
+                ? `${clipName} ? ${row} : bbl::VatClipRow{${name}, std::numeric_limits<double>::quiet_NaN()}`
+                : row
+        }); });`,
+    ];
+    for (const [source, target] of Object.entries(VAT_BONE_CAPTURE_FIELDS)) {
+        const field = read.field(source);
+        if (!field) continue;
+        const capture =
+            field.type.kind === "optional" ? field.type.inner : undefined;
+        if (
+            capture?.kind !== "map" ||
+            capture.weak ||
+            capture.key.kind !== "number" ||
+            capture.value.kind !== "f32array"
+        )
+            context.fail(
+                node,
+                `A prepared VAT record stores '${source}' as optional per-bone Float32Arrays.`,
+            );
+        lines.push(`${payload}.${target} = ${read.cpp(entry, field)};`);
+    }
+    return read.reference
+        ? [`if (${entry}) {`, ...lines.map((line) => `    ${line}`), "}"]
+        : lines;
+}
+
+/** Field reads of one stored record type: through its reference or in place. */
+function structReader(
+    context: VatIntrinsicContext,
+    type: DataType<"struct">,
+    node: ts.Node,
+): {
+    reference: boolean;
+    field(name: string): DataStructField | undefined;
+    cpp(owner: string, field: DataStructField): string;
+} {
+    return {
+        reference: context.dataTypes.isReferenceStruct(type.name),
+        field: (name) =>
+            context.dataTypes.findStructField(type.name, name, node),
+        cpp: (owner, field) =>
+            `${owner}${context.dataTypes.memberAccess(type.name)}${field.name}`,
+    };
 }
 
 /**

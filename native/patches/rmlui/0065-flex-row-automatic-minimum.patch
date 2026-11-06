@@ -1,0 +1,155 @@
+A row flex item whose min-width is auto and whose overflow is visible has an automatic minimum width (CSS Flexbox
+4.5): its min-content width, capped by a definite width (a replaced item's is its box width) and by its maximum.
+Items shrank, and flex: 1 items grew from zero, below their content. An auto basis never falls below that
+minimum, so it is measured only for a line that shrinks; another basis measures it for the hypothetical size.
+A non-replaced item with a length width keeps no automatic minimum: its shrink-to-fit width is that length, so the
+zero-width measure cannot see its content. Grid contributions, flex rows and the aspect-ratio automatic minimum
+share that measure (LayoutDetails::GetMinContentWidth), taken once per layout pass for its element and inputs.
+
+diff --git a/Source/Core/Layout/FlexFormattingContext.cpp b/Source/Core/Layout/FlexFormattingContext.cpp
+index c2f16d1..99c835f 100644
+--- a/Source/Core/Layout/FlexFormattingContext.cpp
++++ b/Source/Core/Layout/FlexFormattingContext.cpp
+@@ -145,6 +145,7 @@ struct FlexItem {
+ 	float inner_flex_base_size;   // Inner size
+ 	float flex_base_size;         // Outer size
+ 	float hypothetical_main_size; // Outer size
++	bool automatic_minimum_pending = false; // A row item's automatic minimum width, measured once shrinking needs it.
+ 
+ 	// Used for resolving flexible length
+ 	enum class Violation : uint8_t { None = 0, Min, Max };
+@@ -246,6 +247,15 @@ void FlexFormattingContext::Format(Vector2f& flex_resulting_content_size, Vector
+ 	// Grid items, and flex items measured under an indefinite inline size (GetMaxContentSize), resolve cyclic
+ 	// inline percentages as auto, zero or none (CSS Sizing 3 5.2.1).
+ 	const bool intrinsic_inline = is_grid || flex_available_content_size.x < 0.f;
++	// A row item's automatic minimum width (CSS Flexbox 4.5): its min-content width, capped by a definite width
++	// (a replaced item's is its box width) and by its maximum.
++	auto AutomaticMinimumWidth = [&](const FlexItem& item) {
++		const float width = item.box.GetSize().x;
++		const float content = item.element->IsReplaced() && width >= 0.f
++			? width
++			: LayoutDetails::GetMinContentWidth(item.element, item.box, item.box.GetSize().y, flex_content_containing_block);
++		return Math::Min(width >= 0.f ? Math::Min(content, width) : content, item.main.max_size);
++	};
+ 	const Style::FlexDirection direction = is_grid ? Style::FlexDirection::Row : computed_flex.flex_direction();
+ 	const Style::LengthPercentage row_gap = computed_flex.row_gap();
+ 	const Style::LengthPercentage column_gap = computed_flex.column_gap();
+@@ -477,6 +487,20 @@ void FlexFormattingContext::Format(Vector2f& flex_resulting_content_size, Vector
+ 				item.main.min_size = Math::Min(item.inner_flex_base_size, item.main.max_size);
+ 		}
+ 
++		// A row item whose min-width is auto and whose overflow is visible has an automatic minimum width (CSS Flexbox
++		// 4.5). An auto basis never falls below it, so only shrinking needs it, measured then; another basis needs it
++		// now, for the hypothetical size. A non-replaced item with a length width is left without one: its shrink-to-fit
++		// width is that length, so the min-content measure cannot see its content.
++		if (!is_grid && main_axis_horizontal && !element->GetLocalProperty(PropertyId::MinWidth) &&
++			!LayoutDetails::IsScrollContainer(computed.overflow_x(), computed.overflow_y()) &&
++			(computed.width().type != Style::Width::Type::Length || element->IsReplaced()))
++		{
++			if (computed.flex_basis().type == Style::FlexBasis::Auto)
++				item.automatic_minimum_pending = true;
++			else
++				item.main.min_size = AutomaticMinimumWidth(item);
++		}
++
+ 		// Calculate the hypothetical main size (clamped flex base size).
+ 		item.hypothetical_main_size = Math::Clamp(item.inner_flex_base_size, item.main.min_size, item.main.max_size) + item.main.sum_edges;
+ 		item.flex_base_size = item.inner_flex_base_size + item.main.sum_edges;
+@@ -506,13 +530,8 @@ void FlexFormattingContext::Format(Vector2f& flex_resulting_content_size, Vector
+ 				if (!flexible_span && (!element->GetLocalProperty(PropertyId::MinWidth) || computed.min_width().type == Style::LengthPercentage::Percentage) && !LayoutDetails::IsScrollContainer(computed.overflow_x(), computed.overflow_y())) {
+ 					if (element->IsReplaced()) minimum = item.hypothetical_main_size;
+ 					else {
+-					// Formatting with zero inline space exposes the largest unbreakable
+-					// contribution, using the same text/block formatter as final layout.
+-					Box minimum_box = item.box;
+-					minimum_box.SetContent({0.f, minimum_box.GetSize().y});
+-					RootBox root(Math::Max(flex_content_containing_block, Vector2f(0.f)));
+-					auto minimum_layout = FormattingContext::FormatIndependent(&root, element, &minimum_box, FormattingContextType::Block);
+-					minimum = Math::Clamp(minimum_layout->GetShrinkToFitWidth(), item.main.min_size, item.main.max_size) + item.main.sum_edges;
++					const float content = LayoutDetails::GetMinContentWidth(element, item.box, item.box.GetSize().y, flex_content_containing_block);
++					minimum = Math::Clamp(content, item.main.min_size, item.main.max_size) + item.main.sum_edges;
+ 					}
+ 				}
+ 			}
+@@ -622,6 +641,13 @@ void FlexFormattingContext::Format(Vector2f& flex_resulting_content_size, Vector
+ 		  })->accumulated_hypothetical_main_size;
+ 
+ 	float used_main_size = Math::Clamp(used_main_size_unconstrained, main_min_size, main_max_size);
++	// A line that shrinks bounds its shrinkable items by their deferred automatic minimum widths.
++	if (!is_grid)
++		for (FlexLine& line : container.lines)
++			if (line.accumulated_hypothetical_main_size > used_main_size)
++				for (FlexItem& item : line.items)
++					if (item.automatic_minimum_pending && item.flex_shrink_factor > 0.f)
++						item.main.min_size = AutomaticMinimumWidth(item);
+ 	Vector<float> grid_column_offsets;
+ 	if (is_grid) {
+ 		const bool stretch_auto = !element_flex->GetLocalProperty(PropertyId::JustifyContent) || computed_flex.justify_content() == Style::JustifyContent::Normal || computed_flex.justify_content() == Style::JustifyContent::Stretch;
+diff --git a/Source/Core/Layout/LayoutDetails.cpp b/Source/Core/Layout/LayoutDetails.cpp
+index 801c89b..ff0b92d 100644
+--- a/Source/Core/Layout/LayoutDetails.cpp
++++ b/Source/Core/Layout/LayoutDetails.cpp
+@@ -23,7 +23,12 @@ struct LayoutMeasures {
+ 	// What a measure depends on besides its element.
+ 	struct Inputs {
+ 		Vector2f containing_block;
+-		bool operator==(const Inputs& other) const { return containing_block == other.containing_block; }
++		bool min_content = false; // Otherwise a max-content width.
++		Box box;                  // The box a min-content width is formatted in.
++		bool operator==(const Inputs& other) const
++		{
++			return containing_block == other.containing_block && min_content == other.min_content && box == other.box;
++		}
+ 	};
+ 	UnorderedMap<Element*, Vector<Pair<Inputs, float>>> widths;
+ };
+@@ -175,15 +180,9 @@ static void ApplyAspectRatio(Box& box, Vector2f& content_area, Vector2f min_size
+ 	else if (content_area.y >= 0.f && content_area.x < 0.f)
+ 	{
+ 		float width = TransferAspectRatio(ratio, box, computed, false, content_area.y);
++		// The automatic minimum is the min-content width.
+ 		if (!IsDefiniteAspectRatioSize(element, false))
+-		{
+-			// The automatic minimum is the min-content width: the content formatted at zero inline size.
+-			Box measure = box;
+-			measure.SetContent({0.f, content_area.y});
+-			RootBox root(Math::Max(containing_block, Vector2f(0.f)));
+-			const auto layout = FormattingContext::FormatIndependent(&root, element, &measure, FormattingContextType::Block);
+-			width = Math::Max(width, layout->GetShrinkToFitWidth());
+-		}
++			width = Math::Max(width, LayoutDetails::GetMinContentWidth(element, box, content_area.y, containing_block));
+ 		content_area.x = Math::Clamp(width, min_size.x, max_size.x);
+ 	}
+ }
+@@ -495,6 +494,17 @@ float LayoutDetails::GetShrinkToFitWidth(Element* element, Vector2f containing_b
+ 	return MeasureOnce(element, {containing_block}, [&] { return MeasureShrinkToFitWidth(element, containing_block, true); });
+ }
+ 
++float LayoutDetails::GetMinContentWidth(Element* element, const Box& box, float height, Vector2f containing_block)
++{
++	Box measure = box;
++	measure.SetContent({0.f, height});
++	containing_block = Math::Max(containing_block, Vector2f(0.f));
++	return MeasureOnce(element, {containing_block, true, measure}, [&] {
++		RootBox root(containing_block);
++		return FormattingContext::FormatIndependent(&root, element, &measure, FormattingContextType::Block)->GetShrinkToFitWidth();
++	});
++}
++
+ ComputedAxisSize LayoutDetails::BuildComputedHorizontalSize(const ComputedValues& computed)
+ {
+ 	return ComputedAxisSize{computed.width(), computed.min_width(), computed.max_width(), computed.padding_left(), computed.padding_right(),
+diff --git a/Source/Core/Layout/LayoutDetails.h b/Source/Core/Layout/LayoutDetails.h
+index 40b43fd..e704688 100644
+--- a/Source/Core/Layout/LayoutDetails.h
++++ b/Source/Core/Layout/LayoutDetails.h
+@@ -104,6 +104,9 @@ public:
+ 
+ 	/// Formats the element and returns the width of its contents. An intrinsic width is measured once per layout pass.
+ 	static float GetShrinkToFitWidth(Element* element, Vector2f containing_block, bool intrinsic_width = false);
++	/// Formats the element with zero inline space at the given content height and returns the width of its contents: its
++	/// min-content width, the largest unbreakable contribution as final layout formats it. Measured once per layout pass.
++	static float GetMinContentWidth(Element* element, const Box& box, float height, Vector2f containing_block);
+ 
+ 	/// Build computed axis size along the horizontal direction (width and friends).
+ 	static ComputedAxisSize BuildComputedHorizontalSize(const ComputedValues& computed);

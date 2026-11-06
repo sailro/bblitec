@@ -29,9 +29,19 @@ test("gradient background layers retain independent dimensions, positions and ne
         ),
         "linear-gradient(red,red) content-box / 4px 4px / 0 0",
     );
+    // A layer repeats unless no-repeat says otherwise: its decorator tiles the paint box.
     for (const value of [
         "linear-gradient(red,blue) center/2px 22px repeat",
         "linear-gradient(red,blue) center/2px 22px",
+    ])
+        assert.equal(
+            uiGradientBackground(value),
+            "linear-gradient(red,blue) padding-box repeat / 2px 22px / 50% 50%",
+        );
+    for (const value of [
+        "linear-gradient(red,blue) center/2px 22px repeat-x",
+        "linear-gradient(red,blue) center/2px 22px space",
+        "linear-gradient(red,blue) center/2px 22px repeat no-repeat",
         "linear-gradient(red,blue) center/-2px 22px no-repeat",
         "linear-gradient(red,blue) left 2px bottom 3px/2px 22px no-repeat",
         "linear-gradient(red,blue) center/contain no-repeat",
@@ -46,6 +56,17 @@ test("gradient background layers retain independent dimensions, positions and ne
             /gradient layers require/,
         );
     }
+});
+
+test("background none is the image layer alone; the colour takes its initial value", () => {
+    const result = compileSource(
+        `import {createEngine} from "@babylonjs/lite"; await createEngine({}); const sheet=document.createElement("style"); sheet.textContent=".plain{background:red}.plain.reset{background: NONE }"; document.head.appendChild(sheet);`,
+    );
+    assert.match(
+        result.cpp,
+        /--bbl-background-image:none;[^"]*--bbl-background-color:transparent"/,
+    );
+    assert.doesNotMatch(result.cpp, /--bbl-background-color:\s*none/i);
 });
 
 test("a background shorthand resets an earlier background-clip of its rule", () => {

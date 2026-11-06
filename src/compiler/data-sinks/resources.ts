@@ -41,6 +41,43 @@ export function storesAsTexture2D(value: Value): boolean {
     );
 }
 
+/**
+ * A `Texture2D` record made of GPU parts -- exactly the interface's
+ * required `{ texture, view, sampler, width, height }` -- as the stored
+ * texture the pin's bindings sample: its view through its sampler. The
+ * native constructor refuses a view of another texture or a size other
+ * than the texture's, the fields the bindings do not read.
+ */
+export function texture2DFromParts(
+    context: Pick<LoweringServices, "requireEngine">,
+    value: Value,
+    node: ts.Node,
+): Value | undefined {
+    const parts = value.kind === "record" ? value.recordProperties : undefined;
+    if (
+        !parts ||
+        Object.keys(parts).sort().join() !== "height,sampler,texture,view,width"
+    )
+        return undefined;
+    const { texture, view, sampler, width, height } = parts;
+    if (
+        texture?.kind !== "gpu-texture" ||
+        view?.kind !== "gpu-texture-view" ||
+        sampler?.kind !== "gpu-sampler" ||
+        width?.kind !== "number" ||
+        height?.kind !== "number"
+    )
+        return undefined;
+    const engine = context.requireEngine(view, node);
+    return {
+        kind: "texture",
+        cpp: `bbl::StoredTexture{bbl::gpu_parts_texture(${engine}, ${texture.cpp}, ${view.cpp}, ${sampler.cpp}, ${width.cpp}, ${height.cpp})}`,
+        engineCpp: engine,
+        textureStorage: "stored",
+        dataType: { kind: "handle", handle: "texture" },
+    };
+}
+
 /** A singleton cloned-root container shares the clone's mesh-only asset record. */
 export function projectAssetContainer(
     context: Pick<LoweringServices, "requireEngine" | "dataLowerer">,
@@ -172,7 +209,10 @@ function expressionHandle(
         if (atlas) return atlas;
     }
     if (value.kind !== dataType.handle) {
-        if (dataType.handle === "texture" && value.kind === "render-texture") {
+        if (
+            dataType.handle === "texture" &&
+            (value.kind === "render-texture" || value.kind === "record")
+        ) {
             return lowerer.compileKnownValueForSink(value, dataType, unwrapped);
         }
         lowerer.context.fail(
@@ -377,6 +417,11 @@ function valueResource(
     ) {
         return value.cpp;
     }
+    const parts =
+        dataType.kind === "handle" && dataType.handle === "texture"
+            ? texture2DFromParts(lowerer.context, value, node)
+            : undefined;
+    if (parts) return parts.cpp;
     if (
         dataType.kind === "handle" &&
         dataType.handle === "texture" &&

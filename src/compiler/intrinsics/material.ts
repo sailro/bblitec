@@ -1,3 +1,4 @@
+import { texture2DFromParts } from "../data-sinks/resources.js";
 import { isPbrMaterialValue } from "../values/model.js";
 import {
     compileCreateExternalTexture,
@@ -698,6 +699,7 @@ function compileCreatePbrMaterial(
         reflectance,
         unlit,
         doubleSided,
+        doubleSidedProperty,
         enableSpecularAA,
         skyboxMode,
         transmission,
@@ -797,6 +799,9 @@ function compileCreatePbrMaterial(
         `.reflectance = ${reflectance}, ` +
         `.unlit = ${unlit}, ` +
         `.double_sided = ${doubleSided}, ` +
+        (doubleSidedProperty === undefined
+            ? ""
+            : `.source_double_sided = ${doubleSidedProperty}, `) +
         `.specular_aa = ${enableSpecularAA}, ` +
         `.skybox_mode = ${skyboxMode}, ` +
         `.transmission_factor = ${transmission}, ` +
@@ -1392,8 +1397,9 @@ function compileSetShaderTexture(
             argumentAt(call, 1),
             "Shader texture names require a string.",
         );
+    const given = context.compileValue(argumentAt(call, 2));
     let texture = context.bindings.pinValueToTemporary(
-        context.compileValue(argumentAt(call, 2)),
+        texture2DFromParts(context, given, argumentAt(call, 2)) ?? given,
         "shader_texture",
         call,
     );

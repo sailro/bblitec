@@ -317,6 +317,9 @@ Repository fixtures against pinned Babylon Lite.
 | no-camera-floating-origin | <img src="images/scenes/regression-no-camera-floating-origin.png" alt="No camera floating origin rendering" width="160"> | pixel‑perfect | pixel‑perfect | No Camera Floating Origin |
 | texture-region-writes | <img src="images/scenes/regression-texture-region-writes.png" alt="Texture region writes rendering" width="160"> | pixel‑perfect | pixel‑perfect | Texture Region Writes |
 | vat-time | <img src="images/scenes/regression-vat-time.png" alt="VAT time rendering" width="160"> | pixel‑perfect | pixel‑perfect | VAT Time |
+| render-target-sampler | <img src="images/scenes/regression-render-target-sampler.png" alt="Render target sampler rendering" width="160"> | pixel‑perfect | pixel‑perfect | Render Target Sampler |
+| vat-bone-texture | <img src="images/scenes/regression-vat-bone-texture.png" alt="VAT bone texture rendering" width="160"> | pixel‑perfect | pixel‑perfect | VAT Bone Texture |
+| case-split-options | <img src="images/scenes/regression-case-split-options.png" alt="Case split options rendering" width="160"> | pixel‑perfect | pixel‑perfect | Case Split Options |
 | csm-static-cache | <img src="images/scenes/regression-csm-static-cache.png" alt="CSM static cache rendering" width="160"> | 0.000/0.000 | 0.000/0.000 | CSM Static Cache |
 | render-task-transmission | <img src="images/scenes/regression-render-task-transmission.png" alt="Render task transmission rendering" width="160"> | pixel‑perfect | pixel‑perfect | Render Task Transmission |
 | glTF-track-clamp | <img src="images/scenes/regression-track-clamp.png" alt="glTF track clamp rendering" width="160"> | pixel‑perfect | pixel‑perfect | glTF Track Clamp |
@@ -328,6 +331,8 @@ Repository fixtures against pinned Babylon Lite.
 | glTF-uv-sets | <img src="images/scenes/regression-gltf-uv-sets.png" alt="glTF UV sets rendering" width="160"> | pixel‑perfect | pixel‑perfect | glTF UV Sets |
 | glTF-topology | <img src="images/scenes/regression-gltf-topology.png" alt="glTF primitive topology rendering" width="160"> | pixel‑perfect | pixel‑perfect | glTF Primitive Topology |
 | glTF-step-animation | <img src="images/scenes/regression-gltf-step-animation.png" alt="glTF STEP animation rendering" width="160"> | pixel‑perfect | pixel‑perfect | glTF STEP Animation |
+| glTF-node-transform-animation | <img src="images/scenes/regression-gltf-node-transform-animation.png" alt="glTF node transform animation rendering" width="160"> | pixel‑perfect | pixel‑perfect | glTF Node Transform Animation |
+| device-recovery-scenes | <img src="images/scenes/regression-device-recovery-scenes.png" alt="Device recovery scenes rendering" width="160"> | pixel‑perfect | pixel‑perfect | Device Recovery Scenes |
 | node-local-attributes | <img src="images/scenes/regression-node-local-attributes.png" alt="Node local attributes rendering" width="160"> | pixel‑perfect | pixel‑perfect | Node Local Attributes |
 | morph-ground | <img src="images/scenes/regression-morph-ground.png" alt="Morph storage ground rendering" width="160"> | pixel‑perfect | pixel‑perfect | Morph Storage Ground |
 | timer-callback-cells | <img src="images/scenes/regression-timer-callback-cells.png" alt="Timer callback cells rendering" width="160"> | pixel‑perfect | pixel‑perfect | Timer Callback Cells |

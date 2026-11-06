@@ -90,6 +90,38 @@ int main() try {
         ui_append_to_root(engine, override_sheet);
         ui_add_id_style(engine, override_sheet, "responsive-grid",
                         "grid-template-columns:2fr 1fr;");
+        // An automatic repetition in a grid item that intrinsic sizing measures, three grid items
+        // below a grid with no width: an indefinite size repeats the tracks once (CSS Grid 7.2.3.2).
+        const auto outer = make("position:absolute;left:10px;top:300px;display:grid;gap:9px;");
+        const auto middle = make("display:grid;");
+        const auto inner = make("display:grid;");
+        const auto actions =
+            make("display:grid;grid-template-columns:repeat(auto-fit,minmax(132px,1fr));gap:7px;");
+        std::vector<UiElementHandle> buttons;
+        for (int i = 0; i < 3; ++i) {
+            buttons.push_back(make("height:20px;"));
+            ui_append_child(engine, actions, buttons.back());
+        }
+        ui_append_child(engine, inner, actions);
+        ui_append_child(engine, middle, inner);
+        ui_append_child(engine, outer, middle);
+        ui_append_to_root(engine, outer);
+        // Percentage heights resolve against the grid area once the rows are sized; row sizing
+        // measures them as auto.
+        const auto rows_grid =
+            make("position:absolute;left:300px;top:300px;width:40px;height:42px;display:grid;"
+                 "grid-template-rows:1fr 1fr;gap:2px;");
+        const auto full_row = make("height:100%;min-height:0;");
+        const auto half_row = make("height:50%;");
+        ui_append_child(engine, rows_grid, full_row);
+        ui_append_child(engine, rows_grid, half_row);
+        ui_append_to_root(engine, rows_grid);
+        const auto content_rows =
+            make("position:absolute;left:360px;top:300px;width:40px;display:grid;");
+        const auto content_row = make("height:100%;");
+        ui_append_child(engine, content_row, make("height:12px;"));
+        ui_append_child(engine, content_rows, content_row);
+        ui_append_to_root(engine, content_rows);
         pal::UiRmlRuntime runtime(engine, window, 640, 480);
         const auto update = [&](int width = 640) {
             pal::update_ui_rml_runtime(runtime, width, 480);
@@ -102,6 +134,16 @@ int main() try {
                    raw(parent)->GetAbsoluteOffset(Rml::BoxArea::Content);
         };
         update();
+        expectNear(raw(actions)->GetBox().GetSize().x, 132.f,
+                   "an indefinite automatic repetition repeats once");
+        expectNear(offset(buttons[1], actions).y, 27.f, "its items stack in the one track");
+        expectNear(raw(full_row)->GetBox().GetSize().y, 20.f,
+                   "a full percentage height fills its row");
+        expectNear(raw(half_row)->GetBox().GetSize().y, 10.f,
+                   "a percentage height resolves against its row");
+        expectNear(offset(half_row, rows_grid).y, 22.f, "the second row starts after the gap");
+        expectNear(raw(content_row)->GetBox().GetSize().y, 12.f,
+                   "an indefinite row holds the content height");
         expectNear(raw(cells[0])->GetBox().GetSize().x, 95.f, "equal flexible columns");
         expectNear(offset(cells[1], grid).x, 105.f, "second column includes gap");
         expectNear(offset(cells[2], grid).y, 30.f, "row-major placement");

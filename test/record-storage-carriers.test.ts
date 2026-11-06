@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { runInNewContext } from "node:vm";
 import ts from "typescript";
 import { compileSource } from "../src/compiler.js";
 import { createCompilerProgram } from "../src/compiler/program.js";
@@ -8,10 +7,7 @@ import { AbsentRecordProperties } from "../src/compiler/absent-record-properties
 import { ClassHierarchy } from "../src/compiler/class-members.js";
 import { DataTypeRegistry } from "../src/compiler/data-types.js";
 import { demandedStorageType } from "../src/compiler/dynamic-binding-storage.js";
-import {
-    optionalNativeFixtureTools,
-    runGeneratedProgram,
-} from "./native-fixture.js";
+import { runSelfCheckingProgram } from "./self-checking-program.js";
 
 function check(name: string, source: string): void {
     test(name, (t) => {
@@ -30,24 +26,11 @@ function check(name: string, source: string): void {
                 ),
             [],
         );
-        runInNewContext(
-            ts.transpileModule(source, {
-                compilerOptions: { target: ts.ScriptTarget.ES2022 },
-            }).outputText,
-        );
-        const result = compileSource(source);
-        const tools = optionalNativeFixtureTools(false);
-        if (!tools) {
-            t.skip("Native fixture compiler unavailable.");
-            return;
-        }
-        runGeneratedProgram(
-            tools,
+        return runSelfCheckingProgram(
+            t,
             `record-storage-carriers/${name}`,
-            result.cpp,
-            {
-                timeoutMs: 10_000,
-            },
+            source,
+            { timeoutMs: 10_000 },
         );
     });
 }

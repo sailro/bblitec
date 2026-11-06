@@ -14,6 +14,7 @@ import type {
     CompiledShaderSampler,
     CompiledShaderStorageBuffer,
 } from "./compiler/types.js";
+import { GPU_VERTEX_ATTRIBUTES } from "./gpu-vertex-attributes.js";
 
 export type ShaderStage = "vertex" | "fragment";
 /** A pipeline's value for a numeric WGSL override ID, distinct from its declaration. */
@@ -2773,13 +2774,17 @@ export function lowerWgslShaderProgram(
             return replacement;
         });
     };
-    const vertex = lowerModule(source.vertexSource, "vertex");
+    const vertex = readAttributesAsDeclared(
+        lowerModule(source.vertexSource, "vertex"),
+        source.attributes,
+    );
     const fragment = lowerModule(source.fragmentSource, "fragment");
-    const attributes = source.attributes.map((name) => {
+    const attributes = source.attributes.flatMap((name) => {
+        if (Object.hasOwn(absentAttributes, name)) return [];
         const attribute = attributeTypes[name];
         if (!attribute)
             throw new Error(`Unsupported vertex attribute '${name}'.`);
-        return { name, ...attribute };
+        return [{ name, ...attribute }];
     });
     if (source.useThinInstances === true) {
         attributes.push(...instanceAttributes);
@@ -2838,14 +2843,83 @@ export function lowerWgslShaderProgram(
 // `VertexInput`, which both render backends bind from GpuVertex; the
 // browser-composed twin assigns locations by declaration order against its
 // own buffers, so only the native map has to match the native vertex table.
-const attributeTypes: Record<string, { location: number; type: ShaderType }> = {
-    position: { location: 0, type: "vec3<f32>" },
-    normal: { location: 1, type: "vec3<f32>" },
-    tangent: { location: 2, type: "vec4<f32>" },
-    uv: { location: 3, type: "vec2<f32>" },
-    uv2: { location: 5, type: "vec2<f32>" },
-    color: { location: 6, type: "vec4<f32>" },
+// A joint index read converts back to the pin's `vec4<u32>`
+// (`convertedAttributes`).
+const attributeTypes: Readonly<
+    Record<string, { location: number; type: ShaderType }>
+> = GPU_VERTEX_ATTRIBUTES;
+
+/** Attributes the native vertex holds in another type than the pin declares, read as the pin's. */
+const convertedAttributes: Readonly<Record<string, string>> = {
+    joints: "vec4<u32>",
 };
+
+/**
+ * Attributes the native vertex does not carry: the second influence pair,
+ * which the four-influence skinning adaptation drops (an absent pair adds
+ * nothing), reads as zero.
+ */
+const absentAttributes: Readonly<Record<string, string>> = {
+    joints1: "vec4<u32>",
+    weights1: "vec4<f32>",
+};
+
+/** Whether a program reads the skinning lanes, which only deformed geometry carries. */
+export function readsSkinningAttributes(
+    attributes: readonly string[],
+): boolean {
+    return attributes.some((name) => name === "joints" || name === "weights");
+}
+
+/**
+ * A vertex stage reading its declared attributes as the pin types them: a
+ * converted lane through its constructor, an absent one as zero. Reads are
+ * `input.<attribute>` on a parameter of the stage's `VertexInput`.
+ */
+function readAttributesAsDeclared(
+    module: ShaderModule,
+    declared: readonly string[],
+): ShaderModule {
+    const inputs = new Set(
+        [module.entryPoint, ...(module.functions ?? [])].flatMap((fn) =>
+            fn.parameters
+                .filter((parameter) => parameter.type === "VertexInput")
+                .map((parameter) => parameter.name),
+        ),
+    );
+    const read = (name: string): string | undefined =>
+        declared.includes(name)
+            ? (convertedAttributes[name] ?? absentAttributes[name])
+            : undefined;
+    return mapShaderModule(module, (expression, boundNames) => {
+        if (
+            expression.kind !== "path" ||
+            expression.parts.length < 2 ||
+            !inputs.has(expression.parts[0]!) ||
+            !boundNames.has(expression.parts[0]!)
+        )
+            return expression;
+        const name = expression.parts[1]!;
+        const type = read(name);
+        if (!type) return expression;
+        // A typed constructor, as the parser reads `vec4<u32>(...)`.
+        let replacement: ShaderExpression = {
+            kind: "call",
+            name: type,
+            arguments: Object.hasOwn(absentAttributes, name)
+                ? [
+                      {
+                          kind: "number",
+                          value: type === "vec4<u32>" ? "0u" : "0.0",
+                      },
+                  ]
+                : [{ kind: "path", parts: expression.parts.slice(0, 2) }],
+        };
+        for (const member of expression.parts.slice(2))
+            replacement = { kind: "member", expression: replacement, member };
+        return replacement;
+    });
+}
 
 /**
  * The instance lanes the pin's own thin-instance module appends to a

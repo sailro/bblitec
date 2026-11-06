@@ -200,3 +200,16 @@ export class NativeRecordStorageRequired extends StorageDemand {
         return { kind: "record", demand: this.demand };
     }
 }
+
+/** A demand storing record types' values as documents, and nothing else. */
+export function isDocumentRecordDemand(
+    error: unknown,
+): error is NativeRecordStorageRequired {
+    return (
+        error instanceof NativeRecordStorageRequired &&
+        error.requests.every(
+            (request) =>
+                request.kind === "record" && request.demand.document === true,
+        )
+    );
+}

@@ -203,6 +203,12 @@ int main() try {
         expectNear(offset(first, grid).x, 0.f, "shorthand removal clears its inline longhands");
         ui_set_style_property(engine, grid, "place-items", "center");
         ui_set_style_property(engine, first, "height", "50%");
+        update();
+        expectNear(raw(first)->GetBox().GetSize().y, 40.f,
+                   "a percentage height resolves against the sized row");
+        expectNear(offset(first, grid).y, 20.f, "the percentage height aligns in its row");
+        ui_set_style_property(engine, first, "height", "10px");
+        ui_set_style_property(engine, first, "min-height", "50%");
         bool refused = false;
         try {
             update();
@@ -210,7 +216,7 @@ int main() try {
             refused = std::string(error.what()).find("percentage-dependent") != std::string::npos;
         }
         check(refused,
-              "unrepresented percentage sizing refuses instead of producing flex geometry");
+              "an unrepresented percentage minimum refuses instead of producing flex geometry");
     }
     SDL_DestroyWindow(window);
     SDL_Quit();

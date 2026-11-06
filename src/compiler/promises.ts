@@ -13,6 +13,7 @@ import {
 import { ApplicationRealmRequired } from "./worker-modules.js";
 import type { Value } from "./types.js";
 import { yieldsNewArray } from "./fresh-records.js";
+import { presentMembers } from "./type-facts.js";
 
 export interface PromiseLoweringContext extends Pick<
     LoweringServices,
@@ -115,6 +116,35 @@ export function promiseReactionOf(
     const name = access.name;
     return (name === "then" || name === "catch" || name === "finally") &&
         libraryName(checker.getTypeAtLocation(access.expression)) === "Promise"
+        ? { ...access, reaction: name }
+        : undefined;
+}
+
+/**
+ * The reaction member an optional chain names on a value typed a library
+ * Promise or absent (`p?.then` with `p: Promise<T> | null`), or undefined.
+ */
+export function optionalPromiseReactionOf(
+    callee: ts.Node,
+    checker: ts.TypeChecker,
+): (NamedMember & { readonly reaction: PromiseReaction }) | undefined {
+    const access = namedMember(checker, callee);
+    if (
+        !access ||
+        !(
+            ts.isPropertyAccessExpression(access.access) ||
+            ts.isElementAccessExpression(access.access)
+        ) ||
+        !access.access.questionDotToken
+    )
+        return undefined;
+    const name = access.name;
+    const present = presentMembers(
+        checker.getTypeAtLocation(access.expression),
+    );
+    return (name === "then" || name === "catch" || name === "finally") &&
+        present.length > 0 &&
+        present.every((member) => libraryName(member) === "Promise")
         ? { ...access, reaction: name }
         : undefined;
 }

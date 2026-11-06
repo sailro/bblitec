@@ -4,11 +4,13 @@ import {
     absenceOf,
     absenceOfNull,
     jsonAbsenceCpp,
+    optionalPresentCpp,
+    optionalValueCpp,
     valueDataType,
 } from "../values/model.js";
 import { isHandleKind } from "../data-types/handles.js";
 import { absenceKind, declaredContextualType } from "../type-facts.js";
-import { hasNonNullAssertion } from "../syntax.js";
+import { hasNonNullAssertion, literalMember } from "../syntax.js";
 import { ownEntries } from "../object-statics.js";
 import { yieldsFreshObject } from "../fresh-records.js";
 import { unwrapObjectIdentity } from "../static-evaluator.js";
@@ -16,7 +18,7 @@ import { unwrapObjectIdentity } from "../static-evaluator.js";
 import { dataTypesEqual, type DataType } from "../data-types.js";
 import type { Value } from "../types.js";
 import { isJsonValue } from "../json-bridge.js";
-import { eventTargetCpp } from "../dom-targets.js";
+import { eventTargetCpp, holdsDomTarget } from "../dom-targets.js";
 import {
     authoredErrorValue,
     errorConstructor,
@@ -34,6 +36,7 @@ import {
     compileJsonRecordView,
     compileJsonTupleView,
     isPlainJsonRecord,
+    viewLiteral,
 } from "../json-record-views.js";
 
 import type { DataSinkHost, DataSinkOperations } from "./contracts.js";
@@ -116,14 +119,68 @@ function ownedDocument(
         converted && unwrapObjectIdentity(lowerer.context.checker, converted);
     if (!expression || !yieldsFreshObject(lowerer.context.checker, expression))
         return undefined;
+    return recordDocumentSnapshot(lowerer, record, node);
+}
+
+/**
+ * A document of a record's own properties as they are now, a key a
+ * conditional spread wrote set only while own: what a WebIDL dictionary
+ * conversion (an event's init) reads once, keeping no alias.
+ */
+export function recordDocumentSnapshot(
+    lowerer: DataSinkHost,
+    record: Value,
+    node: ts.Node,
+): string | undefined {
+    if (!isPlainJsonRecord(record)) return undefined;
     const entries = ownEntries(lowerer.ownObjectContext(), record, node);
     if (!entries) return undefined;
-    const stores = entries.map(({ key, value, presence }) => {
-        const stored = `own.emplace_back(${lowerer.context.cppString(key)}, ${lowerer.compileMemberForSink(value, { kind: "json" }, node, key)});`;
+    const literal = viewLiteral(lowerer, node);
+    const stores = entries.map(({ key, presence }, index) => {
+        const value = lowerer.storeLiteralMember(
+            entries,
+            index,
+            (entry) => literal && literalMember(literal, entry.key),
+            (entry) =>
+                lowerer.compileMemberForSink(
+                    entry.value,
+                    { kind: "json" },
+                    node,
+                    entry.key,
+                ),
+        );
+        const stored = `own.emplace_back(${lowerer.context.cppString(key)}, ${value});`;
         return presence ? `if (${presence.ownCpp}) ${stored}` : stored;
     });
     lowerer.context.reachJson();
     return `([&]() { bbl::js::JsonValue::Object own; ${stores.join(" ")} return bbl::js::JsonValue::from_object(std::move(own)); }())`;
+}
+
+/**
+ * A DOM target a document holds, boxed by its identity (a synthetic event's
+ * `relatedTarget`); an absent one is `null`.
+ */
+function jsonDomTarget(
+    lowerer: DataSinkHost,
+    value: Value,
+    node: ts.Node,
+): string | undefined {
+    if (!holdsDomTarget(value)) return undefined;
+    if (value.dataType?.kind !== "optional")
+        return `bbl::js::json_value(${eventTargetCpp(lowerer.context, value, node)})`;
+    const slot = lowerer.context.bindings.pinValueToTemporary(
+        value,
+        "json_target",
+    );
+    const present = lowerer.leafValue(
+        optionalValueCpp(slot.cpp),
+        value.dataType.inner,
+    );
+    const engined =
+        value.engineCpp !== undefined
+            ? { ...present, engineCpp: value.engineCpp }
+            : present;
+    return `(${optionalPresentCpp(slot.cpp)} ? bbl::js::json_value(${eventTargetCpp(lowerer.context, engined, node)}) : ${jsonAbsenceCpp("null")})`;
 }
 
 function valueJson(
@@ -137,6 +194,10 @@ function valueJson(
         lowerer.markEscaped(value);
         return value.cpp;
     }
+    const expression =
+        value.kind === "record" || value.dataType?.kind === "struct"
+            ? lowerer.convertedExpression(node)
+            : undefined;
     // Stored document members remain mutable through every retained alias.
     // A native observation wrapper only supplies reads; a plain record
     // therefore acquires the document owner before entering this storage.
@@ -144,6 +205,7 @@ function valueJson(
     if (value.dataType?.kind === "struct") {
         const demand = lowerer.context.dataTypes.documentRecordDemand(
             value.dataType.name,
+            expression,
         );
         if (demand) throw new NativeRecordStorageRequired(demand);
     }
@@ -163,10 +225,6 @@ function valueJson(
             node,
             "AggregateError reflection requires represented property descriptors.",
         );
-    const expression =
-        value.kind === "record" || value.dataType?.kind === "struct"
-            ? lowerer.convertedExpression(node)
-            : undefined;
     const contextual =
         expression &&
         declaredContextualType(lowerer.context.checker, expression);
@@ -176,6 +234,7 @@ function valueJson(
         if (value.dataType?.kind === "struct") {
             const demand = lowerer.context.dataTypes.documentRecordDemand(
                 value.dataType.name,
+                expression,
             );
             if (demand) throw new NativeRecordStorageRequired(demand);
             return lowerer.context.fail(
@@ -224,6 +283,8 @@ function valueJson(
             );
     }
     if (value.kind === "json-null") return jsonAbsenceCpp(absenceOfNull(value));
+    const domTarget = jsonDomTarget(lowerer, value, node);
+    if (domTarget !== undefined) return domTarget;
     if (value.kind === "record" && !value.cpp) {
         const owned = ownedDocument(lowerer, value, node);
         if (owned !== undefined) return owned;
@@ -232,6 +293,21 @@ function valueJson(
     }
     if (value.kind === "tuple" && !value.cpp)
         return compileJsonTupleView(lowerer, value, node);
+    // A function a document holds is the callback its declared type stores,
+    // boxed: a member call reads it back with that signature (`json_call`).
+    if (value.kind === "callback") {
+        const expression = lowerer.convertedExpression(node);
+        const checker = lowerer.context.checker;
+        const declared =
+            expression &&
+            (declaredContextualType(checker, expression) ??
+                checker.getTypeAtLocation(expression));
+        const stored =
+            declared &&
+            lowerer.context.dataTypes.fromStoredTsType(declared, node);
+        if (stored?.kind === "function")
+            return `bbl::js::JsonValue::from_native(${lowerer.compileKnownValueForSink(value, stored, node)})`;
+    }
     const type = valueDataType(value);
     const cpp =
         value.kind === "number"

@@ -1,9 +1,7 @@
 import assert from "node:assert/strict";
 import { resolve } from "node:path";
 import test from "node:test";
-import { runInNewContext } from "node:vm";
 import ts from "typescript";
-import { compileSource } from "../src/compiler.js";
 import { createCompilerProgram } from "../src/compiler/program.js";
 import {
     instantiatedRecord,
@@ -12,10 +10,7 @@ import {
 } from "../src/compiler/record-components.js";
 import { ReplayStorage } from "../src/compiler/replay-storage.js";
 import { CompileError } from "../src/compiler/compile-error.js";
-import {
-    optionalNativeFixtureTools,
-    runGeneratedProgram,
-} from "./native-fixture.js";
+import { runSelfCheckingProgram } from "./self-checking-program.js";
 
 function check(name: string, source: string): void {
     test(name, (t) => {
@@ -32,18 +27,11 @@ function check(name: string, source: string): void {
                 ),
             [],
         );
-        runInNewContext(
-            ts.transpileModule(source, {
-                compilerOptions: { target: ts.ScriptTarget.ES2022 },
-            }).outputText,
-        );
-        const result = compileSource(source, { fileName });
-        const tools = optionalNativeFixtureTools(false);
-        if (!tools) return t.skip("Native fixture compiler unavailable.");
-        runGeneratedProgram(
-            tools,
+        return runSelfCheckingProgram(
+            t,
             `generic-record-components/${name}`,
-            result.cpp,
+            source,
+            { compile: { fileName } },
         );
     });
 }

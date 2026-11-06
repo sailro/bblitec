@@ -143,6 +143,18 @@ const INITIALIZER_FACTS = [
     "packagedBodySource",
 ] as const satisfies readonly (keyof Value)[];
 
+/** A repeated body's answers per observation, by the binding's declared name. */
+interface RepeatedBodyAnswers {
+    readonly deep: Map<ts.Identifier, boolean>;
+    readonly "array-elements": Map<ts.Identifier, boolean>;
+}
+
+/** A repeated body's answers and the nodes it reached when they were taken. */
+interface RepeatedBodyEntry {
+    readonly reached: ReadonlySet<ts.Node>;
+    readonly answers: RepeatedBodyAnswers;
+}
+
 export class BindingScopes {
     private readonly transparentRebindingScopes = new EmissionWeakSet<
         Map<ts.Symbol, VariableBinding>
@@ -266,6 +278,36 @@ export class BindingScopes {
             if (scope.has(symbol)) return scope;
         }
         return undefined;
+    }
+
+    /**
+     * Single-use `const` selections their declarations left to the read
+     * (`deferredSelection` in declarations.ts): the conditional each name
+     * evaluates to where it is read.
+     */
+    private readonly deferredSelections = new EmissionMap<
+        ts.Symbol,
+        ts.ConditionalExpression
+    >();
+
+    public deferSelection(
+        name: ts.Identifier,
+        selection: ts.ConditionalExpression,
+    ): void {
+        const symbol = this.context.symbols.valueSymbol(name);
+        if (symbol) this.deferredSelections.set(symbol, selection);
+    }
+
+    /** The selection an identifier names when its declaration deferred it. */
+    public deferredSelection(
+        expression: ts.Expression,
+    ): ts.ConditionalExpression | undefined {
+        const name = unwrapExpression(expression);
+        if (this.deferredSelections.size === 0 || !ts.isIdentifier(name))
+            return undefined;
+        const symbol = this.context.symbols.valueSymbol(name);
+        const selection = symbol && this.deferredSelections.get(symbol);
+        return selection && !this.lookupOptional(name) ? selection : undefined;
     }
 
     /** The innermost scope binding the variable an identifier names. */
@@ -1851,24 +1893,31 @@ export class BindingScopes {
         visitor: (value: Value, elementsUnchanged: boolean) => void,
     ): void {
         const visited = new Set<ts.Symbol>();
-        let reached: Set<ts.Node> | undefined;
+        let entry: RepeatedBodyEntry | undefined;
         const mayChange = (
-            bound: ts.Expression,
+            bound: ts.Identifier,
             observation: "deep" | "array-elements" = "deep",
         ): boolean => {
-            if (!reached) {
-                reached = new Set<ts.Node>();
+            if (!entry) {
+                const reached = new Set<ts.Node>();
                 walkReachedLoopNodes(this.context, body, (node) => {
-                    reached!.add(node);
+                    reached.add(node);
                 });
+                entry = this.repeatedBodyAnswers(body, reached);
             }
-            return loopBoundMayChange(
-                this.context,
-                body,
-                bound,
-                observation,
-                reached,
-            );
+            const known = entry.answers[observation];
+            let changed = known.get(bound);
+            if (changed === undefined) {
+                changed = loopBoundMayChange(
+                    this.context,
+                    body,
+                    bound,
+                    observation,
+                    entry.reached,
+                );
+                known.set(bound, changed);
+            }
+            return changed;
         };
         for (let index = this.variableScopes.length - 1; index >= 0; index--) {
             for (const [symbol, binding] of this.variableScopes[index]!) {
@@ -1885,23 +1934,7 @@ export class BindingScopes {
                     !ts.isIdentifier(declaration.name)
                 )
                     continue;
-                const collections: Value[] = [];
-                const seen = new Set<Value>();
-                const collect = (value: Value): void => {
-                    if (seen.has(value)) return;
-                    seen.add(value);
-                    if (
-                        value.collectionCardinality ||
-                        value.staticElements ||
-                        value.staticElementsOwner
-                    )
-                        collections.push(value);
-                    for (const member of Object.values(
-                        value.recordProperties ?? {},
-                    ))
-                        collect(member);
-                };
-                collect(binding.value);
+                const collections = heldCollections(binding.value);
                 if (collections.length && mayChange(declaration.name)) {
                     // Mutating an existing handle's properties keeps the array's
                     // membership and its common resource family unchanged.
@@ -1917,6 +1950,37 @@ export class BindingScopes {
                 }
             }
         }
+    }
+
+    /**
+     * @unjournaled Whether a repeated body may change a binding, per body:
+     * the answer is an aliased-mutation scan of the binding over the nodes
+     * the body reaches (`loopBoundMayChange`), a function of those nodes and
+     * the checked program, so it holds while the body reaches the same ones.
+     */
+    private readonly repeatedBodyChanges = new WeakMap<
+        ts.Node,
+        RepeatedBodyEntry
+    >();
+
+    /** The answers recorded for `body`, kept while it reaches the same nodes. */
+    private repeatedBodyAnswers(
+        body: ts.Node,
+        reached: ReadonlySet<ts.Node>,
+    ): RepeatedBodyEntry {
+        const known = this.repeatedBodyChanges.get(body);
+        if (
+            known &&
+            known.reached.size === reached.size &&
+            [...reached].every((node) => known.reached.has(node))
+        )
+            return known;
+        const entry: RepeatedBodyEntry = {
+            reached,
+            answers: { deep: new Map(), "array-elements": new Map() },
+        };
+        this.repeatedBodyChanges.set(body, entry);
+        return entry;
     }
 
     /** Invalidate one native array's complete snapshot through all aliases. */
@@ -2329,6 +2393,57 @@ export class BindingScopes {
                     pinned[key] = rebaseSpelling(spelling, value.cpp, cpp);
             }
             this.context.registerNativeConstBinding(cpp);
+            this.context.describeNativeValue(pinned);
+            return pinned;
+        }
+        if (
+            isHandleKind(value.kind) &&
+            value.kind !== "engine" &&
+            value.kind !== "scene" &&
+            value.optionalStorageCpp &&
+            knownCondition(presenceFlagCpp(value)) !== true
+        ) {
+            // A maybe-absent handle pins its presence, and its payload only
+            // where present: the flag and the handle follow the snapshot, not
+            // the storage they came from. An engine or scene is shared state
+            // its captures name directly.
+            const present = this.context.allocateTemporaryCppName(
+                `${label}_present`,
+            );
+            this.context.emit({
+                kind: "declaration",
+                type: "const bool",
+                name: present,
+                initializer: presenceFlagCpp(value)!,
+                attributes: "[[maybe_unused]] ",
+            });
+            const presence = this.context.registerNativeConstBinding(present);
+            this.context.registerNativeBindingType(present, "bool");
+            const cpp = this.context.allocateTemporaryCppName(label);
+            this.context.emit({
+                kind: "declaration",
+                type: "auto",
+                name: cpp,
+                initializer: `${present} ? ${value.ownedCpp ?? snapshotReadCpp(value)} : std::decay_t<decltype(${value.cpp})>{}`,
+                attributes: "[[maybe_unused]] ",
+            });
+            this.context.registerNativeConstBinding(cpp);
+            const pinned: Value = {
+                ...value,
+                cpp,
+                optionalFoundCpp: present,
+                truthinessCpp: present,
+                nativeBinding: true,
+                nativeCompanionCaptures: {
+                    ...value.nativeCompanionCaptures,
+                    optionalFoundCpp: [presence],
+                    truthinessCpp: [presence],
+                },
+            };
+            delete writable(pinned).ownedCpp;
+            delete writable(pinned).optionalStorageCpp;
+            delete writable(pinned).stableOwnerCpp;
+            delete writable(pinned).sharedStorageCpp;
             this.context.describeNativeValue(pinned);
             return pinned;
         }
@@ -3485,6 +3600,38 @@ export function sceneNodeVectorProperties(
             } satisfies Value,
         ]),
     );
+}
+
+const NO_COLLECTIONS: readonly Value[] = [];
+
+function holdsCollection(value: Value): boolean {
+    return Boolean(
+        value.collectionCardinality ||
+        value.staticElements ||
+        value.staticElementsOwner,
+    );
+}
+
+/**
+ * The collections a value holds: itself, then through its record
+ * properties in order, each value once.
+ */
+function heldCollections(value: Value): readonly Value[] {
+    if (!value.recordProperties)
+        return holdsCollection(value) ? [value] : NO_COLLECTIONS;
+    const collections: Value[] = [];
+    const seen = new Set<Value>();
+    const visit = (current: Value): void => {
+        if (seen.has(current)) return;
+        seen.add(current);
+        if (holdsCollection(current)) collections.push(current);
+        const properties = current.recordProperties;
+        if (properties)
+            for (const key in properties)
+                if (Object.hasOwn(properties, key)) visit(properties[key]!);
+    };
+    visit(value);
+    return collections;
 }
 
 /**

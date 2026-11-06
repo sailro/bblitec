@@ -82,10 +82,44 @@ WGPUTexture upload_compressed_texture(DawnState& state, const CompressedTexture&
     return upload_compressed_texture(state.device, state.queue, compressed);
 }
 
+WGPUTexture create_float_texture(WGPUDevice device, std::uint32_t width, std::uint32_t height,
+                                 const char* failure) {
+    WGPUTextureDescriptor descriptor = WGPU_TEXTURE_DESCRIPTOR_INIT;
+    descriptor.dimension = WGPUTextureDimension_2D;
+    descriptor.size = {width, height, 1};
+    descriptor.format = WGPUTextureFormat_RGBA32Float;
+    descriptor.usage = WGPUTextureUsage_TextureBinding | WGPUTextureUsage_CopyDst;
+    descriptor.mipLevelCount = 1;
+    descriptor.sampleCount = 1;
+    DawnTexture texture{wgpuDeviceCreateTexture(device, &descriptor)};
+    if (!texture)
+        dawn_error(failure);
+    return texture.release();
+}
+
+void write_float_texture(WGPUQueue queue, WGPUTexture texture, const float* data,
+                         std::uint32_t width, std::uint32_t height) {
+    WGPUTexelCopyTextureInfo destination = WGPU_TEXEL_COPY_TEXTURE_INFO_INIT;
+    destination.texture = texture;
+    WGPUTexelCopyBufferLayout copy = WGPU_TEXEL_COPY_BUFFER_LAYOUT_INIT;
+    copy.bytesPerRow = width * 16u;
+    copy.rowsPerImage = height;
+    WGPUExtent3D extent{width, height, 1};
+    DawnGpuDevice{queue}.write_texture(
+        &destination, data, static_cast<std::size_t>(width) * 16u * height, &copy, &extent);
+}
+
 WGPUTexture upload_material_texture(WGPUDevice device, WGPUQueue queue, DawnMipGenerator& mips,
                                     const TextureData& texture_data, bool srgb,
                                     const std::array<std::uint8_t, 4>& fallback,
                                     std::uint32_t& out_mip_count) {
+    if (const auto& texels = texture_data.float_texels) {
+        out_mip_count = 1;
+        WGPUTexture texture = create_float_texture(device, texels->width, texels->height,
+                                                   "wgpuDeviceCreateTexture float material");
+        write_float_texture(queue, texture, texels->rgba.data(), texels->width, texels->height);
+        return texture;
+    }
     // A compressed slot carries its own format and its own chain, so the
     // encoding flag has nothing to select: the container states which of
     // the two views its blocks decode through.

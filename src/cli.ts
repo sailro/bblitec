@@ -934,7 +934,11 @@ function writeSurvey(
     source: string,
     compileOptions: CompileOptions,
 ): void {
-    const { report } = surveySource(source, compileOptions);
+    // A survey of a large entry runs for hours: it says where it is.
+    const { report } = surveySource(source, compileOptions, {
+        report: (line) => console.error(line),
+        intervalMs: 5 * 60 * 1000,
+    });
     writeJsonRecord(censusPath, report);
     console.log(
         `Survey: ${report.statements.attempted} statement lowerings, ${report.statements.refused} refused ` +
@@ -949,6 +953,8 @@ function writeSurvey(
     }
     if (!report.complete) {
         console.error(`Survey incomplete: ${report.terminal}`);
+        for (const frame of report.terminalStack ?? [])
+            console.error(`    ${frame}`);
         process.exitCode = 1;
     }
 }

@@ -1,10 +1,11 @@
 import ts from "typescript";
 import type { DataLowerer } from "./data-lowering.js";
-import type { DataType } from "./data-types.js";
+import { presentDataType, type DataType } from "./data-types.js";
 import { optionalPresentCpp, optionalValueCpp, type Value } from "./types.js";
 import { compileJsonPropertyKey, isJsonValue } from "./json-bridge.js";
 import { namedMember } from "./symbols.js";
 import { localCallback } from "./syntax.js";
+import { arrayElementType, holdsOnly, tupleElements } from "./type-facts.js";
 
 /** Construct from a present iterable; both absent values create an empty owner. */
 export function compileCollectionIterable(
@@ -195,6 +196,20 @@ export function compileMapInitializer(
     );
 }
 
+/**
+ * Whether every key of an array of `[key, value]` pairs holds only strings
+ * by its type: each pair's key is then the property key it converts to,
+ * whatever element carrier the pairs share.
+ */
+function stringKeyedEntries(
+    checker: ts.TypeChecker,
+    entries: ts.Expression,
+): boolean {
+    const pair = arrayElementType(checker, checker.getTypeAtLocation(entries));
+    const key = pair && tupleElements(checker, pair)?.[0];
+    return key !== undefined && holdsOnly(key.type, ["string"]);
+}
+
 /** Consume key/value entries for Map constructors and Object.fromEntries. */
 export function compileCollectionEntries(
     lowerer: DataLowerer,
@@ -239,8 +254,15 @@ export function compileEntryCollection(
     absentIsEmpty = false,
 ): Value {
     const input = lowerer.context.unwrap(expression);
+    // A key the entries' type proves a string, held in a carrier the pairs
+    // share, is read as the string it is; a key stored as itself converts.
+    const stringKeys =
+        type.dictionary && stringKeyedEntries(lowerer.context.checker, input);
     const compileKey = (value: Value, keyType: DataType): string => {
-        if (!type.dictionary)
+        if (
+            !type.dictionary ||
+            (stringKeys && presentDataType(value.dataType)?.kind === "union")
+        )
             return lowerer.compileLaneForSink(value, keyType, input);
         const key = compileJsonPropertyKey(lowerer.context, value, input);
         // Heterogeneous pairs can share a union element carrier. Converting

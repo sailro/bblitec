@@ -182,7 +182,11 @@ export async function withBrowserPage<T>(
         if (consoleErrorPrefix !== undefined) {
             page.on("console", (message) => {
                 if (message.type() === "error") {
-                    console.error(`${consoleErrorPrefix}: ${message.text()}`);
+                    // A failed resource load names its request only here.
+                    const { url } = message.location();
+                    console.error(
+                        `${consoleErrorPrefix}: ${message.text()}${url ? ` (${url})` : ""}`,
+                    );
                 }
             });
         }

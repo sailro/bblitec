@@ -563,23 +563,6 @@ void upload_pinned_float_texture(GpuState& state, SDL_GPUTexture* texture, const
         {width, height, 1});
 }
 
-SDL_GPUTexture* create_pinned_float_texture(GpuState& state, std::uint32_t width,
-                                            std::uint32_t height, const char* label) {
-    SDL_GPUTextureCreateInfo texture_info{};
-    texture_info.type = SDL_GPU_TEXTURETYPE_2D;
-    texture_info.format = SDL_GPU_TEXTUREFORMAT_R32G32B32A32_FLOAT;
-    texture_info.usage = SDL_GPU_TEXTUREUSAGE_SAMPLER;
-    texture_info.width = width;
-    texture_info.height = height;
-    texture_info.layer_count_or_depth = 1;
-    texture_info.num_levels = 1;
-    texture_info.sample_count = SDL_GPU_SAMPLECOUNT_1;
-    SDL_GPUTexture* texture = SDL_CreateGPUTexture(state.device, &texture_info);
-    if (!texture)
-        gpu_error(label);
-    return texture;
-}
-
 void ensure_pinned_bone_sampler(GpuState& state) {
     if (state.pinned_bone_sampler)
         return;
@@ -604,8 +587,9 @@ void write_pinned_bone_texture(GpuState& state, GpuMesh& mesh, const MeshRecord&
             if (mesh.pinned_bone_texture) {
                 SDL_ReleaseGPUTexture(state.device, mesh.pinned_bone_texture);
             }
-            mesh.pinned_bone_texture = create_pinned_float_texture(
-                state, palette.width, palette.height, "SDL_CreateGPUTexture pinned bone palette");
+            mesh.pinned_bone_texture =
+                create_float_texture(state.device, palette.width, palette.height,
+                                     "SDL_CreateGPUTexture pinned bone palette");
         },
         [&](const float* floats, const BonePaletteLayout& palette) {
             upload_pinned_float_texture(state, mesh.pinned_bone_texture, floats, palette.width,
@@ -623,18 +607,19 @@ void write_pinned_vat_texture(GpuState& state, GpuMesh& mesh, const MeshRecord& 
             ensure_pinned_bone_sampler(state);
             if (mesh.pinned_vat_texture)
                 SDL_ReleaseGPUTexture(state.device, mesh.pinned_vat_texture);
-            mesh.pinned_vat_texture = create_pinned_float_texture(
-                state, layout.width, layout.height, "SDL_CreateGPUTexture pinned VAT");
-            upload_pinned_float_texture(state, mesh.pinned_vat_texture, bake.data.data(),
-                                        layout.width, layout.height, layout.bytes);
+            mesh.pinned_vat_texture = create_float_texture(
+                state.device, layout.width, layout.height, "SDL_CreateGPUTexture pinned VAT");
+            upload_pinned_float_texture(state, mesh.pinned_vat_texture,
+                                        bake.texture.texels->rgba.data(), layout.width,
+                                        layout.height, layout.bytes);
         },
         [](const VatData&) {},
 #if BBLITE_VAT_INSTANCES
         [&](const VatData& vat) {
             if (mesh.pinned_vat_instance_texture)
                 SDL_ReleaseGPUTexture(state.device, mesh.pinned_vat_instance_texture);
-            mesh.pinned_vat_instance_texture = create_pinned_float_texture(
-                state, vat.instance_texels, 1u, "SDL_CreateGPUTexture pinned VAT instances");
+            mesh.pinned_vat_instance_texture = create_float_texture(
+                state.device, vat.instance_texels, 1u, "SDL_CreateGPUTexture pinned VAT instances");
         },
         [&](const VatData& vat, const VatTextureLayout& layout) {
             upload_pinned_float_texture(state, mesh.pinned_vat_instance_texture,

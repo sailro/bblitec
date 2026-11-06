@@ -696,6 +696,7 @@ ${pbrMaterialRecordSeedCpp("material", "    ")}
     ${materialProperty("occlusion_strength")}
     material.specular_aa = props.get("enableSpecularAA").truthy();
     material.double_sided = props.get("doubleSided").truthy();
+    material.source_double_sided = material.double_sided;
     material.has_uv_transform = props.get("_hasUvTx").truthy();
     material.unlit = props.get("_unlit").truthy();
     ${materialProperty("unlit_color")}

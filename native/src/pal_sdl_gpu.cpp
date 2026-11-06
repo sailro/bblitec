@@ -265,6 +265,9 @@ void release(GpuState& state) {
         SDL_ReleaseGPUSampler(state.device, state.transmission_sampler);
     }
 #endif
+    for (const auto& [_, sampler] : state.render_texture_samplers)
+        SDL_ReleaseGPUSampler(state.device, sampler);
+    state.render_texture_samplers.clear();
     if (state.ground_sampler) {
         SDL_ReleaseGPUSampler(state.device, state.ground_sampler);
     }
@@ -606,9 +609,11 @@ class SdlSceneRun {
         switch (draw.item.material_kind) {
 #if BBLITE_PBR_VARIANTS > 0
         case upstream::RenderMaterialKind::pbr: {
-            const auto variant = pinned_variant_for_draw(scene, engine, draw, shader);
+            pal::PinnedVariantKey key;
+            const auto variant = pinned_variant_for_draw(scene, engine, draw, shader, &key);
             if (variant == npos)
-                throw std::runtime_error("Startup PBR draw has no composed variant.");
+                throw std::runtime_error("Startup PBR draw has no composed variant: " +
+                                         pal::pinned_variant_request(key, shader));
             prepare([&state, variant, kind, geometry, shadow_pass, esm, samples, target] {
                 static_cast<void>(pinned_variant_pipeline(state, variant, kind, geometry,
                                                           shadow_pass, esm, samples, target));
@@ -4654,7 +4659,8 @@ public:
         if (engine.device_recovery) {
             auto& recovery = *engine.device_recovery;
             recovery.environments[scene.state.get()] = {
-                engine.device_generation, reinterpret_cast<std::uintptr_t>(state.environment)};
+                engine.device_generation, reinterpret_cast<std::uintptr_t>(state.environment),
+                nullptr};
             std::size_t renderable_count = state.meshes.size();
 #if BBLITE_PINNED_BACKGROUNDS
             renderable_count += state.background_arms.size();
@@ -4665,7 +4671,7 @@ public:
             for (std::size_t i = 0; i < state.shadow_generators.size(); ++i) {
                 recovery.shadows[i] = {
                     engine.device_generation,
-                    reinterpret_cast<std::uintptr_t>(state.shadow_generators[i].map)};
+                    reinterpret_cast<std::uintptr_t>(state.shadow_generators[i].map), nullptr};
             }
 #endif
             recovery.resources_ready = true;

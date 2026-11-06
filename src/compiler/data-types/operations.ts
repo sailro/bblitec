@@ -58,6 +58,13 @@ export function passesByReferenceKind(type: DataType): boolean {
     return kinds[type.kind].byReference;
 }
 
+/** A storage past its optional wrapper. */
+export function presentDataType(
+    type: DataType | undefined,
+): DataType | undefined {
+    return type?.kind === "optional" ? type.inner : type;
+}
+
 /** An optional undefined field stores key presence, never a different value. */
 export function isUndefinedDataType(type: DataType | undefined): boolean {
     return (
@@ -70,18 +77,34 @@ export function isOpaqueReference(type: DataType | undefined): boolean {
     return type !== undefined && kinds[type.kind].opaqueReference === true;
 }
 
-/** Structural annotations can retain these existing native object carriers. */
+/**
+ * Structural annotations can retain these existing native object carriers;
+ * a DOM event target is the DOM object itself.
+ */
 export function isNativeStructuralView(type: DataType | undefined): boolean {
     return (
         isOpaqueReference(type) ||
         type?.kind === "borrowed-platform-event" ||
-        type?.kind === "handle"
+        type?.kind === "handle" ||
+        type?.kind === "event-target"
     );
 }
 
 /** Whether native copies of this kind share storage (`sharesStorage`). */
 export function sharesStorageKind(type: DataType): boolean {
     return kinds[type.kind].sharesStorage === true;
+}
+
+/** A number, boolean, string or string enum: storage that copies by value. */
+export function isScalarDataType(
+    type: DataType | undefined,
+): type is DataType<"number" | "boolean" | "string" | "enum"> {
+    return (
+        type?.kind === "number" ||
+        type?.kind === "boolean" ||
+        type?.kind === "string" ||
+        type?.kind === "enum"
+    );
 }
 
 /** The traits of a primitive held in a native value class (`primitive`). */
@@ -117,7 +140,7 @@ export function reseatsOnAssignment(
     if (type.kind === "struct") return isReferenceStruct(type.name);
     const reseats = kinds[type.kind].reseats;
     return reseats === "children"
-        ? children(type, () => [], false).every((child) =>
+        ? dataTypeChildren(type, () => [], false).every((child) =>
               reseatsOnAssignment(child, isReferenceStruct),
           )
         : reseats === true;
@@ -141,7 +164,7 @@ export function containsDataKind(
         if (seen.has(type.name)) return false;
         seen.add(type.name);
     }
-    return children(type, fields, signatures).some((child) =>
+    return dataTypeChildren(type, fields, signatures).some((child) =>
         containsDataKind(child, target, fields, signatures, seen, matches),
     );
 }
@@ -165,7 +188,7 @@ function kindTraceCondition<K extends DataKind>(
     if (typeof traced === "function") return traced(type);
     if (traced !== "children") return traced === "always";
     return anyTraceCondition(
-        children(type, () => [], false).map((child) =>
+        dataTypeChildren(type, () => [], false).map((child) =>
             tracedEdgeCondition(child, record),
         ),
     );
@@ -209,7 +232,8 @@ export function recordTraceConditions(
     return conditions;
 }
 
-function children<K extends DataKind>(
+/** The types a type holds: a struct's through `fields`, a callable's signature with `signatures`. */
+export function dataTypeChildren<K extends DataKind>(
     type: DataType<K>,
     fields: StructFieldTypes,
     signatures: boolean,

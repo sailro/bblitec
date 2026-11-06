@@ -66,6 +66,31 @@ export type StorageRequest =
     | { kind: "shared-class"; declaration: ts.ClassLikeDeclaration };
 
 /**
+ * Where a storage request was demanded, for reports: the declaration it
+ * retypes, the node a record demand rose at, or a signature site; nothing
+ * for the program-wide kinds.
+ */
+export function storageRequestSite(
+    request: StorageRequest,
+): ts.Node | string | undefined {
+    switch (request.kind) {
+        case "record":
+        case "refused-record":
+            return request.demand.node;
+        case "completion":
+        case "unproven-completion":
+            return request.signatureSite;
+        case "generic":
+        case "enum-array":
+        case "enum-record":
+        case "thrown-value":
+            return undefined;
+        default:
+            return request.declaration;
+    }
+}
+
+/**
  * The storage demands a compile replays with, keyed by the source each
  * belongs to. Emission replays and the discarded planner each hold one: the
  * planner's collects what its attempt met, the replay's is what every
@@ -262,6 +287,30 @@ export class ReplayStorage {
                 component(join.source, join.sourceInstantiation) ===
                     component(join.target, join.targetInstantiation),
         );
+    }
+}
+
+/**
+ * A request that only adds its key to a set: wherever lowering meets it,
+ * it demands the same storage. Every other request carries what its site
+ * found (a record's type, a binding's storage, a completion proof).
+ */
+export function demandsKeyOnly(request: StorageRequest): boolean {
+    switch (request.kind) {
+        case "absence-tag":
+        case "class-field-presence":
+        case "engine-owner":
+        case "tuple-array":
+        case "parameter-object":
+        case "numeric-slot":
+        case "enum-array":
+        case "enum-record":
+        case "thrown-value":
+        case "shared-class":
+        case "unproven-completion":
+            return true;
+        default:
+            return false;
     }
 }
 

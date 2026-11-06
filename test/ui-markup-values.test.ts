@@ -182,6 +182,49 @@ test("the closed string domain selects the markup a parameter holds through a ru
     );
 });
 
+test("a translation written as innerHTML is the text of its key's translations", () => {
+    // Tables past the candidate limit: only the key's own entries may count.
+    const entries = (suffix: string) =>
+        Array.from(
+            { length: 300 },
+            (_, index) => `"k${index}": "label ${index} ${suffix}"`,
+        ).join(", ");
+    const source = (call: string, note = "Plain note") => `
+        const EN: Record<string, string> = { ${entries("en")}, "a.note": "${note}" };
+        const FR: Record<string, string> = { ${entries("fr")}, "a.note": "Note simple" };
+        const TABLES: Record<string, Record<string, string>> = { en: EN, fr: FR };
+        const OVERRIDES: Readonly<Record<string, string>> = { k1: "k2" };
+        const current = performance.now() > 1 ? "en" : "fr";
+        function translate(lang: string, key: string, params?: Record<string, string>): string {
+            let s = TABLES[lang]![key] ?? EN[key] ?? key;
+            if (params) for (const [k, v] of Object.entries(params)) s = s.split("{" + k + "}").join(v);
+            return s;
+        }
+        function t(key: string, params?: Record<string, string>): string {
+            const resolved = Object.hasOwn(OVERRIDES, key) && performance.now() > 2 ? OVERRIDES[key]! : key;
+            return translate(current, resolved, params);
+        }
+        const root = document.createElement("div");
+        root.innerHTML = ${call};
+        document.body.append(root);
+    `;
+    // The omitted params never rewrite the text; the override arm is dead for this key.
+    assert.match(compileSource(source(`t("a.note")`)).cpp, /ui_escape_rml\(/);
+    // Supplied params build open text, which may hold markup.
+    assert.throws(
+        () =>
+            compileSource(
+                source(`t("a.note", { n: String(performance.now()) })`),
+            ),
+        /closed authored markup provenance/,
+    );
+    // A character reference parses differently from its text.
+    assert.throws(
+        () => compileSource(source(`t("a.note")`, "Tom &amp; Jerry")),
+        /closed authored markup provenance/,
+    );
+});
+
 test("a markup hole whose closed part exceeds the candidate limit beside run-time text is run-time text", () => {
     const entries = Array.from(
         { length: 5000 },

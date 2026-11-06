@@ -166,6 +166,7 @@ struct DawnState {
     WGPUSampler transmission_sampler = nullptr, transmission_grab_sampler = nullptr,
                 nearest_sampler = nullptr, ground_sampler = nullptr, clamp_sampler = nullptr,
                 default_sampler = nullptr;
+    std::vector<std::pair<TextureSamplerState, WGPUSampler>> render_texture_samplers;
     // The background arms own their resources; teardown clears them first.
     std::vector<int> background_arms;
     struct OverlayFrame {

@@ -1,33 +1,17 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { runInNewContext } from "node:vm";
-import ts from "typescript";
 import { compileSource } from "../src/compiler.js";
 import { doubleCpp, doubleLiteral } from "../src/cpp-literals.js";
-import {
-    optionalNativeFixtureTools,
-    runGeneratedProgram,
-} from "./native-fixture.js";
+import { runSelfCheckingProgram } from "./self-checking-program.js";
 
 function check(name: string, source: string): void {
-    test(name, async (t) => {
-        await (runInNewContext(
-            ts.transpileModule(source, {
-                compilerOptions: { target: ts.ScriptTarget.ES2022 },
-            }).outputText,
-        ) as unknown);
-        const result = compileSource(source);
-        const tools = optionalNativeFixtureTools(false);
-        if (!tools) {
-            t.skip("Native fixture compiler unavailable.");
-            return;
-        }
-        runGeneratedProgram(
-            tools,
+    test(name, (t) =>
+        runSelfCheckingProgram(
+            t,
             `language-completion-storage/${name}`,
-            result.cpp,
-        );
-    });
+            source,
+        ),
+    );
 }
 
 test("double literals preserve both zero signs", () => {

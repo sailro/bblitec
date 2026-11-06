@@ -270,27 +270,27 @@ test("glTF sampler lookup, descriptors and sharing execute the pinned source", (
     execFileSync(executable, { cwd: directory, stdio: "pipe" });
 });
 
-test("glTF sampler lowering refuses descriptor fields without native storage", () => {
+test("glTF sampler lowering refuses descriptor properties GPUSamplerDescriptor does not declare", () => {
     assert.throws(
         () =>
             lowerGltfSamplers(
                 doctoredContext(
                     module,
                     "maxAnisotropy: magLinear",
-                    "lodMinClamp: 0, maxAnisotropy: magLinear",
+                    "lodBias: 0, maxAnisotropy: magLinear",
                 ),
             ),
         /Unrepresented glTF sampler descriptor property/,
     );
-    assert.throws(
-        () =>
-            lowerGltfSamplers(
-                doctoredContext(
-                    module,
-                    'mipmapFilter: mipNearest ? "nearest" : "linear",',
-                    "",
-                ),
+    // A member the descriptor leaves out takes WebGPU's default natively.
+    assert.match(
+        lowerGltfSamplers(
+            doctoredContext(
+                module,
+                'mipmapFilter: mipNearest ? "nearest" : "linear",',
+                "",
             ),
-        /Incomplete glTF sampler descriptor/,
+        ),
+        /GpuSamplerDescriptor result;[^}]*return texture_sampler_state\(result\);/,
     );
 });

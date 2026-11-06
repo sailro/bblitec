@@ -115,6 +115,60 @@ test("stored pending promises compile in the application realm", (t) => {
     runNative(result, directory, t);
 });
 
+test("a stored promise of a call that settles in place binds its settlement", (t) => {
+    const directory = resolve("artifacts/async-stored-settled");
+    mkdirSync(directory, { recursive: true });
+    writeFileSync(
+        join(directory, "load.ts"),
+        "export const state={loads:0};export async function load():Promise<void>{state.loads++;}",
+    );
+    const result = compileSource(
+        `
+        import {load,state} from './load';
+        function kickoff():Promise<void>{const pending=load();if(state.loads!==1)throw new Error('eager');return pending;}
+        void(async()=>{await kickoff();if(state.loads!==1)throw new Error('settled');})();
+    `,
+        { fileName: join(directory, "entry.ts") },
+    );
+    assert.doesNotMatch(result.cpp, /co_await/);
+    runNative(result, directory, t);
+});
+
+test("a stored promise's truthiness compiles in the application realm", (t) => {
+    const directory = resolve("artifacts/async-stored-truthiness");
+    mkdirSync(directory, { recursive: true });
+    const result = compileSource(
+        `
+        let loads=0;
+        async function load():Promise<number>{loads++;return 0;}
+        function kickoff():Promise<number>{const pending=load();if(!pending)throw new Error('absent');return pending;}
+        void(async()=>{if((await kickoff())!==0||loads!==1)throw new Error('settled');globalThis.close();})();
+    `,
+        { fileName: join(directory, "entry.ts") },
+    );
+    assert.match(result.cpp, /co_await/);
+    runNative(result, directory, t);
+});
+
+test("an optional reaction on a receiver generation proves a promise is that reaction", (t) => {
+    const directory = resolve("artifacts/async-optional-reaction");
+    mkdirSync(directory, { recursive: true });
+    const result = compileSource(
+        `
+        let settled=0;
+        async function load():Promise<void>{await Promise.resolve();settled++;}
+        function maybe(skip:boolean):Promise<void>|null{return skip?null:load();}
+        const pending=maybe(false);
+        void pending?.catch(()=>{});
+        void pending?.then(()=>{settled+=10;});
+        void(async()=>{await pending;await Promise.resolve();if(settled!==11)throw new Error('reactions '+settled);globalThis.close();})();
+    `,
+        { fileName: join(directory, "entry.ts") },
+    );
+    assert.match(result.cpp, /catch_error/);
+    runNative(result, directory, t);
+});
+
 test("Promise.resolve preserves existing promise identity and settlement", (t) => {
     const directory = resolve("artifacts/async-promise-resolve-adoption");
     mkdirSync(directory, { recursive: true });
@@ -417,7 +471,7 @@ test("nested cleanup preserves exception identity and runs every finalizer after
     runNative(result, directory, t);
 });
 
-// `resolveUrl(d.name)` over a constant record list is a shared call whose
+// `resolveUrl(DEFS[0]!.name)` over a constant record list is a shared call whose
 // string result is known at generation. The activation takes that constant
 // as its argument rather than a copy of the call's result the callee would
 // never read.
@@ -436,7 +490,7 @@ test("an async activation takes a generation-known shared result as its constant
             return url.length;
         }
         async function measureAll(resolveUrl: (name: string) => string): Promise<number[]> {
-            return Promise.all(DEFS.map((d) => measure(resolveUrl(d.name))));
+            return Promise.all([measure(resolveUrl(DEFS[0]!.name)), measure(resolveUrl(DEFS[1]!.name))]);
         }
         void (async () => {
             const lengths = await measureAll((name) => "/models/" + name);

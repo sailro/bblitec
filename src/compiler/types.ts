@@ -320,6 +320,14 @@ export interface CompileManifest {
      *  scene order. When `dynamicSceneLights` is false this is the complete
      *  light topology and shader composition must not widen it. */
     sceneLightKinds: LightKind[];
+    /**
+     * Each registered scene's lights, in registration order, when the
+     * program registers more than one: the pin selects a draw's light mode
+     * from its own scene's lights, so composition takes each scene's arms.
+     * Null for a scene whose topology generation does not know, whose
+     * draws may take any arm.
+     */
+    registeredSceneLightKinds?: (LightKind[] | null)[];
     /** A callback can add lights at run time, so the static list above is
      *  then only a lower bound and composition must retain compatible arms. */
     dynamicSceneLights: boolean;
@@ -1672,11 +1680,13 @@ export type ValueKind =
     | "engine"
     | "environment-textures"
     | "pbr-local-probe-set"
-    // A captured browser GPUDevice exists only so a structurally recognized
-    // thin-instance upload helper can be replaced as a unit. No generic raw
-    // device operation is part of the compiled surface.
+    // A captured browser GPUDevice: its identity, `createSampler`, and a
+    // structurally recognized thin-instance upload helper replaced as a
+    // unit. No other raw device operation is part of the compiled surface.
     | "gpu-device"
     | "gpu-texture"
+    | "gpu-texture-view"
+    | "gpu-sampler"
     | "device-recovery"
     | "gpu-environment"
     | "procedural-sky-environment"
@@ -1742,13 +1752,6 @@ export type ValueKind =
      * row read below.
      */
     | "vat-clip-map"
-    /**
-     * One `VatClip` -- a clip's first row, frame count and native rate. The
-     * row map is filled by the bake, so this is a native record read rather
-     * than a generation-time constant: deciding the layout here would be a
-     * second implementation of the bake's own frame arithmetic.
-     */
-    | "vat-clip"
     | "node-particle-graph"
     | "node-particle-set"
     | "node-particle-system"
@@ -2193,6 +2196,19 @@ export function staticStringValue(
     cppString: (text: string) => string,
 ): Value {
     return { kind: "string", cpp: cppString(text), staticString: text };
+}
+
+/** A record's own function member as a value: a call through it resolves as the record's method does. */
+export function recordMethodValue(
+    owner: Value,
+    method: NonNullable<Value["recordMethods"]>[string],
+): Value {
+    return {
+        kind: "callback",
+        cpp: "",
+        callbackDeclaration: method,
+        callbackRecordOwner: owner,
+    };
 }
 
 /** A string as the program sees it: a plain string value or a data leaf typed string. */
@@ -3371,6 +3387,7 @@ export type Feature =
     | "mesh:vat-time"
     | "mesh:deformed-position"
     | "mesh:vat-instance-storage"
+    | "mesh:vat-prepared"
     // A skeleton a scene authored in code rather than one the glTF loader
     // built from a skin. `createSkeleton` is the pin's own resource factory
     // and `mesh.skeleton = ...` is what puts the mesh on the skinned arm.

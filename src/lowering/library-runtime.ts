@@ -41,7 +41,8 @@ import {
     plainDataMembers,
     sameSource,
 } from "../compiler/syntax.js";
-import { snakeCase, stringLiteral } from "../cpp-literals.js";
+import { stringLiteral } from "../cpp-literals.js";
+import { gpuSamplerDescriptorCpp } from "./gpu-schema.js";
 import {
     pinnedToneMapping,
     toneMappingExportNames,
@@ -1172,15 +1173,18 @@ function environmentSampler(
             descriptor,
             `Expected samplers.ts ${name} to be a plain object literal.`,
         );
-    const fields = members.map(({ key, value }) => {
-        if (!ts.isStringLiteral(value))
-            context.contractError(
-                value,
-                `Expected samplers.ts ${name} to state string fields.`,
-            );
-        return ` sampler.${snakeCase(key)} = std::string(${stringLiteral(value.text)});`;
-    });
-    return `[] { GpuSamplerDescriptor sampler;${fields.join("")} return sampler; }()`;
+    return gpuSamplerDescriptorCpp(
+        new Map(
+            members.map(({ key, value }) => {
+                if (!ts.isStringLiteral(value))
+                    context.contractError(
+                        value,
+                        `Expected samplers.ts ${name} to state string fields.`,
+                    );
+                return [key, value.text];
+            }),
+        ),
+    );
 }
 
 /**

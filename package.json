@@ -23,7 +23,7 @@
     "typescript"
   ],
   "bin": {
-    "bblitec": "dist/src/cli.js"
+    "bblitec": "dist/src/bblitec.js"
   },
   "scripts": {
     "clean:dist": "node tools/clean-dist.mjs",

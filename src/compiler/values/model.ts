@@ -114,6 +114,11 @@ export function undefinedValue(): Value<"json-null"> {
     return { kind: "json-null", cpp: "std::nullopt" };
 }
 
+/** `null` as a value: the json-null kind with no native spelling of its own. */
+export function nullValue(): Value<"json-null"> {
+    return { kind: "json-null", cpp: "" };
+}
+
 /** The property key a value folds to: its static text, or its static number's. */
 export function staticKeyOf(value: Value | undefined): string | undefined {
     return (

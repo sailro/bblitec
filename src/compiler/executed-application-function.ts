@@ -33,6 +33,7 @@ import {
     CompilerSymbols,
     declarationOrigin,
     declaredSymbol,
+    isAbsentTypeofIdentifier,
     libraryGlobal,
     namedMember,
 } from "./symbols.js";
@@ -86,6 +87,15 @@ interface ExecutedFunctionContext {
     ): string | boolean | null | undefined;
 }
 
+/**
+ * Host globals a generation run may read: pure WHATWG URL parsing, which the
+ * realm receives from Node and which reads no host state.
+ */
+const GENERATION_HOST_GLOBALS: ReadonlySet<string> = new Set([
+    "URL",
+    "URLSearchParams",
+]);
+
 /** The pinned imports an executed closure may reach, by imported name. */
 const pinnedTags: ReadonlySet<string> = new Set(["wgsl"]);
 
@@ -122,7 +132,7 @@ export function executeApplicationFunction(
     const closure = new ExecutedClosure(context, target, label);
     const program = closure.program();
     const realm = vm.createContext(
-        {},
+        { URL, URLSearchParams },
         {
             name: `generation function ${label}`,
             microtaskMode: "afterEvaluate",
@@ -575,6 +585,9 @@ return __bblScope(${this.parts.get(targetFile)!.index})[${root}];
             this.resolveImport(identifier, symbol, file);
             return;
         }
+        // A binding only ambient declarations name is absent in the realm, as
+        // it is natively: bare `typeof` reads "undefined" and a read throws.
+        if (isAbsentTypeofIdentifier(checker, identifier)) return;
         const declaration = symbol.valueDeclaration ?? symbol.declarations?.[0];
         if (!declaration && identifier.text === "undefined") return;
         if (!declaration) {
@@ -585,6 +598,13 @@ return __bblScope(${this.parts.get(targetFile)!.index})[${root}];
         }
         const origin = declarationOrigin(declaration);
         if (origin === "default-lib") return;
+        if (
+            origin === "dom" &&
+            GENERATION_HOST_GLOBALS.has(identifier.text) &&
+            ts.isVariableDeclaration(declaration) &&
+            declaration.getSourceFile().isDeclarationFile
+        )
+            return;
         if (
             origin !== "program" ||
             declaration.getSourceFile().isDeclarationFile

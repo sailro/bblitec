@@ -1,0 +1,157 @@
+A sized decorator layer marked repeat tiles its paint box from its placed position in both directions (CSS
+background-repeat: repeat); the paint area's clip mask cuts the edge tiles, as a rounded box's does. Each tile is one
+generation of the layer at the tile's box, so gradient coordinates are the tile's. Mask layers and more than 4096
+tiles refuse.
+
+diff --git a/Include/RmlUi/Core/StyleSheetTypes.h b/Include/RmlUi/Core/StyleSheetTypes.h
+index f1b2fd2..4567da5 100644
+--- a/Include/RmlUi/Core/StyleSheetTypes.h
++++ b/Include/RmlUi/Core/StyleSheetTypes.h
+@@ -39,6 +39,8 @@ struct DecoratorBox {
+     Style::LengthCalc size_calc[2], position_calc[2];
+     // The box the layer is sized and placed in (CSS background-origin); Auto: its paint (clip) box.
+     BoxArea origin = BoxArea::Auto;
++    // A sized layer that repeats (CSS background-repeat: repeat) tiles its paint box.
++    bool repeat = false;
+ };
+ struct DecoratorDeclaration {
+ 	String type;
+diff --git a/Source/Core/ElementEffects.cpp b/Source/Core/ElementEffects.cpp
+index 8c428dc..4377a35 100644
+--- a/Source/Core/ElementEffects.cpp
++++ b/Source/Core/ElementEffects.cpp
+@@ -143,6 +143,8 @@ void ElementEffects::ReloadEffectsData()
+ 			for (DecoratorEntry& decorator : *list)
+ 			{
+ 				const DecoratorDataHandle old_data = decorator.decorator_data;
++				const Vector<DecoratorDataHandle> old_tiles = std::move(decorator.tiles);
++				decorator.tiles.clear();
+ 
+                 bool paints = true;
+                 const auto generate = [&]() {
+@@ -170,6 +172,37 @@ void ElementEffects::ReloadEffectsData()
+                     paints = size.x > 0 && size.y > 0 && bounds.x > 0 && bounds.y > 0;
+                     if (!paints) return DecoratorDataHandle(0);
+                     const Vector2f placed = origin_box.GetFillOffset() - paint_box.GetFillOffset() + position;
++                    // Restore even if a renderer refuses a shader or allocation.
++                    struct RestoreBox {
++                        const RenderBox*& slot;
++                        ~RestoreBox() { slot = nullptr; }
++                    } restore{element->decorator_render_box};
++                    if (decorator.box.repeat) {
++                        // Tiles start at the placed layer and repeat both ways over the paint box, whose
++                        // clip mask cuts the edge tiles (CSS background-repeat: repeat).
++                        if (list == &mask_images)
++                            throw std::runtime_error("Repeating UI mask layers are not represented.");
++                        Vector2f start;
++                        for (int axis = 0; axis < 2; ++axis)
++                            start[axis] = placed[axis] - Math::RoundUp(placed[axis] / size[axis]) * size[axis];
++                        const int columns = int(Math::RoundUp((paint_bounds.x - start.x) / size.x));
++                        const int rows = int(Math::RoundUp((paint_bounds.y - start.y) / size.y));
++                        if (columns * rows > 4096)
++                            throw std::runtime_error("A repeating UI background layer exceeds 4096 tiles.");
++                        decorator.rounded_clip = true;
++                        for (int row = 0; row < rows; ++row)
++                            for (int column = 0; column < columns; ++column) {
++                                const Vector2f offset = paint_box.GetFillOffset() + start + Vector2f(float(column) * size.x, float(row) * size.y);
++                                const RenderBox tile(size, paint_box.GetBorderOffset(), {offset.y, 0, 0, offset.x}, {});
++                                element->decorator_render_box = &tile;
++                                if (const DecoratorDataHandle data = decorator.decorator->GenerateElementData(element, decorator.paint_area))
++                                    decorator.tiles.push_back(data);
++                                else
++                                    decorator_data_failed = true;
++                            }
++                        paints = false;
++                        return DecoratorDataHandle(0);
++                    }
+                     for (int axis = 0; axis < 2; ++axis)
+                         if (placed[axis] < -0.01f || placed[axis] + size[axis] > paint_bounds[axis] + 0.01f)
+                             throw std::runtime_error("Sized UI background layers must fit inside their paint box.");
+@@ -178,11 +211,6 @@ void ElementEffects::ReloadEffectsData()
+                         decorator.rounded_clip = decorator.rounded_clip || radius.x > 0 || radius.y > 0;
+                     const Vector2f offset = paint_box.GetFillOffset() + placed;
+                     paint_box = RenderBox(size, paint_box.GetBorderOffset(), {offset.y, 0, 0, offset.x}, {});
+-                    // Restore even if a renderer refuses a shader or allocation.
+-                    struct RestoreBox {
+-                        const RenderBox*& slot;
+-                        ~RestoreBox() { slot = nullptr; }
+-                    } restore{element->decorator_render_box};
+                     element->decorator_render_box = &paint_box;
+                     return decorator.decorator->GenerateElementData(element, decorator.paint_area);
+                 };
+@@ -192,6 +220,8 @@ void ElementEffects::ReloadEffectsData()
+ 				// Release old element data after generating new data, so that the decorator can reuse any cache.
+ 				if (old_data)
+ 					decorator.decorator->ReleaseElementData(old_data);
++				for (const DecoratorDataHandle tile : old_tiles)
++					decorator.decorator->ReleaseElementData(tile);
+ 			}
+ 		}
+ 
+@@ -222,6 +252,8 @@ void ElementEffects::ReleaseEffects()
+ 		{
+ 			if (decorator.decorator_data)
+ 				decorator.decorator->ReleaseElementData(decorator.decorator_data);
++			for (const DecoratorDataHandle tile : decorator.tiles)
++				decorator.decorator->ReleaseElementData(tile);
+ 		}
+ 		list->clear();
+ 	}
+@@ -257,11 +289,17 @@ void ElementEffects::RenderEffects(RenderStage render_stage)
+ 			for (int i = (int)decorators.size() - 1; i >= 0; i--)
+ 			{
+ 				DecoratorEntry& decorator = decorators[i];
+-				if (!decorator.decorator_data)
++				if (!decorator.decorator_data && decorator.tiles.empty())
+ 					continue;
++				const auto render = [&]() {
++					if (decorator.decorator_data)
++						decorator.decorator->RenderElement(element, decorator.decorator_data);
++					for (const DecoratorDataHandle tile : decorator.tiles)
++						decorator.decorator->RenderElement(element, tile);
++				};
+ 				if (!decorator.rounded_clip)
+ 				{
+-					decorator.decorator->RenderElement(element, decorator.decorator_data);
++					render();
+ 					continue;
+ 				}
+ 				// CSS background-clip with border-radius: the layer stays inside its rounded paint box.
+@@ -276,7 +314,7 @@ void ElementEffects::RenderEffects(RenderStage render_stage)
+ 						element->GetAbsoluteOffset(BoxArea::Border).Round(), transform_state ? transform_state->GetTransform() : nullptr});
+ 					render_manager->SetClipMask(std::move(clip));
+ 				}
+-				decorator.decorator->RenderElement(element, decorator.decorator_data);
++				render();
+ 				render_manager->SetState(saved);
+ 			}
+ 		}
+diff --git a/Source/Core/ElementEffects.h b/Source/Core/ElementEffects.h
+index 383c942..c721529 100644
+--- a/Source/Core/ElementEffects.h
++++ b/Source/Core/ElementEffects.h
+@@ -61,6 +61,8 @@ private:
+ 		DecoratorBox box;
+ 		// A sized layer in a rounded paint box renders under that box's clip mask.
+ 		bool rounded_clip = false;
++		// A repeating layer's tiles, rendered under its paint box's clip mask.
++		Vector<DecoratorDataHandle> tiles;
+ 	};
+ 	using DecoratorEntryList = Vector<DecoratorEntry>;
+ 
+diff --git a/Source/Core/PropertyParserDecorator.cpp b/Source/Core/PropertyParserDecorator.cpp
+index 5321f4f..da50f36 100644
+--- a/Source/Core/PropertyParserDecorator.cpp
++++ b/Source/Core/PropertyParserDecorator.cpp
+@@ -116,6 +116,11 @@ bool PropertyParserDecorator::ParseValue(Property& property, const String& decor
+ 			{
+ 				if (keyword.empty())
+ 					continue;
++				if (StringUtilities::ToLower(keyword) == "repeat")
++				{
++					box.repeat = true;
++					continue;
++				}
+ 
+ 				auto it = parser_data->area_keywords.find(StringUtilities::ToLower(keyword));
+ 				if (it == parser_data->area_keywords.end())

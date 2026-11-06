@@ -1,0 +1,86 @@
+A block box's own percentage min/max widths resolved against a zero base inside its shrink-to-fit width, so
+max-width: 100% clamped the measured content to nothing. They are cyclic there and now behave as zero and none
+(CSS Sizing 3 5.2.1, LayoutDetails::BuildIntrinsicHorizontalSize). A column flex item's hypothetical cross size
+clamps by its min/max widths, which resolve against the flex container, as a fit-content width does.
+
+diff --git a/Source/Core/Layout/BlockContainer.cpp b/Source/Core/Layout/BlockContainer.cpp
+index 48e9161..0c638b5 100644
+--- a/Source/Core/Layout/BlockContainer.cpp
++++ b/Source/Core/Layout/BlockContainer.cpp
+@@ -370,12 +370,14 @@ void BlockContainer::PlaceQueuedFloats(float vertical_position)
+ 	}
+ }
+ 
++// The box's own percentage min/max widths are cyclic here and behave as zero and none (CSS Sizing 3 5.2.1). Callers
++// clamp the result by them against the box's containing block.
+ float BlockContainer::GetShrinkToFitWidth() const
+ {
+     if (element->IsInlineSizeContainer()) {
+         const auto& computed = element->GetComputedValues();
+         float minimum, maximum;
+-        LayoutDetails::GetMinMaxWidth(minimum, maximum, computed, box, 0.f);
++        LayoutDetails::GetMinMaxWidth(minimum, maximum, LayoutDetails::BuildIntrinsicHorizontalSize(computed), box, 0.f);
+         return Math::Clamp(computed.width().type == Style::Width::Length ? box.GetSize().x : 0.f, minimum, maximum);
+     }
+ 	auto& computed = element->GetComputedValues();
+@@ -412,7 +414,7 @@ float BlockContainer::GetShrinkToFitWidth() const
+ 	}
+ 
+ 	float min_width, max_width;
+-	LayoutDetails::GetMinMaxWidth(min_width, max_width, computed, box, 0.f);
++	LayoutDetails::GetMinMaxWidth(min_width, max_width, LayoutDetails::BuildIntrinsicHorizontalSize(computed), box, 0.f);
+ 	content_width = Math::Clamp(content_width, min_width, max_width);
+ 
+ 	return content_width;
+diff --git a/Source/Core/Layout/FlexFormattingContext.cpp b/Source/Core/Layout/FlexFormattingContext.cpp
+index f29c1ed..90634c7 100644
+--- a/Source/Core/Layout/FlexFormattingContext.cpp
++++ b/Source/Core/Layout/FlexFormattingContext.cpp
+@@ -928,8 +928,8 @@ void FlexFormattingContext::Format(Vector2f& flex_resulting_content_size, Vector
+ 				if (content_size.x < 0.0f)
+ 				{
+ 					item.box.SetContent(Vector2f(content_size.x, GetInnerUsedMainSize(item)));
+-					item.hypothetical_cross_size =
+-						LayoutDetails::GetShrinkToFitWidth(item.element, flex_content_containing_block, intrinsic_inline) + item.cross.sum_edges;
++					const float fit_width = LayoutDetails::GetShrinkToFitWidth(item.element, flex_content_containing_block, intrinsic_inline);
++					item.hypothetical_cross_size = Math::Clamp(fit_width, item.cross.min_size, item.cross.max_size) + item.cross.sum_edges;
+ 				}
+ 				else
+ 				{
+diff --git a/Source/Core/Layout/LayoutDetails.cpp b/Source/Core/Layout/LayoutDetails.cpp
+index f6ab7af..2154ca4 100644
+--- a/Source/Core/Layout/LayoutDetails.cpp
++++ b/Source/Core/Layout/LayoutDetails.cpp
+@@ -269,10 +269,16 @@ void LayoutDetails::BuildBox(Box& box, Vector2f containing_block, Element* eleme
+ 
+ void LayoutDetails::GetMinMaxWidth(float& min_width, float& max_width, const ComputedValues& computed, const Box& box, float containing_block_width)
+ {
+-	min_width = ResolveValueOr(computed.min_width(), containing_block_width, 0.f);
+-	max_width = ResolveValueOr(computed.max_width(), containing_block_width, FLT_MAX);
++	GetMinMaxWidth(min_width, max_width, BuildComputedHorizontalSize(computed), box, containing_block_width);
++}
+ 
+-	if (computed.box_sizing() == Style::BoxSizing::BorderBox)
++void LayoutDetails::GetMinMaxWidth(float& min_width, float& max_width, const ComputedAxisSize& horizontal, const Box& box,
++	float containing_block_width)
++{
++	min_width = ResolveValueOr(horizontal.min_size, containing_block_width, 0.f);
++	max_width = ResolveValueOr(horizontal.max_size, containing_block_width, FLT_MAX);
++
++	if (horizontal.box_sizing == Style::BoxSizing::BorderBox)
+ 	{
+ 		const float border_padding_width = box.GetSizeAcross(BoxDirection::Horizontal, BoxArea::Border, BoxArea::Padding);
+ 		min_width = BorderSizeToContentSize(min_width, border_padding_width);
+diff --git a/Source/Core/Layout/LayoutDetails.h b/Source/Core/Layout/LayoutDetails.h
+index bba84b8..90bd51c 100644
+--- a/Source/Core/Layout/LayoutDetails.h
++++ b/Source/Core/Layout/LayoutDetails.h
+@@ -50,6 +50,8 @@ public:
+ 
+ 	// Retrieves the minimum and maximum width from an element's computed values.
+ 	static void GetMinMaxWidth(float& min_width, float& max_width, const ComputedValues& computed, const Box& box, float containing_block_width);
++	// Retrieves the minimum and maximum width from a computed horizontal axis size.
++	static void GetMinMaxWidth(float& min_width, float& max_width, const ComputedAxisSize& horizontal, const Box& box, float containing_block_width);
+ 
+ 	// Retrieves the minimum and maximum height from an element's computed values.
+ 	static void GetMinMaxHeight(float& min_height, float& max_height, const ComputedValues& computed, const Box& box, float containing_block_height);

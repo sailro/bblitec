@@ -152,6 +152,213 @@ int main() {
         placed(0, 0);
         placed(2, 220);
         painted({0, 1, 2});
+
+        // Shrink-to-fit flex containers measure their items' cyclic inline percentages as auto,
+        // zero or none, then resolve them against the measured width.
+        ui_remove(engine, row);
+        const auto make = [&](const char* style) {
+            const auto handle = ui_create_element(engine, "div");
+            ui_set_attribute(engine, handle, "style", style);
+            return handle;
+        };
+        const auto column =
+            make("position:fixed;top:10px;right:18px;display:flex;flex-direction:column;"
+                 "align-items:center;padding:14px 20px;box-sizing:border-box;");
+        const auto column_inner =
+            make("width:100%;display:flex;flex-direction:column;align-items:center;");
+        const auto column_title = make("padding:7px 26px;min-width:0;");
+        ui_append_child(engine, column_title, make("width:150px;height:10px;"));
+        const auto column_fields = make("width:100%;display:grid;");
+        const auto column_field =
+            make("display:grid;grid-template-columns:82px minmax(0,1fr);gap:10px;");
+        ui_append_child(engine, column_field, make("width:40px;height:10px;"));
+        ui_append_child(engine, column_field, make("width:177px;height:10px;"));
+        ui_append_child(engine, column_fields, column_field);
+        ui_append_child(engine, column_inner, column_title);
+        ui_append_child(engine, column_inner, column_fields);
+        ui_append_child(engine, column, column_inner);
+        ui_append_to_root(engine, column);
+        const auto shrink_row =
+            make("position:fixed;top:200px;right:18px;display:flex;align-items:start;");
+        const auto half = make("width:50%;padding:0 5%;");
+        ui_append_child(engine, half, make("width:100px;height:10px;"));
+        const auto rest = make("");
+        ui_append_child(engine, rest, make("width:60px;height:10px;"));
+        ui_append_child(engine, shrink_row, half);
+        ui_append_child(engine, shrink_row, rest);
+        ui_append_to_root(engine, shrink_row);
+        update();
+        const auto measured = [&](UiElementHandle handle, float expected, const char* label) {
+            const float width = element(handle)->GetBox().GetSize(Rml::BoxArea::Border).x;
+            if (std::abs(width - expected) >= .1f) {
+                std::fprintf(stderr, "%s: actual %.2f; expected %.2f\n", label, width, expected);
+                std::exit(1);
+            }
+        };
+        measured(column, 309, "column panel takes its content width");
+        measured(column_inner, 269, "a full percentage width resolves against the measured panel");
+        measured(column_title, 202, "a centered item keeps its content width");
+        measured(shrink_row, 160, "row panel measures a percentage item by its content");
+        measured(half, 96, "a half percentage width and its padding resolve against the row");
+        const auto rest_x = element(rest)->GetAbsoluteOffset(Rml::BoxArea::Border).x -
+                            element(shrink_row)->GetAbsoluteOffset(Rml::BoxArea::Content).x;
+        if (std::abs(rest_x - 96) >= .1f) {
+            std::fprintf(stderr, "row rest offset: actual %.2f; expected 96\n", rest_x);
+            std::exit(1);
+        }
+
+        // An item's percentage min/max widths resolve against its flex container, not against the
+        // zero base its own shrink-to-fit measurement sees.
+        const auto clamped = [&](const char* panel_style, const char* item_style, int content) {
+            const auto clamped_panel =
+                make((std::string("position:fixed;top:300px;right:18px;width:356px;display:flex;"
+                                  "padding:14px 28px;box-sizing:border-box;") +
+                      panel_style)
+                         .c_str());
+            const auto clamped_inner =
+                make("width:100%;display:flex;flex-direction:column;align-items:center;");
+            const auto item = make((std::string("padding:7px 26px;border:10px solid transparent;"
+                                                "box-sizing:border-box;min-width:0;") +
+                                    item_style)
+                                       .c_str());
+            ui_append_child(engine, item,
+                            make(("width:" + std::to_string(content) + "px;height:10px;").c_str()));
+            ui_append_child(engine, clamped_inner, item);
+            ui_append_child(engine, clamped_panel, clamped_inner);
+            ui_append_to_root(engine, clamped_panel);
+            return item;
+        };
+        const auto fits =
+            clamped("flex-direction:column;align-items:center;", "max-width:100%;", 150);
+        const auto wide =
+            clamped("flex-direction:column;align-items:center;", "max-width:100%;", 400);
+        const auto calc = clamped("flex-direction:column;align-items:center;",
+                                  "max-width:calc(100% - 52px);", 400);
+        const auto minimum =
+            clamped("flex-direction:column;align-items:center;", "min-width:400px;", 150);
+        const auto row_panel =
+            make("position:fixed;top:360px;right:18px;width:356px;display:flex;align-items:start;"
+                 "padding:14px 28px;box-sizing:border-box;");
+        const auto row_max = make("max-width:50%;");
+        ui_append_child(engine, row_max, make("width:400px;height:10px;"));
+        ui_append_child(engine, row_panel, row_max);
+        ui_append_to_root(engine, row_panel);
+        update();
+        measured(fits, 222, "a percentage maximum leaves fitting content alone");
+        measured(wide, 300, "a percentage maximum caps wide content at its container");
+        measured(calc, 248, "a percentage maximum in calc() resolves against its container");
+        measured(minimum, 400, "a minimum width wins over the available width");
+        measured(row_max, 150, "a row item's percentage maximum resolves against its row");
+
+        // A shrink-to-fit row sums its items' max-content contributions: each max-content width,
+        // bounded by the flex base size where the item cannot grow or shrink, then by min/max.
+        struct Contribution {
+            const char* label;
+            const char* row;
+            std::vector<std::pair<const char*, int>> items;
+            float width;
+        };
+        const std::vector<Contribution> contributions{
+            {"growable zero bases", "", {{"flex:1;", 100}, {"flex:1;", 60}}, 160},
+            {"a fixed percentage basis", "", {{"flex:0 0 50%;", 100}, {"", 60}}, 160},
+            {"zero bases and a gap",
+             "column-gap:10px;",
+             {{"flex:1 1 0px;", 100}, {"flex:1 1 0px;", 60}},
+             170},
+            {"an inflexible basis floors and caps", "", {{"flex:0 0 200px;", 100}}, 200},
+            {"a definite width caps an inflexible item", "", {{"width:50px;", 100}}, 50},
+            {"a maximum width clamps", "", {{"max-width:50px;", 100}}, 50},
+            {"edges add to the contribution",
+             "",
+             {{"margin:0 7px;padding:0 3px;flex:1;", 100}},
+             120},
+        };
+        std::vector<UiElementHandle> rows;
+        for (const auto& contribution : contributions) {
+            const auto measured_row =
+                make((std::string(
+                          "position:fixed;top:300px;right:18px;display:flex;align-items:start;") +
+                      contribution.row)
+                         .c_str());
+            for (const auto& [style, content] : contribution.items) {
+                const auto item = make(style);
+                ui_append_child(
+                    engine, item,
+                    make(("width:" + std::to_string(content) + "px;height:10px;").c_str()));
+                ui_append_child(engine, measured_row, item);
+            }
+            ui_append_to_root(engine, measured_row);
+            rows.push_back(measured_row);
+        }
+        update();
+        for (size_t index = 0; index < rows.size(); ++index)
+            measured(rows[index], contributions[index].width, contributions[index].label);
+        // Without automatic minimums the items share the measured width.
+        const auto zero_minimums =
+            make("position:fixed;top:400px;right:18px;display:flex;align-items:start;");
+        std::vector<UiElementHandle> shared;
+        for (const int content : {100, 60}) {
+            shared.push_back(make("flex:1 1 0px;min-width:0;"));
+            ui_append_child(engine, shared.back(),
+                            make(("width:" + std::to_string(content) + "px;height:10px;").c_str()));
+            ui_append_child(engine, zero_minimums, shared.back());
+        }
+        ui_append_to_root(engine, zero_minimums);
+        update();
+        measured(zero_minimums, 160, "zero minimums still measure their content");
+        measured(shared[0], 80, "zero minimums share the measured width");
+        measured(shared[1], 80, "zero minimums share the measured width equally");
+        // A row item whose min-width is auto never shrinks below its min-content width, capped by a
+        // definite width and its maximum (CSS Flexbox 4.5); min-width: 0 or clipped overflow lifts it.
+        struct Minimum {
+            const char* label;
+            std::vector<std::pair<const char*, int>> items;
+            std::vector<float> widths;
+        };
+        const std::vector<Minimum> minimums{
+            {"zero bases grow from their minimums", {{"flex:1;", 100}, {"flex:1;", 60}}, {100, 60}},
+            {"shrinking stops at the minimums",
+             {{"flex:0 1 auto;", 100}, {"flex:0 1 auto;", 60}},
+             {100, 60}},
+            {"zero minimums shrink in proportion",
+             {{"flex:0 1 auto;min-width:0;", 100}, {"flex:0 1 auto;min-width:0;", 60}},
+             {75, 45}},
+            {"clipped overflow has no minimum",
+             {{"flex:0 1 auto;overflow:hidden;", 100}, {"flex:0 1 auto;", 60}},
+             {60, 60}},
+            {"a maximum width caps the minimum",
+             {{"flex:0 1 auto;max-width:40px;", 100}, {"flex:0 1 auto;", 60}},
+             {40, 60}},
+        };
+        std::vector<std::vector<UiElementHandle>> minimum_items;
+        for (const auto& minimum : minimums) {
+            const auto minimum_row = make(
+                "position:absolute;left:10px;top:420px;width:120px;display:flex;align-items:start;");
+            minimum_items.emplace_back();
+            for (const auto& [style, content] : minimum.items) {
+                minimum_items.back().push_back(make(style));
+                ui_append_child(
+                    engine, minimum_items.back().back(),
+                    make(("width:" + std::to_string(content) + "px;height:10px;").c_str()));
+                ui_append_child(engine, minimum_row, minimum_items.back().back());
+            }
+            ui_append_to_root(engine, minimum_row);
+        }
+        update();
+        for (size_t row_index = 0; row_index < minimums.size(); ++row_index)
+            for (size_t index = 0; index < minimums[row_index].widths.size(); ++index)
+                measured(minimum_items[row_index][index], minimums[row_index].widths[index],
+                         minimums[row_index].label);
+        // A shrink-to-fit row's contributions are bounded by the minimums too.
+        const auto zero_basis_row =
+            make("position:fixed;top:460px;right:18px;display:flex;align-items:start;");
+        const auto zero_basis = make("flex:0 0 0px;");
+        ui_append_child(engine, zero_basis, make("width:100px;height:10px;"));
+        ui_append_child(engine, zero_basis_row, zero_basis);
+        ui_append_to_root(engine, zero_basis_row);
+        update();
+        measured(zero_basis_row, 100, "an inflexible zero basis contributes its minimum");
+        measured(zero_basis, 100, "an inflexible zero basis keeps its minimum");
     }
     SDL_DestroyWindow(window);
     SDL_Quit();

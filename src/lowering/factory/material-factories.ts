@@ -1475,6 +1475,7 @@ ${pbrMaterialRecordSeedCpp("material", "    ")}
     material.reflectance = options.reflectance;
     material.unlit = options.unlit;
     material.double_sided = options.double_sided;
+    material.source_double_sided = options.source_double_sided;
     material.specular_aa = options.specular_aa;
     material.skybox_mode = options.skybox_mode;
     material.transmission_factor = options.transmission_factor;

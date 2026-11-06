@@ -188,6 +188,51 @@ test("render targets retain explicit color formats and double precision scales",
     );
 });
 
+test("a surface size built before the call reads its surface and scale", () => {
+    const result = compileSource(`${setup}
+        const postScale = 0.5;
+        const scaledSize = postScale < 1 ? { surface: engine, scale: postScale } : engine;
+        createSurfaceRenderTargetTexture(engine, {format: "rgba8unorm", samples: 1, size: scaledSize});
+        } void main();`);
+    // The record keeps its scale in field storage, read where the target is made.
+    assert.match(
+        result.cpp,
+        /const double scale = \(\*v_bblite_scaledSize_fields_scale_\d+\);/,
+    );
+    assert.match(
+        result.cpp,
+        /options\.scale_source = bbl::swapchain_render_target\(/,
+    );
+});
+
+test("a surface size selected at run time keeps each arm's own sizing", () => {
+    // The selection has no one native storage; read once, it is the size
+    // where the target is made, the scaled arm scaling the surface and the
+    // other reading it directly.
+    const result = compileSource(`${setup}
+        const postScale = Number(localStorage.getItem("postres") ?? "0.5");
+        const scaledSize = postScale < 1 ? { surface: engine, scale: postScale } : engine;
+        createSurfaceRenderTargetTexture(engine, {format: "rgba8unorm", samples: 1, size: scaledSize});
+        } void main();`);
+    assert.match(
+        result.cpp,
+        /if \(v_\w*postScale\w* < 1\.0\) \{ const double scale = v_\w*postScale\w*; .*options\.scale_source = bbl::swapchain_render_target\(.*\} else \{ +\}/,
+    );
+});
+
+test("a run-time surface size selection read twice still refuses", () => {
+    assert.throws(
+        () =>
+            compileSource(`${setup}
+        const postScale = Number(localStorage.getItem("postres") ?? "0.5");
+        const scaledSize = postScale < 1 ? { surface: engine, scale: postScale } : engine;
+        createSurfaceRenderTargetTexture(engine, {format: "rgba8unorm", samples: 1, size: scaledSize});
+        createSurfaceRenderTargetTexture(engine, {format: "rgba8unorm", samples: 1, size: scaledSize});
+        } void main();`),
+        /Conditional expressions require matching native value branches/,
+    );
+});
+
 test("surface extent arithmetic matches the pin and sampled facades retain distinct aspects", async (t) => {
     const tools = optionalNativeFixtureTools(false);
     if (!tools) {

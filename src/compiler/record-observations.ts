@@ -15,6 +15,8 @@ import {
     type ProgramObservations,
 } from "./program-observations.js";
 import { yieldsNewArray } from "./fresh-records.js";
+import { bindingReferences } from "./binding-references.js";
+import { OPEN_HOLDER_FLAGS } from "./written-holders.js";
 import {
     declarationOrigin,
     declaredSymbol,
@@ -33,7 +35,6 @@ import {
     isExpressionWrapper,
     writeSites,
     writeSiteOf,
-    referenceSite,
     equalityOperator,
     positionalParameter,
     variableKind,
@@ -506,7 +507,11 @@ function identityUses(
     follow(declaration.name);
     let reason: string | undefined;
     for (let index = 0; index < followed.length && !reason; index++)
-        for (const reference of bindingReferences(context, followed[index]!)) {
+        for (const reference of bindingReferences(
+            context.program,
+            context.checker,
+            followed[index]!,
+        )) {
             const use = flowingUse(reference);
             const parent = use.parent;
             if (isIdentityComparison(parent)) {
@@ -683,83 +688,6 @@ function emptyTokenRoot(
     return undefined;
 }
 
-/** @unjournaled Pure functions of the checked program, kept across replays. */
-const namedIdentifiers = new WeakMap<
-    ts.SourceFile,
-    ReadonlyMap<string, readonly ts.Identifier[]>
->();
-
-/** A file's identifiers outside type positions, by name. */
-function identifiersByName(
-    file: ts.SourceFile,
-): ReadonlyMap<string, readonly ts.Identifier[]> {
-    let known = namedIdentifiers.get(file);
-    if (!known) {
-        const names = new Map<string, ts.Identifier[]>();
-        const visit = (node: ts.Node): void => {
-            if (ts.isTypeNode(node)) return;
-            if (ts.isIdentifier(node)) {
-                const list = names.get(node.text);
-                if (list) list.push(node);
-                else names.set(node.text, [node]);
-            }
-            ts.forEachChild(node, visit);
-        };
-        visit(file);
-        namedIdentifiers.set(file, (known = names));
-    }
-    return known;
-}
-
-/**
- * The expressions reading a binding: in its own file, and for a module
- * binding in every file of the program, by its name or the local name an
- * import gives it.
- */
-function bindingReferences(
-    context: RecordObservationContext,
-    symbol: ts.Symbol,
-): ts.Expression[] {
-    const declaration = symbol.valueDeclaration;
-    if (!declaration) return [];
-    const moduleBinding =
-        ts.isVariableDeclaration(declaration) &&
-        ts.isVariableStatement(declaration.parent.parent) &&
-        ts.isSourceFile(declaration.parent.parent.parent);
-    const files = moduleBinding
-        ? context.program
-              .getSourceFiles()
-              .filter((file) => !file.isDeclarationFile)
-        : [declaration.getSourceFile()];
-    const declared = ts.getNameOfDeclaration(declaration);
-    return files.flatMap((file) => {
-        const byName = identifiersByName(file);
-        const names = new Set([symbol.name]);
-        for (const identifier of byName.get(symbol.name) ?? []) {
-            const specifier = identifier.parent;
-            if (
-                (ts.isImportSpecifier(specifier) ||
-                    ts.isExportSpecifier(specifier)) &&
-                specifier.propertyName === identifier
-            )
-                names.add(specifier.name.text);
-        }
-        return [...names].flatMap((name) =>
-            (byName.get(name) ?? []).flatMap((identifier) => {
-                const site = referenceSite(identifier);
-                // A namespace import reads a module binding as `m.name`.
-                return site &&
-                    identifier !== declared &&
-                    !ts.isExportSpecifier(identifier.parent) &&
-                    (site === identifier || moduleBinding) &&
-                    resolvedSymbol(context.checker, identifier) === symbol
-                    ? [site]
-                    : [];
-            }),
-        );
-    });
-}
-
 /** The fields a literal's methods write through `this`. */
 function receiverWrites(initializer: ts.Expression | undefined): string[] {
     const literal = initializer && unwrapExpression(initializer);
@@ -907,11 +835,19 @@ export function holderTest(
     };
 }
 
-function holdsRecord(
+/**
+ * Whether a value of type `holder` can be a record of one of `records`.
+ * Under a generic instantiation each type the walk meets is first
+ * `resolve`d to the type the active call binds; {@link holderTest} caches
+ * the answers outside one.
+ */
+export function holdsRecord(
     checker: ts.TypeChecker,
     holder: ts.Type,
     records: readonly ts.Type[],
+    resolve?: (type: ts.Type) => ts.Type,
 ): boolean {
+    if (resolve) holder = resolve(holder);
     // A type parameter holds whatever its constraint admits; an
     // unconstrained one holds anything.
     if ((holder.flags & ts.TypeFlags.TypeParameter) !== 0) {
@@ -919,26 +855,17 @@ function holdsRecord(
         return (
             constraint === undefined ||
             constraint === holder ||
-            holdsRecord(checker, constraint, records)
+            holdsRecord(checker, constraint, records, resolve)
         );
     }
-    const open =
-        ts.TypeFlags.Any |
-        ts.TypeFlags.Unknown |
-        ts.TypeFlags.TypeParameter |
-        ts.TypeFlags.Index |
-        ts.TypeFlags.IndexedAccess |
-        ts.TypeFlags.Conditional |
-        ts.TypeFlags.Substitution |
-        ts.TypeFlags.NonPrimitive;
-    if ((holder.flags & open) !== 0) return true;
+    if ((holder.flags & OPEN_HOLDER_FLAGS) !== 0) return true;
     if (holder.isUnion())
         return holder.types.some((member) =>
-            holdsRecord(checker, member, records),
+            holdsRecord(checker, member, records, resolve),
         );
     if (
         holder.isIntersection() &&
-        holder.types.some((member) => (member.flags & open) !== 0)
+        holder.types.some((member) => (member.flags & OPEN_HOLDER_FLAGS) !== 0)
     )
         return true;
     if (

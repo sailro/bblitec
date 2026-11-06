@@ -14,7 +14,10 @@ import {
 } from "./user-functions.js";
 import { libraryStaticMember } from "./symbols.js";
 
-/** Finite record proxies keep the target's typed slots and their own object identity. */
+/**
+ * Finite record proxies keep the target's typed slots and their own object
+ * identity; a proxy over a dynamic object is a dynamic view through its traps.
+ */
 export class RecordProxies {
     constructor(private readonly context: LoweringServices) {}
 
@@ -61,37 +64,16 @@ export class RecordProxies {
                 context.checker.getTypeAtLocation(targetNode),
                 targetNode,
             );
+        const document = type?.kind === "json";
         if (
-            type?.kind !== "struct" ||
-            context.dataTypes.isClassStruct(type.name)
+            !document &&
+            (type?.kind !== "struct" ||
+                context.dataTypes.isClassStruct(type.name))
         )
             context.fail(
                 targetNode,
                 "A typed Proxy requires a finite plain record target.",
             );
-        const fields = context.dataTypes.structFields(
-            type.name,
-            node,
-            "accessors",
-        );
-        if (!fields.length || fields.some((field) => field.uncheckedProperty))
-            context.fail(
-                node,
-                "A typed Proxy requires a declared finite target layout.",
-            );
-        context.dataTypes.requireProxyRecord(type, node);
-        const target = context.bindings.pinValueToTemporary(
-            context.dataLowerer.leafValue(
-                context.dataLowerer.compileKnownValueForSink(
-                    raw,
-                    type,
-                    targetNode,
-                ),
-                type,
-            ),
-            "proxy_target",
-            targetNode,
-        );
         const handler = context.compileValue(handlerNode);
         if (handler.kind !== "record")
             context.fail(
@@ -141,6 +123,40 @@ export class RecordProxies {
                 handlerNode,
                 "A typed Proxy defineProperty trap requires an explicit set trap.",
             );
+        if (document)
+            return this.documentView(
+                context.bindings.pinValueToTemporary(
+                    raw,
+                    "proxy_target",
+                    targetNode,
+                ),
+                handler,
+                node,
+            );
+        if (type?.kind !== "struct") return undefined;
+        const fields = context.dataTypes.structFields(
+            type.name,
+            node,
+            "accessors",
+        );
+        if (!fields.length || fields.some((field) => field.uncheckedProperty))
+            context.fail(
+                node,
+                "A typed Proxy requires a declared finite target layout.",
+            );
+        context.dataTypes.requireProxyRecord(type, node);
+        const target = context.bindings.pinValueToTemporary(
+            context.dataLowerer.leafValue(
+                context.dataLowerer.compileKnownValueForSink(
+                    raw,
+                    type,
+                    targetNode,
+                ),
+                type,
+            ),
+            "proxy_target",
+            targetNode,
+        );
         const parts = fields.map((field) =>
             this.slot(type, field, target, handler, node),
         );
@@ -168,17 +184,8 @@ export class RecordProxies {
             cpp: context.cppString(field.sourceName),
             staticString: field.sourceName,
         };
-        const argument = (name: string, argumentType: DataType): Value => ({
-            ...context.dataLowerer.leafValue(name, argumentType),
-            nativeCaptures: [
-                context.registerNativeBinding(
-                    name,
-                    false,
-                    false,
-                    context.dataTypes.cppType(argumentType),
-                ),
-            ],
-        });
+        const argument = (name: string, argumentType: DataType): Value =>
+            this.trapArgument(name, argumentType);
         const getter = context.captureManagedClosureLines(() => {
             const receiver = argument(receiverName, type);
             const value =
@@ -302,6 +309,110 @@ export class RecordProxies {
         return `${slotCpp}(bbl::js::Callback<${valueCpp}(${receiverCpp})>(${renderClosure(getter, `[[maybe_unused]] ${receiverCpp} ${receiverName}`, valueCpp)}), bbl::js::Callback<bool(${receiverCpp}, ${valueCpp})>(${renderClosure(setter, `[[maybe_unused]] ${receiverCpp} ${receiverName}, [[maybe_unused]] ${valueCpp} ${valueName}`, "bool")}), bbl::js::Callback<bool()>(${renderClosure(presence, "", "bool")}), ${mutation("deleteProperty")}, ${mutation("defineProperty")}, bbl::js::Callback<bool(${slotCpp}, bool, bool)>(${renderClosure(definition, `${slotCpp} ${replacement}, bool ${configurable}, bool ${preserveSetter}`, "bool")}), bbl::js::Callback<${slotCpp}::DescriptorState()>(${renderClosure(descriptor, "", `${slotCpp}::DescriptorState`)}))`;
     }
 
+    /**
+     * A proxy over a dynamic object: each trap runs per property key at run
+     * time, an absent one forwarding to the target. A trap reading its
+     * receiver (the proxy itself) has no native contract.
+     */
+    private documentView(target: Value, handler: Value, node: ts.Node): Value {
+        const context: LoweringServices = this.context;
+        const json: DataType = { kind: "json" };
+        for (const [name, arity] of [
+            ["get", 2],
+            ["set", 3],
+            ["deleteProperty", 2],
+        ] as const) {
+            const trap = this.trap(handler, name);
+            if (
+                trap &&
+                (ts.isIdentifier(trap) ||
+                    trap.parameters.length > arity ||
+                    trap.parameters.some(
+                        (parameter) => parameter.dotDotDotToken,
+                    ))
+            )
+                context.fail(
+                    trap,
+                    `A dynamic object's Proxy ${name} trap cannot read its receiver.`,
+                );
+        }
+        const keyName = context.allocateTemporaryCppName("proxy_key");
+        const valueName = context.allocateTemporaryCppName("proxy_value");
+        const argument = (name: string, dataType: DataType): Value =>
+            this.trapArgument(name, dataType);
+        const read = context.captureManagedClosureLines(() => {
+            const key = argument(keyName, { kind: "string" });
+            const result = this.invokeTrap(handler, "get", [target, key], node);
+            context.useNativeValue(target);
+            context.emit(
+                `return ${
+                    result
+                        ? context.dataLowerer.compileKnownValueForSink(
+                              result,
+                              json,
+                              node,
+                          )
+                        : `${target.cpp}.get(${keyName})`
+                };`,
+            );
+        });
+        const accepted = (
+            name: "set" | "deleteProperty",
+            values: readonly Value[],
+            forward: string,
+        ): void => {
+            const result = this.invokeTrap(handler, name, values, node);
+            context.useNativeValue(target);
+            if (result)
+                context.emit(
+                    `return ${context.dataLowerer.compileKnownValueForSink(result, { kind: "boolean" }, node)};`,
+                );
+            else context.emit(`${forward}; return true;`);
+        };
+        const write = context.captureManagedClosureLines(() =>
+            accepted(
+                "set",
+                [
+                    target,
+                    argument(keyName, { kind: "string" }),
+                    argument(valueName, json),
+                ],
+                `${target.cpp}.set(${keyName}, ${valueName})`,
+            ),
+        );
+        const erase = context.captureManagedClosureLines(() =>
+            accepted(
+                "deleteProperty",
+                [target, argument(keyName, { kind: "string" })],
+                `${target.cpp}.remove(${keyName})`,
+            ),
+        );
+        const key = `[[maybe_unused]] std::string ${keyName}`;
+        context.reachJson();
+        return context.dataLowerer.leafValue(
+            `bbl::js::JsonValue::from_proxy_view(${target.cpp}, ` +
+                `bbl::js::Callback<bbl::js::JsonValue(std::string)>(${renderClosure(read, key, "bbl::js::JsonValue")}), ` +
+                `bbl::js::Callback<bool(std::string, bbl::js::JsonValue)>(${renderClosure(write, `${key}, [[maybe_unused]] bbl::js::JsonValue ${valueName}`, "bool")}), ` +
+                `bbl::js::Callback<bool(std::string)>(${renderClosure(erase, key, "bool")}))`,
+            json,
+        );
+    }
+
+    /** A native closure's parameter `name`, read by the trap it calls. */
+    private trapArgument(name: string, dataType: DataType): Value {
+        return {
+            ...this.context.dataLowerer.leafValue(name, dataType),
+            nativeCaptures: [
+                this.context.registerNativeBinding(
+                    name,
+                    false,
+                    false,
+                    this.context.dataTypes.cppType(dataType),
+                ),
+            ],
+        };
+    }
+
     private trap(handler: Value, name: string) {
         return (
             handler.recordMethods?.[name] ??
@@ -389,9 +500,7 @@ export class RecordProxies {
         );
         context.useNativeValue(target);
         context.useNativeValue(receiver);
-        const member = context.dataTypes.isReferenceStruct(target.dataType.name)
-            ? "->"
-            : ".";
+        const member = context.dataTypes.memberAccess(target.dataType.name);
         const slot = `${target.cpp}${member}${field.name}`;
         if (field.accessor && !field.accessorReceiver && receiverNode)
             context.fail(

@@ -4,6 +4,11 @@
 #include "pal_ui_rml.cpp"
 #include <cassert>
 
+namespace bbl {
+std::string asset_path(const std::string&) {
+    throw std::runtime_error("Unexpected SVG asset read");
+}
+} // namespace bbl
 namespace bbl::pal {
 std::string asset_path(std::string_view) { throw std::runtime_error("Unexpected SVG asset read"); }
 std::string environment_variable(const char*) { return {}; }
@@ -23,6 +28,22 @@ int run_window_application(WorkerEntry initialize, EngineOptions) {
 
 int run() {
     using namespace bbl;
+    // A smooth curve reflects the previous segment's last control point about the current one.
+    const auto lowest_after = [](std::string_view data, double from) {
+        const auto lines = pal::ui_svg_path_polylines(data);
+        if (!lines)
+            throw std::runtime_error("SVG path flattening: " + std::string(data));
+        double lowest = 0;
+        for (const auto& point : lines->front())
+            if (point.x > from)
+                lowest = std::min(lowest, point.y);
+        return lowest;
+    };
+    const auto cubic = lowest_after("M0 0C0 10 10 10 10 0s10-10 10 0", 10);
+    const auto quadratic = lowest_after("M0 0Q5 10 10 0T20 0", 10);
+    if (cubic > -7 || cubic < -7.6 || quadratic > -4.5 || quadratic < -5.1)
+        throw std::runtime_error("SVG smooth curves: " + std::to_string(cubic) + ", " +
+                                 std::to_string(quadratic));
     assert(SDL_Init(SDL_INIT_VIDEO));
     SDL_Window* window = SDL_CreateWindow("Retained SVG", 320, 240, SDL_WINDOW_HIDDEN);
     assert(window && generated_main() == 0);
@@ -223,6 +244,25 @@ int run() {
         ui_remove(engine, svg);
         pal::update_ui_rml_runtime(runtime, 320, 240);
         assert(!runtime.projected_elements.at(svg.value).element);
+        // A percentage viewport is the root's size only under an author size.
+        const auto flag = ui_create_element(engine, "span");
+        ui_append_to_root(engine, flag);
+        ui_set_inner_rml(
+            engine, flag,
+            "<svg class=\"flag\" viewBox=\"0 0 60 30\" data-bbl-viewport-width=\"100%\" "
+            "preserveAspectRatio=\"none\"><rect width=\"60\" height=\"30\"/></svg>");
+        bool refused = false;
+        try {
+            pal::update_ui_rml_runtime(runtime, 320, 240);
+        } catch (const std::runtime_error&) {
+            refused = true;
+        }
+        if (!refused)
+            throw std::runtime_error("An unsized percentage viewport must refuse");
+        const auto flag_style = ui_create_element(engine, "style");
+        ui_append_to_root(engine, flag_style);
+        ui_add_class_style(engine, flag_style, "flag", "display:block;width:18px;height:12px;");
+        pal::update_ui_rml_runtime(runtime, 320, 240);
     }
     SDL_DestroyWindow(window);
     SDL_Quit();

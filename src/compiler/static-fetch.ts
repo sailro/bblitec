@@ -6,13 +6,17 @@ import { localAssetPath } from "../asset-source.js";
 import ts from "typescript";
 import { argumentAt } from "./syntax.js";
 import { cacheOnlyRequestOptions } from "./http.js";
-import { readdirSync } from "node:fs";
+import { readdirSync, statSync } from "node:fs";
 import { dirname, relative, resolve, sep } from "node:path";
 
 import { floatLiteral } from "../cpp-literals.js";
 import { readAssetBytesSync } from "./asset-bytes-sync.js";
 import { canonicalLocalAssetSource, resolveBundledAsset } from "./assets.js";
-import { deploymentUrl, packagedResponseUrl } from "./deployment.js";
+import {
+    deploymentAssetSource,
+    deploymentUrl,
+    packagedResponseUrl,
+} from "./deployment.js";
 import { assetUrlDomain } from "./asset-url-domain.js";
 import { jsonToValue, type JsonValuePolicy } from "./json-value.js";
 import { isStringValue, type CompileAsset, type Value } from "./types.js";
@@ -38,6 +42,7 @@ export interface StaticFetchContext extends Pick<
     | "fail"
     | "checker"
     | "sourceFiles"
+    | "inlinedCallArgument"
 > {}
 
 export function compileStaticFetch(
@@ -78,8 +83,14 @@ export function compileStaticFetch(
               )
             : packagedAssetFetch(context, url, discovery);
     if (ts.isIdentifier(url)) {
+        // An inlined call's parameter a call's result fills reads that
+        // call's text, which a generation run computes.
         const bound = context.bindings.lookupOptional(url);
-        if (bound && bound.staticString === undefined) {
+        if (
+            bound &&
+            bound.staticString === undefined &&
+            !(bound.parameterBinding && context.inlinedCallArgument(url))
+        ) {
             context.fail(
                 url,
                 `Generation-time fetch URL '${url.text}' lost its static value (${bound.kind}: ${bound.cpp}).`,
@@ -93,6 +104,21 @@ export function compileStaticFetch(
         context.options.fileName,
         context.options,
     );
+    // A URL the deployment's public directory holds no file at rejects when
+    // fetched, as a URL outside the package does. Only an owned response
+    // settles at run time; a generation-known one reads the file.
+    if (
+        deploymentAssetSource(logicalSource, context.options) === source &&
+        !readablePackagedAsset(context, source)
+    ) {
+        if (!response) throw new ApplicationRealmRequired();
+        return ownedPackagedResponse(
+            context,
+            url,
+            [{ key: logicalSource, logicalSource, output: "" }],
+            { kind: "string", cpp: context.cppString(logicalSource) },
+        );
+    }
     if (response) {
         const asset = context.assetRegistry.registerAsset(source, "binary");
         return ownedPackagedResponse(
@@ -157,11 +183,17 @@ function registerAs(
     return (source) => context.assetRegistry.registerAsset(source, kind).output;
 }
 
-/** Readability is shared by literal, candidate-table and directory discovery. */
+/**
+ * Readability is shared by literal, candidate-table and directory discovery.
+ * A local file answers from its directory entry, without reading it.
+ */
 export function readablePackagedAsset(
     context: Pick<StaticFetchContext, "options">,
     source: string,
 ): boolean {
+    const local = localAssetPath(source, resolve(context.options.fileName));
+    if (local)
+        return statSync(local, { throwIfNoEntry: false })?.isFile() ?? false;
     try {
         readAssetBytesSync(source, context.options.fileName);
         return true;
@@ -527,21 +559,47 @@ export function compileStaticFetchMethod(
             },
         };
     }
-    if (method === "text") {
+    if (method === "text" || method === "json") {
         if (call.arguments.length !== 0) {
-            context.fail(call, "Response.text() takes no arguments.");
+            context.fail(call, `Response.${method}() takes no arguments.`);
         }
+        // The file a runtime URL selects, decoded as a Response body is.
+        if (owner.dynamicAssetPathCpp) {
+            context.reachJsData();
+            const text = `bbl::js::decode_utf8_removing_bom(bbl::pal::read_binary_file(${owner.dynamicAssetPathCpp}))`;
+            const nativeCaptures =
+                owner.nativeCompanionCaptures?.dynamicAssetPathCpp ??
+                owner.nativeCaptures ??
+                [];
+            if (method === "text")
+                return { kind: "string", cpp: text, nativeCaptures };
+            context.reachFeature("data:json", call);
+            return {
+                kind: "data",
+                cpp: `bbl::js::json_parse(${text})`,
+                dataType: { kind: "json" },
+                nativeCaptures,
+            };
+        }
+        if (owner.staticString === undefined) {
+            context.fail(
+                call.expression,
+                "Fetched response has no static source.",
+            );
+        }
+    }
+    if (method === "text") {
         let source: string;
         try {
             const bytes = readAssetBytesSync(
-                owner.staticString ?? "",
+                owner.staticString!,
                 context.options.fileName,
             );
             source = new TextDecoder().decode(bytes);
         } catch (error: unknown) {
             context.fail(
                 call,
-                `Generation-time fetch of '${owner.staticString ?? ""}' failed: ${
+                `Generation-time fetch of '${owner.staticString}' failed: ${
                     error instanceof Error ? error.message : String(error)
                 }`,
             );
@@ -558,20 +616,17 @@ export function compileStaticFetchMethod(
             `Generation-time fetch responses support json(), text(), and arrayBuffer(), not '${method}()'.`,
         );
     }
-    if (call.arguments.length !== 0) {
-        context.fail(call, "Response.json() takes no arguments.");
-    }
     let parsed: unknown;
     try {
         const bytes = readAssetBytesSync(
-            owner.staticString ?? "",
+            owner.staticString!,
             context.options.fileName,
         );
         parsed = JSON.parse(new TextDecoder().decode(bytes));
     } catch (error: unknown) {
         context.fail(
             call,
-            `Generation-time fetch of '${owner.staticString ?? ""}' failed: ${
+            `Generation-time fetch of '${owner.staticString}' failed: ${
                 error instanceof Error ? error.message : String(error)
             }`,
         );
@@ -716,7 +771,8 @@ function ownedPackagedResponse(
     if (response.kind !== "promise" || !response.promiseResult) return response;
     return {
         ...response,
-        ...(assets.length === 1
+        // A served file's body is known at generation.
+        ...(assets.length === 1 && assets[0]!.output
             ? {
                   promiseResult: {
                       ...response.promiseResult,

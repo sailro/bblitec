@@ -27,6 +27,7 @@ import {
 import {
     forEachAnalysisNode,
     someAnalysisNode,
+    sourceFilesWalk,
 } from "./compiler/analysis-walk.js";
 import {
     emissionArray,
@@ -83,6 +84,7 @@ import {
 import {
     activeSurvey,
     SurveyCollector,
+    type SurveyProgress,
     withSurvey,
     type SurveyReport,
 } from "./compiler/survey.js";
@@ -152,6 +154,7 @@ import {
 import {
     probePixelsAsset,
     registerSpriteAtlasAsset,
+    withStableAssetSources,
 } from "./compiler/assets.js";
 import {
     compileStaticFetch,
@@ -184,6 +187,7 @@ import {
 import {
     selectedStaticExpression,
     selectedStaticNumberValue,
+    type StaticSelectionContext,
     staticNumberValue,
     validateObjectProperties,
 } from "./compiler/option-helpers.js";
@@ -481,26 +485,22 @@ const NULLABLE_RESOURCE_TYPES = new EmissionMap<
 ]);
 
 /**
- * The two VAT rows, kept in their own table because they are classified
- * AFTER the data model has been asked about the type.
+ * The VAT handle row, kept in its own table because it is classified AFTER
+ * the data model has been asked about the type.
  *
  * `fromTsType` is not a pure classifier -- reaching it can register a
- * native record for the type it is handed -- so moving these two names in
- * front of it would silently withdraw that call. They stay where they are.
+ * native record for the type it is handed -- so moving this name in front
+ * of it would silently withdraw that call. It stays where it is.
  *
  * `VatHandle`: `let handle: VatHandle | null = null` then a guarded
  * assignment inside the "did the asset carry a skinned mesh and clips" arm,
- * the shape both VAT scenes are written in. `VatClip`: `let swim: VatClip |
- * null = null` then the guarded row read, the per-instance scene's shape for
- * holding one clip's row block. Both are pinned types.
+ * the shape both VAT scenes are written in. A pinned type. A `VatClip` is a
+ * plain record: a bake's clip read is its row's three fields.
  */
 const NULLABLE_VAT_RESOURCE_TYPES = new EmissionMap<
     string,
     { kind: ValueKind; cppType: string }
->([
-    ["VatHandle", { kind: "vat-handle", cppType: "bbl::VatHandle" }],
-    ["VatClip", { kind: "vat-clip", cppType: "bbl::VatClipRow" }],
-]);
+>([["VatHandle", { kind: "vat-handle", cppType: "bbl::VatHandle" }]]);
 
 /** The two DOM types a drawing surface is declared as. */
 const CANVAS_TYPE_NAMES: ReadonlySet<string> = new EmissionSet([
@@ -557,6 +557,65 @@ const parameterDefaultAnswers = new WeakMap<
     }
 >();
 
+/** The variable and parameter names a program declares. */
+const sourceDeclaredNames = sourceFilesWalk((node) =>
+    (ts.isVariableDeclaration(node) || ts.isParameter(node)) &&
+    ts.isIdentifier(node.name)
+        ? node.name.text
+        : undefined,
+);
+
+/** A site `predeclareStoredObjectReferences` maps before emission. */
+type StoredReferenceSite =
+    | { readonly kind: "retained"; readonly target: ts.Expression }
+    | {
+          readonly kind: "named-type";
+          readonly node: ts.InterfaceDeclaration | ts.TypeAliasDeclaration;
+      }
+    | {
+          readonly kind: "annotated";
+          readonly node: ts.VariableDeclaration;
+          readonly type: ts.TypeNode;
+      }
+    | {
+          readonly kind: "class-parameter";
+          readonly node: ts.ParameterDeclaration;
+      }
+    | { readonly kind: "field"; readonly node: ts.PropertyDeclaration }
+    | {
+          readonly kind: "home-literal";
+          readonly node: ts.ObjectLiteralExpression;
+      };
+
+/**
+ * A retained mutation target, a named type, an annotated variable, a class
+ * constructor or method parameter, a field, or a literal with home methods.
+ */
+function storedReferenceSite(
+    node: ts.Node,
+    symbols: CompilerSymbols,
+): StoredReferenceSite | undefined {
+    const target = retainedNativeMutationTarget(symbols, node);
+    if (target) return { kind: "retained", target };
+    if (ts.isInterfaceDeclaration(node) || ts.isTypeAliasDeclaration(node))
+        return { kind: "named-type", node };
+    if (ts.isVariableDeclaration(node) && node.type)
+        return { kind: "annotated", node, type: node.type };
+    if (
+        ts.isParameter(node) &&
+        (ts.isConstructorDeclaration(node.parent) ||
+            ts.isMethodDeclaration(node.parent))
+    )
+        return { kind: "class-parameter", node };
+    if (ts.isPropertyDeclaration(node)) return { kind: "field", node };
+    if (ts.isObjectLiteralExpression(node) && homeObjectMembers(node).size > 0)
+        return { kind: "home-literal", node };
+    return undefined;
+}
+
+/** A program's stored-reference sites in source order. */
+const storedReferenceSites = sourceFilesWalk(storedReferenceSite);
+
 /**
  * Executed module constants: numbers are JavaScript doubles, and every value
  * keeps full static metadata for the static positions that read it.
@@ -592,20 +651,42 @@ interface SurveyOutcome {
 export function surveySource(
     source: string,
     options: CompileOptions = {},
+    progress?: SurveyProgress,
 ): SurveyOutcome {
-    const collector = new SurveyCollector();
+    const collector = new SurveyCollector(progress);
     return withSurvey(collector, () => {
         try {
             const result = compileSourceApplication(source, options);
             return { report: collector.report(), result };
         } catch (error) {
             if (!(error instanceof Error)) throw error;
-            return { report: collector.report(error.message) };
+            return { report: collector.report(error) };
         }
     });
 }
 
 function compileSourceApplication(
+    source: string,
+    options: CompileOptions,
+): CompileResult {
+    return withStableAssetSources(() =>
+        lowerSourceApplication(source, options),
+    );
+}
+
+/**
+ * The replays besides storage a compile applies before its next attempt: a
+ * lazy module's activation, runtime query state, pending activations.
+ */
+function isReplayBesidesStorage(error: unknown): error is Error {
+    return (
+        error instanceof ModuleActivationRequired ||
+        error instanceof RuntimeSearchParamsRequired ||
+        error instanceof PendingActivationsRequired
+    );
+}
+
+function lowerSourceApplication(
     source: string,
     options: CompileOptions,
 ): CompileResult {
@@ -672,16 +753,18 @@ function compileSourceApplication(
                 resolved,
                 storage,
                 lazyModules,
-                planner,
             );
         };
         // A replay lowers the realm again from the start, so a survey keeps
-        // only the attempt that ran to the end.
-        const lower = (): CompileResult =>
+        // only the attempt that ran to the end. A plan that lowered every
+        // statement is that attempt (`StorageDemandPlanner.complete`).
+        const lower = (planner?: StorageDemandPlanner): CompileResult =>
             coverSourceRealm(input.program, input.sourceFile.fileName, () => {
-                const compiler = newCompiler();
+                const compiler = newCompiler(planner);
                 const result = traceSourceProgram(input.program, () =>
-                    compiler.compile(),
+                    planner
+                        ? planner.complete(compiler.compile())
+                        : compiler.compile(),
                 );
                 result.manifest.inputs = input.localFiles;
                 return result;
@@ -700,7 +783,10 @@ function compileSourceApplication(
                         ? storage.refusedRecord(error.demand)
                         : undefined;
                 if (refusal) throw refusal;
-                return storage.add(error.request);
+                return (
+                    error.requests.filter((request) => storage.add(request))
+                        .length > 0
+                );
             }
             if (
                 error instanceof RuntimeSearchParamsRequired &&
@@ -717,49 +803,82 @@ function compileSourceApplication(
             } else return false;
             return true;
         };
-        // A second storage demand no plan foresaw starts a discarded planning
-        // attempt, which collects the demands past it; demands the last plan
-        // lacked plan again, to a fixed point. A plan that found no more
-        // than the next strict attempt would doubles the demands the next
-        // one waits for.
-        let unplanned = 0;
-        let interval = 2;
+        const addPlanned = (planner: StorageDemandPlanner): number =>
+            planner.demands.filter(
+                (demand) =>
+                    !storage.joinsAlreadyHeld(demand) && storage.add(demand),
+            ).length;
+        // Once a storage demand restarted the realm, every attempt outside a
+        // survey is a plan: it goes on past the demands later statements do
+        // not read, so one attempt meets a run of them, and a plan that
+        // lowered every statement is the compile. A plan that adds no demand
+        // leaves the next attempt to strict lowering. A survey's attempts
+        // are always strict: a discarded plan runs between them, as far as
+        // it can, after each restart while plans pay -- each demand a plan
+        // adds saves a strict attempt as long as the last one. Costs are
+        // statement lowerings, so the schedule is the program's alone. After
+        // a plan that lowered more statements than the attempts it saved,
+        // strict attempts lower as many before the next one, twice as many
+        // after each further such plan: a survey whose plans stop paying
+        // spends ever less of its time planning, and the next plan that
+        // pays plans after every restart again.
+        let planning = false;
+        let owed = 0;
+        let unpaid = 0;
         for (;;) {
-            const started = performance.now();
+            if (planning) {
+                const planner = new StorageDemandPlanner(input.checker);
+                try {
+                    const planned = planner.run(() => lower(planner));
+                    if (planned) return planned;
+                } catch (planningError) {
+                    if (!acceptReplay(planningError)) throw planningError;
+                }
+                planning = addPlanned(planner) > 0;
+                continue;
+            }
             try {
                 return survey
                     ? survey.attempt(input.sourceFile.fileName, lower)
                     : lower();
             } catch (error) {
                 if (!acceptReplay(error)) throw error;
+                survey?.restarted(error);
                 if (
                     !(error instanceof StorageDemand) ||
-                    !storageDemandPlanningEnabled() ||
-                    ++unplanned < interval
+                    !storageDemandPlanningEnabled()
                 )
                     continue;
-                unplanned = 0;
-                // A plan may lower as much as two strict attempts.
+                if (!survey) {
+                    planning = true;
+                    continue;
+                }
+                const strict = survey.statementsLowered(
+                    input.sourceFile.fileName,
+                );
+                owed -= strict;
+                if (owed > 0) continue;
+                const planned = performance.now();
                 const planner = new StorageDemandPlanner(
                     input.checker,
-                    2 * (performance.now() - started),
-                    survey !== undefined,
+                    true,
+                    isReplayBesidesStorage,
                 );
-                // No coverage realm or survey attempt can publish this
-                // discarded compiler. The next strict attempt owns both.
                 try {
-                    planner.run(() => {
-                        newCompiler(planner).compile();
-                    });
+                    planner.run(() => newCompiler(planner).compile());
                 } catch (planningError) {
                     if (!acceptReplay(planningError)) throw planningError;
                 }
-                const added = planner.demands.filter(
-                    (demand) =>
-                        !storage.joinsAlreadyHeld(demand) &&
-                        storage.add(demand),
-                ).length;
-                interval = added > 1 ? 2 : 2 * interval;
+                for (const replay of planner.replays) acceptReplay(replay);
+                const added = addPlanned(planner);
+                survey.planned(
+                    added,
+                    performance.now() - planned,
+                    planner.ended(),
+                );
+                unpaid = added * strict > planner.statements ? 0 : unpaid + 1;
+                owed =
+                    unpaid === 0 ? 0 : planner.statements * 2 ** (unpaid - 1);
             }
         }
     };
@@ -826,6 +945,12 @@ class Compiler implements LoweringServices {
      * compiled. @unjournaled Set and cleared around one arm's compile.
      */
     public readonly conditionOverrides = new Map<ts.Node, boolean>();
+    /**
+     * Runtime case split: the value an argument a split test reads takes in
+     * the arm being compiled. @unjournaled Set and cleared around one arm's
+     * compile.
+     */
+    public readonly valueOverrides = new Map<ts.Node, Value>();
     /**
      * `stableLocalInitializer` answers, by declaration (`false`: none).
      * @unjournaled A function of the program's syntax.
@@ -1098,8 +1223,6 @@ class Compiler implements LoweringServices {
         public readonly options: ResolvedCompileOptions,
         storage: ReplayStorage,
         private readonly lazyModules: ReadonlySet<ts.SourceFile>,
-        /** The discarded planning attempt this compiler lowers for, if any. */
-        planner?: StorageDemandPlanner,
     ) {
         this.replayStorage = storage;
         this.dynamicBindings = storage.dynamicBindings;
@@ -1116,7 +1239,6 @@ class Compiler implements LoweringServices {
             new ClassHierarchy(checker, program),
             options.workers !== undefined,
             storage,
-            planner && ((demand) => planner.planJoin(demand)),
         );
         this.dataLowerer = new DataLowerer(this);
         this.classLowerer = new ClassLowerer(this);
@@ -1187,6 +1309,13 @@ class Compiler implements LoweringServices {
             (object) => this.objectProperties(object),
             (identifier) => this.inlinedArgumentText(identifier),
             (access) => this.dataLowerer.compileGuardableElementAccess(access),
+            (probe, answered) => this.probeEmission(probe, answered),
+            (value, dataType, node) =>
+                this.dataLowerer.compileKnownValueForSink(
+                    value,
+                    dataType,
+                    node,
+                ),
         );
     }
 
@@ -1215,13 +1344,6 @@ class Compiler implements LoweringServices {
         this.emitEntryBody(entry);
         if (!this.options.pageStartup?.length) this.emitNativeHostUi();
         this.finalizeSceneRegistration();
-        if (this.features.has("engine:device-recovery")) {
-            if (this.admissions.temporalRegisteredScenes.length > 1)
-                this.fail(
-                    this.sourceFile,
-                    "Device recovery resource observations currently require one registered scene.",
-                );
-        }
         this.admissions.enforceDeferredAdmissions();
         const particles = this.sceneManifest.reachedNodeParticles;
         if (
@@ -1409,11 +1531,15 @@ class Compiler implements LoweringServices {
                     : undefined);
             if (type) this.dataTypes.markStoredObjectReferences(type);
         }
-        const visit = (root: ts.Node): void =>
-            forEachAnalysisNode(root, (node) => {
-                const target = retainedNativeMutationTarget(this.symbols, node);
-                if (target) {
-                    const targetType = this.checker.getTypeAtLocation(target);
+        for (const site of storedReferenceSites(
+            this.program.getSourceFiles(),
+            this.symbols,
+        )) {
+            switch (site.kind) {
+                case "retained": {
+                    const targetType = this.checker.getTypeAtLocation(
+                        site.target,
+                    );
                     // Existing accessor records keep their getter/setter lowering.
                     // Plain targets are retained by the group's generated writer.
                     const hasAccessors = targetType
@@ -1428,85 +1554,67 @@ class Compiler implements LoweringServices {
                     if (!hasAccessors) {
                         const dataType = this.dataTypes.fromTsType(
                             targetType,
-                            target,
+                            site.target,
                         );
-                        if (dataType?.kind === "struct") {
+                        if (dataType?.kind === "struct")
                             this.dataTypes.markStoredObjectReferences(dataType);
-                        }
                     }
-                } else if (
-                    (ts.isInterfaceDeclaration(node) ||
-                        ts.isTypeAliasDeclaration(node)) &&
-                    node.name
-                ) {
+                    break;
+                }
+                case "named-type":
                     this.dataTypes.fromTsType(
-                        this.checker.getTypeAtLocation(node.name),
-                        node,
+                        this.checker.getTypeAtLocation(site.node.name),
+                        site.node,
                     );
-                } else if (ts.isVariableDeclaration(node) && node.type) {
+                    break;
+                case "annotated": {
                     // Mapping an explicitly stored container eagerly marks any
                     // object-valued entries as shared references. Do this before
                     // function bodies are emitted so an earlier object literal
                     // cannot use value syntax for a type that a later Map/Array
                     // declaration makes reference-backed.
                     const dataType = this.dataTypes.fromTsType(
-                        this.checker.getTypeFromTypeNode(node.type),
-                        node.type,
+                        this.checker.getTypeFromTypeNode(site.type),
+                        site.type,
                     );
-                    if (this.bindingSelectsObjects(node, dataType))
+                    if (this.bindingSelectsObjects(site.node, dataType))
                         this.dataTypes.markStoredObjectReferences(dataType!);
-                } else if (
-                    ts.isParameter(node) &&
-                    (ts.isConstructorDeclaration(node.parent) ||
-                        ts.isMethodDeclaration(node.parent))
-                ) {
+                    break;
+                }
+                case "class-parameter": {
                     // Class argument binding preserves JavaScript object identity.
                     // Predeclare that representation before helpers returning the
                     // same structural type are lowered.
                     const dataType = this.dataTypes.fromTsType(
-                        this.checker.getTypeAtLocation(node),
-                        node,
-                    );
-                    if (dataType?.kind === "struct") {
-                        this.dataTypes.markStoredObjectReferences(dataType);
-                    }
-                } else if (ts.isPropertyDeclaration(node)) {
-                    const dataType = this.dataTypes.fromTsType(
-                        this.checker.getTypeAtLocation(node),
-                        node,
-                    );
-                    if (dataType) {
-                        this.dataTypes.markStoredObjectReferences(dataType);
-                    }
-                } else if (
-                    ts.isParameter(node) &&
-                    node.parent &&
-                    ts.isParameterPropertyDeclaration(node, node.parent)
-                ) {
-                    const dataType = this.dataTypes.fromTsType(
-                        this.checker.getTypeAtLocation(node),
-                        node,
-                    );
-                    if (dataType) {
-                        this.dataTypes.markStoredObjectReferences(dataType);
-                    }
-                } else if (
-                    ts.isObjectLiteralExpression(node) &&
-                    homeObjectMembers(node).size > 0
-                ) {
-                    // A method's or accessor's `this` is the object the
-                    // literal creates.
-                    const dataType = this.dataTypes.fromTsType(
-                        this.checker.getContextualType(node) ??
-                            this.checker.getTypeAtLocation(node),
-                        node,
+                        this.checker.getTypeAtLocation(site.node),
+                        site.node,
                     );
                     if (dataType?.kind === "struct")
                         this.dataTypes.markStoredObjectReferences(dataType);
+                    break;
                 }
-            });
-        for (const source of this.sourceFiles()) {
-            if (!source.isDeclarationFile) visit(source);
+                case "field": {
+                    const dataType = this.dataTypes.fromTsType(
+                        this.checker.getTypeAtLocation(site.node),
+                        site.node,
+                    );
+                    if (dataType)
+                        this.dataTypes.markStoredObjectReferences(dataType);
+                    break;
+                }
+                case "home-literal": {
+                    // A method's or accessor's `this` is the object the
+                    // literal creates.
+                    const dataType = this.dataTypes.fromTsType(
+                        this.checker.getContextualType(site.node) ??
+                            this.checker.getTypeAtLocation(site.node),
+                        site.node,
+                    );
+                    if (dataType?.kind === "struct")
+                        this.dataTypes.markStoredObjectReferences(dataType);
+                    break;
+                }
+            }
         }
     }
 
@@ -1579,22 +1687,8 @@ class Compiler implements LoweringServices {
     }
 
     private collectSourceCppNames(): void {
-        const visit = (root: ts.Node): void =>
-            forEachAnalysisNode(root, (node) => {
-                if (
-                    (ts.isVariableDeclaration(node) || ts.isParameter(node)) &&
-                    ts.isIdentifier(node.name)
-                ) {
-                    this.sourceCppNames.add(
-                        this.bindings.cppIdentifier(node.name.text),
-                    );
-                }
-            });
-        for (const file of this.program.getSourceFiles()) {
-            if (!file.isDeclarationFile) {
-                visit(file);
-            }
-        }
+        for (const name of sourceDeclaredNames(this.program.getSourceFiles()))
+            this.sourceCppNames.add(this.bindings.cppIdentifier(name));
     }
 
     /**
@@ -3779,9 +3873,7 @@ class Compiler implements LoweringServices {
     ): string {
         if (value.kind === "data" && value.dataType?.kind === "struct") {
             const type = precision === "float" ? "bbl::Vec3" : "bbl::Vec3d";
-            const arrow = this.dataTypes.isReferenceStruct(value.dataType.name)
-                ? "->"
-                : ".";
+            const arrow = this.dataTypes.memberAccess(value.dataType.name);
             const lanes = ["x", "y", "z"].map((name) => {
                 const field = this.dataTypes.structField(
                     value.dataType!.kind === "struct"
@@ -3990,11 +4082,7 @@ class Compiler implements LoweringServices {
         // A probe: a spread generation cannot settle leaves no trace.
         return this.probeEmission(() => {
             const selected = selectedStaticExpression(
-                {
-                    conditions: this.conditions,
-                    resolveStaticExpression: (node) =>
-                        this.evaluator.resolveStaticLiteral(node),
-                },
+                this.literalSelection(),
                 spread.expression,
             );
             return selected && ts.isObjectLiteralExpression(selected)
@@ -4973,6 +5061,23 @@ class Compiler implements LoweringServices {
     }
 
     /**
+     * Whether a read-only parameter of an inlined call is, through each
+     * inlined call that passes it on, a call's result: a generation run
+     * computes that text, and refuses a binding the program writes through.
+     */
+    public inlinedCallArgument(identifier: ts.Identifier): boolean {
+        const argument = this.userFunctions.inlinedArgument(
+            identifier,
+            (name) => this.bindings.scopeOf(name),
+        );
+        if (!argument) return false;
+        const source = this.unwrap(argument);
+        return ts.isCallExpression(source)
+            ? true
+            : ts.isIdentifier(source) && this.inlinedCallArgument(source);
+    }
+
+    /**
      * Required text from an unwritten module constant or its plain-data
      * fields, evaluated by the same generation executor as its initializer.
      */
@@ -5361,8 +5466,27 @@ class Compiler implements LoweringServices {
     private staticScalar(
         expression: ts.Expression,
     ): ExecutedScalar | undefined {
-        const value = this.compileValue(expression);
-        return value.staticString ?? value.staticBoolean ?? value.staticNumber;
+        return this.generationScalar(expression, this.compileValue(expression));
+    }
+
+    /**
+     * The scalar a generation run reads for `value`, compiled from
+     * `expression`: its static text, boolean or number, or the text
+     * generation knows another way (a module constant, an inlined call's
+     * argument).
+     */
+    private generationScalar(
+        expression: ts.Expression,
+        value: Value,
+    ): ExecutedScalar | undefined {
+        return (
+            value.staticString ??
+            value.staticBoolean ??
+            value.staticNumber ??
+            (isStringValue(value)
+                ? this.evaluator.staticTextValue(expression)
+                : undefined)
+        );
     }
 
     /** Retained objects stay native; only fresh, lossless literal data may cross realms. */
@@ -5424,10 +5548,7 @@ class Compiler implements LoweringServices {
         // Nested undefined values remain excluded by the lossless JSON boundary.
         if (absenceOf(carried) === "undefined" && !carried.parameterBinding)
             return { value: undefined };
-        const value =
-            carried.staticString ??
-            carried.staticBoolean ??
-            carried.staticNumber;
+        const value = this.generationScalar(node, carried);
         if (value !== undefined) return { value };
         // A complete static snapshot of retained data (a record or array
         // whose current contents generation knows) crosses as its copy.
@@ -5689,17 +5810,22 @@ class Compiler implements LoweringServices {
         return initializer;
     }
 
+    /** The fold over required literals, which may read closed helpers. */
+    private literalSelection(): StaticSelectionContext {
+        return {
+            conditions: this.conditions,
+            probeEmission: (probe, answered) =>
+                this.probeEmission(probe, answered),
+            resolveStaticExpression: (node) =>
+                this.evaluator.resolveStaticLiteral(node),
+        };
+    }
+
     /** Required descriptors may read closed helpers or unwritten module constants. */
     public resolveStaticLiteral(expression: ts.Expression): ts.Expression {
         const resolved =
-            selectedStaticExpression(
-                {
-                    conditions: this.conditions,
-                    resolveStaticExpression: (node) =>
-                        this.evaluator.resolveStaticLiteral(node),
-                },
-                expression,
-            ) ?? this.evaluator.resolveStaticLiteral(expression);
+            selectedStaticExpression(this.literalSelection(), expression) ??
+            this.evaluator.resolveStaticLiteral(expression);
         let value: unknown;
         if (
             ts.isIdentifier(resolved) ||
@@ -5849,24 +5975,7 @@ class Compiler implements LoweringServices {
         // than inside resolveStaticExpression, which feeds every numeric
         // and colour position in the compiler: folding conditional arms
         // there would move emitted code far outside array positions.
-        // The condition goes through `probeEmission`, unlike the
-        // evaluator's copy of this: several callers fall through on
-        // undefined, so a condition that emits a temporary and then fails
-        // to fold would leak that emission into a lowering nobody kept.
-        const resolved = selectedStaticExpression(
-            {
-                conditions: {
-                    compileCondition: (node) =>
-                        this.probeEmission(
-                            () => this.conditions.compileCondition(node),
-                            (folded) => knownCondition(folded) !== undefined,
-                        ),
-                },
-                resolveStaticExpression: (node) =>
-                    this.resolveStaticExpression(node),
-            },
-            expression,
-        );
+        const resolved = selectedStaticExpression(this, expression);
         return resolved && ts.isArrayLiteralExpression(resolved)
             ? resolved
             : undefined;
@@ -6857,9 +6966,7 @@ class Compiler implements LoweringServices {
             if (type.kind !== "struct" || ancestry.has(type.name)) return;
             ancestry.add(type.name);
             try {
-                const access = this.dataTypes.isReferenceStruct(type.name)
-                    ? "->"
-                    : ".";
+                const access = this.dataTypes.memberAccess(type.name);
                 for (const field of this.dataTypes.structFields(
                     type.name,
                     this.sourceFile,

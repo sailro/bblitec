@@ -319,7 +319,7 @@ test("specialization schemas preserve descriptors, cycles, sparse arrays and rol
     );
     assert.equal(
         cache.key(scope, [{ b: [1, true], a: "x" }]),
-        '0:0:0:-1:[{string:"a":string:"x",string:"b":[number:"1",boolean:"true"]}]',
+        '0:0:0:-1:[{string:"a":string:"x",string:"b":[number:1,boolean:true]}]',
     );
 });
 

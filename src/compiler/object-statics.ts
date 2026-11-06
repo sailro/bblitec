@@ -8,6 +8,7 @@ import {
     scalarFacts,
     staticStringValue,
     type Value,
+    recordMethodValue,
 } from "./types.js";
 import {
     type DataStructField,
@@ -15,6 +16,7 @@ import {
     type OwnPresence,
 } from "./data-types.js";
 import { isJsonValue } from "./json-bridge.js";
+import { NativeRecordStorageRequired } from "./native-record-storage.js";
 import {
     heldRecord,
     storeLoweredRecordProperty,
@@ -22,8 +24,15 @@ import {
 import { pinOperand } from "./evaluation-order.js";
 import { pinDetached } from "./dom-listeners.js";
 import { refuseErrorReflection } from "./error-values.js";
-import { borrowedPrototypeMethod, isSymbolPropertyKey } from "./symbols.js";
-import { requireHeldRecordStorage } from "./dynamic-binding-storage.js";
+import {
+    borrowedPrototypeMethod,
+    isSymbolPropertyKey,
+    resolvedSymbol,
+} from "./symbols.js";
+import {
+    DynamicBindingStorageRequired,
+    requireHeldRecordStorage,
+} from "./dynamic-binding-storage.js";
 import { renderClosure } from "./closure-captures.js";
 import { functionUsesDynamicThis } from "./user-functions.js";
 import {
@@ -75,6 +84,7 @@ type ObjectStaticContext = Pick<
     | "program"
     | "evaluationOrder"
     | "refuseBorrowedPlatformEventEscape"
+    | "useNativeValue"
     | "resolveRecordValue"
     | "unwrap"
     | "libraryGlobal"
@@ -166,9 +176,7 @@ export function structOwnEntries(
     excludedKeys?: ReadonlySet<string>,
 ): OwnEntry[] {
     refuseErrorReflection(context, owner, node);
-    const access = context.dataTypes.isReferenceStruct(dataType.name)
-        ? "->"
-        : ".";
+    const access = context.dataTypes.memberAccess(dataType.name);
     const sourceFields = owner.recordOwnKeys
         ? owner.recordOwnKeys.map((key) =>
               context.dataTypes.structField(
@@ -835,12 +843,7 @@ function compileObjectAssign(
                   ...pairs,
                   ...methods.map(([name, method]): [string, Value] => [
                       name,
-                      {
-                          kind: "callback",
-                          cpp: "",
-                          callbackDeclaration: method,
-                          callbackRecordOwner: value,
-                      },
+                      recordMethodValue(value, method),
                   ]),
               ]
             : pairs;
@@ -1001,9 +1004,7 @@ function compileObjectAssign(
             "assign_target",
             targetExpression,
         );
-        const access = context.dataTypes.isReferenceStruct(structType.name)
-            ? "->"
-            : ".";
+        const access = context.dataTypes.memberAccess(structType.name);
         // Evaluate the complete argument list before getters or target setters
         // run. Stored sources retain identity, so later arguments may mutate them.
         const values = sources.map((source) => {
@@ -1297,17 +1298,57 @@ function propertyDefinition(
     };
 }
 
-/** Hold the target before descriptor expressions can rebind its source name. */
+/**
+ * Hold the target before descriptor expressions can rebind its source name:
+ * a stored record, or a dynamic object (a document), which defines its own
+ * properties at run time.
+ */
 function definitionTarget(
     context: ObjectStaticContext,
     call: ts.CallExpression,
     operation: DefinitionOperation,
-): Value & { dataType: DataType<"struct"> } {
+): Value & { dataType: DataType<"struct"> | DataType<"json"> } {
     const expression = argumentAt(call, 0);
     const target = context.compileValue(expression);
     if (target.kind === "record") {
         requireHeldRecordStorage(context, target, expression);
     }
+    // A record dictionary holds data entries only: objects of a record
+    // type that gain accessors take the document layout, and a binding
+    // still holding its initializer's dictionary its declared type's.
+    if (
+        target.kind === "data" &&
+        target.dataType?.kind === "map" &&
+        target.dataType.dictionary
+    ) {
+        const demand = context.dataTypes.documentDemandOf(
+            context.checker.getTypeAtLocation(expression),
+            expression,
+        );
+        if (demand) throw new NativeRecordStorageRequired(demand);
+        const root = context.unwrap(expression);
+        const bound = ts.isIdentifier(root)
+            ? resolvedSymbol(context.checker, root)?.valueDeclaration
+            : undefined;
+        if (
+            bound &&
+            ts.isVariableDeclaration(bound) &&
+            ts.isIdentifier(bound.name)
+        )
+            throw new DynamicBindingStorageRequired(bound, {
+                nativeType: context.checker.getTypeAtLocation(bound.name),
+                node: bound.name,
+            });
+    }
+    if (isJsonValue(target))
+        return {
+            ...context.bindings.pinValueToTemporary(
+                target,
+                "defined_object",
+                expression,
+            ),
+            dataType: { kind: "json" },
+        };
     if (target.kind !== "data" || target.dataType?.kind !== "struct")
         return context.fail(
             call,
@@ -1563,6 +1604,62 @@ function applyGlobalDefinitions(
         : context.compileValue(argumentAt(call, 0));
 }
 
+/**
+ * Property definitions on a dynamic object: each accessor becomes an own
+ * enumerable accessor slot (its getter and setter stored functions), each
+ * value a data property. A non-configurable data property has no dynamic
+ * storage.
+ */
+function applyDocumentDefinitions(
+    context: ObjectStaticContext,
+    call: ts.CallExpression,
+    operation: DefinitionOperation,
+    target: Value,
+    definitions: readonly PropertyDefinition[],
+): Value {
+    const json: DataType = { kind: "json" };
+    const applied = definitions.map((definition) => {
+        const refuse = (message: string): never =>
+            context.fail(definition.node, `Object.${operation} ${message}`);
+        const key = context.cppString(definition.key);
+        if (!definition.accessor) {
+            const value = definition.members.find(
+                (member) => member.name === "value",
+            );
+            if (!definition.configurable || value?.name !== "value")
+                return refuse(
+                    "defines a dynamic object's data property only as configurable.",
+                );
+            return `${target.cpp}.define_value(${key}, ${context.dataLowerer.compileForSink(value.expression, json)});`;
+        }
+        const stored = (name: "get" | "set"): string | undefined => {
+            const member = definition.members.find(
+                (candidate) => candidate.name === name,
+            );
+            if (member?.name !== name) return undefined;
+            if (functionUsesDynamicThis(member.callback))
+                return refuse(
+                    `does not represent a dynamic object's ${name}ter that reads 'this'.`,
+                );
+            return context.compileStoredDataFunction(
+                member.callback,
+                name === "get"
+                    ? { kind: "function", parameters: [], result: json }
+                    : { kind: "function", parameters: [json] },
+            );
+        };
+        const getter = stored("get")!;
+        const setter =
+            stored("set") ?? "bbl::js::Callback<void(bbl::js::JsonValue)>{}";
+        return `${target.cpp}.define_accessor(${key}, ${getter}, ${setter}, ${definition.configurable});`;
+    });
+    context.useNativeValue(target);
+    for (const code of applied) context.emit({ kind: "expression", code });
+    return ts.isExpressionStatement(call.parent)
+        ? { kind: "void", cpp: "" }
+        : target;
+}
+
 function compileObjectDefineProperty(
     context: ObjectStaticContext,
     call: ts.CallExpression,
@@ -1587,15 +1684,13 @@ function compileObjectDefineProperty(
             global,
         ),
     ];
-    return target
-        ? applyPropertyDefinitions(
-              context,
-              call,
-              "defineProperty",
-              target,
-              definitions,
-          )
-        : applyGlobalDefinitions(context, call, "defineProperty", definitions);
+    return applyDefinitions(
+        context,
+        call,
+        "defineProperty",
+        target,
+        definitions,
+    );
 }
 
 function compileObjectDefineProperties(
@@ -1638,18 +1733,38 @@ function compileObjectDefineProperties(
             ),
         );
     }
+    return applyDefinitions(
+        context,
+        call,
+        "defineProperties",
+        target,
+        definitions,
+    );
+}
+
+/** Applies definitions to the realm's global object, a document or a record. */
+function applyDefinitions(
+    context: ObjectStaticContext,
+    call: ts.CallExpression,
+    method: "defineProperty" | "defineProperties",
+    target: ReturnType<typeof definitionTarget> | undefined,
+    definitions: readonly PropertyDefinition[],
+): Value {
     if (!target)
-        return applyGlobalDefinitions(
+        return applyGlobalDefinitions(context, call, method, definitions);
+    if (target.dataType.kind === "json")
+        return applyDocumentDefinitions(
             context,
             call,
-            "defineProperties",
+            method,
+            target,
             definitions,
         );
     return applyPropertyDefinitions(
         context,
         call,
-        "defineProperties",
-        target,
+        method,
+        { ...target, dataType: target.dataType },
         definitions,
     );
 }

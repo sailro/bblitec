@@ -17,6 +17,21 @@ test("max-width rules share ordinary retained declaration admission", () => {
         result.cpp,
         /"flex-wrap:wrap;margin-left:14px;text-align:right;[^"]*", \.max_width = 480\.0/,
     );
+    assert.match(
+        compileSheet(
+            "@media (min-width: 721px) and (max-height: 620px) and (min-height: 300px){.panel{margin-left:2px}}",
+        ).cpp,
+        /"margin-left:2px", \.min_width = 721\.0, \.max_height = 620\.0, \.min_height = 300\.0/,
+    );
+    for (const query of [
+        "(max-height:10%)",
+        "(min-width:20em)",
+        "(height:400px)",
+    ])
+        assert.throws(
+            () => compileSheet(`@media ${query}{.panel{margin-left:2px}}`),
+            /Retained stylesheet selector/,
+        );
     for (const condition of [
         "max-width:480px",
         "prefers-reduced-motion:reduce",

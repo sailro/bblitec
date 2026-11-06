@@ -1,5 +1,9 @@
 import ts from "typescript";
-import { someAnalysisNode, sourceFileNodes } from "./analysis-walk.js";
+import {
+    forEachAnalysisNode,
+    someAnalysisNode,
+    sourceFileNodes,
+} from "./analysis-walk.js";
 import { pinnedHandleKind } from "./data-types.js";
 import type { EvaluationOrder } from "./evaluation-order.js";
 import {
@@ -26,6 +30,7 @@ import {
     unwrapExpression,
     variableKind,
     wrappedParent,
+    yieldedOperands,
 } from "./syntax.js";
 import {
     callSignatures,
@@ -117,13 +122,60 @@ export function moduleContainerSymbol(
         ts.isPropertyAccessExpression(current) ||
         ts.isElementAccessExpression(current)
     ) {
-        if (isModuleNamespace(checker, current.expression)) {
-            const exported = accessedPropertySymbol(checker, current);
-            symbol = exported && aliasTarget(checker, exported);
-        } else
-            return moduleContainerSymbol(current.expression, checker, symbols);
+        if (isModuleNamespace(checker, current.expression))
+            symbol = namespaceExport(checker, current);
+        else return moduleContainerSymbol(current.expression, checker, symbols);
     }
     return symbol?.declarations?.some(ts.isSourceFile) ? undefined : symbol;
+}
+
+/** The export a member of an imported module namespace names. */
+function namespaceExport(
+    checker: ts.TypeChecker,
+    member: ts.PropertyAccessExpression | ts.ElementAccessExpression,
+): ts.Symbol | undefined {
+    const exported = accessedPropertySymbol(checker, member);
+    return exported && aliasTarget(checker, exported);
+}
+
+/** @unjournaled Checked-source names are immutable across storage-demand replays. */
+const containerOccurrences = new WeakMap<
+    ts.TypeChecker,
+    WeakMap<ts.SourceFile, ReadonlyMap<ts.Symbol, readonly ts.Node[]>>
+>();
+
+/**
+ * Every node in `file` that names a binding as `moduleContainerSymbol`
+ * reads it, types included: a name's value symbol, and a namespace
+ * member's export.
+ */
+function moduleContainerOccurrences(
+    file: ts.SourceFile,
+    checker: ts.TypeChecker,
+    symbols: CompilerSymbols,
+): ReadonlyMap<ts.Symbol, readonly ts.Node[]> {
+    let byFile = containerOccurrences.get(checker);
+    if (!byFile) containerOccurrences.set(checker, (byFile = new WeakMap()));
+    let occurrences = byFile.get(file);
+    if (occurrences) return occurrences;
+    const found = new Map<ts.Symbol, ts.Node[]>();
+    const add = (symbol: ts.Symbol | undefined, node: ts.Node): void => {
+        if (!symbol) return;
+        const nodes = found.get(symbol);
+        if (nodes) nodes.push(node);
+        else found.set(symbol, [node]);
+    };
+    forEachAnalysisNode(file, (node) => {
+        if (ts.isIdentifier(node)) add(symbols.valueSymbol(node), node);
+        else if (
+            (ts.isPropertyAccessExpression(node) ||
+                ts.isElementAccessExpression(node)) &&
+            isModuleNamespace(checker, node.expression)
+        )
+            add(namespaceExport(checker, node), node);
+    });
+    byFile.set(file, (occurrences = found));
+    return occurrences;
 }
 
 /** Checked-source references are immutable across storage-demand replays. */
@@ -328,6 +380,16 @@ function writesThroughBinding(
         const root = ts.isExpression(node) ? rootExpression(node) : node;
         if (ts.isCallExpression(root) && returnsConstant(scan, root))
             return true;
+        // One rooted at a selection (`(c ? a : b).url`) reads below each
+        // operand it yields.
+        if (
+            ts.isExpression(root) &&
+            root !== unwrapExpression(node as ts.Expression)
+        ) {
+            const operands = yieldedOperands(root);
+            if (operands.length > 1 || operands[0]!.operand !== root)
+                return operands.some(({ operand }) => names(scan, operand));
+        }
         const named =
             ts.isIdentifier(node) ||
             ts.isPropertyAccessExpression(node) ||
@@ -474,6 +536,10 @@ function writesThroughBinding(
             // A named helper can return a container holding the identity;
             // its callers, importing files included, are followed.
             aliasingReturn: mentions,
+            // Every write below names the constant or an alias in the node
+            // it accepts (`names`, `mentions`), and none adds an alias.
+            occurrences: (file) =>
+                moduleContainerOccurrences(file, checker, symbols),
             mutates: (node, scan) =>
                 (scalarRecord &&
                     ts.isExpression(node) &&

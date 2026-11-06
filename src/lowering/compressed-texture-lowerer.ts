@@ -5,6 +5,7 @@ import { containsPinnedErrorMessage } from "./pinned-error.js";
 import { LoweredSource, LoweringContext } from "./context.js";
 import { compressedTextureFormat as layout } from "../compressed-texture-format.js";
 import { pinnedHeader } from "./pinned-header.js";
+import { textureSamplerStateCpp } from "../pinned-address-modes.js";
 import { lowerPinnedBody } from "./pinned-body-lowerer.js";
 import type { PinnedBinding } from "./pinned-numeric-lowerer.js";
 import { variableKind, sameSource } from "../compiler/syntax.js";
@@ -1039,14 +1040,16 @@ FileTexture load_compressed_texture(
     texture.data.compressed =
         upstream::read_compressed_texture(pal::read_binary_file(path));
     const bool chain = texture.data.compressed.mips.size() > 1;
-    texture.data.sampler = TextureSamplerState{
-        TextureFilter::linear,
-        TextureFilter::linear,
-        chain ? TextureMipmapMode::linear : TextureMipmapMode::nearest,
-        TextureAddressMode::repeat,
-        TextureAddressMode::repeat,
-        chain ? 4.0f : 1.0f,
-        1000.0f};
+    texture.data.sampler = ${textureSamplerStateCpp({
+        minFilter: "TextureFilter::linear",
+        magFilter: "TextureFilter::linear",
+        mipmapMode:
+            "chain ? TextureMipmapMode::linear : TextureMipmapMode::nearest",
+        addressModeU: "TextureAddressMode::repeat",
+        addressModeV: "TextureAddressMode::repeat",
+        anisotropy: "chain ? 4.0f : 1.0f",
+        maxLod: "1000.0f",
+    })};
     texture.data.uv_invert_y = invert_y;
     texture.width = texture.data.compressed.width;
     texture.height = texture.data.compressed.height;

@@ -33,24 +33,18 @@ interface IdentityPayload {
 interface PinnedGltfFeature {
     id: string;
     applyMaterial?: unknown;
+    wrapTexture?: (texture: object, info: unknown) => object;
 }
 
 /**
  * Execute the pin's cache, sampler and material construction with inert GPU
- * transport. Material extensions run as the pin's own triggered features;
- * a texture wrapper would give each use its own object, which is not
- * represented.
+ * transport. Material extensions run as the pin's own triggered features,
+ * and its texture wrappers as `loadGltf` composes them: a use a wrapper
+ * clones (`KHR_texture_transform`) is its own object, so its own identity.
  */
 export async function gltfSourceAlbedoIdentities(
     document: JsonObject,
 ): Promise<IdentityPayload> {
-    const unsupported = asStrings(document.extensionsUsed).find(
-        (extension) => extension === "KHR_texture_transform",
-    );
-    if (unsupported)
-        throw new Error(
-            `Source glTF albedo identity does not yet represent '${unsupported}' material or texture producers.`,
-        );
     await ensurePinnedLoaderExecution();
     // Let the extension own per-material caches and overrides. Only image bytes
     // are replaced: each four-byte marker identifies the original image.
@@ -159,11 +153,15 @@ export function resolveImage(_json, _bin, index) {
                 context: unknown,
             ) => Promise<unknown>;
         }>("loader-gltf/gltf-feature-registry.js");
+    const loaded = await loadGltfFeatures(sourceDocument);
     // The observed basisu feature stands in for the pin's own instance.
-    const materialFeatures = (await loadGltfFeatures(sourceDocument)).filter(
+    const materialFeatures = loaded.filter(
         (feature) =>
             feature.applyMaterial !== undefined &&
             feature.id !== "KHR_texture_basisu",
+    );
+    const wraps = loaded.flatMap((feature) =>
+        feature.wrapTexture ? [feature.wrapTexture] : [],
     );
     const definitions = asRecords(sourceDocument.materials);
     // Include the pin's implicit default material as the last association.
@@ -198,7 +196,10 @@ export function resolveImage(_json, _bin, index) {
         _baseUrl: "",
         _matExts: [...features, ...materialFeatures],
         _runMatExts: runGltfMaterialFeatures,
-        _wrapTex: identityTexWrap,
+        _wrapTex: wraps.length
+            ? (texture: object, info: unknown) =>
+                  wraps.reduce((wrapped, wrap) => wrap(wrapped, info), texture)
+            : identityTexWrap,
     });
     const identities = new Map<object, number>();
     const fallbackTexels: Record<number, number[]> = {};

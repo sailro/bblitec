@@ -70,8 +70,9 @@ struct GpuState {
     StageTextureBindingScratch shader_texture_binding_scratch;
     unsigned ground_sampler = 33;
 };
-// A render target's current colour texture.
+// A render target's current colour texture, and the sampler a written texture.sampler names.
 SDL_GPUTexture* sdl_shader_render_texture(const GpuState&, const Engine&, const RenderTextureRef&) { return texture(77); }
+unsigned sdl_render_texture_sampler(GpuState&, const TextureSamplerState&) { return 55; }
 template <typename SharedTextures>
 ${cppFunction(vertex, "inline SharedTextures*\nfind_shared_shader_material_textures(")}
 template <typename SharedTextures>

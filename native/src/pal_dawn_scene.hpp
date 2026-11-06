@@ -150,6 +150,8 @@ struct DawnShaderBindings {
     DawnBuffer fragment_uniforms{};
     /** The render-target views the resource group was built from, by sampler slot. */
     std::vector<WGPUTextureView> render_views;
+    /** And the samplers a written `texture.sampler` chose for them. */
+    std::vector<WGPUSampler> render_samplers;
     std::optional<std::uint64_t> resource_version;
 };
 
@@ -1025,6 +1027,8 @@ struct DawnState : DawnDevice {
     WGPUSampler clamp_sampler = nullptr;
     WGPUSampler ground_sampler = nullptr;
     WGPUSampler nearest_sampler = nullptr;
+    /** One sampler per state a render target's written `texture.sampler` names. */
+    std::vector<std::pair<TextureSamplerState, WGPUSampler>> render_texture_samplers;
 #if BBLITE_HAS_EFFECT_TASK
     // One built pass per effect render task, keyed by task index and built
     // lazily against the target's own format and sample count -- the pin
@@ -1905,6 +1909,9 @@ struct DawnState : DawnDevice {
 #endif
         if (ground_sampler)
             wgpuSamplerRelease(ground_sampler);
+        for (const auto& [_, sampler] : render_texture_samplers)
+            wgpuSamplerRelease(sampler);
+        render_texture_samplers.clear();
         if (clamp_sampler)
             wgpuSamplerRelease(clamp_sampler);
         if (default_sampler)
@@ -2168,6 +2175,13 @@ WGPUTexture upload_material_texture(WGPUDevice device, WGPUQueue queue, DawnMipG
 WGPUTexture upload_material_texture(DawnState& state, const TextureData& texture_data, bool srgb,
                                     const std::array<std::uint8_t, 4>& fallback,
                                     std::uint32_t& out_mip_count);
+
+/** A sampled rgba32float texture of one level, `width` x `height`. */
+WGPUTexture create_float_texture(WGPUDevice device, std::uint32_t width, std::uint32_t height,
+                                 const char* failure);
+/** Its whole level from tightly packed rgba32float rows, through the queue. */
+void write_float_texture(WGPUQueue queue, WGPUTexture texture, const float* data,
+                         std::uint32_t width, std::uint32_t height);
 
 // `.babylon` reflection cube, matching the pinned loadCubeTexture:
 // rgba8unorm faces with a full GPU-blit mip chain generated per face.
@@ -2490,9 +2504,6 @@ void sync_morph_weights(DawnState& state, DawnMesh& mesh, const ModelGeometry& g
 #endif
 
 #if BBLITE_PBR_VARIANTS > 0 || BBLITE_STANDARD_SKELETON
-WGPUTexture create_pinned_float_texture(DawnState& state, std::uint32_t width, std::uint32_t height,
-                                        const char* failure);
-
 /**
  * The bone palette as the pin's own texture.
  *
@@ -2508,10 +2519,6 @@ void write_pinned_bone_texture(DawnState& state, DawnMesh& mesh, const MeshRecor
 
 #if BBLITE_PBR_VARIANTS > 0
 #if BBLITE_VAT
-/** One rgba32float upload of `height` rows through the queue. */
-void write_pinned_float_texture(DawnState& state, WGPUTexture texture, const float* data,
-                                const VatTextureLayout& layout);
-
 /**
  * The baked VAT as the pin's own texture, plus the settings block the
  * vertex stage reads its row range and clock from.

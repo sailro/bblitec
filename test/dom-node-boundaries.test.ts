@@ -120,6 +120,68 @@ test("a detached element's pointer capture throws natively beside a typed deferr
     });
 });
 
+test("pointer capture through a structural view acts on the DOM target it holds", (t) => {
+    // The view declares the DOM methods it uses; a DOM element it holds
+    // runs them natively, and a record implementing it runs its own.
+    const source = `
+    interface CaptureTarget { setPointerCapture(id: number): void; hasPointerCapture(id: number): boolean; dispatchEvent?(event: Event): boolean }
+    function capture(target: CaptureTarget | undefined, id: number): string {
+        if (!target) return 'none';
+        if (typeof target.dispatchEvent !== 'function') return 'no-dispatch';
+        try { target.setPointerCapture(id); } catch (error) { return error instanceof DOMException ? error.name : 'other'; }
+        return target.hasPointerCapture(id) ? 'captured' : 'released';
+    }
+    const host = document.createElement('div');
+    let pointer = 1;
+    const held = pointer > 0 ? host : undefined;
+    if (capture(held, pointer) !== 'InvalidStateError') throw new Error('detached view capture');
+    if (capture(undefined, pointer) !== 'none') throw new Error('absent view');
+    let captured = 0;
+    const double: CaptureTarget = { setPointerCapture: (id) => { captured += id; }, hasPointerCapture: () => captured > 0, dispatchEvent: () => true };
+    if (capture(double, 2) !== 'captured' || captured !== 2) throw new Error('authored view');
+    globalThis.close();
+    `;
+    const directory = resolve("artifacts/structural-pointer-capture");
+    mkdirSync(directory, { recursive: true });
+    const result = compileSource(source, {
+        fileName: join(directory, "entry.ts"),
+    });
+    assert.match(result.cpp, /bbl::dom_set_pointer_capture/);
+    writeFileSync(join(directory, "program.hpp"), result.cpp);
+    runRmlUiFixture(t, "structural-pointer-capture", {
+        macros: {
+            BBLITE_WORKERS: 1,
+            BBLITE_OFFSCREEN_SURFACES: 1,
+            BBLITE_HAS_DOM_INPUT: 1,
+        },
+    });
+});
+
+test("the engine canvas selected into a structural view is stored as its DOM event target", () => {
+    const source = `
+    import { createEngine } from "babylon-lite";
+    interface CaptureTarget { setPointerCapture(id: number): void; hasPointerCapture(id: number): boolean; dispatchEvent?(event: Event): boolean }
+    function capture(id: number, target?: CaptureTarget): boolean {
+        if (!target || typeof target.dispatchEvent !== "function") return false;
+        target.setPointerCapture(id);
+        return target.hasPointerCapture(id);
+    }
+    async function main(): Promise<void> {
+        const canvas = document.getElementById("renderCanvas") as HTMLCanvasElement;
+        await createEngine(canvas);
+        canvas.addEventListener("pointerdown", (event) => {
+            capture(event.pointerId, event.pointerId > 1 ? canvas : undefined);
+        });
+    }
+    void main();
+    `;
+    const { cpp } = compileSource(source, {
+        fileName: resolve("artifacts/structural-canvas-capture/entry.ts"),
+    });
+    assert.match(cpp, /bbl::DomEventTarget::canvas\(\)/);
+    assert.match(cpp, /bbl::dom_set_pointer_capture\(/);
+});
+
 test("unrelated markup and stored child collections continue to refuse", () => {
     for (const markup of [
         "<script></script>",

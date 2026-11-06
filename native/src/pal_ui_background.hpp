@@ -10,8 +10,11 @@
 #include <cctype>
 #include <optional>
 #include <stdexcept>
+#include <string>
 #include <string_view>
 #include <unordered_map>
+#include <utility>
+#include <vector>
 
 namespace bbl::pal {
 
@@ -56,6 +59,42 @@ inline std::optional<std::string_view> ui_css_wide_keyword(std::string_view valu
             }))
             return keyword;
     return std::nullopt;
+}
+
+/**
+ * A background position as the two offsets a sized decorator layer takes: keywords as
+ * percentages, a single value centring the other axis (CSS Backgrounds 3 `<bg-position>`).
+ */
+inline Rml::String ui_background_offsets(std::string_view position) {
+    std::vector<std::string> tokens;
+    int depth = 0;
+    for (const char character : position) {
+        if (character == '(')
+            ++depth;
+        else if (character == ')')
+            --depth;
+        if (depth == 0 && std::isspace(static_cast<unsigned char>(character))) {
+            if (!tokens.empty() && !tokens.back().empty())
+                tokens.emplace_back();
+            continue;
+        }
+        if (tokens.empty())
+            tokens.emplace_back();
+        tokens.back().push_back(js::ascii_lower(character));
+    }
+    if (!tokens.empty() && tokens.back().empty())
+        tokens.pop_back();
+    if (tokens.empty() || tokens.size() > 2)
+        throw std::runtime_error("Unrepresented UI background position: " + std::string(position));
+    if (tokens.size() == 1)
+        tokens.emplace_back("center");
+    if (tokens[0] == "top" || tokens[0] == "bottom" || tokens[1] == "left" || tokens[1] == "right")
+        std::swap(tokens[0], tokens[1]);
+    const auto offset = [](const std::string& token, std::string_view start,
+                           std::string_view end) -> std::string {
+        return token == "center" ? "50%" : token == start ? "0%" : token == end ? "100%" : token;
+    };
+    return offset(tokens[0], "left", "right") + " " + offset(tokens[1], "top", "bottom");
 }
 
 /** Whether an image function at `offset` is a gradient, ending at the returned index. */
@@ -230,12 +269,19 @@ public:
                         if (repeat == "repeat" && size != "auto")
                             throw std::runtime_error(
                                 "Repeating sized UI backgrounds are not represented.");
-                        const auto fit = repeat == "repeat" ? "repeat"
-                                         : size == "auto"   ? "scale-none"
-                                                            : size;
                         const auto position =
                             ui_background_value(element, "bbl-background-position");
-                        decorator = "image(" + image + " " + fit + " " + position + ") padding-box";
+                        // An explicit size is a layer with its own box the image fills,
+                        // placed at the position's offsets (RmlUi patch 0025).
+                        if (size != "auto" && size != "contain" && size != "cover")
+                            decorator = "image(" + image + " fill) padding-box / " + size + " / " +
+                                        ui_background_offsets(position);
+                        else
+                            decorator = "image(" + image + " " +
+                                        (repeat == "repeat" ? "repeat"
+                                         : size == "auto"   ? "scale-none"
+                                                            : size) +
+                                        " " + position + ") padding-box";
                     }
                 }
                 changed = state.image.set_string(element, "decorator", decorator) || changed;

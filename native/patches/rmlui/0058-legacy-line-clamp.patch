@@ -1,0 +1,485 @@
+legacy line clamping: display:-webkit-box/-webkit-inline-box with a vertical -webkit-box-orient and a -webkit-line-clamp
+is a flow-root/inline-block whose formatting context shows its first N lines: the box ends at line N and that line's
+ending text run ends in an ellipsis when a line follows it, shedding characters until both fit through the loop
+text-overflow shortens with (ShortenText). Without the clamp, a legacy box is a flex container along its orient.
+CSS Overflow 4: https://drafts.csswg.org/css-overflow-4/#webkit-line-clamp
+
+diff --git a/Include/RmlUi/Core/ComputedValues.h b/Include/RmlUi/Core/ComputedValues.h
+index 9de1e74..653fbd3 100644
+--- a/Include/RmlUi/Core/ComputedValues.h
++++ b/Include/RmlUi/Core/ComputedValues.h
+@@ -287,7 +287,7 @@ namespace Style {
+ 		AlignSelf         justify_self()               const { return GetLocalPropertyKeyword(PropertyId::JustifySelf, AlignSelf::Auto); }
+ 		AlignItems        align_items()                const { return GetLocalPropertyKeyword(PropertyId::AlignItems, AlignItems::Stretch); }
+ 		AlignSelf         align_self()                 const { return GetLocalPropertyKeyword(PropertyId::AlignSelf, AlignSelf::Auto); }
+-		FlexDirection     flex_direction()             const { return GetLocalPropertyKeyword(PropertyId::FlexDirection, FlexDirection::Row); }
++		FlexDirection     flex_direction()             const;
+ 		FlexWrap          flex_wrap()                  const { return GetLocalPropertyKeyword(PropertyId::FlexWrap, FlexWrap::Nowrap); }
+ 		JustifyContent    justify_content()            const { return GetLocalPropertyKeyword(PropertyId::JustifyContent, JustifyContent::FlexStart); }
+ 		float             flex_grow()                  const { return GetLocalProperty(PropertyId::FlexGrow, 0.f); }
+@@ -299,6 +299,10 @@ namespace Style {
+ 		BorderRadius             border_bottom_left_radius()  const { return rare.border_bottom_left_radius; }
+ 		Array<BorderRadius, 4> border_radius()          const { return {rare.border_top_left_radius, rare.border_top_right_radius,
+ 		                                                               rare.border_bottom_right_radius, rare.border_bottom_left_radius}; }
++		// A legacy -webkit-box or -webkit-inline-box whose -webkit-box-orient is vertical shows the first
++		// -webkit-line-clamp lines of its formatting context (CSS Overflow 4 legacy line clamping); 0 otherwise.
++		int               line_clamp()                 const;
++		bool              legacy_box()                 const { return GetLocalPropertyKeyword(PropertyId::Display, 0) >= LegacyBoxDisplay; }
+ 		TextOverflow      text_overflow()              const { return rare.text_overflow; }
+ 		String            text_overflow_string()       const { return GetLocalProperty(PropertyId::TextOverflow, String());; }
+ 		Clip              clip()                       const { return rare.clip; }
+diff --git a/Include/RmlUi/Core/ElementText.h b/Include/RmlUi/Core/ElementText.h
+index 4a23085..fdae086 100644
+--- a/Include/RmlUi/Core/ElementText.h
++++ b/Include/RmlUi/Core/ElementText.h
+@@ -41,6 +41,10 @@ public:
+ 	/// @param[in] line_position The position of this line, as an offset from the first line.
+ 	/// @param[in] line The contents of the line.
+ 	void AddLine(Vector2f line_position, String line);
++	/// Ends a line in an ellipsis, removing the characters before it that do not fit.
++	/// @param[in] line_index The line's index in the element's lines.
++	/// @param[in] available_width The width the line's text and ellipsis may fill.
++	void EllipsizeLine(int line_index, float available_width);
+ 
+ 	/// Prevents the element from dirtying its document's layout when its text is changed.
+ 	void SuppressAutoLayout();
+diff --git a/Include/RmlUi/Core/ID.h b/Include/RmlUi/Core/ID.h
+index d404f85..c58cf7a 100644
+--- a/Include/RmlUi/Core/ID.h
++++ b/Include/RmlUi/Core/ID.h
+@@ -195,6 +195,8 @@ enum class PropertyId : uint8_t {
+ 	JustifyItems,
+ 	JustifySelf,
+ 	Order,
++	WebkitBoxOrient,
++	WebkitLineClamp,
+ 
+ 	NumDefinedIds,
+ 	FirstCustomId = NumDefinedIds,
+diff --git a/Include/RmlUi/Core/StyleTypes.h b/Include/RmlUi/Core/StyleTypes.h
+index 54b86d5..64db825 100644
+--- a/Include/RmlUi/Core/StyleTypes.h
++++ b/Include/RmlUi/Core/StyleTypes.h
+@@ -85,6 +85,11 @@ namespace Style {
+ 		Grid,
+ 		InlineGrid
+ 	};
++	// The legacy -webkit-box and -webkit-inline-box keywords follow the display values in the display parser's keyword
++	// list. Only a cascaded display holds them: the computed display is what they resolve to.
++	constexpr int LegacyBoxDisplay = int(Display::InlineGrid) + 1;
++	constexpr int LegacyInlineBoxDisplay = LegacyBoxDisplay + 1;
++	enum class BoxOrient : uint8_t { Horizontal, Vertical, InlineAxis, BlockAxis };
+ 	enum class Position : uint8_t { Static, Relative, Absolute, Fixed };
+ 	enum class Isolation : uint8_t { Auto, Isolate };
+ 
+diff --git a/Source/Core/ComputedValues.cpp b/Source/Core/ComputedValues.cpp
+index 6928742..c22f7c1 100644
+--- a/Source/Core/ComputedValues.cpp
++++ b/Source/Core/ComputedValues.cpp
+@@ -51,6 +51,23 @@ float Style::ComputedValues::letter_spacing() const
+ 	return 0.f;
+ }
+ 
++// A legacy box lays out along its orient; flex-direction does not apply to it.
++Style::FlexDirection ComputedValues::flex_direction() const
++{
++	if (!legacy_box())
++		return GetLocalPropertyKeyword(PropertyId::FlexDirection, FlexDirection::Row);
++	const BoxOrient orient = GetLocalPropertyKeyword(PropertyId::WebkitBoxOrient, BoxOrient::Horizontal);
++	return orient == BoxOrient::Vertical || orient == BoxOrient::BlockAxis ? FlexDirection::Column : FlexDirection::Row;
++}
++
++int ComputedValues::line_clamp() const
++{
++	if (!legacy_box() || flex_direction() != FlexDirection::Column)
++		return 0;
++	const Property* clamp = GetLocalPropertyWithResolvedVariables(PropertyId::WebkitLineClamp);
++	return clamp && clamp->unit == Unit::NUMBER ? Math::Max(int(clamp->Get<float>()), 0) : 0;
++}
++
+ const Property* ComputedValues::GetLocalPropertyWithResolvedVariables(PropertyId id) const
+ {
+ 	return element->GetStyle()->GetLocalPropertyWithResolvedVariables(id);
+diff --git a/Source/Core/ElementStyle.cpp b/Source/Core/ElementStyle.cpp
+index c70726a..7aa27f2 100644
+--- a/Source/Core/ElementStyle.cpp
++++ b/Source/Core/ElementStyle.cpp
+@@ -1147,6 +1147,14 @@ PropertyIdSet ElementStyle::ComputeValues(Style::ComputedValues& values, const S
+ 		}
+ 	}
+ 
++	// A legacy box's orient and line clamp decide its computed display and its flex direction.
++	if (dirty_properties.Contains(PropertyId::Display) || dirty_properties.Contains(PropertyId::WebkitBoxOrient) ||
++		dirty_properties.Contains(PropertyId::WebkitLineClamp))
++	{
++		dirty_properties.Insert(PropertyId::Display);
++		dirty_properties.Insert(PropertyId::FlexDirection);
++	}
++
+ 	// Next, pass inheritable dirty properties onto our children
+ 	PropertyIdSet dirty_inherited_properties = (dirty_properties & StyleSheetSpecification::GetRegisteredInheritedProperties());
+ 
+@@ -1290,8 +1298,18 @@ void ElementStyle::ComputeValue(Style::ComputedValues& values, float dp_ratio, V
+ 		break;
+ 
+ 	case PropertyId::Display:
+-		values.display((Display)p->Get<int>());
+-		break;
++	{
++		// A legacy box is a line clamp container (flow-root, inline-block) or a flex container along its orient.
++		const int display = p->Get<int>();
++		const bool inline_box = (display == LegacyInlineBoxDisplay);
++		if (display < LegacyBoxDisplay)
++			values.display((Display)display);
++		else if (values.line_clamp() > 0)
++			values.display(inline_box ? Display::InlineBlock : Display::FlowRoot);
++		else
++			values.display(inline_box ? Display::InlineFlex : Display::Flex);
++	}
++	break;
+ 	case PropertyId::Position:
+ 		values.position((Position)p->Get<int>());
+ 		break;
+@@ -1557,6 +1575,8 @@ void ElementStyle::ComputeValue(Style::ComputedValues& values, float dp_ratio, V
+ 	case PropertyId::BorderImageOutset:
+ 	case PropertyId::BorderImageRepeat:
+ 	case PropertyId::BackgroundClip:
++	case PropertyId::WebkitBoxOrient:
++	case PropertyId::WebkitLineClamp:
+ 		break;
+ 	// Invalid properties
+ 	case PropertyId::Invalid:
+diff --git a/Source/Core/ElementText.cpp b/Source/Core/ElementText.cpp
+index d395cd4..26fada9 100644
+--- a/Source/Core/ElementText.cpp
++++ b/Source/Core/ElementText.cpp
+@@ -27,6 +27,29 @@ struct TextOverflowResolved {
+ 	String overflow_text;
+ };
+ 
++// An ellipsis: U+2026 where the font has it, otherwise three full stops.
++static const char* Ellipsis(FontFaceHandle font_face_handle)
++{
++	return GetFontEngineInterface()->GetFontMetrics(font_face_handle).has_ellipsis ? "\xE2\x80\xA6" : "...";
++}
++
++// The text before `end` followed by `suffix`, with characters removed from its end one at a time, but none before
++// `limit`, while `overflows` holds for its width.
++template <typename Overflows>
++static String ShortenText(const String& text, StringIteratorU8 end, const char* limit, const String& suffix, FontFaceHandle font_face_handle,
++	const TextShapingContext& text_shaping_context, Overflows overflows)
++{
++	String shortened;
++	shortened.reserve(text.size() + suffix.size());
++	for (;; --end)
++	{
++		shortened.assign(text.c_str(), end.get());
++		shortened.append(suffix);
++		if (end.get() == limit || !overflows(GetFontEngineInterface()->GetStringWidth(font_face_handle, shortened, text_shaping_context)))
++			return shortened;
++	}
++}
++
+ static TextOverflowResolved ResolveTextOverflow(Element* parent, FontFaceHandle font_face_handle)
+ {
+ 	if (!parent)
+@@ -52,12 +75,8 @@ static TextOverflowResolved ResolveTextOverflow(Element* parent, FontFaceHandle
+ 
+ 	const float overflow_width = parent->GetScrollLeft() + box.GetSize().x + AccumulateRightSideEdgesUpTo(box, clip_area);
+ 
+-	constexpr char ellipsis_chars[] = "\xE2\x80\xA6"; // U+2026
+-	constexpr char dots_chars[] = "...";
+-
+-	String overflow_text = (text_overflow == Style::TextOverflow::String
+-			? parent->GetComputedValues().text_overflow_string()
+-			: (GetFontEngineInterface()->GetFontMetrics(font_face_handle).has_ellipsis ? ellipsis_chars : dots_chars));
++	String overflow_text =
++		(text_overflow == Style::TextOverflow::String ? parent->GetComputedValues().text_overflow_string() : Ellipsis(font_face_handle));
+ 
+ 	return TextOverflowResolved{
+ 		true,
+@@ -363,6 +382,22 @@ void ElementText::AddLine(Vector2f line_position, String line)
+ 	geometry_dirty = true;
+ }
+ 
++void ElementText::EllipsizeLine(int line_index, float available_width)
++{
++	const FontFaceHandle font_face_handle = GetFontFaceHandle();
++	if (!font_face_handle || line_index < 0 || line_index >= (int)lines.size())
++		return;
++
++	const auto& computed = GetComputedValues();
++	const TextShapingContext text_shaping_context{computed.language(), computed.direction(), computed.font_kerning(), computed.letter_spacing()};
++
++	// The ellipsis follows the line's content; characters before it are removed one at a time until both fit.
++	Line& line = lines[line_index];
++	line.text = ShortenText(line.text, StringIteratorU8(line.text, line.text.size()), line.text.c_str(), Ellipsis(font_face_handle),
++		font_face_handle, text_shaping_context, [&](float width) { return width > available_width; });
++	geometry_dirty = true;
++}
++
+ void ElementText::SuppressAutoLayout()
+ {
+ 	dirty_layout_on_change = false;
+@@ -507,8 +542,9 @@ void ElementText::GenerateGeometry(RenderManager& render_manager, const FontFace
+ 			opacity, text_shaping_context, mesh_list);
+ 	}
+ 
+-	const auto text_overflows_on_line = [&](const Line& line) { return line.position.x + line.width > text_overflow.overflow_width; };
+-	if (text_overflow.enabled && std::any_of(lines.begin(), lines.end(), text_overflows_on_line))
++	const auto text_overflows_on_line = [&](const Line& line, float width) { return line.position.x + width > text_overflow.overflow_width; };
++	if (text_overflow.enabled &&
++		std::any_of(lines.begin(), lines.end(), [&](const Line& line) { return text_overflows_on_line(line, line.width); }))
+ 	{
+ 		mesh_list.clear();
+ 
+@@ -522,15 +558,15 @@ void ElementText::GenerateGeometry(RenderManager& render_manager, const FontFace
+ 			StringIteratorU8 view(line.text, line.text.size());
+ 			--view;
+ 
+-			// If we have text overflow, reduce the string one character at a time, append the ellipsis or custom
+-			// string, and try again until it fits. @performance Can be improved by e.g. logarithmic search. Consider
+-			// combining it with the word-breaking algorithm of 'GenerateLine'.
+-			for (; text_overflows_on_line(line) && view && view.get() != line.text.c_str(); --view)
++			// If we have text overflow, reduce the string one character at a time, keeping the first, append the
++			// ellipsis or custom string, and try again until it fits. @performance Can be improved by e.g. logarithmic
++			// search. Consider combining it with the word-breaking algorithm of 'GenerateLine'.
++			if (text_overflows_on_line(line, line.width) && view.get() != line.text.c_str())
+ 			{
+-				abbreviated_text.reserve(line.text.size() + text_overflow.overflow_text.size());
+-				abbreviated_text.assign(line.text.c_str(), view.get());
+-				abbreviated_text.append(text_overflow.overflow_text);
+-				line.width = GetFontEngineInterface()->GetStringWidth(font_face_handle, abbreviated_text, text_shaping_context);
++				StringIteratorU8 second(line.text);
++				++second;
++				abbreviated_text = ShortenText(line.text, view, second.get(), text_overflow.overflow_text, font_face_handle, text_shaping_context,
++					[&](float width) { return text_overflows_on_line(line, width); });
+ 				text_submit_view = abbreviated_text;
+ 			}
+ 
+diff --git a/Source/Core/Layout/BlockContainer.cpp b/Source/Core/Layout/BlockContainer.cpp
+index b1792d9..48e9161 100644
+--- a/Source/Core/Layout/BlockContainer.cpp
++++ b/Source/Core/Layout/BlockContainer.cpp
+@@ -2,6 +2,7 @@
+ #include "../../../Include/RmlUi/Core/ComputedValues.h"
+ #include "../../../Include/RmlUi/Core/Element.h"
+ #include "../../../Include/RmlUi/Core/ElementScroll.h"
++#include "../../../Include/RmlUi/Core/ElementText.h"
+ #include "../../../Include/RmlUi/Core/Profiling.h"
+ #include "FloatedBoxSpace.h"
+ #include "InlineContainer.h"
+@@ -23,6 +24,17 @@ BlockContainer::BlockContainer(ContainerBox* _parent_container, FloatedBoxSpace*
+ 		// We are the root of the formatting context, establish a new space for floated boxes.
+ 		root_space = MakeUnique<FloatedBoxSpace>();
+ 		space = root_space.get();
++
++		if (const int lines = element->GetComputedValues().line_clamp())
++		{
++			own_line_clamp = MakeUnique<LineClamp>();
++			own_line_clamp->lines = lines;
++			line_clamp = own_line_clamp.get();
++		}
++	}
++	else if (_parent_container && _parent_container->GetType() == Type::BlockContainer)
++	{
++		line_clamp = rmlui_static_cast<BlockContainer*>(_parent_container)->line_clamp;
+ 	}
+ }
+ 
+@@ -34,6 +46,11 @@ bool BlockContainer::Close(BlockContainer* parent_block_container)
+ 	if (!CloseOpenInlineContainer())
+ 		return false;
+ 
++	// The clamp line ends in an ellipsis when a line follows it.
++	const bool clamped = (own_line_clamp && own_line_clamp->clamped);
++	if (clamped && own_line_clamp->text)
++		own_line_clamp->text->EllipsizeLine(own_line_clamp->text_line, own_line_clamp->available_width);
++
+ 	// Set this box's height, if necessary.
+ 	if (box.GetSize().y < 0)
+ 	{
+@@ -55,7 +72,8 @@ bool BlockContainer::Close(BlockContainer* parent_block_container)
+ 				}
+ 			}
+ 		}
+-		float content_height = box_cursor;
++		// A clamped container ends at its clamp line; the lines after it overflow.
++		float content_height = (clamped ? own_line_clamp->bottom - (position.y + box.GetPosition().y) : box_cursor);
+ 
+ 		if (!parent_block_container)
+ 		{
+@@ -443,6 +461,9 @@ void BlockContainer::ResetContents()
+ 	box_cursor = 0;
+ 	interrupted_line_box.reset();
+ 
++	if (own_line_clamp)
++		*own_line_clamp = LineClamp{own_line_clamp->lines};
++
+ 	inner_content_size = {};
+ 	inner_content_margin_size = {};
+ }
+diff --git a/Source/Core/Layout/BlockContainer.h b/Source/Core/Layout/BlockContainer.h
+index c8b1aa0..3232d8a 100644
+--- a/Source/Core/Layout/BlockContainer.h
++++ b/Source/Core/Layout/BlockContainer.h
+@@ -5,6 +5,7 @@
+ 
+ namespace Rml {
+ 
++class ElementText;
+ class FloatedBoxSpace;
+ class LineBox;
+ class InlineBox;
+@@ -96,6 +97,19 @@ public:
+ 	Box& GetBox();
+ 	const Box& GetBox() const;
+ 
++	// A line clamp container's lines count down to its clamp line (CSS Overflow 4 legacy line clamping), across the
++	// block containers of its formatting context.
++	struct LineClamp {
++		int lines = 0;
++		int counted = 0;
++		ElementText* text = nullptr; // The text run ending the clamp line, if one does.
++		int text_line = -1;
++		float available_width = 0.f;
++		float bottom = 0.f;   // The clamp line's bottom, in the formatting context's space.
++		bool clamped = false; // A line follows the clamp line.
++	};
++	LineClamp* GetLineClamp() const { return line_clamp; }
++
+ 	// -- Inherited from LayoutBox --
+ 
+ 	const Box* GetIfBox() const override;
+@@ -162,6 +176,10 @@ private:
+ 	// Stores the unplaced part of a line box that was split by a block-level box.
+ 	UniquePtr<LineBox> interrupted_line_box;
+ 
++	// The line clamp this container's lines count toward: its own, or its formatting context's.
++	UniquePtr<LineClamp> own_line_clamp;
++	LineClamp* line_clamp = nullptr;
++
+ 	// The inner content size (excluding any padding/border/margins).
+ 	// This is extended as child block boxes are closed, or from external formatting contexts.
+ 	Vector2f inner_content_size;
+diff --git a/Source/Core/Layout/InlineContainer.cpp b/Source/Core/Layout/InlineContainer.cpp
+index a55317e..3039589 100644
+--- a/Source/Core/Layout/InlineContainer.cpp
++++ b/Source/Core/Layout/InlineContainer.cpp
+@@ -158,6 +158,19 @@ void InlineContainer::CloseOpenLineBox(bool split_all_open_boxes, UniquePtr<Line
+ 		// Our parent block container acts as the containing block for our inline boxes.
+ 		line_box->Close(parent->GetElement(), parent->GetPosition(), text_align);
+ 
++		if (BlockContainer::LineClamp* clamp = parent->GetLineClamp(); clamp && !line_box->CanCollapseLine())
++		{
++			clamp->counted += 1;
++			if (clamp->counted == clamp->lines)
++			{
++				if (!line_box->GetEndingTextRun(clamp->text, clamp->text_line, clamp->available_width))
++					clamp->text = nullptr;
++				clamp->bottom = line_box->GetPosition().y + height_of_line;
++			}
++			else if (clamp->counted == clamp->lines + 1)
++				clamp->clamped = true;
++		}
++
+ 		// Move the cursor down, unless we should collapse the line.
+ 		if (!line_box->CanCollapseLine())
+ 			box_cursor = (line_box->GetPosition().y - position.y) + height_of_line;
+diff --git a/Source/Core/Layout/InlineLevelBox.h b/Source/Core/Layout/InlineLevelBox.h
+index 6244235..82b1bb9 100644
+--- a/Source/Core/Layout/InlineLevelBox.h
++++ b/Source/Core/Layout/InlineLevelBox.h
+@@ -110,8 +110,9 @@ public:
+ 
+ 	String DebugDumpNameValue() const override;
+ 
+-private:
+ 	ElementText* GetTextElement();
++
++private:
+ 	static bool IsCollapsible(Style::WhiteSpace white_space);
+ 
+ 	Vector2f element_offset;
+diff --git a/Source/Core/Layout/LineBox.cpp b/Source/Core/Layout/LineBox.cpp
+index 605fcca..4c734bb 100644
+--- a/Source/Core/Layout/LineBox.cpp
++++ b/Source/Core/Layout/LineBox.cpp
+@@ -1,5 +1,6 @@
+ #include "LineBox.h"
+ #include "../../../Include/RmlUi/Core/Element.h"
++#include "../../../Include/RmlUi/Core/ElementText.h"
+ #include "../../../Include/RmlUi/Core/StyleTypes.h"
+ #include "InlineBox.h"
+ #include "InlineLevelBox.h"
+@@ -362,6 +363,24 @@ void LineBox::Close(Element* offset_parent, Vector2f offset_parent_position, Sty
+ 	is_closed = true;
+ }
+ 
++bool LineBox::GetEndingTextRun(ElementText*& out_text, int& out_line, float& out_available_width) const
++{
++	RMLUI_ASSERT(is_closed);
++	for (auto it = fragments.rbegin(); it != fragments.rend(); ++it)
++	{
++		// Inline boxes only open and close around the runs they hold.
++		if (it->type == FragmentType::InlineBox)
++			continue;
++		if (it->type != FragmentType::TextRun)
++			return false;
++		out_text = rmlui_static_cast<InlineLevelBox_Text*>(it->box)->GetTextElement();
++		out_line = (int)out_text->GetLines().size() - 1;
++		out_available_width = line_width - offset_horizontal_alignment - it->position.x;
++		return true;
++	}
++	return false;
++}
++
+ void LineBox::VerticallyAlignSubtree(const int subtree_root_index, const int children_end_index, float& max_ascent, float& max_descent)
+ {
+ 	const int children_begin_index = subtree_root_index + 1;
+diff --git a/Source/Core/Layout/LineBox.h b/Source/Core/Layout/LineBox.h
+index 2629124..91863e8 100644
+--- a/Source/Core/Layout/LineBox.h
++++ b/Source/Core/Layout/LineBox.h
+@@ -5,6 +5,7 @@
+ 
+ namespace Rml {
+ 
++class ElementText;
+ class InlineBox;
+ class InlineBoxRoot;
+ class InlineLevelBox;
+@@ -66,6 +67,10 @@ public:
+ 	// @note Only available after line has been closed.
+ 	float GetExtentRight() const;
+ 
++	// The text run ending this closed line: the text element it was submitted to, its line there, and the width it may
++	// fill up to the line's end. False when the line ends in another box.
++	bool GetEndingTextRun(ElementText*& out_text, int& out_line, float& out_available_width) const;
++
+ 	// Returns the baseline position, relative to the top of the line box.
+ 	// @note Only available after line has been closed.
+ 	float GetBaseline() const;
+diff --git a/Source/Core/StyleSheetSpecification.cpp b/Source/Core/StyleSheetSpecification.cpp
+index 1d7c968..68df8f0 100644
+--- a/Source/Core/StyleSheetSpecification.cpp
++++ b/Source/Core/StyleSheetSpecification.cpp
+@@ -328,7 +328,7 @@ void StyleSheetSpecification::RegisterDefaultProperties()
+ 	RegisterShorthand(ShorthandId::BorderRadius, "border-radius", "border-top-left-radius, border-top-right-radius, border-bottom-right-radius, border-bottom-left-radius", ShorthandType::Box);
+ 
+ 	RegisterProperty(PropertyId::Display, "display", "inline", false, true)
+-		.AddParser("keyword", "none, block, inline, inline-block, flow-root, flex, inline-flex, table, inline-table, table-row, table-row-group, table-column, table-column-group, table-cell, grid, inline-grid");
++		.AddParser("keyword", "none, block, inline, inline-block, flow-root, flex, inline-flex, table, inline-table, table-row, table-row-group, table-column, table-column-group, table-cell, grid, inline-grid, -webkit-box, -webkit-inline-box");
+ 	RegisterProperty(PropertyId::Position, "position", "static", false, true).AddParser("keyword", "static, relative, absolute, fixed");
+ 	RegisterProperty(PropertyId::Top, "top", "auto", false, false).AddParser("keyword", "auto").AddParser("length_percent").SetRelativeTarget(RelativeTarget::ContainingBlockHeight);
+ 	RegisterProperty(PropertyId::Right, "right", "auto", false, false).AddParser("keyword", "auto").AddParser("length_percent").SetRelativeTarget(RelativeTarget::ContainingBlockWidth);
+@@ -477,6 +477,9 @@ void StyleSheetSpecification::RegisterDefaultProperties()
+ 	RegisterProperty(PropertyId::JustifyItems, "justify-items", "stretch", false, true).AddParser("keyword", "flex-start, flex-end, center, baseline, stretch, start, end");
+ 	RegisterProperty(PropertyId::JustifySelf, "justify-self", "auto", false, true).AddParser("keyword", "auto, flex-start, flex-end, center, baseline, stretch, start, end");
+ 	RegisterProperty(PropertyId::Order, "order", "0", false, true).AddParser("number");
++	RegisterProperty(PropertyId::WebkitBoxOrient, "-webkit-box-orient", "horizontal", false, true)
++		.AddParser("keyword", "horizontal, vertical, inline-axis, block-axis");
++	RegisterProperty(PropertyId::WebkitLineClamp, "-webkit-line-clamp", "none", false, true).AddParser("keyword", "none").AddParser("number");
+ 	RegisterProperty(PropertyId::AlignItems, "align-items", "stretch", false, true).AddParser("keyword", "flex-start, flex-end, center, baseline, stretch, start, end");
+ 	RegisterShorthand(ShorthandId::PlaceItems, "place-items", "align-items, justify-items", ShorthandType::Replicate);
+ 	RegisterProperty(PropertyId::AlignSelf, "align-self", "auto", false, true).AddParser("keyword", "auto, flex-start, flex-end, center, baseline, stretch, start, end");

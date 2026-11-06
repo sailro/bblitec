@@ -3,6 +3,7 @@
 // and folds from `comparisons.ts`; a value's own truthiness is the data
 // lowerer's `truthinessCondition`.
 import ts from "typescript";
+import { requireObservedPromise } from "./promise-observations.js";
 import { traceSourceNode } from "./source-trace.js";
 import { someAnalysisNode } from "./analysis-walk.js";
 import {
@@ -41,7 +42,12 @@ import {
     variableKind,
 } from "./syntax.js";
 import { recordAt } from "./record-access.js";
-import { declaredIn, libraryName, resolvedSymbol } from "./symbols.js";
+import {
+    declaredIn,
+    libraryName,
+    nullishComparison,
+    resolvedSymbol,
+} from "./symbols.js";
 import { ApplicationRealmRequired } from "./worker-modules.js";
 import { retainTextValue } from "./text-surface.js";
 import { pinOperand } from "./evaluation-order.js";
@@ -84,6 +90,7 @@ interface ConditionContext
             | "leaveRuntimeControlFlow"
             | "libraryGlobal"
             | "options"
+            | "program"
             | "reachFeature"
             | "reachJsData"
             | "registerNativeBinding"
@@ -200,29 +207,66 @@ export class ConditionLowerer {
      * pin's loader sets them for a skinned node with joint and weight
      * streams and for a primitive with morph targets, and an attachment
      * sets them in scene code; the record keeps which of those it got.
-     * Only the test is lowered: no other read of either member is.
+     * Only the test is lowered: no other read of either member is. A loose
+     * `== null` / `!= null` is the same test, both members being objects,
+     * and a read through a cast of a native mesh is that mesh's member.
+     * `mesh.vat`, the record `attachVat` installs, is tested the same way.
      */
     private meshDeformationPresence(
         expression: ts.Expression,
     ): string | undefined {
-        if (
-            !ts.isPropertyAccessExpression(expression) ||
-            expression.questionDotToken
-        )
-            return undefined;
+        const comparison = nullishComparison(this.context.checker, expression);
+        if (comparison) {
+            const binary = this.context.unwrap(
+                expression,
+            ) as ts.BinaryExpression;
+            const literal =
+                binary.left === comparison.tested ? binary.right : binary.left;
+            const present =
+                comparison.loose &&
+                this.context.symbols.isNullishLiteral(literal)
+                    ? this.meshDeformationPresence(
+                          this.context.unwrap(comparison.tested),
+                      )
+                    : undefined;
+            if (present === undefined) return undefined;
+            return comparison.negated ? present : `!(${present})`;
+        }
+        if (!ts.isPropertyAccessExpression(expression)) return undefined;
         const property = expression.name.text;
-        if (property !== "skeleton" && property !== "morphTargets")
+        // `mesh.vat?.joints1Buffer`: attachVat's copy of the skeleton's
+        // second influence pair, which native vertices never carry (the
+        // four-influence-skinning adaptation), so it is absent on every mesh.
+        if (
+            expression.questionDotToken &&
+            (property === "joints1Buffer" || property === "weights1Buffer")
+        ) {
+            const vat = this.context.unwrap(expression.expression);
+            return ts.isPropertyAccessExpression(vat) &&
+                !vat.questionDotToken &&
+                vat.name.text === "vat" &&
+                this.nativeMesh(vat.expression)
+                ? "false"
+                : undefined;
+        }
+        if (
+            expression.questionDotToken ||
+            (property !== "skeleton" &&
+                property !== "morphTargets" &&
+                property !== "vat")
+        )
             return undefined;
         const member = resolvedSymbol(this.context.checker, expression);
         const owner = member?.declarations?.[0]?.parent;
-        if (
-            !declaredIn(member, "babylon") ||
-            !owner ||
-            !ts.isInterfaceDeclaration(owner) ||
-            owner.name.text !== "Mesh"
-        )
-            return undefined;
-        const mesh = this.context.compileValue(expression.expression);
+        const pinned =
+            declaredIn(member, "babylon") &&
+            owner !== undefined &&
+            ts.isInterfaceDeclaration(owner) &&
+            owner.name.text === "Mesh";
+        const mesh = pinned
+            ? this.context.compileValue(expression.expression)
+            : this.nativeMesh(expression.expression);
+        if (!mesh) return undefined;
         if (mesh.kind !== "mesh")
             return this.context.fail(
                 expression,
@@ -231,9 +275,25 @@ export class ConditionLowerer {
         const engine =
             mesh.engineCpp ?? this.context.requireDefaultEngine(expression);
         const record = recordAt(`${engine}.meshes`, mesh.cpp);
+        // `mesh.vat` is the record attachVat installs.
         return property === "skeleton"
             ? `${record}.skeleton_attached`
-            : `(${record}.morph_targets_attached || ${record}.scene_morph_targets)`;
+            : property === "vat"
+              ? `${record}.has_vat`
+              : `(${record}.morph_targets_attached || ${record}.scene_morph_targets)`;
+    }
+
+    /** The native mesh an expression names through any cast, or none. */
+    private nativeMesh(expression: ts.Expression): Value | undefined {
+        return this.context.probeEmission(() =>
+            unlessRefused(() => {
+                // The object itself: a cast stores nothing.
+                const value = this.context.compileValue(
+                    this.context.unwrap(expression),
+                );
+                return value.kind === "mesh" ? value : undefined;
+            }),
+        );
     }
 
     /**
@@ -315,6 +375,7 @@ export class ConditionLowerer {
         );
         if (assigned !== undefined) return assigned;
         traceSourceNode(expression);
+        requireObservedPromise(this.context, expression);
         const unwrapped = this.context.unwrapValue(expression);
         if (this.context.symbols.isNullishLiteral(unwrapped)) return "false";
         // A BigInt is truthy unless it is zero.

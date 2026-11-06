@@ -4,6 +4,7 @@ import { copyFileSync, mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import test from "node:test";
 import { compileSource } from "../src/compiler.js";
+import type { CompileResult } from "../src/compiler/types.js";
 import {
     optionalNativeFixtureTools,
     runNativeFixtureCompiler,
@@ -97,20 +98,158 @@ test("packaged fetch owns responses, snapshots selections and rejects missing or
             asset.source.endsWith("sound.bin"),
         ),
     );
+    runPackagedProgram(t, directory, result, "missing.bin");
+});
+
+test("a fetch of a URL the deployment holds no file at rejects", (t) => {
+    // The native build cannot tell whether a server would answer the URL,
+    // so the fetch rejects, as one outside the package does.
+    const directory = resolve("artifacts/packaged-fetch-not-served");
+    const publicDir = join(directory, "public");
+    mkdirSync(publicDir, { recursive: true });
+    const result = compileSource(
+        `
+        async function catalog(): Promise<string> {
+            try {
+                const response = await fetch("/files/absent.json");
+                if (!response.ok) throw new Error(\`HTTP \${response.status}\`);
+                return ((await response.json()) as { name: string }).name;
+            } catch (error) {
+                return "fallback:" + (error instanceof TypeError ? "TypeError" : String(error));
+            }
+        }
+        void (async () => {
+            const name = await catalog();
+            if (name !== "fallback:TypeError") throw new Error("not packaged " + name);
+            globalThis.close();
+        })();
+    `,
+        {
+            fileName: join(directory, "entry.ts"),
+            publicDir,
+            siteUrl: "https://assets.example/",
+        },
+    );
+    assert.ok(result.manifest.features.includes("platform:packaged-fetch"));
+    assert.ok(
+        !result.manifest.assets.some((asset) =>
+            asset.source.endsWith("absent.json"),
+        ),
+    );
+    runPackagedProgram(t, directory, result);
+});
+
+test("a generation-time fetch of a runtime-selected file reads its text and JSON at run time, a selection write included", (t) => {
+    const directory = resolve("artifacts/packaged-fetch-selected-text");
+    const publicDir = join(directory, "public");
+    mkdirSync(join(publicDir, "data"), { recursive: true });
+    // The byte order mark is the decode's to remove, as a Response does.
+    writeFileSync(
+        join(publicDir, "data", "a.json"),
+        Buffer.concat([
+            Buffer.from([0xef, 0xbb, 0xbf]),
+            Buffer.from('{"name":"a"}'),
+        ]),
+    );
+    writeFileSync(join(publicDir, "data", "b.json"), '{"name":"b"}');
+    const result = compileSource(
+        `
+        const choice = { url: "/data/a.json" };
+        if (Date.now() < 0) choice.url = "/data/b.json";
+        const response = await fetch(choice.url);
+        const text = await response.text();
+        if (text !== '{"name":"a"}') throw new Error("text " + text);
+        // A write through a selection may write either operand.
+        const first = { url: "/data/a.json" }, second = { url: "/data/a.json" };
+        (Date.now() < 0 ? first : second).url = "/data/b.json";
+        const parsed = (await (await fetch(first.url)).json()) as { name: string };
+        if (parsed.name !== "a") throw new Error("json " + parsed.name);
+        const moved = (await (await fetch(second.url)).json()) as { name: string };
+        if (moved.name !== "b") throw new Error("selection " + moved.name);
+    `,
+        { fileName: join(directory, "entry.ts"), publicDir },
+    );
+    assert.equal(result.manifest.assets.length, 2);
+    assert.match(result.cpp, /bbl::js::decode_utf8_removing_bom\(/);
+    assert.match(result.cpp, /bbl::js::json_parse\(/);
+    runPackagedProgram(t, directory, result);
+});
+
+test("a URL member a record takes from a spread call result keeps that member's domain", (t) => {
+    const directory = resolve("artifacts/packaged-fetch-spread-member");
+    const publicDir = join(directory, "public");
+    mkdirSync(join(publicDir, "data"), { recursive: true });
+    writeFileSync(join(publicDir, "data", "a.json"), '{"name":"a"}');
+    writeFileSync(join(publicDir, "data", "b.json"), '{"name":"b"}');
+    // The record lacks `file` itself; its type requires it, so the spread
+    // source supplies it on every path.
+    const result = compileSource(
+        `
+        interface Options { dir?: string; file: string; size: number }
+        const FILES = { a: { file: "a.json" }, b: { file: "b.json" } } as const;
+        function preset(kind: "a" | "b") {
+            return { dir: "data", file: FILES[kind].file, size: 1 } as const;
+        }
+        async function load(options: Options): Promise<string> {
+            const url = \`/\${options.dir ?? "other"}/\${options.file}\`;
+            return ((await (await fetch(url)).json()) as { name: string }).name;
+        }
+        const kinds: ("a" | "b")[] = Date.now() < 0 ? ["b"] : ["a", "b"];
+        const names: string[] = [];
+        for (const kind of kinds) names.push(await load({ ...preset(kind), size: 2 }));
+        if (names.join() !== "a,b") throw new Error(names.join());
+    `,
+        { fileName: join(directory, "entry.ts"), publicDir },
+    );
+    assert.equal(result.manifest.assets.length, 2);
+    runPackagedProgram(t, directory, result);
+});
+
+test("a runtime-selected KTX2 URL loads among its packaged containers", () => {
+    const directory = resolve("artifacts/packaged-ktx2-selection");
+    const publicDir = join(directory, "public");
+    mkdirSync(join(publicDir, "images"), { recursive: true });
+    writeFileSync(join(publicDir, "images", "a.ktx2"), "KTX2 a");
+    writeFileSync(join(publicDir, "images", "b.ktx2"), "KTX2 b");
+    const result = compileSource(
+        `
+        import { createEngine, loadKtx2Texture2D } from "@babylonjs/lite";
+        const engine = await createEngine(document.getElementById("renderCanvas") as HTMLCanvasElement);
+        const IMAGES = { a: { url: "/images/a.ktx2", srgb: true }, b: { url: "/images/b.ktx2", srgb: false } } as const;
+        const keys: ("a" | "b")[] = Date.now() < 0 ? ["b"] : ["a", "b"];
+        for (const key of keys) {
+            const image = IMAGES[key];
+            console.log((await loadKtx2Texture2D(engine, image.url, image.srgb)).width);
+        }
+    `,
+        { fileName: join(directory, "entry.ts"), publicDir },
+    );
+    assert.deepEqual(result.manifest.assets.map((asset) => asset.kind).sort(), [
+        "ktx2",
+        "ktx2",
+    ]);
+    assert.match(
+        result.cpp,
+        /bbl::load_ktx2_texture\(v_engine, \(\[&\]\(const std::string& key\)/,
+    );
+});
+
+/**
+ * Stages the program's packaged assets at their deployment paths, but the one
+ * whose source ends with `withheld`, then builds and runs the program.
+ */
+function runPackagedProgram(
+    t: test.TestContext,
+    directory: string,
+    result: CompileResult,
+    withheld?: string,
+): void {
     for (const asset of result.manifest.assets) {
-        if (asset.source.endsWith("missing.bin")) continue;
+        if (withheld !== undefined && asset.source.endsWith(withheld)) continue;
         const output = join(directory, asset.output);
         mkdirSync(dirname(output), { recursive: true });
         copyFileSync(resolve(directory, asset.source), output);
     }
-    runPackagedProgram(t, directory, result.cpp);
-});
-
-function runPackagedProgram(
-    t: test.TestContext,
-    directory: string,
-    program: string,
-): void {
     const native = optionalNativeFixtureTools();
     if (!native) {
         t.skip("Native fixture compiler unavailable.");
@@ -118,7 +257,7 @@ function runPackagedProgram(
     }
     const cpp = join(directory, "check.cpp"),
         exe = join(directory, "check.exe");
-    writeFileSync(cpp, program);
+    writeFileSync(cpp, result.cpp);
     runNativeFixtureCompiler(native, [
         "/DBBLITE_WORKERS=1",
         `/Fo:${directory}/`,
@@ -203,12 +342,7 @@ test("packaged URL domains survive descriptor selection, base helpers and async 
             (asset) => !asset.source.endsWith("unrelated.bin"),
         ),
     );
-    for (const asset of result.manifest.assets) {
-        const output = join(directory, asset.output);
-        mkdirSync(dirname(output), { recursive: true });
-        copyFileSync(resolve(directory, asset.source), output);
-    }
-    runPackagedProgram(t, directory, result.cpp);
+    runPackagedProgram(t, directory, result);
 });
 
 test("a module URL reads as the package's public root in conditions and URL bases", (t) => {
@@ -235,12 +369,7 @@ test("a module URL reads as the package's public root in conditions and URL base
         { fileName: join(directory, "entry.ts"), publicDir },
     );
     assert.equal(result.manifest.assets.length, 1);
-    for (const asset of result.manifest.assets) {
-        const output = join(directory, asset.output);
-        mkdirSync(dirname(output), { recursive: true });
-        copyFileSync(resolve(directory, asset.source), output);
-    }
-    runPackagedProgram(t, directory, result.cpp);
+    runPackagedProgram(t, directory, result);
 });
 
 test("worker native-object mutations preserve sibling packaged URL selection", (t) => {
@@ -294,12 +423,7 @@ test("worker native-object mutations preserve sibling packaged URL selection", (
         result.manifest.assets.map((asset) => asset.source),
         ["public/files/bytes.bin"],
     );
-    for (const asset of result.manifest.assets) {
-        const output = join(directory, asset.output);
-        mkdirSync(dirname(output), { recursive: true });
-        copyFileSync(resolve(directory, asset.source), output);
-    }
-    runPackagedProgram(t, directory, result.cpp);
+    runPackagedProgram(t, directory, result);
 });
 
 test("packaged URL provenance refuses uncertain mutations, origins and unbounded domains", () => {
@@ -345,6 +469,7 @@ test("packaged URL provenance refuses uncertain mutations, origins and unbounded
         `const entries=[{url:"/clips/voice_01.bin"}]; let alias:{url:string}[]=[]; alias=entries; alias[0].url="/clips/voice_02.bin"; const url=entries[0].url;`,
         `const a={url:"/clips/voice_01.bin"}; const b={url:"/clips/voice_01.bin"}; const pick=Math.random()>0.5?a:b; pick.url="/clips/voice_02.bin"; const url=a.url;`,
         `const a={url:"/clips/voice_01.bin"}; const box={a}; box.a.url="/clips/voice_02.bin"; const url=a.url;`,
+        `const a={url:"/clips/voice_01.bin"}; const b={url:"/clips/voice_01.bin"}; (Math.random()>0.5?a:b).url="/clips/voice_02.bin"; const url=a.url;`,
     ])
         assert.deepEqual(
             compileSource(program(body), {
@@ -357,7 +482,6 @@ test("packaged URL provenance refuses uncertain mutations, origins and unbounded
             body,
         );
     const cases = [
-        `const a={url:"/clips/voice_01.bin"}; const b={url:"/clips/voice_01.bin"}; (Math.random()>0.5?a:b).url="/clips/voice_02.bin"; const url=a.url;`,
         `const entries=["https://remote.invalid/a.bin","https://remote.invalid/b.bin"]; const url=entries[Math.floor(Math.random()*2)];`,
         `const entries=["/clips/../clips/voice_01.bin","/clips/%2e%2e/clips/voice_02.bin"]; const url=entries[Math.floor(Math.random()*2)];`,
         `const entries=["/clips%2fvoice_01.bin","/clips%5cvoice_02.bin"]; const url=entries[Math.floor(Math.random()*2)];`,

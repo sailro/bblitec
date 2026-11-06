@@ -126,3 +126,68 @@ test("JSON number arrays build and fill typed arrays element by element", (t) =>
     }
     runGeneratedProgram(native, "json-tuple-inputs/typed-arrays", result.cpp);
 });
+
+test("a parsed array asserted as a Vec3 reaches a light direction lane by lane", () => {
+    // A config deep-merged over its defaults is a parsed document; the
+    // field's tuple type is the source's assertion over it, as at any
+    // numeric tuple sink.
+    const source = `import { addToScene, createDirectionalLight, createEngine, createSceneContext, registerScene, startEngine } from "babylon-lite";
+interface Config { sun: { direction: [number, number, number] } }
+const DEFAULTS: Config = { sun: { direction: [-0.4, -1, -0.3] } };
+function merge<T>(base: T, over: unknown): T {
+    if (over === null || typeof over !== "object" || Array.isArray(over)) return base;
+    const out: Record<string, unknown> = { ...(base as Record<string, unknown>) };
+    for (const [key, value] of Object.entries(over as Record<string, unknown>)) out[key] = value;
+    return out as T;
+}
+async function main(): Promise<void> {
+    const canvas = document.getElementById("renderCanvas") as HTMLCanvasElement;
+    const engine = await createEngine(canvas);
+    const scene = createSceneContext(engine);
+    const config = merge(DEFAULTS, JSON.parse(localStorage.getItem("config") ?? "{}") as unknown);
+    addToScene(scene, createDirectionalLight(config.sun.direction, 1));
+    await registerScene(scene);
+    await startEngine(engine);
+}
+void main();
+`;
+    const result = compileSource(source, {
+        fileName: "light-from-parsed-config.ts",
+    });
+    assert.match(
+        result.cpp,
+        /bbl::js::json_tuple<3>\(v_config\.read_property\("sun"\)\.read_property\("direction"\)\)/,
+    );
+});
+
+test("a typeof-guarded parsed scalar stores the primitive union member its kind names", async (t) => {
+    const source = `
+        const raw = JSON.parse('{"a":1,"b":"q","c":true,"d":[1]}') as Record<string, unknown>;
+        const params: Record<string, number | string | boolean> = {};
+        for (const k of Object.keys(raw)) {
+            const pv = raw[k];
+            if (typeof pv !== "number" && typeof pv !== "string" && typeof pv !== "boolean") continue;
+            params[k] = pv as number | string | boolean;
+        }
+        if (params["a"] !== 1 || params["b"] !== "q" || params["c"] !== true || "d" in params)
+            throw new Error("params " + JSON.stringify(params));
+    `;
+    runInNewContext(
+        ts.transpileModule(source, {
+            compilerOptions: {
+                target: ts.ScriptTarget.ES2022,
+                module: ts.ModuleKind.None,
+            },
+        }).outputText,
+    );
+    const result = compileSource(source);
+    assert.match(result.cpp, /bbl::js::json_primitive_union<std::variant</);
+    const native = optionalNativeFixtureTools(false);
+    await t.test("native assertions", { skip: !native }, () => {
+        runGeneratedProgram(
+            native!,
+            "json-tuple-inputs/primitive-union",
+            result.cpp,
+        );
+    });
+});

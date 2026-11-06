@@ -1667,6 +1667,10 @@ export class BrowserErasure {
         );
     }
 
+    /** Local calls whose result `isNativeDomBridge` is classifying. */
+    private readonly nativeResultCallsInProgress =
+        new EmissionSet<ts.CallExpression>();
+
     private isNativeDomBridge(expression: ts.Expression): boolean {
         const owner = (node: ts.Expression): Value | undefined => {
             const unwrapped = this.context.unwrap(node);
@@ -1732,6 +1736,29 @@ export class BrowserErasure {
                 : undefined;
             if (callee) {
                 return owner(callee.expression);
+            }
+            // A local function returning represented data (a record a Map
+            // holds) owns the members read off its result. Its own browser
+            // classification can reach this read again: that one bridges
+            // nothing.
+            if (
+                ts.isCallExpression(unwrapped) &&
+                ts.isIdentifier(this.context.unwrap(unwrapped.expression)) &&
+                !this.nativeResultCallsInProgress.has(unwrapped)
+            ) {
+                this.nativeResultCallsInProgress.add(unwrapped);
+                try {
+                    if (
+                        !this.isBrowserOnlyExpression(unwrapped) &&
+                        this.context.dataTypes.fromTsType(
+                            this.context.checker.getTypeAtLocation(unwrapped),
+                            unwrapped,
+                        ) !== undefined
+                    )
+                        return { kind: "data", cpp: "" };
+                } finally {
+                    this.nativeResultCallsInProgress.delete(unwrapped);
+                }
             }
             return undefined;
         };

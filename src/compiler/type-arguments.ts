@@ -1,5 +1,11 @@
 import ts from "typescript";
-import { isTypeReference, callSignatures, unionMembers } from "./type-facts.js";
+import {
+    isTypeReference,
+    callSignatures,
+    unionMembers,
+    valueKinds,
+} from "./type-facts.js";
+import { requiredParameterCount } from "./syntax.js";
 
 type Fail = (node: ts.Node, message: string) => never;
 
@@ -23,6 +29,68 @@ export function callTypeArguments(
     if (!parameters || parameters.length === 0) {
         return undefined;
     }
+    const bindings = determinedTypeArguments(checker, call, declaration);
+    for (const parameter of parameters)
+        if (!bindings.has(checker.getTypeAtLocation(parameter).symbol))
+            fail(
+                call,
+                `Type parameter '${parameter.name.text}' is not determined by this call's arguments; spell it explicitly.`,
+            );
+    return bindings;
+}
+
+/**
+ * Whether a parameter of type `type` accepts `void` (`place(context: C)`
+ * with `C = void`), which TypeScript lets a call omit like an optional
+ * one; `resolve` reads the type parameters in force.
+ */
+export function acceptsOmittedVoid(
+    type: ts.Type,
+    resolve: (type: ts.Type) => ts.Type,
+): boolean {
+    return valueKinds(resolve(type)).has("void");
+}
+
+/**
+ * How many arguments a call must pass, as TypeScript counts them: the
+ * declaration's required parameters, less the trailing ones whose type at
+ * this call accepts `void` (`acceptsOmittedVoid`).
+ */
+export function requiredArgumentCount(
+    checker: ts.TypeChecker,
+    call: ts.CallExpression | ts.NewExpression,
+    parameters: readonly ts.ParameterDeclaration[],
+    resolve: (type: ts.Type) => ts.Type,
+): number {
+    let count = requiredParameterCount(parameters);
+    const resolved = checker.getResolvedSignature(call);
+    if (!resolved) return count;
+    while (count > 0) {
+        const parameter = resolved.parameters[count - 1];
+        if (
+            !parameter ||
+            !acceptsOmittedVoid(
+                checker.getTypeOfSymbolAtLocation(parameter, call),
+                resolve,
+            )
+        )
+            break;
+        count--;
+    }
+    return count;
+}
+
+/**
+ * The type parameters of `declaration` one call determines, each with the
+ * type it stands for there ({@link callTypeArguments}); one no argument
+ * determines is absent.
+ */
+export function determinedTypeArguments(
+    checker: ts.TypeChecker,
+    call: ts.CallExpression | ts.NewExpression,
+    declaration: ts.SignatureDeclaration,
+): ReadonlyMap<ts.Symbol, ts.Type> {
+    const parameters = declaration.typeParameters ?? [];
     const parameterSymbols = parameters.map(
         (parameter) => checker.getTypeAtLocation(parameter).symbol,
     );
@@ -64,12 +132,6 @@ export function callTypeArguments(
             !checker.isTypeAssignableTo(checker.getUnknownType(), constraint)
         )
             bindings.set(symbol, constraint);
-        if (!bindings.has(symbol)) {
-            fail(
-                call,
-                `Type parameter '${parameter.name.text}' is not determined by this call's arguments; spell it explicitly.`,
-            );
-        }
     });
     return bindings;
 }

@@ -57,6 +57,53 @@ test("an event target narrowed to an element writes like the retained element it
         });
         button.dispatchEvent(new MouseEvent("click", { bubbles: true }));
         origin.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+        // A target a record keeps, read back through a function: a detached
+        // node hands its event to the document.
+        interface Capture { readonly pointerId: number; readonly target: EventTarget }
+        const captures = new Map<number, Capture>();
+        function read(id: number): Capture | null { return captures.get(id) ?? null; }
+        let pressedOn: EventTarget | null = null;
+        captures.set(1, { pointerId: 1, target: document.createElement("span") });
+        pressedOn = button;
+        document.addEventListener("pointercancel", () => { origin.dataset.cancelled = "document"; });
+        const cancelPress = (id: number): string => {
+            const downOn = read(id)?.target ?? pressedOn;
+            if (!downOn) return "none";
+            (downOn instanceof Node && !downOn.isConnected ? document : downOn).dispatchEvent(new MouseEvent("pointercancel", { bubbles: true }));
+            return String(downOn instanceof Node && downOn.isConnected);
+        };
+        origin.setAttribute("data-connected1", cancelPress(1));
+        origin.setAttribute("data-connected2", cancelPress(2));
+        // A binding every branch gives a constructed event owns that event.
+        let downs = 0;
+        button.addEventListener("pointerdown", () => { downs++; });
+        const send = (target: EventTarget, pointer: boolean): void => {
+            let event: Event;
+            if (pointer) event = new PointerEvent("pointerdown", { bubbles: true, pointerId: 1 });
+            else event = new MouseEvent("pointerdown", { bubbles: true });
+            target.dispatchEvent(event);
+        };
+        send(button, true);
+        send(button, false);
+        origin.setAttribute("data-downs", String(downs));
+        // A constructed event carries the target the pointer came from.
+        const previous = document.createElement("div");
+        origin.appendChild(previous);
+        button.addEventListener("pointerover", (e) => {
+            origin.setAttribute("data-related", e.relatedTarget === previous ? "previous" : e.relatedTarget === null ? "none" : "other");
+        });
+        const hover = (from: Element | null): void => {
+            button.dispatchEvent(new PointerEvent("pointerover", { bubbles: true, relatedTarget: from }));
+        };
+        hover(null);
+        origin.setAttribute("data-related-first", origin.getAttribute("data-related") ?? "");
+        hover(previous);
+        // An init typed as the platform's dictionary sets represented fields.
+        button.addEventListener("pointermove", (e) => {
+            origin.setAttribute("data-client", String(e.clientX));
+        });
+        const plain: MouseEventInit = { bubbles: true, clientX: 3 };
+        button.dispatchEvent(new MouseEvent("pointermove", plain));
         globalThis.close();
     `);
     writeFileSync(join(directory, "program.hpp"), cpp);

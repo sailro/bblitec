@@ -550,13 +550,18 @@ ${
     {
     const auto node_rest = gltf_animation_node_rest(document,
         [&](double index) { gltf_checked_index(index); return find_gltf_parent(parents, index); });
-    animation_runtime->nodes.resize(node_rest.size());
-    animation_runtime->source_nodes.reserve(node_rest.size());
+${nodeTransforms ? "" : "    animation_runtime->nodes.resize(node_rest.size());\n"}    animation_runtime->source_nodes.reserve(node_rest.size());
     for (std::size_t index = 0; index < node_rest.size(); ++index) {
         const auto& rest = node_rest[index];
         GltfAnimationPoseNode source_node{rest.tx,rest.ty,rest.tz,rest.rx,rest.ry,rest.rz,rest.rw,rest.sx,rest.sy,rest.sz,rest.parentIdx,{}};
         if(rest.matrix&&!rest.matrix->is_null()){const auto matrix=gltf_matrix_from_json(rest.matrix);source_node.matrix=GltfAnimationFloats(matrix.begin(),matrix.end());}
-        animation_runtime->source_nodes.push_back(std::move(source_node));
+        animation_runtime->source_nodes.push_back(std::move(source_node));${
+            // Under node transforms the scene nodes are the only node
+            // copy: channels write them and the engine composes their
+            // worlds.
+            nodeTransforms
+                ? ""
+                : `
         AnimatedNode& animated_node =
             animation_runtime->nodes[index];
         if (!std::isfinite(rest.parentIdx) || std::floor(rest.parentIdx) != rest.parentIdx || rest.parentIdx < -1 ||
@@ -570,7 +575,8 @@ ${
         animated_node.translation = Vec3d{rest.tx,rest.ty,rest.tz};
         animated_node.rotation = Vec4d{rest.rx,rest.ry,rest.rz,rest.rw};
         animated_node.scale = Vec3d{rest.sx,rest.sy,rest.sz};
-
+`
+        }
     }
     }
     for (const ts::JsonValue& skin_value : skin_json) {
@@ -753,18 +759,15 @@ ${options.cpuGeometry ? `            record.cpu_streams = read_gltf_cpu_streams(
                         : ""
                 }
             // The pin's glTF mesh is an identity-TRS child of its node, so
-            // the node's world is the record's parent world.
-            record.parent_world = mesh_world;${
+            // the node's world is the record's parent world.${
                 nodeTransforms
                     ? `
-            // Scene code writes node transforms, so the node's world is its
-            // transform node's, composed through the hierarchy live.
-            // Static skeleton palettes compose under the live mesh world;
-            // animation-owned worlds and morphs still require separate wiring.
-            if (animated || planned_morph)
-                throw std::runtime_error("An animated or morphed glTF primitive reached a node-carrying load.");
-            record.parent_world.reset();`
-                    : ""
+            // Scene code writes node transforms, so that world is the node's
+            // scene node's, composed through the hierarchy live: the record
+            // hangs under it below, and a pose writes its channels into the
+            // scene nodes. Skeleton palettes compose under the live mesh world.`
+                    : `
+            record.parent_world = mesh_world;`
             }
             // mesh.skeleton / mesh.morphTargets upstream, as plain facts.
             record.skeleton_attached = planned_skin != nullptr;
@@ -832,7 +835,7 @@ ${
                         initial_joint_matrices.push_back(read_matrix(palette, bone));
                 }
                 publish_gltf_deformation(${recordAt("engine.meshes", "mesh_handle")},
-                    mesh_world, initial_joint_matrices, planned_skin != nullptr, morph_default_weights);
+                    ${nodeTransforms ? "" : "mesh_world, "}initial_joint_matrices, planned_skin != nullptr, morph_default_weights);
                 // mesh.skeleton upstream: the node named a skin, so the
                 // pose pass writes this record a joint palette rather than
                 // its own world matrix.
@@ -1114,7 +1117,10 @@ using Matrix = std::array<float, 16>;
 
 ${gltfCameras ? `struct AnimatedCameraBinding { CameraHandle camera{}; std::size_t node=0; Matrix local{}; };` : ""}
 ${animationPointer ? `struct AnimatedLightBinding { LightHandle light{}; std::size_t node=0; };` : ""}
-
+${
+    nodeTransforms
+        ? ""
+        : `
 struct AnimatedNode {
     Vec3d translation{};
     Vec4d rotation{0.0, 0.0, 0.0, 1.0};
@@ -1131,7 +1137,8 @@ struct AnimatedNode {
     bool computing = false;
 
 };
-
+`
+}
 struct SkinRuntime {
     std::vector<std::size_t> joints;
     std::vector<Matrix> inverse_bind_matrices;

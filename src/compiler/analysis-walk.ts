@@ -42,6 +42,30 @@ export function sourceFileNodes(file: ts.SourceFile): readonly ts.Node[] {
     return nodes;
 }
 
+/** @unjournaled Parsed syntax is immutable: each file's identifiers by name, kept. */
+const fileIdentifiers = new WeakMap<
+    ts.SourceFile,
+    ReadonlyMap<string, readonly ts.Identifier[]>
+>();
+
+/** A file's identifiers outside type positions, by name, in source order. */
+export function identifiersByName(
+    file: ts.SourceFile,
+): ReadonlyMap<string, readonly ts.Identifier[]> {
+    let known = fileIdentifiers.get(file);
+    if (!known) {
+        const names = new Map<string, ts.Identifier[]>();
+        for (const node of sourceFileNodes(file)) {
+            if (!ts.isIdentifier(node)) continue;
+            const list = names.get(node.text);
+            if (list) list.push(node);
+            else names.set(node.text, [node]);
+        }
+        fileIdentifiers.set(file, (known = names));
+    }
+    return known;
+}
+
 /** Preorder analysis with explicit boundaries and early termination. */
 export function findAnalysisNode<T extends ts.Node>(
     root: ts.Node,
@@ -112,4 +136,29 @@ export function forEachAnalysisNode(
     policy?: AnalysisWalkPolicy,
 ): void {
     findAnalysisNode(root, (node) => action(node) ?? false, policy);
+}
+
+/**
+ * A walk over a program's source files (not its declaration files) keeping,
+ * in source order, what `select` maps each node to: run once per file list
+ * and kept for every replay.
+ */
+export function sourceFilesWalk<T, A extends readonly unknown[] = []>(
+    select: (node: ts.Node, ...args: A) => T | undefined,
+): (files: readonly ts.SourceFile[], ...args: A) => readonly T[] {
+    const walked = new WeakMap<readonly ts.SourceFile[], readonly T[]>();
+    return (files, ...args) => {
+        let found = walked.get(files);
+        if (!found) {
+            const entries: T[] = [];
+            for (const file of files)
+                if (!file.isDeclarationFile)
+                    forEachAnalysisNode(file, (node) => {
+                        const entry = select(node, ...args);
+                        if (entry !== undefined) entries.push(entry);
+                    });
+            walked.set(files, (found = entries));
+        }
+        return found;
+    };
 }

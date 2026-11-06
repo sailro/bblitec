@@ -4023,12 +4023,12 @@ function emitMaterialAssignment(
             context.sceneManifest.recordUnknownStandardMeshMaterial();
         }
         if (meshProfile === undefined) {
-            for (const profile of target.possibleSceneMeshProfiles ?? [
-                undefined,
-            ])
+            const profiles = target.possibleSceneMeshProfiles ?? [undefined];
+            for (const profile of profiles)
                 context.sceneManifest.recordSceneShaderMaterialDraw(
                     profile,
                     material,
+                    profiles.length > 1,
                 );
         }
         if (
@@ -4074,6 +4074,29 @@ function emitBoundMinAssignment(
         return true;
     }
     return false;
+}
+
+/**
+ * `texture.sampler = sampler` on a render target's texture or depth facade:
+ * the sampler a material binds it through from then on, as upstream binds
+ * `tex.sampler`.
+ */
+function emitSamplerAssignment(
+    context: AssignmentContext,
+    state: TargetPropertyAssignment,
+): boolean {
+    const { expression, target, property } = state;
+    if (property !== "sampler" || target.kind !== "render-texture")
+        return false;
+    requireSimpleAssignment(context, expression, "texture sampler");
+    const sampler = context.compileValue(expression.right);
+    context.expectKind(sampler, "gpu-sampler", expression.right);
+    context.expectSameEngine(target, sampler, expression);
+    context.emit({
+        kind: "expression",
+        code: `bbl::set_render_texture_sampler(${context.requireEngine(target, expression)}, ${target.cpp}, ${sampler.cpp});`,
+    });
+    return true;
 }
 
 function emitSkeletonAssignment(
@@ -4733,6 +4756,7 @@ const targetPropertyHandlers1 = new EmissionMap<
     ["boundMax", emitBoundMinAssignment],
     ["skeleton", emitSkeletonAssignment],
     ["morphTargets", emitMorphTargetsAssignment],
+    ["sampler", emitSamplerAssignment],
 ]);
 
 const targetPropertyHandlers2 = new EmissionMap<

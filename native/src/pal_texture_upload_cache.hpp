@@ -15,6 +15,8 @@ inline bool same_texture_image(const TextureData& left, const TextureData& right
     // binding holds of them.
     if (left.pixels || right.pixels)
         return left.pixels == right.pixels;
+    if (left.float_texels || right.float_texels)
+        return left.float_texels == right.float_texels;
     if (left.bytes.data() != right.bytes.data() || left.bytes.size() != right.bytes.size() ||
         left.rgba_width != right.rgba_width || left.rgba_height != right.rgba_height ||
         left.invert_y != right.invert_y || left.premultiply_alpha != right.premultiply_alpha ||

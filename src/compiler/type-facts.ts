@@ -542,6 +542,26 @@ export function nullability(type: ts.Type): Nullability {
     };
 }
 
+/** An object type, or an intersection of them (`{ committed: true } & Moved`), which is one object. */
+export function objectLikeType(type: ts.Type): boolean {
+    return (
+        (type.flags & ts.TypeFlags.Object) !== 0 ||
+        (type.isIntersection() && type.types.every(objectLikeType))
+    );
+}
+
+/** The texts a string literal type, or a union of them, admits; undefined for any other type. */
+export function stringLiteralValues(
+    type: ts.Type,
+): ReadonlySet<string> | undefined {
+    const values = new Set<string>();
+    for (const member of unionMembers(type)) {
+        if (!member.isStringLiteral()) return undefined;
+        values.add(member.value);
+    }
+    return values;
+}
+
 /**
  * The literal's named keys whose value types admit neither `null` nor
  * `undefined`: each is present on the object the literal builds.

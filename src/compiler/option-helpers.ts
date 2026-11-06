@@ -302,7 +302,7 @@ export function compileBooleanOptions<N extends string>(
                     : reference
                       ? `static_cast<bool>(${cpp})`
                       : undefined;
-            const member = reference ? "->" : ".";
+            const member = context.dataTypes.memberAccess(recordType.name);
             for (const field of context.dataTypes.structFields(
                 recordType.name,
                 expression,
@@ -515,8 +515,9 @@ export interface StaticBooleanContext extends Pick<
     "resolveStaticExpression" | "compileBoolean" | "fail"
 > {}
 
-interface StaticNumberSelectionContext extends StaticFoldContext {
-    /** The condition compiler the fold asks; a caller may probe it. */
+interface StaticNumberSelectionContext
+    extends StaticFoldContext, Pick<LoweringServices, "probeEmission"> {
+    /** The condition compiler the fold asks. */
     readonly conditions: Pick<ConditionLowerer, "compileCondition">;
 }
 
@@ -546,11 +547,11 @@ export function selectedStaticNumberValue(
  * that folds. Undefined when a condition stays live, so each caller keeps
  * its own domain-specific refusal rather than inheriting a number's.
  */
-interface StaticSelectionContext extends Pick<
+export interface StaticSelectionContext extends Pick<
     LoweringServices,
-    "resolveStaticExpression"
+    "resolveStaticExpression" | "probeEmission"
 > {
-    /** The condition compiler the fold asks; a caller may probe it. */
+    /** The condition compiler the fold asks. */
     readonly conditions: Pick<ConditionLowerer, "compileCondition">;
 }
 
@@ -560,8 +561,12 @@ export function selectedStaticExpression(
 ): ts.Expression | undefined {
     let selected = context.resolveStaticExpression(expression);
     while (ts.isConditionalExpression(selected)) {
-        const condition = context.conditions.compileCondition(
-            selected.condition,
+        // Probed: a condition that emits a temporary and then fails to
+        // fold leaves no trace in a lowering that falls through.
+        const test = selected.condition;
+        const condition = context.probeEmission(
+            () => context.conditions.compileCondition(test),
+            (folded) => knownCondition(folded) !== undefined,
         );
         if (knownCondition(condition) === undefined) {
             return undefined;

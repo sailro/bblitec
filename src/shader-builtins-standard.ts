@@ -1,5 +1,6 @@
 import { sharedPinnedContext } from "./lowering/context.js";
 import { pinnedMaterialVertex } from "./pinned-material-vertex.js";
+import { gpuVertexInputLines } from "./gpu-vertex-attributes.js";
 
 /** The palette capacity in the shared PAL's DeformationUniforms transport. */
 export const DEFORMATION_BONE_SLOTS = 64;
@@ -54,30 +55,22 @@ struct MeshUniforms {
 
 
 struct VertexInput {
-    @location(0) position: vec3<f32>,
-    @location(1) normal: vec3<f32>,
-    @location(2) tangent: vec4<f32>,
-    @location(3) uv: vec2<f32>,
-    @location(5) uv2: vec2<f32>,
-    @location(6) color: vec4<f32>,
-${
-    gpuDeformation
-        ? `    @location(8) joints: vec4<f32>,
-    @location(9) weights: vec4<f32>,
-${
-    morphStorage
-        ? `    @builtin(vertex_index) vertexIndex: u32,
+${gpuVertexInputLines(["position", "normal", "tangent", "uv", "uv2", "color"])}${
+        gpuDeformation
+            ? `${gpuVertexInputLines(["joints", "weights"])}${
+                  morphStorage
+                      ? `    @builtin(vertex_index) vertexIndex: u32,
 `
-        : `    @location(10) morphPosition0: vec3<f32>,
+                      : `    @location(10) morphPosition0: vec3<f32>,
     @location(11) morphPosition1: vec3<f32>,
     @location(12) morphNormal0: vec3<f32>,
     @location(13) morphNormal1: vec3<f32>,
     @location(14) morphTangent0: vec3<f32>,
     @location(15) morphTangent1: vec3<f32>,
 `
-}`
-        : ""
-}${
+              }`
+            : ""
+    }${
         gpuInstancing
             ? `    @location(16) instanceColumn0: vec4<f32>,
     @location(17) instanceColumn1: vec4<f32>,

@@ -1,35 +1,13 @@
 import test from "node:test";
-import { runInNewContext } from "node:vm";
-import ts from "typescript";
-import { compileSource } from "../src/compiler.js";
-import {
-    optionalNativeFixtureTools,
-    runGeneratedProgram,
-} from "./native-fixture.js";
+import { runSelfCheckingProgram } from "./self-checking-program.js";
 
 function check(name: string, source: string): void {
-    test(name, (t) => {
-        runInNewContext(
-            ts.transpileModule(source, {
-                compilerOptions: { target: ts.ScriptTarget.ES2022 },
-            }).outputText,
-        );
-        const result = compileSource(source);
-        const tools = optionalNativeFixtureTools(false);
-        if (!tools) {
-            t.skip("Requires the Windows native fixture compiler.");
-            return;
-        }
-        runGeneratedProgram(
-            tools,
-            `retained-callback-storage/${name}`,
-            result.cpp,
-            {
-                timeoutMs: 10000,
-                expectedOutput: "",
-            },
-        );
-    });
+    test(name, (t) =>
+        runSelfCheckingProgram(t, `retained-callback-storage/${name}`, source, {
+            timeoutMs: 10000,
+            expectedOutput: "",
+        }),
+    );
 }
 
 check(

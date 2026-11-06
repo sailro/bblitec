@@ -272,7 +272,10 @@ interface ReachedLoopCache {
 /** @unjournaled Syntax plans are immutable; expansions validate their current callee before reuse. */
 const reachedLoopCaches = new WeakMap<object, ReachedLoopCache>();
 
-/** Follow reached calls with readonly callback parameters bound to their source bodies. */
+/**
+ * Follow reached calls with readonly callback parameters bound to their source
+ * bodies. `own` tells a node of the root's own body from one a call reaches.
+ */
 export function walkReachedLoopNodes(
     context: Pick<ResourceLoopContext, "checker" | "symbols"> &
         Partial<
@@ -284,7 +287,8 @@ export function walkReachedLoopNodes(
     root: ts.Node,
     visit: (
         node: ts.Node,
-        called?: ts.Signature["declaration"],
+        called: ts.Signature["declaration"] | undefined,
+        own: boolean,
     ) => boolean | void,
 ): void {
     let cache = reachedLoopCaches.get(context);
@@ -372,7 +376,11 @@ export function walkReachedLoopNodes(
         }
         return rows;
     };
-    const walk = (subtree: ts.Node, callbacks: LoopCallbacks): void => {
+    const walk = (
+        subtree: ts.Node,
+        callbacks: LoopCallbacks,
+        own: boolean,
+    ): void => {
         const rows = plan(subtree);
         const key = callbackKey(callbacks);
         for (let index = 0; index < rows.length; index++) {
@@ -393,7 +401,7 @@ export function walkReachedLoopNodes(
                       calledDeclaration(context.checker, node))
                     : resolvedLoopCallee(context, node)
                 : undefined;
-            if (visit(node, called) === false) {
+            if (visit(node, called, own) === false) {
                 index = row.end - 1;
                 continue;
             }
@@ -517,7 +525,7 @@ export function walkReachedLoopNodes(
                     if (seen.has(edge.functionKey)) continue;
                     seen.add(edge.functionKey);
                 }
-                walk(edge.node, edge.callbacks);
+                walk(edge.node, edge.callbacks, false);
             }
         }
     };
@@ -529,6 +537,7 @@ export function walkReachedLoopNodes(
             ? callbackRoot.body
             : root,
         new Map(),
+        true,
     );
 }
 
@@ -601,7 +610,7 @@ function reachesSpecializingEffect(
             );
         });
     let required = false;
-    walkReachedLoopNodes(context, root, (node) => {
+    walkReachedLoopNodes(context, root, (node, _called, own) => {
         if (required) return false;
         // Handle and finite record properties dispatch by their source key.
         if (
@@ -709,8 +718,14 @@ function reachesSpecializingEffect(
                 (isMaterialCallEffectIntrinsic(awaitedIntrinsic) ||
                     isAssetCallEffectIntrinsic(awaitedIntrinsic))) ||
                 isSupportedFunction(resolvedLoopCallee(context, awaited)));
+        // An await suspends the function it stands in: one in a callee or in a
+        // callback the body registers is another activation's, not the loop's.
+        // Sharing still treats every reached await as specializing: a shared
+        // body replays at each call site, so sharing such bodies costs more
+        // than inlining them.
         if (
             (ts.isAwaitExpression(node) &&
+                (own || !keepsRetainedFacts) &&
                 !effectAwait &&
                 !(
                     awaitedIntrinsic &&

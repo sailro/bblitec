@@ -7,6 +7,8 @@ import { join } from "node:path";
 import test from "node:test";
 import { specializeGltf } from "../src/asset-specializer.js";
 import { packageGltf } from "../src/gltf-packager.js";
+import { prepareAssetDecoders } from "../src/asset-decoders.js";
+import { resolveBrowserPath } from "../src/browser-path.js";
 import {
     GLTF_SOURCE_ALBEDO_IDENTITIES,
     parseGlbJson,
@@ -794,6 +796,67 @@ test("embeds an external image referenced by a GLB beside that GLB", async () =>
             [...packaged.binary.subarray(0, 7)],
             [1, 2, 3, 4, 5, 6, 7],
         );
+    } finally {
+        rmSync(directory, { recursive: true, force: true });
+    }
+});
+
+test("drops the texture transforms the pinned basisu extension never composes", async (t) => {
+    try {
+        resolveBrowserPath();
+    } catch {
+        t.skip("Chromium is unavailable.");
+        return;
+    }
+    const directory = mkdtempSync(join(tmpdir(), "bblitec-basisu-transform-"));
+    const transform = { KHR_texture_transform: { offset: [0.5, 0] } };
+    const decoder = new TextEncoder().encode(`globalThis.KTX2DECODER={
+        MSCTranscoder:{},WASMMemoryManager:{},Palette:{},
+        KTX2Decoder:class {async decode(){
+            return {transcodedFormat:36492,mipmaps:[{width:4,height:4,data:new Uint8Array(16)}]};
+        }}
+    };`);
+    try {
+        writeFileSync(
+            join(directory, "scene.gltf"),
+            JSON.stringify({
+                asset: { version: "2.0" },
+                extensionsUsed: ["KHR_texture_basisu", "KHR_texture_transform"],
+                images: [{ uri: "a.ktx2" }],
+                textures: [
+                    { extensions: { KHR_texture_basisu: { source: 0 } } },
+                ],
+                materials: [
+                    {
+                        pbrMetallicRoughness: {
+                            baseColorTexture: {
+                                index: 0,
+                                extensions: transform,
+                            },
+                        },
+                    },
+                ],
+            }),
+        );
+        writeFileSync(join(directory, "a.ktx2"), new Uint8Array([1, 2, 3]));
+        const decoders = prepareAssetDecoders(
+            {
+                ktx2: {
+                    javascript: "decoder.js",
+                    wasmUrls: { Palette: { WasmModuleURL: "palette.wasm" } },
+                },
+            },
+            async (source) =>
+                source.endsWith(".js") ? decoder : new Uint8Array([0]),
+        );
+        const { document } = readGlbFixture(
+            await packageGltf("scene.gltf", directory, false, [], decoders),
+        );
+        // Upstream deletes the textureInfo before its transform hook runs.
+        assert.deepEqual(document.materials, [
+            { pbrMetallicRoughness: { baseColorTexture: { index: 0 } } },
+        ]);
+        assert.deepEqual(document.extensionsUsed, ["KHR_texture_transform"]);
     } finally {
         rmSync(directory, { recursive: true, force: true });
     }

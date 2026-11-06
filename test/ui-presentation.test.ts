@@ -56,6 +56,8 @@ test("border lines keep their style, spell CSS shorthand resets and dashed outli
     assert.match(result.cpp, /border-left-style:hidden/);
     assert.match(result.cpp, /border:1px solid var\(--Edge\)/);
     assert.match(result.cpp, /--bbl-outline:2px dashed #fff/);
+    // A zero-width outline draws nothing, as none does.
+    assert.match(compile(".h{outline:0}").cpp, /--bbl-outline:none/);
     // `text-shadow: none` removes an inherited shadow.
     assert.match(compile(".g{text-shadow:none}").cpp, /font-effect:none/);
     // A generation-known style write lowers as a declaration does.
@@ -134,10 +136,15 @@ test("image controls retain transparent text, composed transforms, empty clips a
         ).cpp,
         /--bbl-background-image:radial-gradient\(circle at 38% 32%, rgba\(255,255,255,0\.55\), rgba\(255,255,255,0\) 60%\),linear-gradient\(red,blue\)/,
     );
+    // An explicit size is a decorator layer's own box.
+    assert.match(
+        compile(".panel{background-size:20px 40px}").cpp,
+        /--bbl-background-size:20px 40px/,
+    );
     for (const declaration of [
         "background-image:linear-gradient(red,blue) no-repeat",
         "background-image:url(a.png),linear-gradient(red,blue)",
-        "background-size:20px 40px",
+        "background-size:20px auto",
         "background-position:right bottom",
         "background-repeat:space",
         "scale:1 2",

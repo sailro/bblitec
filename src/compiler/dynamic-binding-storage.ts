@@ -1,4 +1,5 @@
 import { StorageDemand } from "./storage-demand.js";
+import { demandOrPlan } from "./storage-demand-planner.js";
 import type { StorageRequest } from "./replay-storage.js";
 import ts from "typescript";
 import type { BindingScopes } from "./binding-scopes.js";
@@ -513,7 +514,7 @@ export function requireHeldRecordStorage(
             storedCopyObservation(context, expression, declaration) !==
                 undefined
         )
-            throw new ParameterObjectStorageRequired(declaration);
+            demandOrPlan(new ParameterObjectStorageRequired(declaration));
         return;
     }
     // A binding already given its own storage is still a record only when

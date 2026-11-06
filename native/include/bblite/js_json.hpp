@@ -392,11 +392,17 @@ struct JsonNativeObject {
     }
     [[nodiscard]] virtual bool has_property(std::string_view key) const { return has_own(key); }
     [[nodiscard]] virtual std::string to_string() const { return "[object Object]"; }
+    /** A boxed function (`JsonNativeBox<Callback<Sig>>`): `typeof` reads "function". */
+    [[nodiscard]] virtual bool callable() const { return false; }
     virtual void set(std::string_view, const JsonValue&) {
         throw std::runtime_error("Dynamic property assignment requires an owned object.");
     }
     virtual void remove(std::string_view) {
         throw std::runtime_error("Dynamic property deletion requires an owned object.");
+    }
+    /** Defines an own property (a value, or an accessor slot) in place. */
+    virtual void define(std::string_view, const JsonValue&) {
+        throw std::runtime_error("Dynamic property definition requires an owned object.");
     }
     virtual void gc_trace(const TraceVisitor& visitor) const = 0;
 };
@@ -478,6 +484,37 @@ public:
 
     template <typename Getter>
     [[nodiscard]] static JsonValue from_tuple_view(Getter getter, std::size_t length);
+
+    /**
+     * Defines an enumerable accessor property on an owned object: a new key
+     * is appended, an existing one keeps its place. A non-configurable
+     * accessor cannot be redefined.
+     */
+    void define_accessor(std::string_view key, Callback<JsonValue()> getter,
+                         Callback<void(JsonValue)> setter, bool configurable) const;
+
+    /**
+     * Defines a writable, enumerable, configurable data property on an owned
+     * object, replacing an accessor of the key in its place.
+     */
+    void define_value(std::string_view key, JsonValue value) const;
+
+    /** A property's value: an accessor slot's getter result, else the stored value. */
+    [[nodiscard]] JsonValue property_value() const;
+    /** An accessor slot's setter for a write, true when this value is a slot. */
+    bool set_accessor(std::string_view key, const JsonValue& value) const;
+    /** Throws for a non-configurable accessor slot. */
+    void check_accessor_removal(std::string_view key) const;
+    /** Throws when this value is a non-configurable accessor slot. */
+    void check_redefinition(std::string_view key) const;
+    [[nodiscard]] bool nonconfigurable_accessor() const;
+    /** Whether this value is an accessor slot, read through `property_value`. */
+    [[nodiscard]] bool is_accessor_slot() const;
+
+    [[nodiscard]] static JsonValue from_proxy_view(JsonValue target,
+                                                   Callback<JsonValue(std::string)> read,
+                                                   Callback<bool(std::string, JsonValue)> write,
+                                                   Callback<bool(std::string)> erase);
 
     [[nodiscard]] static JsonValue from_array_reference(const bbl::js::Array<JsonValue>& elements) {
         JsonValue value;
@@ -594,6 +631,7 @@ public:
     [[nodiscard]] bool is_string() const { return kind_ == Kind::string; }
     [[nodiscard]] bool is_array() const { return kind_ == Kind::array; }
     [[nodiscard]] bool is_object() const { return kind_ == Kind::object; }
+    [[nodiscard]] bool is_callable() const { return native_ && native_->callable(); }
 
     /** `typeof value` -- the operator, spelled the way JavaScript spells it. */
     [[nodiscard]] std::string type_of() const {
@@ -606,9 +644,12 @@ public:
             return "number";
         case Kind::string:
             return "string";
+        case Kind::object:
+            if (is_callable())
+                return "function";
+            break;
         case Kind::null:
         case Kind::array:
-        case Kind::object:
             break;
         }
         return "object";
@@ -672,7 +713,7 @@ public:
             return native_->get(key);
         for (const Entry& entry : *object_) {
             if (entry.first == key)
-                return entry.second;
+                return entry.second.property_value();
         }
         return {};
     }
@@ -695,7 +736,12 @@ public:
             for (const auto& key : own_keys())
                 visitor(key, native_->get(key));
         } else if (kind_ == Kind::object) {
-            json_for_each_object_entry(*object_, std::forward<Visitor>(visitor));
+            json_for_each_object_entry(*object_, [&](const auto& key, const JsonValue& value) {
+                if (value.is_accessor_slot())
+                    visitor(key, value.property_value());
+                else
+                    visitor(key, value);
+            });
         }
     }
 
@@ -717,7 +763,14 @@ public:
             native_->set(key, value);
             return;
         }
-        set_entry(*object_, key, std::move(value));
+        for (Entry& entry : *object_) {
+            if (entry.first != key)
+                continue;
+            if (!entry.second.set_accessor(key, value))
+                entry.second = std::move(value);
+            return;
+        }
+        object_->emplace_back(std::string(key), std::move(value));
     }
 
     /** Deletes an owned object's own property. */
@@ -728,7 +781,12 @@ public:
             native_->remove(key);
             return;
         }
-        std::erase_if(*object_, [&](const Entry& entry) { return entry.first == key; });
+        const auto found = std::find_if(object_->begin(), object_->end(),
+                                        [&](const Entry& entry) { return entry.first == key; });
+        if (found == object_->end())
+            return;
+        found->second.check_accessor_removal(key);
+        object_->erase(found);
     }
 
     /** Object.assign keeps the target identity; arguments are already evaluated. */
@@ -744,7 +802,13 @@ public:
             if (source.is_null() || source.is_undefined())
                 continue;
             if (source.kind_ == Kind::object && !source.native_)
-                json_for_each_object_entry(*source.object_, copy_entry);
+                json_for_each_object_entry(*source.object_,
+                                           [&](const auto& key, const JsonValue& value) {
+                                               if (value.is_accessor_slot())
+                                                   copy_entry(key, value.property_value());
+                                               else
+                                                   copy_entry(key, value);
+                                           });
             else
                 for (const auto& key : source.own_keys())
                     if (source.has_own(key))
@@ -760,9 +824,9 @@ public:
         };
         if (kind_ == Kind::object && !native_) {
             entries.reserve(object_->size());
-            json_for_each_object_entry(*object_, [&](const auto& key, const auto& value) {
+            json_for_each_object_entry(*object_, [&](const auto& key, const auto& stored) {
                 if (included(key))
-                    entries.emplace_back(key, value);
+                    entries.emplace_back(key, stored.property_value());
             });
         } else {
             for (const auto& key : own_keys())
@@ -1173,7 +1237,13 @@ template <typename T>
 template <typename T> struct JsonNativeBox final : JsonNativeObject {
     T value;
     explicit JsonNativeBox(T source) : value(std::move(source)) {}
-    JsonValue get(std::string_view key) const override { return json_value_property(value, key); }
+    JsonValue get(std::string_view key) const override {
+        if constexpr (std::is_same_v<T, Map<std::string, JsonValue>>) {
+            const std::string name(key);
+            return value.has(name) ? value.at(name).property_value() : JsonValue{};
+        } else
+            return json_value_property(value, key);
+    }
     bbl::js::Array<std::string> own_keys() const override { return json_value_keys(value); }
     const std::type_info& type() const override { return typeid(T); }
     const void* identity() const override {
@@ -1183,19 +1253,60 @@ template <typename T> struct JsonNativeBox final : JsonNativeObject {
             return value.get();
     }
     void set(std::string_view key, const JsonValue& member) override {
-        if constexpr (std::is_same_v<T, Map<std::string, JsonValue>>)
-            value.set(std::string(key), member);
-        else
+        if constexpr (std::is_same_v<T, Map<std::string, JsonValue>>) {
+            const std::string name(key);
+            if (!value.has(name) || !value.at(name).set_accessor(key, member))
+                value.set(name, member);
+        } else
             JsonNativeObject::set(key, member);
     }
     void remove(std::string_view key) override {
-        if constexpr (std::is_same_v<T, Map<std::string, JsonValue>>)
-            static_cast<void>(value.erase(std::string(key)));
-        else
+        if constexpr (std::is_same_v<T, Map<std::string, JsonValue>>) {
+            const std::string name(key);
+            if (value.has(name))
+                value.at(name).check_accessor_removal(key);
+            static_cast<void>(value.erase(name));
+        } else
             JsonNativeObject::remove(key);
+    }
+    void define(std::string_view key, const JsonValue& member) override {
+        if constexpr (std::is_same_v<T, Map<std::string, JsonValue>>) {
+            const std::string name(key);
+            if (value.has(name))
+                value.at(name).check_redefinition(key);
+            value.set(name, member);
+        } else
+            JsonNativeObject::define(key, member);
     }
     void gc_trace(const TraceVisitor& visitor) const override { visitor(value); }
 };
+
+/**
+ * A function a document holds: the callback, with no own keys. A call reads it
+ * back with the signature the member's declared type gives (`json_call`).
+ */
+template <typename Sig> struct JsonNativeBox<Callback<Sig>> final : JsonNativeObject {
+    Callback<Sig> value;
+    explicit JsonNativeBox(Callback<Sig> source) : value(std::move(source)) {}
+    JsonValue get(std::string_view) const override { return {}; }
+    bbl::js::Array<std::string> own_keys() const override { return {}; }
+    const std::type_info& type() const override { return typeid(Callback<Sig>); }
+    const void* identity() const override { return value.weak_identity().lock().get(); }
+    bool callable() const override { return true; }
+    void gc_trace(const TraceVisitor& visitor) const override { visitor(value); }
+};
+
+/**
+ * `member(...args)` on a dynamic value: the function it holds, called with the
+ * signature its declared type gives. Any other member throws, as JavaScript
+ * does for a value that is not a function.
+ */
+template <typename R, typename... Args>
+R json_call(const JsonValue& member, std::string_view name, Args... args) {
+    if (!member.instance_of<Callback<R(Args...)>>())
+        throw NamedError("TypeError", std::string(name) + " is not a function");
+    return member.asserted_instance<Callback<R(Args...)>>()(std::forward<Args>(args)...);
+}
 
 /** Error views retain the exception owner; its standard fields are not enumerable. */
 template <> struct JsonNativeBox<Error> final : JsonNativeObject {
@@ -1282,6 +1393,132 @@ JsonValue JsonValue::from_record_view(Getter getter, bbl::js::Array<std::string>
     return value;
 }
 
+/**
+ * A Proxy over a dynamic object: its handler's traps read, write and delete
+ * properties, and a falsish `set` or `deleteProperty` result throws, as it
+ * does in strict code. The keys and presence no trap answers are the
+ * target's own, read live.
+ */
+struct JsonProxyView final : JsonNativeObject {
+    JsonValue target;
+    mutable Callback<JsonValue(std::string)> read;
+    Callback<bool(std::string, JsonValue)> write;
+    Callback<bool(std::string)> erase;
+    JsonProxyView(JsonValue object, Callback<JsonValue(std::string)> get,
+                  Callback<bool(std::string, JsonValue)> set, Callback<bool(std::string)> remove)
+        : target(std::move(object)), read(std::move(get)), write(std::move(set)),
+          erase(std::move(remove)) {}
+    JsonValue get(std::string_view key) const override { return read(std::string(key)); }
+    bbl::js::Array<std::string> own_keys() const override { return target.own_keys(); }
+    bool has_own(std::string_view key) const override { return target.has_own(key); }
+    void set(std::string_view key, const JsonValue& value) override {
+        if (!write(std::string(key), value))
+            throw NamedError("TypeError", "'set' on proxy: trap returned falsish for property '" +
+                                              std::string(key) + "'");
+    }
+    void remove(std::string_view key) override {
+        if (!erase(std::string(key)))
+            throw NamedError("TypeError",
+                             "'deleteProperty' on proxy: trap returned falsish for property '" +
+                                 std::string(key) + "'");
+    }
+    const std::type_info& type() const override { return typeid(JsonProxyView); }
+    const void* identity() const override { return this; }
+    void gc_trace(const TraceVisitor& visitor) const override {
+        visitor(target);
+        visitor(read);
+        visitor(write);
+        visitor(erase);
+    }
+};
+
+inline JsonValue JsonValue::from_proxy_view(JsonValue target, Callback<JsonValue(std::string)> read,
+                                            Callback<bool(std::string, JsonValue)> write,
+                                            Callback<bool(std::string)> erase) {
+    JsonValue value;
+    value.kind_ = Kind::object;
+    value.native_ = make_gc_shared<JsonProxyView>(std::move(target), std::move(read),
+                                                  std::move(write), std::move(erase));
+    return value;
+}
+
+/** An own accessor property of a dynamic object, held as the entry's value. */
+struct JsonAccessorSlot final : JsonNativeObject {
+    mutable Callback<JsonValue()> getter;
+    mutable Callback<void(JsonValue)> setter;
+    bool configurable;
+    JsonAccessorSlot(Callback<JsonValue()> get, Callback<void(JsonValue)> set, bool keep)
+        : getter(std::move(get)), setter(std::move(set)), configurable(keep) {}
+    JsonValue get(std::string_view) const override { return {}; }
+    bbl::js::Array<std::string> own_keys() const override { return {}; }
+    const std::type_info& type() const override { return typeid(JsonAccessorSlot); }
+    const void* identity() const override { return this; }
+    void gc_trace(const TraceVisitor& visitor) const override {
+        visitor(getter);
+        visitor(setter);
+    }
+};
+
+inline bool JsonValue::is_accessor_slot() const { return instance_of<JsonAccessorSlot>(); }
+
+inline JsonValue JsonValue::property_value() const {
+    if (!is_accessor_slot())
+        return *this;
+    return static_cast<const JsonAccessorSlot&>(*native_).getter();
+}
+
+inline bool JsonValue::set_accessor(std::string_view key, const JsonValue& value) const {
+    if (!is_accessor_slot())
+        return false;
+    const auto& slot = static_cast<const JsonAccessorSlot&>(*native_);
+    if (!slot.setter)
+        throw NamedError("TypeError", "Cannot set property " + std::string(key) +
+                                          " of #<Object> which has only a getter");
+    slot.setter(value);
+    return true;
+}
+
+inline bool JsonValue::nonconfigurable_accessor() const {
+    return is_accessor_slot() && !static_cast<const JsonAccessorSlot&>(*native_).configurable;
+}
+
+inline void JsonValue::check_accessor_removal(std::string_view key) const {
+    if (nonconfigurable_accessor())
+        throw NamedError("TypeError",
+                         "Cannot delete property '" + std::string(key) + "' of #<Object>");
+}
+
+inline void JsonValue::define_accessor(std::string_view key, Callback<JsonValue()> getter,
+                                       Callback<void(JsonValue)> setter, bool configurable) const {
+    JsonValue slot;
+    slot.kind_ = Kind::object;
+    slot.native_ =
+        make_gc_shared<JsonAccessorSlot>(std::move(getter), std::move(setter), configurable);
+    define_value(key, std::move(slot));
+}
+
+inline void JsonValue::check_redefinition(std::string_view key) const {
+    if (nonconfigurable_accessor())
+        throw NamedError("TypeError", "Cannot redefine property: " + std::string(key));
+}
+
+inline void JsonValue::define_value(std::string_view key, JsonValue value) const {
+    if (kind_ != Kind::object)
+        throw std::runtime_error("Dynamic property definition requires an object.");
+    if (native_) {
+        native_->define(key, value);
+        return;
+    }
+    for (Entry& entry : *object_) {
+        if (entry.first != key)
+            continue;
+        entry.second.check_redefinition(key);
+        entry.second = std::move(value);
+        return;
+    }
+    object_->emplace_back(std::string(key), std::move(value));
+}
+
 inline void json_write(JsonWriter& writer, const JsonValue& value) {
     switch (value.kind()) {
     case JsonValue::Kind::undefined:
@@ -1300,7 +1537,11 @@ inline void json_write(JsonWriter& writer, const JsonValue& value) {
     case JsonValue::Kind::array:
         writer.begin_array();
         for (const JsonValue& element : value.elements()) {
-            json_write(writer, element);
+            // An array writes a function as null, as it writes undefined.
+            if (element.is_callable())
+                writer.null_value();
+            else
+                json_write(writer, element);
         }
         writer.end_array();
         return;
@@ -1309,7 +1550,7 @@ inline void json_write(JsonWriter& writer, const JsonValue& value) {
     }
     writer.begin_object();
     value.for_each_entry([&](const std::string& key, const JsonValue& entry) {
-        if (entry.is_undefined())
+        if (entry.is_undefined() || entry.is_callable())
             return;
         writer.key(key);
         json_write(writer, entry);
@@ -1469,6 +1710,26 @@ template <std::size_t N> [[nodiscard]] inline Tuple<N> json_tuple(const JsonValu
         result.push_back(element.to_string());
     }
     return result;
+}
+
+/**
+ * A parsed scalar as a primitive union stores it -- the lowering of an
+ * assertion such as `value as number | string | boolean` behind the
+ * source's typeof guard: the member the document's kind names. A kind the
+ * union does not hold cannot be stored.
+ */
+template <typename Variant>
+[[nodiscard]] inline Variant json_primitive_union(const JsonValue& value) {
+    if constexpr (is_alternative_v<double, Variant>)
+        if (value.is_number())
+            return Variant(std::in_place_type<double>, value.to_number());
+    if constexpr (is_alternative_v<std::string, Variant>)
+        if (value.is_string())
+            return Variant(std::in_place_type<std::string>, value.string_value());
+    if constexpr (is_alternative_v<bool, Variant>)
+        if (value.is_boolean())
+            return Variant(std::in_place_type<bool>, value.truthy());
+    throw NamedError("TypeError", "The parsed value is not one of the union's primitive kinds");
 }
 
 /**

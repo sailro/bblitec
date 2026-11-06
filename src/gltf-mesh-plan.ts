@@ -1317,8 +1317,9 @@ export async function recordMeshPlan(
         }
         // A scene that writes SceneNode transforms moves the pin's nodes
         // and everything beneath them, so the loader builds the pin's own
-        // hierarchy. What the native runtime poses or places from its own
-        // copy of the loaded nodes would not follow it, and refuses.
+        // hierarchy; animation poses those nodes. What the native runtime
+        // places from its own copy of the loaded nodes would not follow
+        // it, and refuses.
         let hierarchy: GltfNodeHierarchy | undefined;
         if (options.nodeTransforms === true) {
             const refuse = (what: string): never =>
@@ -1329,10 +1330,6 @@ export async function recordMeshPlan(
                         "places from its own loaded node worlds rather " +
                         "than from the scene's node records.",
                 );
-            if (features.includes(loader.__animationFeature))
-                refuse("animations");
-            if (plannedMeshes.some((mesh) => mesh.morph !== undefined))
-                refuse("morphed primitives");
             if (sourceLights.length > 0) refuse("punctual lights");
             if (sourceCameras.length > 0) refuse("cameras");
             hierarchy = packageNodeHierarchy(root, nodeMap, packer);

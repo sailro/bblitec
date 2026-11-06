@@ -409,16 +409,27 @@ export async function composeScenePipeline({
         assetJoin.assetLightNodes !== undefined ||
         assetJoin.babylonLights.length > 0;
     const staticLightKinds =
-        !result.manifest.dynamicSceneLights && !assetLightsReached
+        !result.manifest.dynamicSceneLights &&
+        !assetLightsReached &&
+        !result.manifest.registeredSceneLightKinds?.includes(null)
             ? result.manifest.sceneLightKinds
             : undefined;
+    const hasShadowReceiver =
+        result.manifest.shadowGenerators.length > 0 &&
+        (result.manifest.shadowReceiverMeshes.length > 0 ||
+            result.manifest.dynamicShadowReceivers);
     const staticArms = staticLightKinds
-        ? staticSceneLightArms(
-              staticLightKinds,
-              result.manifest.shadowGenerators.length > 0 &&
-                  (result.manifest.shadowReceiverMeshes.length > 0 ||
-                      result.manifest.dynamicShadowReceivers),
-          )
+        ? (result.manifest.registeredSceneLightKinds ?? [staticLightKinds])
+              .map((kinds) =>
+                  staticSceneLightArms(kinds ?? [], hasShadowReceiver),
+              )
+              .reduce((all, arms) => ({
+                  lightKinds: [
+                      ...new Set([...all.lightKinds, ...arms.lightKinds]),
+                  ],
+                  multiLight: all.multiLight || arms.multiLight,
+                  noLight: all.noLight || arms.noLight,
+              }))
         : undefined;
     const sceneArms = await pinnedSceneArms({
         lightKinds: staticArms?.lightKinds ?? lightKinds,

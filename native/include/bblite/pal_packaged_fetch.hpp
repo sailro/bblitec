@@ -15,8 +15,10 @@ js::Promise<HttpResponse> fetch_packaged(const std::string& key,
     try {
         for (const auto& entry : entries)
             if (entry.key == key)
-                return fetch_packaged(std::string(entry.url),
-                                      bbl::asset_path(std::string(entry.output)));
+                return entry.output.empty()
+                           ? fetch_not_packaged(std::string(entry.url))
+                           : fetch_packaged(std::string(entry.url),
+                                            bbl::asset_path(std::string(entry.output)));
         throw std::runtime_error("Unknown packaged asset: " + key);
     } catch (...) {
         return js::Promise<HttpResponse>::rejected(std::current_exception());

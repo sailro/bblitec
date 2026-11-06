@@ -70,7 +70,7 @@ import {
     type TypedArrayKind,
 } from "./data-types.js";
 import type { DataLowerer } from "./data-lowering.js";
-import { isJsonValue } from "./json-bridge.js";
+import { compileJsonMemberCall, isJsonValue } from "./json-bridge.js";
 import {
     commonResourceValue,
     presenceCpp,
@@ -1364,6 +1364,15 @@ function compileKnownDataMethod(
         callee.expression,
     );
     if (isJsonValue(narrowedOwner)) {
+        const held = compileJsonMemberCall(
+            lowerer.context,
+            call,
+            { expression: callee.expression, name: method },
+            narrowedOwner,
+        );
+        if (held) return held;
+    }
+    if (isJsonValue(narrowedOwner)) {
         const declared = lowerer.dataTypeAt(callee.expression);
         if (declared?.kind === "string" || declared?.kind === "enum") {
             narrowedOwner = lowerer.leafValue(
@@ -1445,7 +1454,9 @@ function compileKnownDataMethod(
         const functionType = field?.type;
         if (
             field &&
-            functionType?.kind === "union" &&
+            (functionType?.kind === "union" ||
+                (functionType?.kind === "optional" &&
+                    functionType.inner.kind === "union")) &&
             dataType?.kind !== "optional" &&
             !field.accessor
         ) {
@@ -1455,7 +1466,7 @@ function compileKnownDataMethod(
                 lowerer.context.allocateTemporaryCppName("callback_receiver");
             const member = lowerer.unionFunctionMember(
                 lowerer.leafValue(
-                    `${receiver}${referenceReceiver ? "->" : "."}${field.name}`,
+                    `${receiver}${lowerer.context.dataTypes.memberAccess(recordType.name)}${field.name}`,
                     functionType,
                 ),
                 callee.access,
@@ -1503,7 +1514,7 @@ function compileKnownDataMethod(
             return lowerer.compileCallableRecordCall(
                 call,
                 lowerer.leafValue(
-                    `${receiver}${referenceReceiver ? "->" : "."}${field.name}`,
+                    `${receiver}${lowerer.context.dataTypes.memberAccess(recordType.name)}${field.name}`,
                     functionType,
                 ),
             );
@@ -1511,7 +1522,9 @@ function compileKnownDataMethod(
         if (functionType?.kind === "function") {
             const referenceReceiver =
                 lowerer.context.dataTypes.isReferenceStruct(recordType.name);
-            const member = referenceReceiver ? "->" : ".";
+            const member = lowerer.context.dataTypes.memberAccess(
+                recordType.name,
+            );
             const receiver =
                 lowerer.context.allocateTemporaryCppName("callback_receiver");
             const optional = dataType?.kind === "optional";

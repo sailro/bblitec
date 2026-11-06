@@ -306,7 +306,9 @@ test("VAT source CPU seeking preserves binding validation order and uploaded pal
         file,
         `#include <bblite/runtime.hpp>
 #include <bblite/js_data.hpp>
+// Before js_json.hpp, which would include it with implicit conversions off.
 #include <nlohmann/json.hpp>
+#include <bblite/js_json.hpp>
 #include <fstream>
 #include <iostream>
 using Json = nlohmann::json;
@@ -323,7 +325,7 @@ void fixture_stop_animation(Engine&,AnimationGroupHandle handle) {
 }
 void fixture_vat_play(Engine&,VatHandle,const std::string&,std::optional<double>,std::optional<double>);
 ${new VatLowerer(context)
-    .lower({ instances: false })
+    .lower({ instances: false, baked: true })
     .source.replace(/^#include .*$/gm, "")
     .replace("namespace bbl {", "")
     .replace(/} \/\/ namespace bbl\s*$/, "")
@@ -367,7 +369,7 @@ Json run(const Json& scenarios) {
         try {
             const auto handle=fixture_bake_vat(engine,MeshHandle{mesh_index},handles);const auto& result=engine.vat_bakes.at(handle.value);
             Json clips=Json::object();for(const auto& clip:result.clips)clips[clip.name]={{"fromRow",clip.from_row},{"frameCount",clip.frame_count},{"fps",clip.fps}};
-            baked={{"data",result.data},{"frame_count",result.frame_count},{"bone_count",result.bone_count},{"clips",clips}};
+            baked={{"data",result.texture.texels->rgba},{"frame_count",result.frame_count},{"bone_count",result.bone_count},{"clips",clips}};
         } catch(const std::exception& caught){error=caught.what();}
         bool restored=false;
         try {gltf_tick_animation_controller(groups[0],groups[0].controller,0,false,true,true,[](double,bool){});}catch(...){restored=true;}
@@ -421,7 +423,7 @@ test("VAT controller CPU lifetime and binding identity mutations refuse unsuppor
                     "binding.boneTexture === skeleton.boneTexture",
                     "binding.boneCount === skeleton.boneCount",
                 ),
-            ).lower({ instances: false }),
+            ).lower({ instances: false, baked: true }),
         /identity lookup/,
     );
 });

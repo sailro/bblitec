@@ -2,6 +2,8 @@
 // typed data declarations, recursive and forward callback bindings, and
 // array/object binding patterns, lowered into the scope stack's bindings.
 import ts from "typescript";
+import { bindingReferences } from "./binding-references.js";
+import { isRebound } from "./binding-rebinds.js";
 import {
     absenceOf,
     knownCondition,
@@ -14,8 +16,8 @@ import { cppIdentifierPattern, stringLiteral } from "../cpp-literals.js";
 import {
     forEachAnalysisNode,
     findAnalysisNodeWithState,
+    identifiersByName,
     someAnalysisNode,
-    sourceFileNodes,
 } from "./analysis-walk.js";
 import {
     browserDeploymentValue,
@@ -122,11 +124,13 @@ import {
     withNativeMetadata,
     type Value,
     type NullableResourceType,
+    recordMethodValue,
 } from "./types.js";
 import type { UiProjection } from "./ui-projection.js";
 import { withLiteralSelfBinding } from "./home-object-methods.js";
 import { emitSharedCell, sharedCellCpp } from "./shared-cells.js";
 import {
+    assignsOnlyConstructedEvents,
     inferPromiseRejectStorage,
     inferUninitializedStorage,
 } from "./uninitialized-handle.js";
@@ -173,6 +177,7 @@ interface DeclarationContext
             | "captureEmittedStatements"
             | "compileCallbackWithValues"
             | "compileEngineCreation"
+            | "compileRecordGetter"
             | "compileForDataSink"
             | "compileStoredDataFunction"
             | "compileStringLiteral"
@@ -246,29 +251,6 @@ export type ForwardDeclaration = ts.VariableDeclaration & {
     initializer: ts.Expression;
 };
 
-/** @unjournaled Parsed syntax is immutable: each file's identifier positions by name. */
-const fileIdentifierPositions = new WeakMap<
-    ts.SourceFile,
-    ReadonlyMap<string, readonly number[]>
->();
-
-function identifierPositions(
-    file: ts.SourceFile,
-): ReadonlyMap<string, readonly number[]> {
-    let positions = fileIdentifierPositions.get(file);
-    if (positions) return positions;
-    const found = new Map<string, number[]>();
-    for (const node of sourceFileNodes(file)) {
-        if (!ts.isIdentifier(node)) continue;
-        const list = found.get(node.text);
-        if (list) list.push(node.pos);
-        else found.set(node.text, [node.pos]);
-    }
-    positions = found;
-    fileIdentifierPositions.set(file, positions);
-    return positions;
-}
-
 /**
  * Whether a declaration's scope spells its name outside the declaration,
  * where any read its initializer reaches outside itself must be: written
@@ -281,13 +263,13 @@ function spelledOutside(
 ): boolean {
     const scope = declaration.parent.parent.parent;
     return (
-        identifierPositions(declaration.getSourceFile())
+        identifiersByName(declaration.getSourceFile())
             .get(name.text)
             ?.some(
-                (position) =>
-                    position >= scope.pos &&
-                    position < scope.end &&
-                    outsideDeclaration(declaration, position),
+                ({ pos }) =>
+                    pos >= scope.pos &&
+                    pos < scope.end &&
+                    outsideDeclaration(declaration, pos),
             ) ?? false
     );
 }
@@ -578,11 +560,17 @@ export class DeclarationLowerer {
             this.context.evaluationOrder.isPureExpression(
                 declaration.initializer,
             );
+        // Temporal-dead-zone storage is native whatever the binding holds, so
+        // its `unknown` positions are dynamic.
         const type = pure
             ? undefined
-            : this.lexicalBindingType(
-                  declaration.name,
-                  declaration.initializer,
+            : this.context.dataTypes.withDynamicJsonTypes(
+                  initialization === "temporal-dead-zone",
+                  () =>
+                      this.lexicalBindingType(
+                          declaration.name,
+                          declaration.initializer,
+                      ),
               );
         if (type) {
             this.forwardBindings.set(symbol, {
@@ -731,6 +719,8 @@ export class DeclarationLowerer {
         const declaredType = this.context.checker.getTypeAtLocation(name);
         const demanded =
             declaration && this.context.dynamicBindings.get(declaration);
+        // A declared slot is native storage whatever it will hold, so the
+        // `unknown` positions of its declared type are dynamic.
         let dataType =
             declaration && demanded
                 ? demandedStorageType(
@@ -739,7 +729,15 @@ export class DeclarationLowerer {
                       demanded,
                       undefined,
                   )
-                : this.context.dataTypes.fromTsType(declaredType, name);
+                : (this.context.dataTypes.fromTsType(declaredType, name) ??
+                  (declaration?.type
+                      ? this.context.dataTypes.withDynamicJsonTypes(true, () =>
+                            this.context.dataTypes.fromTsType(
+                                declaredType,
+                                name,
+                            ),
+                        )
+                      : undefined));
         // Only an assignment gives this binding a value.
         if (dataType)
             dataType = this.reboundBindingStorage(dataType, declaredType);
@@ -779,6 +777,16 @@ export class DeclarationLowerer {
             });
             return;
         }
+        if (
+            dataType.kind === "borrowed-platform-event" &&
+            declaration &&
+            assignsOnlyConstructedEvents(
+                declaration,
+                this.context.checker,
+                (expression) => this.context.libraryGlobal(expression),
+            )
+        )
+            dataType = { kind: "handle", handle: "dom-event" };
         if (dataType.kind === "borrowed-platform-event") {
             this.context.fail(
                 name,
@@ -868,6 +876,136 @@ export class DeclarationLowerer {
         return true;
     }
 
+    /**
+     * A `const` whose conditional initializer can be read where its one
+     * reference is, with the same result: the condition and both arms read
+     * only bindings nothing rebinds and build only plain literals (no call,
+     * member read, construction or write), and the reference is in the same
+     * function with no loop between them, so it is evaluated once there.
+     */
+    private deferrableSelection(
+        declaration: ts.VariableDeclaration,
+    ): ts.ConditionalExpression | undefined {
+        const selection =
+            declaration.initializer &&
+            this.context.unwrap(declaration.initializer);
+        if (
+            !selection ||
+            !ts.isConditionalExpression(selection) ||
+            !ts.isIdentifier(declaration.name) ||
+            !ts.isVariableDeclarationList(declaration.parent) ||
+            variableKind(declaration.parent) !== "const"
+        )
+            return undefined;
+        const checker = this.context.checker;
+        const files = this.context.program.getSourceFiles();
+        const unchanging = (identifier: ts.Identifier): boolean => {
+            const symbol = declaredSymbol(checker, identifier);
+            const declared = symbol?.valueDeclaration;
+            return (
+                !!symbol &&
+                !!declared &&
+                (ts.isParameter(declared) ||
+                    (ts.isVariableDeclaration(declared) &&
+                        ts.isVariableDeclarationList(declared.parent) &&
+                        variableKind(declared.parent) === "const")) &&
+                !isRebound(checker, files, symbol)
+            );
+        };
+        const plain = (node: ts.Expression): boolean => {
+            const current = this.context.unwrap(node);
+            if (
+                ts.isNumericLiteral(current) ||
+                ts.isStringLiteralLike(current) ||
+                current.kind === ts.SyntaxKind.TrueKeyword ||
+                current.kind === ts.SyntaxKind.FalseKeyword ||
+                current.kind === ts.SyntaxKind.NullKeyword
+            )
+                return true;
+            if (ts.isIdentifier(current)) return unchanging(current);
+            if (ts.isPrefixUnaryExpression(current))
+                return plain(current.operand);
+            if (ts.isBinaryExpression(current))
+                return (
+                    !isAssignmentExpression(current) &&
+                    plain(current.left) &&
+                    plain(current.right)
+                );
+            if (ts.isObjectLiteralExpression(current))
+                return current.properties.every(
+                    (property) =>
+                        (ts.isPropertyAssignment(property) &&
+                            !ts.isComputedPropertyName(property.name) &&
+                            plain(property.initializer)) ||
+                        (ts.isShorthandPropertyAssignment(property) &&
+                            unchanging(property.name)),
+                );
+            return false;
+        };
+        if (
+            !plain(selection.condition) ||
+            !plain(selection.whenTrue) ||
+            !plain(selection.whenFalse)
+        )
+            return undefined;
+        // Two literals of one kind always share one native storage.
+        const literalKind = (node: ts.Expression): ts.SyntaxKind => {
+            const current = this.context.unwrap(node);
+            return current.kind === ts.SyntaxKind.FalseKeyword
+                ? ts.SyntaxKind.TrueKeyword
+                : ts.isNoSubstitutionTemplateLiteral(current)
+                  ? ts.SyntaxKind.StringLiteral
+                  : current.kind;
+        };
+        const armKind = literalKind(selection.whenTrue);
+        if (
+            armKind === literalKind(selection.whenFalse) &&
+            (armKind === ts.SyntaxKind.NumericLiteral ||
+                armKind === ts.SyntaxKind.StringLiteral ||
+                armKind === ts.SyntaxKind.TrueKeyword)
+        )
+            return undefined;
+        const symbol = declaredSymbol(checker, declaration.name);
+        const references = symbol
+            ? bindingReferences(this.context.program, checker, symbol)
+            : [];
+        const reference = references[0];
+        if (references.length !== 1 || !reference) return undefined;
+        const block = declaration.parent.parent.parent;
+        for (
+            let node: ts.Node = reference.parent;
+            node !== block;
+            node = node.parent
+        )
+            if (
+                !node.parent ||
+                ts.isFunctionLike(node) ||
+                ts.isIterationStatement(node, false)
+            )
+                return undefined;
+        return selection;
+    }
+
+    /** Whether a selection has no one native storage (its arms differ). */
+    private selectionRefuses(selection: ts.ConditionalExpression): boolean {
+        return (
+            this.context.probeEmission(
+                () => {
+                    try {
+                        this.context.compileValue(selection);
+                        return false;
+                    } catch (error) {
+                        return (
+                            error instanceof CompileError &&
+                            error.reason === "mismatched-branches"
+                        );
+                    }
+                },
+                () => false,
+            ) === true
+        );
+    }
+
     public emitVariableDeclaration(declaration: ts.VariableDeclaration): void {
         if (
             (ts.getCombinedModifierFlags(declaration) &
@@ -921,6 +1059,12 @@ export class DeclarationLowerer {
                 declaration.name,
                 "Only identifier variable declarations are supported.",
             );
+        }
+        // A selection no one native storage holds is read where it is used.
+        const selection = this.deferrableSelection(declaration);
+        if (selection && this.selectionRefuses(selection)) {
+            this.context.bindings.deferSelection(declaration.name, selection);
+            return;
         }
         // An empty `Mesh[]` and the entity loop that fills it are one
         // construct — the recursive-visitor spelling of a container
@@ -2315,12 +2459,7 @@ export class DeclarationLowerer {
             ),
         );
         for (const [key, method] of Object.entries(owner.recordMethods ?? {}))
-            callbacks.set(key, {
-                kind: "callback",
-                cpp: "",
-                callbackDeclaration: method,
-                callbackRecordOwner: owner,
-            });
+            callbacks.set(key, recordMethodValue(owner, method));
         if (callbacks.size === 0) return;
         const assigned = new Set<string>();
         const visited = new Set<ts.Symbol>();
@@ -4102,9 +4241,6 @@ export class DeclarationLowerer {
         // Give nested handle arrays the native field's one invalidatable snapshot.
         // Later reads share it; aliases, element writes and escapes withdraw it.
         if (annotated.kind === "struct") {
-            const reference = this.context.dataTypes.isReferenceStruct(
-                annotated.name,
-            );
             const fields = this.context.dataTypes.structFields(
                 annotated.name,
                 initializer,
@@ -4130,7 +4266,7 @@ export class DeclarationLowerer {
                 ) {
                     staticRecordProperties[field.sourceName] = {
                         ...this.context.dataLowerer.leafValue(
-                            `${boundCpp}${reference ? "->" : "."}${field.name}`,
+                            `${boundCpp}${this.context.dataTypes.memberAccess(annotated.name)}${field.name}`,
                             field.type,
                         ),
                         optionalFoundCpp: "true",
@@ -4146,7 +4282,7 @@ export class DeclarationLowerer {
                     continue;
                 staticRecordProperties[field.sourceName] = {
                     ...this.context.dataLowerer.leafValue(
-                        `${boundCpp}${reference ? "->" : "."}${field.name}`,
+                        `${boundCpp}${this.context.dataTypes.memberAccess(annotated.name)}${field.name}`,
                         field.type,
                     ),
                     staticElements: source.tupleElements,
@@ -4317,9 +4453,7 @@ export class DeclarationLowerer {
         node: ts.Node,
     ): Record<string, Value> | undefined {
         if (type.kind !== "struct") return undefined;
-        const memberAccess = this.context.dataTypes.isReferenceStruct(type.name)
-            ? "->"
-            : ".";
+        const memberAccess = this.context.dataTypes.memberAccess(type.name);
         const properties: Record<string, Value> = {};
         for (const field of this.context.dataTypes.structFields(
             type.name,
@@ -5705,7 +5839,7 @@ export class DeclarationLowerer {
                     element,
                     "accessors",
                 );
-                const slotCpp = `${temporary}${this.context.dataTypes.isReferenceStruct(value.dataType.name) ? "->" : "."}${field.name}`;
+                const slotCpp = `${temporary}${this.context.dataTypes.memberAccess(value.dataType.name)}${field.name}`;
                 // An accessor's getter runs once; the binding owns its result.
                 const storedFieldCpp = field.accessor
                     ? this.context.allocateTemporaryCppName("accessed")
@@ -6142,12 +6276,20 @@ export class DeclarationLowerer {
             }
             const { name, property } = this.bindingProperty(element);
             consumed.add(property);
+            // Each element reads its property as a member read does: a
+            // getter's value, a data field, or a function member.
+            const getter = value.recordGetters?.[property];
+            const method = value.recordMethods?.[property];
             const present =
                 this.context.moduleNamespaces.member(
                     value,
                     property,
                     element,
-                ) ?? value.recordProperties?.[property];
+                ) ??
+                (getter
+                    ? this.context.compileRecordGetter(value, getter)
+                    : value.recordProperties?.[property]) ??
+                (method ? recordMethodValue(value, method) : undefined);
             // A default applies exactly when the property is undefined:
             // absent from the record, or present as `undefined`.
             let propertyValue =

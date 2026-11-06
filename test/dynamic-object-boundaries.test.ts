@@ -1,32 +1,15 @@
-import assert from "node:assert/strict";
 import test from "node:test";
-import { runInNewContext } from "node:vm";
-import ts from "typescript";
 import { compileSource } from "../src/compiler.js";
 import {
     optionalNativeFixtureTools,
     runGeneratedProgram,
 } from "./native-fixture.js";
+import { runSelfCheckingProgram } from "./self-checking-program.js";
 
 function check(name: string, source: string): void {
-    test(name, (t) => {
-        runInNewContext(
-            ts.transpileModule(source, {
-                compilerOptions: { target: ts.ScriptTarget.ES2022 },
-            }).outputText,
-        );
-        const result = compileSource(source);
-        const tools = optionalNativeFixtureTools(false);
-        if (!tools) {
-            t.skip("Native fixture compiler unavailable.");
-            return;
-        }
-        runGeneratedProgram(
-            tools,
-            `dynamic-object-boundaries/${name}`,
-            result.cpp,
-        );
-    });
+    test(name, (t) =>
+        runSelfCheckingProgram(t, `dynamic-object-boundaries/${name}`, source),
+    );
 }
 
 check(
@@ -178,17 +161,17 @@ check(
 `,
 );
 
-test("required deletion refuses records with retained function fields", () => {
-    assert.throws(
-        () =>
-            compileSource(`
-        interface Item { value: number; read: () => number; }
-        const items: Item[] = [{ value: 3, read: () => 3 }];
-        delete (items[0]! as Partial<Item>).value;
-    `),
-        /required field/,
-    );
-});
+check(
+    "required deletion keeps a record's function fields callable",
+    `
+    interface Item { value: number; read: () => number; }
+    const items: Item[] = [{ value: 3, read: () => 7 }];
+    const item = items[0]!;
+    delete (item as Partial<Item>).value;
+    if (Object.hasOwn(item, 'value') || item.value !== undefined) throw new Error('deleted value');
+    if (item.read() !== 7 || Object.keys(item).join(',') !== 'read') throw new Error('kept method');
+`,
+);
 
 check(
     "optional nullable deletion clears value and own presence",

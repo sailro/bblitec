@@ -443,6 +443,62 @@
       "variants": ["all"]
     },
     {
+      "library": "rmlui",
+      "file": "native/patches/rmlui/0058-legacy-line-clamp.patch",
+      "purpose": "legacy line clamping: a vertical -webkit-box with -webkit-line-clamp ends at line N in an ellipsis",
+      "upstream": { "state": "unsubmitted" },
+      "variants": ["all"]
+    },
+    {
+      "library": "rmlui",
+      "file": "native/patches/rmlui/0059-repeating-sized-decorators.patch",
+      "purpose": "a sized decorator layer marked repeat tiles its paint box under the paint area clip",
+      "upstream": { "state": "unsubmitted" },
+      "variants": ["all"]
+    },
+    {
+      "library": "rmlui",
+      "file": "native/patches/rmlui/0060-grid-max-content-repetition.patch",
+      "purpose": "a grid stretching from the max-content constraint counts automatic repetitions from an indefinite size",
+      "upstream": { "state": "unsubmitted" },
+      "variants": ["all"]
+    },
+    {
+      "library": "rmlui",
+      "file": "native/patches/rmlui/0061-grid-percentage-heights.patch",
+      "purpose": "a grid item's percentage height resolves against its grid area once the rows are sized",
+      "upstream": { "state": "unsubmitted" },
+      "variants": ["all"]
+    },
+    {
+      "library": "rmlui",
+      "file": "native/patches/rmlui/0062-flex-intrinsic-percentages.patch",
+      "purpose": "a flex container measured for its max-content size treats its items' cyclic inline percentages as auto",
+      "upstream": { "state": "unsubmitted" },
+      "variants": ["all"]
+    },
+    {
+      "library": "rmlui",
+      "file": "native/patches/rmlui/0063-shrink-to-fit-percentage-limits.patch",
+      "purpose": "percentage min/max widths are cyclic in a shrink-to-fit width; column flex items clamp by them",
+      "upstream": { "state": "unsubmitted" },
+      "variants": ["all"]
+    },
+    {
+      "library": "rmlui",
+      "file": "native/patches/rmlui/0064-flex-row-max-content-contributions.patch",
+      "purpose": "a row flex container measured for its max-content size sums its items' max-content contributions",
+      "upstream": { "state": "unsubmitted" },
+      "variants": ["all"]
+    },
+    {
+      "library": "rmlui",
+      "file": "native/patches/rmlui/0065-flex-row-automatic-minimum.patch",
+      "purpose": "a row flex item with min-width: auto never shrinks below its min-content width",
+      "upstream": { "state": "unsubmitted" },
+      "variants": ["all"]
+    },
+    {
       "library": "dawn",
       "file": "native/patches/dawn/0001-android-surface-loss.patch",
       "purpose": "Report Android Vulkan surface loss at the next acquisition without losing the device",

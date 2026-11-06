@@ -121,7 +121,8 @@ test("runtime img src selects packaged images the URL inference finds, with load
         const preload = new Image();
         preload.onload = () => record(preload.naturalHeight === 4 ? "P" : "x");
         preload.onerror = () => record("x");
-        preload.src = appUrl("/assets/ui/green.png");
+        // An absolute URL on the deployment's origin loads its path.
+        preload.src = location.origin + appUrl(night ? "/assets/ui/red.png" : "/assets/ui/green.png");
     `);
     writeFileSync(join(directory, "program.hpp"), result.cpp);
     const outputs = result.manifest.assets.map((asset) => asset.output).sort();
@@ -130,6 +131,7 @@ test("runtime img src selects packaged images the URL inference finds, with load
     assert.ok(!outputs.some((output) => output.includes("missing")));
     assert.match(result.cpp, /bbl::set_dom_pointer_handler\([^;]+"error"/);
     assert.match(result.cpp, /bbl::ui_create_element\([^;]+"img"\)/);
+    assert.match(result.cpp, /bbl::ui_document_url\(/);
     runRmlUiFixture(t, "ui-runtime-image-src", {
         imageDecoder: true,
         macros: {
@@ -185,6 +187,47 @@ test("runtime img src reads a member a conditional spread copies", () => {
     assert.ok(!outputs.includes("assets/ui/blue.png"));
 });
 
+test("runtime img src reads a table by the keys a guard lets through", () => {
+    const result = compileEntry(`
+        type Icon = "record" | "play" | "load" | "save";
+        const ASSET = Object.freeze({
+            load: appUrl("/assets/ui/red.png"),
+            save: appUrl("/assets/ui/green.png"),
+            other: appUrl("/assets/ui/blue.png"),
+        });
+        function panel(): HTMLElement {
+            const root = document.createElement("div");
+            const setIcon = (host: HTMLElement, name: Icon): void => {
+                if (name === "load" || name === "save") {
+                    const img = document.createElement("img");
+                    img.src = ASSET[name];
+                    host.replaceChildren(img);
+                    return;
+                }
+                host.textContent = name;
+            };
+            const button = (label: string, name: Icon): void => {
+                const mark = document.createElement("span");
+                setIcon(mark, name);
+                mark.title = label;
+                mark.addEventListener("click", () => root.classList.toggle(label));
+                root.append(mark);
+            };
+            button("a", "record");
+            button("b", "load");
+            button("c", "save");
+            button("d", "play");
+            return root;
+        }
+        document.body.append(panel());
+    `);
+    const outputs = result.manifest.assets.map((asset) => asset.output);
+    for (const name of ["red", "green"])
+        assert.ok(outputs.includes(`assets/ui/${name}.png`), name);
+    // The guard leaves the table's other member out.
+    assert.ok(!outputs.includes("assets/ui/blue.png"));
+});
+
 test("runtime img src reads sorted, flat-mapped and named-callback records whose spreads lack the member", () => {
     const result = compileEntry(`
         interface Tool { name: string; image: string; wide?: boolean }
@@ -209,6 +252,23 @@ test("runtime img src reads sorted, flat-mapped and named-callback records whose
     for (const name of ["red", "green"])
         assert.ok(outputs.includes(`assets/ui/${name}.png`), name);
     assert.ok(!outputs.includes("assets/ui/blue.png"));
+});
+
+test("runtime img src reads the member values Object.values lists", () => {
+    const result = compileEntry(`
+        const previews: Record<"on" | "off", string> = { on: "/assets/ui/red.png", off: "/assets/ui/green.png" };
+        const features = [{ preview: "/assets/ui/blue.png" }, { preview: "/assets/ui/red.png" }];
+        requestAnimationFrame(() => {
+            const warm = [...features.slice(1).flatMap((feature) => [feature.preview]), ...Object.values(previews)];
+            for (const url of warm) {
+                const preload = new Image();
+                preload.src = appUrl(url);
+            }
+        });
+    `);
+    const outputs = result.manifest.assets.map((asset) => asset.output);
+    for (const name of ["red", "green"])
+        assert.ok(outputs.includes(`assets/ui/${name}.png`), name);
 });
 
 test("runtime img src reads requests a class queue holds in private fields", () => {
@@ -333,8 +393,9 @@ test("runtime img src strings generation cannot bound refuse", () => {
             /An img src write requires sources generation can package/,
         ],
         [
-            `const img = document.createElement("img"); const pick = (big: boolean): string => big ? "http://localhost/assets/ui/red.png" : appUrl("/assets/ui/blue.png"); img.src = pick(Date.now() > 0);`,
-            /img src candidate 'http:\/\/localhost\/assets\/ui\/red.png' must be a root-relative or relative URL/,
+            // Another origin than the deployment's has no packaged path.
+            `const img = document.createElement("img"); const pick = (big: boolean): string => big ? "https://cdn.example/assets/ui/red.png" : appUrl("/assets/ui/blue.png"); img.src = pick(Date.now() > 0);`,
+            /Packaged URL provenance requires local URLs/,
         ],
     ] as const)
         assert.throws(() => compileEntry(body), pattern, body);

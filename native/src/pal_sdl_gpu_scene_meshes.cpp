@@ -17,6 +17,7 @@
 #include <bblite/features/shadows_csm.hpp>
 
 #include "pal_sdl_gpu_scene.hpp"
+#include "pal_texture_sampler_cache.hpp"
 #include <unordered_set>
 #if BBLITE_GPU_MORPH_STORAGE
 #include <bblite/upstream/morph_targets.hpp>
@@ -250,6 +251,14 @@ SDL_GPUBuffer* shader_storage_buffer(GpuState& state, const Engine& engine,
                : nullptr;
 }
 
+/** The device's one sampler for a state a render target's `texture.sampler` names. */
+SDL_GPUSampler* sdl_render_texture_sampler(GpuState& state, const TextureSamplerState& sampler) {
+    return cached_texture_sampler(state.render_texture_samplers, sampler,
+                                  [&](const TextureSamplerState& made) {
+                                      return create_texture_sampler(state.device, made);
+                                  });
+}
+
 void bind_shader_material_textures(GpuState& state, SDL_GPURenderPass* pass,
                                    [[maybe_unused]] const Scene& scene,
                                    [[maybe_unused]] const Engine& engine,
@@ -291,7 +300,11 @@ void bind_shader_material_textures(GpuState& state, SDL_GPURenderPass* pass,
                 reference.source == RenderTextureSource::transmission_depth)
                 return task_transmission_binding(state, engine, reference);
 #endif
-            return {sdl_shader_render_texture(state, engine, reference), state.ground_sampler};
+            SDL_GPUTexture* texture = sdl_shader_render_texture(state, engine, reference);
+            // The pin binds the texture's own sampler (`tex.sampler`).
+            const TextureSamplerState* written = render_texture_sampler(engine, reference);
+            return {texture,
+                    written ? sdl_render_texture_sampler(state, *written) : state.ground_sampler};
         }
         if (slot >= uploaded.size())
             gpu_error(shader_sampler_shortfall(info, uploaded.size()).c_str());

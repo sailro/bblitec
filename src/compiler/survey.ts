@@ -20,6 +20,8 @@ import ts from "typescript";
 import { CompileError } from "./compile-error.js";
 import { declaredSymbol } from "./symbols.js";
 import { sourceLocation, syntaxKindName } from "../source-location.js";
+import { storageRequestSite } from "./replay-storage.js";
+import { StorageDemand } from "./storage-demand.js";
 import {
     rootExpression,
     sourceFunctionName,
@@ -63,6 +65,8 @@ export interface SurveyReport {
     /** False when an error outside statement lowering ended the survey. */
     complete: boolean;
     terminal?: string;
+    /** The stack frames that raised `terminal`, innermost first: an error without a source location names its raiser. */
+    terminalStack?: string[];
     statements: { attempted: number; refused: number };
     refusals: SurveyRefusal[];
     classes: SurveyClass[];
@@ -107,14 +111,113 @@ function enclosingFunctionName(statement: ts.Statement): string {
         : "<module>";
 }
 
+/**
+ * What stopped an attempt or a plan, and where: the site its storage
+ * demand rose at, else the statement lowering then.
+ */
+function describeStop(cause: unknown, lowering: ts.Node | undefined): string {
+    const text =
+        cause instanceof Error
+            ? `${cause.constructor.name}: ${cause.message}`
+            : String(cause);
+    const demanded =
+        cause instanceof StorageDemand
+            ? cause.requests.map(storageRequestSite).find(Boolean)
+            : undefined;
+    const node = typeof demanded === "object" ? demanded : lowering;
+    const site =
+        typeof demanded === "string"
+            ? demanded
+            : node &&
+              `${sourceLocation(node).file.fileName}:${sourceLocation(node).line}`;
+    return (
+        text.replace(/\s+/g, " ").slice(0, 160) + (site ? ` at ${site}` : "")
+    );
+}
+
+/** How a survey reports while it runs: a line at most every `intervalMs`. */
+export interface SurveyProgress {
+    readonly report: (line: string) => void;
+    readonly intervalMs: number;
+}
+
 export class SurveyCollector {
     /** @unjournaled The census counts refusals a rollback discards too. */
     private readonly realms = new Map<string, Attempt>();
     /** @unjournaled The census counts refusals a rollback discards too. */
     private current: Attempt | undefined;
+    /** @unjournaled When the last progress line was reported. */
+    private reportedAt = Date.now();
+    /** @unjournaled Compile attempts so far: each restart replays the program. */
+    private attempts = 0;
+    /** @unjournaled What ended the last attempt that restarted, and where. */
+    private restart: string | undefined;
+    /** @unjournaled The statement lowering began last: where a restart's demand rose. */
+    private lowering: ts.Statement | undefined;
+
+    public constructor(private readonly progress?: SurveyProgress) {}
+
+    /**
+     * A progress line once `intervalMs` passed: the lowerings and refused
+     * statements counted so far, and the statement starting to lower.
+     */
+    private reportProgress(statement: ts.Statement): void {
+        if (!this.progress) return;
+        const now = Date.now();
+        if (now - this.reportedAt < this.progress.intervalMs) return;
+        this.reportedAt = now;
+        let attempted = 0;
+        const refused = new Set<ts.Statement>();
+        for (const attempt of this.realms.values()) {
+            attempted += attempt.attempted;
+            for (const census of attempt.refusals.values())
+                for (const rolledBack of census.rolledBack)
+                    refused.add(rolledBack);
+        }
+        const location = sourceLocation(statement);
+        this.progress.report(
+            `Survey progress: attempt ${this.attempts}, ${attempted} statement lowerings, ${refused.size} refused; lowering ` +
+                `${location.file.fileName}:${location.line} (${enclosingFunctionName(statement)})` +
+                (this.restart ? `; last restart: ${this.restart}` : ""),
+        );
+    }
+
+    /**
+     * Records what ended an attempt that restarts the program: where its
+     * storage demand rose, else the statement lowering then.
+     */
+    public restarted(cause: unknown): void {
+        this.restart = describeStop(cause, this.lowering);
+        this.progress?.report(
+            `Survey restart after attempt ${this.attempts}: ${this.restart}`,
+        );
+    }
+
+    /**
+     * Reports a plan run between strict attempts: the demands it added,
+     * how long it lowered, and what ended it.
+     */
+    public planned(
+        added: number,
+        milliseconds: number,
+        ended: { cause: unknown; statement?: ts.Statement },
+    ): void {
+        this.progress?.report(
+            `Survey plan after attempt ${this.attempts}: ${added} demands added in ${Math.round(milliseconds / 1000)} s; ended by ` +
+                (ended.cause === undefined
+                    ? "the end of the program"
+                    : describeStop(ended.cause, ended.statement)),
+        );
+    }
+
+    /** The statements the last attempt of `realm` lowered. */
+    public statementsLowered(realm: string): number {
+        return this.realms.get(realm)?.attempted ?? 0;
+    }
 
     /** Runs one realm's compile attempt, replacing the census a previous attempt of that realm left. */
     public attempt<T>(realm: string, run: () => T): T {
+        this.attempts++;
         const previous = this.current;
         const attempt: Attempt = {
             attempted: 0,
@@ -142,6 +245,8 @@ export class SurveyCollector {
             return;
         }
         attempt.attempted++;
+        this.lowering = statement;
+        this.reportProgress(statement);
         try {
             context.transaction(lower);
         } catch (error) {
@@ -231,7 +336,7 @@ export class SurveyCollector {
         return symbol ? attempt.declarations.get(symbol) : undefined;
     }
 
-    public report(terminal?: string): SurveyReport {
+    public report(terminal?: Error): SurveyReport {
         const merged = new Map<string, Census>();
         let attempted = 0;
         for (const attempt of this.realms.values()) {
@@ -278,7 +383,16 @@ export class SurveyCollector {
         return {
             schemaVersion: 1,
             complete: terminal === undefined,
-            ...(terminal === undefined ? {} : { terminal }),
+            ...(terminal === undefined
+                ? {}
+                : {
+                      terminal: terminal.message,
+                      terminalStack: (terminal.stack ?? "")
+                          .split("\n")
+                          .map((line) => line.trim())
+                          .filter((line) => line.startsWith("at "))
+                          .slice(0, 12),
+                  }),
             statements: {
                 attempted,
                 refused: refusals.reduce(

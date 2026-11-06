@@ -1,7 +1,7 @@
 import ts from "typescript";
 import { LoweringContext } from "../context.js";
 import { lowerGltfMaterialObjectFunction } from "./material-object-lowerer.js";
-import { gltfSamplerFields } from "./sampler-resolver.js";
+import { gpuSamplerDescriptorMembers } from "../gpu-schema.js";
 
 /** Project the source upload sampler through the native descriptor boundary. */
 export function lowerGltfDefaultSampler(
@@ -50,7 +50,7 @@ export function lowerGltfDefaultSampler(
             ts.isPropertyAssignment(property) && ts.isIdentifier(property.name)
                 ? property.name.text
                 : undefined;
-        if (!gltfSamplerFields.some(([field]) => field === name))
+        if (!gpuSamplerDescriptorMembers.has(name ?? ""))
             context.contractError(
                 property,
                 "Unrepresented shared sampler field.",

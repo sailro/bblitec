@@ -1319,6 +1319,57 @@ const sceneInputs: readonly SceneInput[] = [
         },
     },
     {
+        // Two 4x4 checker targets magnified through a shader material: the
+        // texture's own bilinear sampler on the left, a nearest one written
+        // to `texture.sampler` on the right.
+        id: "regression-render-target-sampler",
+        name: "Regression - Render Target Sampler",
+        source: "examples/regression-render-target-sampler.ts",
+        sourceOrigin: "bblitec-regression",
+        title: "Babylon Lite Native - Render Target Sampler",
+        parity: {
+            maxFullMad: 0.001,
+            maxForegroundMad: 0.001,
+            backgroundColor: [26, 26, 38],
+            backgroundThreshold: 30,
+            nativeEnvironment: fixedCaptureEnvironment(),
+        },
+    },
+    {
+        // A VAT bake's texture bound by hand: two bit-equal payloads share
+        // one texture, and a shader material reads it in both stages through
+        // a Texture2D built from its GPU parts.
+        id: "regression-vat-bone-texture",
+        name: "Regression - VAT Bone Texture",
+        source: "examples/regression-vat-bone-texture.ts",
+        sourceOrigin: "bblitec-regression",
+        title: "Babylon Lite Native - VAT Bone Texture",
+        parity: {
+            maxFullMad: 0.001,
+            maxForegroundMad: 0.001,
+            backgroundColor: [26, 38, 26],
+            backgroundThreshold: 30,
+            nativeEnvironment: fixedCaptureEnvironment(),
+        },
+    },
+    {
+        // Shader materials a factory composes from run-time options (a
+        // boolean, an optional boolean, an optional object): compiled once
+        // per outcome and selected at run time.
+        id: "regression-case-split-options",
+        name: "Regression - Case Split Options",
+        source: "examples/regression-case-split-options.ts",
+        sourceOrigin: "bblitec-regression",
+        title: "Babylon Lite Native - Case Split Options",
+        parity: {
+            maxFullMad: 0.001,
+            maxForegroundMad: 0.001,
+            backgroundColor: [26, 26, 38],
+            backgroundThreshold: 30,
+            nativeEnvironment: fixedCaptureEnvironment(),
+        },
+    },
+    {
         // Scene 214 with enableCsmStaticCache: quiet casters demote into
         // the static cache, and a caster moved every frame stays dynamic
         // and draws over the copied cache layers.
@@ -4593,6 +4644,40 @@ const sceneInputs: readonly SceneInput[] = [
         parity: {
             // Inside the second STEP span, where a LINEAR reading would be
             // halfway to the third key rather than holding the second.
+            referenceTimeSeconds: 0.75,
+            maxFullMad: 0.001,
+            maxForegroundMad: 0.001,
+            backgroundColor: [10, 13, 20],
+            backgroundThreshold: 30,
+        },
+    },
+    {
+        id: "regression-device-recovery-scenes",
+        name: "Regression - Device Recovery Scenes",
+        source: "examples/regression-device-recovery-scenes.ts",
+        sourceOrigin: "bblitec-regression",
+        title: "Babylon Lite Native - Device Recovery Scenes",
+        parity: {
+            // The browser reference is the frame before the forced loss;
+            // the native capture is a frame after both scenes recovered.
+            maxFullMad: 0.001,
+            maxForegroundMad: 0.002,
+            backgroundColor: [20, 23, 36],
+            backgroundThreshold: 30,
+            nativeEnvironment: {
+                BBLITE_INPUT_REPLAY: "Dataset@captured=true",
+                BBLITE_SCREENSHOT_FRAME: "50",
+            },
+        },
+    },
+    {
+        id: "regression-gltf-node-transform-animation",
+        name: "Regression - glTF Node Transform Animation",
+        source: "examples/regression-gltf-node-transform-animation.ts",
+        sourceOrigin: "bblitec-regression",
+        title: "Babylon Lite Native - glTF Node Transform Animation",
+        parity: {
+            // Inside the second STEP span of every channel.
             referenceTimeSeconds: 0.75,
             maxFullMad: 0.001,
             maxForegroundMad: 0.001,

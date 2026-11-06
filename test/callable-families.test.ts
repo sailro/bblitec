@@ -80,6 +80,36 @@ test("bind refuses a target without native signature types or a spread receiver,
         `),
         /tuple rest parameter is bound from lanes only when every element is required/,
     );
+    // A spread before another argument shifts it by the tuple's length.
+    assert.throws(
+        () =>
+            compileSource(`
+            const log:string[]=[];
+            function sink(a:number,b?:string,c?:string):void{log.push(String(c));}
+            const relay:(a:number,b?:string)=>void=(...args)=>{sink(...args,"x");};
+            relay(1);
+            if(log[0]!=="x")throw new Error("shifted");
+        `),
+        /tuple rest parameter is bound from lanes only when every element is required/,
+    );
+});
+
+test("a stored function forwarding an optional-element tuple rest passes each lane", (t) => {
+    nativeCheck(
+        t,
+        "forwarded-optional-rest",
+        `
+        type Family="door"|"window";
+        interface Bridge{publish(index:number,family?:Family,surface?:"body"|"both"):void}
+        const log:string[]=[];
+        function createBridge():Bridge{return{publish:(index,family,surface="both")=>{log.push(index+":"+(family??"-")+":"+surface);}};}
+        const bridge=createBridge();
+        let pokes=0;
+        const publish:typeof bridge.publish=(...args)=>{pokes++;bridge.publish(...args);};
+        publish(1);publish(2,"door");publish(3,"window","body");
+        if(pokes!==3||log.join(",")!=="1:-:both,2:door:both,3:window:body")throw new Error("forwarded "+log.join(","));
+    `,
+    );
 });
 
 test("bound functions run as timers, promise reactions and Window, Document and AbortSignal listeners", (t) => {

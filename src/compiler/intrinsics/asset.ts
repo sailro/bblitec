@@ -107,6 +107,7 @@ export interface AssetIntrinsicContext
             | "bindings"
             | "staticAssetUrlCandidates"
             | "sourceFiles"
+            | "inlinedCallArgument"
             | "reachJsData"
             | "probeEmission"
             | "requireEngine"
@@ -936,8 +937,22 @@ function compileLoadKtx2Texture2D(
     context.expectArgumentCount(call, 2, 3);
     const engine = context.compileValue(argumentAt(call, 0));
     context.expectKind(engine, "engine", argumentAt(call, 0));
-    const url = context.compileStringLiteral(argumentAt(call, 1));
-    const asset = context.assetRegistry.registerAsset(url, "ktx2");
+    // A runtime URL selects among the packaged containers its inference
+    // finds, as `loadTexture2D`'s does.
+    const dynamic = compileDynamicPackagedAsset(
+        context,
+        argumentAt(call, 1),
+        "ktx2",
+        (source) => /\.ktx2(?:[?#]|$)/i.test(source),
+    );
+    const texturePathCpp =
+        dynamic?.dynamicAssetPathCpp ??
+        `bbl::asset_path(${context.cppString(
+            context.assetRegistry.registerAsset(
+                context.compileStringLiteral(argumentAt(call, 1)),
+                "ktx2",
+            ).output,
+        )})`;
     const srgb = call.arguments[2]
         ? context.conditions.compileCondition(call.arguments[2])
         : "false";
@@ -947,7 +962,7 @@ function compileLoadKtx2Texture2D(
         kind: "texture",
         textureStorage: "file",
         textureObjectInvertY: true,
-        cpp: `bbl::load_ktx2_texture(${engine.cpp}, bbl::asset_path(${context.cppString(asset.output)}), ${srgb})`,
+        cpp: `bbl::load_ktx2_texture(${engine.cpp}, ${texturePathCpp}, ${srgb})`,
         textureFile: {},
         engineCpp: engine.engineCpp ?? engine.cpp,
     };

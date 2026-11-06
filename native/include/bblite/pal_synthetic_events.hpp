@@ -80,6 +80,22 @@ public:
     std::shared_ptr<DomEventState> dom;
 };
 
+/**
+ * An init holding members its event's dictionary declares but the native event does not
+ * represent (`unrepresented`): one present refuses, as generation refuses one it sees.
+ */
+[[nodiscard]] inline js::JsonValue
+require_event_options(js::JsonValue options, std::string_view event,
+                      std::initializer_list<std::string_view> unrepresented) {
+    if (options.is_null() || options.is_undefined())
+        return options;
+    for (const auto key : unrepresented)
+        if (!options.get(key).is_undefined())
+            throw std::runtime_error(std::string(event) + " option '" + std::string(key) +
+                                     "' is not represented.");
+    return options;
+}
+
 [[nodiscard]] inline OwnedDomEvent synthetic_event_from_options(std::string type,
                                                                 OwnedDomEvent::Kind kind,
                                                                 const js::JsonValue& options) {
@@ -96,6 +112,12 @@ public:
         return value.is_undefined() ? fallback : value.to_number();
     };
     if (kind == OwnedDomEvent::Kind::Mouse || kind == OwnedDomEvent::Kind::Pointer) {
+        // The target the pointer left or entered, as the options document boxes it.
+        const auto related = options.get("relatedTarget");
+        if (related.instance_of<DomEventTargetValue>())
+            event.dom->related_target = related.asserted_instance<DomEventTargetValue>().target;
+        else if (!related.is_null() && !related.is_undefined())
+            throw js::NamedError("TypeError", "relatedTarget requires an EventTarget or null.");
         event.button = js::to_int16(number("button"));
         event.buttons = js::to_uint16(number("buttons"));
         event.client_x = number("clientX");

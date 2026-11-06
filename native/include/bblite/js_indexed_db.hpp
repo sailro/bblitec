@@ -77,6 +77,8 @@ template <> struct CloneCodec<JsonValue> {
         }
         if (value.instance_of<Blob>())
             return clone_write(writer, value.asserted_instance<Blob>());
+        if (value.is_callable())
+            throw NamedError("DataCloneError", "A function could not be cloned.");
         pal::CloneObject object;
         for (const auto& key : value.own_keys())
             object.properties.emplace_back(key, write(writer, value.get(key)));

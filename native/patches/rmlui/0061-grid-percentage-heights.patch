@@ -1,0 +1,94 @@
+A grid item's percentage height resolves against its grid area, its containing block, once the rows are sized;
+row sizing measures it as auto, since the area's block size is indefinite until then. Percentage min and max
+heights still refuse: block formatting would clamp the measured content height against the grid. GridAreaExtent
+owns a grid area's extent for columns and rows.
+
+diff --git a/Source/Core/Layout/FlexFormattingContext.cpp b/Source/Core/Layout/FlexFormattingContext.cpp
+index b21ae08..152fcb8 100644
+--- a/Source/Core/Layout/FlexFormattingContext.cpp
++++ b/Source/Core/Layout/FlexFormattingContext.cpp
+@@ -353,8 +353,9 @@ void FlexFormattingContext::Format(Vector2f& flex_resulting_content_size, Vector
+ 			// Grid auto-placement walks document order; order-modified placement is not represented.
+ 			if (element->GetProperty(PropertyId::Order)->Get<float>() != 0.f)
+ 				throw std::runtime_error("UI grid item order is not represented.");
+-			if (computed.height().type == LengthPercentageAuto::Percentage ||
+-				computed.min_height().type == LengthPercentage::Percentage || computed.max_height().type == LengthPercentage::Percentage)
++			// A percentage height resolves against the grid area once the rows are sized. A percentage min or max
++			// height would also clamp the measured content height, which block formatting resolves against the grid.
++			if (computed.min_height().type == LengthPercentage::Percentage || computed.max_height().type == LengthPercentage::Percentage)
+ 				throw std::runtime_error("UI grid percentage-dependent item sizing is not represented.");
+ 			if (computed.align_self() == AlignSelf::Baseline || computed.justify_self() == AlignSelf::Baseline ||
+ 				computed_flex.align_items() == AlignItems::Baseline || computed_flex.justify_items() == AlignItems::Baseline)
+@@ -367,7 +368,9 @@ void FlexFormattingContext::Format(Vector2f& flex_resulting_content_size, Vector
+ 			item.grid_column = size_t(placement.column.begin); item.grid_span = size_t(placement.column.span);
+ 			item.grid_row = size_t(placement.row.begin); item.grid_row_span = size_t(placement.row.span);
+         }
+-		LayoutDetails::BuildBox(item.box, flex_content_containing_block, element, is_grid ? BuildBoxMode::IntrinsicWidth : BuildBoxMode::UnalignedBlock);
++		// A grid area's block size is indefinite until the rows are sized.
++		LayoutDetails::BuildBox(item.box, is_grid ? Vector2f(flex_content_containing_block.x, -1.f) : flex_content_containing_block, element,
++			is_grid ? BuildBoxMode::IntrinsicWidth : BuildBoxMode::UnalignedBlock);
+ 
+ 		Style::LengthPercentageAuto item_main_size;
+ 
+@@ -747,15 +750,16 @@ void FlexFormattingContext::Format(Vector2f& flex_resulting_content_size, Vector
+ 		if (is_grid) {
+ 			for (auto& item : line.items) {
+                 const size_t column = item.grid_column;
+-                const size_t last = column + item.grid_span - 1;
+-                const float cell_width = grid_column_offsets[last] + grid_columns[last].size - grid_column_offsets[column];
++                const float cell_width = GridAreaExtent(grid_column_offsets, grid_columns, column, item.grid_span);
+ 
+ 				const auto& values = item.element->GetComputedValues();
+-				// Once the cell is definite, all inline percentages and both axes'
+-				// percentage edges resolve against its inline size, not the grid box.
+-				LayoutDetails::BuildBox(item.box, {cell_width, flex_content_containing_block.y}, item.element, BuildBoxMode::UnalignedBlock);
++				// Once the cell is definite, all inline percentages and both axes' percentage edges resolve
++				// against its inline size, not the grid box. Row sizing measures a percentage height as auto.
++				LayoutDetails::BuildBox(item.box, {cell_width, -1.f}, item.element, BuildBoxMode::UnalignedBlock);
+ 				GetItemSizing(item.main, LayoutDetails::BuildComputedHorizontalSize(values), cell_width, false);
+-				GetItemSizing(item.cross, LayoutDetails::BuildComputedVerticalSize(values), cross_size_base_value, false, cell_width);
++				ComputedAxisSize vertical = LayoutDetails::BuildComputedVerticalSize(values);
++				if (vertical.size.type == Style::LengthPercentageAuto::Percentage) vertical.size = {Style::LengthPercentageAuto::Auto, 0.f};
++				GetItemSizing(item.cross, vertical, cross_size_base_value, false, cell_width);
+ 				const float resolved_width = item.box.GetSize().x;
+ 				item.used_main_size = Math::Clamp(resolved_width >= 0.f ? resolved_width : item.inner_flex_base_size, item.main.min_size, item.main.max_size) + item.main.sum_edges;
+ 				const float free = cell_width - item.used_main_size;
+@@ -1205,12 +1209,18 @@ void FlexFormattingContext::Format(Vector2f& flex_resulting_content_size, Vector
+ 		for (size_t i = 0; i < container.lines.size(); ++i) {
+ 			auto& line = container.lines[i]; line.cross_offset = offsets[i];
+ 			for (auto& item : line.items) {
+-				const size_t last = item.grid_row + item.grid_row_span - 1;
+-				const float cell_size = offsets[last] + grid_rows[last].size - offsets[i];
++				const float cell_size = GridAreaExtent(offsets, grid_rows, i, item.grid_row_span);
+ 				const int auto_margins = int(item.cross.auto_margin_a) + int(item.cross.auto_margin_b);
+ 				item.used_cross_size = item.align_self == Style::AlignSelf::Stretch && item.cross.auto_size && !auto_margins
+ 					? Math::Clamp(cell_size - item.cross.sum_edges, item.cross.min_size, item.cross.max_size) + item.cross.sum_edges
+ 					: item.hypothetical_cross_size;
++				if (item.element->GetComputedValues().height().type == Style::LengthPercentageAuto::Percentage) {
++					// The grid area is the item's containing block, definite now that the rows are sized.
++					Box area;
++					const float cell_width = GridAreaExtent(grid_column_offsets, grid_columns, item.grid_column, item.grid_span);
++					LayoutDetails::BuildBox(area, {cell_width, cell_size}, item.element, BuildBoxMode::UnalignedBlock);
++					item.used_cross_size = area.GetSize().y + item.cross.sum_edges;
++				}
+ 				const float remaining = cell_size - item.used_cross_size;
+ 				item.cross_offset = item.cross.margin_a;
+ 				if (auto_margins) item.cross_offset += item.cross.auto_margin_a ? std::max(0.f, remaining) / float(auto_margins) : 0.f;
+diff --git a/Source/Core/Layout/GridTrackSizing.h b/Source/Core/Layout/GridTrackSizing.h
+index 6d41d2d..b3da72c 100644
+--- a/Source/Core/Layout/GridTrackSizing.h
++++ b/Source/Core/Layout/GridTrackSizing.h
+@@ -192,6 +192,13 @@ inline Vector<float> GridTrackOffsets(const Vector<GridTrack>& tracks, float ava
+ 	return offsets;
+ }
+ 
++// The extent of the grid area spanning `span` tracks from `first`, inner gaps included.
++inline float GridAreaExtent(const Vector<float>& offsets, const Vector<GridTrack>& tracks, size_t first, size_t span)
++{
++	const size_t last = first + span - 1;
++	return offsets[last] + tracks[last].size - offsets[first];
++}
++
+ struct GridContribution {
+ 	size_t begin, span;
+ 	float minimum, maximum;

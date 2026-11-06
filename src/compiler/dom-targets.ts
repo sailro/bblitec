@@ -1,6 +1,8 @@
 import ts from "typescript";
 import type { LoweringServices } from "./lowering-services.js";
 import type { Value } from "./types.js";
+import { presentDataType } from "./data-types/operations.js";
+import { unlessRefused } from "./compile-error.js";
 import { documentEngine } from "./window-events.js";
 import { declaredInDomLibrary } from "./symbols.js";
 import { inheritsFrom } from "./type-facts.js";
@@ -46,6 +48,46 @@ type Context = Pick<
     | "reachFeature"
     | "fail"
 >;
+
+/**
+ * Whether a value is a DOM event target, possibly optional: a retained
+ * element, a stored event target or the engine canvas.
+ */
+export function holdsDomTarget(value: Value): boolean {
+    const present = presentDataType(value.dataType);
+    return (
+        value.kind === "ui-element" ||
+        present?.kind === "event-target" ||
+        (present?.kind === "handle" && present.handle === "ui-element") ||
+        (value.browserValue?.kind === "object" &&
+            value.browserValue.primaryCanvas === true)
+    );
+}
+
+/**
+ * Whether `expression`, lowered in a discarded probe, holds a DOM event
+ * target; false where it does not lower.
+ */
+export function probedDomTarget(
+    context: Pick<
+        LoweringServices,
+        "compileValue" | "dataLowerer" | "probeEmission"
+    >,
+    expression: ts.Expression,
+): boolean {
+    return context.probeEmission(
+        () =>
+            unlessRefused(() =>
+                holdsDomTarget(
+                    context.dataLowerer.narrowOptional(
+                        context.compileValue(expression),
+                        expression,
+                    ),
+                ),
+            ) ?? false,
+        () => false,
+    );
+}
 
 export function eventTargetCpp(
     context: Context,

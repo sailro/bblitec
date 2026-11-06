@@ -81,7 +81,29 @@ test("UV2 clones retain distinct source wrapper identities", async () => {
     );
 });
 
-test("packaging refuses metadata collisions and unrepresented extension producers", async () => {
+test("texture transform clones retain distinct source wrapper identities", async () => {
+    const transformed: JsonObject = {
+        pbrMetallicRoughness: {
+            baseColorTexture: {
+                index: 0,
+                extensions: { KHR_texture_transform: { offset: [0.5, 0] } },
+            },
+        },
+    };
+    assert.deepEqual(
+        (
+            await gltfSourceAlbedoIdentities({
+                extensionsUsed: ["KHR_texture_transform"],
+                materials: [textured(), transformed, transformed],
+                textures: [{ source: 0 }],
+                images: [{}],
+            })
+        ).materials,
+        [0, 1, 2, 3],
+    );
+});
+
+test("packaging refuses metadata collisions", async () => {
     for (const value of [null, false, {}, []]) {
         await assert.rejects(
             packageSourceAlbedoIdentities({
@@ -90,14 +112,6 @@ test("packaging refuses metadata collisions and unrepresented extension producer
             /already carries/,
         );
     }
-    // Material extensions run as the pin's own features; a texture wrapper
-    // would give each use its own object.
-    await assert.rejects(
-        gltfSourceAlbedoIdentities({
-            extensionsUsed: ["KHR_texture_transform"],
-        }),
-        /does not yet represent/,
-    );
     const document: JsonObject = {
         materials: [{}],
         extensionsUsed: ["KHR_lights_punctual"],

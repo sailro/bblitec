@@ -1,10 +1,11 @@
-import type ts from "typescript";
+import ts from "typescript";
 import { EmissionWeakMap } from "./emission-transaction.js";
 import {
     DynamicBindingStorageRequired,
     demandedStorageType,
 } from "./dynamic-binding-storage.js";
-import { unwrapExpression } from "./syntax.js";
+import { constInitializer } from "./browser-erasure.js";
+import { literalMember, unwrapExpression } from "./syntax.js";
 import type { CapturedClosure } from "./closure-captures.js";
 import type { Value } from "./types.js";
 import type { DataSinkHost } from "./data-sinks/contracts.js";
@@ -35,10 +36,27 @@ function sharedGetter(
     return `bbl::js::make_closure(${body.initializer}, bblscene::${shared}{})`;
 }
 
+/**
+ * The literal a stored value was written as: the stored expression itself,
+ * or the initializer of the const it names. A view's members are that
+ * literal's members (`literalMember`).
+ */
+export function viewLiteral(
+    lowerer: DataSinkHost,
+    node: ts.Node,
+): ts.Expression | undefined {
+    const converted = lowerer.convertedExpression(node);
+    const expression = converted && unwrapExpression(converted);
+    return expression && ts.isIdentifier(expression)
+        ? constInitializer(lowerer.context, expression)
+        : expression;
+}
+
 export function compileJsonTupleView(
     lowerer: DataSinkHost,
     tuple: Value,
     node: ts.Node,
+    literal: ts.Expression | undefined = viewLiteral(lowerer, node),
 ): string | undefined {
     const elements = tuple.tupleElements;
     if (tuple.kind !== "tuple" || !elements || tuple.cpp) return undefined;
@@ -48,21 +66,32 @@ export function compileJsonTupleView(
         context.useNativeValue(previous);
         return previous.cpp;
     }
-    const values = elements.map((value) => {
+    const members = elements.map((value, slot) => {
+        const expression = literal && literalMember(literal, slot);
         const nested =
-            compileJsonRecordView(lowerer, value, node) ??
-            compileJsonTupleView(lowerer, value, node);
-        return nested ? lowerer.leafValue(nested, { kind: "json" }) : value;
+            compileJsonRecordView(lowerer, value, node, expression) ??
+            compileJsonTupleView(lowerer, value, node, expression);
+        return {
+            value: nested ? lowerer.leafValue(nested, { kind: "json" }) : value,
+            expression,
+            slot,
+        };
     });
     const index = context.allocateTemporaryCppName("dynamic_index");
     const body = context.captureManagedClosureLines(() => {
         context.registerNativeBinding(index);
-        values.forEach((value, slot) => {
-            const cpp = lowerer.compileMemberForSink(
-                value,
-                { kind: "json" },
-                node,
+        members.forEach((_, slot) => {
+            const cpp = lowerer.storeLiteralMember(
+                members,
                 slot,
+                (member) => member.expression,
+                (member) =>
+                    lowerer.compileMemberForSink(
+                        member.value,
+                        { kind: "json" },
+                        node,
+                        member.slot,
+                    ),
             );
             context.emit(`if (${index} == ${slot}) return ${cpp};`);
         });
@@ -77,7 +106,7 @@ export function compileJsonTupleView(
         kind: "declaration",
         type: "auto",
         name: cpp,
-        initializer: `bbl::js::JsonValue::from_tuple_view(${sharedGetter(lowerer, body, index, "std::size_t")}, ${values.length})`,
+        initializer: `bbl::js::JsonValue::from_tuple_view(${sharedGetter(lowerer, body, index, "std::size_t")}, ${members.length})`,
     });
     const result = {
         ...lowerer.leafValue(cpp, { kind: "json" }),
@@ -113,6 +142,7 @@ export function compileJsonRecordView(
     lowerer: DataSinkHost,
     record: Value,
     node: ts.Node,
+    literal: ts.Expression | undefined = viewLiteral(lowerer, node),
 ): string | undefined {
     const properties = record.recordProperties;
     // A view lists its keys once; a key a conditional spread wrote is own
@@ -157,23 +187,31 @@ export function compileJsonRecordView(
     // Supplying a source expression here could instead construct a second record.
     context.bindings.materializeEscapingValue(record, "dynamic_record");
     const fields = Object.entries(properties).map(([name, value]) => {
+        const expression = literal && literalMember(literal, name);
         const nested =
-            compileJsonRecordView(lowerer, value, node) ??
-            compileJsonTupleView(lowerer, value, node);
+            compileJsonRecordView(lowerer, value, node, expression) ??
+            compileJsonTupleView(lowerer, value, node, expression);
         return {
             name,
             value: nested ? lowerer.leafValue(nested, { kind: "json" }) : value,
+            expression,
         };
     });
     const key = context.allocateTemporaryCppName("dynamic_key");
     const body = context.captureManagedClosureLines(() => {
         context.registerNativeBinding(key);
-        for (const field of fields) {
-            const value = lowerer.compileMemberForSink(
-                field.value,
-                { kind: "json" },
-                node,
-                field.name,
+        for (const [index, field] of fields.entries()) {
+            const value = lowerer.storeLiteralMember(
+                fields,
+                index,
+                (member) => member.expression,
+                (member) =>
+                    lowerer.compileMemberForSink(
+                        member.value,
+                        { kind: "json" },
+                        node,
+                        member.name,
+                    ),
             );
             context.emit(
                 `if (${key} == ${context.cppString(field.name)}) return ${value};`,

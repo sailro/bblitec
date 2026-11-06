@@ -1019,6 +1019,10 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
         provenance: "src/vat/vat-baker.ts setVatInstanceStorage",
         consumers: CMAKE,
     },
+    "mesh:vat-prepared": {
+        provenance: "src/vat/vat-baker.ts createVatBakeResults",
+        consumers: CMAKE,
+    },
     "mesh:skeleton": {
         provenance:
             "src/skeleton/create-skeleton.ts and " +
@@ -1798,7 +1802,7 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
     },
     "ui:inline-svg": {
         provenance:
-            "generation-validated inline svg/path/rect markup projected through the pinned RmlUi SVG plugin",
+            "generation-validated inline svg/path/rect markup projected through the pinned RmlUi SVG plugin, and SVG background images its LunaSVG rasterizes",
         consumers: CMAKE,
     },
     "ui:svg-image": {

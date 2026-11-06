@@ -224,4 +224,8 @@ test("status reports a scene whose tree and binary are absent as not current", (
     const result = sceneCommand("status", source);
     assert.equal(result.status, 1);
     assert.match(result.stdout, new RegExp(`status ${id}: NOT current`));
+    // An ad-hoc source is read against the flags it was compiled with.
+    const placed = sceneCommand("status", source, "--public-dir", directory);
+    assert.equal(placed.status, 1);
+    assert.match(placed.stdout, new RegExp(`status ${id}: NOT current`));
 });

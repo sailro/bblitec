@@ -42,7 +42,12 @@ import { compileFullscreenCall } from "./fullscreen.js";
 import { compileCanvasCaptureStream } from "./media-streams.js";
 import { timerCancellation } from "./workers.js";
 import { isDocumentReceiver } from "./dom-targets.js";
-import { isPinnedType } from "./data-types.js";
+import {
+    isPinnedType,
+    platformHandleKind,
+    type DataType,
+} from "./data-types.js";
+import { compileDeviceSampler } from "./intrinsics/sampler.js";
 import {
     compileBooleanOptions,
     optionalOptionMember,
@@ -193,7 +198,10 @@ export class PlatformCalls {
      * A spread of a retained element list, snapshotted before the call, as
      * JavaScript spreads it before inserting.
      */
-    private uiElementSpread(argument: ts.SpreadElement): { spread: string } {
+    private uiElementSpread(argument: ts.SpreadElement): {
+        spread: string;
+        element: DataType;
+    } {
         const list = this.context.compileValue(argument.expression);
         const type = list.dataType;
         if (
@@ -207,6 +215,7 @@ export class PlatformCalls {
                 "A spread of retained UI nodes requires an element array.",
             );
         return {
+            element: type.element,
             spread: this.context.bindings.pinValueToTemporary(
                 {
                     kind: "data",
@@ -520,6 +529,34 @@ export class PlatformCalls {
                 return {
                     kind: "void",
                     cpp: `bbl::add_gpu_error_listener(${owner.cpp}, ${callback.cpp})`,
+                };
+            }
+        }
+        if (callee?.name === "createSampler" || callee?.name === "createView") {
+            const kind = platformHandleKind(
+                receiverType(this.context, callee.expression),
+            );
+            if (kind === "gpu-device" && callee.name === "createSampler")
+                return compileDeviceSampler(
+                    this.context,
+                    call,
+                    this.context.compileValue(callee.expression),
+                );
+            // A view with no descriptor: the whole texture, a new object.
+            if (kind === "gpu-texture" && callee.name === "createView") {
+                this.context.expectArgumentCount(call, 0, 0);
+                const texture = this.context.compileValue(callee.expression);
+                this.context.expectKind(
+                    texture,
+                    "gpu-texture",
+                    callee.expression,
+                );
+                const engine = this.context.requireEngine(texture, call);
+                return {
+                    kind: "gpu-texture-view",
+                    cpp: `bbl::create_texture_view(${engine}, ${texture.cpp})`,
+                    engineCpp: engine,
+                    dataType: { kind: "handle", handle: "gpu-texture-view" },
                 };
             }
         }
@@ -2579,9 +2616,14 @@ export class PlatformCalls {
                 const child = this.context.allocateTemporaryCppName(
                     "append_spread_child",
                 );
+                // An element the array stores with its engine appends its handle.
+                const node = this.context.dataLowerer.leafValue(
+                    child,
+                    value.element,
+                ).cpp;
                 const append = receiver.uiRoot
-                    ? `bbl::ui_append_to_root(${engine}, ${child})`
-                    : `bbl::ui_append_child(${engine}, ${receiver.cpp}, ${child})`;
+                    ? `bbl::ui_append_to_root(${engine}, ${node})`
+                    : `bbl::ui_append_child(${engine}, ${receiver.cpp}, ${node})`;
                 operations.push(
                     `[&] { for (const auto& ${child} : ${value.spread}) static_cast<void>(${append}); }()`,
                 );

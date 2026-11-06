@@ -181,7 +181,7 @@ function storedTimeout(
         .structFields(record.name, node)
         .find((candidate) => candidate.sourceName === "timeout");
     if (!field) return "0.0";
-    const read = `${optional ? `(*${cpp})` : cpp}${reference ? "->" : "."}${field.name}`;
+    const read = `${optional ? `(*${cpp})` : cpp}${context.dataTypes.memberAccess(record.name)}${field.name}`;
     const value =
         field.type.kind === "number"
             ? read

@@ -6,6 +6,7 @@
 #include <bblite/runtime.hpp>
 #include <bblite/js_data.hpp>
 #include <bblite/js_error.hpp>
+#include <bblite/js_json.hpp>
 
 #include <algorithm>
 #include <array>
@@ -724,6 +725,23 @@ inline js::WeakIdentity dom_target_weak_identity(DomEventTargetValue value) {
     return identity;
 }
 
+namespace js {
+/** A DOM target a dynamic value holds (a synthetic event's relatedTarget): its identity alone. */
+template <> struct JsonNativeBox<DomEventTargetValue> final : JsonNativeObject {
+    DomEventTargetValue value;
+    explicit JsonNativeBox(DomEventTargetValue source) : value(std::move(source)) {}
+    JsonValue get(std::string_view) const override { return {}; }
+    bbl::js::Array<std::string> own_keys() const override { return {}; }
+    const std::type_info& type() const override { return typeid(DomEventTargetValue); }
+    const void* identity() const override { return dom_target_weak_identity(value).lock().get(); }
+    void gc_trace(const TraceVisitor&) const override {}
+};
+
+[[nodiscard]] inline JsonValue json_value(const DomEventTargetValue& value) {
+    return JsonValue::from_native(value);
+}
+} // namespace js
+
 inline Engine& dom_window_owner(DomEventTargetValue value) {
     auto& engine = dom_target_owner(value);
     if (value.target.kind != DomEventTargetKind::Window)
@@ -845,6 +863,20 @@ inline bool dom_target_is_content_editable(DomEventTargetValue value) {
         dom_target_retained_element(value).value == invalid_handle)
         return false;
     return ui_is_content_editable(dom_target_owner(value), dom_target_element(value));
+}
+
+/**
+ * `Node.isConnected`: the Document is; an element is when its tree reaches the document; the
+ * page's own canvas, retained by no element, is. The Window is no Node.
+ */
+inline bool dom_target_is_connected(DomEventTargetValue value) {
+    if (value.target.kind == DomEventTargetKind::Window)
+        return false;
+    if (value.target.kind == DomEventTargetKind::Document)
+        return true;
+    const auto element = dom_target_retained_element(value);
+    return element.value == invalid_handle ? value.target.kind == DomEventTargetKind::Canvas
+                                           : ui_is_connected(dom_target_owner(value), element);
 }
 
 /** `instanceof Node`: the Document, the canvas and retained elements and text, not the Window. */

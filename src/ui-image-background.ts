@@ -1,4 +1,7 @@
-import { uiGradientImageList } from "./ui-gradient-background.js";
+import {
+    uiBackgroundPair,
+    uiGradientImageList,
+} from "./ui-gradient-background.js";
 
 /**
  * The CSS-wide keyword `value` is, lowercased. The PAL resolves it on every
@@ -26,12 +29,20 @@ export function supportedUiImageBackground(
             ) ||
             uiGradientImageList(value)
         );
+    // An explicit size is a decorator layer with its own box, placed at two
+    // offsets (RmlUi patch 0025).
     if (property === "background-size")
         return (
-            wide || /^(?:auto|contain|cover|0(?:px)?\s+0(?:px)?)$/.test(keyword)
+            wide ||
+            /^(?:auto|contain|cover)$/.test(keyword) ||
+            uiBackgroundPair(value, "size")
         );
     if (property === "background-position")
-        return wide || /^(?:center(?:\s+center)?|0%\s+0%)$/.test(keyword);
+        return (
+            wide ||
+            /^center(?:\s+center)?$/.test(keyword) ||
+            uiBackgroundPair(value, "position")
+        );
     if (property === "background-repeat")
         return wide || /^(?:repeat|no-repeat)$/.test(keyword);
     if (property === "background-origin")

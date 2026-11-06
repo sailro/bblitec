@@ -99,6 +99,20 @@ function expressionEnum(
     );
 }
 
+/** A right side the struct sink lowers as one value before converting it. */
+export function structSinkLowersWhole(unwrapped: ts.Expression): boolean {
+    return (
+        ts.isCallExpression(unwrapped) ||
+        ts.isArrowFunction(unwrapped) ||
+        ts.isFunctionExpression(unwrapped) ||
+        ts.isNewExpression(unwrapped) ||
+        ts.isIdentifier(unwrapped) ||
+        unwrapped.kind === ts.SyntaxKind.ThisKeyword ||
+        ts.isPropertyAccessExpression(unwrapped) ||
+        ts.isElementAccessExpression(unwrapped)
+    );
+}
+
 function expressionStruct(
     dataType: DataType<"struct">,
     lowerer: DataSinkHost,
@@ -138,17 +152,9 @@ function expressionStruct(
         }
         return lowerer.structLiteral(unwrapped, dataType);
     }
-    if (
-        ts.isCallExpression(unwrapped) ||
-        ts.isArrowFunction(unwrapped) ||
-        ts.isFunctionExpression(unwrapped) ||
-        ts.isNewExpression(unwrapped) ||
-        ts.isIdentifier(unwrapped) ||
-        unwrapped.kind === ts.SyntaxKind.ThisKeyword ||
-        ts.isPropertyAccessExpression(unwrapped) ||
-        ts.isElementAccessExpression(unwrapped)
-    ) {
+    if (structSinkLowersWhole(unwrapped)) {
         const known = lowerer.context.compileValue(unwrapped);
+        lowerer.requireStoredStructSource(unwrapped, known);
         if (
             known.kind === "record" ||
             ((known.kind === "callback" ||
@@ -339,6 +345,30 @@ function valueStruct(
     const callable = callableRecordValue(lowerer, value, dataType, node);
     if (callable) return callable.cpp;
     value = lowerer.context.classLowerer.errorView(value, node) ?? value;
+    // A record an optional read may not have found (its found flag) stores
+    // as no object when absent, as JavaScript stores `undefined`.
+    if (
+        value.kind === "record" &&
+        value.optionalFoundCpp !== undefined &&
+        knownCondition(value.optionalFoundCpp) !== true &&
+        lowerer.context.dataTypes.isReferenceStruct(dataType.name)
+    ) {
+        const { optionalFoundCpp: found, ...present } = value;
+        let converted = "";
+        const lines = lowerer.context.captureEmittedLines(() => {
+            converted = lowerer.compileKnownValueForSink(
+                present,
+                dataType,
+                node,
+            );
+        });
+        return (
+            `([&]() -> ${lowerer.context.dataTypes.cppType(dataType)} {\n` +
+            `    if (!(${found})) return {};\n` +
+            lines.map((line) => `    ${line}\n`).join("") +
+            `    return ${converted};\n}())`
+        );
+    }
     const wrapped = value.dataType?.kind === "optional";
     const sourceType =
         value.dataType?.kind === "optional"
@@ -489,12 +519,12 @@ function valueStruct(
             ]),
             node,
         );
+        lowerer.context.dataTypes.requireEngineFieldsStorage(
+            fields,
+            () => node,
+        );
         const aggregate = `bblscene::${dataType.name}${lowerer.context.dataTypes.isReferenceStruct(dataType.name) ? "Data" : ""}{${fields
             .map((field) => {
-                lowerer.context.dataTypes.requireEngineFieldStorage(
-                    field,
-                    node,
-                );
                 const getter = value.recordGetters?.[field.sourceName];
                 const setter = value.recordSetters?.[field.sourceName];
                 if (getter || setter)
@@ -651,9 +681,6 @@ function valueStruct(
                   "record_data_source",
               )
             : value;
-        const sourceArrow = lowerer.context.dataTypes.isReferenceStruct(
-            sourceType.name,
-        );
         const stored = new Set(fields.map((field) => field.sourceName));
         lowerer.context.dataTypes.noteRecordConversion(
             dataType,
@@ -662,12 +689,15 @@ function valueStruct(
             ),
             sourceType,
         );
+        lowerer.context.dataTypes.requireEngineFieldsStorage(
+            fields.flatMap((field) => {
+                const source = sourceFields.get(field.sourceName);
+                return source ? [field, source] : [field];
+            }),
+            () => node,
+        );
         const aggregate = `bblscene::${dataType.name}${lowerer.context.dataTypes.isReferenceStruct(dataType.name) ? "Data" : ""}{${fields
             .map((field) => {
-                lowerer.context.dataTypes.requireEngineFieldStorage(
-                    field,
-                    node,
-                );
                 const source = sourceFields.get(field.sourceName);
                 if (!source) {
                     if (
@@ -691,11 +721,7 @@ function valueStruct(
                         `Struct ${sourceType.name} is missing required destination field '${field.sourceName}'.`,
                     );
                 }
-                lowerer.context.dataTypes.requireEngineFieldStorage(
-                    source,
-                    node,
-                );
-                const sourceCpp = `${held.cpp}${sourceArrow ? "->" : "."}${source.name}`;
+                const sourceCpp = `${held.cpp}${lowerer.context.dataTypes.memberAccess(sourceType.name)}${source.name}`;
                 if (copyDataSlots && field.accessorReceiver) {
                     let stored = "";
                     const lines = lowerer.context.captureEmittedLines(() => {
@@ -766,8 +792,10 @@ function valueStruct(
             "accessors",
         );
         lowerer.context.dataTypes.noteRecordConversion(dataType, [ANY_KEY]);
-        for (const field of fields)
-            lowerer.context.dataTypes.requireEngineFieldStorage(field, node);
+        lowerer.context.dataTypes.requireEngineFieldsStorage(
+            fields,
+            () => node,
+        );
         // A parsed entry converts, checked, to a scalar field type.
         const parsedEntry = (field: DataStructField): boolean => {
             const stored =

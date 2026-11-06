@@ -48,6 +48,23 @@ test("native platform reads share function and method bodies", () => {
     assert.equal(result.cpp.match(/bbl::platform_gamepads\(/g)?.length, 2);
 });
 
+test("typeof a lowered platform method off its platform object is function", () => {
+    const result = compileSource(`
+        import { createEngine } from "@babylonjs/lite";
+        async function main() {
+            const engine = await createEngine({});
+            const read = (): readonly (Gamepad | null)[] | null =>
+                typeof navigator !== "undefined" && typeof navigator.getGamepads === "function"
+                    ? navigator.getGamepads()
+                    : null;
+            if (typeof navigator.getGamepads !== "function") throw new Error("platform method typeof");
+            if ((read()?.length ?? 0) < 0) throw new Error("pads");
+        }
+    `);
+    assert.doesNotMatch(result.cpp, /platform method typeof/);
+    assert.match(result.cpp, /bbl::platform_gamepads\(/);
+});
+
 const tools = optionalNativeFixtureTools(false);
 test(
     "shared gamepad reads preserve live state, nullable arguments and closure updates",
