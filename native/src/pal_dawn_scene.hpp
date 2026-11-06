@@ -335,7 +335,7 @@ struct DawnDrawResources {
     std::uint64_t area_light_emission_id = 0;
 #endif
 #if BBLITE_GEOMETRY_VELOCITY
-    // The velocity resources the held group binds (`DawnPbrVelocity::generation`).
+    // The velocity resources the held group binds (`DawnGeometryVelocity::generation`).
     std::uint64_t velocity_generation = 0;
 #endif
 };
@@ -682,16 +682,17 @@ struct DawnRenderTask {
 };
 
 /** A geometry velocity renderable's GPU state (`BBLITE_GEOMETRY_VELOCITY`). */
-struct DawnPbrVelocity;
+struct DawnGeometryVelocity;
 
 #if BBLITE_GEOMETRY_VELOCITY
 /**
- * A PBR velocity renderable's GPU state, by mesh slot: its `gm` block and
- * the previous bone palette and morph weights its deformation snapshots.
+ * A velocity renderable's GPU state, by mesh slot: a PBR renderable's `gm`
+ * block and the previous bone palette and morph weights either family's
+ * deformation snapshots.
  * `generation` moves whenever a resource is replaced, so a held group
  * binding the old one is rebuilt.
  */
-struct DawnPbrVelocity {
+struct DawnGeometryVelocity {
     DawnBuffer block;
     DawnTexture bones;
     DawnTextureView bones_view;
@@ -714,10 +715,10 @@ struct DawnGeometryTask {
     DawnBuffer pinned_geometry_params;
     std::array<float, 16> previous_view_projection{};
     bool has_previous_view_projection = false;
-    /** The task's Standard renderables' previous worlds, and its PBR ones' velocity. */
+    /** The task's renderables' velocity state (`PinnedVelocityHistory`). */
     PinnedVelocityHistory velocity;
 #if BBLITE_GEOMETRY_VELOCITY
-    std::vector<DawnPbrVelocity> pbr_velocity;
+    std::vector<DawnGeometryVelocity> mesh_velocity;
 #endif
     /** Set with the textures: another task binds this task's depth. */
     bool depth_borrowed = false;
@@ -725,13 +726,13 @@ struct DawnGeometryTask {
 
 #if BBLITE_GEOMETRY_VELOCITY
 /**
- * The writes of a geometry task's PBR velocity renderables
- * (`PbrVelocitySink`), through the queue: the `gm` block, the previous
+ * The writes of a geometry task's velocity renderables
+ * (`VelocitySink`), through the queue: the `gm` block, the previous
  * palette into an rgba32float row and the previous weights into a storage
  * buffer, each resource made at its first write and remade when its size
  * moves.
  */
-struct DawnPbrVelocitySink {
+struct DawnVelocitySink {
     DawnState& state;
     DawnGeometryTask& task;
     void block(MeshHandle mesh, std::span<const float> floats);
@@ -2704,7 +2705,7 @@ build_pinned_draw_group(DawnState& state, DawnMesh& mesh, std::size_t variant,
                         // The pass it binds for (`pinned_resource_for`).
                         const ShaderPassMatrices* pass = nullptr,
                         // A velocity task's renderable state, which a velocity view binds.
-                        const DawnPbrVelocity* velocity = nullptr);
+                        const DawnGeometryVelocity* velocity = nullptr);
 
 /**
  * The per-draw buffers and, with `build_group`, the group-1 bind group for one
@@ -2727,7 +2728,7 @@ DawnDrawState& ensure_pinned_geometry_bindings(DawnState& state, DawnMesh& mesh,
                                                std::size_t variant, WGPUBuffer geometry_params,
                                                const Scene& scene,
                                                // A velocity task's renderable state for the mesh.
-                                               const DawnPbrVelocity* velocity = nullptr);
+                                               const DawnGeometryVelocity* velocity = nullptr);
 
 /**
  * The pin's two per-draw blocks for one resolved variant — the mesh block
@@ -2992,7 +2993,9 @@ WGPUBindGroup build_standard_draw_group(
     // The colour draw state's `meshOpacity` block, likewise.
     WGPUBuffer mesh_opacity_uniforms, WGPUBuffer geometry_params, StandardRenderViews render_views,
     // The draw's emission allocation (`area_light_emission_of`).
-    const DawnAreaLightEmission* area_light_emission);
+    const DawnAreaLightEmission* area_light_emission,
+    // A geometry task's renderable state, whose previous pose a velocity view binds.
+    const DawnGeometryVelocity* velocity = nullptr);
 
 /** The per-draw uniform buffers for a mesh's Standard draws of `variant`. */
 DawnDrawState& ensure_standard_draw_buffers(DawnState& state, DawnMesh& mesh,

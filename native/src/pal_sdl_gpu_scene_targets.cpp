@@ -245,7 +245,7 @@ void release_frame_graph_textures(GpuState& state, const Engine* preserve) {
         if (task.params)
             SDL_ReleaseGPUBuffer(state.device, task.params);
 #if BBLITE_GEOMETRY_VELOCITY
-        release_pbr_velocity(state, task);
+        release_geometry_velocity(state, task);
 #endif
         task.colors.clear();
         task.sampled_colors.clear();

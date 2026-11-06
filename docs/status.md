@@ -358,6 +358,8 @@ Repository fixtures against pinned Babylon Lite.
 | mesh-opacity-runtime | <img src="images/scenes/regression-mesh-opacity-runtime.png" alt="Mesh opacity at run time rendering" width="160"> | pixel‑perfect | pixel‑perfect | Mesh Opacity at Run Time |
 | mesh-opacity-geometry | <img src="images/scenes/regression-mesh-opacity-geometry.png" alt="Mesh opacity in a geometry task rendering" width="160"> | pixel‑perfect | pixel‑perfect | Mesh Opacity in a Geometry Task |
 | geometry-velocity | <img src="images/scenes/regression-geometry-velocity.png" alt="Geometry velocity rendering" width="160"> | 0.000/0.000 | 0.000/0.000 | Geometry Velocity |
+| geometry-velocity-standard | <img src="images/scenes/regression-geometry-velocity-standard.png" alt="Standard geometry velocity rendering" width="160"> | pixel‑perfect | pixel‑perfect | Standard Geometry Velocity |
+| geometry-velocity-preload | <img src="images/scenes/regression-geometry-velocity-preload.png" alt="Geometry velocity preload rendering" width="160"> | pixel‑perfect | pixel‑perfect | Geometry Velocity Preload |
 | mesh-opacity-transmission | <img src="images/scenes/regression-mesh-opacity-transmission.png" alt="Mesh opacity with transmission rendering" width="160"> | 0.000/0.000 | 0.000/0.000 | Mesh Opacity with Transmission |
 | glTF-track-clamp | <img src="images/scenes/regression-track-clamp.png" alt="glTF track clamp rendering" width="160"> | pixel‑perfect | pixel‑perfect | glTF Track Clamp |
 | shader-frame-graph | <img src="images/scenes/audit-shader-frame-graph.png" alt="Shader frame graph rendering" width="160"> | pixel‑perfect | pixel‑perfect | Shader Frame Graph |

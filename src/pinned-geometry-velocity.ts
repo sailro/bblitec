@@ -5,10 +5,14 @@
  * (`installPbrGeometryVelocity`) and the deformation feature with its
  * previous-depth output (`installGeometryDeformationVelocity`) into module
  * state the geometry composers read, and marks each PBR geometry view the
- * task creates `_geometryVelocity`. Composition runs the same composers with
- * that state set and the view active (`setActiveGeometryVelocityView`) for
- * exactly one synchronous call, then restores what was there, so a variant
- * composed outside a velocity task composes as before.
+ * task creates `_geometryVelocity`. The Standard composer reads the
+ * installed output and feature directly, so every Standard LINEAR_VELOCITY
+ * view of the program composes from them. Without the enabler, a Standard
+ * task's preload loads the deformation feature alone when its mesh list holds
+ * a skinned or morphed mesh (`preloadGeometryDeformationVelocity`). Composition runs the same composers
+ * with that state set and the view active (`setActiveGeometryVelocityView`)
+ * for exactly one synchronous call, then restores what was there, so a
+ * variant composed outside a velocity task composes as before.
  */
 import {
     importPinnedModule,
@@ -47,12 +51,20 @@ let loaded:
     | undefined;
 
 /**
- * Runs `compose` under the state `enableGeometryVelocity` installs, with a
- * velocity view active. Loaded once; `compose` must not await.
+ * The module state a composition runs under: `enableGeometryVelocity`'s
+ * (the PBR namespace, the deformation feature and its previous-depth output,
+ * with a velocity view active), or a Standard task preload's
+ * (`preloadGeometryDeformationVelocity` loads the deformation feature
+ * alone).
  */
-export async function pinnedGeometryVelocityScope(): Promise<
-    <T>(compose: () => T) => T
-> {
+export type GeometryVelocityState = "enabler" | "preload";
+
+/**
+ * Runs `compose` under `state`. Loaded once; `compose` must not await.
+ */
+export async function pinnedGeometryVelocityScope(
+    state: GeometryVelocityState = "enabler",
+): Promise<<T>(compose: () => T) => T> {
     loaded ??= Promise.all([
         importPinnedModule<PbrVelocityModule>(
             pinnedSourceModule(PBR_GEOMETRY_VELOCITY_MODULE),
@@ -73,23 +85,26 @@ export async function pinnedGeometryVelocityScope(): Promise<
         deformationHooks,
     }));
     const { velocity, deformation, hooks, deformationHooks } = await loaded;
+    const enabler = state === "enabler";
     return <T>(compose: () => T): T => {
         const previousVelocity = hooks.pbrGeometryVelocity;
         const previousFeature =
             deformationHooks.getGeometryDeformationVelocity();
         const previousOutput = deformationHooks.geometryVelocityOutput;
-        hooks.installPbrGeometryVelocity(velocity);
+        if (enabler) hooks.installPbrGeometryVelocity(velocity);
         deformationHooks.installGeometryDeformationVelocity(
             deformation,
-            velocity.geometryVelocityOutput,
+            enabler ? velocity.geometryVelocityOutput : previousOutput,
         );
-        const previousView = velocity.setActiveGeometryVelocityView({
-            _geometryVelocity: true,
-        });
+        const previousView = enabler
+            ? velocity.setActiveGeometryVelocityView({
+                  _geometryVelocity: true,
+              })
+            : null;
         try {
             return compose();
         } finally {
-            velocity.setActiveGeometryVelocityView(previousView);
+            if (enabler) velocity.setActiveGeometryVelocityView(previousView);
             deformationHooks.installGeometryDeformationVelocity(
                 previousFeature,
                 previousOutput,

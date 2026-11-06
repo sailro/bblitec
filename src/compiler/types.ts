@@ -3300,7 +3300,8 @@ export interface ValueFields {
         readonly normalsCpp: string;
         readonly vertexCountCpp: string;
         readonly weightCpp: string;
-        readonly meshCpp?: string;
+        /** The mesh the data is attached to, which a weights update names. */
+        readonly mesh?: Value;
     };
 }
 

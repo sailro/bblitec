@@ -659,7 +659,7 @@ namespace {
  */
 template <typename Copy>
 void record_velocity_upload(SDL_GPUDevice* device, SDL_GPUCommandBuffer* command,
-                            GpuPbrVelocity::Staging& staging, std::span<const float> floats,
+                            GpuGeometryVelocity::Staging& staging, std::span<const float> floats,
                             Copy&& copy) {
     const auto bytes = static_cast<std::uint32_t>(floats.size_bytes());
     if (!staging.transfer || staging.bytes < bytes) {
@@ -684,8 +684,8 @@ void record_velocity_upload(SDL_GPUDevice* device, SDL_GPUCommandBuffer* command
 }
 } // namespace
 
-void SdlPbrVelocitySink::block(MeshHandle mesh, std::span<const float> floats) {
-    GpuPbrVelocity& velocity = mesh_velocity_resources(task.pbr_velocity, mesh);
+void SdlVelocitySink::block(MeshHandle mesh, std::span<const float> floats) {
+    GpuGeometryVelocity& velocity = mesh_velocity_resources(task.mesh_velocity, mesh);
     if (!velocity.block)
         return;
     record_velocity_upload(
@@ -697,8 +697,8 @@ void SdlPbrVelocitySink::block(MeshHandle mesh, std::span<const float> floats) {
         });
 }
 
-void SdlPbrVelocitySink::bones(MeshHandle mesh, std::span<const float> floats) {
-    GpuPbrVelocity& velocity = mesh_velocity_resources(task.pbr_velocity, mesh);
+void SdlVelocitySink::bones(MeshHandle mesh, std::span<const float> floats) {
+    GpuGeometryVelocity& velocity = mesh_velocity_resources(task.mesh_velocity, mesh);
     const auto texels = static_cast<std::uint32_t>(floats.size() / 4u);
     if (velocity.bone_texels != texels) {
         if (velocity.bones)
@@ -716,8 +716,8 @@ void SdlPbrVelocitySink::bones(MeshHandle mesh, std::span<const float> floats) {
         });
 }
 
-void SdlPbrVelocitySink::morph(MeshHandle mesh, std::span<const float> floats) {
-    GpuPbrVelocity& velocity = mesh_velocity_resources(task.pbr_velocity, mesh);
+void SdlVelocitySink::morph(MeshHandle mesh, std::span<const float> floats) {
+    GpuGeometryVelocity& velocity = mesh_velocity_resources(task.mesh_velocity, mesh);
     const auto bytes = static_cast<std::uint32_t>(floats.size_bytes());
     if (velocity.morph_bytes != bytes) {
         if (velocity.morph)
@@ -741,7 +741,7 @@ void SdlPbrVelocitySink::morph(MeshHandle mesh, std::span<const float> floats) {
 
 SDL_GPUBuffer* pbr_velocity_block_buffer(GpuState& state, GpuGeometryTask& task, MeshHandle mesh) {
     const upstream::PbrGeometryVelocity& pbr = pbr_velocity_state(task.velocity, mesh);
-    GpuPbrVelocity& velocity = mesh_velocity_resources(task.pbr_velocity, mesh);
+    GpuGeometryVelocity& velocity = mesh_velocity_resources(task.mesh_velocity, mesh);
     if (!velocity.block) {
         velocity.block = upload_buffer(state.device, SDL_GPU_BUFFERUSAGE_GRAPHICS_STORAGE_READ,
                                        pbr.data.data(), sizeof(pbr.data));
@@ -749,8 +749,8 @@ SDL_GPUBuffer* pbr_velocity_block_buffer(GpuState& state, GpuGeometryTask& task,
     return velocity.block;
 }
 
-void release_pbr_velocity(GpuState& state, GpuGeometryTask& task) {
-    for (GpuPbrVelocity& velocity : task.pbr_velocity) {
+void release_geometry_velocity(GpuState& state, GpuGeometryTask& task) {
+    for (GpuGeometryVelocity& velocity : task.mesh_velocity) {
         if (velocity.bones)
             SDL_ReleaseGPUTexture(state.device, velocity.bones);
         if (velocity.morph)
@@ -758,8 +758,51 @@ void release_pbr_velocity(GpuState& state, GpuGeometryTask& task) {
         if (velocity.block)
             SDL_ReleaseGPUBuffer(state.device, velocity.block);
     }
-    task.pbr_velocity.clear();
+    task.mesh_velocity.clear();
 }
+
+namespace {
+/**
+ * The velocity renderable's GPU state a velocity view binds (`_bind`): in a
+ * velocity task's views only, which alone declare these bindings.
+ */
+const GpuGeometryVelocity& velocity_resources(const GpuGeometryTask* task, MeshHandle mesh) {
+    if (!task || mesh.value >= task->mesh_velocity.size())
+        gpu_error("a geometry velocity view drew before its velocity update.");
+    return task->mesh_velocity[mesh.value];
+}
+
+/**
+ * A velocity view's vertex storage, by the pin's binding name: a PBR
+ * renderable's demoted `gm` block, or either family's previous weights.
+ * Null for any other name.
+ */
+SDL_GPUBuffer* velocity_storage_for(GpuState& state, GpuGeometryTask* task, MeshHandle mesh,
+                                    std::string_view name) {
+    switch (feature_binding(name)) {
+    case FeatureBinding::velocity_block:
+        return task ? pbr_velocity_block_buffer(state, *task, mesh) : nullptr;
+    case FeatureBinding::previous_morph:
+        return velocity_resources(task, mesh).morph;
+    default:
+        return nullptr;
+    }
+}
+
+#if BBLITE_PBR_VARIANTS > 0 || BBLITE_STANDARD_SKELETON
+/** A velocity view's previous palette, read through the palette sampler; none for any other name. */
+std::optional<SDL_GPUTextureSamplerBinding> velocity_texture_for(GpuState& state,
+                                                                 const GpuGeometryTask* task,
+                                                                 MeshHandle mesh,
+                                                                 std::string_view name) {
+    if (feature_binding(name) != FeatureBinding::previous_bones)
+        return std::nullopt;
+    ensure_pinned_bone_sampler(state);
+    return SDL_GPUTextureSamplerBinding{velocity_resources(task, mesh).bones,
+                                        state.pinned_bone_sampler};
+}
+#endif
+} // namespace
 #endif
 
 #if BBLITE_HAS_PBR_RENDERER && BBLITE_PBR_VARIANTS > 0 && BBLITE_VAT
@@ -825,15 +868,6 @@ void draw_pinned_variant(
     const auto* local_cubemap = ensure_local_cubemap(state, material);
 #endif
     const upstream::RenderItem& item = draw.item;
-#if BBLITE_GEOMETRY_VELOCITY
-    // The velocity renderable's GPU state (`bindPbrGeometryVelocity`): in a
-    // velocity task's views only, which alone declare these bindings.
-    const auto velocity_resources = [&]() -> const GpuPbrVelocity& {
-        if (!geometry_state || item.mesh.value >= geometry_state->pbr_velocity.size())
-            gpu_error("a geometry velocity view drew before its velocity update.");
-        return geometry_state->pbr_velocity[item.mesh.value];
-    };
-#endif
     SDL_GPUGraphicsPipeline* variant_pipeline = pinned_variant_pipeline(
         state, pinned_variant, draw.pipeline, geometry_task, shadow_pass, esm_shadow_index,
         task_samples, target, draw.item.alpha_to_coverage);
@@ -1024,15 +1058,9 @@ void draw_pinned_variant(
                 return morph;
             }
 #if BBLITE_GEOMETRY_VELOCITY
-            switch (feature_binding(name)) {
-            case FeatureBinding::velocity_block:
-                if (geometry_state)
-                    return pbr_velocity_block_buffer(state, *geometry_state, item.mesh);
-                break;
-            case FeatureBinding::previous_morph:
-                return velocity_resources().morph;
-            default:
-                break;
+            if (SDL_GPUBuffer* velocity =
+                    velocity_storage_for(state, geometry_state, item.mesh, name)) {
+                return velocity;
             }
 #endif
 #if BBLITE_PBR_SHADOWS
@@ -1045,23 +1073,20 @@ void draw_pinned_variant(
 #endif
             return nullptr;
         });
-    bind_stage_textures(pass, pinned_vertex, false, "pinned variant vertex",
-                        [&](const std::string& name, std::size_t slot) {
+    bind_stage_textures(
+        pass, pinned_vertex, false, "pinned variant vertex",
+        [&](const std::string& name, std::size_t slot) {
 #if BBLITE_GEOMETRY_VELOCITY
-                            if (feature_binding(name) == FeatureBinding::previous_bones) {
-                                ensure_pinned_bone_sampler(state);
-                                return SDL_GPUTextureSamplerBinding{velocity_resources().bones,
-                                                                    state.pinned_bone_sampler};
-                            }
+            if (const auto velocity = velocity_texture_for(state, geometry_state, item.mesh, name))
+                return *velocity;
 #endif
-                            const PinnedResource resource =
-                                pinned_resource_for(state, mesh, name, pinned_variant, false, slot,
-                                                    material, pass_matrices);
-                            return SDL_GPUTextureSamplerBinding{
-                                resource.texture,
-                                resource.sampler,
-                            };
-                        });
+            const PinnedResource resource = pinned_resource_for(
+                state, mesh, name, pinned_variant, false, slot, material, pass_matrices);
+            return SDL_GPUTextureSamplerBinding{
+                resource.texture,
+                resource.sampler,
+            };
+        });
     // The thin-instance arm's second stream and the instance count; a
     // non-instanced variant binds neither and draws once.
     const bool instanced_draw = pinned_record_instanced(handle_at(engine.meshes, item.mesh));
@@ -1802,7 +1827,8 @@ void draw_standard_variant(
     const std::shared_ptr<PersistentSceneUniforms>& deferred_scene
 #endif
     ,
-    std::optional<SDL_GPUSampleCount> task_samples, std::optional<ShaderTaskTarget> target) {
+    std::optional<SDL_GPUSampleCount> task_samples, std::optional<ShaderTaskTarget> target,
+    [[maybe_unused]] GpuGeometryTask* geometry_state) {
     const upstream::RenderItem& item = draw.item;
     SDL_GPUGraphicsPipeline* variant_pipeline = standard_variant_pipeline(
         state, variant, draw.pipeline, geometry_task, shadow_pass, esm_shadow_index, task_samples,
@@ -1894,6 +1920,10 @@ void draw_standard_variant(
     const PinnedStageSlots& vertex_slots = state.standard_vertex_slots[variant];
     const PinnedStageSlots& fragment_slots = state.standard_fragment_slots[variant];
     const auto textures = [&](bool fragment, const std::string& name, std::size_t slot) {
+#if BBLITE_GEOMETRY_VELOCITY && BBLITE_STANDARD_SKELETON
+        if (const auto velocity = velocity_texture_for(state, geometry_state, item.mesh, name))
+            return *velocity;
+#endif
         const PinnedResource resource = standard_resource_for(
             state, mesh, material, render_textures, name, variant, fragment, slot);
         return SDL_GPUTextureSamplerBinding{resource.texture, resource.sampler};
@@ -1922,6 +1952,10 @@ void draw_standard_variant(
                                     [[maybe_unused]] std::size_t slot) -> SDL_GPUBuffer* {
         if (SDL_GPUBuffer* morph = morph_storage_buffer_for(mesh, name))
             return morph;
+#if BBLITE_GEOMETRY_VELOCITY
+        if (SDL_GPUBuffer* velocity = velocity_storage_for(state, geometry_state, item.mesh, name))
+            return velocity;
+#endif
 #if BBLITE_STANDARD_SHADOWS
         if (SDL_GPUBuffer* info = shadow_info_buffer_at(state, vertex_shadow_rows.storage[slot]))
             return info;

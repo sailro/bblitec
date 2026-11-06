@@ -2127,10 +2127,10 @@ public:
                             handle_at(state.geometry_tasks, handle).velocity, graph_scene, engine,
                             (graph_layer == 0 ? render_plan : overlay_plans[graph_layer - 1])
                                 .scene_items(),
-                            geometry_pass.camera, task.geometry
+                            geometry_pass.camera, task
 #if BBLITE_GEOMETRY_VELOCITY
                             ,
-                            DawnPbrVelocitySink{state, handle_at(state.geometry_tasks, handle)}
+                            DawnVelocitySink{state, handle_at(state.geometry_tasks, handle)}
 #endif
                         );
 #endif

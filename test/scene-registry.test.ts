@@ -103,6 +103,8 @@ test("registers unique generated scene targets", () => {
             "regression-mesh-opacity-runtime",
             "regression-mesh-opacity-geometry",
             "regression-geometry-velocity",
+            "regression-geometry-velocity-standard",
+            "regression-geometry-velocity-preload",
             "regression-mesh-opacity-transmission",
             "scene168",
             "scene176",

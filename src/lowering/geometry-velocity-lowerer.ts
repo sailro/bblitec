@@ -14,7 +14,11 @@
  *    record mirroring its closure;
  *  - `createGeometryDeformationVelocity`'s `_update(neutral)`: the previous
  *    pose snapshots the vertex stage reads through `previousBoneSampler` and
- *    `previousMorph`.
+ *    `previousMorph`;
+ *  - for a program whose Standard velocity views compose both arms, the
+ *    task preload that loads the deformation feature
+ *    (`preloadGeometryDeformationVelocity`) and the program-wide flag it
+ *    sets, which picks the arm a Standard renderable is built with.
  *
  * Every statement that creates, binds or uploads is asserted and answered
  * through a callback the backend supplies (`deformation`, `write`,
@@ -32,6 +36,16 @@ import {
     GEOMETRY_VELOCITY_MODULE,
     PBR_GEOMETRY_VELOCITY_MODULE,
 } from "../pinned-geometry-velocity.js";
+
+const GEOMETRY_DEFORMATION_HOOKS_MODULE =
+    "src/material/geometry-deformation-hooks.ts";
+const STANDARD_GEOMETRY_VIEW_MODULE = "src/material/standard/geometry-view.ts";
+const GEOMETRY_RENDERER_TASK_MODULE =
+    "src/frame-graph/geometry-renderer-task.ts";
+const STANDARD_GEOMETRY_RENDERABLE_MODULE =
+    "src/material/standard/standard-geometry-renderable.ts";
+const STANDARD_GEOMETRY_OUTPUT_MODULE =
+    "src/material/standard/standard-geometry-output-shader.ts";
 import type { LoweringContext } from "./context.js";
 import { lowerPinnedBody } from "./pinned-body-lowerer.js";
 import { lowerPinnedFunction } from "./pinned-function-lowerer.js";
@@ -80,7 +94,12 @@ function pinnedThrow(
 export class GeometryVelocityLowerer {
     public constructor(private readonly context: LoweringContext) {}
 
-    public header(): string {
+    /**
+     * `preload`: the program's Standard velocity views compose both arms
+     * (`StandardSceneComposition.velocityArms`), so the run-time preload
+     * decides between them.
+     */
+    public header(preload = false): string {
         return pinnedHeader(
             [
                 "<bblite/runtime.hpp>",
@@ -93,15 +112,198 @@ export class GeometryVelocityLowerer {
                 "<cstdint>",
                 "<span>",
                 "<stdexcept>",
+                ...(preload ? ["<string_view>"] : []),
                 "<vector>",
             ],
             [
-                this.enabler(),
+                ...(preload ? [this.loadedFeature()] : []),
+                this.enabler(preload),
                 this.invert(),
                 this.velocity(),
                 this.deformation(),
+                ...(preload ? [this.preload()] : []),
             ].join("\n\n"),
         );
+    }
+
+    /**
+     * A geometry task's `_preload` and the deformation feature it loads. The
+     * task's mesh list is the scene's (a native task takes no `meshes`); its
+     * Standard family's preload hands it `preloadGeometryDeformationVelocity`,
+     * which loads the feature once, for the program, when the task writes
+     * velocity and a listed mesh is skinned or morphed and neither instanced
+     * nor baked. The families are the task's material bridges: a family
+     * first appearing after the preload re-runs it (`_lateLoad`).
+     */
+    private preload(): string {
+        const context = this.context;
+        const hooks = context.functionDeclaration(
+            GEOMETRY_DEFORMATION_HOOKS_MODULE,
+            "preloadGeometryDeformationVelocity",
+        ).declaration;
+        context.assertStatementShapes(
+            hooks,
+            hooks.body!.statements,
+            "if (velocity && !_feature && meshes.some((mesh) => !mesh.thinInstances && !mesh.vat && (!!mesh.skeleton || !!mesh.morphTargets))) { " +
+                '_feature = await import("./geometry-deformation-velocity.js"); }',
+            "Geometry deformation velocity preload",
+        );
+        const standard = context.functionDeclaration(
+            STANDARD_GEOMETRY_VIEW_MODULE,
+            "preloadStandardGeometryFeatures",
+        ).declaration;
+        if (
+            !context.hasNode(standard, (node) =>
+                sameSource(
+                    node,
+                    "loads.push(preloadGeometryDeformationVelocity(meshes, needsVelocity))",
+                ),
+            )
+        )
+            context.contractError(
+                standard,
+                "Expected the Standard geometry preload to hand its mesh list to the deformation preload.",
+            );
+        const task = context.functionDeclaration(
+            GEOMETRY_RENDERER_TASK_MODULE,
+            "createGeometryRendererTask",
+        ).declaration;
+        const preloads = context.findNodes(
+            task,
+            (node): node is ts.MethodDeclaration =>
+                ts.isMethodDeclaration(node) &&
+                ts.isIdentifier(node.name) &&
+                node.name.text === "_preload",
+        );
+        if (preloads.length !== 1)
+            context.contractError(
+                task,
+                "Expected the geometry task's one _preload.",
+            );
+        const preload = preloads[0]!;
+        context.assertExpressionShape(
+            context.variableInitializer(preload.body!, "meshes"),
+            "(config.meshes ?? sc.meshes) as readonly Mesh[]",
+            "Geometry task preload meshes",
+        );
+        context.assertExpressionShape(
+            context.variableInitializer(preload.body!, "family"),
+            "resolveMaterialFamily(mesh.material)",
+            "Geometry task preload family",
+        );
+        const standardCensus = context.findNodes(
+            preload,
+            (node): node is ts.IfStatement =>
+                ts.isIfStatement(node) &&
+                sameSource(node.expression, 'family === "standard"'),
+        );
+        if (
+            standardCensus.length !== 1 ||
+            !context.hasNode(standardCensus[0]!.thenStatement, (node) =>
+                sameSource(node, "hasStandard = true"),
+            )
+        )
+            context.contractError(
+                preload,
+                "Expected the geometry task preload's family census.",
+            );
+        if (
+            !context.hasNode(preload, (node) =>
+                sameSource(
+                    node,
+                    "viewMod.preloadStandardGeometryFeatures(meshes, task._needsVelocity)",
+                ),
+            ) ||
+            !context.hasNode(
+                preload,
+                (node) =>
+                    ts.isIfStatement(node) &&
+                    sameSource(node.expression, "hasStandard"),
+            )
+        )
+            context.contractError(
+                preload,
+                "Expected the geometry task preload to run the Standard preload over its meshes when a Standard mesh is listed.",
+            );
+        const morphContext = `#${pinnedErrorCodeOf(
+            context,
+            "standard-geometry: morph targets require the scene Standard morph context",
+            context.functionDeclaration(
+                STANDARD_GEOMETRY_RENDERABLE_MODULE,
+                "_ensureViewResources",
+            ).declaration,
+        )}`;
+        const notPreloaded = `#${pinnedErrorCodeOf(
+            context,
+            "Standard geometry deformation velocity was not preloaded.",
+            context.functionDeclaration(
+                STANDARD_GEOMETRY_OUTPUT_MODULE,
+                "createGeometryParamsFragment",
+            ).declaration,
+        )}`;
+        return `// ${context.provenance(GEOMETRY_DEFORMATION_HOOKS_MODULE, "preloadGeometryDeformationVelocity")}
+inline void preload_geometry_deformation_velocity(const Engine& engine, std::span<const MeshHandle> meshes, bool velocity) {
+    if (velocity && !geometry_deformation_velocity_loaded &&
+        std::any_of(meshes.begin(), meshes.end(), [&](MeshHandle mesh) {
+            if (mesh.value >= engine.meshes.size())
+                return false;
+            const MeshRecord& record = handle_at(engine.meshes, mesh);
+            return !record.thin_instances && !record.has_vat &&
+                   (record.skeleton_attached || record.morph_targets_attached || record.scene_morph_targets);
+        })) {
+        geometry_deformation_velocity_loaded = true;
+    }
+}
+
+/** \`resolveMaterialFamily\`, one bit per family a geometry task bridges. */
+inline constexpr std::uint32_t geometry_family_standard = 1u;
+inline constexpr std::uint32_t geometry_family_pbr = 2u;
+inline constexpr std::uint32_t geometry_family_node = 4u;
+
+/** The families the task's mesh list draws. */
+inline std::uint32_t geometry_task_families(const Engine& engine, std::span<const MeshHandle> meshes) {
+    std::uint32_t families = 0;
+    for (const MeshHandle mesh : meshes) {
+        if (mesh.value >= engine.meshes.size())
+            continue;
+        const MaterialHandle material = handle_at(engine.meshes, mesh).material;
+        if (material.value >= engine.materials.size())
+            continue;
+        const std::string_view family = material_family_name(handle_at(engine.materials, material));
+        families |= family == "standard" ? geometry_family_standard
+                    : family == "pbr"    ? geometry_family_pbr
+                    : family == "node"   ? geometry_family_node
+                                         : 0u;
+    }
+    return families;
+}
+
+// ${context.provenance(GEOMETRY_RENDERER_TASK_MODULE, "createGeometryRendererTask", "its _preload")}
+// Returns the families it bridged.
+inline std::uint32_t preload_geometry_task(const Engine& engine, const Scene& scene, const GeometryTaskOptions& task) {
+    const std::span<const MeshHandle> meshes(scene.meshes);
+    const std::uint32_t families = geometry_task_families(engine, meshes);
+    if (families & geometry_family_standard) {
+        preload_geometry_deformation_velocity(
+            engine, meshes,
+            std::any_of(task.attachments.begin(), task.attachments.end(), [](const GeometryTextureDescription& attachment) {
+                return attachment.type == GeometryTextureType::linear_velocity;
+            }));
+    }
+    return families;
+}
+
+// ${context.provenance(STANDARD_GEOMETRY_RENDERABLE_MODULE, "_ensureViewResources", `${STANDARD_GEOMETRY_OUTPUT_MODULE}#createGeometryParamsFragment`)}
+// A Standard velocity view of a skinned or morphed mesh composed before any
+// preload loaded the feature. A morphed one first needs the scene's Standard
+// morph context, which only a morphed mesh the preload skips (instanced or
+// baked, which a geometry task here refuses) could have given it; a skinned
+// one is the composer's own refusal.
+inline void require_standard_deformation_velocity(bool morphed) {
+    if (geometry_deformation_velocity_loaded)
+        return;
+    throw std::runtime_error(morphed ? ${stringLiteral(morphContext)} : ${stringLiteral(notPreloaded)});
+}`;
     }
 
     /**
@@ -110,7 +312,13 @@ export class GeometryVelocityLowerer {
      * generation's (`intrinsics/geometry-velocity.ts`); the camera check runs
      * where the task validates its camera, every executed frame.
      */
-    private enabler(): string {
+    /** The pin's module state `_feature`, program-wide as the module is. */
+    private loadedFeature(): string {
+        return `// ${this.context.provenance(GEOMETRY_DEFORMATION_HOOKS_MODULE, "_feature")}
+inline bool geometry_deformation_velocity_loaded = false;`;
+    }
+
+    private enabler(preload: boolean): string {
         const context = this.context;
         const { declaration } = context.functionDeclaration(
             GEOMETRY_VELOCITY_MODULE,
@@ -145,13 +353,31 @@ export class GeometryVelocityLowerer {
             "Geometry previous-depth camera",
         );
         const orthographic = `#${pinnedErrorCode(context, validation[0]!)}`;
+        if (
+            !context.hasNode(declaration, (node) =>
+                sameSource(
+                    node,
+                    "installGeometryDeformationVelocity(deformation, pbrVelocity.geometryVelocityOutput)",
+                ),
+            )
+        )
+            context.contractError(
+                declaration,
+                "Expected enableGeometryVelocity to install the deformation feature.",
+            );
         return `// ${context.provenance(GEOMETRY_VELOCITY_MODULE, "enableGeometryVelocity")}
 // The contract is recorded once; its params lane is \`cameraNearFar.z\`.
 inline void enable_geometry_velocity(Engine& engine, TaskHandle task, bool previous_depth) {
     FrameTaskRecord& record = handle_at(engine.frame_tasks, task);
     if (record.kind != FrameTaskKind::geometry)
         throw std::runtime_error("enableGeometryVelocity requires a geometry renderer task.");
-    record.geometry.velocity_previous_depth = previous_depth;
+    record.geometry.velocity_previous_depth = previous_depth;${
+        preload
+            ? `
+    // \`installGeometryDeformationVelocity\`: the feature, for the program.
+    geometry_deformation_velocity_loaded = true;`
+            : ""
+    }
 }
 
 /** The previous-depth lane \`task._paramsData[18]\`. */

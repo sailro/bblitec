@@ -1473,6 +1473,41 @@ const authoredInputs: readonly SceneInput[] = [
         },
     },
     {
+        // Material-point velocity of moving, skinned and morphed Standard
+        // meshes beside a moving PBR box in one task.
+        id: "regression-geometry-velocity-standard",
+        name: "Regression - Standard Geometry Velocity",
+        source: "examples/regression-geometry-velocity-standard.ts",
+        sourceOrigin: "bblitec-regression",
+        title: "Babylon Lite Native - Standard Geometry Velocity",
+        parity: {
+            referenceFrame: 40,
+            maxFullMad: 0.001,
+            maxForegroundMad: 0.001,
+            // Zero velocity shows as (0.5, 0.5, 0): 128, 128, 0 in 8-bit.
+            backgroundColor: [128, 128, 0],
+            backgroundThreshold: 8,
+            nativeEnvironment: fixedCaptureEnvironment(),
+        },
+    },
+    {
+        // Standard velocity whose deformation feature the task preload loads.
+        id: "regression-geometry-velocity-preload",
+        name: "Regression - Geometry Velocity Preload",
+        source: "examples/regression-geometry-velocity-preload.ts",
+        sourceOrigin: "bblitec-regression",
+        title: "Babylon Lite Native - Geometry Velocity Preload",
+        parity: {
+            referenceFrame: 40,
+            maxFullMad: 0.001,
+            maxForegroundMad: 0.001,
+            // Zero velocity shows as (0.5, 0.5, 0): 128, 128, 0 in 8-bit.
+            backgroundColor: [128, 128, 0],
+            backgroundThreshold: 8,
+            nativeEnvironment: fixedCaptureEnvironment(),
+        },
+    },
+    {
         // Faded meshes in the scene's transmission pass.
         id: "regression-mesh-opacity-transmission",
         name: "Regression - Mesh Opacity with Transmission",

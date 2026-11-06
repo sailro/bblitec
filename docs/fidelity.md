@@ -61,7 +61,6 @@ anything not listed here must match it.
 - Shaders come from pinned composers; a composition failure never selects a substitute.
 - glTF primitives without NORMAL use the pin's generated smooth normals. Mesh blocks carry `mesh.worldMatrix`
   (eye-relative under floating origin); palettes hold 64 matrices.
-- A skinned Standard mesh in a LINEAR_VELOCITY task refuses.
 - SDL single-sample image processing samples texel centers; single-sample transmission uses mip-zero loads.
 - Linux Vulkan surfaces and canvas-emulation resolves request storage-capable allocations to match Chromium's MSAA rounding.
 - SDL may use depth-only formats instead of depth24plus-stencil8.

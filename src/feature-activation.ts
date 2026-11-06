@@ -2029,6 +2029,12 @@ function assetJoinReason(name: string, joinedBy: string): string {
             "whose setPbrTransmission scene hook enables scene transmission"
         );
     }
+    if (name === "renderer:geometry-velocity") {
+        return (
+            " over Standard materials and a skinned or morphed mesh loads the " +
+            "deformation velocity feature (preloadGeometryDeformationVelocity)"
+        );
+    }
     if (name === "loader:splat") {
         return (
             " carries KHR_gaussian_splatting clouds, converted to the " +

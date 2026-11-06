@@ -1,45 +1,26 @@
 // Regression gate: enableGeometryVelocity in a geometry renderer task.
 //
 // A PBR box slides and turns, a skinned beam bends and a morphed beam swells
-// (the ambient-occlusion demo's own procedural glTF), beside a still sphere.
-// The geometry task writes material-point velocity with the previous view
-// depth in Z; a copy carries it into a sampled target, and an effect task
-// shows it scaled: red and green are the X and Y velocity about mid-grey,
-// blue the previous depth.
+// (the ambient-occlusion demo's own procedural glTF), beside a still sphere,
+// shown through the velocity regressions' shared view.
 
 import {
-    addTask,
     addToScene,
     createArcRotateCamera,
     createBox,
-    createCopyToTextureTask,
-    createEffectRenderTask,
-    createEffectWrapper,
     createEngine,
-    createGeometryRendererTask,
     createHemisphericLight,
     createPbrMaterial,
-    createRenderTargetTexture,
     createSceneContext,
     createSphere,
     enableGeometryVelocity,
-    GeometryTextureType,
     onBeforeRender,
     playAnimation,
     registerScene,
-    setEffectTexture,
     startEngine,
 } from "babylon-lite";
 import { createAoDeformationExamples } from "../corpus/babylon-lite/lab/lite/src/demos/ambient-occlusion-deformation.js";
-
-const VELOCITY_WGSL = `@group(0) @binding(0) var velocityTexture:texture_2d<f32>;
-@group(0) @binding(1) var velocitySampler:sampler;
-@fragment fn effectFragment(input:EffectVertexOutput)->@location(0) vec4<f32>{
-    let size = vec2<f32>(textureDimensions(velocityTexture));
-    let texel = vec2<i32>(clamp(input.uv * size, vec2<f32>(0.0), size - vec2<f32>(1.0)));
-    let velocity = textureLoad(velocityTexture, texel, 0);
-    return vec4<f32>(clamp(vec3<f32>(0.5 + velocity.x * 60.0, 0.5 + velocity.y * 60.0, velocity.z * 0.08), vec3<f32>(0.0), vec3<f32>(1.0)), 1.0);
-}`;
+import { addVelocityView, createVelocityTask } from "./regression-geometry-velocity-view.js";
 
 async function main(): Promise<void> {
     const __initStart = performance.now();
@@ -78,42 +59,9 @@ async function main(): Promise<void> {
         box.rotation.y = frame * 0.05;
     });
 
-    const geometry = createGeometryRendererTask(
-        {
-            name: "velocity-geometry",
-            samples: 1,
-            textureDescriptions: [{ type: GeometryTextureType.LINEAR_VELOCITY, format: "rgba16float" }],
-        },
-        engine,
-        scene
-    );
+    const geometry = createVelocityTask(engine, scene);
     enableGeometryVelocity(geometry, { previousDepth: true });
-    addTask(scene, geometry);
-    const effect = createEffectWrapper(engine, {
-        name: "velocity-view",
-        fragmentWGSL: VELOCITY_WGSL,
-        bindings: [
-            { name: "velocityTexture", binding: 0, kind: "texture" },
-            { name: "velocitySampler", binding: 1, kind: "sampler", textureBinding: "velocityTexture" },
-        ],
-    });
-    const velocity = createRenderTargetTexture(engine, {
-        lbl: "velocity-copy",
-        format: "rgba16float",
-        samples: 1,
-        // The capture extent: the copy is one texel per pixel.
-        size: { width: 1280, height: 720 },
-    });
-    addTask(
-        scene,
-        createCopyToTextureTask(
-            { name: "velocity-copy", sourceTexture: geometry.geometryLinearVelocityTexture!, targetTexture: velocity.rt },
-            engine,
-            scene
-        )
-    );
-    setEffectTexture(effect, "velocityTexture", velocity.texture);
-    addTask(scene, createEffectRenderTask({ name: "velocity-view", effect, target: engine.scRT, clear: true }, engine, scene));
+    addVelocityView(engine, scene, geometry);
 
     await registerScene(scene);
     await startEngine(engine);

@@ -1259,6 +1259,9 @@ export async function composeScenePipeline({
                     : {}),
                 morphTargets:
                     result.manifest.features.includes("mesh:morph-targets"),
+                deformationVelocity: result.manifest.features.includes(
+                    "renderer:geometry-velocity",
+                ),
                 sceneMaterials: sceneStandardMaterials,
                 sceneMeshFeatureValues: [
                     ...new Set(

@@ -62,9 +62,11 @@ test("scene morph attachment records its exact PBR row and keeps weight updates 
         /bbl::on_before_render\([^\n]+bblscene::(v_bblite_closure_body_\d+)/,
     );
     assert.ok(callback);
+    // The update names the mesh, which the callback captures though its
+    // source reaches the morph targets alone.
     assert.match(
         cppDefinition(result.cpp, `void ${callback[1]}(`),
-        /bbl::set_morph_target_weights/,
+        /auto& v_mesh = [\s\S]*bbl::set_morph_target_weights\(v_engine, v_mesh,/,
     );
     const outputPath = resolve("artifacts/scene-morph-composition");
     const composed = await composeScenePipeline({
@@ -436,7 +438,7 @@ ${[
     "std::array<float, 16> mesh_block_world(",
     "int pick_mesh_projection(",
     "std::vector<GpuVertex> mesh_gpu_vertices(",
-    "std::vector<float> morph_weight_values(",
+    "void morph_weight_values(",
     "std::vector<std::uint8_t> pack_morph_weights(",
 ]
     .map((name) => cppDefinition(pal, name))

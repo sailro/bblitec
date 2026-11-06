@@ -4,12 +4,12 @@
 #include <bblite/features/geometry_velocity.hpp>
 #include <bblite/runtime.hpp>
 #include <bblite/upstream/render_capabilities.hpp>
+#include <algorithm>
 #include <array>
 #include <cstdint>
 #include <optional>
 #include <span>
 #include <stdexcept>
-#include <string_view>
 #include <vector>
 #if BBLITE_PINNED_MATERIALS && BBLITE_PINNED_MATERIAL_VARIANTS
 #include <bblite/upstream/renderer_plan.hpp>
@@ -24,15 +24,21 @@
 namespace bbl::pal {
 
 /**
- * A geometry task's Standard renderables' velocity state
- * (`standard-geometry-renderable.ts`), one per mesh slot.
+ * A geometry task's renderables' velocity state, one per mesh slot: a
+ * Standard renderable's (`standard-geometry-renderable.ts`) and a PBR one's
+ * (`createPbrGeometryVelocity`), and either's deformation previous pose
+ * (`createGeometryDeformationVelocity`). The pin keeps the two families'
+ * world histories apart -- Standard writes its previous world into the mesh
+ * block, PBR its previous-from-current product into its own `gm` block --
+ * and shares the deformation.
  *
- * The pin builds one renderable per bound mesh. It packs the mesh's world
- * as `previousWorld` when built and starts with `velocityReady` false; each
- * frame's update writes the mesh block from that snapshot and flag, then
- * snapshots the current world and sets the flag, so a renderable's first
- * frame writes `velocityEnabled` 0 and the composed vertex's previous clip
- * falls back to the current one. The task re-syncs (`rebuildBoundMeshes`)
+ * The pin builds one renderable per bound mesh. A Standard one packs the
+ * mesh's world as `previousWorld` when built and starts with `velocityReady`
+ * false; each frame's update writes the mesh block from that snapshot and
+ * `velocityReady && tracked`, then snapshots the current world and sets the
+ * flag to `tracked`, so a renderable's first frame writes `velocityEnabled` 0
+ * and the composed vertex's previous clip falls back to the current one. The
+ * task re-syncs (`rebuildBoundMeshes`)
  * at every `record()` and whenever the scene's renderable version (here
  * `render_topology_version`) moves: an entry whose mesh still draws the same
  * source material through the forward renderable it was built alongside (the
@@ -66,9 +72,9 @@ struct PinnedVelocityHistory {
 #if BBLITE_GEOMETRY_VELOCITY
         /**
          * A PBR renderable's `createPbrGeometryVelocity` state, made with
-         * the renderable, and its deformation's previous pose when the mesh
-         * deforms. `packed_world` is the world its mesh block last packed:
-         * the update's `worldChanged` is a change of it.
+         * the renderable, and either family's deformation previous pose
+         * when the mesh deforms. `packed_world` is the world a PBR mesh block
+         * last packed: the update's `worldChanged` is a change of it.
          */
         std::optional<upstream::PbrGeometryVelocity> pbr;
         std::optional<upstream::GeometryDeformationVelocity> deformation;
@@ -99,6 +105,10 @@ struct PinnedVelocityHistory {
     bool recorded = true;
     std::optional<Stamp> stamp;
     std::vector<Renderable> renderables;
+#if BBLITE_GEOMETRY_VELOCITY
+    /** The families the task's preloads bridged (`_preload`), from its registration's. */
+    std::optional<std::uint32_t> preloaded_families;
+#endif
 };
 
 template <typename Block>
@@ -120,8 +130,9 @@ inline void begin_pinned_velocity_frame(PinnedVelocityHistory& history, const Sc
     if (history.recorded || history.topology_version != scene.render_topology_version) {
         // A sync: carry nothing across a changed stamp. Otherwise each entry
         // is carried or rebuilt as its update finds it (`update_pinned_velocity`).
-        if (history.stamp != stamp)
+        if (history.stamp != stamp) {
             history.renderables.clear();
+        }
         history.stamp = stamp;
         history.topology_version = scene.render_topology_version;
         history.recorded = false;
@@ -165,30 +176,41 @@ inline PinnedVelocityHistory::Renderable& sync_pinned_velocity(PinnedVelocityHis
     return renderable;
 }
 
+/** The update of a renderable whose velocity view composes no previous pose. */
+struct NoVelocityDeformation {
+    void operator()(PinnedVelocityHistory::Renderable&, bool, bool) const {}
+};
+
+/**
+ * One Standard renderable's frame (`_baseUpdate`): `tracked` is
+ * `mesh.visible !== false` (no reached program excludes a mesh from
+ * velocity). `deformation(renderable, rebuilt, neutral)` runs where the pin's
+ * `deformationVelocity?._update(!velocityEnabled)` does, between the block's
+ * write and the world snapshot.
+ */
+template <typename Deformation = NoVelocityDeformation>
 inline const PinnedVelocityHistory::Renderable&
 update_pinned_velocity(PinnedVelocityHistory& history, MeshHandle mesh,
-                       std::uint64_t source_identity, const std::array<float, 16>& world) {
+                       std::uint64_t source_identity, const std::array<float, 16>& world,
+                       bool tracked = true, Deformation&& deformation = {}) {
     bool rebuilt = false;
     PinnedVelocityHistory::Renderable& renderable =
         sync_pinned_velocity(history, mesh, source_identity, rebuilt);
     if (rebuilt)
         renderable.previous_world = world;
     if (renderable.updated_frame != history.frame) {
+        const bool velocity_enabled = renderable.velocity_ready && tracked;
         renderable.written_previous_world = renderable.previous_world;
-        renderable.written_velocity_enabled = renderable.velocity_ready ? 1.0f : 0.0f;
+        renderable.written_velocity_enabled = velocity_enabled ? 1.0f : 0.0f;
+        deformation(renderable, rebuilt, !velocity_enabled);
         renderable.previous_world = world;
-        renderable.velocity_ready = true;
+        renderable.velocity_ready = tracked;
         renderable.updated_frame = history.frame;
     }
     return renderable;
 }
 
 #if BBLITE_GEOMETRY_VELOCITY
-/** The composed velocity arm's bindings: the PBR renderable's block and the deformation's previous pose. */
-inline constexpr std::string_view velocity_block_name = "gm";
-inline constexpr std::string_view previous_morph_name = "previousMorph";
-inline constexpr std::string_view previous_bones_name = "previousBoneSampler";
-
 /** A task's per-mesh velocity resources, grown to reach `mesh`. */
 template <typename Resources>
 Resources& mesh_velocity_resources(std::vector<Resources>& slots, MeshHandle mesh) {
@@ -200,19 +222,20 @@ Resources& mesh_velocity_resources(std::vector<Resources>& slots, MeshHandle mes
 
 #if BBLITE_PINNED_MATERIALS && BBLITE_PINNED_MATERIAL_VARIANTS
 /**
- * What a backend uploads for a PBR velocity renderable
- * (`createPbrGeometryVelocity`): its `gm` block when made and at each
- * `write()`, and its deformation's previous bones and morph weights.
+ * What a backend uploads for a geometry task's velocity renderables: a PBR
+ * one's `gm` block (`createPbrGeometryVelocity`) when made and at each
+ * `write()`, and either family's deformation previous bones and morph
+ * weights.
  */
 template <typename Sink>
-concept PbrVelocitySink = requires(Sink sink, MeshHandle mesh, std::span<const float> floats) {
+concept VelocitySink = requires(Sink sink, MeshHandle mesh, std::span<const float> floats) {
     sink.block(mesh, floats);
     sink.bones(mesh, floats);
     sink.morph(mesh, floats);
 };
 
-/** The sink of a task without `enableGeometryVelocity`, which uploads nothing. */
-struct NoPbrVelocitySink {
+/** The sink of a program without `enableGeometryVelocity`, which uploads nothing. */
+struct NoVelocitySink {
     void block(MeshHandle, std::span<const float>) const {}
     void bones(MeshHandle, std::span<const float>) const {}
     void morph(MeshHandle, std::span<const float>) const {}
@@ -220,39 +243,76 @@ struct NoPbrVelocitySink {
 
 #if BBLITE_GEOMETRY_VELOCITY
 /**
+ * The live pose a deformation snapshots: the mesh's bone palette, and its
+ * morph weights, read into the renderable's reused storage.
+ */
+inline std::span<const float> velocity_pose(PinnedVelocityHistory::Renderable& renderable,
+                                            [[maybe_unused]] const Engine& engine,
+                                            const MeshRecord& record) {
+    std::vector<float>& weights = renderable.morph_weights;
+    weights.clear();
+#if BBLITE_GPU_MORPH_STORAGE
+    // The pin's `mesh.morphTargets`, set by the loader or a scene attachment.
+    if ((record.morph_targets_attached || record.scene_morph_targets) &&
+        record.geometry < engine.geometries.size())
+        morph_weight_values(engine.geometries[record.geometry], record, weights);
+#endif
+    return record.bone_matrices.empty()
+               ? std::span<const float>{}
+               : std::span<const float>(record.bone_matrices.data()->data(),
+                                        record.bone_matrices.size() * 16u);
+}
+
+/**
+ * `createGeometryDeformationVelocity`, made with the renderable of a mesh
+ * neither instanced nor baked that carries a skeleton or a morph set: PBR's
+ * `needsDeformation`, and Standard's `_hasDeformationVelocity` once the
+ * enabler installed the feature (a Standard skeleton is `HAS_SKELETON`
+ * exactly for such a mesh).
+ */
+inline void make_velocity_deformation(PinnedVelocityHistory::Renderable& renderable,
+                                      const MeshRecord& record, std::span<const float> bones) {
+    if (!record.thin_instances && !record.has_vat &&
+        (!bones.empty() || !renderable.morph_weights.empty()))
+        renderable.deformation =
+            upstream::create_geometry_deformation_velocity(bones, renderable.morph_weights);
+}
+
+/** The deformation's `_update(neutral)`, uploading its snapshots through `sink`. */
+template <VelocitySink Sink>
+inline void advance_velocity_deformation(PinnedVelocityHistory::Renderable& renderable,
+                                         bool neutral, std::span<const float> bones,
+                                         MeshHandle mesh, Sink& sink) {
+    if (!renderable.deformation)
+        return;
+    upstream::update_geometry_deformation_velocity(
+        *renderable.deformation, neutral, bones, renderable.morph_weights,
+        [&](std::span<const float> snapshot) { sink.bones(mesh, snapshot); },
+        [&](std::span<const float> snapshot) { sink.morph(mesh, snapshot); });
+}
+
+/**
  * One PBR renderable's frame (`pbr-geometry-renderable.ts` update): the
  * velocity state is made with the renderable from the world its mesh block
  * packs, and `_update(worldChanged)` runs after the block repacks a changed
  * world. `tracked` is `mesh.visible !== false`: no reached program excludes
  * a mesh from velocity.
  */
-template <PbrVelocitySink Sink>
+template <VelocitySink Sink>
 inline void update_pbr_geometry_velocity(PinnedVelocityHistory& history, const Scene& scene,
                                          const Engine& engine, const upstream::RenderItem& item,
                                          Sink& sink) {
     const MeshRecord& record = handle_at(engine.meshes, item.mesh);
     const std::array<float, 16> world = mesh_block_world(scene, engine, record);
     const bool tracked = !(record.visible == false);
-    const std::span<const float> bones =
-        record.bone_matrices.empty() ? std::span<const float>{}
-                                     : std::span<const float>(record.bone_matrices.data()->data(),
-                                                              record.bone_matrices.size() * 16u);
     bool rebuilt = false;
     PinnedVelocityHistory::Renderable& renderable =
         sync_pinned_velocity(history, item.mesh, item.source_identity, rebuilt);
-    std::vector<float>& weights = renderable.morph_weights;
-    weights.clear();
-#if BBLITE_GPU_MORPH_STORAGE
-    if (record.morph_targets_attached && record.geometry < engine.geometries.size())
-        morph_weight_values(engine.geometries[record.geometry], record, weights);
-#endif
+    const std::span<const float> bones = velocity_pose(renderable, engine, record);
     if (rebuilt || !renderable.pbr) {
         renderable.pbr = upstream::create_pbr_geometry_velocity(world, tracked);
         renderable.packed_world = world;
-        // `needsDeformation`: a skeleton or morph set on a mesh neither
-        // instanced nor baked.
-        if (!record.thin_instances && !record.has_vat && (!bones.empty() || !weights.empty()))
-            renderable.deformation = upstream::create_geometry_deformation_velocity(bones, weights);
+        make_velocity_deformation(renderable, record, bones);
         sink.block(item.mesh, renderable.pbr->data);
     }
     const bool world_changed = renderable.packed_world != world;
@@ -261,12 +321,7 @@ inline void update_pbr_geometry_velocity(PinnedVelocityHistory& history, const S
     upstream::update_pbr_geometry_velocity(
         *renderable.pbr, renderable.packed_world, world_changed, tracked,
         [&](bool neutral) {
-            if (!renderable.deformation)
-                return;
-            upstream::update_geometry_deformation_velocity(
-                *renderable.deformation, neutral, bones, weights,
-                [&](std::span<const float> snapshot) { sink.bones(item.mesh, snapshot); },
-                [&](std::span<const float> snapshot) { sink.morph(item.mesh, snapshot); });
+            advance_velocity_deformation(renderable, neutral, bones, item.mesh, sink);
         },
         [&] { sink.block(item.mesh, renderable.pbr->data); });
     renderable.updated_frame = history.frame;
@@ -275,19 +330,27 @@ inline void update_pbr_geometry_velocity(PinnedVelocityHistory& history, const S
 
 /**
  * A geometry task's renderables, updated once a frame before any draw: the
- * Standard ones' camera history, and under `enableGeometryVelocity`
- * (`task.velocity_previous_depth`) the PBR ones' material-point velocity.
+ * Standard ones' history, with their previous pose once the program reaches
+ * `enableGeometryVelocity` (whose installed feature every Standard velocity
+ * view composes from) or a task preload loaded the deformation feature, and
+ * in a task the enabler reached (`task.geometry.velocity_previous_depth`) the PBR
+ * ones' material-point velocity.
  */
-template <PbrVelocitySink Sink = NoPbrVelocitySink>
+template <VelocitySink Sink = NoVelocitySink>
 inline void update_pinned_velocity_frame(PinnedVelocityHistory& history, const Scene& scene,
                                          const Engine& engine,
                                          std::span<const upstream::RenderItem> items,
                                          const CameraRecord* camera,
-                                         [[maybe_unused]] const GeometryTaskOptions& task,
+                                         [[maybe_unused]] const FrameTaskRecord& task,
                                          [[maybe_unused]] Sink&& sink = {}) {
     constexpr bool standard = PinnedVelocityBlock<upstream::MeshUniforms>;
 #if BBLITE_GEOMETRY_VELOCITY
-    const bool pbr = task.velocity_previous_depth.has_value();
+    const bool pbr = task.geometry.velocity_previous_depth.has_value();
+    // `_hasDeformationVelocity` reads the view's `_needsVelocity`.
+    const bool standard_deformation = std::ranges::any_of(
+        task.geometry.attachments, [](const GeometryTextureDescription& attachment) {
+            return attachment.type == GeometryTextureType::linear_velocity;
+        });
 #else
     constexpr bool pbr = false;
 #endif
@@ -297,6 +360,27 @@ inline void update_pinned_velocity_frame(PinnedVelocityHistory& history, const S
     begin_pinned_velocity_frame(history, scene, {engine.device_generation, camera});
 #if BBLITE_FLOATING_ORIGIN
     clear_pinned_velocity_stamp(history, camera);
+#endif
+#if BBLITE_GEOMETRY_VELOCITY && BBLITE_STANDARD_VARIANTS > 0
+    // `_lateLoad`: a family first listed after the task's preloads re-runs
+    // `_preload` over the current list. The pin binds that family's meshes
+    // only once the reload lands, so a late Standard family's renderables
+    // compose under what it loads; the renderables of families already
+    // bridged are built in the sync that starts it, before it lands.
+    const bool synced = history.synced_frame == history.frame;
+    if (!history.preloaded_families)
+        history.preloaded_families = task.geometry_preloaded_families.value_or(0u);
+    const std::uint32_t listed =
+        synced ? upstream::geometry_task_families(engine, scene.meshes) : 0u;
+    const bool late = (listed & ~*history.preloaded_families) != 0;
+    const auto late_load = [&] {
+        history.preloaded_families = *history.preloaded_families |
+                                     upstream::preload_geometry_task(engine, scene, task.geometry);
+    };
+    const bool late_standard =
+        late && (listed & ~*history.preloaded_families & upstream::geometry_family_standard) != 0;
+    if (late_standard)
+        late_load();
 #endif
     for (const upstream::RenderItem& source : items) {
         const upstream::RenderItem item =
@@ -318,10 +402,34 @@ inline void update_pinned_velocity_frame(PinnedVelocityHistory& history, const S
             continue;
         }
 #endif
-        update_pinned_velocity(
-            history, item.mesh, item.source_identity,
-            mesh_block_world(scene, engine, handle_at(engine.meshes, item.mesh)));
+        const MeshRecord& record = handle_at(engine.meshes, item.mesh);
+#if BBLITE_GEOMETRY_VELOCITY
+        const auto deformation = [&](PinnedVelocityHistory::Renderable& renderable, bool rebuilt,
+                                     bool neutral) {
+            if (!standard_deformation)
+                return;
+            const std::span<const float> bones = velocity_pose(renderable, engine, record);
+            if (rebuilt) {
+                make_velocity_deformation(renderable, record, bones);
+#if BBLITE_STANDARD_VARIANTS > 0
+                if (renderable.deformation)
+                    upstream::require_standard_deformation_velocity(
+                        !renderable.morph_weights.empty());
+#endif
+            }
+            advance_velocity_deformation(renderable, neutral, bones, item.mesh, sink);
+        };
+#else
+        const NoVelocityDeformation deformation;
+#endif
+        update_pinned_velocity(history, item.mesh, item.source_identity,
+                               mesh_block_world(scene, engine, record), !(record.visible == false),
+                               deformation);
     }
+#if BBLITE_GEOMETRY_VELOCITY && BBLITE_STANDARD_VARIANTS > 0
+    if (late && !late_standard)
+        late_load();
+#endif
 }
 
 #if BBLITE_GEOMETRY_VELOCITY

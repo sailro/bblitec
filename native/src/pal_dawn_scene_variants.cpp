@@ -263,8 +263,8 @@ void write_pinned_geometry_prologue(DawnState& state, const Scene& scene, const 
 #endif
 
 #if BBLITE_HAS_DAWN && BBLITE_GEOMETRY_VELOCITY
-void DawnPbrVelocitySink::block(MeshHandle mesh, std::span<const float> floats) {
-    DawnPbrVelocity& velocity = mesh_velocity_resources(task.pbr_velocity, mesh);
+void DawnVelocitySink::block(MeshHandle mesh, std::span<const float> floats) {
+    DawnGeometryVelocity& velocity = mesh_velocity_resources(task.mesh_velocity, mesh);
     if (!velocity.block) {
         WGPUBufferDescriptor descriptor = WGPU_BUFFER_DESCRIPTOR_INIT;
         descriptor.size = floats.size_bytes();
@@ -277,8 +277,8 @@ void DawnPbrVelocitySink::block(MeshHandle mesh, std::span<const float> floats) 
     DawnGpuDevice{state.queue}.write_buffer(velocity.block, 0, floats.data(), floats.size_bytes());
 }
 
-void DawnPbrVelocitySink::bones(MeshHandle mesh, std::span<const float> floats) {
-    DawnPbrVelocity& velocity = mesh_velocity_resources(task.pbr_velocity, mesh);
+void DawnVelocitySink::bones(MeshHandle mesh, std::span<const float> floats) {
+    DawnGeometryVelocity& velocity = mesh_velocity_resources(task.mesh_velocity, mesh);
     const auto texels = static_cast<std::uint32_t>(floats.size() / 4u);
     if (velocity.bone_texels != texels) {
         velocity.bones = create_float_texture(state.device, texels, 1u,
@@ -290,8 +290,8 @@ void DawnPbrVelocitySink::bones(MeshHandle mesh, std::span<const float> floats) 
     write_float_texture(state.queue, velocity.bones, floats.data(), texels, 1u);
 }
 
-void DawnPbrVelocitySink::morph(MeshHandle mesh, std::span<const float> floats) {
-    DawnPbrVelocity& velocity = mesh_velocity_resources(task.pbr_velocity, mesh);
+void DawnVelocitySink::morph(MeshHandle mesh, std::span<const float> floats) {
+    DawnGeometryVelocity& velocity = mesh_velocity_resources(task.mesh_velocity, mesh);
     if (velocity.morph_bytes != floats.size_bytes()) {
         WGPUBufferDescriptor descriptor = WGPU_BUFFER_DESCRIPTOR_INIT;
         descriptor.size = floats.size_bytes();
@@ -307,11 +307,14 @@ void DawnPbrVelocitySink::morph(MeshHandle mesh, std::span<const float> floats) 
 
 namespace {
 /**
- * `bindPbrGeometryVelocity`'s entries: the renderable's `gm` block and the
- * deformation's previous palette and weights. False for any other binding.
+ * A velocity renderable's entries (`bindPbrGeometryVelocity`, and a Standard
+ * renderable's `deformationVelocity._bind`): a PBR renderable's `gm` block
+ * and either family's previous palette and weights. False for any other
+ * binding.
  */
-bool bind_pbr_velocity(const DawnPbrVelocity* velocity,
-                       const upstream::PinnedVariantBinding& binding, WGPUBindGroupEntry& entry) {
+bool bind_geometry_velocity(const DawnGeometryVelocity* velocity,
+                            const upstream::PinnedVariantBinding& binding,
+                            WGPUBindGroupEntry& entry) {
     const FeatureBinding feature = feature_binding(binding.name);
     if (feature != FeatureBinding::velocity_block && feature != FeatureBinding::previous_morph &&
         feature != FeatureBinding::previous_bones)
@@ -623,7 +626,7 @@ build_pinned_draw_group(DawnState& state, DawnMesh& mesh, std::size_t variant,
                         // generator its `shadowParams` block belongs to.
                         [[maybe_unused]] const MaterialRecord* material,
                         [[maybe_unused]] const ShaderPassMatrices* pass,
-                        [[maybe_unused]] const DawnPbrVelocity* velocity) {
+                        [[maybe_unused]] const DawnGeometryVelocity* velocity) {
 #if BBLITE_LOCAL_CUBEMAP
     const auto* local_cubemap = ensure_local_cubemap(state, material);
 #endif
@@ -644,7 +647,7 @@ build_pinned_draw_group(DawnState& state, DawnMesh& mesh, std::size_t variant,
         WGPUBindGroupEntry group_entry = WGPU_BIND_GROUP_ENTRY_INIT;
         group_entry.binding = binding.binding;
 #if BBLITE_GEOMETRY_VELOCITY
-        if (bind_pbr_velocity(velocity, binding, group_entry)) {
+        if (bind_geometry_velocity(velocity, binding, group_entry)) {
             entries.push_back(group_entry);
             continue;
         }
@@ -847,10 +850,10 @@ DawnDrawState& ensure_pinned_draw_bindings(DawnState& state, DawnMesh& mesh, std
     return draw_state;
 }
 
-DawnDrawState& ensure_pinned_geometry_bindings(DawnState& state, DawnMesh& mesh,
-                                               std::size_t variant, WGPUBuffer geometry_params,
-                                               [[maybe_unused]] const Scene& scene,
-                                               [[maybe_unused]] const DawnPbrVelocity* velocity) {
+DawnDrawState&
+ensure_pinned_geometry_bindings(DawnState& state, DawnMesh& mesh, std::size_t variant,
+                                WGPUBuffer geometry_params, [[maybe_unused]] const Scene& scene,
+                                [[maybe_unused]] const DawnGeometryVelocity* velocity) {
     auto existing = mesh.pinned_geometry_states.find(variant);
     if (existing != mesh.pinned_geometry_states.end()) {
         // A new emission snapshot of the draw's scene, or a replaced velocity
@@ -958,12 +961,12 @@ void write_pinned_geometry_task(DawnState& state, const Scene& scene, const Engi
             if (pinned_variant_vat(variant))
                 write_pinned_vat_texture(state, mesh, record, engine);
 #endif
-            const DawnPbrVelocity* velocity = nullptr;
+            const DawnGeometryVelocity* velocity = nullptr;
 #if BBLITE_GEOMETRY_VELOCITY
             // The renderable's velocity resources, which this frame's update
             // (run before this writer) made.
             if (task.geometry.velocity_previous_depth)
-                velocity = &mesh_velocity_resources(geometry.pbr_velocity, draw.item.mesh);
+                velocity = &mesh_velocity_resources(geometry.mesh_velocity, draw.item.mesh);
 #endif
             DawnDrawState& draw_state = ensure_pinned_geometry_bindings(
                 state, mesh, variant, geometry.pinned_geometry_params, scene, velocity);
@@ -1081,7 +1084,8 @@ WGPUBindGroup build_standard_draw_group(
     // the same shape `geometry_params` takes below.
     [[maybe_unused]] WGPUBuffer uv_transform_uniforms,
     [[maybe_unused]] WGPUBuffer mesh_opacity_uniforms, WGPUBuffer geometry_params,
-    StandardRenderViews render_views, const DawnAreaLightEmission* area_light_emission) {
+    StandardRenderViews render_views, const DawnAreaLightEmission* area_light_emission,
+    [[maybe_unused]] const DawnGeometryVelocity* velocity) {
     const WGPUTextureView emissive_render_view = render_views.emissive;
     const WGPUTextureView diffuse_render_view = render_views.diffuse;
     const bool unfilterable_emissive = emissive_render_view != nullptr;
@@ -1102,6 +1106,12 @@ WGPUBindGroup build_standard_draw_group(
     for (const upstream::PinnedVariantBinding& binding : rows) {
         WGPUBindGroupEntry group_entry = WGPU_BIND_GROUP_ENTRY_INIT;
         group_entry.binding = binding.binding;
+#if BBLITE_GEOMETRY_VELOCITY
+        if (bind_geometry_velocity(velocity, binding, group_entry)) {
+            entries.push_back(group_entry);
+            continue;
+        }
+#endif
         if (binding.kind == upstream::PinnedBindingKind::uniformBuffer) {
             if (binding.name == "up") {
                 group_entry.buffer = uv_uniforms;
@@ -1408,8 +1418,20 @@ void write_standard_geometry_task(DawnState& state, const Scene& scene, const En
             }
             write_standard_draw_blocks(state, scene, engine, draw, draw_state.mesh_uniforms,
                                        colour_state, &geometry.velocity);
-            // A new emission snapshot of the draw's scene stales the held group.
-            if (refresh_area_light_group(state, draw_state, scene) && draw_state.group) {
+            const DawnGeometryVelocity* velocity = nullptr;
+            // A new emission snapshot of the draw's scene, or a replaced
+            // velocity resource, stales the held group.
+            bool stale = refresh_area_light_group(state, draw_state, scene);
+#if BBLITE_GEOMETRY_VELOCITY
+            // The renderable's velocity resources, which this frame's update
+            // (run before this writer) made.
+            velocity = &mesh_velocity_resources(geometry.mesh_velocity, draw.item.mesh);
+            if (draw_state.velocity_generation != velocity->generation) {
+                draw_state.velocity_generation = velocity->generation;
+                stale = true;
+            }
+#endif
+            if (stale && draw_state.group) {
                 wgpuBindGroupRelease(draw_state.group);
                 draw_state.group = nullptr;
             }
@@ -1422,7 +1444,7 @@ void write_standard_geometry_task(DawnState& state, const Scene& scene, const En
                     // A geometry task writes the MRT attachments and
                     // samples neither slot, and its layout arm is the
                     // filterable one, so it binds neither view.
-                    StandardRenderViews{}, area_light_emission_of(draw_state));
+                    StandardRenderViews{}, area_light_emission_of(draw_state), velocity);
             }
         }
     }

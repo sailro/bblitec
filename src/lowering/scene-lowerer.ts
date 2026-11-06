@@ -161,6 +161,11 @@ interface SceneCoreOptions {
     overlayScenes?: boolean;
     /** `setMeshOpacity`: its material validator joins the material setter. */
     meshOpacity?: boolean;
+    /**
+     * Registration runs each geometry task's preload, whose deformation
+     * feature picks the Standard velocity arms (`geometry_velocity.hpp`).
+     */
+    geometryTaskPreload?: boolean;
 }
 
 export class SceneLowerer {
@@ -852,7 +857,7 @@ ${options.taskBuild && options.ssaoTasks ? "#include <bblite/upstream/frame_grap
 #include <bblite/upstream/pinned_matrix.hpp>
 #include <bblite/upstream/render_task_removal.hpp>
 ${options.pbrSceneHooks ? "#include <bblite/upstream/pinned_mesh_features.hpp>" : ""}
-${options.visibility ? "#include <bblite/upstream/subtree_visibility.hpp>" : ""}
+${options.visibility ? "#include <bblite/upstream/subtree_visibility.hpp>" : ""}${options.geometryTaskPreload ? "\n#include <bblite/upstream/geometry_velocity.hpp>" : ""}
 #include <bblite/upstream/thin_instance_sync.hpp>
 #include <bblite/upstream/pinned_world_transform.hpp>
 #include <bblite/js_data.hpp>
@@ -2885,6 +2890,19 @@ ${options.pbrSceneHooks ? "    finish_pbr_scene_build(scene);\n" : ""}\
         }
     }
     scene.material_family_mask = scene_material_families(scene);
+${
+    options.geometryTaskPreload
+        ? `    // Each geometry task's \`_preload\`, which registration awaits before it
+    // builds the frame graph.
+    for (const auto task_handle : scene.frame_passes()) {
+        auto& task = ${recordAt("scene.engine->frame_tasks", "task_handle")};
+        if (task.kind == FrameTaskKind::geometry)
+            task.geometry_preloaded_families =
+                upstream::preload_geometry_task(*scene.engine, scene, task.geometry);
+    }
+`
+        : ""
+}\
 ${
     options.liveTaskAdd
         ? `    // \`ctx._frameGraph.build()\` records every task, including those

@@ -14,7 +14,6 @@ import type { ShaderModuleDeclaration } from "./shader-composition.js";
 import {
     reflectWgslBindingStruct,
     reflectWgslModule,
-    reflectWgslStruct,
     sameWgslMembers,
     wgslEntryPoints,
 } from "./shader-ir.js";
@@ -253,6 +252,7 @@ import {
     lightKindsHeader,
     pinnedStandardVariantsHeader,
     sceneUniformsStruct,
+    widestMeshUniformsFragment,
 } from "./pinned-pbr-variant-cpp.js";
 import { composedMaterialCapabilities } from "./composed-material-capabilities.js";
 import type { PinnedVariantManifestEntry } from "./pinned-pbr-variant-output.js";
@@ -308,6 +308,31 @@ function sceneUboBytes(context: LoweringContext): number {
     return context.pinnedNumber(
         "src/shader/scene-uniforms-size.ts",
         "SCENE_UBO_BYTES",
+    );
+}
+
+/**
+ * Whether the program's task preloads decide its Standard velocity views'
+ * previous pose at run time: it carries the deformation velocity state and
+ * composes Standard variants.
+ */
+function standardVelocityPreload(
+    features: readonly string[],
+    options: UpstreamEmitOptions,
+): boolean {
+    return (
+        features.includes("renderer:geometry-velocity") &&
+        (options.pinnedStandardVariants ?? []).length > 0
+    );
+}
+
+/** The fragment declaring the one mesh mirror both composed families bind. */
+function sharedMeshUniformsFragment(options: UpstreamEmitOptions): string {
+    return widestMeshUniformsFragment(
+        [
+            ...(options.pinnedVariants ?? []),
+            ...(options.pinnedStandardVariants ?? []),
+        ].map((variant) => variant.fragmentWgsl),
     );
 }
 
@@ -1426,6 +1451,7 @@ ${lowerThinInstanceSync(context)}
                 csmStaticCache: features.includes("shadow:csm-static-cache"),
                 overlayScenes: features.includes("scene:overlay"),
                 meshOpacity: features.includes("mesh:opacity"),
+                geometryTaskPreload: standardVelocityPreload(features, options),
             }),
         );
         emitReached(
@@ -1777,7 +1803,9 @@ ${lowerThinInstanceSync(context)}
         if (features.includes("renderer:geometry-velocity")) {
             this.writeVariantModule(
                 "upstream/include/bblite/upstream/geometry_velocity.hpp",
-                new GeometryVelocityLowerer(context).header(),
+                new GeometryVelocityLowerer(context).header(
+                    standardVelocityPreload(features, options),
+                ),
             );
             generated.push(
                 {
@@ -4063,6 +4091,7 @@ ${shadow.blurFragmentWgsl}`,
                     options.scenePbrMaterialIndices,
                     reachedRectAreaLightings(features),
                     options.pbrMaterialStateRows,
+                    sharedMeshUniformsFragment(options),
                 ),
             );
         }
@@ -4076,45 +4105,17 @@ ${shadow.blurFragmentWgsl}`,
     ): void {
         if ((options.pinnedStandardVariants ?? []).length > 0) {
             const rectAreaLightings = reachedRectAreaLightings(features);
-            // The mesh mirror must cover every composed variant's declaration:
-            // the LINEAR_VELOCITY geometry arm appends previousWorld and
-            // velocityEnabled after the light indices, and binding the base
-            // 144-byte block to that variant is a validation error. The
-            // largest declared struct is mirrored; the base variants read
-            // its prefix, which is laid out identically.
-            const meshMembers = (text: string): number =>
-                reflectWgslStruct(text, "MeshUniforms")?.members.length ?? 0;
-            const widestStandardMesh = [
-                ...options.pinnedStandardVariants!,
-            ].sort(
-                (left, right) =>
-                    meshMembers(right.fragmentWgsl) -
-                    meshMembers(left.fragmentWgsl),
-            )[0]!.fragmentWgsl;
-            if (
-                (options.pinnedVariants ?? []).length > 0 &&
-                reflectWgslStruct(
-                    widestStandardMesh,
-                    "MeshUniforms",
-                )?.members.some(({ name }) => name === "previousWorld")
-            ) {
-                // The velocity arm rides a geometry-output task.
-                refuseGeneration(
-                    "renderer:geometry-output",
-                    "A composed Standard velocity variant extends " +
-                        "MeshUniforms past the PBR header's mirror; " +
-                        "hoisting the widest struct for a scene that also " +
-                        "emits pbr_variants.hpp is not wired yet.",
-                    options.featureSites,
-                );
-            }
             // The per-pass mirrors ride whichever family header comes
             // first; the shared variant declarations are their own header,
             // so only this one is a hoist decision now.
             const hoistsSharedDeclarations =
                 (options.pinnedVariants ?? []).length === 0;
             const sharedMirrors = hoistsSharedDeclarations
-                ? sharedPinnedMirrors(context, features, widestStandardMesh)
+                ? sharedPinnedMirrors(
+                      context,
+                      features,
+                      sharedMeshUniformsFragment(options),
+                  )
                 : "";
             this.writeVariantModule(
                 "upstream/include/bblite/upstream/standard_variants.hpp",

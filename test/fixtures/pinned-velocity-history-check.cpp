@@ -3,6 +3,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <stdexcept>
+#include <utility>
 #include <vector>
 
 #include "pal_gpu_velocity.hpp"
@@ -56,7 +57,7 @@ int main() {
     std::vector<upstream::RenderItem> items{{mesh}, {mesh}};
     for (auto& item : items)
         item.source_identity = 7;
-    update_pinned_velocity_frame(history, scene, engine, items, nullptr, GeometryTaskOptions{});
+    update_pinned_velocity_frame(history, scene, engine, items, nullptr, FrameTaskRecord{});
 #if !FIXTURE_VELOCITY
     check(history.frame == 0 && history.renderables.empty() && world_compositions == 0,
           "a block without a velocity tail never builds history or composes worlds");
@@ -90,6 +91,24 @@ int main() {
     begin_pinned_velocity_frame(history, scene, stamp);
     update_pinned_velocity(history, mesh, 7, world_at(3.0f));
     check(draw(history, mesh).previousWorld == world_at(2.0f), "the snapshot advances");
+
+    // An untracked frame (`mesh.visible === false`) writes velocity off and
+    // readies nothing, so the next tracked frame writes it off too; the
+    // deformation advances in each update, neutral exactly when velocity is
+    // off.
+    std::vector<std::pair<bool, bool>> deformations;
+    const auto deformation = [&](PinnedVelocityHistory::Renderable&, bool rebuilt, bool neutral) {
+        deformations.emplace_back(rebuilt, neutral);
+    };
+    for (const bool tracked : {false, true, true}) {
+        begin_pinned_velocity_frame(history, scene, stamp);
+        update_pinned_velocity(history, mesh, 7, world_at(3.0f), tracked, deformation);
+        check(draw(history, mesh).velocityEnabled == (deformations.size() == 3 ? 1.0f : 0.0f),
+              "velocity follows the previous frame's tracking");
+    }
+    check(deformations ==
+              std::vector<std::pair<bool, bool>>{{false, true}, {false, true}, {false, false}},
+          "the deformation is neutral exactly when velocity is off");
 
     // A sync, at a version move or a record(), carries an entry still drawn
     // through the same forward renderable.

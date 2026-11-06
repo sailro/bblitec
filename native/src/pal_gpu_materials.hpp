@@ -21,7 +21,6 @@
 #include <string_view>
 #include <vector>
 #include "pal_gpu_variants.hpp"
-#include "pal_gpu_velocity.hpp"
 #if BBLITE_NODE_VARIANTS > 0
 #include <bblite/node_material.hpp>
 #endif
@@ -62,6 +61,13 @@ inline bool mesh_opacity_moved(std::optional<upstream::MeshOpacityUniforms>& wri
  * pin's binding name: one table for the names both backends realize --
  * mesh opacity's block and the velocity arm's block and previous pose.
  */
+#if BBLITE_GEOMETRY_VELOCITY
+/** The composed velocity arm's bindings: the PBR renderable's block and the deformation's previous pose. */
+inline constexpr std::string_view velocity_block_name = "gm";
+inline constexpr std::string_view previous_morph_name = "previousMorph";
+inline constexpr std::string_view previous_bones_name = "previousBoneSampler";
+#endif
+
 enum class FeatureBinding : std::uint8_t {
     none,
     mesh_opacity,

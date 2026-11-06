@@ -1984,6 +1984,12 @@ struct FrameTaskRecord {
     mutable double shader_packet_scene_version = -1;
     mutable bool shader_packet_rebuild_pending = false;
     GeometryTaskOptions geometry;
+    /**
+     * The material families a geometry task's `_preload` bridged at its
+     * scene's registration; absent for a task added later, which preloads at
+     * its first execute.
+     */
+    std::optional<std::uint32_t> geometry_preloaded_families;
     CopyTaskOptions copy;
     /**
      * A post-process task's passes; also a screen-space task's two ordinary

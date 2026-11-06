@@ -716,13 +716,13 @@ struct GpuScreenSpaceProgram {
 
 #if BBLITE_GEOMETRY_VELOCITY
 /**
- * A PBR velocity renderable's GPU state, by mesh slot: the previous bone
- * palette and morph weights its deformation snapshots, and its `gm` block
- * as a buffer for a vertex stage the shader compile demoted it in (a stage
+ * A velocity renderable's GPU state, by mesh slot: the previous bone
+ * palette and morph weights either family's deformation snapshots, and a
+ * PBR renderable's `gm` block as a buffer for a vertex stage the shader compile demoted it in (a stage
  * keeping it in a uniform slot reads the history's block directly). Each
  * resource keeps its own transfer buffer, cycled per write.
  */
-struct GpuPbrVelocity {
+struct GpuGeometryVelocity {
     struct Staging {
         OwnedSdlTransfer transfer;
         std::uint32_t bytes = 0;
@@ -752,10 +752,10 @@ struct GpuGeometryTask {
     // shader compile demotes their gp block to a read-only storage
     // buffer and the encode uploads its contents here each frame.
     SDL_GPUBuffer* params = nullptr;
-    /** The task's Standard renderables' previous worlds, and its PBR ones' velocity. */
+    /** The task's renderables' velocity state (`PinnedVelocityHistory`). */
     PinnedVelocityHistory velocity;
 #if BBLITE_GEOMETRY_VELOCITY
-    std::vector<GpuPbrVelocity> pbr_velocity;
+    std::vector<GpuGeometryVelocity> mesh_velocity;
 #endif
     /** Set with the textures: another task binds this task's depth. */
     bool depth_borrowed = false;
@@ -1674,13 +1674,13 @@ void write_pinned_bone_texture(GpuState& state, GpuMesh& mesh, const MeshRecord&
 
 #if BBLITE_GEOMETRY_VELOCITY
 /**
- * The uploads of a geometry task's PBR velocity renderables
- * (`PbrVelocitySink`), recorded into the frame's command buffer ahead of the
+ * The uploads of a geometry task's velocity renderables
+ * (`VelocitySink`), recorded into the frame's command buffer ahead of the
  * task's pass: the previous palette into an rgba32float row, the previous
  * weights into a storage buffer, and the `gm` block into its buffer once a
  * demoted stage asked for one (`pbr_velocity_block_buffer`).
  */
-struct SdlPbrVelocitySink {
+struct SdlVelocitySink {
     GpuState& state;
     GpuGeometryTask& task;
     SDL_GPUCommandBuffer* command;
@@ -1693,7 +1693,7 @@ struct SdlPbrVelocitySink {
 SDL_GPUBuffer* pbr_velocity_block_buffer(GpuState& state, GpuGeometryTask& task, MeshHandle mesh);
 
 /** Drops a task's velocity GPU state; the next update rewrites what a draw binds. */
-void release_pbr_velocity(GpuState& state, GpuGeometryTask& task);
+void release_geometry_velocity(GpuState& state, GpuGeometryTask& task);
 #endif
 
 #if BBLITE_PBR_VARIANTS > 0
@@ -1925,7 +1925,10 @@ void draw_standard_variant(GpuState& state, SDL_GPUCommandBuffer* command, SDL_G
 #endif
                            ,
                            std::optional<SDL_GPUSampleCount> task_samples = {},
-                           std::optional<ShaderTaskTarget> target = {});
+                           std::optional<ShaderTaskTarget> target = {},
+                           // The geometry task drawn into, whose velocity renderables' previous
+                           // pose a velocity view binds.
+                           GpuGeometryTask* geometry_state = nullptr);
 #endif
 
 struct ImageProcessingUniforms {

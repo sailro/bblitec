@@ -3,17 +3,42 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import test from "node:test";
 import { compileSource } from "../src/compiler.js";
+import { doctoredContext } from "./doctored-store.js";
 import { floatLiteral } from "../src/cpp-literals.js";
 import { LoweringContext } from "../src/lowering/context.js";
+import { pinnedErrorCodeOf } from "../src/lowering/pinned-error.js";
 import { GeometryVelocityLowerer } from "../src/lowering/geometry-velocity-lowerer.js";
 import { pinnedMatrixHeader } from "../src/lowering/pinned-matrix.js";
+import { widestMeshUniformsFragment } from "../src/pinned-pbr-variant-cpp.js";
 import { composePinnedPbrVariant } from "../src/pinned-pbr-variants.js";
 import { importPinnedModule } from "../src/pinned-shader-composer.js";
+import { composePinnedStandardVariant } from "../src/pinned-standard-variants.js";
+import type { GeometryVelocityState } from "../src/pinned-geometry-velocity.js";
 import {
     optionalNativeFixtureTools,
     runFixtureExecutable,
     runNativeFixtureCompiler,
 } from "./native-fixture.js";
+
+/** The pin's coded error `owner` in `module` throws for `message`. */
+function pinnedRefusal(module: string, owner: string, message: string): string {
+    const context = new LoweringContext();
+    return `#${pinnedErrorCodeOf(
+        context,
+        message,
+        context.functionDeclaration(module, owner).declaration,
+    )}`;
+}
+const MORPH_CONTEXT_REFUSAL = pinnedRefusal(
+    "src/material/standard/standard-geometry-renderable.ts",
+    "_ensureViewResources",
+    "standard-geometry: morph targets require the scene Standard morph context",
+);
+const NOT_PRELOADED_REFUSAL = pinnedRefusal(
+    "src/material/standard/standard-geometry-output-shader.ts",
+    "createGeometryParamsFragment",
+    "Standard geometry deformation velocity was not preloaded.",
+);
 
 const MSH_HAS_SKELETON = 2;
 const MSH_HAS_MORPH_TARGETS = 8;
@@ -65,6 +90,87 @@ test("a velocity task's PBR views compose the pin's material-point velocity and 
     assert.doesNotMatch(before.vertexWgsl, /gmUniforms/);
 });
 
+const composeStandard = (
+    meshFeatures: number,
+    velocity?: GeometryVelocityState,
+) =>
+    composePinnedStandardVariant(
+        {},
+        {
+            meshFeatures,
+            skeleton: true,
+            geometry: {
+                attachments: ["VIEW_NORMAL", "LINEAR_VELOCITY"],
+                emitColor: false,
+                ...(velocity ? { velocity } : {}),
+            },
+        },
+    );
+
+test("a velocity program's Standard views compose the enabler's output and previous pose", async () => {
+    const before = await composeStandard(0);
+    const plain = await composeStandard(0, "enabler");
+    const skinned = await composeStandard(MSH_HAS_SKELETON, "enabler");
+    const morphed = await composeStandard(MSH_HAS_MORPH_TARGETS, "enabler");
+    for (const variant of [plain, skinned, morphed]) {
+        assert.match(variant.vertexWgsl, /mesh\.previousWorld/);
+        assert.match(
+            variant.fragmentWgsl,
+            /select\(0\.0,input\.vPreviousClip\.w,gp\.cameraNearFar\.z>0\.5\)/,
+        );
+    }
+    assert.doesNotMatch(before.fragmentWgsl, /gp\.cameraNearFar\.z/);
+    assert.doesNotMatch(plain.vertexWgsl, /previousBoneSampler|previousMorph/);
+    assert.match(skinned.vertexWgsl, /var previousBoneSampler:texture_2d<f32>/);
+    assert.match(
+        morphed.vertexWgsl,
+        /var<storage, read> previousMorph:previousMorphUniforms/,
+    );
+    // The hooks hold for the one call.
+    assert.deepEqual(await composeStandard(0), before);
+});
+
+test("a task preload's feature gives Standard views the previous pose and keeps their output", async () => {
+    const skinned = await composeStandard(MSH_HAS_SKELETON, "preload");
+    const morphed = await composeStandard(MSH_HAS_MORPH_TARGETS, "preload");
+    assert.match(skinned.vertexWgsl, /var previousBoneSampler:texture_2d<f32>/);
+    assert.match(
+        morphed.vertexWgsl,
+        /var<storage, read> previousMorph:previousMorphUniforms/,
+    );
+    for (const variant of [skinned, morphed])
+        assert.doesNotMatch(variant.fragmentWgsl, /gp\.cameraNearFar\.z/);
+    // Before any preload loaded it, a morphed view keeps the current-morph
+    // arm and a skinned one throws as the pin's composer does.
+    assert.doesNotMatch(
+        (await composeStandard(MSH_HAS_MORPH_TARGETS)).vertexWgsl,
+        /previousMorph/,
+    );
+    await assert.rejects(
+        composeStandard(MSH_HAS_SKELETON),
+        new RegExp(`${NOT_PRELOADED_REFUSAL}\\b`),
+    );
+});
+
+test("the shared mesh mirror is the widest prefix-compatible MeshUniforms", () => {
+    const fragment = (members: string): string =>
+        `struct MeshUniforms { ${members} }; @fragment fn main() {}`;
+    const base = fragment("world: mat4x4<f32>, lc: u32,");
+    const velocity = fragment(
+        "world: mat4x4<f32>, lc: u32, previousWorld: mat4x4<f32>, velocityEnabled: f32,",
+    );
+    assert.equal(widestMeshUniformsFragment([base, velocity, base]), velocity);
+    assert.equal(widestMeshUniformsFragment([base, base]), base);
+    assert.throws(
+        () =>
+            widestMeshUniformsFragment([
+                velocity,
+                fragment("world: mat4x4<f32>, other: u32,"),
+            ]),
+        /not a prefix/,
+    );
+});
+
 function geometryProgram(
     descriptions: string,
     body: string,
@@ -82,6 +188,44 @@ function geometryProgram(
 }
 
 const VELOCITY = "{ type: GeometryTextureType.LINEAR_VELOCITY }";
+
+test("the task preload's deformation load is lowered from the pin's", () => {
+    const header = new GeometryVelocityLowerer(new LoweringContext()).header(
+        true,
+    );
+    assert.match(header, /inline bool geometry_deformation_velocity_loaded/);
+    assert.doesNotMatch(
+        new GeometryVelocityLowerer(new LoweringContext()).header(),
+        /geometry_deformation_velocity_loaded/,
+    );
+    for (const [module, needle, replacement] of [
+        ["src/material/geometry-deformation-hooks.ts", "!mesh.vat && ", ""],
+        [
+            "src/material/standard/geometry-view.ts",
+            "preloadGeometryDeformationVelocity(meshes, needsVelocity)",
+            "preloadGeometryDeformationVelocity(meshes, true)",
+        ],
+        [
+            "src/frame-graph/geometry-renderer-task.ts",
+            "preloadStandardGeometryFeatures(meshes, task._needsVelocity)",
+            "preloadStandardGeometryFeatures(meshes, true)",
+        ],
+        [
+            "src/frame-graph/geometry-renderer-task.ts",
+            "const meshes = (config.meshes ?? sc.meshes) as readonly Mesh[];",
+            "const meshes = sc.meshes as readonly Mesh[];",
+        ],
+    ] as const) {
+        assert.throws(
+            () =>
+                new GeometryVelocityLowerer(
+                    doctoredContext(module, needle, replacement),
+                ).header(true),
+            /Expected|Geometry/,
+            needle,
+        );
+    }
+});
 
 test("enableGeometryVelocity records its contract on the task", () => {
     const result = geometryProgram(
@@ -291,7 +435,7 @@ test("the lowered velocity renderable writes what the pin's writes over a run", 
     const context = new LoweringContext();
     writeFileSync(
         join(includes, "geometry_velocity.hpp"),
-        new GeometryVelocityLowerer(context).header(),
+        new GeometryVelocityLowerer(context).header(true),
     );
     writeFileSync(
         join(includes, "pinned_matrix.hpp"),
@@ -343,6 +487,49 @@ int main() {
             [](std::span<const float> values) { print("texture", values); },
             [](std::span<const float> values) { print("buffer", values); });
     }
+    // A task preload loads the feature only for a velocity task listing a
+    // Standard mesh and a skinned or morphed mesh neither instanced nor baked.
+    bbl::Engine engine;
+    engine.materials.resize(2);
+    engine.materials[0].standard_material = true;
+    engine.meshes.resize(3);
+    for (auto& record : engine.meshes) record.material = bbl::MaterialHandle{1};
+    bbl::Scene scene;
+    scene.meshes = {bbl::MeshHandle{0}, bbl::MeshHandle{1}, bbl::MeshHandle{2}};
+    bbl::GeometryTaskOptions task;
+    task.attachments.push_back({bbl::GeometryTextureType::linear_velocity});
+    const auto loaded = [&] {
+        const bool value = geometry_deformation_velocity_loaded;
+        geometry_deformation_velocity_loaded = false;
+        return value;
+    };
+    std::printf("preload:%u", preload_geometry_task(engine, scene, task));
+    std::printf(",%d", loaded());
+    engine.meshes[2].morph_targets_attached = true;
+    engine.meshes[2].has_vat = true;
+    engine.meshes[0].material = bbl::MaterialHandle{0};
+    std::printf(",%u", preload_geometry_task(engine, scene, task));
+    std::printf(",%d", loaded());
+    engine.meshes[2].has_vat = false;
+    task.attachments.clear();
+    preload_geometry_task(engine, scene, task);
+    std::printf(",%d", loaded());
+    task.attachments.push_back({bbl::GeometryTextureType::linear_velocity});
+    preload_geometry_task(engine, scene, task);
+    std::printf(",%d", loaded());
+    // A deformed Standard view built before the feature loaded refuses as
+    // the pin does: a morphed one at its morph context, a skin at the
+    // composer.
+    for (const bool morphed : {true, false}) {
+        try {
+            require_standard_deformation_velocity(morphed);
+        } catch (const std::runtime_error& error) {
+            std::printf(",%s", error.what());
+        }
+    }
+    geometry_deformation_velocity_loaded = true;
+    require_standard_deformation_velocity(true);
+    std::printf("\\n");
 }
 `,
     );
@@ -356,5 +543,15 @@ int main() {
         source,
     ]);
     const native = runFixtureExecutable(executable).trim().split(/\r?\n/);
+    // Families: PBR alone, then Standard and PBR; loaded only for the
+    // non-baked morphed mesh of a velocity task.
+    assert.equal(
+        native.pop(),
+        [
+            "preload:2,0,3,0,0,1",
+            MORPH_CONTEXT_REFUSAL,
+            NOT_PRELOADED_REFUSAL,
+        ].join(","),
+    );
     assert.deepEqual(native, await pinnedWrites());
 });

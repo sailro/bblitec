@@ -1184,6 +1184,40 @@ export function mirroredStructFromWgsl(
 }
 
 /**
+ * The composed fragment whose mesh block the shared mirror declares: the
+ * first widest `MeshUniforms` across every family's variants. Every other
+ * declaration must be a prefix of it, member for member, so each variant
+ * reads its own block at the mirror's offsets.
+ */
+export function widestMeshUniformsFragment(
+    fragmentWgsls: readonly string[],
+): string {
+    const declared = fragmentWgsls.flatMap((wgsl) => {
+        const members = reflectWgslStruct(wgsl, "MeshUniforms")?.members;
+        return members ? [{ wgsl, members }] : [];
+    });
+    let widest = declared[0];
+    for (const each of declared) {
+        if (widest && each.members.length > widest.members.length)
+            widest = each;
+    }
+    if (!widest) {
+        throw new Error("No composed variant declares struct MeshUniforms.");
+    }
+    for (const { members } of declared) {
+        if (
+            !sameWgslMembers(members, widest.members.slice(0, members.length))
+        ) {
+            throw new Error(
+                "A composed MeshUniforms is not a prefix of the widest " +
+                    "declaration; one mirror cannot serve both.",
+            );
+        }
+    }
+    return widest.wgsl;
+}
+
+/**
  * The pin's own mesh block, from a composed fragment.
  *
  * The widest declaration wins: the velocity geometry arm appends
@@ -1560,6 +1594,9 @@ export function pinnedPbrVariantsHeader(
     // lighting always had.
     rectAreaLightings?: readonly RectAreaLightingMode[],
     materialStateRows: readonly PbrMaterialStateRow[] = [],
+    // The fragment declaring the shared mesh mirror
+    // (`widestMeshUniformsFragment` over every composed family).
+    meshFragmentWgsl: string = variants[0]!.fragmentWgsl,
 ): CppModule {
     const cpp = new CppDefinitions();
     const blocks: string[] = [];
@@ -2054,7 +2091,7 @@ ${sceneUniformsStruct(sceneUniformsWgsl, pinnedSceneUboBytes)}
 
 ${lightUniformsBlock(context, pinnedMaxLights, lightKinds)}
 
-${meshUniformsBlock(variants[0]!.fragmentWgsl, meshLightIndexWordOffset)}
+${meshUniformsBlock(meshFragmentWgsl, meshLightIndexWordOffset)}
 
 ${cpp.privateCode(blocks.join("\n\n"))}
 

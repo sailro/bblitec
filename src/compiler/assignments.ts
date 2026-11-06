@@ -4443,7 +4443,7 @@ function emitMorphTargetsAssignment(
         if (!morph.morphTarget) {
             context.fail(expression.right, "Morph target data is incomplete.");
         }
-        if (morph.morphTarget.meshCpp) {
+        if (morph.morphTarget.mesh) {
             context.fail(
                 expression.right,
                 "Direct morph target data can be attached to one mesh.",
@@ -4464,7 +4464,7 @@ function emitMorphTargetsAssignment(
                 `${morph.morphTarget.vertexCountCpp}, ` +
                 `${morph.morphTarget.weightCpp});`,
         });
-        writable(morph.morphTarget).meshCpp = target.cpp;
+        writable(morph.morphTarget).mesh = target;
         context.reachFeature("mesh:morph-targets", expression);
         return true;
     }

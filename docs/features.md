@@ -410,8 +410,12 @@ InvalidStateError), moving its playback into the graph. Other members and attrib
   binding refuses.
 - TAA: one scene, explicit Standard color tasks, engine-format color, depth24plus-stencil8, single-sample inputs.
 - `enableGeometryVelocity(task, { previousDepth })`, unconditional before scene registration: the task's PBR views write
-  material-point velocity (previous world, bones and morph weights; previous view depth in Z). A transform write that
-  leaves the packed world unchanged moves nothing. Standard materials in a LINEAR_VELOCITY task of such a program refuse.
+  material-point velocity (previous world, bones and morph weights; previous view depth in Z), and every Standard
+  LINEAR_VELOCITY view of the program writes its previous world, bones and morph weights with the same output. A
+  transform write that leaves the packed world unchanged moves nothing.
+- Without it, a LINEAR_VELOCITY task's preload (at registration, or when a material family first reaches the task)
+  loads the previous bones and morph weights for Standard views once its scene lists a skinned or morphed mesh; a
+  Standard view of a deformed mesh built before that refuses, as the pin does.
 - `enableRenderTaskTransmission` with `linear: false` on a single-sample, non-swapchain render task: the pass breaks
   before transmissive transparent draws (`copyCount`) to grab colour, and with `grabDepth` depth (set before recording);
   `grab.texture`/`depthTexture` read live for `setShaderTexture`. The linear arm and multisampled targets refuse.

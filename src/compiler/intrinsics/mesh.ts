@@ -131,6 +131,7 @@ export interface MeshIntrinsicContext
             | "symbols"
             | "handleCollections"
             | "heldTypedArrayValue"
+            | "useNativeValue"
             | "fail"
         > {}
 
@@ -2847,13 +2848,16 @@ function compileSetMorphTargetWeights(
             "Morph targets and engine must belong to the same engine.",
         );
     }
-    const mesh = morph.morphTarget?.meshCpp;
+    const mesh = morph.morphTarget?.mesh;
     if (!mesh) {
         context.fail(
             argumentAt(call, 1),
             "Morph targets must be attached to a mesh before their weights are updated.",
         );
     }
+    // The update names the mesh's binding, which a callback reaching the
+    // morph targets alone must capture.
+    context.useNativeValue(mesh);
     const weights = context.compileTypedArrayArgument(
         argumentAt(call, 2),
         "f32array",
@@ -2863,7 +2867,7 @@ function compileSetMorphTargetWeights(
         kind: "void",
         cpp:
             `bbl::set_morph_target_weights(${engine.cpp}, ` +
-            `${mesh}, ${weights})`,
+            `${mesh.cpp}, ${weights})`,
     };
 }
 

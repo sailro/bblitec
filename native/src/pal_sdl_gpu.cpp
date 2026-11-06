@@ -2630,7 +2630,10 @@ public:
                                         deferred, deferred_scene
 #endif
                                         ,
-                                        task_samples, shader_target);
+                                        task_samples, shader_target,
+                                        geometry_task && pass_task
+                                            ? &handle_at(state.geometry_tasks, *pass_task)
+                                            : nullptr);
                                     continue;
                                 }
 #else
@@ -3590,12 +3593,12 @@ public:
 #if BBLITE_STANDARD_VARIANTS > 0 || BBLITE_GEOMETRY_VELOCITY
                             // Each renderable's update, before the pass: a
                             // velocity renderable uploads its previous pose.
-                            update_pinned_velocity_frame(
-                                geometry.velocity, graph_scene, engine, graph_plan.scene_items(),
-                                geometry_pass.camera, task.geometry
+                            update_pinned_velocity_frame(geometry.velocity, graph_scene, engine,
+                                                         graph_plan.scene_items(),
+                                                         geometry_pass.camera, task
 #if BBLITE_GEOMETRY_VELOCITY
-                                ,
-                                SdlPbrVelocitySink{state, geometry, command}
+                                                         ,
+                                                         SdlVelocitySink{state, geometry, command}
 #endif
                             );
 #endif
