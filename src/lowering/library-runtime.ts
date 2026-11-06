@@ -379,6 +379,10 @@ const pbrMaterialRecord: RecordSpec = {
             read(optional(record("Texture2D")), "pbr_lightmap_texture"),
         ],
         [
+            "bentNormalTexture",
+            read(optional(record("Texture2D")), "pbr_bent_normal_texture"),
+        ],
+        [
             "specGlossTexture",
             read(optional(record("Texture2D")), "pbr_spec_gloss_texture"),
         ],

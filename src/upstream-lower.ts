@@ -2564,7 +2564,7 @@ ${metallicReflectanceCapabilityDefines(pbrBindingNames)}
                 },
                 {
                     modulePath: "src/loader-gltf/gltf-parser.ts",
-                    symbolName: "RH_TO_LH_ROOT",
+                    symbolName: "GLTF_ROOT",
                 },
                 {
                     modulePath:

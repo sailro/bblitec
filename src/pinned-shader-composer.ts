@@ -24,7 +24,11 @@ import { importAugmentedModule } from "./pinned-module-loader.js";
 import { javascriptModuleUrl } from "./data-url.js";
 import { webgpuFlagNamespaces } from "./webgpu-flags.js";
 import { rewriteModuleSpecifiers } from "./module-specifier-rewrite.js";
-import { isRelativeSpecifier } from "./typescript-module-specifiers.js";
+import {
+    isPackageImportSpecifier,
+    isRelativeSpecifier,
+} from "./typescript-module-specifiers.js";
+import { packageImportTarget } from "./pinned-build-conditions.js";
 import { existsSync, readFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 import { dirname, join, resolve, relative } from "node:path";
@@ -160,16 +164,24 @@ function packagedDeclaration<T extends ts.Expression>(
     return found;
 }
 
-/** Raw WGSL imports retain their source path in Vite's region markers. */
+/** The comment line the package build leaves above a raw WGSL import's string. */
+function rawShaderMarker(sourcePath: string): string {
+    return `// ${sourcePath}?raw\n`;
+}
+
+/**
+ * A raw WGSL import's string: the declaration under its source-path
+ * comment, before the next comment line the build writes.
+ */
 export function extractPackagedRawShader(
     source: string,
     sourcePath: string,
 ): string {
-    const marker = `//#region ${sourcePath}?raw`;
+    const marker = rawShaderMarker(sourcePath);
     const start = source.indexOf(marker);
     if (start < 0)
         throw new Error(`Pinned raw shader '${sourcePath}' was not found.`);
-    const end = source.indexOf("//#endregion", start);
+    const end = source.indexOf("\n//", start + marker.length - 1);
     const declaration = packagedDeclaration(
         source,
         ts.isStringLiteral,
@@ -282,7 +294,7 @@ export function readPinnedRawShader(
         if (visited.has(path)) return undefined;
         visited.add(path);
         const text = readFileSync(join(pinnedLibraryRoot(), path), "utf8");
-        if (text.includes(`//#region ${sourcePath}?raw`))
+        if (text.includes(rawShaderMarker(sourcePath)))
             return extractPackagedRawShader(text, sourcePath);
         for (const alias of aliases) {
             const folded = packagedDeclaration(text, ts.isStringLiteral, alias);
@@ -670,7 +682,7 @@ export function anchorSpecifiersInText(
     shims: ReadonlyMap<string, string> = new Map(),
 ): string {
     return rewriteModuleSpecifiers(text, modulePath, (specifier) =>
-        isRelativeSpecifier(specifier.text)
+        anchorsSpecifier(specifier.text)
             ? {
                   specifier: anchoredSpecifier(
                       modulePath,
@@ -682,15 +694,33 @@ export function anchorSpecifiersInText(
     );
 }
 
-/** A specifier as an importable URL: its shim, or the file it names. */
+/** A specifier the pinned package resolves itself: a sibling file or its own `#` import. */
+function anchorsSpecifier(specifier: string): boolean {
+    return (
+        isRelativeSpecifier(specifier) || isPackageImportSpecifier(specifier)
+    );
+}
+
+/**
+ * A specifier as an importable URL: its shim, the file it names, or the
+ * file the package's `imports` map selects under the build conditions.
+ */
 function anchoredSpecifier(
     modulePath: string,
     specifier: string,
     shims: ReadonlyMap<string, string>,
 ): string {
+    const packageRoot = dirname(pinnedLibraryRoot());
     return (
         shims.get(specifier) ??
-        pathToFileURL(resolve(dirname(modulePath), specifier)).href
+        pathToFileURL(
+            isPackageImportSpecifier(specifier)
+                ? resolve(
+                      packageRoot,
+                      packageImportTarget(packageRoot, specifier),
+                  )
+                : resolve(dirname(modulePath), specifier),
+        ).href
     );
 }
 
@@ -771,7 +801,7 @@ export function pinnedModuleUnasyncedUrl(
                 );
                 return { expression: name };
             }
-            return isRelativeSpecifier(specifier.text)
+            return anchorsSpecifier(specifier.text)
                 ? {
                       specifier: anchoredSpecifier(
                           modulePath,

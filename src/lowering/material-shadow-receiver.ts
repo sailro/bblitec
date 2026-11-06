@@ -84,8 +84,9 @@ export function materialShadowReceiverCpp(context: LoweringContext): string {
             return ["++shadow_count;"];
         },
     });
-    const hasSome = context.variableInitializer(file, "hasSomeShadows");
-    const receive = context.variableInitializer(file, "receiveShadows");
+    // The builder's own: `_neededLightPath` declares a receiver of its own.
+    const hasSome = context.variableInitializer(declaration, "hasSomeShadows");
+    const receive = context.variableInitializer(declaration, "receiveShadows");
     context.assertExpressionShape(
         context.variableInitializer(
             context.sourceFile("src/material/standard/standard-renderable.ts"),

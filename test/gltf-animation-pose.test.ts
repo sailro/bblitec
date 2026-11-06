@@ -438,7 +438,7 @@ struct Binding{std::size_t target;double off,mask;};
 struct Skeleton{Floats invMeshWorld,inverseBindMatrices;std::vector<double> jointNodes;double boneCount;bool disposed;int id;};
 struct Morph{double targetCount;Floats weights;bool disposed;int id;};
 struct State{std::vector<Node> nodes;std::vector<Channel> channels;std::vector<double> samplers,topo_order;std::vector<Binding> node_trs_bindings;std::vector<Skeleton> skeletons;std::vector<Floats> bone_scratch;std::vector<Morph> morphs;
-Floats currentTRS,localMat,worldMat,_boneTmp=Floats(16),RH_TO_LH={-1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1};
+Floats currentTRS,localMat,worldMat,_boneTmp=Floats(16),ROOT_TRANSFORM={-1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1};
 std::shared_ptr<Floats> pointerScratch=std::make_shared<Floats>(16),morphUploadF32=pointerScratch;std::vector<std::uint8_t> masked_nodes;
 bool mask_active=true,mask_resolver=true,has_bone_overrides=true;double bone_override_count=1;};
 template<class Evaluate> Json run(const Json& row,Evaluate evaluate){const auto& input=row.at("initial");State state;

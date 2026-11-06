@@ -11,6 +11,13 @@ import {
     assertPinnedWgslTagIsIdentity,
     pinnedTaggedWgslTransform,
 } from "./pinned-wgsl-build.js";
+import {
+    foldPackageImportConstants,
+    literalConstantExports,
+    packageImportTarget,
+    pinnedBuildConditions,
+    type PinnedConstant,
+} from "./pinned-build-conditions.js";
 
 interface SourceMapFile {
     sources?: string[];
@@ -115,11 +122,12 @@ export class UpstreamSourceStore {
     private readonly sources = new Map<string, string>();
     /**
      * Each module's text as the pin's own package build leaves it
-     * (`pinned-wgsl-build.ts`), memoized per module across every store
-     * over the same package, since the transform is a pure function of the
-     * module: everything that reads a pinned module reads this, so a
-     * shader folded from a builder's AST is the text the browser compiles,
-     * byte for byte.
+     * (`pinned-wgsl-build.ts`) and the application's bundler then reads it
+     * under the build conditions (`pinned-build-conditions.ts`), memoized
+     * per module across every store over the same package and conditions,
+     * since both are pure functions of the module: everything that reads a
+     * pinned module reads this, so a shader folded from a builder's AST is
+     * the text the browser compiles, byte for byte.
      */
     private static readonly builtSources = new Map<string, string>();
     private readonly sourceFiles = new Map<string, ts.SourceFile>();
@@ -172,7 +180,7 @@ export class UpstreamSourceStore {
 
     public getSource(modulePath: string): string {
         const normalized = modulePath.replace(/\\/g, "/");
-        const key = `${this.packageRoot}\0${normalized}`;
+        const key = `${this.packageRoot}\0${pinnedBuildConditions().join(",")}\0${normalized}`;
         const built = UpstreamSourceStore.builtSources.get(key);
         if (built !== undefined) return built;
         const source = this.sources.get(normalized);
@@ -180,11 +188,42 @@ export class UpstreamSourceStore {
             throw new Error(
                 `Upstream TypeScript source not found: ${normalized}.`,
             );
-        const text =
+        const text = foldPackageImportConstants(
             pinnedTaggedWgslTransform(this.repositoryRoot)(source, normalized)
-                ?.code ?? source;
+                ?.code ?? source,
+            normalized,
+            (specifier) => this.packageImportConstants(specifier),
+        );
         UpstreamSourceStore.builtSources.set(key, text);
         return text;
+    }
+
+    /**
+     * The constants a `#` import selects under the build conditions, read
+     * from the selected module's source, or undefined when that module is
+     * more than constants.
+     */
+    private packageImportConstants(
+        specifier: string,
+    ): ReadonlyMap<string, PinnedConstant> | undefined {
+        const emitted = posix
+            .normalize(packageImportTarget(this.packageRoot, specifier))
+            .replace(/^lib\//, "");
+        const source = [...this.packagedModules].find(
+            ([, module]) => module === emitted,
+        )?.[0];
+        if (!source)
+            throw new Error(
+                `The pinned '${specifier}' import selects ${emitted}, which carries no source.`,
+            );
+        return literalConstantExports(
+            ts.createSourceFile(
+                source,
+                this.sources.get(source)!,
+                ts.ScriptTarget.Latest,
+                false,
+            ),
+        );
     }
 
     public hasSource(modulePath: string): boolean {

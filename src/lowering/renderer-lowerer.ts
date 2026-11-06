@@ -1,6 +1,7 @@
 import { resolve } from "node:path";
 import { backgroundFactories } from "../pinned-background-factories.js";
 import ts from "typescript";
+import { materialShadowReceiverCpp } from "./material-shadow-receiver.js";
 import { CameraLowerer } from "./camera-lowerer.js";
 import { lowerCameraMatrixCaches } from "./camera-matrix-cache.js";
 import { SceneUboLowerer } from "./scene-ubo-lowerer.js";
@@ -979,6 +980,7 @@ ${options.publicCameraMatrices ? new SceneUboLowerer(this.context).cacheHeader()
 namespace bbl::upstream {${options.standardVertexAlpha ? lowerStandardMeshAlpha(this.context, options.standardVertexColors) : ""}
 
 ${renderTaskPassCpp(this.context)}
+${materialShadowReceiverCpp(this.context)}
 
 inline constexpr bool public_camera_matrix_caches = ${options.publicCameraMatrices === true};
 template<class Source, class Engine, class Scene, class Camera, class CameraKey, class WriteFull>
@@ -1460,12 +1462,24 @@ bool pick_candidate(const MeshRecord& mesh);
 bool mesh_draws(const MeshRecord& mesh);
 bool render_item_material_draws(const RenderItem& item, const Engine& engine);
 bool render_item_draws_now(const RenderItem& item, const Engine& engine);
-// src/render/mesh-light-selection.ts lightAffectsMeshId: a light applies to the meshes its
+// src/render/mesh-light-selection.ts lightAffectsMesh: a light applies to the meshes its
 // includedOnlyMeshIds names, or to every mesh its excludedMeshIds does
 // not. One definition, because both the Standard slot writer and the pinned
 // per-draw mesh block need the same per-mesh light set.
 bool light_affects_mesh(
     const LightRecord& light,
+    MeshHandle mesh);
+// src/render/mesh-light-selection.ts writeMeshLightSelection's walk: how many
+// of the scene's lights affect a mesh, and the pin's type of the last one --
+// the single light when only one does. The PBR variant key and the group
+// widening's light paths walk it alike.
+struct MeshLightSelection {
+    std::uint32_t count = 0;
+    std::string_view single_type;
+};
+MeshLightSelection mesh_light_selection(
+    const Engine& engine,
+    const Scene& scene,
     MeshHandle mesh);
 PbrUniforms build_pbr_uniforms(
     const Scene& scene,
@@ -1534,6 +1548,7 @@ PbrUniforms build_pbr_uniforms(
 #include <bblite/upstream/pinned_world_transform.hpp>
 #include <bblite/upstream/camera_math.hpp>
 #include <bblite/upstream/render_capabilities.hpp>
+#include <bblite/upstream/light_kinds.hpp>
 // The Standard bucket reads the lowered feature word; the PBR header goes
 // first because the Standard one hoists the shared mirrors only without it.
 #if BBLITE_PBR_VARIANTS > 0
@@ -2339,7 +2354,7 @@ bool render_item_draws_now(const RenderItem& item, const Engine& engine) {
         !(mesh.thin_instances && mesh.thin_instances->gpu_culling_enabled)) || render_item_material_draws(item, engine);
 }
 
-// src/render/mesh-light-selection.ts lightAffectsMeshId.
+// src/render/mesh-light-selection.ts lightAffectsMesh.
 bool light_affects_mesh(
     const LightRecord& light,
     MeshHandle mesh) {
@@ -2353,6 +2368,21 @@ bool light_affects_mesh(
                light.included_meshes.begin(),
                light.included_meshes.end(),
                mesh) != light.included_meshes.end();
+}
+
+// src/render/mesh-light-selection.ts writeMeshLightSelection's walk.
+MeshLightSelection mesh_light_selection(
+    const Engine& engine,
+    const Scene& scene,
+    MeshHandle mesh) {
+    MeshLightSelection selection;
+    for (const LightHandle handle : scene.lights) {
+        const LightRecord* light = handle_find(engine.lights, handle);
+        if (!light || !light_affects_mesh(*light, mesh)) continue;
+        ++selection.count;
+        selection.single_type = pinned_light_type(light->kind);
+    }
+    return selection;
 }
 
 PbrUniforms build_pbr_uniforms(
@@ -3058,25 +3088,30 @@ ${options.publicCameraMatrices ? lowerShaderPacketCameraInitialization(this.cont
      * `light_affects_mesh` is a representation translation — the pin keys
      * Sets of string mesh ids where the records key index vectors — so it
      * cannot be lowered by the numeric translator, and each arm's fold is
-     * justified against the body asserted here: a native mesh index is
-     * always a present id, so the pin's `!!meshId` conjunct folds to true
-     * and its `!meshId` disjunct folds to false, leaving exactly the two
-     * membership tests the emission carries, in the pinned precedence
-     * (included wins when it is non-empty). The id is the mesh's own
-     * (`assertPinnedLightSlotPacking`).
+     * justified against the body asserted here: the object-identity sets
+     * (`excludedMeshes`, `includedOnlyMeshes`) are written by no lowered
+     * API -- a light write outside the supported members refuses -- so
+     * `isExcluded` folds to false and their arm away; a native mesh index
+     * is always a present id, so the pin's `!!meshId` conjunct folds to
+     * true and its `!meshId` disjunct folds to false, leaving exactly the
+     * two membership tests the emission carries, in the pinned precedence
+     * (included wins when it is non-empty). The id is the mesh's own.
      */
     private assertPinnedAffectsMesh(): void {
         this.context.assertFunctionContract(
             "src/render/mesh-light-selection.ts",
-            "lightAffectsMeshId",
-            `export function lightAffectsMeshId(light: LightBase, meshId: string | undefined): boolean {
-                const included = light.includedOnlyMeshIds;
-                if (included?.size) {
-                    return !!meshId && included.has(meshId);
+            "lightAffectsMesh",
+            `export function lightAffectsMesh(light: LightBase, mesh: Mesh): boolean {
+                const isExcluded = light.excludedMeshes?.has(mesh);
+                const includedMeshes = light.includedOnlyMeshes;
+                if (includedMeshes?.size) {
+                    return includedMeshes.has(mesh) && !isExcluded;
                 }
-                return !meshId || !light.excludedMeshIds?.has(meshId);
+                const meshId = mesh.id;
+                const includedIds = light.includedOnlyMeshIds;
+                return isExcluded ? false : includedIds?.size ? !!meshId && includedIds.has(meshId) : !meshId || !light.excludedMeshIds?.has(meshId);
             }`,
-            "Pinned lightAffectsMeshId membership arms",
+            "Pinned lightAffectsMesh membership arms",
         );
     }
 
@@ -3411,15 +3446,18 @@ ${options.publicCameraMatrices ? lowerShaderPacketCameraInitialization(this.cont
         // (0 and 200 are asserted with the background renderables above in
         // `lowerShaders`; 100/150/200 live in these rows), and the
         // cull/winding forks `render_pipeline_kind` enumerates.
+        const drifted: string[] = [];
         for (const [modulePath, marker, label] of [
             [
                 "src/frame-graph/render-task-base.ts",
-                "draws += drawList(pass, task._transparentBindings, eng);",
+                "draws += drawList(pass, task._transparentBindings, eng, true);",
                 "transparent draws execute each frame",
             ],
             [
+                // `_skipColorDraw` is mesh opacity's zero-opacity flag, set by
+                // no lowered API.
                 "src/frame-graph/render-task-base.ts",
-                "if (mesh && mesh.visible === false) {",
+                "if (mesh && (mesh.visible === false || (transparent && mesh._skipColorDraw))) {",
                 "draw-time visibility predicate",
             ],
             [
@@ -3453,14 +3491,12 @@ ${options.publicCameraMatrices ? lowerShaderPacketCameraInitialization(this.cont
                 "glTF transmission activation",
             ],
             [
-                // 1.23 renamed `vertexAlphaBlend` to `colorAlphaBlend` and
-                // widened it: a thin-instance fragment declaring RGBA alpha
-                // now blends even without a mesh colour buffer. That arm is
+                // `colorAlphaBlend` reaches the stamp as the word's
+                // `MATERIAL_ALPHA_BLEND`. Its thin-instance RGBA arm is
                 // unreachable here -- `pinned-standard-variants.ts` refuses
-                // `MSH_HAS_INSTANCE_COLOR` outright -- so for every Standard
-                // variant this port composes the predicate is the old one.
+                // `MSH_HAS_INSTANCE_COLOR` outright.
                 "src/material/standard/standard-renderable.ts",
-                "const isTransparent = !shadowOutput && ((features & HAS_OPACITY_TEXTURE) !== 0 || mat.alpha < 1 || colorAlphaBlend);",
+                "const isTransparent = !shadowOutput && ((features & (HAS_OPACITY_TEXTURE | MATERIAL_ALPHA_BLEND)) !== 0 || mat.alpha < 1);",
                 "Standard transparency stamp",
             ],
             [
@@ -3485,17 +3521,17 @@ ${options.publicCameraMatrices ? lowerShaderPacketCameraInitialization(this.cont
             ],
             [
                 "src/material/pbr/pbr-pipeline.ts",
-                'cullMode: hasDoubleSided ? ("none" as GPUCullMode) : "back", ...composed._prim }',
+                'cullMode: hasDoubleSided ? ("none" as GPUCullMode) : "back",\n            ...composed._prim\n        },',
                 "PBR cull fork",
             ],
             [
                 "src/material/standard/standard-pipeline.ts",
-                'cullMode: features & DOUBLE_SIDED ? "none" : "back", frontFace: "ccw" }',
+                'cullMode: features & DOUBLE_SIDED ? "none" : "back",\n                  frontFace: "ccw",\n              },',
                 "Standard cull fork",
             ],
             [
                 shaderPipelineModule,
-                'cullMode: material.backFaceCulling ? "back" : "none" }',
+                'cullMode: material.backFaceCulling ? "back" : "none"\n        },',
                 "shader-material cull fork",
             ],
             [
@@ -3569,17 +3605,16 @@ ${options.publicCameraMatrices ? lowerShaderPacketCameraInitialization(this.cont
                 "strip index format",
             ],
         ] as const) {
-            if (!this.context.store.getSource(modulePath).includes(marker)) {
-                throw new Error(
-                    `Pinned Babylon Lite ${label} changed: ${marker}`,
-                );
-            }
+            if (!this.context.store.getSource(modulePath).includes(marker))
+                drifted.push(`Pinned Babylon Lite ${label} changed: ${marker}`);
         }
+        // Every drifted stamp at once: a bump reads them in one run.
+        if (drifted.length > 0) throw new Error(drifted.join("\n"));
     }
 
     /**
      * Anchors for the light-slot packing contract behind the emitted
-     * `light_affects_mesh` (its `lightAffectsMeshId` fork is anchored by
+     * `light_affects_mesh` (its `lightAffectsMesh` fork is anchored by
      * `assertPinnedAffectsMesh`, here only its call on `mesh.id`), and the
      * two pinned packing loops whose slot arithmetic the PALs walk
      * against it — `writeMeshLightSelection` (per-mesh indices from
@@ -3600,7 +3635,7 @@ ${options.publicCameraMatrices ? lowerShaderPacketCameraInitialization(this.cont
             ["pi >= MAX_LIGHTS", "Pinned light-slot cursor break"],
             ["!light._writeLightUbo", "Pinned light-slot eligibility skip"],
             [
-                "lightAffectsMeshId(light, mesh.id)",
+                "lightAffectsMesh(light, mesh)",
                 "Pinned per-mesh light test on the mesh's own id",
             ],
             ["u32", "Pinned light-index write guard"],

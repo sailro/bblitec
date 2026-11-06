@@ -179,7 +179,7 @@ ${lowerMatrixComposeCpp(variants[0]!.sourceFile("src/math/compose-mat4-into-buff
 Json bits(const Floats& values){Json result=Json::array();for(float v:values)result.push_back(std::bit_cast<std::uint32_t>(v));return result;}
 struct Node{double parentIdx,tx,ty,tz,rx,ry,rz,rw,sx,sy,sz;std::optional<Floats> matrix;};
 struct Skeleton{double boneCount;std::vector<double> jointNodes;Floats invMeshWorld,inverseBindMatrices;std::shared_ptr<Floats> boneMatrices;bool disposed;int texture;};
-struct State{std::vector<Node> nodes;std::vector<Skeleton> skeletons;std::vector<double> topo_order;Floats currentTRS,localMat,worldMat,RH_TO_LH,_boneTmp=Floats(16);};
+struct State{std::vector<Node> nodes;std::vector<Skeleton> skeletons;std::vector<double> topo_order;Floats currentTRS,localMat,worldMat,ROOT_TRANSFORM,_boneTmp=Floats(16);};
 ${variants.map((context, index) => `namespace variant_${index} {${lowerGltfSkeletonPose(context)}}`).join("\n")}
 template<class Initialize,class Bake>void check(const Json& row,Initialize initialize,Bake bake){
     const auto& input=row.at("initial");State state;

@@ -1120,26 +1120,16 @@ PinnedVariantKey pinned_variant_key(const Scene& scene, const Engine& engine,
             key.mesh_features &= ~receive_shadows;
         }
     }
-    // The light mode, walked the way `writeMeshLightSelection` walks it: how
-    // many of the scene's lights affect this mesh decides which arm the pin
-    // composed.
-    std::uint32_t light_count = 0;
-    for (const LightHandle handle : scene.lights) {
-        const LightRecord* light = handle_find(engine.lights, handle);
-        if (!light)
-            continue;
-        if (!upstream::light_affects_mesh(*light, draw.item.mesh)) {
-            continue;
-        }
-        ++light_count;
-        key.single_light_type = upstream::pinned_light_type(light->kind);
-    }
+    // The light mode: how many of the scene's lights affect this mesh
+    // decides which arm the pin composed.
+    const auto lights = upstream::mesh_light_selection(engine, scene, draw.item.mesh);
+    key.single_light_type = lights.single_type;
     // The receive bit rides the mesh row rather than the material, which is
     // why it is read back from the mesh half of the key; the arm it selects
     // comes from the generated lookup generation composed against, so the
     // two cannot disagree about which variants exist.
     key.light_mode = upstream::pinned_pbr_light_mode(
-        light_count,
+        lights.count,
         (key.mesh_features & static_cast<std::size_t>(upstream::pinned_msh_receive_shadows)) != 0);
     if (key.light_mode != 1)
         key.single_light_type = "";

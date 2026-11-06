@@ -235,7 +235,7 @@ export function lowerMatrixComposeCpp(
 }
 
 /**
- * `gltf_rooted_world`, the pin's `RH_TO_LH_ROOT` left multiply.
+ * `gltf_rooted_world`, the pin's `GLTF_ROOT` left multiply.
  *
  * `computeNodeWorldMatrix` parents every hierarchy root on that diagonal,
  * so a node world the port composes from the root down (an animated

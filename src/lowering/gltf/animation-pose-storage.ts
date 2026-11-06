@@ -46,7 +46,7 @@ struct GltfAnimationPoseState {
     GltfAnimationObjectRows<GltfAnimationFloats> bone_scratch;
     std::vector<std::optional<GltfAnimationObjectRows<GltfAnimationPoseMorph>>> morphs_by_node;
     GltfAnimationFloats currentTRS,localMat,worldMat,_boneTmp=GltfAnimationFloats(16);
-    GltfAnimationFloats RH_TO_LH;
+    GltfAnimationFloats ROOT_TRANSFORM;
     std::shared_ptr<GltfAnimationFloats> pointerScratch,morphUploadF32;
     std::vector<std::uint8_t> masked_nodes;
     bool mask_active=false,mask_resolver=false,has_bone_overrides=false,requires_engine=false;
@@ -60,7 +60,7 @@ std::shared_ptr<GltfAnimationPoseState> read_gltf_animation_pose(const JsonObjec
     ReadFloats read_floats,BindPointer bind_pointer,const GltfAnimationFloats& root_flip) {
     auto result=std::make_shared<GltfAnimationPoseState>();
     result->nodes=nodes;
-    result->RH_TO_LH=root_flip;
+    result->ROOT_TRANSFORM=root_flip;
     for(const auto& value:required(clip,"samplers").as_array()) {
         const auto& sampler=value.as_object();
         result->samplers.push_back({read_floats(unsigned_value(required(sampler,"input"))),

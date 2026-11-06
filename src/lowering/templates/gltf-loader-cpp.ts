@@ -89,7 +89,7 @@ interface GltfLoaderLoweredSegments {
     matrixCompose: string;
     /**
      * `gltf_rooted_world`, the left multiply by
-     * `src/loader-gltf/gltf-parser.ts#RH_TO_LH_ROOT` that parents every
+     * `src/loader-gltf/gltf-parser.ts#GLTF_ROOT` that parents every
      * hierarchy root.
      */
     rootedWorld: string;

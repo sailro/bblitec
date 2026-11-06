@@ -13,6 +13,11 @@ export function isRelativeSpecifier(specifier: string): boolean {
     );
 }
 
+/** A specifier the importing package's own `imports` map resolves (`#name`). */
+export function isPackageImportSpecifier(specifier: string): boolean {
+    return specifier.startsWith("#");
+}
+
 /** The literal specifier of an `import("...")` call. */
 export function dynamicImportSpecifier(
     node: ts.Node,

@@ -1,5 +1,5 @@
 import ts from "typescript";
-import { pinnedErrorCode } from "./pinned-error.js";
+import { pinnedErrorCode, pinnedErrorCodeOf } from "./pinned-error.js";
 import { jsToUint32Call } from "./pinned-operators.js";
 import { LoweredSource, LoweringContext } from "./context.js";
 import { lowerGltfVatBinding } from "./gltf/vat-binding.js";
@@ -342,6 +342,11 @@ void seek_vat(Engine& engine, double seconds) {
      * Sibling payloads with byte-identical data share one GPU texture, as
      * upstream.
      */
+    /** The pinned error code whose message the table spells so. */
+    private errorCode(message: string): number {
+        return pinnedErrorCodeOf(this.context, message);
+    }
+
     private lowerPrepared(): string {
         const positive = this.context.functionDeclaration(
             VAT_MODULE,
@@ -352,7 +357,7 @@ void seek_vat(Engine& engine, double seconds) {
             positive.body!.statements,
             `
             if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 1) {
-                ThrowLiteError(933, field);
+                ThrowLiteError(${this.errorCode("VAT prepared payload: ${a0} must be a positive integer.")}, field);
             }
             return value;
         `,
@@ -370,16 +375,16 @@ void seek_vat(Engine& engine, double seconds) {
                 return undefined;
             }
             if (typeof capture !== "object" || Array.isArray(capture)) {
-                ThrowLiteError(934, field);
+                ThrowLiteError(${this.errorCode("VAT prepared payload: ${a0} must be a record.")}, field);
             }
             const validated: Record<number, Float32Array> = {};
             for (const [key, values] of Object.entries(capture)) {
                 const bone = Number(key);
                 if (!Number.isSafeInteger(bone) || bone < 0 || bone >= boneCount || String(bone) !== key) {
-                    ThrowLiteError(935, field, key);
+                    ThrowLiteError(${this.errorCode('VAT prepared payload: ${a0} contains invalid bone index "${a1}".')}, field, key);
                 }
                 if (!(values instanceof Float32Array) || values.length !== frameCount * valuesPerFrame) {
-                    ThrowLiteError(936, field, key);
+                    ThrowLiteError(${this.errorCode("VAT prepared payload: ${a0}[${a1}] has an invalid length.")}, field, key);
                 }
                 validated[bone] = values;
             }
@@ -399,10 +404,10 @@ void seek_vat(Engine& engine, double seconds) {
                 const boneCount = positiveInteger(source?.boneCount, "boneCount");
                 const frameCount = positiveInteger(source?.frameCount, "frameCount");
                 if (!(source?.data instanceof Float32Array) || source.data.length !== boneCount * frameCount * 16) {
-                    ThrowLiteError(937);
+                    ThrowLiteError(${this.errorCode("VAT prepared payload: data length must equal boneCount * frameCount * 16.")});
                 }
                 if (!source.clips || typeof source.clips !== "object" || Array.isArray(source.clips)) {
-                    ThrowLiteError(938);
+                    ThrowLiteError(${this.errorCode("VAT prepared payload: clips must be a record.")});
                 }
                 const clips: Record<string, VatClip> = {};
                 for (const [name, clip] of Object.entries(source.clips)) {
@@ -417,7 +422,7 @@ void seek_vat(Engine& engine, double seconds) {
                         !Number.isFinite(clip.fps) ||
                         clip.fps <= 0
                     ) {
-                        ThrowLiteError(939, name);
+                        ThrowLiteError(${this.errorCode('VAT prepared payload: clip "${a0}" is invalid.')}, name);
                     }
                     clips[name] = { fromRow: clip.fromRow, frameCount: clip.frameCount, fps: clip.fps };
                 }
@@ -717,7 +722,7 @@ VatBake bake_vat(
             `
             const vat = mesh.vat;
             if (!vat) {
-                ThrowLiteError(945);
+                ThrowLiteError(${this.errorCode("setVatTime: mesh has no VAT data.")});
             }
             const time = (_vatTime ??= new Float32Array(1));
             time[0] = seconds;
@@ -765,10 +770,10 @@ void set_vat_time(Engine& engine, MeshHandle mesh, double seconds) {
             `
             const vat = mesh.vat;
             if (!vat) {
-                ThrowLiteError(943);
+                ThrowLiteError(${this.errorCode("setVatInstanceStorage: mesh has no VAT data.")});
             }
             if (buffer && (buffer._destroyed || buffer._engine !== engine || !engine._storageBuffers?.has(buffer))) {
-                ThrowLiteError(944);
+                ThrowLiteError(${this.errorCode("setVatInstanceStorage requires a live StorageBuffer from the same engine.")});
             }
             vat._instanceStorage = buffer;
         `,

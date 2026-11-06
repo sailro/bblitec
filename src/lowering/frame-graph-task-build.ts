@@ -2,7 +2,7 @@ import type { LoweringContext } from "./context.js";
 import { lowerPinnedBody } from "./pinned-body-lowerer.js";
 import { recordAt } from "../compiler/record-access.js";
 import { taskDisposedCpp } from "./frame-graph-task-disposal.js";
-import { pinnedErrorCode } from "./pinned-error.js";
+import { pinnedErrorCode, pinnedErrorCodeOf } from "./pinned-error.js";
 
 const graphModule = "src/frame-graph/frame-graph.ts";
 const baseModule = "src/frame-graph/render-task-base.ts";
@@ -33,7 +33,7 @@ export function lowerFrameGraphTaskBuild(
         statements,
         `
         if (!fg._tasks.includes(task)) {
-            ThrowLiteError(121, task.name);
+            ThrowLiteError(${pinnedErrorCodeOf(context, 'buildFrameGraphTask("${a0}"): task is not registered in this graph.')}, task.name);
         }
         recordTask(fg, task);
         for (const pass of task._passes) {

@@ -3350,6 +3350,8 @@ struct MaterialRecord {
     TextureData iridescence_thickness_texture;
     /** The file texture bound by the PBR or Standard lightmap setter. */
     TextureData lightmap_texture;
+    /** `bentNormalTexture`, read once `enableBentNormals` composes its IBL term. */
+    TextureData bent_normal_texture;
     TextureData emissive_texture;
     TextureData opacity_texture;
     TextureData specular_texture;
@@ -6379,15 +6381,28 @@ struct SourceMaterialDraw {
 using SourceMaterialOutput = std::shared_ptr<SourceMaterialDraw>;
 using SourceMaterialOutputs = std::vector<SourceMaterialOutput>;
 
-/** A group's `_w`: the lazy capability mask (`_c`) its rebuild closure composes;
- *  empty while `_w` is null or unset, when the closure composes every mesh. */
-using PbrLazyWidening = std::optional<double>;
+/** The light WGSL a PBR group's rebuild closure loaded (`_p`): its single-light
+ *  types (`_s`) and whether the multi-light loop (`_m`). */
+struct PbrLightPaths {
+    std::vector<std::string_view> single;
+    bool multi = false;
+};
+
+/** A group's `_w`, `lazyCapsWidening`'s predicate: the lazy capability mask its
+ *  rebuild closure composes (`_c`), the light paths it loaded (`_p`), and the
+ *  scene's shadow state it closes over. */
+struct PbrLazyWidening {
+    double caps = 0.0;
+    PbrLightPaths paths;
+    bool has_shadows = false;
+};
 
 struct SourceMaterialGroupState {
     SourceMaterialOutputs outputs;
     std::vector<MeshHandle> meshes;
     bool rebuild_ready = false;
-    PbrLazyWidening widening;
+    /** Empty while `_w` is unset. */
+    std::optional<PbrLazyWidening> widening;
 };
 using SourceMaterialGroups = js::Map<std::uint64_t, std::shared_ptr<SourceMaterialGroupState>>;
 

@@ -1,8 +1,8 @@
 {
   "package": "@babylonjs/lite",
-  "version": "1.37.2",
+  "version": "1.38.2",
   "repository": "https://github.com/BabylonJS/Babylon-Lite.git",
-  "sourceVersion": "a05fc292912d3475ec600cea57c76fce2ee9f7f4",
+  "sourceVersion": "bc317f91a55b2af616abf487812ac6d4888151f7",
   "scenes": [
     {
       "id": "scene1",
@@ -1292,13 +1292,13 @@
       "id": "scene224",
       "upstreamPath": "lab/lite/src/lite/scene224.ts",
       "source": "corpus/babylon-lite/lab/lite/src/lite/scene224.ts",
-      "sha256": "6b5f16e724cc1db47061e4da09ffcd3104d3af039515934c3f5d921b1bbba8fe"
+      "sha256": "1d326fb237dcc0de76a81ac13a021668e7efcd3539ebed7a70ff3576ff961fbd"
     },
     {
       "id": "scene222",
       "upstreamPath": "lab/lite/src/lite/scene222.ts",
       "source": "corpus/babylon-lite/lab/lite/src/lite/scene222.ts",
-      "sha256": "08d0ff4209ff263586a05e3fefbfece62d2c8daf24b80a85527e9ce82fa1460b"
+      "sha256": "8c5960082f755570a571c7403b693b6041039b99babc35748e5c37d6c103da85"
     },
     {
       "id": "scene86",
@@ -1316,13 +1316,13 @@
       "id": "scene221",
       "upstreamPath": "lab/lite/src/lite/scene221.ts",
       "source": "corpus/babylon-lite/lab/lite/src/lite/scene221.ts",
-      "sha256": "b0633d0fd0f56ba3d92fcb1e6ee08c55b19d3619cd2bc6d6338f355907476a18"
+      "sha256": "9e858a700bd2b609884a27564038ed829aa637ca33f982c693043961f56b546a"
     },
     {
       "id": "scene223",
       "upstreamPath": "lab/lite/src/lite/scene223.ts",
       "source": "corpus/babylon-lite/lab/lite/src/lite/scene223.ts",
-      "sha256": "bcee1f2fde33e38c81eff300940ee0646c06880dc6ff48a10289474f580a6617"
+      "sha256": "c4261526f2057ece1281b86c5fd083986c0bce56cc9316844dbf4fbae2c9fafd"
     },
     {
       "id": "scene305",
@@ -1334,7 +1334,7 @@
       "id": "scene73",
       "upstreamPath": "lab/lite/src/lite/scene73.ts",
       "source": "corpus/babylon-lite/lab/lite/src/lite/scene73.ts",
-      "sha256": "cd697444db8da41e9353be82f9dafdcfd7f494ad22e8847bfb05f3b6fdd91c3c"
+      "sha256": "459de40173b1ccaf4d620f5e8766b56b2b8288c93fdced4e9a5572edc450727a"
     },
     {
       "id": "scene187",
@@ -1406,7 +1406,7 @@
       "id": "scene49",
       "upstreamPath": "lab/lite/src/lite/scene49.ts",
       "source": "corpus/babylon-lite/lab/lite/src/lite/scene49.ts",
-      "sha256": "9fa4455f128d8c7a1a0710567e64c424e12d1890475d660b23b1a94839fb584d"
+      "sha256": "2cee0325e5dd9cf1ece776eba23bded322a304c1f04c482405a18a1a581d7a9e"
     },
     {
       "id": "scene122",
@@ -3263,7 +3263,7 @@
         {
           "upstreamPath": "lab/lite/src/demos/antigravity-racer/editor.ts",
           "source": "corpus/babylon-lite/lab/lite/src/demos/antigravity-racer/editor.ts",
-          "sha256": "52ac31827ffe91c767100b2575a035bf125766e90cb630ec551ef93ed46643bb"
+          "sha256": "f64ddffb80f7c9f5ac8215f17dc4ede1b386d6aebb2af32f95e2b06c9cc79446"
         },
         {
           "upstreamPath": "lab/lite/src/demos/antigravity-racer/environment.ts",
@@ -4468,12 +4468,12 @@
         {
           "upstreamPath": "lab/lite/demo-screen-space-effects.html",
           "source": "corpus/babylon-lite/lab/lite/demo-screen-space-effects.html",
-          "sha256": "3011fb89ba35bca18d536ff666021d6551051e7d6aeb88cff358475a775b5483"
+          "sha256": "11e0452fc168f6b2f3e041fdcb62e28af7653e20fb0f13f93b51d6ca343af8ef"
         },
         {
           "upstreamPath": "lab/lite/src/demos/screen-space-effects.ts",
           "source": "corpus/babylon-lite/lab/lite/src/demos/screen-space-effects.ts",
-          "sha256": "8c5f8f63a795ef92286b9aa852dfe80acbc52c8ba4d75ca848deeb4146322ed8"
+          "sha256": "18861a6f51c71d111e8ef9358c26b209bc08207410b21e040a599ee6c39885b8"
         },
         {
           "upstreamPath": "lab/lite/src/demos/demo-asset-url.ts",

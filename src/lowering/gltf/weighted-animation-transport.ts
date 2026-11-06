@@ -91,7 +91,7 @@ bool update_weighted_gltf_animation_groups(Engine& native_engine,PropertyAnimati
             result->localMat=std::move(local);result->worldMat=std::move(world);
             result->topo_order.assign(order.begin(),order.end());
             result->tWeight=std::move(translation_weights);result->rWeight=std::move(rotation_weights);result->sWeight=std::move(scale_weights);
-            result->active=active;result->RH_TO_LH=${rootFlip};
+            result->active=active;result->ROOT_TRANSFORM=${rootFlip};
             return result;
         }
         GltfAnimationOverrideRows override_rows(const GltfWeightedTarget& target)const {

@@ -127,6 +127,13 @@ export function unwrapTypePreserving(expression: ts.Expression): ts.Expression {
     return current;
 }
 
+/** Whether a node is grouping parentheses, which group without changing value or type. */
+export function isGroupingParentheses(
+    node: ts.Node,
+): node is ts.ParenthesizedExpression {
+    return ts.isParenthesizedExpression(node);
+}
+
 /** Whether a wrapper exists only in TypeScript: `as`, `<T>`, `!`, `satisfies`. */
 export function isTypeOnlyWrapper(
     node: ts.Node,

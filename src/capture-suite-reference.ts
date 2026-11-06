@@ -20,6 +20,7 @@ import ts from "typescript";
 import { moduleSpecifiers } from "./typescript-module-specifiers.js";
 import { rewriteModuleSpecifiers } from "./module-specifier-rewrite.js";
 import { pinnedLabPublicFile, servedFile } from "./pinned-lab-materializers.js";
+import { packageImportTargets } from "./pinned-build-conditions.js";
 
 // ---------------------------------------------------------------------------
 // Lazy module loads
@@ -260,6 +261,23 @@ export const pinnedBrowserEntryUrl =
  */
 export function pinnedBrowserModuleUrl(relativePath: string): string {
     return pinnedBrowserEntryUrl.replace(/index\.js$/, relativePath);
+}
+
+/**
+ * The pinned package's own `#` imports as a served page resolves them: an
+ * import map scoped to the package, each target the build conditions
+ * select. A browser resolves a package's `imports` field only through one.
+ */
+function pinnedPackageImportMapScript(): string {
+    const packageUrl = pinnedBrowserEntryUrl.replace(/lib\/index\.js$/, "");
+    const { packageRoot } = upstreamSource().sharedUpstreamStore();
+    const imports = Object.fromEntries(
+        [...packageImportTargets(packageRoot)].map(([specifier, target]) => [
+            specifier,
+            packageUrl + target.replace(/^\.\//, ""),
+        ]),
+    );
+    return `<script type="importmap">${JSON.stringify({ scopes: { [packageUrl]: imports } })}</script>\n`;
 }
 
 /**
@@ -627,6 +645,7 @@ export function createSuiteSceneServer(
         : "/scene.js";
     // Plain scripts that run before every page script.
     const startScripts =
+        pinnedPackageImportMapScript() +
         `<script>${engineCanvasRecorderScript}</script>\n` +
         (options.seededRandom
             ? `<script>${seededRandomScript}</script>\n`

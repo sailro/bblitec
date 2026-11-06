@@ -142,13 +142,19 @@ export function lowerRenderBucket(
         standard.initializer,
         [
             ["shadowOutput", { cpp: "shadow_output", type: "bool" }],
-            ["features", { cpp: "features", type: "scalar" }],
+            // The pin's word holds the mesh's colour alpha bits by then.
+            [
+                "features",
+                { cpp: "(features | color_alpha_features)", type: "scalar" },
+            ],
             [
                 "mat.alpha",
                 { cpp: "static_cast<double>(material.alpha)", type: "scalar" },
             ],
-            ["colorAlphaBlend", { cpp: "color_alpha_blend", type: "bool" }],
-            ...flagBindings(context, STANDARD_FLAGS, ["HAS_OPACITY_TEXTURE"]),
+            ...flagBindings(context, STANDARD_FLAGS, [
+                "HAS_OPACITY_TEXTURE",
+                "MATERIAL_ALPHA_BLEND",
+            ]),
         ],
     );
     const pbr = isTransparentInitializer(context, PBR_RENDERABLE);
@@ -165,25 +171,25 @@ export function lowerRenderBucket(
         "PBR2_NO_COLOR_OUTPUT",
         "PBR2_ESM_SHADOW_OUTPUT",
     ].map((name) => context.pinnedNumber(PBR_FLAGS, name));
-    // `colorAlphaBlend`, through the pin's own lowered decision where the
-    // scene reached vertex alpha; without it the arm is false.
-    const colorAlphaBlend = options.standardVertexAlpha
-        ? `bool color_alpha_blend = false;
+    // The colour alpha bits, through the pin's own lowered decision where
+    // the scene reached vertex alpha; without it there are none.
+    const colorAlphaFeatures = options.standardVertexAlpha
+        ? `std::uint32_t color_alpha_features = 0u;
         if (item.mesh.value < engine.meshes.size()) {
             const MeshRecord& mesh = ${recordAt("engine.meshes", "item.mesh")};
             const bool has_vertex_color = ${options.standardVertexColors ? "mesh.geometry < engine.geometries.size() && engine.geometries[mesh.geometry].has_vertex_colors" : "false"};
-            color_alpha_blend = standard_color_alpha_features(
+            color_alpha_features = standard_color_alpha_features(
                 shadow_output, mesh.has_vertex_alpha, has_vertex_color,
-                has_instance_colors(mesh)) != 0u;
+                has_instance_colors(mesh));
         }`
-        : "const bool color_alpha_blend = false;";
+        : "const std::uint32_t color_alpha_features = 0u;";
     return `    // ${context.provenance(STANDARD_RENDERABLE, "isTransparent", `${PBR_RENDERABLE}#isTransparent, ${PBR_FEATURES}#_computePbrMaterialFeatures`)}
     bool transparent = material.alpha_mode == MaterialAlphaMode::blend;
     if (item.material_kind == RenderMaterialKind::standard) {
 #if BBLITE_STANDARD_VARIANTS > 0
         const bool shadow_output = material.no_color || material.esm_shadow;
         const std::uint32_t features = standard_material_features(material);
-        ${colorAlphaBlend}
+        ${colorAlphaFeatures}
         transparent = ${standardTransparent};
 #else
         throw std::runtime_error(

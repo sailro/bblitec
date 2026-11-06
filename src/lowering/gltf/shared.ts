@@ -198,7 +198,7 @@ export function identifierText(expression: ts.Expression): string | undefined {
 }
 
 /**
- * The pin's RH→LH root conversion (`gltf-parser.ts#RH_TO_LH_ROOT`): the
+ * The pin's RH→LH root conversion (`gltf-parser.ts#GLTF_ROOT`): the
  * single sixteen-entry F32 literal, verified diagonal with exactly one
  * axis flipped by -1 and a unit homogeneous lane, and verified to be the
  * parent `computeNodeWorldMatrix` multiplies onto hierarchy roots. The
@@ -210,7 +210,7 @@ export function pinnedRootFlip(file: ts.SourceFile): {
     lane: number;
     sign: number;
 } {
-    const symbol = "RH_TO_LH_ROOT";
+    const symbol = "GLTF_ROOT";
     const candidates: { name: string; values: number[] }[] = [];
     for (const statement of file.statements) {
         if (!ts.isVariableStatement(statement)) continue;

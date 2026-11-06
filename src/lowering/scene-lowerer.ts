@@ -846,11 +846,14 @@ ${options.visibility ? "#include <bblite/upstream/subtree_visibility.hpp>" : ""}
 #include <bblite/js_data.hpp>
 ${options.nodeMaterials ? "#include <bblite/node_material.hpp>" : ""}
 ${
-    options.mirroredMeshes || options.geometryAccess || options.parenting
+    options.mirroredMeshes ||
+    options.geometryAccess ||
+    options.parenting ||
+    options.pbrSceneHooks
         ? `// The mirrored-mesh watcher this scene installs calls the render
 // plan's own determinant pass; a scene that never opts in includes
 // neither. Geometry access and setParent also read the plan's emitted
-// world matrix.
+// world matrix, and the PBR group widening its mesh light walk.
 #include <bblite/upstream/renderer_plan.hpp>`
         : ""
 }

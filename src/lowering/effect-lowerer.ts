@@ -20,7 +20,11 @@ import type { LoweredSource, LoweringContext } from "./context.js";
 import { recordAt } from "../compiler/record-access.js";
 import { lowerEffectWrapperDisposal } from "./effect-wrapper-disposal.js";
 import { lowerEffectTaskDisposal } from "./frame-graph-task-disposal.js";
-import { pinnedErrorCode, pinnedErrorMessageCpp } from "./pinned-error.js";
+import {
+    pinnedErrorCode,
+    pinnedErrorCodeOf,
+    pinnedErrorMessageCpp,
+} from "./pinned-error.js";
 
 const effectModule = "src/effect/effect-renderer.ts";
 const uniformEffectModule = "src/effect/uniform-effect-renderer.ts";
@@ -433,7 +437,7 @@ ${disposal || taskBuild ? lowerEffectWrapperDisposal(this.context, disposal) : "
         this.context.assertStatementShapes(
             setter,
             setter.body!.statements,
-            "const internal = wrapper as EffectWrapperInternal; const slot = findTextureSlot(internal, bindingNameOrIndex); if (!slot) { ThrowLiteError(36, String(bindingNameOrIndex)); } slot.texture = texture; internal._bindGroupDirty = true;",
+            `const internal = wrapper as EffectWrapperInternal; const slot = findTextureSlot(internal, bindingNameOrIndex); if (!slot) { ThrowLiteError(${pinnedErrorCodeOf(this.context, 'setEffectTexture: unknown texture binding "${a0}".')}, String(bindingNameOrIndex)); } slot.texture = texture; internal._bindGroupDirty = true;`,
             "setEffectTexture slot lookup",
         );
         const { declaration: find } = this.context.functionDeclaration(
