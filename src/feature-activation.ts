@@ -751,8 +751,8 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
             "extension's detect turns into PBR_HAS_ALPHA_TEST; the cutoff " +
             "itself is a UBO lane)",
         // The arm rides the composed variant through the material's own
-        // stamp; the name selects the lowered setter.
-        consumers: INVENTORY,
+        // stamp; the name selects the lowered setter in the PBR factory.
+        consumers: ["generation gate"],
     },
     "material:iridescence": {
         provenance: "src/material/pbr/set-iridescence.ts",

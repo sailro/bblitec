@@ -1430,6 +1430,11 @@ export function emitUnobservedErrorPropertyWrite(
         !ts.isPropertyAccessExpression(left) ||
         // The receiver evaluates first; this write reads it for nothing.
         expressionHasEffects(left.expression) ||
+        // `toString`, a host report and the console read the represented
+        // fields without naming them.
+        ERROR_CLASS_FIELDS.some(
+            (field) => field.sourceName === left.name.text,
+        ) ||
         !propertyNeverRead(context.program, context.checker, left.name.text)
     )
         return false;
@@ -2812,6 +2817,7 @@ import { stringLiteral } from "../cpp-literals.js";
 import { PINNED_ASSIGNMENT_OPERATORS } from "../lowering/pinned-operators.js";
 import { unwrappedIdentifier } from "./syntax.js";
 import { unionMembers } from "./type-facts.js";
+import { ERROR_CLASS_FIELDS } from "./error-values.js";
 import { isGlobalUndefined, libraryName } from "./symbols.js";
 import {
     emitDeterministicRandomInstall,

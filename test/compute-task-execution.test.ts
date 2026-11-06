@@ -13,6 +13,9 @@ import {
     optionalNativeFixtureTools,
     runNativeFixtureCompiler,
 } from "./native-fixture.js";
+import { pinnedError, pinnedErrorsCpp } from "./pinned-errors.js";
+
+const task = "src/compute/compute-task.ts";
 
 test("source task execution retains dispatch order, dynamic offsets, submission cleanup and preparation", (t) => {
     const tools = optionalNativeFixtureTools(false);
@@ -32,6 +35,54 @@ test("source task execution retains dispatch order, dynamic offsets, submission 
             lowerComputeTask(context, true).source,
             lowerComputeTaskExecution(context).source,
             lowerComputeFrameGraph(context).source,
+            pinnedErrorsCpp({
+                dispatch_size: pinnedError(
+                    "ComputeDispatch: ${a0} workgroup dimension must be an integer in [0, ${a1}], received ${a2}x${a3}x${a4}.",
+                ),
+                dispatch_binding_set: pinnedError(
+                    "ComputeDispatch: binding set belongs to a different ComputeShader.",
+                ),
+                dynamic_binding: pinnedError(
+                    'ComputeDispatch: binding "${a0}" is not a dynamic buffer binding.',
+                ),
+                dynamic_alignment: pinnedError(
+                    'ComputeDispatch: dynamic offset for "${a0}" must be a non-negative multiple of ${a1}.',
+                ),
+                dynamic_range: pinnedError(
+                    'ComputeDispatch: dynamic offset for "${a0}" exceeds the bound buffer range.',
+                ),
+                shader_disposed: pinnedError(
+                    'ComputeShader "${a0}" has been disposed.',
+                    {
+                        module: "src/compute/compute-shader.ts",
+                        name: "_assertComputeShaderLive",
+                    },
+                ),
+                record_disposed: pinnedError(
+                    'ComputeTask "${a0}" has been disposed.',
+                    { module: task, name: "createComputeTask" },
+                ),
+                add_disposed: pinnedError(
+                    'ComputeTask "${a0}" has been disposed.',
+                    { module: task, name: "addComputeDispatch" },
+                ),
+                add_engines: pinnedError(
+                    'ComputeTask "${a0}" and its dispatch belong to different engines.',
+                ),
+                submit_engines: pinnedError(
+                    "submitComputeTasks requires tasks from the same engine.",
+                ),
+                submit_unrecorded: pinnedError(
+                    'ComputeTask "${a0}" must be recorded and active before direct submission.',
+                ),
+                submit_recording: pinnedError(
+                    "submitComputeTasks cannot run while a frame is being recorded.",
+                ),
+                prepare_disposed: pinnedError(
+                    'ComputeTask "${a0}" has been disposed.',
+                    { module: task, name: "prepareComputeTask" },
+                ),
+            }),
             readFileSync(
                 resolve("test/fixtures/compute-task-execution-check.cpp"),
                 "utf8",
