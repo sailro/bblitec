@@ -7,6 +7,7 @@
 #include "pal_gpu_materials.hpp"
 #include "pal_gpu_scene_blocks.hpp"
 #include "pal_gpu_pipeline.hpp"
+#include <bblite/features/geometry_velocity.hpp>
 #include <bblite/features/has_clustered_lights.hpp>
 #include <bblite/features/has_material_plugin_textures.hpp>
 #include <bblite/features/has_pbr_renderer.hpp>
@@ -324,13 +325,13 @@ pinned_resource_for(GpuState& state, const GpuMesh& mesh, const std::string& nam
                     if (source->engine_lifetime.expired())
                         throw std::runtime_error("Render texture engine has expired.");
                     const auto& reference = source->reference;
-#if BBLITE_HAS_SSAO
-                    if (reference.source == RenderTextureSource::ssao_output) {
+                    if (reference.source == RenderTextureSource::task_output) {
                         const SDL_GPUTextureSamplerBinding sampled =
-                            ssao_pbr_binding(state, *source->engine, reference.task, pass);
+                            SdlTaskOutputOwners::of(*source->engine, reference.task)
+                                .plugin(state, *source->engine, *material, pass)
+                                .binding;
                         return {sampled.texture, sampled.sampler};
                     }
-#endif
                     auto& target = handle_at(state.render_targets, reference.target);
                     if (target.color || target.depth) {
                         const auto texture =
@@ -557,32 +558,40 @@ pinned_variant_pipeline(GpuState& state, std::size_t variant, upstream::RenderPi
 #endif
 
 #if BBLITE_MESH_OPACITY
-void sync_mesh_opacity(GpuState& state, GpuBufferUploadBatch& uploads, const Engine& engine,
+void sync_mesh_opacity(GpuState&, GpuBufferUploadBatch& uploads, const Engine& engine,
                        const upstream::RenderItem& item, GpuMesh& mesh) {
     // Every binding of the mesh reads its live value, whichever pass and
     // material draw it -- a task's resolved binding at 1 included.
     const MeshRecord& record = handle_at(engine.meshes, item.mesh);
-    for (std::size_t policy = 0; policy < mesh.mesh_opacity.size(); ++policy) {
+    for (GpuMesh::MeshOpacityStorage& binding : mesh.mesh_opacity) {
         const upstream::MeshOpacityUniforms block =
-            upstream::mesh_opacity_uniforms(record, static_cast<double>(policy));
-        const std::array<float, 2> written{block.value, block.policy};
-        if (!mesh.mesh_opacity[policy]) {
-            mesh.mesh_opacity[policy] = state.kept_buffers.upload(
-                uploads, SDL_GPU_BUFFERUSAGE_GRAPHICS_STORAGE_READ, &block, sizeof(block));
-        } else if (written != mesh.mesh_opacity_written[policy]) {
-            uploads.update(mesh.mesh_opacity[policy], &block, sizeof(block));
-        }
-        mesh.mesh_opacity_written[policy] = written;
+            upstream::mesh_opacity_uniforms(record, static_cast<double>(binding.written.policy));
+        if (block == binding.written)
+            continue;
+        uploads.update(binding.buffer, &block, sizeof(block));
+        binding.written = block;
     }
 }
-#endif
 
-#if BBLITE_MESH_OPACITY
 namespace {
-/** The storage block one draw binds: its binding's policy selects it. */
-SDL_GPUBuffer* mesh_opacity_storage(const Engine& engine, const upstream::RenderItem& item,
-                                    const GpuMesh& mesh) {
-    return mesh.mesh_opacity[mesh_opacity_block(engine, item).policy > 0.5f ? 1u : 0u];
+/**
+ * The storage block of the draw's binding, the mesh through its material:
+ * made by the first draw whose variant binds it, and rewritten since by the
+ * mesh's syncs.
+ */
+SDL_GPUBuffer* mesh_opacity_storage(GpuState& state, const Engine& engine,
+                                    const upstream::RenderItem& item, const GpuMesh& mesh) {
+    for (const GpuMesh::MeshOpacityStorage& binding : mesh.mesh_opacity) {
+        if (binding.material.value == item.material.value)
+            return binding.buffer;
+    }
+    const upstream::MeshOpacityUniforms block = mesh_opacity_block(engine, item);
+    mesh.mesh_opacity.push_back(
+        {item.material,
+         upload_buffer(state.device, SDL_GPU_BUFFERUSAGE_GRAPHICS_STORAGE_READ, &block,
+                       sizeof(block)),
+         block});
+    return mesh.mesh_opacity.back().buffer;
 }
 } // namespace
 #endif
@@ -643,19 +652,53 @@ void write_pinned_bone_texture(GpuState& state, GpuMesh& mesh, const MeshRecord&
 #endif
 
 #if BBLITE_GEOMETRY_VELOCITY
-GpuPbrVelocity& SdlPbrVelocitySink::resources(MeshHandle mesh) {
-    if (task.pbr_velocity.size() <= mesh.value)
-        task.pbr_velocity.resize(static_cast<std::size_t>(mesh.value) + 1u);
-    return task.pbr_velocity[mesh.value];
+namespace {
+/**
+ * Stages `floats` through `staging`'s transfer buffer, cycled past a
+ * submission still reading it, and records `copy` from it into `command`.
+ */
+template <typename Copy>
+void record_velocity_upload(SDL_GPUDevice* device, SDL_GPUCommandBuffer* command,
+                            GpuPbrVelocity::Staging& staging, std::span<const float> floats,
+                            Copy&& copy) {
+    const auto bytes = static_cast<std::uint32_t>(floats.size_bytes());
+    if (!staging.transfer || staging.bytes < bytes) {
+        SDL_GPUTransferBufferCreateInfo info{};
+        info.usage = SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD;
+        info.size = bytes;
+        staging.transfer = OwnedSdlTransfer{SDL_CreateGPUTransferBuffer(device, &info), {device}};
+        if (!staging.transfer)
+            gpu_error("SDL_CreateGPUTransferBuffer geometry velocity");
+        staging.bytes = bytes;
+    }
+    void* mapped = SDL_MapGPUTransferBuffer(device, staging.transfer.get(), true);
+    if (!mapped)
+        gpu_error("SDL_MapGPUTransferBuffer geometry velocity");
+    std::memcpy(mapped, floats.data(), bytes);
+    SDL_UnmapGPUTransferBuffer(device, staging.transfer.get());
+    SdlCopyPass pass{SDL_BeginGPUCopyPass(command)};
+    if (!pass)
+        gpu_error("SDL_BeginGPUCopyPass geometry velocity");
+    copy(pass, staging.transfer.get(), bytes);
+    pass.end();
 }
+} // namespace
 
 void SdlPbrVelocitySink::block(MeshHandle mesh, std::span<const float> floats) {
-    if (SDL_GPUBuffer* buffer = resources(mesh).block)
-        update_buffer(state.device, buffer, floats.data(), floats.size_bytes());
+    GpuPbrVelocity& velocity = mesh_velocity_resources(task.pbr_velocity, mesh);
+    if (!velocity.block)
+        return;
+    record_velocity_upload(
+        state.device, command, velocity.block_staging, floats,
+        [&](SDL_GPUCopyPass* pass, SDL_GPUTransferBuffer* source, std::uint32_t bytes) {
+            const SDL_GPUTransferBufferLocation from{source, 0};
+            const SDL_GPUBufferRegion to{velocity.block, 0, bytes};
+            SDL_UploadToGPUBuffer(pass, &from, &to, false);
+        });
 }
 
 void SdlPbrVelocitySink::bones(MeshHandle mesh, std::span<const float> floats) {
-    GpuPbrVelocity& velocity = resources(mesh);
+    GpuPbrVelocity& velocity = mesh_velocity_resources(task.pbr_velocity, mesh);
     const auto texels = static_cast<std::uint32_t>(floats.size() / 4u);
     if (velocity.bone_texels != texels) {
         if (velocity.bones)
@@ -664,27 +707,41 @@ void SdlPbrVelocitySink::bones(MeshHandle mesh, std::span<const float> floats) {
                                               "SDL_CreateGPUTexture geometry previous bones");
         velocity.bone_texels = texels;
     }
-    upload_pinned_float_texture(state, velocity.bones, floats.data(), texels, 1u,
-                                static_cast<std::uint32_t>(floats.size_bytes()));
+    record_velocity_upload(
+        state.device, command, velocity.bones_staging, floats,
+        [&](SDL_GPUCopyPass* pass, SDL_GPUTransferBuffer* source, std::uint32_t) {
+            const SDL_GPUTextureTransferInfo from{source, 0, texels, 1u};
+            const SDL_GPUTextureRegion to{velocity.bones, 0, 0, 0, 0, 0, texels, 1u, 1u};
+            SDL_UploadToGPUTexture(pass, &from, &to, false);
+        });
 }
 
 void SdlPbrVelocitySink::morph(MeshHandle mesh, std::span<const float> floats) {
-    GpuPbrVelocity& velocity = resources(mesh);
+    GpuPbrVelocity& velocity = mesh_velocity_resources(task.pbr_velocity, mesh);
     const auto bytes = static_cast<std::uint32_t>(floats.size_bytes());
     if (velocity.morph_bytes != bytes) {
         if (velocity.morph)
             SDL_ReleaseGPUBuffer(state.device, velocity.morph);
-        velocity.morph = upload_buffer(state.device, SDL_GPU_BUFFERUSAGE_GRAPHICS_STORAGE_READ,
-                                       floats.data(), bytes);
+        SDL_GPUBufferCreateInfo info{};
+        info.usage = SDL_GPU_BUFFERUSAGE_GRAPHICS_STORAGE_READ;
+        info.size = bytes;
+        velocity.morph = SDL_CreateGPUBuffer(state.device, &info);
+        if (!velocity.morph)
+            gpu_error("SDL_CreateGPUBuffer geometry previous morph");
         velocity.morph_bytes = bytes;
-        return;
     }
-    update_buffer(state.device, velocity.morph, floats.data(), bytes);
+    record_velocity_upload(
+        state.device, command, velocity.morph_staging, floats,
+        [&](SDL_GPUCopyPass* pass, SDL_GPUTransferBuffer* source, std::uint32_t size) {
+            const SDL_GPUTransferBufferLocation from{source, 0};
+            const SDL_GPUBufferRegion to{velocity.morph, 0, size};
+            SDL_UploadToGPUBuffer(pass, &from, &to, false);
+        });
 }
 
 SDL_GPUBuffer* pbr_velocity_block_buffer(GpuState& state, GpuGeometryTask& task, MeshHandle mesh) {
     const upstream::PbrGeometryVelocity& pbr = pbr_velocity_state(task.velocity, mesh);
-    GpuPbrVelocity& velocity = SdlPbrVelocitySink{state, task}.resources(mesh);
+    GpuPbrVelocity& velocity = mesh_velocity_resources(task.pbr_velocity, mesh);
     if (!velocity.block) {
         velocity.block = upload_buffer(state.device, SDL_GPU_BUFFERUSAGE_GRAPHICS_STORAGE_READ,
                                        pbr.data.data(), sizeof(pbr.data));
@@ -859,14 +916,14 @@ void draw_pinned_variant(
         if (block == upstream::rect_area_emission_slots_block)
             return area_light_emission_slots_block(state);
 #endif
+        switch (feature_binding(block)) {
 #if BBLITE_MESH_OPACITY
-        if (block == mesh_opacity_block_name) {
+        case FeatureBinding::mesh_opacity:
             opacity_block = mesh_opacity_block(engine, item);
             return {&opacity_block, sizeof(opacity_block)};
-        }
 #endif
 #if BBLITE_GEOMETRY_VELOCITY
-        if (block == "gm") {
+        case FeatureBinding::velocity_block: {
             if (!geometry_state)
                 gpu_error("pinned variant declares a velocity block outside a geometry task.");
             const upstream::PbrGeometryVelocity& pbr =
@@ -874,7 +931,9 @@ void draw_pinned_variant(
             return {pbr.data.data(), sizeof(pbr.data)};
         }
 #endif
-        return {};
+        default:
+            return {};
+        }
     };
 #if BBLITE_PBR_SHADOWS
     // The cached rows parallel to this variant's slot lists; the walks
@@ -925,8 +984,8 @@ void draw_pinned_variant(
                 return area_light_emission_binding(state).slots;
 #endif
 #if BBLITE_MESH_OPACITY
-            if (name == mesh_opacity_block_name)
-                return mesh_opacity_storage(engine, item, mesh);
+            if (feature_binding(name) == FeatureBinding::mesh_opacity)
+                return mesh_opacity_storage(state, engine, item, mesh);
 #endif
 #if BBLITE_LOCAL_CUBEMAP
             if (local_cubemap) {
@@ -965,10 +1024,16 @@ void draw_pinned_variant(
                 return morph;
             }
 #if BBLITE_GEOMETRY_VELOCITY
-            if (name == "gm" && geometry_state)
-                return pbr_velocity_block_buffer(state, *geometry_state, item.mesh);
-            if (name == "previousMorph")
+            switch (feature_binding(name)) {
+            case FeatureBinding::velocity_block:
+                if (geometry_state)
+                    return pbr_velocity_block_buffer(state, *geometry_state, item.mesh);
+                break;
+            case FeatureBinding::previous_morph:
                 return velocity_resources().morph;
+            default:
+                break;
+            }
 #endif
 #if BBLITE_PBR_SHADOWS
             // A receiver whose vertex stage also overflows the four uniform
@@ -983,7 +1048,7 @@ void draw_pinned_variant(
     bind_stage_textures(pass, pinned_vertex, false, "pinned variant vertex",
                         [&](const std::string& name, std::size_t slot) {
 #if BBLITE_GEOMETRY_VELOCITY
-                            if (name == "previousBoneSampler") {
+                            if (feature_binding(name) == FeatureBinding::previous_bones) {
                                 ensure_pinned_bone_sampler(state);
                                 return SDL_GPUTextureSamplerBinding{velocity_resources().bones,
                                                                     state.pinned_bone_sampler};
@@ -1804,7 +1869,7 @@ void draw_standard_variant(
             return area_light_emission_slots_block(state);
 #endif
 #if BBLITE_MESH_OPACITY
-        if (block == mesh_opacity_block_name) {
+        if (feature_binding(block) == FeatureBinding::mesh_opacity) {
             opacity_block = mesh_opacity_block(engine, item);
             return {&opacity_block, sizeof(opacity_block)};
         }
@@ -1844,8 +1909,8 @@ void draw_standard_variant(
             return area_light_emission_binding(state).slots;
 #endif
 #if BBLITE_MESH_OPACITY
-        if (name == mesh_opacity_block_name)
-            return mesh_opacity_storage(engine, item, mesh);
+        if (feature_binding(name) == FeatureBinding::mesh_opacity)
+            return mesh_opacity_storage(state, engine, item, mesh);
 #endif
 #if BBLITE_STANDARD_SHADOWS
         if (SDL_GPUBuffer* info = shadow_info_buffer_at(state, fragment_shadow_rows.storage[slot]))

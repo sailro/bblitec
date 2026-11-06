@@ -127,8 +127,9 @@ void dispose_render_task(Engine& engine, TaskHandle handle) {
         dispose_render_target(engine, task.render.target);
         dispose_render_target(engine, task.render.resolve_target);
     }
-    // The dynamic PBR bindings plugin's \`drawBindingLifecycle\`, which no
-    // lowered API installs, stays absent.
+    // \`drawBindingLifecycle\`, which \`enablePbrSsao\` installs, retires the
+    // task's draw bindings and the texture leases they hold; a backend's
+    // groups belong to its mesh draw states and lease nothing.
     // \`config.depth\` is only a geometry task's eager depth, which
     // disposeRenderTarget skips. No native target signature installs the
     // \`_batchState\` collector. A backend keeps the task's pass block

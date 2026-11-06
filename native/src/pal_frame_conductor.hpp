@@ -13,6 +13,14 @@ enum class FramePreparation { ready, stop, restart, skip };
 enum class FrameOutcome { stopped, skipped, rendered, restart, frozen };
 enum class FrameAcquirePhase { before_update, before_uploads, before_encoding };
 
+/**
+ * Whether a frame completes its animation frame: a frozen one does as a
+ * drawn one would, since the canvas's last frame stands for it.
+ */
+constexpr bool frame_drawn(FrameOutcome outcome) {
+    return outcome == FrameOutcome::rendered || outcome == FrameOutcome::frozen;
+}
+
 constexpr std::optional<FrameOutcome> frame_interruption(FramePreparation preparation) {
     switch (preparation) {
     case FramePreparation::stop:

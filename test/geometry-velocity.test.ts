@@ -3,6 +3,7 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import test from "node:test";
 import { compileSource } from "../src/compiler.js";
+import { floatLiteral } from "../src/cpp-literals.js";
 import { LoweringContext } from "../src/lowering/context.js";
 import { GeometryVelocityLowerer } from "../src/lowering/geometry-velocity-lowerer.js";
 import { pinnedMatrixHeader } from "../src/lowering/pinned-matrix.js";
@@ -276,7 +277,7 @@ async function pinnedWrites(): Promise<string[]> {
 }
 
 const floats = (values: readonly number[]): string =>
-    `{${values.map((value) => `${Math.fround(value).toPrecision(9)}f`).join(", ")}}`;
+    `{${values.map(floatLiteral).join(", ")}}`;
 
 test("the lowered velocity renderable writes what the pin's writes over a run", async (t) => {
     const tools = optionalNativeFixtureTools(false);

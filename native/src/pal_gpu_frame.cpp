@@ -19,17 +19,13 @@ namespace bbl::pal {
 bool registered_scene_set_changed(const Engine& engine,
                                   const std::vector<std::shared_ptr<Scene>>& planned) {
     std::size_t i = 0;
-    for (const auto& current : composited_scenes(engine)) {
-        if (i == planned.size())
-            return true;
-        if (static_cast<bool>(current) != static_cast<bool>(planned[i])) {
-            return true;
-        }
-        if (current && !current->shares_identity(*planned[i]))
-            return true;
+    bool changed = false;
+    visit_composited_scenes(engine, [&](const std::shared_ptr<Scene>& current) {
+        changed = i == planned.size() || !planned[i] || !current->shares_identity(*planned[i]);
         ++i;
-    }
-    return i != planned.size();
+        return !changed;
+    });
+    return changed || i != planned.size();
 }
 
 bool request_renderer_restart_if_scene_set_changed(
@@ -43,7 +39,7 @@ bool request_renderer_restart_if_scene_set_changed(
     // A realm's animation loop outlives a mode's last scene: an asynchronous replacement
     // can register after this frame. Standalone runs retain their empty-scene exit.
     engine.renderer_restart_requested =
-        !composited_scenes(engine).empty() || engine.offscreen_run != nullptr;
+        composited_root(engine) != nullptr || engine.offscreen_run != nullptr;
     return true;
 }
 

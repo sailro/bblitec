@@ -30,7 +30,6 @@
  */
 import ts from "typescript";
 import type {
-    GeometryTextureTypeName,
     PostProcessOptionValue,
     SsaoLiveSetting,
     SsaoTaskManifest,
@@ -40,11 +39,12 @@ import type {
     MaterialPluginSamplerManifest,
 } from "./pinned-material-plugins.js";
 import {
+    geometryAttachmentDefaultFormat,
     importPinnedModule,
+    pinnedSourceModule,
     requirePinnedModule,
 } from "./pinned-shader-composer.js";
 import {
-    createRecordingDevice,
     RecordedBuffer,
     RecordedTexture,
     RecordedTextureView,
@@ -52,11 +52,26 @@ import {
     type RecordedComputePipeline,
     type RecordedPass,
     type RecordedRenderPass,
-    type Recorder,
 } from "./recording-device.js";
-import { reflectWgslBindings } from "./shader-ir.js";
+import {
+    builtRenderTarget,
+    createRecordingEngine,
+    pinnedCameras,
+    pinnedRenderTargets,
+    plannedLayoutResource,
+    type PinnedTaskRecorder,
+    type PinnedTaskShapes,
+    type PlannedLayoutEntry,
+    type RecordedLayoutEntry,
+} from "./recording-engine.js";
+import {
+    reflectWgslBindings,
+    reflectWgslModule,
+    wgslEntryPoints,
+    wgslSamplesTexture,
+    wgslWorkgroupSize,
+} from "./shader-ir.js";
 import { sharedUpstreamStore } from "./upstream-source.js";
-import { webgpuFlagNamespaces } from "./webgpu-flags.js";
 
 /** The pinned modules the composition and the lowering read. */
 export const SSAO_MODULE = "src/post-process/ssao.ts";
@@ -79,11 +94,6 @@ export const SSAO_INTRINSICS: ReadonlyMap<string, string> = new Map([
     ["enablePbrSsao", SSAO_PBR_MODULE],
     ["enableSsaoMotionPruning", SSAO_PRUNING_MODULE],
 ]);
-
-/** The packaged module path `importPinnedModule` loads for a pinned source. */
-function packaged(module: string): string {
-    return module.replace(/^src\//, "").replace(/\.ts$/, ".js");
-}
 
 /** What generation knows about one reached `createSsaoTask` call. */
 export interface SsaoCompositionRequest {
@@ -133,7 +143,7 @@ export interface SsaoTexturePlan {
     label: string;
     format: string;
     extent: SsaoExtent;
-    /** The pin's AO mip chain (`min(5, floor(log2(max)) + 1)`), or one level. */
+    /** The pin's AO mip chain (`ssao_mip_level_count`), or one level. */
     chain: boolean;
     /** The pin's `GPUTextureUsage` bits. */
     usage: number;
@@ -155,27 +165,6 @@ export interface SsaoViewPlan {
     relative?: true;
 }
 
-export type SsaoBindingKind =
-    | "uniform"
-    | "depth-texture"
-    | "float-texture"
-    | "unfilterable-texture"
-    | "uint-texture"
-    | "storage-texture"
-    | "storage-buffer"
-    | "read-only-storage-buffer"
-    | "filtering-sampler"
-    | "non-filtering-sampler";
-
-export interface SsaoLayoutEntry {
-    binding: number;
-    /** The WGSL identifier declared at the binding. */
-    name: string;
-    kind: SsaoBindingKind;
-    /** A storage texture's format. */
-    storageFormat?: string;
-}
-
 export interface SsaoProgramPlan {
     stage: "compute" | "render";
     wgsl: string;
@@ -186,7 +175,7 @@ export interface SsaoProgramPlan {
     constants: readonly { name: string; value: number }[];
     /** A render program's colour target formats, in attachment order. */
     targets: readonly string[];
-    layout: readonly SsaoLayoutEntry[];
+    layout: readonly PlannedLayoutEntry[];
     /** A compute program's `@workgroup_size` x and y. */
     workgroup?: readonly [number, number];
 }
@@ -270,69 +259,14 @@ export interface ComposedSsaoTask {
     velocityFormat?: string;
 }
 
-/** The descriptor members this composition reads back off the recording. */
-interface SsaoShapes {
-    sampler: {
-        label?: string;
-        minFilter?: string;
-        magFilter?: string;
-        mipmapFilter?: string;
-        addressModeU?: string;
-        addressModeV?: string;
-        addressModeW?: string;
-        compare?: string;
-    };
-    shaderModule: { code: string };
-    bindGroupLayout: { entries: readonly RecordedLayoutEntry[] };
-    pipelineLayout: {
-        bindGroupLayouts: readonly SsaoShapes["bindGroupLayout"][];
-    };
-    renderPipeline: {
-        label?: string;
-        layout: SsaoShapes["pipelineLayout"];
-        vertex: { module: SsaoShapes["shaderModule"]; entryPoint: string };
-        fragment: {
-            module: SsaoShapes["shaderModule"];
-            entryPoint: string;
-            targets: readonly { format: string; blend?: unknown }[];
-            constants?: Readonly<Record<string, number>>;
-        };
-        primitive?: { topology?: string };
-    };
-    bindGroup: {
-        layout: SsaoShapes["bindGroupLayout"] | object;
-        entries: readonly { binding: number; resource: unknown }[];
-    };
-}
-
-interface RecordedLayoutEntry {
-    binding: number;
-    visibility: number;
-    buffer?: { type?: string };
-    texture?: { sampleType?: string };
-    storageTexture?: { access?: string; format?: string };
-    sampler?: { type?: string };
-}
-
-type SsaoRecorder = Recorder<SsaoShapes>;
+type SsaoShapes = PinnedTaskShapes;
+type SsaoRecorder = PinnedTaskRecorder;
 
 /** The source textures composition builds, by label. */
 const DEPTH_LABEL = "bblitec-ssao-depth";
 const NORMAL_LABEL = "bblitec-ssao-normal";
 const VELOCITY_LABEL = "bblitec-ssao-velocity";
 
-interface PinnedRenderTargets {
-    createRenderTarget: (descriptor: Record<string, unknown>) => unknown;
-    buildRenderTarget: (target: unknown, engine: unknown) => void;
-}
-interface PinnedCameras {
-    createArcRotateCamera: (
-        alpha: number,
-        beta: number,
-        radius: number,
-        target: { x: number; y: number; z: number },
-    ) => { nearPlane: number; farPlane: number };
-}
 interface PinnedSsaoTask {
     enabled: boolean;
     _gpu: { samplingFootprint?: number; width: number; height: number } | null;
@@ -364,55 +298,30 @@ interface PinnedMotionMaskModule {
 /** WebGPU defines the device features the browser engine requests; the reference device reports this one. */
 const REFERENCE_DEVICE_FEATURES = ["float32-filterable"];
 
-function recordingEngine(width: number, height: number) {
-    const { device, encoder, recorder } = createRecordingDevice<SsaoShapes>({
-        producer: "ssao",
-        device: [
-            "createShaderModule",
-            "createTexture",
-            "createBuffer",
-            "createSampler",
-            "createBindGroupLayout",
-            "createPipelineLayout",
-            "createRenderPipeline",
-            "createComputePipeline",
-            "createBindGroup",
-        ],
-        queue: ["writeBuffer"],
-        encoder: ["beginRenderPass", "beginComputePass", "clearBuffer"],
-        renderPass: [
-            "setPipeline",
-            "setBindGroup",
-            "draw",
-            "drawIndirect",
-            "end",
-        ],
-        computePass: [
-            "setPipeline",
-            "setBindGroup",
-            "dispatchWorkgroups",
-            "end",
-        ],
-        deviceFields: {
-            // WebGPU's default limit, which the pin's engine requests no change to.
-            limits: { maxTextureDimension2D: 8192 },
-            features: new Set(REFERENCE_DEVICE_FEATURES),
-        },
-    });
-    return {
-        recorder,
-        engine: {
-            canvas: { width, height },
-            msaaSamples: 1,
-            useHighPrecisionMatrix: false,
-            useFloatingOrigin: false,
-            _device: device,
-            _currentEncoder: encoder,
-            _currentDelta: 0,
-            _cbs: [],
-        },
-    };
-}
+/** The calls the pin's factory, enablers, `record()` and `execute()` make. */
+const SSAO_CONTRACT = {
+    producer: "ssao",
+    device: [
+        "createShaderModule",
+        "createTexture",
+        "createBuffer",
+        "createSampler",
+        "createBindGroupLayout",
+        "createPipelineLayout",
+        "createRenderPipeline",
+        "createComputePipeline",
+        "createBindGroup",
+    ],
+    queue: ["writeBuffer"],
+    encoder: ["beginRenderPass", "beginComputePass", "clearBuffer"],
+    renderPass: ["setPipeline", "setBindGroup", "draw", "drawIndirect", "end"],
+    computePass: ["setPipeline", "setBindGroup", "dispatchWorkgroups", "end"],
+    deviceFields: {
+        // WebGPU's default limit, which the pin's engine requests no change to.
+        limits: { maxTextureDimension2D: 8192 },
+        features: new Set(REFERENCE_DEVICE_FEATURES),
+    },
+} as const;
 
 /** One mode recorded at one source extent. */
 interface Recording {
@@ -448,44 +357,37 @@ interface RecordedState {
     pruning?: boolean;
 }
 
-let flagsInstalled = false;
-function installWebGpuFlags(): void {
-    if (flagsInstalled) return;
-    flagsInstalled = true;
-    for (const [name, values] of Object.entries(webgpuFlagNamespaces)) {
-        if (!(name in globalThis))
-            Object.assign(globalThis, { [name]: values });
-    }
-}
-
 async function record(
     request: SsaoCompositionRequest,
     width: number,
     height: number,
     state: RecordedState,
 ): Promise<Recording> {
-    installWebGpuFlags();
     const ssao = await importPinnedModule<PinnedSsaoModule>(
-        packaged(SSAO_MODULE),
+        pinnedSourceModule(SSAO_MODULE),
     );
     const halfModule = await importPinnedModule<PinnedHalfModule>(
-        packaged(SSAO_HALF_MODULE),
+        pinnedSourceModule(SSAO_HALF_MODULE),
     );
-    const targets = await importPinnedModule<PinnedRenderTargets>(
-        "engine/render-target.js",
-    );
-    const cameras = await importPinnedModule<PinnedCameras>(
-        "camera/arc-rotate.js",
-    );
-    const { engine, recorder } = recordingEngine(width, height);
-    const depth = targets.createRenderTarget({
-        lbl: DEPTH_LABEL,
-        format: "rgba16float",
-        dFormat: "depth32float",
-        samples: 1,
-        size: { width, height },
+    const targets = await pinnedRenderTargets();
+    const cameras = await pinnedCameras();
+    const { engine, recorder } = createRecordingEngine(SSAO_CONTRACT, {
+        width,
+        height,
     });
-    targets.buildRenderTarget(depth, engine);
+    const source = (
+        lbl: string,
+        format: string,
+        depthFormat?: string,
+    ): unknown =>
+        builtRenderTarget(targets, engine, {
+            lbl,
+            format,
+            ...(depthFormat !== undefined ? { dFormat: depthFormat } : {}),
+            samples: 1,
+            size: { width, height },
+        });
+    const depth = source(DEPTH_LABEL, "rgba16float", "depth32float");
     let normal: unknown;
     if (state.normal) {
         if (request.normalFormat === undefined) {
@@ -493,13 +395,7 @@ async function record(
                 "An SSAO state with a normal input has no normal format.",
             );
         }
-        normal = targets.createRenderTarget({
-            lbl: NORMAL_LABEL,
-            format: request.normalFormat,
-            samples: 1,
-            size: { width, height },
-        });
-        targets.buildRenderTarget(normal, engine);
+        normal = source(NORMAL_LABEL, request.normalFormat);
     }
     const camera = cameras.createArcRotateCamera(1.8, 1.4, 1.5, {
         x: 0,
@@ -508,16 +404,9 @@ async function record(
     });
     camera.nearPlane = 0.05;
     camera.farPlane = 20;
-    let velocity: unknown;
-    if (request.velocity) {
-        velocity = targets.createRenderTarget({
-            lbl: VELOCITY_LABEL,
-            format: request.velocity.format,
-            samples: 1,
-            size: { width, height },
-        });
-        targets.buildRenderTarget(velocity, engine);
-    }
+    const velocity = request.velocity
+        ? source(VELOCITY_LABEL, request.velocity.format)
+        : undefined;
     // The scene's flat temporal settings, nested as the pin's config declares them.
     const temporal: Record<string, unknown> = {};
     const options: Record<string, unknown> = {};
@@ -560,7 +449,7 @@ async function record(
     if (request.motionPruning) {
         const settings = (
             await importPinnedModule<PinnedPruningModule>(
-                packaged(SSAO_PRUNING_MODULE),
+                pinnedSourceModule(SSAO_PRUNING_MODULE),
             )
         ).enableSsaoMotionPruning(task);
         if (state.pruning !== undefined) settings.enabled = state.pruning;
@@ -584,6 +473,18 @@ async function record(
     const samplingFootprint = task._gpu?.samplingFootprint;
     const workingWidth = task._gpu?.width ?? 0;
     const workingHeight = task._gpu?.height ?? 0;
+    const chainLevels = new Set(
+        recorder.textures
+            .filter(
+                (texture) => !texture.destroyed && texture.mipLevelCount > 1,
+            )
+            .map((texture) => texture.mipLevelCount),
+    );
+    if (chainLevels.size > 1) {
+        throw new Error(
+            `Pinned SSAO sizes its mip chains two ways at ${width}x${height}.`,
+        );
+    }
     task.enabled = false;
     const disabled = frame();
     return {
@@ -645,52 +546,26 @@ function passSignature(passes: readonly RecordedPass<SsaoShapes>[]): string {
         .join("\n");
 }
 
-function layoutKind(
+/** The layout kinds the backends bind, by the WebGPU member that names each. */
+const SSAO_LAYOUT_KINDS = {
+    bufferType: new Set(["uniform", "storage", "read-only-storage"]),
+    sampleType: new Set(["depth", "float", "unfilterable-float", "uint"]),
+    samplerType: new Set(["filtering", "non-filtering"]),
+} as const;
+
+/** A layout entry under its module's identifier, of the kinds the backends bind. */
+function layoutEntry(
     entry: RecordedLayoutEntry,
-): Pick<SsaoLayoutEntry, "kind" | "storageFormat"> {
-    if (entry.buffer) {
-        switch (entry.buffer.type ?? "uniform") {
-            case "uniform":
-                return { kind: "uniform" };
-            case "storage":
-                return { kind: "storage-buffer" };
-            case "read-only-storage":
-                return { kind: "read-only-storage-buffer" };
-        }
-        throw new Error(
-            `Pinned SSAO declared a '${entry.buffer.type}' buffer binding.`,
-        );
-    }
-    if (entry.texture) {
-        switch (entry.texture.sampleType ?? "float") {
-            case "depth":
-                return { kind: "depth-texture" };
-            case "float":
-                return { kind: "float-texture" };
-            case "unfilterable-float":
-                return { kind: "unfilterable-texture" };
-            case "uint":
-                return { kind: "uint-texture" };
-        }
-    }
-    if (entry.storageTexture) {
-        if (
-            (entry.storageTexture.access ?? "write-only") !== "write-only" ||
-            !entry.storageTexture.format
-        ) {
-            throw new Error(
-                "Pinned SSAO declared a storage texture other than a write-only one.",
-            );
-        }
-        return {
-            kind: "storage-texture",
-            storageFormat: entry.storageTexture.format,
-        };
-    }
-    if (entry.sampler) {
-        const type = entry.sampler.type ?? "filtering";
-        if (type === "filtering") return { kind: "filtering-sampler" };
-        if (type === "non-filtering") return { kind: "non-filtering-sampler" };
+    name: string,
+    what: string,
+): PlannedLayoutEntry {
+    const resource = plannedLayoutResource(entry, what);
+    if (resource.storageTexture?.access === "write-only")
+        return { binding: entry.binding, name, ...resource };
+    for (const [member, kinds] of Object.entries(SSAO_LAYOUT_KINDS)) {
+        const kind = resource[member as keyof typeof SSAO_LAYOUT_KINDS];
+        if (kind !== undefined && kinds.has(kind))
+            return { binding: entry.binding, name, ...resource };
     }
     throw new Error(
         `Pinned SSAO declared binding ${entry.binding} of a kind this port does not carry.`,
@@ -708,11 +583,17 @@ function constantsOf(
         );
 }
 
-const WORKGROUP = /@compute\s*@workgroup_size\(\s*(\d+)\s*,\s*(\d+)\s*\)/;
-
-/** The pin's mip chain rule, which the native allocator repeats (asserted here). */
-function pinnedChainLevels(width: number, height: number): number {
-    return Math.min(5, Math.floor(Math.log2(Math.max(width, height))) + 1);
+/** A compute entry point's 2D `@workgroup_size`, as its module declares it. */
+function workgroupOf(
+    wgsl: string,
+    entry: string,
+): readonly [number, number] | undefined {
+    const point = wgslEntryPoints(reflectWgslModule(wgsl), "compute").find(
+        (candidate) => candidate.name === entry,
+    );
+    const size = point ? wgslWorkgroupSize(point) : undefined;
+    if (!size || size.length < 2 || (size[2] ?? 1) !== 1) return undefined;
+    return [size[0]!, size[1]!];
 }
 
 function extentOf(
@@ -905,15 +786,11 @@ class ModeBuilder {
                     "half of it rounded up, nor one texel.",
             );
         }
+        // A chain's level count is the pin's one rule over the working
+        // extent, which generation lowers (`ssao_mip_level_count`) and
+        // `record` checks every chain of a recording takes.
         const chains = new Set(
-            textures.map(({ texture }) =>
-                texture.mipLevelCount === 1
-                    ? false
-                    : texture.mipLevelCount ===
-                        pinnedChainLevels(texture.width, texture.height)
-                      ? true
-                      : undefined,
-            ),
+            textures.map(({ texture }) => texture.mipLevelCount > 1),
         );
         const [chain] = chains;
         if (chains.size !== 1 || chain === undefined) {
@@ -1064,7 +941,7 @@ class ModeBuilder {
 
     /** The resources a group binds, one per layout entry, at every recording. */
     private resources(
-        layout: readonly SsaoLayoutEntry[],
+        layout: readonly PlannedLayoutEntry[],
         groups: readonly SsaoShapes["bindGroup"][],
         what: string,
         level: number | undefined,
@@ -1081,11 +958,7 @@ class ModeBuilder {
                 return found.resource;
             });
             const [first] = bound;
-            if (
-                entry.kind === "uniform" ||
-                entry.kind === "storage-buffer" ||
-                entry.kind === "read-only-storage-buffer"
-            ) {
+            if (entry.bufferType !== undefined) {
                 const buffers = bound.map((resource) => {
                     const buffer =
                         typeof resource === "object" &&
@@ -1108,7 +981,7 @@ class ModeBuilder {
                     }
                     return buffer;
                 });
-                return entry.kind === "uniform"
+                return entry.bufferType === "uniform"
                     ? { kind: "uniform", block: this.composed.uniform(buffers) }
                     : {
                           kind: "buffer",
@@ -1118,10 +991,7 @@ class ModeBuilder {
                           ),
                       };
             }
-            if (
-                entry.kind === "filtering-sampler" ||
-                entry.kind === "non-filtering-sampler"
-            ) {
+            if (entry.samplerType !== undefined) {
                 return {
                     kind: "sampler",
                     sampler: this.composed.sampler(
@@ -1162,7 +1032,7 @@ class ModeBuilder {
         const what = `Pinned SSAO dispatch of '${label}'`;
         const resources = this.resources(plan.layout, groups, what, level);
         const domain = plan.layout.findIndex(
-            (entry) => entry.kind === "storage-texture",
+            (entry) => entry.storageTexture !== undefined,
         );
         if (!plan.workgroup) {
             throw new Error(`${what} runs a module without a 2D workgroup.`);
@@ -1478,56 +1348,83 @@ class ModeBuilder {
 /**
  * The layout WebGPU derives for a pipeline built with `layout: "auto"`, read
  * off its module: buffers by address space and access, textures by type. A
- * float texture the module reads only through `textureLoad` (no sampler is
- * declared) binds as unfilterable-float, which every float format admits.
+ * float texture the module reads only through `textureLoad` binds as
+ * unfilterable-float, which every float format admits.
  */
-function automaticLayout(wgsl: string, what: string): SsaoLayoutEntry[] {
-    const declarations = reflectWgslBindings(wgsl)
+function automaticLayout(wgsl: string, what: string): PlannedLayoutEntry[] {
+    const module = reflectWgslModule(wgsl);
+    return reflectWgslBindings(wgsl)
         .filter((binding) => binding.group === 0)
-        .sort((left, right) => left.binding - right.binding);
-    const sampled = declarations.some((binding) =>
-        (binding.type?.text ?? "").startsWith("sampler"),
-    );
-    return declarations.map((binding): SsaoLayoutEntry => {
-        const type = (binding.type?.text ?? "").replace(/\s+/g, "");
-        const entry = { binding: binding.binding, name: binding.name };
-        if (binding.addressSpace === "uniform")
-            return { ...entry, kind: "uniform" };
-        if (binding.addressSpace === "storage") {
-            return {
-                ...entry,
-                kind:
-                    binding.accessMode === "read_write"
-                        ? "storage-buffer"
-                        : "read-only-storage-buffer",
-            };
-        }
-        if (type.startsWith("texture_depth_2d"))
-            return { ...entry, kind: "depth-texture" };
-        const storage = /^texture_storage_2d<([a-z0-9]+),write>$/.exec(type);
-        if (storage)
-            return {
-                ...entry,
-                kind: "storage-texture",
-                storageFormat: storage[1]!,
-            };
-        if (type === "texture_2d<f32>" && !sampled)
-            return { ...entry, kind: "unfilterable-texture" };
-        if (type === "texture_2d<u32>")
-            return { ...entry, kind: "uint-texture" };
-        throw new Error(
-            `${what} declares binding ${binding.binding} ('${type}'), which an automatic layout this port derives does not carry.`,
-        );
-    });
+        .sort((left, right) => left.binding - right.binding)
+        .map((binding): PlannedLayoutEntry => {
+            const type = (binding.type?.text ?? "").replace(/\s+/g, "");
+            const entry = { binding: binding.binding, name: binding.name };
+            if (binding.addressSpace === "uniform")
+                return { ...entry, bufferType: "uniform" };
+            if (binding.addressSpace === "storage") {
+                return {
+                    ...entry,
+                    bufferType:
+                        binding.accessMode === "read_write"
+                            ? "storage"
+                            : "read-only-storage",
+                };
+            }
+            if (type.startsWith("texture_depth_2d"))
+                return { ...entry, sampleType: "depth" };
+            const storage = /^texture_storage_2d<([a-z0-9]+),write>$/.exec(
+                type,
+            );
+            if (storage)
+                return {
+                    ...entry,
+                    storageTexture: {
+                        access: "write-only",
+                        format: storage[1]!,
+                    },
+                };
+            if (
+                type === "texture_2d<f32>" &&
+                !wgslSamplesTexture(module, binding.name)
+            )
+                return { ...entry, sampleType: "unfilterable-float" };
+            if (type === "texture_2d<u32>")
+                return { ...entry, sampleType: "uint" };
+            throw new Error(
+                `${what} declares binding ${binding.binding} ('${type}'), which an automatic layout this port derives does not carry.`,
+            );
+        });
+}
+
+/**
+ * A table of distinct plain rows, each row's index by its JSON text: the
+ * first insertion of a row appends it, a later equal one answers its index.
+ */
+export class InternTable<T> {
+    public readonly rows: T[] = [];
+    private readonly indices = new Map<string, number>();
+
+    public intern(row: T): number {
+        const key = JSON.stringify(row);
+        const known = this.indices.get(key);
+        if (known !== undefined) return known;
+        this.rows.push(row);
+        this.indices.set(key, this.rows.length - 1);
+        return this.rows.length - 1;
+    }
 }
 
 /** Programs, samplers, uniform blocks, textures and buffers, shared by every mode. */
 class CompositionTables {
-    public readonly programs: SsaoProgramPlan[] = [];
-    public readonly samplers: SsaoSamplerPlan[] = [];
+    private readonly programTable = new InternTable<SsaoProgramPlan>();
+    private readonly samplerTable = new InternTable<SsaoSamplerPlan>();
+    private readonly textureTable = new InternTable<SsaoTexturePlan>();
+    private readonly bufferTable = new InternTable<SsaoBufferPlan>();
+    public readonly programs = this.programTable.rows;
+    public readonly samplers = this.samplerTable.rows;
     public readonly uniforms: { label: string; bytes: number }[] = [];
-    public readonly textures: SsaoTexturePlan[] = [];
-    public readonly buffers: SsaoBufferPlan[] = [];
+    public readonly textures = this.textureTable.rows;
+    public readonly buffers = this.bufferTable.rows;
 
     public constructor(
         /** The pin's `ssaoMotionMaskCellCount`. */
@@ -1539,34 +1436,24 @@ class CompositionTables {
         return this.motionCells(width, height) * 16;
     }
 
-    private static indexOf<T>(table: T[], plan: T): number {
-        const key = JSON.stringify(plan);
-        const found = table.findIndex(
-            (candidate) => JSON.stringify(candidate) === key,
-        );
-        if (found >= 0) return found;
-        table.push(plan);
-        return table.length - 1;
-    }
-
     private program(plan: SsaoProgramPlan): number {
-        return CompositionTables.indexOf(this.programs, plan);
+        return this.programTable.intern(plan);
     }
 
     /** A texture the task owns; the same one in two modes is one entry a mode switch keeps. */
     public texture(plan: SsaoTexturePlan): number {
-        return CompositionTables.indexOf(this.textures, plan);
+        return this.textureTable.intern(plan);
     }
 
     public buffer(plan: SsaoBufferPlan): number {
-        return CompositionTables.indexOf(this.buffers, plan);
+        return this.bufferTable.intern(plan);
     }
 
     private layout(
         layout: SsaoShapes["pipelineLayout"],
         wgsl: string,
         what: string,
-    ): SsaoLayoutEntry[] {
+    ): PlannedLayoutEntry[] {
         if (layout.bindGroupLayouts.length !== 1) {
             throw new Error(`${what} is not laid out as one bind group.`);
         }
@@ -1584,7 +1471,7 @@ class CompositionTables {
                         `${what} lays out binding ${entry.binding}, which its module does not declare.`,
                     );
                 }
-                return { binding: entry.binding, name, ...layoutKind(entry) };
+                return layoutEntry(entry, name, what);
             });
     }
 
@@ -1597,7 +1484,8 @@ class CompositionTables {
                 const module = descriptor.compute
                     .module as SsaoShapes["shaderModule"];
                 const wgsl = module.code;
-                const workgroup = WORKGROUP.exec(wgsl);
+                const entry = descriptor.compute.entryPoint ?? "main";
+                const workgroup = workgroupOf(wgsl, entry);
                 if (!workgroup)
                     throw new Error(
                         "Pinned SSAO compute module declares no 2D workgroup size.",
@@ -1606,7 +1494,7 @@ class CompositionTables {
                 return this.program({
                     stage: "compute",
                     wgsl,
-                    entry: descriptor.compute.entryPoint ?? "main",
+                    entry,
                     constants: constantsOf(descriptor.compute.constants),
                     targets: [],
                     layout:
@@ -1617,7 +1505,7 @@ class CompositionTables {
                                   wgsl,
                                   what,
                               ),
-                    workgroup: [Number(workgroup[1]), Number(workgroup[2])],
+                    workgroup,
                 });
             }),
         );
@@ -1717,7 +1605,7 @@ class CompositionTables {
         const keys = new Set(plans.map((plan) => JSON.stringify(plan)));
         if (keys.size !== 1)
             throw new Error("Pinned SSAO binds a size-dependent sampler.");
-        return CompositionTables.indexOf(this.samplers, plans[0]!);
+        return this.samplerTable.intern(plans[0]!);
     }
 
     public uniform(buffers: readonly RecordedBuffer[]): number {
@@ -1792,10 +1680,16 @@ export async function composeSsaoTask(
     request: SsaoCompositionRequest,
 ): Promise<ComposedSsaoTask> {
     const motionMask = await importPinnedModule<PinnedMotionMaskModule>(
-        packaged(SSAO_MOTION_MASK_MODULE),
+        pinnedSourceModule(SSAO_MOTION_MASK_MODULE),
     );
     const tables = new CompositionTables(motionMask.ssaoMotionMaskCellCount);
     const modes: SsaoModePlan[] = [];
+    const composed = (resolution: "full" | "half", key: SsaoModeKey) =>
+        modes.some(
+            (mode) =>
+                mode.resolution === resolution &&
+                JSON.stringify(mode.key) === JSON.stringify(key),
+        );
     const compose = async (
         extents: readonly [number, number][],
         expectActive: boolean,
@@ -1822,15 +1716,7 @@ export async function composeSsaoTask(
             pruning: first.pruning && first.task.temporal.enabled,
         };
         const resolution = expectActive ? "half" : "full";
-        if (
-            modes.some(
-                (mode) =>
-                    mode.resolution === resolution &&
-                    JSON.stringify(mode.key) === JSON.stringify(key),
-            )
-        ) {
-            return first;
-        }
+        if (composed(resolution, key)) return first;
         const builder = new ModeBuilder(tables, recordings);
         const frames: [SsaoPassPlan[], SsaoPassPlan[]] = [
             builder.frame(0),
@@ -1893,17 +1779,22 @@ export async function composeSsaoTask(
             ? [[HALF_EXTENTS, true] as [readonly [number, number][], boolean]]
             : []),
     ];
+    // A state names its whole key, so one composed already (the initial
+    // one among them) is not recorded again.
     for (const [extents, active] of resolutions)
         for (const quality of qualities)
             for (const normal of normals)
                 for (const temporal of temporals)
-                    for (const pruning of prunings(temporal))
+                    for (const pruning of prunings(temporal)) {
+                        const key = { quality, normal, temporal, pruning };
+                        if (composed(active ? "half" : "full", key)) continue;
                         await compose(extents, active, {
                             quality,
                             normal,
                             temporal,
                             ...(request.motionPruning ? { pruning } : {}),
                         });
+                    }
     return {
         settings,
         uniforms: tables.uniforms,
@@ -1918,43 +1809,25 @@ export async function composeSsaoTask(
     };
 }
 
-/** A geometry attachment's colour format, read from the pin's geometry table. */
-async function geometryAttachmentFormat(
-    attachment: GeometryTextureTypeName,
-): Promise<string> {
-    const types = await importPinnedModule<{
-        GeometryTextureType: Record<string, number>;
-        GEOMETRY_TEXTURE_DESCRIPTIONS: readonly { defaultFormat: string }[];
-    }>("frame-graph/geometry-types.js");
-    const type = types.GeometryTextureType[attachment];
-    const description =
-        type === undefined
-            ? undefined
-            : types.GEOMETRY_TEXTURE_DESCRIPTIONS[type];
-    if (!description) {
-        throw new Error(
-            `Pinned geometry types have no '${attachment}' description.`,
-        );
-    }
-    return description.defaultFormat;
-}
+/** Each composition request's plan, composed once: equal tasks share it. */
+const compositions = new Map<string, Promise<ComposedSsaoTask>>();
 
 /** A reached task's composition, its inputs' formats read from the pin's geometry table. */
-export async function composeSsaoTaskManifest(
+export function composeSsaoTaskManifest(
     manifest: SsaoTaskManifest,
 ): Promise<ComposedSsaoTask> {
-    return composeSsaoTask({
+    const request: SsaoCompositionRequest = {
         options: manifest.options,
         normalFormat:
             manifest.normalAttachment === undefined
                 ? undefined
-                : await geometryAttachmentFormat(manifest.normalAttachment),
+                : geometryAttachmentDefaultFormat(manifest.normalAttachment),
         initialNormal: manifest.initialNormal,
         halfResolution: manifest.halfResolution,
         ...(manifest.velocity
             ? {
                   velocity: {
-                      format: await geometryAttachmentFormat(
+                      format: geometryAttachmentDefaultFormat(
                           manifest.velocity.attachment,
                       ),
                       previousDepth: manifest.velocity.previousDepth,
@@ -1963,7 +1836,14 @@ export async function composeSsaoTaskManifest(
             : {}),
         motionPruning: manifest.motionPruning,
         live: manifest.live,
-    });
+    };
+    const key = JSON.stringify(request);
+    let composed = compositions.get(key);
+    if (!composed) {
+        composed = composeSsaoTask(request);
+        compositions.set(key, composed);
+    }
+    return composed;
 }
 
 /** The members of the plugin `enablePbrSsao` attaches (its scoped wrapper). */
@@ -2010,7 +1890,7 @@ export function ssaoPbrPluginManifest(): MaterialPluginManifest {
     if (ssaoPbrPlugin) return ssaoPbrPlugin;
     const { enablePbrSsao } = requirePinnedModule<{
         enablePbrSsao: (scene: object, task: object) => Promise<void>;
-    }>(packaged(SSAO_PBR_MODULE));
+    }>(pinnedSourceModule(SSAO_PBR_MODULE));
     const { getPbrGroupBuilder } = requirePinnedModule<{
         getPbrGroupBuilder: () => unknown;
     }>("material/pbr/pbr-group-builder.js");

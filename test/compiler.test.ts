@@ -5760,7 +5760,7 @@ test("compiles generated mesh data and the file-texture contract", () => {
     );
     assert.match(
         result.cpp,
-        /bbl::set_material_base_color_file\(v_engine, v_bblite_material_\d+, v_decalTexture\);/,
+        /bbl::set_pbr_texture\(v_engine, v_bblite_material_\d+, bbl::MaterialTextureSlot::base_color, v_decalTexture\);/,
     );
     assert.ok(
         result.manifest.assets.some((asset) =>
@@ -5898,7 +5898,10 @@ test("carries a base-color image's own encoding, either way", () => {
     );
     assert.match(load(""), /bbl::load_file_texture\([^\n]+, false, false\)/);
     for (const options of [", { srgb: true }", ""]) {
-        assert.match(load(options), /bbl::set_material_base_color_file\(/);
+        assert.match(
+            load(options),
+            /bbl::set_pbr_texture\([^;]*MaterialTextureSlot::base_color/,
+        );
     }
 });
 
@@ -5929,7 +5932,7 @@ test("compiles scene17's file ORM and matrix-constructor chain", () => {
     );
     assert.match(
         result.cpp,
-        /bbl::set_material_orm_file\(v_engine, v_bblite_material_\d+, v_ormTex\);/,
+        /bbl::set_pbr_texture\(v_engine, v_bblite_material_\d+, bbl::MaterialTextureSlot::orm, v_ormTex\);/,
     );
     assert.match(
         result.cpp,
@@ -5968,7 +5971,10 @@ test("binds an sRGB file texture in PBR's ORM slot through its own encoding", ()
         labDeployment,
     );
     assert.match(result.cpp, /bbl::load_file_texture\([^;]*, true, false\)/);
-    assert.match(result.cpp, /bbl::set_material_orm_file\(/);
+    assert.match(
+        result.cpp,
+        /bbl::set_pbr_texture\([^;]*MaterialTextureSlot::orm/,
+    );
 });
 
 test("reaches scene transmission only from the pin's transmission calls", () => {
@@ -18221,6 +18227,7 @@ test("compiles Babylon Lite scene 146 geometry outputs and frame graph", () => {
                 "LINEAR_VELOCITY",
             ],
             emitColor: false,
+            velocityFormat: "rgba16float",
         },
     ]);
     assert.match(result.cpp, /bbl::create_geometry_renderer_task/);
@@ -20800,7 +20807,10 @@ test("fuses a mesh-material map/find and replaces an asset occlusion texture bef
         /v_material\.has_value\(\) && bbl::handle_at\([^;]+occlusion_texture\.has_image\(\)/,
     );
     assert.match(result.cpp, /optional_compare[^\n]*== "metalmat"/);
-    assert.match(result.cpp, /bbl::set_pbr_occlusion_solid_texture\(/);
+    assert.match(
+        result.cpp,
+        /bbl::set_pbr_texture\([^;]*MaterialTextureSlot::occlusion, bbl::solid_texture_file\(/,
+    );
     assert.doesNotMatch(result.cpp, /rebuild_material/);
 });
 

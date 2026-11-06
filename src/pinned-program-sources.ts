@@ -19,6 +19,13 @@ import { isRuntimeImport } from "./module-imports.js";
 import { cachedBakeSync, moduleIdentity } from "./bake-cache.js";
 import { compilerRepositoryRoot } from "./repository-root.js";
 import {
+    dynamicImportSpecifier,
+    isPackageImportSpecifier,
+    isRelativeSpecifier,
+    moduleSpecifiers,
+} from "./typescript-module-specifiers.js";
+import {
+    exportedDeclarations,
     readPinFile,
     sharedUpstreamStore,
     type UpstreamSourceStore,
@@ -44,33 +51,15 @@ function packageSpecifier(specifier: string): {
     };
 }
 
-/** Every module specifier a file names: imports, re-exports, `import()` and `import("x")` types. */
-function moduleSpecifiers(file: ts.SourceFile): string[] {
-    const specifiers: string[] = [];
-    const visit = (node: ts.Node): void => {
-        if (
-            (ts.isImportDeclaration(node) || ts.isExportDeclaration(node)) &&
-            node.moduleSpecifier &&
-            ts.isStringLiteral(node.moduleSpecifier)
-        )
-            specifiers.push(node.moduleSpecifier.text);
-        else if (
-            ts.isCallExpression(node) &&
-            node.expression.kind === ts.SyntaxKind.ImportKeyword &&
-            node.arguments[0] &&
-            ts.isStringLiteralLike(node.arguments[0])
-        )
-            specifiers.push(node.arguments[0].text);
-        else if (
-            ts.isImportTypeNode(node) &&
-            ts.isLiteralTypeNode(node.argument) &&
-            ts.isStringLiteral(node.argument.literal)
-        )
-            specifiers.push(node.argument.literal.text);
-        ts.forEachChild(node, visit);
-    };
-    visit(file);
-    return specifiers;
+/**
+ * The specifiers a module's text names, `import("x")` types included, from
+ * a parse of its own that sets no parents and is not kept.
+ */
+function specifierTexts(path: string, text: string): string[] {
+    return moduleSpecifiers(
+        ts.createSourceFile(path, text, ts.ScriptTarget.Latest, false),
+        { importTypes: true },
+    ).map((literal) => literal.text);
 }
 
 /** A virtual module file the program reads. */
@@ -85,7 +74,7 @@ interface VirtualModule {
 
 export class PinnedProgramSources {
     private readonly packages: ReadonlyMap<string, VendoredPackage>;
-    private readonly reach = new Map<string, "vendored" | "none" | "refused">();
+    private reach: ReadonlyMap<string, "vendored" | "refused"> | undefined;
     private readonly specifiers = new Map<string, readonly string[]>();
     private selection:
         | {
@@ -103,51 +92,60 @@ export class PinnedProgramSources {
 
     /** Whether a pinned module compiles as program code (see the module comment). */
     public qualifies(module: string): boolean {
-        return this.reaches(module) === "vendored";
+        return this.reaches().get(module) === "vendored";
     }
 
     /**
-     * What a pinned module's import closure reaches: an available vendored
-     * package and nothing unavailable (`vendored`), no package (`none`), or
-     * a package that is not source-available (`refused`).
+     * What each pinned module's import closure reaches: an available
+     * vendored package and nothing unavailable (`vendored`), or a package
+     * that is not source-available (`refused`); a module reaching no
+     * package is absent. One walk back over the import graph from the
+     * modules naming each kind of package.
      */
-    private reaches(module: string): "vendored" | "none" | "refused" {
-        const known = this.reach.get(module);
-        if (known) return known;
-        const seen = new Set<string>([module]);
-        const pending = [module];
-        const packages = new Set<string>();
-        let refused = false;
-        while (pending.length && !refused) {
-            const current = pending.pop()!;
-            for (const specifier of this.moduleSpecifiers(current)) {
-                if (specifier.startsWith(".")) {
-                    const target = this.store.resolveImport(current, specifier);
-                    if (target && !seen.has(target)) {
-                        seen.add(target);
-                        pending.push(target);
-                    }
-                    continue;
-                }
-                if (specifier.startsWith("#")) continue;
-                const name = packageSpecifier(specifier).name;
-                if (this.packages.get(name)?.available) packages.add(name);
-                else refused = true;
+    private reaches(): ReadonlyMap<string, "vendored" | "refused"> {
+        if (this.reach) return this.reach;
+        const importers = new Map<string, string[]>();
+        const vendored: string[] = [];
+        const refused: string[] = [];
+        for (const module of this.store.listSources())
+            for (const specifier of this.pinnedSpecifiers(module)) {
+                if (isRelativeSpecifier(specifier)) {
+                    const target = this.store.resolveImport(module, specifier);
+                    if (target)
+                        importers.set(target, [
+                            ...(importers.get(target) ?? []),
+                            module,
+                        ]);
+                } else if (!isPackageImportSpecifier(specifier))
+                    (this.packages.get(packageSpecifier(specifier).name)
+                        ?.available
+                        ? vendored
+                        : refused
+                    ).push(module);
             }
-        }
-        const result = refused
-            ? "refused"
-            : packages.size
-              ? "vendored"
-              : "none";
-        this.reach.set(module, result);
-        return result;
+        const reaching = (named: readonly string[]): Set<string> => {
+            const reached = new Set(named);
+            const pending = [...reached];
+            while (pending.length)
+                for (const importer of importers.get(pending.pop()!) ?? [])
+                    if (!reached.has(importer)) {
+                        reached.add(importer);
+                        pending.push(importer);
+                    }
+            return reached;
+        };
+        const reach = new Map<string, "vendored" | "refused">();
+        for (const module of reaching(vendored)) reach.set(module, "vendored");
+        for (const module of reaching(refused)) reach.set(module, "refused");
+        this.reach = reach;
+        return reach;
     }
 
-    private moduleSpecifiers(module: string): readonly string[] {
+    /** The specifiers a pinned module names, in the text the program reads. */
+    private pinnedSpecifiers(module: string): readonly string[] {
         let known = this.specifiers.get(module);
         if (!known) {
-            known = moduleSpecifiers(this.store.getSourceFile(module));
+            known = specifierTexts(module, this.store.getSource(module));
             this.specifiers.set(module, known);
         }
         return known;
@@ -171,22 +169,17 @@ export class PinnedProgramSources {
             ts.ScriptTarget.Latest,
             false,
         );
-        // A type the package's barrel cannot name is the export of the one
-        // qualifying module declaring it.
-        const declaring = new Map<string, string[]>();
-        for (const module of this.store.listSources())
-            if (this.qualifies(module))
-                for (const name of declaredNames(
-                    this.store.getSourceFile(module),
-                ).keys())
-                    declaring.set(name, [
-                        ...(declaring.get(name) ?? []),
-                        module,
-                    ]);
         const exports = new Map<string, string>();
-        for (const name of declaredNames(declarations).keys()) {
+        for (const name of exportedDeclarations(declarations).keys()) {
             const value = this.store.findPublicExport(name)?.modulePath;
-            const owners = declaring.get(name) ?? [];
+            // A type the package's barrel cannot name is the export of the
+            // one qualifying module declaring it.
+            const owners =
+                value === undefined
+                    ? this.store
+                          .declaringModules(name)
+                          .filter((module) => this.qualifies(module))
+                    : [];
             const module =
                 value !== undefined
                     ? this.qualifies(value)
@@ -209,7 +202,7 @@ export class PinnedProgramSources {
             // only where its values are read.
             const visit = (node: ts.Node): void => {
                 let specifier: string | undefined;
-                let runtime = false;
+                let runtime: boolean;
                 if (
                     (ts.isImportDeclaration(node) ||
                         ts.isExportDeclaration(node)) &&
@@ -218,17 +211,12 @@ export class PinnedProgramSources {
                 ) {
                     specifier = node.moduleSpecifier.text;
                     runtime = isRuntimeImport(checker, node);
-                } else if (
-                    ts.isCallExpression(node) &&
-                    node.expression.kind === ts.SyntaxKind.ImportKeyword &&
-                    node.arguments[0] &&
-                    ts.isStringLiteralLike(node.arguments[0])
-                ) {
-                    specifier = node.arguments[0].text;
-                    runtime = true;
+                } else {
+                    specifier = dynamicImportSpecifier(node)?.text;
+                    runtime = specifier !== undefined;
                 }
                 const target =
-                    specifier?.startsWith(".") &&
+                    specifier !== undefined &&
                     this.store.resolveImport(module, specifier);
                 if (target && (runtime || this.qualifies(target)))
                     pending.push(target);
@@ -261,7 +249,7 @@ export class PinnedProgramSources {
             ts.ScriptTarget.Latest,
             false,
         );
-        const removed = [...declaredNames(file)]
+        const removed = [...exportedDeclarations(file)]
             .filter(([name]) => exports.has(name))
             .flatMap(([, statements]) => statements)
             .sort((a, b) => b.pos - a.pos);
@@ -338,14 +326,9 @@ export class PinnedProgramSources {
             const module = this.module(path);
             if (!module) continue;
             found.add(path);
-            for (const specifier of moduleSpecifiers(
-                ts.createSourceFile(
-                    path,
-                    module.text,
-                    ts.ScriptTarget.Latest,
-                    false,
-                ),
-            )) {
+            for (const specifier of module.pinned
+                ? this.pinnedSpecifiers(module.pinned)
+                : specifierTexts(path, module.text)) {
                 const target = this.resolve(specifier, module);
                 if (target && target !== this.declarationsPath())
                     pending.push(target);
@@ -369,7 +352,7 @@ export class PinnedProgramSources {
         containing: VirtualModule,
     ): string | undefined {
         if (containing.pinned) {
-            if (specifier.startsWith(".")) {
+            if (isRelativeSpecifier(specifier)) {
                 const target = this.store.resolveImport(
                     containing.pinned,
                     specifier,
@@ -381,7 +364,8 @@ export class PinnedProgramSources {
             return this.packageEntry(specifier);
         }
         const vendored = containing.vendored!;
-        if (!specifier.startsWith(".")) return this.packageEntry(specifier);
+        if (!isRelativeSpecifier(specifier))
+            return this.packageEntry(specifier);
         const owner = this.packages.get(vendored.name) as AvailablePackage;
         const base = posix
             .normalize(posix.join(posix.dirname(vendored.module), specifier))
@@ -398,46 +382,10 @@ export class PinnedProgramSources {
     private packageEntry(specifier: string): string | undefined {
         const { name, subpath } = packageSpecifier(specifier);
         const vendored = this.packages.get(name);
-        const entry = vendored?.available
-            ? vendored.entries.get(subpath)
-            : undefined;
-        return entry && vendored?.available
-            ? resolve(vendored.root, entry)
-            : undefined;
+        if (!vendored?.available) return undefined;
+        const entry = vendored.entries.get(subpath);
+        return entry === undefined ? undefined : resolve(vendored.root, entry);
     }
-}
-
-/** A declaration file's exported top-level names, with the statements declaring each. */
-function declaredNames(file: ts.SourceFile): Map<string, ts.Statement[]> {
-    const names = new Map<string, ts.Statement[]>();
-    for (const statement of file.statements) {
-        if (
-            !ts.canHaveModifiers(statement) ||
-            !ts
-                .getModifiers(statement)
-                ?.some(
-                    (modifier) => modifier.kind === ts.SyntaxKind.ExportKeyword,
-                )
-        )
-            continue;
-        const declared: string[] = [];
-        if (
-            (ts.isFunctionDeclaration(statement) ||
-                ts.isClassDeclaration(statement) ||
-                ts.isInterfaceDeclaration(statement) ||
-                ts.isTypeAliasDeclaration(statement) ||
-                ts.isEnumDeclaration(statement)) &&
-            statement.name
-        )
-            declared.push(statement.name.text);
-        else if (ts.isVariableStatement(statement))
-            for (const declaration of statement.declarationList.declarations)
-                if (ts.isIdentifier(declaration.name))
-                    declared.push(declaration.name.text);
-        for (const name of declared)
-            names.set(name, [...(names.get(name) ?? []), statement]);
-    }
-    return names;
 }
 
 let shared: PinnedProgramSources | undefined;
@@ -474,6 +422,7 @@ export function pinnedProgramExportNames(): ReadonlySet<string> {
                 .map(moduleIdentity)
                 .join(":"),
             browser: false,
+            buildConditions: true,
             parameters: {},
             inputs,
         },

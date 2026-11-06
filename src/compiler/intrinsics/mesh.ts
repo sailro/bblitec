@@ -974,6 +974,10 @@ function compileSetMeshOpacity(
 ): Value | undefined {
     context.expectArgumentCount(call, 2, 2);
     const mesh = compileMeshOpacityTarget(context, call, "setMeshOpacity");
+    // Composition decorates only the meshes a call can reach.
+    context.sceneManifest.recordMeshOpacityTarget(
+        mesh.sceneMeshIndex ?? mesh.sceneMeshProfileIndex,
+    );
     const opacity = context.compileNumber(argumentAt(call, 1), "double");
     return {
         kind: "void",

@@ -63,6 +63,7 @@ import {
     declaredKey,
     sourceEntry,
     ownParameters,
+    hasExportModifier,
 } from "../compiler/syntax.js";
 import {
     calledDeclaration,
@@ -615,18 +616,6 @@ interface OrderedSlot {
     type?: () => string;
     /** The representation it was rendered in (a natural value or a sink's). */
     via?: string;
-}
-
-function isExported(node: ts.Node): boolean {
-    return (
-        ts.canHaveModifiers(node) &&
-        (ts
-            .getModifiers(node)
-            ?.some(
-                (modifier) => modifier.kind === ts.SyntaxKind.ExportKeyword,
-            ) ??
-            false)
-    );
 }
 
 /** The store path of a program source file. */
@@ -2976,7 +2965,7 @@ export class PinnedRecordModel {
             namespace: (
                 this.schema.exported
                     ? this.schema.exported.has(`${module}#${named.exported}`)
-                    : isExported(named.declared)
+                    : hasExportModifier(named.declared)
             )
                 ? "bbl"
                 : detailNamespace(module),
@@ -3148,7 +3137,7 @@ export class PinnedRecordModel {
             cpp: cppIdentifier(snakeCase(declaration.name.text)),
             // Realm state sits in its own namespace, so no lowered local of
             // the same name hides it.
-            namespace: `${isExported(statement) ? "bbl" : detailNamespace(module)}::realm`,
+            namespace: `${hasExportModifier(statement) ? "bbl" : detailNamespace(module)}::realm`,
             shape,
             ...(initialize ? { initializer: initialize(shape) } : {}),
         };

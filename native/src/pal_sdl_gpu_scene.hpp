@@ -3,6 +3,7 @@
 // each paired with its Dawn twin (pal_dawn_scene_<family>.cpp), compiled as
 // one translation unit (pal_sdl_gpu_scene_all.cpp).
 #pragma once
+#include <bblite/features/geometry_velocity.hpp>
 #include <bblite/features/gpu_retirement.hpp>
 #include <bblite/features/has_billboards.hpp>
 #include <bblite/features/has_clustered_lights.hpp>
@@ -47,6 +48,9 @@
 #if BBLITE_HAS_PBR_RENDERER
 #include <bblite/upstream/render_capabilities.hpp>
 #include <bblite/upstream/renderer_plan.hpp>
+#if BBLITE_MESH_OPACITY
+#include <bblite/upstream/mesh_opacity.hpp>
+#endif
 #endif
 #if BBLITE_HAS_CLUSTERED_LIGHTS
 #include <bblite/upstream/clustered_light.hpp>
@@ -78,6 +82,7 @@
 #include "pal_gpu_surface.hpp"
 #include "pal_gpu_vertex.hpp"
 #include "pal_gpu_materials.hpp"
+#include "pal_gpu_task_outputs.hpp"
 #include "pal_gpu_scene_blocks.hpp"
 #include "pal_gpu_targets.hpp"
 #include "pal_gpu_pipeline.hpp"
@@ -226,11 +231,17 @@ struct GpuMeshResources {
 #endif
 #if BBLITE_MESH_OPACITY
     // The `meshOpacity` block as read-only storage, for a fragment whose
-    // shader compile demoted it out of the four uniform slots: one per
-    // binding policy, so a task drawing the mesh through another material
-    // binds its own, and the value and policy each holds.
-    std::array<SDL_GPUBuffer*, 2> mesh_opacity{};
-    std::array<std::array<float, 2>, 2> mesh_opacity_written{};
+    // shader compile demoted it out of the four uniform slots. As the pin's
+    // `_bindMeshOpacity`, and as each Dawn draw state, a binding of the mesh
+    // through one material owns its own: made by the first draw whose
+    // variant binds it, with that material's policy, and rewritten with the
+    // mesh's live value when the block moves.
+    struct MeshOpacityStorage {
+        MaterialHandle material{};
+        SDL_GPUBuffer* buffer = nullptr;
+        upstream::MeshOpacityUniforms written{};
+    };
+    mutable std::vector<MeshOpacityStorage> mesh_opacity;
 #endif
     SDL_GPUTexture* base_color = nullptr;
     SDL_GPUTexture* metallic_roughness = nullptr;
@@ -476,6 +487,11 @@ struct SecondaryPipelines {
     const std::vector<SDL_GPUGraphicsPipeline*>* shader_a2c = nullptr;
 };
 
+/** Where a shader variant's pipeline at one front face sits in its pipeline vectors. */
+inline std::size_t shader_pipeline_slot(std::uint32_t variant, bool clockwise) {
+    return std::size_t{variant} * 2 + (clockwise ? 1 : 0);
+}
+
 /**
  * The pipeline a non-composed draw binds: a shader material by its variant
  * index. The composed
@@ -540,7 +556,7 @@ struct ShaderTaskPipeline {
     std::vector<SDL_GPUVertexBufferDescription> buffers;
     std::vector<SDL_GPUVertexAttribute> attributes;
     std::map<std::tuple<SDL_GPUTextureFormat, SDL_GPUTextureFormat, SDL_GPUSampleCount, bool,
-                        SDL_GPUCompareOp>,
+                        SDL_GPUCompareOp, bool>,
              OwnedSdlPipeline>
         pipelines;
 
@@ -560,8 +576,9 @@ struct ShaderTaskPipeline {
                               input.vertex_attributes + input.num_vertex_attributes);
     }
 
+    /** `ordinary` and `alpha_to_coverage`: the frame-target pipelines at `clockwise`. */
     SDL_GPUGraphicsPipeline* get(SDL_GPUDevice* device, const ShaderTaskTarget& target, bool cutout,
-                                 SDL_GPUGraphicsPipeline* ordinary,
+                                 bool clockwise, SDL_GPUGraphicsPipeline* ordinary,
                                  SDL_GPUGraphicsPipeline* alpha_to_coverage) {
         const bool coverage =
             alpha_to_coverage_enabled(cutout, gpu_sample_count_value(target.samples));
@@ -575,8 +592,8 @@ struct ShaderTaskPipeline {
             depth_compare == base.depth_stencil_state.compare_op) {
             return coverage ? alpha_to_coverage : ordinary;
         }
-        const auto key =
-            std::make_tuple(target.color, target.depth, target.samples, coverage, depth_compare);
+        const auto key = std::make_tuple(target.color, target.depth, target.samples, coverage,
+                                         depth_compare, clockwise);
         if (const auto found = pipelines.find(key); found != pipelines.end())
             return found->second.get();
         auto info = base;
@@ -598,6 +615,7 @@ struct ShaderTaskPipeline {
         info.depth_stencil_state.enable_depth_write &= info.target_info.has_depth_stencil_target;
         info.multisample_state.sample_count = target.samples;
         info.multisample_state.enable_alpha_to_coverage = coverage;
+        info.rasterizer_state.front_face = gpu_front_face(clockwise);
         OwnedSdlPipeline pipeline{create_sdl_gpu_graphics_pipeline(device, vertex, &info),
                                   {device}};
         if (!pipeline)
@@ -701,14 +719,22 @@ struct GpuScreenSpaceProgram {
  * A PBR velocity renderable's GPU state, by mesh slot: the previous bone
  * palette and morph weights its deformation snapshots, and its `gm` block
  * as a buffer for a vertex stage the shader compile demoted it in (a stage
- * keeping it in a uniform slot reads the history's block directly).
+ * keeping it in a uniform slot reads the history's block directly). Each
+ * resource keeps its own transfer buffer, cycled per write.
  */
 struct GpuPbrVelocity {
+    struct Staging {
+        OwnedSdlTransfer transfer;
+        std::uint32_t bytes = 0;
+    };
     SDL_GPUTexture* bones = nullptr;
     std::uint32_t bone_texels = 0;
     SDL_GPUBuffer* morph = nullptr;
     std::uint32_t morph_bytes = 0;
     SDL_GPUBuffer* block = nullptr;
+    Staging bones_staging;
+    Staging morph_staging;
+    Staging block_staging;
 };
 #endif
 
@@ -802,8 +828,8 @@ struct GpuState : SdlGpuDevice {
     SpriteUiSdlResources ui;
     UiSdlReadableSurface ui_readable_surface;
 #endif
-    // One pipeline (plus an alpha-to-coverage twin) per generated
-    // shader variant, indexed by the variant id from the emitted table.
+    // One pipeline (plus an alpha-to-coverage twin) per generated shader
+    // variant and front face the family winds (`shader_pipeline_slot`).
     std::vector<SDL_GPUGraphicsPipeline*> shader_pipelines;
     std::vector<SDL_GPUGraphicsPipeline*> shader_a2c_pipelines;
     /** Custom-material pipelines for depth shadow targets. */
@@ -831,10 +857,9 @@ struct GpuState : SdlGpuDevice {
     // keys its own pipeline cache by exactly that pair.
     std::vector<EffectPass> effect_tasks;
 #endif
-    SDL_GPUGraphicsPipeline* id_pipeline = nullptr;
-    SDL_GPUGraphicsPipeline* id_double_sided_pipeline = nullptr;
-    SDL_GPUGraphicsPipeline* cluster_pipeline = nullptr;
-    SDL_GPUGraphicsPipeline* cluster_double_sided_pipeline = nullptr;
+    // The id and cluster diagnostics, by `DiagnosticPipeline`.
+    std::array<SDL_GPUGraphicsPipeline*, diagnostic_pipeline_count> id_pipelines{};
+    std::array<SDL_GPUGraphicsPipeline*, diagnostic_pipeline_count> cluster_pipelines{};
     SDL_GPUGraphicsPipeline* blit_pipeline = nullptr;
     SDL_GPUGraphicsPipeline* blit_msaa_pipeline = nullptr;
 #if BBLITE_RENDERER_TRANSMISSION
@@ -1224,6 +1249,16 @@ struct GpuState : SdlGpuDevice {
     }
 #endif
 };
+
+/** A shader draw's pipeline on a task target, at its kind's front face. */
+inline SDL_GPUGraphicsPipeline* shader_task_pipeline(GpuState& state, std::uint32_t variant,
+                                                     upstream::RenderPipelineKind kind,
+                                                     const ShaderTaskTarget& target) {
+    const std::size_t slot = shader_pipeline_slot(variant, kind.clockwise_front_face);
+    return state.shader_task_pipelines.at(variant).get(
+        state.device, target, pipeline_kind_wants_a2c(kind), kind.clockwise_front_face,
+        state.shader_pipelines.at(slot), state.shader_a2c_pipelines.at(slot));
+}
 
 #if BBLITE_RENDERER_TRANSMISSION || BBLITE_RENDER_TASK_TRANSMISSION
 /** A single-sample fullscreen triangle into one colour target: the pin's utility passes. */
@@ -1640,15 +1675,15 @@ void write_pinned_bone_texture(GpuState& state, GpuMesh& mesh, const MeshRecord&
 #if BBLITE_GEOMETRY_VELOCITY
 /**
  * The uploads of a geometry task's PBR velocity renderables
- * (`PbrVelocitySink`), each on its own submission ahead of the frame's: the
- * previous palette into an rgba32float row, the previous weights into a
- * storage buffer, and the `gm` block into its buffer once a demoted stage
- * asked for one (`pbr_velocity_block_buffer`).
+ * (`PbrVelocitySink`), recorded into the frame's command buffer ahead of the
+ * task's pass: the previous palette into an rgba32float row, the previous
+ * weights into a storage buffer, and the `gm` block into its buffer once a
+ * demoted stage asked for one (`pbr_velocity_block_buffer`).
  */
 struct SdlPbrVelocitySink {
     GpuState& state;
     GpuGeometryTask& task;
-    GpuPbrVelocity& resources(MeshHandle mesh);
+    SDL_GPUCommandBuffer* command;
     void block(MeshHandle mesh, std::span<const float> floats);
     void bones(MeshHandle mesh, std::span<const float> floats);
     void morph(MeshHandle mesh, std::span<const float> floats);
@@ -2341,12 +2376,21 @@ void record_ssao_task(GpuState& state, Engine& engine, TaskHandle handle,
                       SDL_GPUTexture* velocity, std::uint32_t velocity_width,
                       std::uint32_t velocity_height, std::uint32_t width, std::uint32_t height,
                       GpuTaskTimingSequence& timing);
-/** The texture a task publishes as `outputTexture`, once it executed. */
-SDL_GPUTexture* ssao_output_texture(GpuState& state, const Engine& engine, TaskHandle handle);
-/** What `enablePbrSsao`'s plugin samples in a pass (`ssao_pbr_sampling`). */
-SDL_GPUTextureSamplerBinding ssao_pbr_binding(GpuState& state, const Engine& engine,
-                                              TaskHandle handle, const ShaderPassMatrices* pass);
 #endif
+
+/** What a plugin texture its owner resolves binds in a pass, and the version it holds under. */
+struct SdlDynamicPluginBinding {
+    SDL_GPUTextureSamplerBinding binding{};
+    std::uint64_t version = 0;
+};
+
+/** A task kind's owner of the textures its tasks publish (`TaskOutputOwners`). */
+struct SdlTaskOutputOwner {
+    SDL_GPUTexture* (*texture)(GpuState&, const Engine&, TaskHandle) = nullptr;
+    SdlDynamicPluginBinding (*plugin)(GpuState&, const Engine&, const MaterialRecord&,
+                                      const ShaderPassMatrices*) = nullptr;
+};
+using SdlTaskOutputOwners = TaskOutputOwners<SdlTaskOutputOwner>;
 
 } // namespace sdl_scene
 #endif

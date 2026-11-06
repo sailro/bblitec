@@ -60,6 +60,12 @@ import type {
     ScenePbrLightmapManifest,
 } from "../types.js";
 import { recordAt } from "../record-access.js";
+import {
+    isStoredTextureHandle,
+    setPbrTextureCpp,
+    storedTextureCpp,
+    type PbrTextureSlot,
+} from "../pbr-texture-slots.js";
 import { shaderUniformSlots } from "../../shader-material-programs.js";
 import { shadowCasterMaterialWrite } from "../shadow-caster-material.js";
 import { knownCondition } from "../values/model.js";
@@ -723,74 +729,32 @@ function compileCreatePbrMaterial(
     if (normal) context.expectSameEngine(baseColor, normal.texture, call);
     context.reachFeature("material:pbr", call);
     context.reachFeature("renderer:scene", call);
-    // Typed Texture2D returns use StoredTexture even when every source return
-    // is a solid or file producer. Realm loads retain their file provenance
-    // while reporting stored representation. Both occupy the FileTexture arm.
-    const fileTexture = (texture: Value): string | undefined => {
-        if (
-            texture.dataType?.kind === "handle" &&
-            texture.dataType.handle === "texture"
-        ) {
-            if (
-                texture.textureStorage !== "solid" &&
-                texture.textureStorage !== "file" &&
-                !texture.textureFile
-            ) {
-                context.fail(
+    // A solid texel is a creation option; any other texture attaches after
+    // creation through its slot, whatever its storage, and the creation
+    // takes the neutral white fallback the pinned fragment samples without
+    // one. The normal slot has no creation fallback: an absent texture
+    // composes no normal-map arm.
+    const attached = (texture: Value, property: string): string | undefined =>
+        texture.textureStorage === "solid" && !isStoredTextureHandle(texture)
+            ? undefined
+            : storedTextureCpp(context, texture, call, property);
+    const slotTextures: [PbrTextureSlot, string | undefined][] = [
+        ["base_color", attached(baseColor, "baseColorTexture")],
+        ["orm", attached(orm, "ormTexture")],
+        [
+            "normal",
+            normal &&
+                storedTextureCpp(
+                    context,
+                    normal.texture,
                     call,
-                    "PBR Texture2D storage requires a known solid or file texture producer.",
-                );
-            }
-            const temporary = context.allocateTemporaryCppName("texture");
-            context.emit({
-                kind: "declaration",
-                type: "const auto",
-                name: temporary,
-                initializer: `std::get<bbl::FileTexture>(${texture.cpp})`,
-            });
-            return temporary;
-        }
-        return texture.textureFile ? texture.cpp : undefined;
-    };
-    const baseColorFile = fileTexture(baseColor);
-    // A `createTexture2DFromPixels` texture is a C++ value rather than a
-    // handle: the record takes a copy of its texels and sampler after
-    // creation, the way a loaded image attaches.
-    const baseColorPixels =
-        baseColor.kind === "texture" && baseColor.textureStorage === "pixels";
-    if (orm.kind === "texture" && orm.textureStorage === "pixels")
-        context.fail(
-            call,
-            "A created PBR material's ormTexture from createTexture2DFromPixels is not supported.",
-        );
-    const ormFile = fileTexture(orm);
-    // The normal slot has no creation fallback: an absent texture composes
-    // no normal-map arm, and a present one is a loaded image the pinned
-    // collector binds with its own sampler.
-    const normalFile = normal ? fileTexture(normal.texture) : undefined;
-    if (normal && !normalFile) {
-        context.fail(
-            call,
-            "A created PBR material's normalTexture must come from loadTexture2D.",
-        );
-    }
-    // A loaded base-color image pairs with the neutral white
-    // factor texel and attaches after creation, carrying its own
-    // encoding: upstream keeps the sRGB/linear choice on the
-    // `Texture2D` `loadTexture2D` built, so the slot samples what
-    // the scene asked for rather than what the family assumes.
-    const baseColorCpp =
-        baseColorFile || baseColorPixels
-            ? "bbl::SolidTexture{bbl::Color4{1.0f, 1.0f, 1.0f, 1.0f}}"
-            : baseColor.cpp;
-    // The pinned PBR fragment always samples its ORM texture. A
-    // loaded image therefore uses the same neutral white creation
-    // fallback as a missing image, then replaces that slot after the
-    // material record exists. loadTexture2D's sampler and invertY
-    // remain on the FileTexture that the attachment moves whole.
-    const ormCpp = ormFile
-        ? "bbl::SolidTexture{bbl::Color4{1.0f, 1.0f, 1.0f, 1.0f}}"
-        : orm.cpp;
+                    "normalTexture",
+                ),
+        ],
+    ];
+    const white = "bbl::SolidTexture{bbl::Color4{1.0f, 1.0f, 1.0f, 1.0f}}";
+    const baseColorCpp = slotTextures[0]![1] ? white : baseColor.cpp;
+    const ormCpp = slotTextures[1]![1] ? white : orm.cpp;
     // Designated rather than positional: the option list is long
     // enough that a member emitted at the wrong index would compile
     // and shade wrong, which is the hazard `CompiledPbrMaterialOptions`
@@ -831,7 +795,7 @@ function compileCreatePbrMaterial(
         `.use_physical_light_falloff = ` +
         `${usePhysicalLightFalloff}, ` +
         `.composition_profile = ${scenePbrMaterialIndex}u})`;
-    if (baseColorFile || baseColorPixels || ormFile || normalFile || plugins) {
+    if (slotTextures.some(([, texture]) => texture) || plugins) {
         const temporary = context.allocateTemporaryCppName("material");
         context.emit({
             kind: "declaration",
@@ -839,30 +803,18 @@ function compileCreatePbrMaterial(
             name: temporary,
             initializer: creation,
         });
-        if (baseColorFile) {
+        for (const [slot, texture] of slotTextures) {
+            if (!texture) continue;
             context.emit({
                 kind: "expression",
-                code: `bbl::set_material_base_color_file(${engine}, ${temporary}, ${baseColorFile});`,
+                code: setPbrTextureCpp(engine, temporary, slot, texture),
             });
         }
-        if (baseColorPixels) {
-            context.reachFeature("material:pbr-base-color-pixels", call);
-            context.boundPixelsTextures.add(baseColor.cpp);
+        // The pin's UBO writer reads the scale for the normal-map arm.
+        if (normal) {
             context.emit({
                 kind: "expression",
-                code: `bbl::set_material_base_color_pixels(${engine}, ${temporary}, ${baseColor.cpp});`,
-            });
-        }
-        if (ormFile) {
-            context.emit({
-                kind: "expression",
-                code: `bbl::set_material_orm_file(${engine}, ${temporary}, ${ormFile});`,
-            });
-        }
-        if (normal && normalFile) {
-            context.emit({
-                kind: "expression",
-                code: `bbl::set_material_normal_file(${engine}, ${temporary}, ${normalFile}, ${normal.scale});`,
+                code: `${recordAt(`${engine}.materials`, temporary)}.normal_texture_scale = ${normal.scale};`,
             });
         }
         if (plugins) {
@@ -1712,7 +1664,7 @@ function compileSetPbrUnlit(
     // is the container's, and `assetWholeMeshList` is the proof that
     // the walk reaching this material reaches every one of them.
     const container = material.assetPbrMaterial
-        ? material.assetWholeMeshList
+        ? material.assetWholeMeshList?.asset
         : undefined;
     if (container) {
         context.assetRegistry.recordAssetSceneUnlit(

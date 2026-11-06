@@ -609,11 +609,11 @@ void save_dawn_geometry_id_buffer(DawnState& state, std::uint32_t width, std::ui
     }
     const WGPUTextureFormat color_format = WGPUTextureFormat_RGBA8Unorm;
     auto& pipelines = cluster_ids ? state.cluster_pipelines : state.id_pipelines;
-    for (int sided = 0; sided < 2; ++sided) {
-        if (!pipelines[sided]) {
-            pipelines[sided] = create_diagnostic_pipeline(
+    for (std::size_t culling = 0; culling < diagnostic_pipeline_count; ++culling) {
+        if (!pipelines[culling]) {
+            pipelines[culling] = create_diagnostic_pipeline(
                 state, cluster_ids ? state.diagnostic_cluster_module : state.diagnostic_id_module,
-                sided == 1, 1, &color_format, 1);
+                static_cast<DiagnosticPipeline>(culling), 1, &color_format, 1);
         }
     }
 
@@ -654,8 +654,8 @@ void save_dawn_geometry_id_buffer(DawnState& state, std::uint32_t width, std::ui
     pass_descriptor.colorAttachments = &color_attachment;
     pass_descriptor.depthStencilAttachment = &depth_attachment;
     DawnRenderPass pass{wgpuCommandEncoderBeginRenderPass(encoder, &pass_descriptor)};
+    WGPURenderPipeline bound_pipeline = nullptr;
     for (int sided_mode = 0; sided_mode < 2; ++sided_mode) {
-        wgpuRenderPassEncoderSetPipeline(pass, pipelines[sided_mode]);
         std::uint32_t cluster_id_base = 1;
         for (std::size_t mesh_index = 0;
              mesh_index < state.meshes.size() && mesh_index < render_plan.size(); ++mesh_index) {
@@ -665,9 +665,13 @@ void save_dawn_geometry_id_buffer(DawnState& state, std::uint32_t width, std::ui
             const std::uint32_t current_cluster_base = cluster.id_start;
             const upstream::RenderItem& item = render_plan[mesh_index];
             const MaterialRecord* material = handle_find(engine.materials, item.material);
-            const bool double_sided = item.cull_mode == upstream::RenderCullMode::none;
-            if (double_sided != (sided_mode == 1))
+            const DiagnosticPipeline culling = diagnostic_pipeline(item);
+            if ((culling == DiagnosticPipeline::double_sided) != (sided_mode == 1))
                 continue;
+            if (pipelines[static_cast<std::size_t>(culling)] != bound_pipeline) {
+                bound_pipeline = pipelines[static_cast<std::size_t>(culling)];
+                wgpuRenderPassEncoderSetPipeline(pass, bound_pipeline);
+            }
 
             const std::array<float, 4> alpha_options = diagnostic_alpha_options(item, material);
             WGPUBufferDescriptor uniform_descriptor = WGPU_BUFFER_DESCRIPTOR_INIT;

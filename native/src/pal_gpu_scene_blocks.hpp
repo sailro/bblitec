@@ -3,6 +3,7 @@
 // and the geometry task's parameters and velocity history.
 #pragma once
 #include <bblite/features/external_renderables.hpp>
+#include <bblite/features/geometry_velocity.hpp>
 #include <bblite/features/has_billboards.hpp>
 #include <bblite/features/has_pbr_renderer.hpp>
 

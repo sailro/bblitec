@@ -169,11 +169,7 @@ import {
     recordFieldIsWritten,
 } from "./record-observations.js";
 import { sceneRelativeSourceLabel } from "../source-location.js";
-import {
-    notJson,
-    staticJsonValue,
-    staticNumberValue,
-} from "./option-helpers.js";
+import { staticJsonValue, staticNumberValue } from "./option-helpers.js";
 import {
     isObjectIdentityFunction,
     numberFromOptionalCpp,
@@ -291,6 +287,7 @@ import {
     isMemberAccess,
     localCallback,
     type LocalCallback,
+    notJson,
 } from "./syntax.js";
 import {
     namespaceMemberName,

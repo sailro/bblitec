@@ -137,7 +137,7 @@ int main(){
     mesh.cpu_streams->indices.reset();bool rejected=false;
     try{bbl::upstream::merge_nav_meshes(engine,meshes);}catch(const std::runtime_error& error){rejected=std::string(error.what())=="${pinnedError('Mesh "${a0}" missing CPU geometry for navmesh')}";}
     assert(rejected);
-    mesh.cpu_streams.reset();geometry.vertices.resize(3);geometry.indices={0,2,1};geometry.source_indices_reversed=true;
+    mesh.cpu_streams.reset();geometry.vertices.resize(3);geometry.indices={0,1,2};
     const auto fallback=bbl::upstream::merge_nav_meshes(engine,{{0}});
     assert(fallback.positions.size()==9&&(fallback.indices==std::vector<std::uint32_t>{0,2,1}));
 }

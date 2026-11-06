@@ -145,6 +145,7 @@ export function materializePinnedText(
             version: "3",
             module: moduleIdentity(import.meta.url),
             browser: false,
+            buildConditions: true,
             parameters: {
                 requestSha256: textSha256(request),
                 modules: modules.map(({ path }) => path),

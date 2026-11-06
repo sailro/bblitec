@@ -527,17 +527,7 @@ DawnMesh upload_dawn_scene_mesh(DawnState& state, Engine& engine,
                                 const upstream::RenderItem& item) {
     const ModelGeometry& geometry = engine.geometries[item.geometry];
     const MeshRecord& mesh_record = handle_at(engine.meshes, item.mesh);
-    const bool use_source_indices = mesh_record.detached_imported_mesh
-#if BBLITE_NODE_GEOMETRY_VARIANTS > 0
-                                    || item.material_kind == upstream::RenderMaterialKind::node
-#endif
-        ;
-    std::vector<std::uint32_t> source_indices;
-    if (use_source_indices && geometry.source_indices_reversed) {
-        node_source_indices(geometry, source_indices);
-    }
-    const auto& upload_indices =
-        source_indices.empty() ? mesh_gpu_indices(geometry) : source_indices;
+    const auto& upload_indices = mesh_gpu_indices(geometry);
     const bool shader_material = item.material_kind == upstream::RenderMaterialKind::shader;
     const std::vector<GpuVertex> vertices = mesh_gpu_vertices(geometry, mesh_record);
     DawnMesh mesh(state);

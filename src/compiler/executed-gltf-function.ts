@@ -17,6 +17,7 @@
  * one of this shape that cannot run at generation refuses.
  */
 import ts from "typescript";
+import { GLB_MAGIC } from "../gltf-document.js";
 import { forEachAnalysisNode } from "./analysis-walk.js";
 import { EmissionWeakMap } from "./emission-transaction.js";
 import { generationBlobBytes } from "./generation-blob.js";
@@ -175,7 +176,7 @@ export function compileExecutedGltfFunctionCall(
                       // The pin tells GLB from JSON by the magic, not the type.
                       const glb =
                           blob.bytes.length >= 4 &&
-                          blob.bytes.readUInt32LE(0) === 0x46546c67;
+                          blob.bytes.readUInt32LE(0) === GLB_MAGIC;
                       return `data:${glb ? "model/gltf-binary" : "model/gltf+json"};base64,${blob.bytes.toString("base64")}`;
                   }
                 : undefined,

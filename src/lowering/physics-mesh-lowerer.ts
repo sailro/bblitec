@@ -13,14 +13,45 @@ import { declaredKey } from "../compiler/syntax.js";
 const modulePath = "src/physics/havok.ts";
 
 /**
- * The order `MeshAccumulator` pushes a triangle's corners to Havok, whose
- * mesh-shape interior optimization wants right-handed winding: a
- * left-handed build reverses each triangle and a right-handed one keeps it.
+ * The order `MeshAccumulator._addNodeMesh` pushes a triangle's corners
+ * `a, b, c` to Havok, read from the build's folded push: a left-handed
+ * build reverses each triangle and a right-handed one keeps it.
  */
 export function physicsTriangleCorners(
     context: LoweringContext,
 ): readonly string[] {
-    return context.store.rightHanded() ? ["a", "b", "c"] : ["c", "b", "a"];
+    const { declaration: owner } = context.classDeclaration(
+        modulePath,
+        "MeshAccumulator",
+    );
+    const method = owner.members.find(
+        (member): member is ts.MethodDeclaration =>
+            ts.isMethodDeclaration(member) &&
+            declaredKey(member.name) === "_addNodeMesh",
+    );
+    const pushes = method
+        ? context.findNodes(
+              method,
+              (node): node is ts.CallExpression =>
+                  ts.isCallExpression(node) &&
+                  context.expressionMatchesShape(
+                      node.expression,
+                      "this._indices.push",
+                  ),
+          )
+        : [];
+    const corners = (pushes.length === 1 ? pushes[0]!.arguments : []).map(
+        (argument) => {
+            const corner = context.unwrapExpression(argument);
+            return ts.isIdentifier(corner) ? corner.text : "";
+        },
+    );
+    if ([...corners].sort().join() !== "a,b,c")
+        return context.contractError(
+            method ?? owner,
+            "Expected MeshAccumulator._addNodeMesh to push each triangle's corners a, b and c once.",
+        );
+    return corners;
 }
 
 const accumulatorContracts = (corners: readonly string[]) =>

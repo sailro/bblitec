@@ -58,7 +58,7 @@ inline void retain_mesh_geometry_snapshot(Engine& engine, MeshHandle mesh,
     const MeshCpuStreamsView streams(record, &geometry);
     geometry.vertices = pack_mesh_vertices(streams.positions, streams.normals, streams.uvs,
                                            streams.uvs2, streams.tangents, streams.colors);
-    geometry.indices = streams.indices.copy_raw();
+    geometry.indices = streams.indices.copy();
     record.has_bounds = minimum.has_value() && maximum.has_value();
     record.has_bounds_min_override = false;
     record.has_bounds_max_override = false;

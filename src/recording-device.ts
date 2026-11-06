@@ -65,7 +65,7 @@ type RenderPassMethod =
     | "end";
 
 /** What one producer lets its pinned factory reach. */
-interface RecordingContract {
+export interface RecordingContract {
     /** Names the producer in every refusal. */
     readonly producer: string;
     readonly device: readonly DeviceMethod[];
@@ -73,8 +73,12 @@ interface RecordingContract {
     readonly encoder?: readonly EncoderMethod[];
     readonly renderPass?: readonly RenderPassMethod[];
     readonly computePass?: readonly ComputePassMethod[];
-    /** Opt into texture-call history; submitted order preserves GPU dependencies. */
-    readonly textureOperations?: "recording" | "submitted";
+    /**
+     * When an encoder's commands join the log: as they are encoded, or when
+     * `queue.submit` runs their command buffer, which is the order a device
+     * runs them against the queue's own uploads.
+     */
+    readonly order?: "encoded" | "submitted";
     /** Data members the pinned code reads off the device (`limits`). */
     readonly deviceFields?: Readonly<Record<string, unknown>>;
 }
@@ -368,11 +372,13 @@ export interface RecordedComputeDispatch<S extends DescriptorShapes> {
 }
 
 /**
- * One pass the encoder began, in encoding order: compute passes with the
- * dispatches they carried and render passes, interleaved as the pin
- * encoded them, which neither per-kind list above can say.
+ * One command the device runs, in the order it runs them: a compute pass
+ * with the dispatches it carried, a render pass, a buffer clear, a texture
+ * copy, or a queue upload into a texture. Every view a producer reads --
+ * the passes, the render passes, the copies, the texture operations -- is
+ * this one log filtered.
  */
-export type RecordedPass<S extends DescriptorShapes> =
+export type RecordedCommand<S extends DescriptorShapes> =
     | {
           readonly kind: "compute";
           readonly label: string;
@@ -384,9 +390,21 @@ export type RecordedPass<S extends DescriptorShapes> =
           readonly buffer: RecordedBuffer;
           readonly offset: number;
           readonly size: number;
+      }
+    | { readonly kind: "copy"; readonly copy: RecordedTextureCopy }
+    | {
+          readonly kind: "upload";
+          readonly texture: RecordedTexture;
+          readonly upload: RecordedTextureUpload;
       };
 
-/** GPU calls in recording order, including transfers between reused textures. */
+/** A pass the encoder began: compute and render passes, and buffer clears. */
+export type RecordedPass<S extends DescriptorShapes> = Extract<
+    RecordedCommand<S>,
+    { kind: "compute" | "render" | "clearBuffer" }
+>;
+
+/** The log's texture calls, each dispatch on its own. */
 type RecordedTextureOperation<S extends DescriptorShapes> =
     | {
           readonly kind: "upload";
@@ -428,10 +446,13 @@ export interface Recorder<S extends DescriptorShapes> {
     readonly renderPipelines: readonly S["renderPipeline"][];
     readonly bindGroups: readonly S["bindGroup"][];
     readonly bufferWrites: readonly RecordedBufferWrite[];
+    /** Every command, in the order the contract's `order` runs them. */
+    readonly commands: readonly RecordedCommand<S>[];
     readonly textureCopies: readonly RecordedTextureCopy[];
     readonly renderPasses: readonly RecordedRenderPass<S>[];
-    /** Every pass the encoder began, compute and render, in encoding order. */
+    /** Every pass the encoder began, compute and render, in order. */
     readonly passes: readonly RecordedPass<S>[];
+    /** Uploads, dispatches and copies, in order. */
     readonly textureOperations: readonly RecordedTextureOperation<S>[];
     /** How many command buffers `queue.submit` received. */
     readonly submitted: number;
@@ -575,11 +596,9 @@ export function createRecordingDevice<
     const renderPipelines: S["renderPipeline"][] = [];
     const bindGroups: S["bindGroup"][] = [];
     const bufferWrites: RecordedBufferWrite[] = [];
-    const textureCopies: RecordedTextureCopy[] = [];
-    const renderPasses: RecordedRenderPass<S>[] = [];
-    const passes: RecordedPass<S>[] = [];
-    const textureOperations: RecordedTextureOperation<S>[] = [];
-    const commandBuffers = new WeakMap<object, RecordedTextureOperation<S>[]>();
+    const commands: RecordedCommand<S>[] = [];
+    const commandBuffers = new WeakMap<object, RecordedCommand<S>[]>();
+    const submittedOrder = contract.order === "submitted";
     let submitted = 0;
 
     const kindOf = (value: unknown): RecordedKind | undefined => {
@@ -687,18 +706,17 @@ export function createRecordingDevice<
 
     const createEncoder = (): object => {
         let finished = false;
-        const commands: RecordedTextureOperation<S>[] = [];
-        const recordCommand = (
-            operation: RecordedTextureOperation<S>,
-        ): void => {
-            if (contract.textureOperations === "submitted") {
-                if (finished)
-                    throw new Error(
-                        `Recording device for '${producer}': command encoder already finished.`,
-                    );
-                commands.push(operation);
-            } else if (contract.textureOperations)
-                textureOperations.push(operation);
+        const encoded: RecordedCommand<S>[] = [];
+        const recordCommand = (command: RecordedCommand<S>): void => {
+            if (!submittedOrder) {
+                commands.push(command);
+                return;
+            }
+            if (finished)
+                throw new Error(
+                    `Recording device for '${producer}': command encoder already finished.`,
+                );
+            encoded.push(command);
         };
         return strictSurface(
             producer,
@@ -711,7 +729,7 @@ export function createRecordingDevice<
                     let pipeline: RecordedComputePipeline | undefined;
                     const groups = new Map<number, S["bindGroup"]>();
                     const dispatches: RecordedComputeDispatch<S>[] = [];
-                    passes.push({
+                    recordCommand({
                         kind: "compute",
                         label: descriptor?.label ?? "",
                         dispatches,
@@ -748,17 +766,11 @@ export function createRecordingDevice<
                                         `Recording device for '${producer}': compute dispatch has no pipeline.`,
                                     );
                                 }
-                                const dispatch = {
+                                dispatches.push({
                                     pipeline,
                                     bindGroups: new Map(groups),
                                     workgroups,
-                                };
-                                dispatches.push(dispatch);
-                                if (contract.textureOperations)
-                                    recordCommand({
-                                        kind: "compute",
-                                        dispatch,
-                                    });
+                                });
                             },
                             end: () => undefined,
                         },
@@ -782,8 +794,7 @@ export function createRecordingDevice<
                         indirectDraws: [],
                         ended: false,
                     };
-                    renderPasses.push(pass);
-                    passes.push({ kind: "render", pass });
+                    recordCommand({ kind: "render", pass });
                     return renderPassSurface(pass);
                 },
                 clearBuffer: (buffer: unknown, offset = 0, size?: number) => {
@@ -791,7 +802,7 @@ export function createRecordingDevice<
                         buffer,
                         "a buffer clear's buffer",
                     );
-                    passes.push({
+                    recordCommand({
                         kind: "clearBuffer",
                         buffer: target,
                         offset,
@@ -811,27 +822,30 @@ export function createRecordingDevice<
                     },
                     size: GpuExtent,
                 ) => {
-                    const copy = {
-                        source: copyLocation(source, "a texture copy's source"),
-                        destination: copyLocation(
-                            destination,
-                            "a texture copy's destination",
-                        ),
-                        size: recordedExtent(size),
-                    };
-                    textureCopies.push(copy);
-                    if (contract.textureOperations)
-                        recordCommand({ kind: "copy", copy });
+                    recordCommand({
+                        kind: "copy",
+                        copy: {
+                            source: copyLocation(
+                                source,
+                                "a texture copy's source",
+                            ),
+                            destination: copyLocation(
+                                destination,
+                                "a texture copy's destination",
+                            ),
+                            size: recordedExtent(size),
+                        },
+                    });
                 },
                 finish: () => {
                     const buffer = {};
-                    if (contract.textureOperations === "submitted") {
+                    if (submittedOrder) {
                         if (finished)
                             throw new Error(
                                 `Recording device for '${producer}': command encoder already finished.`,
                             );
                         finished = true;
-                        commandBuffers.set(buffer, commands);
+                        commandBuffers.set(buffer, encoded);
                     }
                     return buffer;
                 },
@@ -883,12 +897,11 @@ export function createRecordingDevice<
                 size: recordedExtent(size),
             };
             location.texture.uploads.push(upload);
-            if (contract.textureOperations)
-                textureOperations.push({
-                    kind: "upload",
-                    texture: location.texture,
-                    upload,
-                });
+            commands.push({
+                kind: "upload",
+                texture: location.texture,
+                upload,
+            });
         },
         copyExternalImageToTexture: (
             source: unknown,
@@ -912,26 +925,25 @@ export function createRecordingDevice<
                 size: recordedExtent(size),
             };
             location.texture.uploads.push(upload);
-            if (contract.textureOperations)
-                textureOperations.push({
-                    kind: "upload",
-                    texture: location.texture,
-                    upload,
-                });
+            commands.push({
+                kind: "upload",
+                texture: location.texture,
+                upload,
+            });
         },
         submit: (buffers: readonly unknown[]) => {
-            if (contract.textureOperations === "submitted")
+            if (submittedOrder)
                 for (const buffer of buffers) {
                     if (typeof buffer !== "object" || buffer === null)
                         throw new Error(
                             `Recording device for '${producer}': unknown command buffer.`,
                         );
-                    const commands = commandBuffers.get(buffer);
-                    if (!commands)
+                    const encoded = commandBuffers.get(buffer);
+                    if (!encoded)
                         throw new Error(
                             `Recording device for '${producer}': unknown or already submitted command buffer.`,
                         );
-                    textureOperations.push(...commands);
+                    commands.push(...encoded);
                     commandBuffers.delete(buffer);
                 }
             submitted += buffers.length;
@@ -1029,9 +1041,7 @@ export function createRecordingDevice<
         createBindGroup: (descriptor: S["bindGroup"]) =>
             copied("bindGroup", bindGroups, descriptor, "createBindGroup"),
         createCommandEncoder: () =>
-            contract.textureOperations === "submitted"
-                ? createEncoder()
-                : encoder,
+            submittedOrder ? createEncoder() : encoder,
     };
     // A Proxy carries no type of its own; the one assertion in this module
     // names the surface the method table above implements member for member.
@@ -1056,10 +1066,39 @@ export function createRecordingDevice<
             renderPipelines,
             bindGroups,
             bufferWrites,
-            textureCopies,
-            renderPasses,
-            passes,
-            textureOperations,
+            commands,
+            get textureCopies() {
+                return commands.flatMap((command) =>
+                    command.kind === "copy" ? [command.copy] : [],
+                );
+            },
+            get renderPasses() {
+                return commands.flatMap((command) =>
+                    command.kind === "render" ? [command.pass] : [],
+                );
+            },
+            get passes() {
+                return commands.filter(
+                    (command): command is RecordedPass<S> =>
+                        command.kind === "compute" ||
+                        command.kind === "render" ||
+                        command.kind === "clearBuffer",
+                );
+            },
+            get textureOperations() {
+                return commands.flatMap(
+                    (command): RecordedTextureOperation<S>[] =>
+                        command.kind === "compute"
+                            ? command.dispatches.map((dispatch) => ({
+                                  kind: "compute",
+                                  dispatch,
+                              }))
+                            : command.kind === "copy" ||
+                                command.kind === "upload"
+                              ? [command]
+                              : [],
+                );
+            },
             get submitted() {
                 return submitted;
             },
@@ -1075,10 +1114,7 @@ export function createRecordingDevice<
                     renderPipelines,
                     bindGroups,
                     bufferWrites,
-                    textureCopies,
-                    renderPasses,
-                    passes,
-                    textureOperations,
+                    commands,
                 ])
                     entries.length = 0;
                 submitted = 0;

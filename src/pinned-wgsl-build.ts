@@ -83,6 +83,7 @@ export function pinnedTaggedWgslTransform(
                 version: "1",
                 module: moduleIdentity(import.meta.url),
                 browser: false,
+                buildConditions: false,
                 parameters: { typescript: ts.version },
                 inputs: [source],
             },

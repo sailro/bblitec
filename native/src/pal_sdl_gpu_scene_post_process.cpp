@@ -8,6 +8,10 @@
 
 #include "pal_sdl_gpu_scene.hpp"
 
+#if BBLITE_HAS_PBR_RENDERER && BBLITE_HAS_SCREEN_SPACE
+#include "pal_sdl_gpu_pinned_program.hpp"
+#endif
+
 namespace bbl::pal {
 inline namespace sdl_scene {
 
@@ -101,23 +105,10 @@ GpuScreenSpaceProgram build_screen_space_program(GpuState& state, std::uint32_t 
                                        program.fragment_slots);
     // The pin builds each stage against its own single-sample target
     // format with no blend and a triangle list (`ensureProducerPipeline`).
-    SDL_GPUColorTargetDescription target{};
-    target.format = texture_format(info.target_format);
-    SDL_GPUGraphicsPipelineCreateInfo pipeline_info{};
-    pipeline_info.vertex_shader = vertex_shader.get();
-    pipeline_info.fragment_shader = fragment_shader.get();
-    pipeline_info.primitive_type = SDL_GPU_PRIMITIVETYPE_TRIANGLELIST;
-    pipeline_info.rasterizer_state.fill_mode = SDL_GPU_FILLMODE_FILL;
-    pipeline_info.rasterizer_state.cull_mode = SDL_GPU_CULLMODE_NONE;
-    pipeline_info.multisample_state.sample_count = SDL_GPU_SAMPLECOUNT_1;
-    pipeline_info.target_info.color_target_descriptions = &target;
-    pipeline_info.target_info.num_color_targets = 1;
-    program.pipeline = OwnedSdlPipeline{
-        create_sdl_gpu_graphics_pipeline(state.device, vertex_shader, &pipeline_info),
-        {state.device}};
-    if (!program.pipeline) {
-        gpu_error("SDL_CreateGPUGraphicsPipeline screen-space");
-    }
+    const SDL_GPUTextureFormat target = texture_format(info.target_format);
+    program.pipeline = create_sdl_fullscreen_pipeline(state.device, vertex_shader, fragment_shader,
+                                                      std::span(&target, 1),
+                                                      "SDL_CreateGPUGraphicsPipeline screen-space");
     // The sidecar names the fragment textures the compaction kept, in slot
     // order; each is matched to the pin's own binding once here, so the
     // frame path indexes roles rather than comparing names.
@@ -125,14 +116,14 @@ GpuScreenSpaceProgram build_screen_space_program(GpuState& state, std::uint32_t 
         throw std::runtime_error("A screen-space stage exceeds 8 textures.");
     }
     for (const std::string& name : program.fragment_slots.textures) {
-        std::size_t declared = info.binding_count;
-        for (std::size_t index = 0; index < info.binding_count; ++index) {
+        std::size_t declared = info.bindings.size();
+        for (std::size_t index = 0; index < info.bindings.size(); ++index) {
             if (name == info.bindings[index].name) {
                 declared = index;
                 break;
             }
         }
-        if (declared == info.binding_count) {
+        if (declared == info.bindings.size()) {
             throw std::runtime_error("Screen-space stage declares a texture the pin did not "
                                      "bind: " +
                                      name);

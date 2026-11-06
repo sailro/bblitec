@@ -42,7 +42,6 @@ test("a method outside the producer's contract refuses naming both", () => {
 test("compute recording preserves uploads and per-dispatch bindings when scratch textures are reused", () => {
     const { device, encoder, recorder } = createRecordingDevice({
         producer: "compute-transfers",
-        textureOperations: "recording",
         device: [
             "createTexture",
             "createShaderModule",
@@ -186,7 +185,6 @@ test("compute recording preserves uploads and per-dispatch bindings when scratch
 test("compute passes refuse uncontracted calls, foreign resources and missing pipelines", () => {
     const { device, encoder, recorder } = createRecordingDevice({
         producer: "compute-refusals",
-        textureOperations: "recording",
         device: ["createComputePipeline", "createBindGroup"],
         encoder: ["beginComputePass"],
         computePass: ["setPipeline", "setBindGroup", "dispatchWorkgroups"],
@@ -239,7 +237,7 @@ test("submitted texture recording follows queue order and rejects command-buffer
         device: ["createTexture", "createCommandEncoder"],
         queue: ["writeTexture", "submit"],
         encoder: ["copyTextureToTexture", "finish"],
-        textureOperations: "submitted",
+        order: "submitted",
     });
     const textures = Array.from({ length: 3 }, () =>
         device.createTexture({ size: [1, 1], format: "rgba8unorm", usage: 3 }),
@@ -400,7 +398,13 @@ test("textures carry their descriptor in both extent spellings and their uploads
         { width: 64, height: 64 },
     );
     assert.deepEqual(recorder.textures, [cube, flat]);
-    assert.equal(recorder.textureOperations.length, 0);
+    // The one command log holds both uploads, in call order.
+    assert.deepEqual(
+        recorder.commands.map((command) =>
+            command.kind === "upload" ? command.texture : undefined,
+        ),
+        [flat, cube],
+    );
     assert.equal(flat.uploads.length, 1);
     const upload = flat.uploads[0]!;
     assert.equal(upload.kind, "write");

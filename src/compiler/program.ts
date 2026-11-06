@@ -1,12 +1,12 @@
 import { compilerRepositoryRoot } from "../repository-root.js";
-import { dirname, resolve, sep } from "node:path";
+import { dirname, resolve } from "node:path";
 import ts from "typescript";
 import { compilerPackageTypings, isBabylonModule } from "./symbols.js";
 import type { HostPageProgram } from "./types.js";
 import { hostPageServedFile } from "../host-page.js";
 import { sharedPinnedContext } from "../lowering/context.js";
 import {
-    isLibraryTyping,
+    isInstalledPackageFile,
     libraryTypingFile,
 } from "../typescript-library-files.js";
 import { repositoryRelativePath } from "../upstream-source.js";
@@ -168,13 +168,12 @@ export interface CompilerProgram {
  * program code (`pinned-program-sources.ts`).
  */
 function importsPinnedProgramSource(program: ts.Program): boolean {
-    const nodeModules = `${sep}node_modules${sep}`;
     return program
         .getSourceFiles()
         .some(
             (file) =>
                 !file.isDeclarationFile &&
-                !resolve(file.fileName).includes(nodeModules) &&
+                !isInstalledPackageFile(file.fileName) &&
                 file.statements.some(
                     (statement) =>
                         (ts.isImportDeclaration(statement) ||
@@ -331,7 +330,7 @@ export function createCompilerProgram(
                           onError,
                           shouldCreateNewSourceFile,
                       );
-            return isLibraryTyping(path)
+            return isInstalledPackageFile(path)
                 ? libraryTypingFile(
                       babylon && pinnedSources
                           ? `${path}?program-sources`
@@ -462,7 +461,6 @@ export function createCompilerProgram(
             `Unable to create TypeScript program for '${fileName}'.`,
         );
     }
-    const nodeModules = `${sep}node_modules${sep}`;
     // The page itself is read in place of its synthesized loader module and
     // inline scripts; an external classic script is a file of its own.
     const localFiles = program
@@ -472,7 +470,7 @@ export function createCompilerProgram(
         )
         .filter((path) => path !== loaderName && !inlineStartup.has(path))
         .concat(page ? [resolve(page.path)] : [])
-        .filter((path) => !path.includes(nodeModules))
+        .filter((path) => !isInstalledPackageFile(path))
         .map((path) => repositoryRelativePath(repositoryRoot, path))
         .sort();
     const loaderFile = loaderName && program.getSourceFile(loaderName);

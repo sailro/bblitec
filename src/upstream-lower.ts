@@ -201,6 +201,11 @@ import {
     type SsaoLoweringInput,
 } from "./lowering/ssao-lowerer.js";
 import { GeometryVelocityLowerer } from "./lowering/geometry-velocity-lowerer.js";
+import {
+    GEOMETRY_DEFORMATION_VELOCITY_MODULE,
+    GEOMETRY_VELOCITY_MODULE,
+    PBR_GEOMETRY_VELOCITY_MODULE,
+} from "./pinned-geometry-velocity.js";
 import type { FlowGraphAssetPrograms } from "./pinned-flow-graph.js";
 import type {
     ComposedScreenSpaceStage,
@@ -868,7 +873,7 @@ function shaderDeclaration(
     };
 }
 
-interface ComposedShader {
+export interface ComposedShader {
     output: string;
     data: string;
     /** Defaults to the repository-owned shader family. */
@@ -1776,15 +1781,15 @@ ${lowerThinInstanceSync(context)}
             );
             generated.push(
                 {
-                    modulePath: "src/frame-graph/enable-geometry-velocity.ts",
+                    modulePath: GEOMETRY_VELOCITY_MODULE,
                     symbolName: "enableGeometryVelocity",
                 },
                 {
-                    modulePath: "src/material/pbr/pbr-geometry-velocity.ts",
+                    modulePath: PBR_GEOMETRY_VELOCITY_MODULE,
                     symbolName: "createPbrGeometryVelocity",
                 },
                 {
-                    modulePath: "src/material/geometry-deformation-velocity.ts",
+                    modulePath: GEOMETRY_DEFORMATION_VELOCITY_MODULE,
                     symbolName: "createGeometryDeformationVelocity",
                 },
             );
@@ -1804,9 +1809,6 @@ ${lowerThinInstanceSync(context)}
         emitReached("upstream/src/material_pbr.cpp", () =>
             factories.lowerPbrMaterialFactory({
                 alphaCutoff: features.includes("material:pbr-alpha-cutoff"),
-                pixelsBaseColor: features.includes(
-                    "material:pbr-base-color-pixels",
-                ),
             }),
         );
         emitReached("upstream/src/local_cubemap.cpp", () =>
@@ -3384,28 +3386,7 @@ ${wgsl}`,
             "upstream/include/bblite/upstream/ssao_plan.hpp",
             lowerer.planHeader(),
         );
-        for (const module of lowerer.shaderModules()) {
-            composedShaders.push({
-                output: module.output,
-                data: module.data,
-                family: "pinnedModule",
-                entryPoint: module.entryPoint,
-                ...(module.namedConstants.length
-                    ? { namedConstants: module.namedConstants }
-                    : {}),
-                ...(module.alsoStages
-                    ? {
-                          alsoStages: module.alsoStages.map((stage) => ({
-                              stem: stage.stem,
-                              entryPoint: stage.entryPoint,
-                              ...(stage.namedConstants.length
-                                  ? { namedConstants: stage.namedConstants }
-                                  : {}),
-                          })),
-                      }
-                    : {}),
-            });
-        }
+        composedShaders.push(...lowerer.shaderModules());
     }
 
     private emitRendererPostProcess(

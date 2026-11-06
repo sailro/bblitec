@@ -85,8 +85,6 @@ import {
     floatLiteral as cppFloatLiteral,
 } from "../cpp-literals.js";
 import {
-    jsonScalarLiteral,
-    notJson,
     selectedStaticExpression,
     selectedStaticNumberValue,
     staticNumberValue,
@@ -132,6 +130,8 @@ import {
     regularExpressionParts,
     type SupportedFunction,
     variableKind,
+    jsonScalarLiteral,
+    notJson,
 } from "./syntax.js";
 import {
     JS_BITWISE_FUNCTIONS,

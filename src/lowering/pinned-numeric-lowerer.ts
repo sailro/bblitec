@@ -141,6 +141,7 @@ const TYPEOF_OBJECT_TYPES: ReadonlySet<PinnedBinding["type"]> = new Set<
     "record-list",
     "function-list",
     "string-set",
+    "string-list",
 ]);
 
 /** The typed arrays a body can own, alias and reseat: sized storage, not views. */
@@ -463,6 +464,11 @@ export interface PinnedBinding {
         | "record-list"
         /** A `std::string` the body reads, compares and concatenates. */
         | "string"
+        /**
+         * A list of strings (`SingleLightType[]`): `std::vector<std::string>`,
+         * whose `includes`, `push` and `slice()` are JavaScript's own.
+         */
+        | "string-list"
         /**
          * The pin's `new Set<string>()`: `bbl::js::Set<std::string>`, which
          * keeps JavaScript's insertion order for `add`, `size` and
@@ -2788,6 +2794,29 @@ export class PinnedNumericLowerer {
      * ties keep is the order they were pushed in, and the comparator's
      * `< 0` is the "a before b" its spec reads.
      */
+    private stringListCall(node: ts.CallExpression): string | undefined {
+        const callee = unwrapExpression(node.expression);
+        if (!ts.isPropertyAccessExpression(callee)) return undefined;
+        const list = this.binding(unwrapExpression(callee.expression));
+        if (list?.type !== "string-list") return undefined;
+        const method = callee.name.text;
+        if (method === "includes" && node.arguments.length === 1) {
+            const value = this.stringExpression(node.arguments[0]!);
+            return `(std::find(${list.cpp}.begin(), ${list.cpp}.end(), ${value}) != ${list.cpp}.end())`;
+        }
+        if (method === "push" && node.arguments.length > 0) {
+            const pushes = node.arguments.map(
+                (argument) =>
+                    `${list.cpp}.push_back(${this.stringExpression(argument)})`,
+            );
+            return pushes.length === 1 ? pushes[0]! : `(${pushes.join(", ")})`;
+        }
+        // `slice()` copies the whole list.
+        if (method === "slice" && node.arguments.length === 0)
+            return `std::vector<std::string>(${list.cpp})`;
+        return this.fail(node, `string list '${method}'`);
+    }
+
     private recordListCall(node: ts.CallExpression): string | undefined {
         const callee = unwrapExpression(node.expression);
         if (!ts.isPropertyAccessExpression(callee)) return undefined;
@@ -3279,6 +3308,15 @@ export class PinnedNumericLowerer {
                     parts.push(stringLiteral(span.literal.text));
             }
             return `(${parts.join(" + ")})`;
+        }
+        // `String(value)` converts as a template span does.
+        if (
+            ts.isCallExpression(node) &&
+            ts.isIdentifier(node.expression) &&
+            node.expression.text === "String" &&
+            node.arguments.length === 1
+        ) {
+            return this.stringExpression(node.arguments[0]!);
         }
         if (
             ts.isCallExpression(node) &&
@@ -3935,6 +3973,8 @@ export class PinnedNumericLowerer {
             return this.binary(node);
         }
         if (ts.isObjectLiteralExpression(node)) {
+            const contextual = this.contextualRecordType(node);
+            if (contextual) return this.recordValueOf(node, contextual);
             if (this.scope.recordLiteral) {
                 return this.recordLiteral(node, this.scope.recordLiteral);
             }
@@ -3943,6 +3983,21 @@ export class PinnedNumericLowerer {
             }
         }
         return undefined;
+    }
+
+    /**
+     * The record type an unannotated object literal takes from where it is
+     * used (an argument, the default of a `??`): its contextual type's name,
+     * looked up as an annotation would be.
+     */
+    private contextualRecordType(
+        node: ts.ObjectLiteralExpression,
+    ): PinnedRecordShape | undefined {
+        const types = this.scope.recordTypes;
+        if (!types) return undefined;
+        const type = pinnedCheckerOf(this.file).getContextualType(node);
+        const name = type?.aliasSymbol?.name ?? type?.getSymbol()?.name;
+        return name ? types.get(name) : undefined;
     }
 
     /**
@@ -4486,6 +4541,15 @@ export class PinnedNumericLowerer {
             callShapeOf(this.scope.callShapes, node) === "bool"
         )
             return "boolean";
+        // A string list's membership test.
+        if (
+            ts.isCallExpression(node) &&
+            ts.isPropertyAccessExpression(node.expression) &&
+            node.expression.name.text === "includes" &&
+            this.binding(unwrapExpression(node.expression.expression))?.type ===
+                "string-list"
+        )
+            return "boolean";
         if (
             node.kind === ts.SyntaxKind.TrueKeyword ||
             node.kind === ts.SyntaxKind.FalseKeyword ||
@@ -4716,6 +4780,8 @@ export class PinnedNumericLowerer {
     private call(node: ts.CallExpression): string {
         const recordListCall = this.recordListCall(node);
         if (recordListCall !== undefined) return recordListCall;
+        const stringListCall = this.stringListCall(node);
+        if (stringListCall !== undefined) return stringListCall;
         const callee = node.expression;
         // A lowered callee takes its numbers as double; a counted loop's
         // `std::int64_t` index is the one binding that is not one yet.

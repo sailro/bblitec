@@ -74,6 +74,10 @@ export function lowerMeshFeatures(context: LoweringContext): string {
             // (mesh-opacity.ts), the mirrored opt-in's through the winding.
             // This word is the attribute and pool half its callers ask for.
             "_meshFeatureExtra",
+            // The loader's primitive bits travel on the render item: its
+            // topology, and the winding mark each family's front face
+            // follows (`render_pipeline_clockwise`).
+            "mesh._primitiveFeatures",
         ].map((name) => [name, absentBinding()] as const),
         [
             "receiveShadows",
@@ -109,19 +113,6 @@ export function lowerMeshFeatures(context: LoweringContext): string {
             return jsToUint32Call(numeric.expression(expression));
         },
         statement(node) {
-            // A right-handed build ORs in the loader's winding bit. Native
-            // feature words carry no winding bit, as for the mirrored opt-in's
-            // `_meshFeatureExtra` above: the mesh's `clockwise_front_face`
-            // carries it to the pipeline kind.
-            if (
-                context.store.rightHanded() &&
-                ts.isExpressionStatement(node) &&
-                context.expressionMatchesShape(
-                    node.expression,
-                    "features |= ((mesh as Mesh & { _primitiveFeatures?: number })._primitiveFeatures ?? 0) & (1 << 11)",
-                )
-            )
-                return [];
             if (
                 ts.isVariableStatement(node) &&
                 node.declarationList.declarations.length === 1

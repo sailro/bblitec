@@ -238,6 +238,9 @@ const loaderOverlaySettle: ReferenceSettle = {
     settleMilliseconds: 1000,
 };
 
+/** The bundler condition a right-handed program builds under (`#coordinate-system`). */
+const RIGHT_HANDED_CONDITION = "babylon-lite-rh";
+
 const authoredInputs: readonly SceneInput[] = [
     {
         id: "primitives",
@@ -4756,6 +4759,55 @@ const authoredInputs: readonly SceneInput[] = [
         },
     },
     {
+        // Standard, Shader and Node materials on plain and mirrored,
+        // back-culling and double-sided glTF cubes: each family winds the
+        // loader's mark as its folded pipeline descriptor states.
+        id: "regression-gltf-material-winding",
+        name: "Regression - glTF Material Winding",
+        source: "examples/regression-gltf-material-winding.ts",
+        sourceOrigin: "bblitec-regression",
+        title: "Babylon Lite Native - glTF Material Winding",
+        parity: {
+            maxFullMad: 0.001,
+            maxForegroundMad: 0.001,
+            // The scene clears to (0.1, 0.11, 0.16): 26, 28, 41 in 8-bit.
+            backgroundColor: [26, 28, 41],
+            backgroundThreshold: 30,
+        },
+    },
+    {
+        id: "regression-gltf-material-winding-right-handed",
+        name: "Regression - glTF Material Winding (Right-Handed)",
+        source: "examples/regression-gltf-material-winding.ts",
+        sourceOrigin: "bblitec-regression",
+        title: "Babylon Lite Native - glTF Material Winding (Right-Handed)",
+        conditions: [RIGHT_HANDED_CONDITION],
+        parity: {
+            maxFullMad: 0.001,
+            maxForegroundMad: 0.001,
+            // The scene clears to (0.1, 0.11, 0.16): 26, 28, 41 in 8-bit.
+            backgroundColor: [26, 28, 41],
+            backgroundThreshold: 30,
+        },
+    },
+    {
+        // A right-handed ShaderMaterial on a mirrored procedural mesh under
+        // the mirrored-mesh opt-in, which keeps its winding mark live.
+        id: "regression-right-handed-shader-winding",
+        name: "Regression - Right-Handed Shader Winding",
+        source: "examples/regression-right-handed-shader-winding.ts",
+        sourceOrigin: "bblitec-regression",
+        title: "Babylon Lite Native - Right-Handed Shader Winding",
+        conditions: [RIGHT_HANDED_CONDITION],
+        parity: {
+            maxFullMad: 0.001,
+            maxForegroundMad: 0.001,
+            // The scene clears to (0.1, 0.11, 0.16): 26, 28, 41 in 8-bit.
+            backgroundColor: [26, 28, 41],
+            backgroundThreshold: 30,
+        },
+    },
+    {
         id: "regression-gltf-step-animation",
         name: "Regression - glTF STEP Animation",
         source: "examples/regression-gltf-step-animation.ts",
@@ -4833,6 +4885,20 @@ const authoredInputs: readonly SceneInput[] = [
             maxFullMad: 0.001,
             maxForegroundMad: 0.002,
             backgroundColor: [29, 29, 29],
+            backgroundThreshold: 30,
+        },
+    },
+    {
+        id: "regression-overlay-gpu-timing",
+        name: "Regression - Overlay Under GPU Task Timing",
+        source: "examples/regression-overlay-gpu-timing.ts",
+        sourceOrigin: "bblitec-regression",
+        title: "Babylon Lite Native - Overlay Under GPU Task Timing",
+        parity: {
+            // The overlay's own scene task composites into the root's.
+            maxFullMad: 0.001,
+            maxForegroundMad: 0.002,
+            backgroundColor: [26, 31, 51],
             backgroundThreshold: 30,
         },
     },
@@ -5800,87 +5866,68 @@ const authoredInputs: readonly SceneInput[] = [
 ];
 
 /**
- * The pin's right-handed twins: each lab file only imports its base scene,
- * and the program builds under `babylon-lite-rh`. A twin takes its base
- * entry's pose and gates, with its own id, source and conditions.
+ * The pin's right-handed twins: the corpus scenes its `scene-config.json`
+ * marks `rightHanded` (`upstream-corpus.ts`), which the lab builds under
+ * `babylon-lite-rh` and whose lab file only imports its base scene. A twin
+ * takes its base entry's pose and gates, with its own id, source and
+ * conditions, and the gates it measures apart.
  */
-const rightHandedTwins: readonly (readonly [
-    twin: number,
-    base: number,
-    gates?: Pick<
-        SceneParityDefinition,
-        "maxFullMad" | "maxForegroundMad" | "dawnThresholds"
-    >,
-])[] = [
-    [321, 2],
-    [322, 5],
-    [323, 13],
-    [324, 28],
-    [325, 38],
-    [326, 11],
-    [327, 25],
-    [328, 250],
-    [329, 266],
-    [330, 268],
-    [331, 270],
-    [332, 4],
-    [333, 214],
-    [334, 72],
-    [335, 60],
-    [336, 159],
-    [337, 54],
-    [338, 94],
-    [339, 223],
-    [340, 225],
-    [341, 91],
-    [342, 265],
+
+const rightHandedGates: Readonly<
+    Record<
+        string,
+        Pick<
+            SceneParityDefinition,
+            "maxFullMad" | "maxForegroundMad" | "dawnThresholds"
+        >
+    >
+> = {
     // MEASURED: SDL_GPU 0.0005/0.0005 (71 px on the steps behind the bench,
     // max 34), Dawn exact; the base scene's SDL_GPU residual is the same
     // backend-only class (25 px, max 10).
-    [
-        343,
-        24,
-        {
-            maxFullMad: 0.001,
-            maxForegroundMad: 0.001,
-            dawnThresholds: { maxFullMad: 0.0002, maxForegroundMad: 0.0002 },
-        },
-    ],
-    [344, 143],
-    [345, 103],
-    [346, 149],
-    [347, 9],
-    [353, 230],
-];
+    scene343: {
+        maxFullMad: 0.001,
+        maxForegroundMad: 0.001,
+        dawnThresholds: { maxFullMad: 0.0002, maxForegroundMad: 0.0002 },
+    },
+};
 
-function rightHandedTwin(
-    twin: number,
-    base: number,
-    gates: (typeof rightHandedTwins)[number][2],
-): SceneInput {
+function rightHandedTwin(row: CorpusScene): SceneInput {
+    const specifier = sideEffectImportSpecifier(
+        readFileSync(resolve(compilerRepositoryRoot(), row.source), "utf8"),
+    );
+    const base =
+        specifier === undefined
+            ? undefined
+            : /^scene(\d+)$/.exec(basename(specifier, extname(specifier)))?.[1];
     const source = authoredInputs.find(({ id }) => id === `scene${base}`);
     const prefix = `Scene ${base} - `;
-    if (!source?.parity || !source.name.startsWith(prefix))
+    const twin = row.id.slice("scene".length);
+    if (
+        base === undefined ||
+        !source?.parity ||
+        !source.name.startsWith(prefix)
+    )
         throw new Error(
-            `Right-handed twin ${twin} names no base scene ${base}.`,
+            `Right-handed twin ${row.id} imports no registered base scene.`,
         );
     // Draw-id attribution is the base scene's own diagnostic.
     const { attribution: _attribution, ...parity } = source.parity;
     return {
-        id: `scene${twin}`,
+        id: row.id,
         name: `Scene ${twin} - ${source.name.slice(prefix.length)} (Right-Handed)`,
-        source: `corpus/babylon-lite/lab/lite/src/lite/scene${twin}.ts`,
+        source: row.source,
         title: `${source.title} (Right-Handed)`,
-        conditions: ["babylon-lite-rh"],
-        parity: { ...parity, ...gates },
+        conditions: [RIGHT_HANDED_CONDITION],
+        parity: { ...parity, ...rightHandedGates[row.id] },
     };
 }
 
 const sceneInputs: readonly SceneInput[] = [
     ...authoredInputs,
-    ...rightHandedTwins.map(([twin, base, gates]) =>
-        rightHandedTwin(twin, base, gates),
-    ),
+    ...readBabylonLiteCorpus(compilerRepositoryRoot())
+        .scenes.filter((row) => row.rightHanded)
+        .map(rightHandedTwin),
 ];
 
 /**
@@ -6151,8 +6198,11 @@ export function resolveScene(idOrSource: string): SceneDefinition {
         },
     };
 }
-import { existsSync, statSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import type { CompileOptions, HostPageProgram } from "./compiler/types.js";
+import { compilerRepositoryRoot } from "./repository-root.js";
+import { sideEffectImportSpecifier } from "./typescript-module-specifiers.js";
+import { readBabylonLiteCorpus, type CorpusScene } from "./upstream-corpus.js";
 import {
     hostPageCompileOptions,
     hostPageRoot,

@@ -22,14 +22,12 @@ import {
     createRenderTarget,
     createRenderTask,
     createSceneContext,
-    createStandardMaterial,
     GeometryTextureType,
-    onBeforeRender,
     registerScene,
-    setMeshOpacity,
     startEngine,
 } from "babylon-lite";
 import type { Mesh } from "babylon-lite";
+import { fadedPlane, restoreOnThirdFrame, standard } from "./regression-mesh-opacity-planes.js";
 
 async function main(): Promise<void> {
     const __initStart = performance.now();
@@ -43,12 +41,6 @@ async function main(): Promise<void> {
     scene.camera = camera;
     addToScene(scene, createHemisphericLight([0, 1, -1], 1));
 
-    const standard = (r: number, g: number, b: number): ReturnType<typeof createStandardMaterial> => {
-        const material = createStandardMaterial();
-        material.diffuseColor = [r, g, b];
-        material.specularColor = [0, 0, 0];
-        return material;
-    };
     const backdrop = createPlane(engine, { width: 12, height: 6 });
     backdrop.position.z = 2;
     backdrop.material = standard(0.7, 0.7, 0.68);
@@ -58,25 +50,24 @@ async function main(): Promise<void> {
     bar.material = standard(0.15, 0.6, 0.3);
     addToScene(scene, bar);
 
-    const faded = (x: number, opacity: number, pbr: boolean): Mesh => {
-        const mesh = createPlane(engine, { width: 1.8, height: 3 });
-        mesh.position.x = x;
-        mesh.material = pbr
-            ? createPbrMaterial({ baseColorFactor: [0.15, 0.4, 0.9, 1], metallicFactor: 0, roughnessFactor: 0.8 })
-            : standard(0.9, 0.3, 0.15);
-        setMeshOpacity(mesh, opacity);
-        addToScene(scene, mesh);
-        return mesh;
-    };
+    const faded = (x: number, opacity: number, pbr: boolean): Mesh =>
+        fadedPlane(
+            engine,
+            scene,
+            1.8,
+            3,
+            x,
+            0,
+            0,
+            pbr
+                ? createPbrMaterial({ baseColorFactor: [0.15, 0.4, 0.9, 1], metallicFactor: 0, roughnessFactor: 0.8 })
+                : standard(0.9, 0.3, 0.15),
+            opacity
+        );
     faded(-3.3, 0.5, false);
     faded(-1.1, 0.5, true);
     faded(1.1, 0, false);
-    const restored = faded(3.3, 0.4, true);
-    let frame = 0;
-    onBeforeRender(scene, () => {
-        frame += 1;
-        if (frame === 3) setMeshOpacity(restored, 1);
-    });
+    restoreOnThirdFrame(scene, faded(3.3, 0.4, true));
 
     const intermediate = createRenderTarget({
         lbl: "regression-mesh-opacity-geometry",

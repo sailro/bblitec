@@ -512,8 +512,7 @@ void update_scene_text(TextState& text, const Scene& scene, long frame,
 /** The run state one scene frame synchronizes, by reference. */
 template <class Mesh> struct SceneSyncState {
     Engine& engine;
-    Scene& scene;
-    /** The run's composited scenes: `scene`, then each overlay plan's scene. */
+    /** The run's composited scenes: its root, then each overlay plan's scene. */
     const std::vector<std::shared_ptr<Scene>>& scenes;
     long frame;
     double delta_ms;
@@ -562,7 +561,7 @@ struct SceneSyncOutcome {
 template <class Mesh, class Backend>
 SceneSyncOutcome synchronize_scene(SceneSyncState<Mesh>& sync, Backend& backend) {
     Engine& engine = sync.engine;
-    Scene& scene = sync.scene;
+    Scene& scene = *sync.scenes.front();
     SceneSyncOutcome outcome;
     trace_dynamic_frame(engine, sync.delta_ms, sync.frame);
     // The renderables' own clocks -- the sprite renderer's hooks, the sprite

@@ -10,9 +10,12 @@
  * exactly one synchronous call, then restores what was there, so a variant
  * composed outside a velocity task composes as before.
  */
-import { importPinnedModule } from "./pinned-shader-composer.js";
+import {
+    importPinnedModule,
+    pinnedSourceModule,
+} from "./pinned-shader-composer.js";
 
-/** The pinned modules the enabler installs from, by packaged path. */
+/** The pinned modules the enabler installs from, by source path. */
 export const GEOMETRY_VELOCITY_MODULE =
     "src/frame-graph/enable-geometry-velocity.ts";
 export const PBR_GEOMETRY_VELOCITY_MODULE =
@@ -34,10 +37,6 @@ interface DeformationHooks {
     getGeometryDeformationVelocity(): unknown;
 }
 
-function packaged(module: string): string {
-    return module.replace(/^src\//, "").replace(/\.ts$/, ".js");
-}
-
 let loaded:
     | Promise<{
           velocity: PbrVelocityModule;
@@ -56,10 +55,10 @@ export async function pinnedGeometryVelocityScope(): Promise<
 > {
     loaded ??= Promise.all([
         importPinnedModule<PbrVelocityModule>(
-            packaged(PBR_GEOMETRY_VELOCITY_MODULE),
+            pinnedSourceModule(PBR_GEOMETRY_VELOCITY_MODULE),
         ),
         importPinnedModule<unknown>(
-            packaged(GEOMETRY_DEFORMATION_VELOCITY_MODULE),
+            pinnedSourceModule(GEOMETRY_DEFORMATION_VELOCITY_MODULE),
         ),
         importPinnedModule<PbrVelocityHooks>(
             "material/pbr/pbr-geometry-velocity-hooks.js",

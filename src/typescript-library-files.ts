@@ -5,11 +5,11 @@ import { EmissionMap } from "./compiler/emission-transaction.js";
 let libraryFiles: Map<string, ts.SourceFile> | undefined;
 
 /**
- * Whether a path is a declaration file this process parses once: one under
- * `node_modules`, TypeScript's own libraries and the installed packages'
- * typings.
+ * Whether a path is an installed package's file (under `node_modules`),
+ * TypeScript's own libraries and the packages' typings included: the
+ * declaration files among them are the ones this process parses once.
  */
-export function isLibraryTyping(path: string): boolean {
+export function isInstalledPackageFile(path: string): boolean {
     return resolve(path).includes(`${sep}node_modules${sep}`);
 }
 

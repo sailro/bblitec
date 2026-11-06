@@ -810,8 +810,12 @@ test("generates GLB framing validation from upstream constants", () => {
         adapter.source,
         /node_name && !node_name->is_null\(\)\s*\? node_name->as_string\(\)\s*: "node_" \+ std::to_string\(node_index\);/,
     );
-    assert.match(adapter.source, /record\.clockwise_front_face/);
-    assert.match(adapter.source, /source_clockwise &&\s*!clockwise_front_face/);
+    // The primitive's winding mark over the file's own indices.
+    assert.match(
+        adapter.source,
+        /record\.clockwise_front_face = source_clockwise;/,
+    );
+    assert.doesNotMatch(adapter.source, /std::swap\(geometry\.indices/);
     assert.match(
         adapter.source,
         /geometry\.has_tangents = tangents != nullptr/,
@@ -1753,7 +1757,8 @@ test("generates the render plan from upstream frame-graph binding semantics", ()
         lowered.header,
         /RenderStage::skybox,[\s\S]*RenderStage::opaque,[\s\S]*RenderStage::transparent,[\s\S]*RenderStage::ground/,
     );
-    assert.match(lowered.header, /enum class RenderPipelineKind/);
+    assert.match(lowered.header, /enum class RenderPipelineArm/);
+    assert.match(lowered.header, /struct RenderPipelineKind/);
     assert.match(lowered.header, /struct RenderDrawCommand/);
     assert.match(lowered.header, /struct RenderDrawLists/);
     assert.match(lowered.header, /struct RenderFeatures/);
@@ -1804,10 +1809,7 @@ test("generates the render plan from upstream frame-graph binding semantics", ()
         /material\.alpha_mode == MaterialAlphaMode::blend/,
     );
     assert.match(lowered.source, /material\.standard_material/);
-    assert.match(
-        lowered.source,
-        /RenderPipelineKind::pbr_opaque_none_clockwise/,
-    );
+    assert.match(lowered.source, /RenderPipelineArm::pbr_opaque_none/);
     assert.match(lowered.source, /build_pbr_uniforms/);
     assert.doesNotMatch(
         lowered.source,

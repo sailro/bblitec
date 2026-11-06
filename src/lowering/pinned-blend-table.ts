@@ -1,4 +1,5 @@
 import ts from "typescript";
+import { hasExportModifier } from "../compiler/syntax.js";
 import { LoweringContext, sharedPinnedContext } from "./context.js";
 import { sharedUpstreamStore } from "../upstream-source.js";
 
@@ -296,11 +297,7 @@ function exportedConstant(
     for (const statement of file.statements) {
         if (
             !ts.isVariableStatement(statement) ||
-            !ts
-                .getModifiers(statement)
-                ?.some(
-                    (modifier) => modifier.kind === ts.SyntaxKind.ExportKeyword,
-                )
+            !hasExportModifier(statement)
         ) {
             continue;
         }

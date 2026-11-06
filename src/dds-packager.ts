@@ -133,6 +133,7 @@ export function packageDdsEnvironment(bytes: Uint8Array): Uint8Array {
             version: "1",
             module: moduleIdentity(import.meta.url),
             browser: false,
+            buildConditions: true,
             parameters: {},
             inputs: [bytes],
         },

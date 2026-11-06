@@ -1,20 +1,27 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import ts from "typescript";
+import { pinnedBuildConditions } from "./compiler-node-flags.js";
 import {
     choosesOperand,
     conditionalExpression,
     declarationNamed,
     equalityOperator,
+    hasExportModifier,
     isBlockScopedVariable,
     isGroupingParentheses,
     isValueReference,
+    jsonScalarLiteral,
+    type JsonScalar,
+    notJson,
     operandYield,
     selectionArms,
     specifierSourceName,
     type ValueClass,
     variableKind,
 } from "./compiler/syntax.js";
+import { applyTextEdits, type TextEdit } from "./text-edits.js";
+import { isPackageImportSpecifier } from "./typescript-module-specifiers.js";
 
 /**
  * The bundler conditions a program is built under, and what they decide in
@@ -31,79 +38,13 @@ import {
  * (`foldPackageImportConstants`), so a left-handed program reads the pin's
  * left-handed bodies.
  *
- * The conditions are the process's: one compilation builds one program,
- * and every pinned read caches the text the conditions decided.
+ * The conditions are the process's (`pinnedBuildConditions`): one
+ * compilation builds one program, and every pinned read caches the text
+ * the conditions decided.
  */
 
 /** Vite's production client conditions, which every lab bundle resolves under. */
 const CLIENT_CONDITIONS = ["import", "module", "browser", "production"];
-
-let extraConditions: readonly string[] | undefined;
-
-/**
- * The extra conditions this process builds under, from
- * `BBLITE_BUILD_CONDITIONS` (comma-separated): the pin is read while the
- * compiler's modules load, so the conditions are the process's own from its
- * start.
- */
-export function pinnedBuildConditions(): readonly string[] {
-    if (extraConditions) return extraConditions;
-    const conditions = (process.env.BBLITE_BUILD_CONDITIONS ?? "")
-        .split(",")
-        .filter((condition) => condition !== "");
-    // A pinned module the compiler imports is resolved by Node itself, so
-    // Node has to select the same `#` targets.
-    const resolved = nodeResolveConditions();
-    const missing = conditions.filter(
-        (condition) => !resolved.includes(condition),
-    );
-    if (missing.length > 0)
-        throw new Error(
-            `BBLITE_BUILD_CONDITIONS names ${missing.join(", ")}, which this Node process does not resolve imports under; start it with buildConditionsEnvironment.`,
-        );
-    return (extraConditions = conditions);
-}
-
-/** The `--conditions` Node resolves imports under, from its flags and `NODE_OPTIONS`. */
-function nodeResolveConditions(): string[] {
-    const flags = [
-        ...process.execArgv,
-        ...(process.env.NODE_OPTIONS ?? "")
-            .split(/\s+/)
-            .filter((option) => option !== ""),
-    ];
-    return flags.flatMap((flag, index) => {
-        const inline = /^(?:--conditions|-C)=(.+)$/.exec(flag);
-        if (inline) return [inline[1]!];
-        return (flag === "--conditions" || flag === "-C") &&
-            flags[index + 1] !== undefined
-            ? [flags[index + 1]!]
-            : [];
-    });
-}
-
-/**
- * A child process environment building under `conditions`: the compiler
- * reads them, and Node resolves the pin's `#` imports under them.
- */
-export function buildConditionsEnvironment(
-    conditions: readonly string[],
-    environment: NodeJS.ProcessEnv = process.env,
-): NodeJS.ProcessEnv {
-    const options = (environment.NODE_OPTIONS ?? "")
-        .split(/\s+/)
-        .filter(
-            (option) => option !== "" && !option.startsWith("--conditions="),
-        );
-    return {
-        ...environment,
-        BBLITE_BUILD_CONDITIONS: conditions.join(","),
-        NODE_OPTIONS: [
-            ...options,
-            ...conditions.map((condition) => `--conditions=${condition}`),
-        ].join(" "),
-    };
-}
 
 type ImportTarget =
     string | null | { readonly [condition: string]: ImportTarget };
@@ -175,28 +116,24 @@ function selectedTarget(
     return undefined;
 }
 
-export type PinnedConstant = null | boolean | number | string;
-
 /**
  * A module's exports when it is nothing but constants a bundler inlines
  * (`export const name = <literal>`), else undefined.
  */
 export function literalConstantExports(
     file: ts.SourceFile,
-): ReadonlyMap<string, PinnedConstant> | undefined {
-    const constants = new Map<string, PinnedConstant>();
+): ReadonlyMap<string, JsonScalar> | undefined {
+    const constants = new Map<string, JsonScalar>();
     for (const statement of file.statements) {
         if (
             !ts.isVariableStatement(statement) ||
             variableKind(statement.declarationList) !== "const" ||
-            !statement.modifiers?.some(
-                (modifier) => modifier.kind === ts.SyntaxKind.ExportKeyword,
-            )
+            !hasExportModifier(statement)
         )
             return undefined;
         for (const declaration of statement.declarationList.declarations) {
             const value = declaration.initializer
-                ? literalValue(declaration.initializer)
+                ? literalConstant(declaration.initializer)
                 : undefined;
             if (!ts.isIdentifier(declaration.name) || value === undefined)
                 return undefined;
@@ -206,28 +143,17 @@ export function literalConstantExports(
     return constants;
 }
 
-function literalValue(
+function literalConstant(
     node: ts.Expression,
-): { value: PinnedConstant } | undefined {
-    if (node.kind === ts.SyntaxKind.NullKeyword) return { value: null };
-    if (node.kind === ts.SyntaxKind.TrueKeyword) return { value: true };
-    if (node.kind === ts.SyntaxKind.FalseKeyword) return { value: false };
-    if (ts.isNumericLiteral(node)) return { value: Number(node.text) };
-    if (ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node))
-        return { value: node.text };
-    return undefined;
+): { value: JsonScalar } | undefined {
+    const value = jsonScalarLiteral(node);
+    return value === notJson ? undefined : { value };
 }
 
 interface Folded {
-    value: PinnedConstant;
+    value: JsonScalar;
     /** Whether an imported constant decided the value. */
     imported: boolean;
-}
-
-interface Edit {
-    start: number;
-    end: number;
-    text: string;
 }
 
 /**
@@ -244,7 +170,7 @@ export function foldPackageImportConstants(
     fileName: string,
     constantsOf: (
         specifier: string,
-    ) => ReadonlyMap<string, PinnedConstant> | undefined,
+    ) => ReadonlyMap<string, JsonScalar> | undefined,
 ): string {
     if (!/\bfrom\s*["']#/.test(text)) return text;
     const file = ts.createSourceFile(
@@ -254,13 +180,13 @@ export function foldPackageImportConstants(
         true,
         fileName.endsWith(".js") ? ts.ScriptKind.JS : ts.ScriptKind.TS,
     );
-    const bound = new Map<string, PinnedConstant>();
+    const bound = new Map<string, JsonScalar>();
     const imports: ts.ImportDeclaration[] = [];
     for (const statement of file.statements) {
         if (
             !ts.isImportDeclaration(statement) ||
             !ts.isStringLiteral(statement.moduleSpecifier) ||
-            !statement.moduleSpecifier.text.startsWith("#")
+            !isPackageImportSpecifier(statement.moduleSpecifier.text)
         )
             continue;
         const constants = constantsOf(statement.moduleSpecifier.text);
@@ -286,8 +212,12 @@ export function foldPackageImportConstants(
         imports.push(statement);
     }
     if (bound.size === 0) return text;
-    assertUnshadowed(file, bound, imports);
-    return new ConstantFold(file, bound, imports).text();
+    return new ConstantFold(
+        file,
+        bound,
+        imports,
+        boundReferences(file, bound, imports),
+    ).text();
 }
 
 function refusal(file: ts.SourceFile, node: ts.Node, reason: string): Error {
@@ -299,27 +229,32 @@ function refusal(file: ts.SourceFile, node: ts.Node, reason: string): Error {
     );
 }
 
-/** A local declaration reusing an imported constant's name would fold a different binding. */
-function assertUnshadowed(
+/**
+ * Where the module names an imported constant outside its imports, in
+ * source order: every fold sits around one of them. A local declaration
+ * reusing the name would fold a different binding, so it refuses.
+ */
+function boundReferences(
     file: ts.SourceFile,
-    bound: ReadonlyMap<string, PinnedConstant>,
+    bound: ReadonlyMap<string, JsonScalar>,
     imports: readonly ts.ImportDeclaration[],
-): void {
+): number[] {
+    const positions: number[] = [];
     const visit = (node: ts.Node): void => {
         if (imports.includes(node as ts.ImportDeclaration)) return;
-        if (
-            ts.isIdentifier(node) &&
-            bound.has(node.text) &&
-            declarationNamed(node) !== undefined
-        )
-            throw refusal(
-                file,
-                node,
-                `meets a local '${node.text}' shadowing the imported constant`,
-            );
+        if (ts.isIdentifier(node) && bound.has(node.text)) {
+            if (declarationNamed(node) !== undefined)
+                throw refusal(
+                    file,
+                    node,
+                    `meets a local '${node.text}' shadowing the imported constant`,
+                );
+            positions.push(node.end);
+        }
         ts.forEachChild(node, visit);
     };
     visit(file);
+    return positions;
 }
 
 const STATEMENT_LISTS = new Set([
@@ -335,8 +270,10 @@ class ConstantFold {
 
     public constructor(
         private readonly file: ts.SourceFile,
-        private readonly bound: ReadonlyMap<string, PinnedConstant>,
+        private readonly bound: ReadonlyMap<string, JsonScalar>,
         private readonly imports: readonly ts.ImportDeclaration[],
+        /** The ends of the module's names of its constants, ascending. */
+        private readonly references: readonly number[],
     ) {
         this.source = file.text;
     }
@@ -350,32 +287,49 @@ class ConstantFold {
                     : this.editsIn(statement),
             ),
         ];
-        return this.spliced(0, this.source.length, edits);
+        return applyTextEdits(this.source, edits);
+    }
+
+    /** Whether a node names an imported constant: a node that does not folds nothing. */
+    private mentionsConstant(node: ts.Node): boolean {
+        let low = 0;
+        let high = this.references.length;
+        while (low < high) {
+            const middle = (low + high) >> 1;
+            if (this.references[middle]! <= node.pos) low = middle + 1;
+            else high = middle;
+        }
+        return (
+            low < this.references.length && this.references[low]! <= node.end
+        );
     }
 
     /** The edits inside a node: its own when it folds, else its children's. */
-    private editsIn(node: ts.Node): Edit[] {
+    private editsIn(node: ts.Node): TextEdit[] {
+        if (!this.mentionsConstant(node)) return [];
         const own = this.editOf(node);
         if (own) return [own];
-        const edits: Edit[] = [];
+        const edits: TextEdit[] = [];
         ts.forEachChild(node, (child) => {
             edits.push(...this.editsIn(child));
         });
         return edits;
     }
 
+    /** The source in `[start, end)` with `edits` inside it applied. */
     private spliced(
         start: number,
         end: number,
-        edits: readonly Edit[],
+        edits: readonly TextEdit[],
     ): string {
-        let text = "";
-        let cursor = start;
-        for (const edit of [...edits].sort((a, b) => a.start - b.start)) {
-            text += this.source.slice(cursor, edit.start) + edit.text;
-            cursor = edit.end;
-        }
-        return text + this.source.slice(cursor, end);
+        return applyTextEdits(
+            this.source.slice(start, end),
+            edits.map((edit) => ({
+                ...edit,
+                start: edit.start - start,
+                end: edit.end - start,
+            })),
+        );
     }
 
     /** A node's text with its folds applied, its own included. */
@@ -394,7 +348,7 @@ class ConstantFold {
                 ? { value: this.bound.get(node.text)!, imported: true }
                 : undefined;
         }
-        const literal = literalValue(node);
+        const literal = literalConstant(node);
         if (literal) return { value: literal.value, imported: false };
         if (
             ts.isPrefixUnaryExpression(node) &&
@@ -458,7 +412,7 @@ class ConstantFold {
             : { kept: node.right, decider };
     }
 
-    private editOf(node: ts.Node): Edit | undefined {
+    private editOf(node: ts.Node): TextEdit | undefined {
         if (ts.isIfStatement(node)) {
             const condition = this.constant(node.expression);
             return condition?.imported
@@ -512,12 +466,12 @@ class ConstantFold {
         return folded?.imported ? constantText(folded.value) : undefined;
     }
 
-    private replacement(node: ts.Node, text: string): Edit {
+    private replacement(node: ts.Node, text: string): TextEdit {
         return { start: node.getStart(this.file), end: node.getEnd(), text };
     }
 
     /** An `if` whose test the constants decide, kept as its selected branch. */
-    private foldedIf(node: ts.IfStatement, truthy: boolean): Edit {
+    private foldedIf(node: ts.IfStatement, truthy: boolean): TextEdit {
         const chosen = truthy ? node.thenStatement : node.elseStatement;
         const parent = node.parent;
         if (STATEMENT_LISTS.has(parent.kind)) {
@@ -534,18 +488,14 @@ class ConstantFold {
             }
             return this.replacement(node, this.rendered(chosen));
         }
-        if (ts.isIfStatement(parent) && parent.elseStatement === node) {
-            if (chosen) return this.replacement(node, this.rendered(chosen));
-            const elseKeyword = parent
-                .getChildren(this.file)
-                .find((child) => child.kind === ts.SyntaxKind.ElseKeyword);
-            if (elseKeyword)
-                return {
-                    start: parent.thenStatement.getEnd(),
-                    end: node.getEnd(),
-                    text: "",
-                };
-        }
+        if (ts.isIfStatement(parent) && parent.elseStatement === node)
+            return chosen
+                ? this.replacement(node, this.rendered(chosen))
+                : {
+                      start: parent.thenStatement.getEnd(),
+                      end: node.getEnd(),
+                      text: "",
+                  };
         throw refusal(
             this.file,
             node,
@@ -596,7 +546,7 @@ class ConstantFold {
     }
 
     /** A statement deleted with its own lines and the comments directly above it. */
-    private removal(node: ts.Node): Edit {
+    private removal(node: ts.Node): TextEdit {
         let start = node.getStart(this.file);
         for (const comment of (
             ts.getLeadingCommentRanges(this.source, node.getFullStart()) ?? []
@@ -633,7 +583,7 @@ class ConstantFold {
     }
 
     /** An object-literal element deleted with the comma that separates it. */
-    private listElementRemoval(node: ts.ObjectLiteralElementLike): Edit {
+    private listElementRemoval(node: ts.ObjectLiteralElementLike): TextEdit {
         const list = (node.parent as ts.ObjectLiteralExpression).properties;
         const index = list.indexOf(node);
         const next = list[index + 1];
@@ -654,8 +604,12 @@ class ConstantFold {
     }
 }
 
-function constantText(value: PinnedConstant): string {
-    return typeof value === "string" ? JSON.stringify(value) : String(value);
+function constantText(value: JsonScalar): string {
+    if (typeof value === "string") return JSON.stringify(value);
+    // A negative literal stands as one operand wherever the constant stood.
+    if (typeof value === "number" && (value < 0 || Object.is(value, -0)))
+        return `(-${String(-value)})`;
+    return String(value);
 }
 
 /** Whether a block's own statements declare names its enclosing list would gain. */
@@ -676,7 +630,7 @@ function skipParentheses(node: ts.Expression): ts.Expression {
 }
 
 /** The class of value a constant passes on through a selection. */
-function valueClass(value: PinnedConstant): ValueClass {
+function valueClass(value: JsonScalar): ValueClass {
     if (value === null) return "nullish";
     return value ? "truthy" : "falsy";
 }

@@ -62,6 +62,7 @@ import {
 } from "./tooling/records.js";
 import { artifactDirectory } from "./tooling/artifacts.js";
 import { isRecord } from "./json-fields.js";
+import { compilerDistSource } from "./repository-root.js";
 
 const requireModule = createRequire(import.meta.url);
 function configuredAtlas(
@@ -133,7 +134,7 @@ function sharedGenerationInputs(repositoryRoot: string): string | undefined {
     if (sharedInputsByRoot.has(repositoryRoot)) {
         return sharedInputsByRoot.get(repositoryRoot);
     }
-    const compiler = resolve(repositoryRoot, "dist", "src");
+    const compiler = compilerDistSource();
     const shared = existsSync(compiler)
         ? hashEntries([
               `node ${process.version}`,

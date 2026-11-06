@@ -367,12 +367,16 @@ Repository fixtures against pinned Babylon Lite.
 | glTF-sparse | <img src="images/scenes/regression-gltf-sparse.png" alt="glTF sparse accessors rendering" width="160"> | pixel‑perfect | pixel‑perfect | glTF Sparse Accessors |
 | glTF-uv-sets | <img src="images/scenes/regression-gltf-uv-sets.png" alt="glTF UV sets rendering" width="160"> | pixel‑perfect | pixel‑perfect | glTF UV Sets |
 | glTF-topology | <img src="images/scenes/regression-gltf-topology.png" alt="glTF primitive topology rendering" width="160"> | pixel‑perfect | pixel‑perfect | glTF Primitive Topology |
+| glTF-material-winding | <img src="images/scenes/regression-gltf-material-winding.png" alt="glTF material winding rendering" width="160"> | pixel‑perfect | pixel‑perfect | glTF Material Winding |
+| glTF-material-winding-right-handed | <img src="images/scenes/regression-gltf-material-winding-right-handed.png" alt="Right-handed glTF material winding rendering" width="160"> | pixel‑perfect | pixel‑perfect | glTF Material Winding (Right-Handed) |
+| right-handed-shader-winding | <img src="images/scenes/regression-right-handed-shader-winding.png" alt="Right-handed shader winding rendering" width="160"> | pixel‑perfect | pixel‑perfect | Right-Handed Shader Winding |
 | glTF-step-animation | <img src="images/scenes/regression-gltf-step-animation.png" alt="glTF STEP animation rendering" width="160"> | pixel‑perfect | pixel‑perfect | glTF STEP Animation |
 | glTF-node-transform-animation | <img src="images/scenes/regression-gltf-node-transform-animation.png" alt="glTF node transform animation rendering" width="160"> | pixel‑perfect | pixel‑perfect | glTF Node Transform Animation |
 | device-recovery-scenes | <img src="images/scenes/regression-device-recovery-scenes.png" alt="Device recovery scenes rendering" width="160"> | pixel‑perfect | pixel‑perfect | Device Recovery Scenes |
 | overlay-swapchain-tasks | <img src="images/scenes/regression-overlay-swapchain-tasks.png" alt="Overlay over swapchain tasks rendering" width="160"> | pixel‑perfect | pixel‑perfect | Overlay Over Swapchain Tasks |
 | overlay-post-process | <img src="images/scenes/regression-overlay-post-process.png" alt="Overlay over post-process rendering" width="160"> | pixel‑perfect | pixel‑perfect | Overlay Over Post-Process |
 | overlay-post-process-single-sample | <img src="images/scenes/regression-overlay-post-process-single-sample.png" alt="Overlay over post-process at one sample rendering" width="160"> | pixel‑perfect | pixel‑perfect | Overlay Over Post-Process, One Sample |
+| overlay-gpu-timing | <img src="images/scenes/regression-overlay-gpu-timing.png" alt="Overlay under GPU task timing rendering" width="160"> | pixel‑perfect | pixel‑perfect | Overlay Under GPU Task Timing |
 | node-local-attributes | <img src="images/scenes/regression-node-local-attributes.png" alt="Node local attributes rendering" width="160"> | pixel‑perfect | pixel‑perfect | Node Local Attributes |
 | morph-ground | <img src="images/scenes/regression-morph-ground.png" alt="Morph storage ground rendering" width="160"> | pixel‑perfect | pixel‑perfect | Morph Storage Ground |
 | timer-callback-cells | <img src="images/scenes/regression-timer-callback-cells.png" alt="Timer callback cells rendering" width="160"> | pixel‑perfect | pixel‑perfect | Timer Callback Cells |

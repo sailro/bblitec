@@ -161,7 +161,7 @@ test("native material getters retain producer variants, replacement aliases and 
         cppFunction(texture, "SolidTexture create_solid_texture("),
         cppFunction(texture, "FileTexture solid_texture_file("),
         cppFunction(pbr, "MaterialHandle create_pbr_material("),
-        cppFunction(pbr, "void set_material_base_color_file("),
+        cppFunction(pbr, "void set_pbr_texture("),
         cppFunction(
             lowerer.lowerStandardMaterialFactory().source,
             "MaterialHandle create_standard_material(",
@@ -210,7 +210,7 @@ int main() {
     assert(bbl::material_source_texture(engine,a,bbl::MaterialTextureSlot::diffuse)==bbl::StoredTexture{file});
     assert(old!=bbl::StoredTexture{file});
     auto pbr=bbl::create_pbr_material(engine,{});
-    bbl::set_material_base_color_file(engine,pbr,file);
+    bbl::set_pbr_texture(engine,pbr,bbl::MaterialTextureSlot::base_color,file);
     assert(bbl::material_source_texture(engine,pbr,bbl::MaterialTextureSlot::base_color)==bbl::StoredTexture{file});
     bbl::set_standard_diffuse_texture(engine,b,bbl::material_source_texture(engine,pbr,bbl::MaterialTextureSlot::base_color));
     assert(bbl::material_source_texture(engine,b,bbl::MaterialTextureSlot::diffuse)==bbl::StoredTexture{file});

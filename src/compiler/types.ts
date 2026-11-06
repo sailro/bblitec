@@ -343,6 +343,10 @@ export interface CompileManifest {
     /** A runtime handle collection may mark imported or otherwise dynamic
      *  meshes as receivers, so composition must retain both receiver states. */
     dynamicShadowReceivers: boolean;
+    /** The `sceneMeshes` entries a `setMeshOpacity` call can reach. */
+    meshOpacityMeshes: number[];
+    /** A `setMeshOpacity` target generation cannot name: any mesh. */
+    dynamicMeshOpacity: boolean;
     /**
      * The clustered light field this scene added, if it added one.
      *
@@ -548,7 +552,7 @@ export interface SceneMeshManifest {
      * collection loop: `getContainerMeshes(a)` bound to a variable, or
      * `a.meshes ?? []`, iterate the same handles without that proof.
      */
-    assetWholeMeshList?: CompileAsset;
+    assetWholeMeshList?: AssetMeshWalk;
     /** For `from-data` meshes: which optional streams the call passes, in
      *  the pin's own argument order (uvs, uv2s, tangents, colors). */
     hasUv2?: boolean;
@@ -737,7 +741,12 @@ export interface ScenePbrMetallicReflectanceManifest {
  */
 export type PbrStateTarget =
     | { readonly kind: "scene"; readonly index: number }
-    | { readonly kind: "asset"; readonly output: string }
+    | {
+          readonly kind: "asset";
+          readonly output: string;
+          /** The one container reached, when generation knows it. */
+          readonly container?: number;
+      }
     | { readonly kind: "assets" };
 
 /** The composition-relevant values writes give the materials of one target. */
@@ -756,8 +765,12 @@ export interface PbrMaterialStateWrites {
     readonly alphaBelowOne: readonly boolean[];
     /** Whether a `baseColorFactor` is written (its presence composes). */
     readonly baseColorFactor: boolean;
-    /** Whether a `bentNormalTexture` is written (its presence composes under `enableBentNormals`). */
-    readonly bentNormalTexture: boolean;
+    /**
+     * Whether a `bentNormalTexture` is written (its presence composes under
+     * `enableBentNormals`): `definite` when every material of the target
+     * holds one from its first build.
+     */
+    readonly bentNormalTexture: boolean | "definite";
     /** The plugin lists written, by PBR plugin signature (from one). */
     readonly pluginSignatures: readonly number[];
     /** The plugins appended to the list a material holds, by PBR plugin id. */
@@ -1179,6 +1192,19 @@ export interface HandleCollectionInfo {
     asset?: CompileAsset;
 }
 
+/** A proven whole-list walk over one container's renderables. */
+export interface AssetMeshWalk {
+    readonly asset: CompileAsset;
+    /** The container among its document's, when its load is definite. */
+    readonly container?: number;
+    /**
+     * The walk's body when the walk itself definitely runs: a statement
+     * directly in it, with nothing that skips an element, runs for every
+     * renderable.
+     */
+    readonly definiteBody?: ts.Statement;
+}
+
 export interface CompileAsset {
     /** Present only for an explicitly selected, verified device atlas bundle. */
     spriteAtlasProducer?: import("../sprite-atlas-bundle.js").SpriteAtlasProvenance;
@@ -1525,8 +1551,6 @@ export interface SsaoTaskManifest {
     velocity?: { attachment: GeometryTextureTypeName; previousDepth: boolean };
     /** `enableSsaoHalfResolution` reaches the task. */
     halfResolution: boolean;
-    /** `enablePbrSsao` reaches the task. */
-    pbr: boolean;
     /** `enableSsaoMotionPruning` reaches the task. */
     motionPruning: boolean;
     /** The program-selecting settings the program writes after creation. */
@@ -1773,12 +1797,12 @@ export type ValueKind =
     | "compute-dispatch"
     | "compute-task"
     | "compute-one-shot"
-    /** A `createSsaoTask` task's `temporal` settings record, by its task. */
-    | "ssao-temporal"
-    /** `enableSsaoHalfResolution`'s settings record, by its task. */
-    | "ssao-half-resolution"
-    /** `enableSsaoMotionPruning`'s settings record, by its task. */
-    | "ssao-motion-pruning"
+    /**
+     * A record a pinned task publishes beside its own settings, by its task:
+     * `taskRecord` names which (a `createSsaoTask` task's `temporal`, the
+     * settings an enabler returns).
+     */
+    | "task-record"
     | "uniform-buffer"
     | "compute-uniform-arena"
     | "compute-uniform-writer"
@@ -2525,8 +2549,6 @@ export interface ValueFields {
     surfaceCanvas?: true;
     /** The scene was created on its engine's primary surface. */
     scenePrimarySurface?: true;
-    /** `createOverlayScene` made this scene: it composites over its base. */
-    overlayScene?: true;
     environmentAsset?: CompileAsset;
     localCubemap?: {
         readonly plan: LocalCubemapPlan;
@@ -2784,7 +2806,7 @@ export interface ValueFields {
      * collection loop: `getContainerMeshes(a)` bound to a variable, or
      * `a.meshes ?? []`, iterate the same handles without that proof.
      */
-    assetWholeMeshList?: CompileAsset;
+    assetWholeMeshList?: AssetMeshWalk;
     /**
      * A `createStandardMaterial` result, which is the family question
      * `material.plugins` has to answer: the pin's Standard plugin bridge
@@ -2861,6 +2883,11 @@ export interface ValueFields {
      * `container.materialVariants`: through the object, not by name.
      */
     asset?: CompileAsset;
+    /**
+     * Which of its document's containers a definite `loadGltf` made, in
+     * load order: the composed rows follow it (`CompileAsset.containerCount`).
+     */
+    assetContainer?: number;
     /**
      * Compile-time state of one loaded glTF container's synthetic root.
      *
@@ -3036,7 +3063,8 @@ export interface ValueFields {
         | "geometry"
         | "geometry-output"
         | "geometry-depth"
-        | "ssao-output";
+        /** A texture a task publishes (an SSAO task's `outputTexture`). */
+        | "task-output";
     /**
      * Which post-process pass a `task` value names. `outputTexture` reads it
      * to resolve the internal target the pin's `prepareOutputTarget` creates,
@@ -3070,10 +3098,12 @@ export interface ValueFields {
      */
     screenSpaceTask?: ScreenSpaceTaskManifest;
     /**
-     * Set when a `task`, `ssao-temporal`, `ssao-half-resolution` or `ssao-motion-pruning` value
-     * names a `createSsaoTask` task, or the settings it publishes.
+     * Set when a `task` or `task-record` value names a `createSsaoTask`
+     * task, or a record it publishes.
      */
     ssaoTask?: SsaoTaskManifest;
+    /** Which record a `task-record` value names. */
+    taskRecord?: "temporal" | "half-resolution" | "motion-pruning";
     lightKind?: LightKind;
     /**
      * A camera's own construction, as static numbers, and the scene's
@@ -3396,7 +3426,6 @@ export type Feature =
     | "material:pbr-gamma-albedo"
     | "material:pbr-alpha-cutoff"
     // `createPbrMaterial({ baseColorTexture })` over a pixels texture.
-    | "material:pbr-base-color-pixels"
     | "material:iridescence"
     | "material:lightmap"
     // `enableBentNormals`: the IBL extension's bent-normal arm.

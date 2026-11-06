@@ -301,7 +301,6 @@ const nativeFixtureReach: FeatureMacroReach = {
         "gizmo:light",
     ] satisfies Feature[],
     imageCodecs: ["png"],
-    rightHanded: false,
 };
 
 /** Install roots whose headers are external, as imported targets are. */

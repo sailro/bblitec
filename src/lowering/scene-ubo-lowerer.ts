@@ -397,8 +397,9 @@ ${this.contributor("writeEnvUbo", "write_environment_scene_uniforms")}`,
                 { cpp: "scene.environment_identity", type: "opaque" },
             ],
             ["task._sceneUboCacheKey", { cpp: "source.cache", type: "opaque" }],
-            // The dynamic PBR bindings plugin's lifecycle, which no lowered
-            // API installs.
+            // The lifecycle `enablePbrSsao` installs publishes this aspect
+            // to its plugin's `_prepareDraw`; natively each pass carries the
+            // aspect it packs (`ShaderPassMatrices::projection_aspect`).
             ["drawBindingLifecycle", absentBinding()],
             ...[
                 "camera",

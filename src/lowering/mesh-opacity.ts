@@ -32,7 +32,6 @@ import { jsToUint32Call } from "./pinned-operators.js";
 import { recordAt } from "../compiler/record-access.js";
 import { finalReturn } from "../compiler/loop-control.js";
 import { conditionalExpression, selectionArms } from "../compiler/syntax.js";
-import { stringLiteral } from "../cpp-literals.js";
 import { javascriptModuleUrl } from "../data-url.js";
 import { transpileForBrowser } from "../typescript-transpile.js";
 import { importPinnedModule } from "../pinned-shader-composer.js";
@@ -109,9 +108,8 @@ function featureEncoder(context: LoweringContext): {
  * extensions read: the Standard one tests it in `_meshFeatures`, the PBR
  * one under its own feature-local name.
  */
-export function meshOpacityFeatureBit(
-    context: LoweringContext = sharedPinnedContext(),
-): number {
+export function meshOpacityFeatureBit(): number {
+    const context = sharedPinnedContext();
     const { file, encoder } = featureEncoder(context);
     const bit = context.numericValue(selectionArms(encoder)[0], file);
     if (context.pinnedNumber(PBR_MODULE, "MESH_OPACITY_MESH_BIT") !== bit)
@@ -437,6 +435,7 @@ struct MeshOpacityUniforms {
     float value = 1.0f;
     float policy = 0.0f;
     float padding[2]{};
+    bool operator==(const MeshOpacityUniforms&) const = default;
 };
 inline MeshOpacityUniforms mesh_opacity_uniforms(const MeshRecord& mesh, double policy) {
     MeshOpacityUniforms block;
@@ -487,7 +486,7 @@ function lowerValidateMaterial(context: LoweringContext): string {
             ["family", { cpp: "family", type: "string" }],
         ]),
         calls: new Map(),
-        statement(statement, lowerer, indent) {
+        statement(statement) {
             // `const family = material._buildGroup?._materialFamily` reads
             // the bound family itself.
             if (
@@ -499,8 +498,6 @@ function lowerValidateMaterial(context: LoweringContext): string {
                 )
             )
                 return [];
-            void lowerer;
-            void indent;
             return undefined;
         },
     });
@@ -550,8 +547,6 @@ if (records) {
         ]),
         calls: new Map(),
         statement(statement, lowerer, indent) {
-            if (statement === statements[0])
-                return finiteOpacityGuard(context, statement, indent);
             if (!ts.isExpressionStatement(statement)) return undefined;
             const expression = statement.expression;
             if (
@@ -585,55 +580,6 @@ if (records) {
             return undefined;
         },
     });
-}
-
-/**
- * The setter's leading guard. The parameter is a native double, so the
- * `typeof` arm cannot hold and finiteness is what is left; the RangeError's
- * message is the pin's template over `String(opacity)`.
- */
-function finiteOpacityGuard(
-    context: LoweringContext,
-    statement: ts.Statement,
-    indent: string,
-): readonly string[] {
-    if (!ts.isIfStatement(statement) || statement.elseStatement)
-        context.contractError(statement, "Expected the opacity range guard.");
-    context.assertExpressionShape(
-        statement.expression,
-        'typeof opacity !== "number" || !Number.isFinite(opacity)',
-        "Mesh opacity range guard",
-    );
-    const thrown = ts.isBlock(statement.thenStatement)
-        ? statement.thenStatement.statements[0]
-        : statement.thenStatement;
-    const error =
-        thrown && ts.isThrowStatement(thrown)
-            ? context.unwrapExpression(thrown.expression)
-            : undefined;
-    const message =
-        error &&
-        ts.isNewExpression(error) &&
-        context.expressionMatchesShape(error.expression, "RangeError")
-            ? error.arguments?.[0]
-            : undefined;
-    if (!message || !ts.isTemplateExpression(message))
-        context.contractError(statement, "Expected the opacity RangeError.");
-    const parts = [`std::string(${stringLiteral(message.head.text)})`];
-    for (const span of message.templateSpans) {
-        context.assertExpressionShape(
-            span.expression,
-            "String(opacity)",
-            "Mesh opacity RangeError operand",
-        );
-        parts.push("bbl::js::number_to_string(opacity)");
-        if (span.literal.text) parts.push(stringLiteral(span.literal.text));
-    }
-    return [
-        `${indent}if (!std::isfinite(opacity)) {`,
-        `${indent}    throw bbl::js::NamedError("RangeError", ${parts.join(" + ")});`,
-        `${indent}}`,
-    ];
 }
 
 /** `upstream/src/mesh_opacity.cpp` and its header. */

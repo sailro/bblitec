@@ -625,7 +625,7 @@ struct DawnWebGpuDevice : GpuDevice {
             info.primitive.cullMode =
                 dawn_webgpu_cull(descriptor.primitive->cull_mode.value_or(std::string("none")));
             info.primitive.frontFace =
-                webgpu_front_face_ccw(*descriptor.primitive) ? WGPUFrontFace_CCW : WGPUFrontFace_CW;
+                dawn_front_face(!webgpu_front_face_ccw(*descriptor.primitive));
         }
         info.primitive.topology = WGPUPrimitiveTopology_TriangleList;
         WGPUDepthStencilState depth = WGPU_DEPTH_STENCIL_STATE_INIT;

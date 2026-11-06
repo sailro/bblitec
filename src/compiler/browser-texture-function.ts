@@ -542,6 +542,7 @@ export function bakeBrowserTextureFunction(
         version: "1",
         module: moduleIdentity(import.meta.url),
         browser: true,
+        buildConditions: false,
         parameters,
         inputs,
     };

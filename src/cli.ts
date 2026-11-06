@@ -66,7 +66,7 @@ import { reachedImageCodecs } from "./image-codecs.js";
 // import makes every compile pay for asset kinds it never packages.
 import { compressedTextureLowerer } from "./compiler/compressed-texture.js";
 import { isKtx1, packageKtx1 } from "./compressed-texture-package.js";
-import { isDataUrl, parseDataUrl } from "./data-url.js";
+import { isDataUrl } from "./data-url.js";
 import { localAssetPath } from "./asset-source.js";
 import { generateIblBrdfLutRgba16f } from "./ibl-brdf-lut.js";
 import {
@@ -94,7 +94,6 @@ import {
     findRepositoryRoot,
     readUpstreamPin,
     repositoryRelativePath,
-    sharedUpstreamStore,
 } from "./upstream-source.js";
 import { GeneratedTree } from "./generated-tree.js";
 import { asFeatures, projectFeatures } from "./compiler/output-projection.js";
@@ -126,11 +125,11 @@ import {
 } from "./pinned-text-pipeline-cpp.js";
 import { holdDistLock } from "./dist-lock.js";
 import { evaluatedEntryPath } from "./bake-cache.js";
-import { spawnSync } from "node:child_process";
 import {
-    buildConditionsEnvironment,
+    buildsUnderConditions,
     pinnedBuildConditions,
-} from "./pinned-build-conditions.js";
+} from "./compiler-node-flags.js";
+import { parseArguments } from "./cli-arguments.js";
 import {
     composeSplatModule,
     composeSplatShModule,
@@ -149,264 +148,14 @@ import type {
     NodeParticleSystemEmit,
 } from "./lowering/node-particle-lowerer.js";
 
-/** What a run produces: a generated tree, or a survey's census in its place. */
-type CliTarget =
-    { kind: "generate"; output: string } | { kind: "survey"; census: string };
-
-interface CliOptions {
-    input: string;
-    target: CliTarget;
-    title?: string;
-    width?: number;
-    height?: number;
-    search?: string;
-    initialSearch?: string;
-    publicDir?: string;
-    publicUrl?: string;
-    siteUrl?: string;
-    environment: Record<string, string>;
-    siteRoot?: string;
-    /** An HTML page's site public directory, when not `publicDir`. */
-    sitePublicDir?: string;
-    /** The module an HTML page's module script loads in place of its URL. */
-    pageEntry?: string;
-    idDiagnostics: boolean;
-    sourceProfile?: string[];
-    coverage?: string;
-    deferredCapabilities?: CompileOptions["deferredCapabilities"];
-    /** The bundler conditions the pin is read under (`pinned-build-conditions.ts`). */
-    conditions: string[];
-}
-
-/**
- * Every option `parseArguments` accepts, with its value placeholder. The
- * usage text is generated from this table, and a test holds the table and
- * the parser's cases to the same set, so neither can grow alone.
- */
-const TARGET_FLAGS = [
-    { flag: "--out", value: "<directory>" },
-    { flag: "--survey", value: "<census.json>" },
-] as const;
-const OPTION_FLAGS: ReadonlyArray<{ flag: string; value?: string }> = [
-    { flag: "--title", value: "<text>" },
-    { flag: "--width", value: "<pixels>" },
-    { flag: "--height", value: "<pixels>" },
-    { flag: "--search", value: "<query>" },
-    { flag: "--initial-search", value: "<query>" },
-    { flag: "--public-dir", value: "<directory>" },
-    { flag: "--public-url", value: "<url>" },
-    { flag: "--site-url", value: "<url>" },
-    { flag: "--env", value: "<NAME=value>" },
-    { flag: "--site-root", value: "<directory>" },
-    { flag: "--site-public-dir", value: "<directory>" },
-    { flag: "--page-entry", value: "<module.ts>" },
-    { flag: "--id-diagnostics" },
-    { flag: "--source-profile", value: "<function,...>" },
-    { flag: "--coverage", value: "<coverage.json>" },
-    { flag: "--deferred-capabilities", value: "runtime-throw" },
-    { flag: "--condition", value: "<name>" },
-];
-
-function usage(): never {
-    const spell = (option: { flag: string; value?: string }): string =>
-        option.value === undefined
-            ? option.flag
-            : `${option.flag} ${option.value}`;
-    console.error(
-        `Usage: bblitec <entry.ts | page.html> (${TARGET_FLAGS.map(spell).join(" | ")}) ` +
-            OPTION_FLAGS.map((option) => `[${spell(option)}]`).join(" "),
-    );
-    process.exit(2);
-}
-
-function parsePositiveInteger(value: string | undefined, flag: string): number {
-    const parsed = Number(value);
-    if (!Number.isInteger(parsed) || parsed <= 0) {
-        throw new Error(`${flag} expects a positive integer.`);
-    }
-    return parsed;
-}
-
-function parseArguments(arguments_: string[]): CliOptions {
-    const input = arguments_[0];
-    if (!input || input.startsWith("--")) {
-        usage();
-    }
-
-    let output: string | undefined;
-    let survey: string | undefined;
-    let title: string | undefined;
-    let width: number | undefined;
-    let height: number | undefined;
-    let search: string | undefined;
-    let initialSearch: string | undefined;
-    let publicDir: string | undefined;
-    let publicUrl: string | undefined;
-    let siteUrl: string | undefined;
-    const environment = new Map<string, string>();
-    let siteRoot: string | undefined;
-    let sitePublicDir: string | undefined;
-    let pageEntry: string | undefined;
-    let idDiagnostics = false;
-    let sourceProfile: string[] | undefined;
-    let coverage: string | undefined;
-    let deferredCapabilities: CompileOptions["deferredCapabilities"];
-    const conditions: string[] = [];
-
-    for (let index = 1; index < arguments_.length; index += 1) {
-        const flag = arguments_[index];
-        const value = arguments_[index + 1];
-        switch (flag) {
-            case "--out":
-                if (!value) usage();
-                output = value;
-                index += 1;
-                break;
-            case "--survey":
-                if (!value) usage();
-                survey = value;
-                index += 1;
-                break;
-            case "--coverage":
-                if (!value || value.startsWith("--")) usage();
-                coverage = value;
-                index += 1;
-                break;
-            case "--deferred-capabilities":
-                if (value !== "runtime-throw")
-                    throw new Error(
-                        "--deferred-capabilities expects runtime-throw.",
-                    );
-                deferredCapabilities = value;
-                index += 1;
-                break;
-            case "--title":
-                if (!value) usage();
-                title = value;
-                index += 1;
-                break;
-            case "--width":
-                width = parsePositiveInteger(value, flag);
-                index += 1;
-                break;
-            case "--height":
-                height = parsePositiveInteger(value, flag);
-                index += 1;
-                break;
-            case "--search":
-                if (!value) usage();
-                search = value;
-                index += 1;
-                break;
-            case "--initial-search":
-                if (value === undefined) usage();
-                initialSearch = value;
-                index += 1;
-                break;
-            case "--site-root":
-                if (!value) usage();
-                siteRoot = value;
-                index += 1;
-                break;
-            case "--site-public-dir":
-                if (!value) usage();
-                sitePublicDir = value;
-                index += 1;
-                break;
-            case "--page-entry":
-                if (!value) usage();
-                pageEntry = value;
-                index += 1;
-                break;
-            case "--public-dir":
-                if (!value) usage();
-                publicDir = value;
-                index += 1;
-                break;
-            case "--condition":
-                if (!value) usage();
-                conditions.push(value);
-                index += 1;
-                break;
-            case "--public-url":
-                if (!value) usage();
-                publicUrl = value;
-                index += 1;
-                break;
-            case "--site-url":
-                if (!value) usage();
-                siteUrl = value;
-                index += 1;
-                break;
-            case "--env": {
-                const equals = value?.indexOf("=") ?? -1;
-                if (!value || equals <= 0)
-                    throw new Error("--env expects NAME=value.");
-                environment.set(
-                    value.slice(0, equals),
-                    value.slice(equals + 1),
-                );
-                index += 1;
-                break;
-            }
-            case "--id-diagnostics":
-                idDiagnostics = true;
-                break;
-            case "--source-profile": {
-                const names = value
-                    ?.split(",")
-                    .map((name) => name.trim())
-                    .filter(Boolean);
-                if (!names?.length)
-                    throw new Error(
-                        "--source-profile expects comma-separated source function names.",
-                    );
-                sourceProfile = names;
-                index += 1;
-                break;
-            }
-            default:
-                throw new Error(`Unknown argument '${flag}'.`);
-        }
-    }
-
-    const target: CliTarget = survey
-        ? { kind: "survey", census: survey }
-        : output
-          ? { kind: "generate", output }
-          : usage();
-
-    return {
-        input,
-        target,
-        idDiagnostics,
-        environment: Object.fromEntries(environment),
-        ...(title ? { title } : {}),
-        ...(width ? { width } : {}),
-        ...(height ? { height } : {}),
-        ...(search ? { search } : {}),
-        ...(initialSearch !== undefined ? { initialSearch } : {}),
-        ...(publicDir ? { publicDir } : {}),
-        ...(publicUrl ? { publicUrl } : {}),
-        ...(siteUrl ? { siteUrl } : {}),
-        ...(siteRoot ? { siteRoot } : {}),
-        ...(sitePublicDir ? { sitePublicDir } : {}),
-        ...(pageEntry ? { pageEntry } : {}),
-        ...(sourceProfile ? { sourceProfile } : {}),
-        ...(coverage ? { coverage } : {}),
-        ...(deferredCapabilities ? { deferredCapabilities } : {}),
-        conditions,
-    };
-}
-
 async function assetBytes(
     source: string,
     inputPath: string,
 ): Promise<Uint8Array> {
     // A data URL carries its own bytes, so there is nothing to fetch and
-    // nothing to read: materializing one is a decode.
-    const inline = parseDataUrl(source);
-    if (inline) return inline.bytes;
+    // nothing to read: materializing one is a decode, the one generation
+    // already made when it read the asset.
+    if (isDataUrl(source)) return readAssetBytesSync(source, inputPath);
     const local = localAssetPath(source, inputPath);
     if (local !== undefined) {
         return new Uint8Array(readFileSync(local));
@@ -990,30 +739,12 @@ function withCoverage<T>(path: string | undefined, lower: () => T): T {
 
 async function main(): Promise<void> {
     const options = parseArguments(process.argv.slice(2));
-    // The pin is read as the modules load, under the environment's
-    // conditions; a `--condition` it does not carry restarts with them.
-    const conditions = pinnedBuildConditions();
-    if (
-        conditions.length !== options.conditions.length ||
-        conditions.some(
-            (condition, index) => condition !== options.conditions[index],
-        )
-    ) {
-        if (process.env.BBLITE_BUILD_CONDITIONS !== undefined)
-            throw new Error(
-                `--condition ${options.conditions.join(", ") || "(none)"} disagrees with BBLITE_BUILD_CONDITIONS=${process.env.BBLITE_BUILD_CONDITIONS}.`,
-            );
-        const restarted = spawnSync(
-            process.execPath,
-            [...process.execArgv, ...process.argv.slice(1)],
-            {
-                stdio: "inherit",
-                env: buildConditionsEnvironment(options.conditions),
-            },
+    // The pin is read as the modules load, under the process's conditions;
+    // `bblitec` starts the compiler under the ones its `--condition`s name.
+    if (!buildsUnderConditions(options.conditions))
+        throw new Error(
+            `--condition ${options.conditions.join(", ") || "(none)"} is not what this process resolves imports under (${pinnedBuildConditions().join(", ") || "none"}); run the compiler through bblitec.`,
         );
-        process.exitCode = restarted.status ?? 1;
-        return;
-    }
     // This process runs out of `dist/` too, and an ad-hoc generation probe is
     // exactly what runs beside somebody else's `npm run build`. A `compile`
     // fan-out's children already run under their parent's lock and take
@@ -1941,7 +1672,6 @@ ${imageCodecLines || '    ""'}
     for (const [include, text] of featureMacroHeaders({
         features: result.manifest.features,
         imageCodecs,
-        rightHanded: sharedUpstreamStore().rightHanded(),
     }))
         tree.write(`upstream/include/${include}`, text);
     // The reached-file list: the program's files (recorded by the

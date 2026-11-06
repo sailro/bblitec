@@ -11,6 +11,7 @@ import {
     type ComposedScreenSpaceTask,
     type ScreenSpaceTextureRef,
 } from "../src/pinned-screen-space.js";
+import type { PlannedLayoutEntry } from "../src/recording-engine.js";
 
 /** The demo's own settings for its three tasks. */
 const CONTACT_OPTIONS = {
@@ -79,13 +80,21 @@ function ref(texture: ScreenSpaceTextureRef | undefined): string {
         : texture.role;
 }
 
+/** A layout entry's resource as `member=value`, in WebGPU's spelling. */
+function resource(binding: PlannedLayoutEntry): string {
+    if (binding.sampleType) return `texture=${binding.sampleType}`;
+    if (binding.samplerType) return `sampler=${binding.samplerType}`;
+    if (binding.bufferType) return `buffer=${binding.bufferType}`;
+    return `storage=${binding.storageTexture?.format}`;
+}
+
 /** One pass as `label -> target`, then each binding's name and what it reads. */
 function describe(pass: ComposedScreenSpaceStagePass): string[] {
     return [
         `${pass.label} -> ${ref(pass.target)}`,
         ...pass.stage.bindings.map(
             (binding, index) =>
-                `${binding.name}:${binding.kind}:${ref(pass.textures[index])}`,
+                `${binding.name}:${resource(binding)}:${ref(pass.textures[index])}`,
         ),
     ];
 }
@@ -102,15 +111,15 @@ test("running the pinned factories records the documented pipeline configuration
     // view; only the GI producer also samples the lit source colour.
     assert.deepEqual(describe(contact.passes[0]!), [
         "producer -> intermediate#0",
-        "ssDepth:depth-texture:depth",
-        "ssContact:uniform:-",
+        "ssDepth:texture=depth:depth",
+        "ssContact:buffer=uniform:-",
     ]);
     assert.deepEqual(describe(gi.passes[0]!), [
         "producer -> intermediate#0",
-        "ssGiDepth:depth-texture:depth",
-        "ssGiColorSampler:sampler:-",
-        "ssGiColor:texture:source-color",
-        "ssGi:uniform:-",
+        "ssGiDepth:texture=depth:depth",
+        "ssGiColorSampler:sampler=filtering:-",
+        "ssGiColor:texture=float:source-color",
+        "ssGi:buffer=uniform:-",
     ]);
     // The shared temporal resolve: sampler, depth, raw, history, block. The
     // pass order of an enabled and a disabled frame is asserted inside
@@ -122,11 +131,11 @@ test("running the pinned factories records the documented pipeline configuration
         );
         assert.deepEqual(describe(task.passes[1]!), [
             "resolve -> stable",
-            "ssLinearSampler:sampler:-",
-            "ssCurrentDepth:depth-texture:depth",
-            "ssRawTex:texture:intermediate#0",
-            "ssHistoryTex:texture:history",
-            "ssTemporal:uniform:-",
+            "ssLinearSampler:sampler=filtering:-",
+            "ssCurrentDepth:texture=depth:depth",
+            "ssRawTex:texture=float:intermediate#0",
+            "ssHistoryTex:texture=float:history",
+            "ssTemporal:buffer=uniform:-",
         ]);
         assert.equal(task.passes[0]!.stage.uniformBytes, 192);
         assert.equal(task.passes[1]!.stage.uniformBytes, 288);
@@ -156,22 +165,22 @@ test("ambient occlusion composes a producer, two blur passes over one pipeline a
     assert.deepEqual(ao.intermediates, ["r8unorm", "r8unorm", "r8unorm"]);
     assert.deepEqual(describe(ao.passes[0]!), [
         "producer -> intermediate#0",
-        "ssAoDepth:depth-texture:depth",
-        "ssAo:uniform:-",
+        "ssAoDepth:texture=depth:depth",
+        "ssAo:buffer=uniform:-",
     ]);
     // One blur pipeline, two bind groups: the horizontal pass reads the raw
     // occlusion, the vertical one the horizontal result.
     assert.equal(ao.passes[1]!.stage, ao.passes[2]!.stage);
     assert.deepEqual(describe(ao.passes[1]!), [
         "blur-horizontal -> intermediate#1",
-        "ssAoBlurDepth:depth-texture:depth",
-        "ssAoInput:texture:intermediate#0",
-        "ssAoBlur:uniform:-",
+        "ssAoBlurDepth:texture=depth:depth",
+        "ssAoInput:texture=float:intermediate#0",
+        "ssAoBlur:buffer=uniform:-",
     ]);
     assert.deepEqual(describe(ao.passes[2]!).slice(0, 3), [
         "blur-vertical -> intermediate#2",
-        "ssAoBlurDepth:depth-texture:depth",
-        "ssAoInput:texture:intermediate#1",
+        "ssAoBlurDepth:texture=depth:depth",
+        "ssAoInput:texture=float:intermediate#1",
     ]);
     // The resolve temporally accumulates the vertical blur, through the
     // scalar owner contact shadows use.
@@ -457,12 +466,12 @@ test("the stage table carries each deployed stage, and each plan its passes over
     const header = module.header + module.definitions;
     assert.ok(
         header.includes(
-            'ScreenSpaceShaderInfo{"screenspace-0", "ssContactVertex", "ssContactFragment", 192u, TextureFormatClass::r8_unorm, screen_space_bindings_0.data(), screen_space_bindings_0.size()}',
+            'ScreenSpaceShaderInfo{"screenspace-0", "ssContactVertex", "ssContactFragment", 192u, TextureFormatClass::r8_unorm, screen_space_bindings_0}',
         ),
     );
     assert.ok(
         header.includes(
-            'ScreenSpaceStageBinding{0u, "ssDepth", ScreenSpaceBindingKind::depth_texture}',
+            'PinnedLayoutEntry{0u, "ssDepth", "", "depth", "", "", ""}',
         ),
     );
     // Both blur passes draw the one blur stage into their own target.

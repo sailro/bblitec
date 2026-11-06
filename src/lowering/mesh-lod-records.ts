@@ -10,6 +10,7 @@
  * emitted from the pin's own declarations.
  */
 import ts from "typescript";
+import { hasExportModifier } from "../compiler/syntax.js";
 import { type LoweringContext } from "./context.js";
 import {
     type CallAdapter,
@@ -204,12 +205,7 @@ function meshLoDCoreRoots(model: PinnedRecordModel): PinnedCallable[] {
                 ts.isFunctionDeclaration(statement) &&
                 statement.name &&
                 statement.body &&
-                ts
-                    .getModifiers(statement)
-                    ?.some(
-                        (modifier) =>
-                            modifier.kind === ts.SyntaxKind.ExportKeyword,
-                    )
+                hasExportModifier(statement)
             )
                 roots.push(statement);
     }

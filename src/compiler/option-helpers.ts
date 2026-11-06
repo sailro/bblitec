@@ -17,6 +17,8 @@ import { traceSourceNode } from "./source-trace.js";
 import { engineSampleCountCpp } from "./engine-samples.js";
 import {
     isExpressionWrapper,
+    jsonScalarLiteral,
+    notJson,
     unwrapExpression,
     literalMember,
     lastWriter,
@@ -632,15 +634,6 @@ export function compileStaticNumber(
     return value;
 }
 
-/**
- * "Not a JSON literal", distinct from every value one can hold.
- *
- * `null` is a value the graphs carry (`tags: null`), so it cannot double as
- * the miss signal — and a signal the caller has to re-test for `object`,
- * `null` and `Array` is a signal that leaks.
- */
-export const notJson = Symbol("not a JSON literal");
-
 /** What reading a JSON literal out of the source needs. */
 export interface StaticJsonContext extends Pick<
     LoweringServices,
@@ -695,25 +688,6 @@ export function staticJsonValue(
         return values;
     }
     return jsonScalarLiteral(node);
-}
-
-/** The JSON scalar a literal node spells, or `notJson`. */
-export function jsonScalarLiteral(node: ts.Expression): unknown {
-    if (ts.isStringLiteralLike(node)) {
-        return node.text;
-    }
-    if (ts.isNumericLiteral(node)) return Number(node.text);
-    if (
-        ts.isPrefixUnaryExpression(node) &&
-        node.operator === ts.SyntaxKind.MinusToken &&
-        ts.isNumericLiteral(node.operand)
-    ) {
-        return -Number(node.operand.text);
-    }
-    if (node.kind === ts.SyntaxKind.TrueKeyword) return true;
-    if (node.kind === ts.SyntaxKind.FalseKeyword) return false;
-    if (node.kind === ts.SyntaxKind.NullKeyword) return null;
-    return notJson;
 }
 
 /**

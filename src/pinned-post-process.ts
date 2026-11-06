@@ -31,6 +31,7 @@ import {
     importPinnedModuleWithExports,
 } from "./pinned-shader-composer.js";
 import { createRecordingDevice } from "./recording-device.js";
+import { builtRenderTarget, pinnedRenderTargets } from "./recording-engine.js";
 
 export interface PostProcessCompositionRequest {
     /** The Babylon Lite entry point the pass was created through. */
@@ -169,16 +170,6 @@ interface PinnedPostProcessTaskModule {
     align16: (value: number) => number;
 }
 
-interface PinnedRenderTargetModule {
-    createRenderTarget: (descriptor: {
-        lbl: string;
-        format: string;
-        samples: number;
-        size: { width: number; height: number };
-    }) => PinnedRenderTarget;
-    buildRenderTarget: (target: PinnedRenderTarget, engine: unknown) => void;
-}
-
 /** The composite facade, of which composition calls only `record`. */
 interface PinnedCompositeTask extends PinnedPostProcessTask {
     record(): void;
@@ -254,9 +245,7 @@ async function runComposite(
     format: string,
 ): Promise<CompositeRun> {
     const options = request.options;
-    const renderTargets = await importPinnedModule<PinnedRenderTargetModule>(
-        "engine/render-target.js",
-    );
+    const renderTargets = await pinnedRenderTargets<PinnedRenderTarget>();
     const passes: CompositeRun["passes"] = [];
     const module = await importPinnedModuleObserving<
         Record<
@@ -294,15 +283,14 @@ async function runComposite(
     const engine = compositionEngine();
     const inputs = new Map<PinnedRenderTarget, string>();
     const input = (option: string): PinnedRenderTarget => {
-        const target = renderTargets.createRenderTarget({
+        // Built, not merely described: `record()` below refuses a source
+        // with no color texture, exactly as it would in the browser.
+        const target = builtRenderTarget(renderTargets, engine, {
             lbl: `bblitec-${option}`,
             format,
             samples: 1,
             size: { width, height },
         });
-        // Built, not merely described: `record()` below refuses a source
-        // with no color texture, exactly as it would in the browser.
-        renderTargets.buildRenderTarget(target, engine);
         inputs.set(target, option);
         return target;
     };
@@ -718,7 +706,7 @@ export async function composePostProcess(
             "frame-graph/post-process-task.js",
             ["getShaderModule", "getUniformBinding", "align16"],
         ),
-        importPinnedModule<PinnedRenderTargetModule>("engine/render-target.js"),
+        pinnedRenderTargets<PinnedRenderTarget>(),
         importPinnedModule<
             Record<
                 string,

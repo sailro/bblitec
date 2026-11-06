@@ -75,8 +75,27 @@ struct FrameSession {
     }
     /** Whether this frame is the requested screenshot, or a stopped engine's final frame. */
     [[nodiscard]] bool screenshot_due() const {
-        return (frame >= frame_options.screenshot_frame || engine.stopped) &&
-               !captures.screenshot_saved && !frame_options.screenshot_path.empty();
+        return captures.screenshot_frame_reached(frame) && captures.screenshot_pending();
+    }
+    /**
+     * A frozen frame (`conduct_frame`): `offscreen` keeps its last frame and
+     * `save_screenshot` hands a waiting screenshot the last frame's image,
+     * answering false when the renderer kept none. A capture still waiting
+     * without its image draws the frame once more.
+     */
+    template <typename SaveScreenshot>
+    bool freeze_frame(OffscreenRun* offscreen, SaveScreenshot save_screenshot) {
+        if (offscreen)
+            offscreen->freeze();
+        if (captures.screenshot_pending() && captures.drains_resolved()) {
+            if (!save_screenshot())
+                return false;
+            captures.screenshot_saved = true;
+        }
+        if (captures.buffers_pending())
+            return false;
+        ++frame;
+        return true;
     }
 };
 
@@ -112,9 +131,7 @@ public:
             const FrameOutcome outcome = conduct_frame(renderer, engine);
             if (outcome == FrameOutcome::stopped)
                 break;
-            // A frozen frame completes its animation frame as a drawn one
-            // would: the canvas's last frame stands for it.
-            co_yield outcome == FrameOutcome::rendered || outcome == FrameOutcome::frozen;
+            co_yield frame_drawn(outcome);
         }
         renderer.finish_run();
         co_return true;
@@ -141,12 +158,7 @@ public:
      * no frame-to-frame state, so it is the frame they last drew.
      */
     bool freeze() {
-        if (offscreen)
-            offscreen->freeze();
-        if (captures.pending())
-            return false;
-        ++frame;
-        return true;
+        return freeze_frame(offscreen, [] { return false; });
     }
 
     FramePreparation update() {

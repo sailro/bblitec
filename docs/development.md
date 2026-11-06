@@ -297,8 +297,10 @@ generation, `npm run corpus:verify` and validation. Preview with
 - The pin's `#` imports resolve per bundler condition (`#coordinate-system`: left-handed by default, right-handed under
   `babylon-lite-rh`). `src/pinned-build-conditions.ts` selects them as an application's bundler does: lowered sources
   fold the selected constants, executed modules and served pages import the selected files. A registry entry's
-  `conditions` names them per program: the compiler process takes `BBLITE_BUILD_CONDITIONS` and Node's own
-  `--conditions` (`NODE_OPTIONS`), and refuses the first without the second.
+  `conditions` names them per program; a compiler process builds under Node's own `--conditions` (flags or
+  `NODE_OPTIONS`), and `bblitec --condition <name>` starts it under them.
+- Corpus scene rows carry the pin's `scene-config.json` `"rightHanded": true` (checked by `corpus:verify`); each
+  flagged row registers as the right-handed twin of the scene its file imports.
 
 ## API coverage
 

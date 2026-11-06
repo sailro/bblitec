@@ -314,28 +314,21 @@ export class AdmissionRecorder {
     /**
      * swapchain-overlay.ts composites an overlay after its root's frame:
      * into the root's swapchain task at MSAA, over the swapchain at one
-     * sample. Natively the layers draw after the root's graph, so a program
-     * building an overlay refuses the shapes that order does not stand for.
+     * sample. The renderers queue every temporal pass until each scene's
+     * frame graph has recorded, so a root's TAA pass would draw over an
+     * overlay the pin records after it.
      */
     private enforceOverlays(): void {
-        for (const [refused, shape] of [
-            [
-                this.context.features.has("engine:gpu-task-timing"),
-                "GPU task timing: it times each registered scene's own scene task, and an overlay draws through its root's",
-            ],
-            [
-                this.context.sceneManifest.postProcessComposites.some(
-                    (composite) =>
-                        composite.intrinsic === "createTaaPostProcessTask",
-                ),
-                "TAA: its temporal pass is encoded after every scene's frame graph, past the root's overlay layers",
-            ],
-        ] as const)
-            if (refused)
-                this.context.fail(
-                    this.context.sourceFile,
-                    `Overlay scenes are not supported with ${shape}.`,
-                );
+        if (
+            this.context.sceneManifest.postProcessComposites.some(
+                (composite) =>
+                    composite.intrinsic === "createTaaPostProcessTask",
+            )
+        )
+            this.context.fail(
+                this.context.sourceFile,
+                "Overlay scenes are not supported with TAA: its temporal passes are encoded after every scene's frame graph, so the root's would draw over an overlay the pin records after it.",
+            );
     }
 
     public noteTemporalAdmissionFailure(node: ts.Node, message: string): void {

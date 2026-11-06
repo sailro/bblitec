@@ -16,8 +16,13 @@ export interface CorpusFile {
     sha256: string;
 }
 
-interface CorpusScene extends CorpusFile {
+export interface CorpusScene extends CorpusFile {
     id: string;
+    /**
+     * `"rightHanded": true` in the pin's `scene-config.json`: the lab builds
+     * the scene under `babylon-lite-rh` (`corpus:verify` checks the flag).
+     */
+    rightHanded?: true;
 }
 
 interface CorpusApplication {

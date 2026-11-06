@@ -55,6 +55,7 @@ import {
     PinnedNumericLowerer,
     recordLiteralCpp,
 } from "./pinned-numeric-lowerer.js";
+import { lowerPinnedBody } from "./pinned-body-lowerer.js";
 
 import {
     PINNED_DECOMPOSE_ROTATION,
@@ -4894,6 +4895,110 @@ void attach_camera_gizmo_to_camera(
     }
 
     /**
+     * light-gizmo.ts `_syncLightGizmoTransform` over the follow's `world`
+     * (`light.worldMatrix`): the root at the light's world translation,
+     * turned along the world direction of a light whose factory declares
+     * one (hemispheric, spot and directional).
+     */
+    private lightGizmoTransformSync(): string {
+        const { file, declaration } = this.context.functionDeclaration(
+            LIGHT_MODULE,
+            "_syncLightGizmoTransform",
+        );
+        this.context.assertParameterNames(
+            declaration,
+            ["root", "light"],
+            "_syncLightGizmoTransform parameters",
+        );
+        let direction: ts.Identifier | undefined;
+        return lowerPinnedBody(
+            file,
+            declaration.body!.statements,
+            {
+                bindings: new Map<string, PinnedBinding>([
+                    ["light.worldMatrix", { cpp: "world", type: "f32" }],
+                    ["root.position", { cpp: "position", type: "opaque" }],
+                    [
+                        "root.rotationQuaternion",
+                        { cpp: "rotationQuaternion", type: "opaque" },
+                    ],
+                ]),
+                calls: new Map([
+                    [
+                        "directionToQuat",
+                        ([vector]: readonly string[]) =>
+                            `direction_to_quat(${vector})`,
+                    ],
+                ]),
+                fixedTupleCalls: new Map([["directionToQuat", 4]]),
+                methods: new Map([
+                    [
+                        "set",
+                        (receiver: string, args: readonly string[]) =>
+                            receiver === "position"
+                                ? `set_transform_node_position(e, g.root, Vec3d{${args.join(", ")}})`
+                                : `set_transform_node_rotation_quaternion(e, g.root, Vec4{${args.map((value) => `static_cast<float>(${value})`).join(", ")}})`,
+                    ],
+                ]),
+                expression: (expression, lowerer) => {
+                    const node = this.context.unwrapExpression(expression);
+                    // The direction `directionToQuat` takes, a Vec3d.
+                    if (
+                        ts.isObjectLiteralExpression(node) &&
+                        ts.isCallExpression(node.parent) &&
+                        ts.isIdentifier(node.parent.expression) &&
+                        node.parent.expression.text === "directionToQuat"
+                    )
+                        return `Vec3d{${lowerObjectComponents(this.context, lowerer, node, ["x", "y", "z"]).join(", ")}}`;
+                    if (
+                        direction &&
+                        ts.isPropertyAccessExpression(node) &&
+                        ts.isIdentifier(node.expression) &&
+                        node.expression.text === direction.text
+                    )
+                        return `static_cast<double>(light.direction.${node.name.text})`;
+                    return undefined;
+                },
+                // `const dir = (light as ...).direction`: the light record's own.
+                statement: (statement, lowerer) => {
+                    if (!ts.isVariableStatement(statement)) return undefined;
+                    const [local] = statement.declarationList.declarations;
+                    const initializer =
+                        local?.initializer &&
+                        this.context.unwrapExpression(local.initializer);
+                    if (
+                        !local ||
+                        !ts.isIdentifier(local.name) ||
+                        !initializer ||
+                        !ts.isPropertyAccessExpression(initializer) ||
+                        initializer.name.text !== "direction"
+                    )
+                        return undefined;
+                    direction = local.name;
+                    lowerer.bindLocal(local.name, {
+                        cpp: "light.direction",
+                        type: "opaque",
+                        absentCpp:
+                            "light.kind != LightKind::hemispheric && " +
+                            "light.kind != LightKind::spot && " +
+                            "light.kind != LightKind::directional",
+                    });
+                    return [];
+                },
+                returnValue: (expression) => {
+                    if (expression)
+                        this.context.contractError(
+                            expression,
+                            "Expected _syncLightGizmoTransform to return nothing.",
+                        );
+                    return "";
+                },
+            },
+            "        ",
+        );
+    }
+
+    /**
      * `createLightGizmo` and `attachLightGizmoToLight`, emitted only for a
      * scene that builds a light gizmo (`gizmo:light`): the two entry points,
      * and the hemisphere and light-line builders inside the unit's
@@ -4901,27 +5006,7 @@ void attach_camera_gizmo_to_camera(
      */
     private lightGizmoSource(): { helpers: string; source: string } {
         const lightFile = this.context.sourceFile(LIGHT_MODULE);
-        // The emitted follow restates the pin's transform sync.
-        this.context.assertFunctionContract(
-            LIGHT_MODULE,
-            "_syncLightGizmoTransform",
-            `
-export function _syncLightGizmoTransform(root: SceneNode, light: LightBase): void {
-    const world = light.worldMatrix;
-    root.position.set(world[12]!, world[13]!, world[14]!);
-    const dir = (light as unknown as { direction?: { x: number; y: number; z: number } }).direction;
-    if (dir) {
-        const q = directionToQuat({
-            x: world[0]! * dir.x + world[4]! * dir.y + world[8]! * dir.z,
-            y: world[1]! * dir.x + world[5]! * dir.y + world[9]! * dir.z,
-            z: world[2]! * dir.x + world[6]! * dir.y + world[10]! * dir.z,
-        });
-        root.rotationQuaternion.set(q[0], q[1], q[2], q[3]);
-    }
-}
-`,
-            "light-gizmo._syncLightGizmoTransform native contract",
-        );
+        const syncLightTransform = this.lightGizmoTransformSync();
         this.context.expectShapeCount(
             this.context.functionDeclaration(LIGHT_MODULE, "createLightGizmo")
                 .declaration,
@@ -5149,37 +5234,9 @@ void build_light_lines(
         LightGizmoRecord& g = ${recordAt("e.light_gizmos", "handle")};
         if (g.attached_light.value >= e.lights.size()) return;
         const LightRecord& light = ${recordAt("e.lights", "g.attached_light")};
-        // _syncLightGizmoTransform: the root at the light's world
-        // translation, every light being a scene node; turned along the
-        // world direction of a light whose factory declares one
-        // (hemispheric, spot and directional).
+        // ${this.context.provenance(LIGHT_MODULE, "_syncLightGizmoTransform")}
         const std::array<float, 16> world = upstream::light_world_matrix(light);
-        set_transform_node_position(
-            e,
-            g.root,
-            Vec3d{
-                static_cast<double>(world[12]),
-                static_cast<double>(world[13]),
-                static_cast<double>(world[14])});
-        if (light.kind == LightKind::hemispheric ||
-            light.kind == LightKind::spot ||
-            light.kind == LightKind::directional) {
-            const auto column = [&world, &light](std::size_t row) {
-                return static_cast<double>(world[row]) * static_cast<double>(light.direction.x) +
-                    static_cast<double>(world[row + 4u]) * static_cast<double>(light.direction.y) +
-                    static_cast<double>(world[row + 8u]) * static_cast<double>(light.direction.z);
-            };
-            const std::array<double, 4> q =
-                direction_to_quat(Vec3d{column(0u), column(1u), column(2u)});
-            set_transform_node_rotation_quaternion(
-                e,
-                g.root,
-                Vec4{
-                    static_cast<float>(q[0]),
-                    static_cast<float>(q[1]),
-                    static_cast<float>(q[2]),
-                    static_cast<float>(q[3])});
-        }
+${syncLightTransform}
         Scene& utility = utility_layer_scene(e, layer);
         const Vec3d root_position =
             ${recordAt("e.transform_nodes", "g.root")}.position;
@@ -5590,10 +5647,7 @@ Scene& utility_layer_scene(Engine& engine, UtilityLayerHandle layer) {
 void register_utility_layer(Engine& engine, UtilityLayerHandle layer) {
     UtilityLayerRecord& record = layer_record(engine, layer);
     register_scene(record.scene);
-    const auto scenes = engine.scenes();
-    if (std::any_of(scenes.begin(), scenes.end(), [&record](const std::shared_ptr<Scene>& registered) {
-            return registered && registered->shares_identity(record.scene);
-        }))
+    if (rendering_context_index(engine, *record.scene.identity()))
         move_swapchain_overlays_after_base(*record.main_scene);
 }
 

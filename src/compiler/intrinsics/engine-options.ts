@@ -1,7 +1,7 @@
 import { EmissionSet } from "../emission-transaction.js";
 import { nativeTextureFormats } from "../../native-texture-format.js";
 import { sharedPinnedContext } from "../../lowering/context.js";
-import { requirePinnedModule } from "../../pinned-shader-composer.js";
+import { geometryAttachmentDefaultFormat } from "../../pinned-shader-composer.js";
 import {
     nativeDepthCompare,
     pinnedDepthClearValue,
@@ -109,7 +109,7 @@ function compileGeometryTextureFormat(
 ): string {
     const table = {
         ...geometryTextureFormat.table,
-        [pinnedGeometryDefaultFormat(type)]:
+        [geometryAttachmentDefaultFormat(type)]:
             "bbl::GeometryTextureFormat::automatic",
     };
     return staticTableEntry(
@@ -117,22 +117,6 @@ function compileGeometryTextureFormat(
         { ...geometryTextureFormat, table },
         expression,
     );
-}
-
-/** The pinned default format of one geometry attachment type. */
-function pinnedGeometryDefaultFormat(type: GeometryTextureTypeName): string {
-    const types = requirePinnedModule<{
-        GeometryTextureType: Record<string, number>;
-        GEOMETRY_TEXTURE_DESCRIPTIONS: readonly { defaultFormat: string }[];
-    }>("frame-graph/geometry-types.js");
-    const index = types.GeometryTextureType[type];
-    const description =
-        index === undefined
-            ? undefined
-            : types.GEOMETRY_TEXTURE_DESCRIPTIONS[index];
-    if (!description)
-        throw new Error(`Pinned geometry types have no '${type}' description.`);
-    return description.defaultFormat;
 }
 
 export interface EngineOptionContext
@@ -577,7 +561,7 @@ export function compileGeometryTaskOptions(
         if (type === "LINEAR_VELOCITY") {
             velocityFormat = formatExpression
                 ? context.compileStringLiteral(formatExpression)
-                : pinnedGeometryDefaultFormat(type);
+                : geometryAttachmentDefaultFormat(type);
         }
         // An attachment's clear value is the pin's own, per lane
         // (`GEOMETRY_TEXTURE_DESCRIPTIONS`), and the runtime already carries

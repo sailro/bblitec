@@ -2,8 +2,7 @@
  * The feature-keyed native macros, and the headers generation writes them to.
  *
  * Each macro is 1 when the scene's final feature list (the compiler's reach
- * plus the asset join), or the program's build conditions, satisfy its row
- * and 0 otherwise. Every macro gets
+ * plus the asset join) satisfies its row and 0 otherwise. Every macro gets
  * a header of its own, `bblite/features/<name>.hpp`, and every native or
  * generated file that tests one includes that header: a translation unit's
  * inputs are then exactly the activation facts its include closure reads,
@@ -21,8 +20,6 @@ export interface FeatureMacroReach {
     readonly features: readonly string[];
     /** The image codecs packaged assets reach (`features.cmake`). */
     readonly imageCodecs: readonly string[];
-    /** Whether the build conditions select the pin's right-handed variant. */
-    readonly rightHanded: boolean;
 }
 
 interface FeatureMacro {
@@ -35,12 +32,9 @@ interface FeatureMacro {
     readonly imageDecoder?: true;
     /** 1 when the program links this image codec. */
     readonly imageCodec?: string;
-    /** 1 when the program is built right-handed (`#coordinate-system`). */
-    readonly rightHanded?: true;
 }
 
 export const featureMacros: readonly FeatureMacro[] = [
-    { macro: "BBLITE_RIGHT_HANDED", rightHanded: true },
     { macro: "BBLITE_DEVICE_RECOVERY", anyOf: ["engine:device-recovery"] },
     { macro: "BBLITE_GPU_TASK_TIMING", anyOf: ["engine:gpu-task-timing"] },
     { macro: "BBLITE_GPU_RETIREMENT", anyOf: ["engine:gpu-retirement"] },
@@ -243,7 +237,6 @@ export function featureMacroInclude(macro: string): string {
 }
 
 function describe(row: FeatureMacro): string {
-    if (row.rightHanded) return "the program is built right-handed";
     if (row.imageDecoder) return "a packaged asset reaches an image codec";
     if (row.imageCodec) return `the program links the ${row.imageCodec} codec`;
     if (row.allOf) return `the scene reaches ${row.allOf.join(" and ")}`;
@@ -255,7 +248,6 @@ export function featureMacroValue(
     row: FeatureMacro,
     reach: FeatureMacroReach,
 ): boolean {
-    if (row.rightHanded) return reach.rightHanded;
     if (row.imageDecoder) return reach.imageCodecs.length > 0;
     if (row.imageCodec) return reach.imageCodecs.includes(row.imageCodec);
     if (row.allOf)

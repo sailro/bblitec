@@ -548,7 +548,6 @@ export function compileEngineIntrinsic(
                 ...(base.scenePrimarySurface
                     ? { scenePrimarySurface: true as const }
                     : {}),
-                overlayScene: true,
                 cpp:
                     (base.msaaSamples ?? 4) === 4
                         ? create

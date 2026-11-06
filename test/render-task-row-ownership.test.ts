@@ -154,6 +154,7 @@ mesh.material=material;addToScene(scene,mesh);
         "bool mesh_draws(",
         "bool render_item_material_draws(",
         "bool pick_candidate(",
+        "RenderPipelineArm render_pipeline_arm(",
         "RenderPipelineKind render_pipeline_kind(",
         "void append_draw(",
         "void order_draw_lists(",

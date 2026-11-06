@@ -215,27 +215,10 @@ inline void validate_geometry_velocity_camera(const GeometryTaskOptions& task, c
             "createPbrGeometryVelocity",
         );
         const statements = declaration.body!.statements;
-        const declared = (name: string): ts.VariableStatement => {
-            const found = statements.filter(
-                (statement): statement is ts.VariableStatement =>
-                    ts.isVariableStatement(statement) &&
-                    statement.declarationList.declarations.length === 1 &&
-                    ts.isIdentifier(
-                        statement.declarationList.declarations[0]!.name,
-                    ) &&
-                    statement.declarationList.declarations[0]!.name.text ===
-                        name,
-            );
-            if (found.length !== 1) {
-                return context.contractError(
-                    declaration,
-                    `Expected createPbrGeometryVelocity to declare '${name}' once.`,
-                );
-            }
-            return found[0]!;
-        };
+        const declared = (name: string): ts.VariableStatement =>
+            context.declaredVariable(statements, name).statement!;
         const initializer = (name: string): ts.Expression =>
-            declared(name).declarationList.declarations[0]!.initializer!;
+            context.declaredVariable(statements, name).initializer;
         context.assertExpressionShape(
             initializer("tracked"),
             "(): boolean => mesh.visible !== false && !exclusions?.has(mesh)",
@@ -361,11 +344,7 @@ inline void validate_geometry_velocity_camera(const GeometryTaskOptions& task, c
             [refusal!, statements[blockIdentity]!],
             scope,
         );
-        const updateBody = lowerPinnedBody(
-            file,
-            update.body!.statements,
-            scope,
-        );
+        const updateBody = lowerPinnedBody(file, update.body.statements, scope);
         return `/** \`createPbrGeometryVelocity\`'s closure state; \`data\` is the \`gm\` block. */
 struct PbrGeometryVelocity {
     std::array<float, 16> inverse_world{};
@@ -415,7 +394,7 @@ ${updateBody}
         );
         const update = returnedMethod(context, declaration, "_update");
         const [disposed, changed, skeleton, morph, ...rest] =
-            update.body!.statements;
+            update.body.statements;
         if (rest.length > 0) {
             context.contractError(
                 update,

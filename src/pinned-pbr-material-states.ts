@@ -8,7 +8,8 @@
  * one row for every state those writes can reach, and
  * `pbr_material_state_rows` names each by the key the native record reaches
  * it by: the pin's blend bit, the record's plugin signature, whether a base
- * colour factor was written and whether it holds a bent normal texture.
+ * colour factor was written and, under `enableBentNormals`, whether it holds
+ * a bent normal texture.
  */
 import type {
     PbrMaterialStateWrites,
@@ -25,6 +26,29 @@ import {
     type PinnedMaterialInput,
 } from "./pinned-pbr-variants.js";
 import { importPinnedModule } from "./pinned-shader-composer.js";
+
+/** The key a state row is selected by: the entry less its rows. */
+type PbrMaterialStateKey = Omit<PbrMaterialStateRow, "sourceRow" | "row">;
+
+type AxisState<Axes extends Record<string, readonly unknown[]>> = {
+    [Axis in keyof Axes]: Axes[Axis][number];
+};
+
+/** Every combination of the axes' values, the first axis outermost. */
+function* axisProduct<Axes extends Record<string, readonly unknown[]>>(
+    axes: Axes,
+    names: readonly (keyof Axes)[] = Object.keys(axes),
+    state: Partial<AxisState<Axes>> = {},
+): Generator<AxisState<Axes>> {
+    const [name, ...rest] = names;
+    if (name === undefined) {
+        // Every axis holds a value once none is left.
+        yield state as AxisState<Axes>;
+        return;
+    }
+    for (const value of axes[name] ?? [])
+        yield* axisProduct(axes, rest, { ...state, [name]: value });
+}
 
 /** One state a source row composes in. */
 export interface PbrMaterialState {
@@ -56,6 +80,11 @@ export class PbrMaterialStates {
         private readonly signatures: readonly (readonly MaterialPluginManifest[])[],
         /** The appends that grow a list (`SceneMaterialRecorder.closePbrPluginSignatures`). */
         appends: readonly PbrPluginAppend[],
+        /**
+         * `enableBentNormals` reached: without it the pin's IBL extension
+         * has no `detect`, so a bent normal texture composes nothing.
+         */
+        private readonly bentNormals: boolean,
     ) {
         this.nextRow = firstRow;
         signatures.forEach((list, index) =>
@@ -100,78 +129,68 @@ export class PbrMaterialStates {
         const states: PbrMaterialState[] = [];
         const reached = new Set<string>();
         const baseSignature = this.signatureOf(plugins ?? []);
-        const blends = [...new Set([input.alphaBlend, ...writes.alphaBlend])];
         // `alpha` composes only through which side of 1 it falls on.
         const alphas = [input.alpha];
         for (const below of new Set(writes.alphaBelowOne))
             if (below !== (input.alpha !== undefined && input.alpha < 1))
                 alphas.push(below ? 0.5 : 1);
-        for (const signature of this.reachableSignatures(
-            baseSignature,
-            writes,
-        )) {
-            const own = signature === baseSignature;
-            const held = signature === 0 ? [] : this.signatures[signature - 1]!;
+        const axes = {
+            signature: this.reachableSignatures(baseSignature, writes),
+            factorWritten: writes.baseColorFactor ? [false, true] : [false],
+            // A definite write leaves its materials no textureless state.
+            bentNormalTexture: !this.bentNormals
+                ? [false]
+                : writes.bentNormalTexture === "definite"
+                  ? [true]
+                  : writes.bentNormalTexture
+                    ? [false, true]
+                    : [false],
+            alphaBlend: [...new Set([input.alphaBlend, ...writes.alphaBlend])],
+            alpha: alphas,
+        };
+        for (const state of axisProduct(axes)) {
+            const own = state.signature === baseSignature;
+            const held =
+                state.signature === 0
+                    ? []
+                    : this.signatures[state.signature - 1]!;
+            const candidate = this.stateInput(
+                input,
+                state,
+                own ? undefined : held,
+            );
+            // The pin's own blend term decides which states share a row, so
+            // no restatement of it can drift.
+            const key: PbrMaterialStateKey = {
+                blend:
+                    ((await pinnedMaterialFeatures({ ...candidate })).features &
+                        PBR_HAS_ALPHA_BLEND) !==
+                    0,
+                pluginSignature: state.signature,
+                baseColorFactorWritten: state.factorWritten,
+                ...(this.bentNormals
+                    ? { bentNormalTexture: state.bentNormalTexture }
+                    : {}),
+            };
+            const id = JSON.stringify(key);
+            if (reached.has(id)) continue;
+            reached.add(id);
+            let row = rows.get(id);
+            if (row === undefined) {
+                row = rows.size === 0 ? sourceRow : this.nextRow++;
+                rows.set(id, row);
+                this.entries.push({ sourceRow, ...key, row });
+            }
             const statePlugins = own
                 ? plugins
                 : held.length > 0
                   ? held
                   : undefined;
-            for (const factorWritten of writes.baseColorFactor
-                ? [false, true]
-                : [false])
-                for (const bentNormalTexture of writes.bentNormalTexture
-                    ? [false, true]
-                    : [false])
-                    for (const alphaBlend of blends)
-                        for (const alpha of alphas) {
-                            const candidate = this.stateInput(
-                                input,
-                                {
-                                    alphaBlend,
-                                    alpha,
-                                    factorWritten,
-                                    bentNormalTexture,
-                                },
-                                own ? undefined : held,
-                            );
-                            // The pin's own blend term decides which states
-                            // share a row, so no restatement of it can drift.
-                            const blend =
-                                ((
-                                    await pinnedMaterialFeatures({
-                                        ...candidate,
-                                    })
-                                ).features &
-                                    PBR_HAS_ALPHA_BLEND) !==
-                                0;
-                            const key = `${blend}:${signature}:${factorWritten}:${bentNormalTexture}`;
-                            if (reached.has(key)) continue;
-                            reached.add(key);
-                            let row = rows.get(key);
-                            if (row === undefined) {
-                                row =
-                                    rows.size === 0
-                                        ? sourceRow
-                                        : this.nextRow++;
-                                rows.set(key, row);
-                                this.entries.push({
-                                    sourceRow,
-                                    blend,
-                                    pluginSignature: signature,
-                                    baseColorFactorWritten: factorWritten,
-                                    bentNormalTexture,
-                                    row,
-                                });
-                            }
-                            states.push({
-                                row,
-                                input: candidate,
-                                ...(statePlugins
-                                    ? { plugins: statePlugins }
-                                    : {}),
-                            });
-                        }
+            states.push({
+                row,
+                input: candidate,
+                ...(statePlugins ? { plugins: statePlugins } : {}),
+            });
         }
         return states;
     }

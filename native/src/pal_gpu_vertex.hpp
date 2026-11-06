@@ -386,8 +386,8 @@ inline constexpr std::array<std::uint32_t, 5> empty_morph_weight_data{};
  * version-gated re-upload may rewrite just this span (the header is
  * constant after creation), and both backends must fill it identically.
  */
-std::vector<float> morph_weight_values(const ModelGeometry& geometry,
-                                       const MeshRecord& mesh_record);
+void morph_weight_values(const ModelGeometry& geometry, const MeshRecord& mesh_record,
+                         std::vector<float>& weights);
 
 std::vector<std::uint8_t> pack_morph_weights(const ModelGeometry& geometry,
                                              const MeshRecord& mesh_record);

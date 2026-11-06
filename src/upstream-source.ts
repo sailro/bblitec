@@ -16,14 +16,13 @@ import {
     foldPackageImportConstants,
     literalConstantExports,
     packageImportTarget,
-    pinnedBuildConditions,
-    type PinnedConstant,
 } from "./pinned-build-conditions.js";
-
-interface SourceMapFile {
-    sources?: string[];
-    sourcesContent?: Array<string | null>;
-}
+import { hasExportModifier, type JsonScalar } from "./compiler/syntax.js";
+import { sourceMapSources } from "./source-maps.js";
+import {
+    isRelativeSpecifier,
+    reexportsOnly,
+} from "./typescript-module-specifiers.js";
 
 interface PackageMetadata {
     name: string;
@@ -84,6 +83,18 @@ export function readUpstreamPin(
     };
 }
 
+/** Where the pinned package is installed (`node_modules/<package>`), from the pin file alone. */
+export function pinnedPackageRoot(
+    repositoryRoot = compilerRepositoryRoot(),
+    pinPath = "upstream/babylon-lite.json",
+): string {
+    return resolve(
+        repositoryRoot,
+        "node_modules",
+        ...readUpstreamPin(repositoryRoot, pinPath).package.split("/"),
+    );
+}
+
 interface PublicExport {
     exportedName: string;
     importedName: string;
@@ -124,15 +135,22 @@ export class UpstreamSourceStore {
     /**
      * Each module's text as the pin's own package build leaves it
      * (`pinned-wgsl-build.ts`) and the application's bundler then reads it
-     * under the build conditions (`pinned-build-conditions.ts`), memoized
-     * per module across every store over the same package and conditions,
-     * since both are pure functions of the module: everything that reads a
-     * pinned module reads this, so a shader folded from a builder's AST is
-     * the text the browser compiles, byte for byte.
+     * under the process's build conditions (`pinned-build-conditions.ts`),
+     * memoized per module across every store over the same package, since
+     * both are pure functions of the module: everything that reads a pinned
+     * module reads this, so a shader folded from a builder's AST is the text
+     * the browser compiles, byte for byte.
      */
     private static readonly builtSources = new Map<string, string>();
     private readonly sourceFiles = new Map<string, ts.SourceFile>();
     private readonly packagedModules = new Map<string, string>();
+    /** The first source each emitted module carries, indexed on the first `#` import read. */
+    private emittedSources: Map<string, string> | undefined;
+    /** What each `#` import selects (`packageImportConstants`), by specifier. */
+    private readonly importConstants = new Map<
+        string,
+        ReadonlyMap<string, JsonScalar> | undefined
+    >();
     private readonly declarationModules = new Map<string, string[]>();
     private readonly publicExports = new Map<string, PublicExport>();
     private typedProgram: PinnedProgram | undefined;
@@ -144,11 +162,7 @@ export class UpstreamSourceStore {
         const pin = readUpstreamPin(repositoryRoot, pinPath);
         this.pin = pin;
         this.repositoryRoot = repositoryRoot;
-        this.packageRoot = resolve(
-            repositoryRoot,
-            "node_modules",
-            ...pin.package.split("/"),
-        );
+        this.packageRoot = pinnedPackageRoot(repositoryRoot, pinPath);
         const packageJsonPath = join(this.packageRoot, "package.json");
         if (!existsSync(packageJsonPath)) {
             throw new Error(
@@ -179,16 +193,10 @@ export class UpstreamSourceStore {
         assertPinnedWgslTagIsIdentity(this.getSourceFile("src/shader/wgsl.ts"));
     }
 
-    /**
-     * A module's text as a program built under `conditions` reads it, the
-     * process's own by default.
-     */
-    public getSource(
-        modulePath: string,
-        conditions: readonly string[] = pinnedBuildConditions(),
-    ): string {
+    /** A module's text as the program this process builds reads it. */
+    public getSource(modulePath: string): string {
         const normalized = modulePath.replace(/\\/g, "/");
-        const key = `${this.packageRoot}\0${conditions.join(",")}\0${normalized}`;
+        const key = `${this.packageRoot}\0${normalized}`;
         const built = UpstreamSourceStore.builtSources.get(key);
         if (built !== undefined) return built;
         const source = this.sources.get(normalized);
@@ -200,7 +208,7 @@ export class UpstreamSourceStore {
             pinnedTaggedWgslTransform(this.repositoryRoot)(source, normalized)
                 ?.code ?? source,
             normalized,
-            (specifier) => this.packageImportConstants(specifier, conditions),
+            (specifier) => this.packageImportConstants(specifier),
         );
         UpstreamSourceStore.builtSources.set(key, text);
         return text;
@@ -213,21 +221,24 @@ export class UpstreamSourceStore {
      */
     private packageImportConstants(
         specifier: string,
-        conditions: readonly string[],
-    ): ReadonlyMap<string, PinnedConstant> | undefined {
+    ): ReadonlyMap<string, JsonScalar> | undefined {
+        if (this.importConstants.has(specifier))
+            return this.importConstants.get(specifier);
         const emitted = posix
-            .normalize(
-                packageImportTarget(this.packageRoot, specifier, conditions),
-            )
+            .normalize(packageImportTarget(this.packageRoot, specifier))
             .replace(/^lib\//, "");
-        const source = [...this.packagedModules].find(
-            ([, module]) => module === emitted,
-        )?.[0];
+        if (!this.emittedSources) {
+            this.emittedSources = new Map();
+            for (const [source, module] of this.packagedModules)
+                if (!this.emittedSources.has(module))
+                    this.emittedSources.set(module, source);
+        }
+        const source = this.emittedSources.get(emitted);
         if (!source)
             throw new Error(
                 `The pinned '${specifier}' import selects ${emitted}, which carries no source.`,
             );
-        return literalConstantExports(
+        const constants = literalConstantExports(
             ts.createSourceFile(
                 source,
                 this.sources.get(source)!,
@@ -235,6 +246,8 @@ export class UpstreamSourceStore {
                 false,
             ),
         );
+        this.importConstants.set(specifier, constants);
+        return constants;
     }
 
     /**
@@ -242,13 +255,11 @@ export class UpstreamSourceStore {
      * `#coordinate-system` import selects under the build conditions,
      * `true` in the right-handed variant and `null` in the default one.
      */
-    public rightHanded(
-        conditions: readonly string[] = pinnedBuildConditions(),
-    ): boolean {
-        const value = this.packageImportConstants(
-            "#coordinate-system",
-            conditions,
-        )?.get("_rightHanded");
+    public rightHanded(): boolean {
+        const value =
+            this.packageImportConstants("#coordinate-system")?.get(
+                "_rightHanded",
+            );
         if (value !== true && value !== null)
             throw new Error(
                 "The pinned '#coordinate-system' import no longer selects a `_rightHanded` of `true` or `null`.",
@@ -318,7 +329,7 @@ export class UpstreamSourceStore {
         fromModule: string,
         specifier: string,
     ): string | undefined {
-        if (!specifier.startsWith(".")) return undefined;
+        if (!isRelativeSpecifier(specifier)) return undefined;
         const withoutExtension = specifier.replace(/\.(?:js|mjs|cjs|ts)$/, "");
         const candidate = posix.normalize(
             posix.join(posix.dirname(fromModule), `${withoutExtension}.ts`),
@@ -331,18 +342,8 @@ export class UpstreamSourceStore {
         for (const mapPath of listFiles(libRoot).filter((path) =>
             path.endsWith(".js.map"),
         )) {
-            const map = JSON.parse(
-                readFileSync(mapPath, "utf8"),
-            ) as SourceMapFile;
-            for (
-                let index = 0;
-                index < (map.sources?.length ?? 0);
-                index += 1
-            ) {
-                const content = map.sourcesContent?.[index];
-                const path = map.sources?.[index]
-                    ? virtualSourcePath(map.sources[index]!)
-                    : undefined;
+            for (const { source, content } of sourceMapSources(mapPath)) {
+                const path = source ? virtualSourcePath(source) : undefined;
                 if (path && content) {
                     this.sources.set(path, content);
                     this.packagedModules.set(
@@ -366,20 +367,7 @@ export class UpstreamSourceStore {
             const source = `src/${emitted.slice(0, -".js".length)}.ts`;
             if (this.sources.has(source)) continue;
             const text = readFileSync(modulePath, "utf8");
-            const statements = ts.createSourceFile(
-                source,
-                text,
-                ts.ScriptTarget.Latest,
-                false,
-            ).statements;
-            if (
-                statements.length > 0 &&
-                statements.every(
-                    (statement) =>
-                        ts.isImportDeclaration(statement) ||
-                        ts.isExportDeclaration(statement),
-                )
-            ) {
+            if (reexportsOnly(source, text)) {
                 this.sources.set(source, text);
                 this.packagedModules.set(source, emitted);
             }
@@ -452,50 +440,49 @@ export class UpstreamSourceStore {
         }
     }
 
-    /**
-     * The module declaring an export the barrel names without a specifier
-     * (a bundled barrel aliases its imports through minified local names).
-     * The index of every source's exported declarations is built from their
-     * syntax the first time one is asked for, which is also the first time a
-     * public export is resolved: a process that never resolves one parses
-     * none of it. The parse is the index's own, so it retains no tree.
-     */
+    /** The module declaring an export the barrel names without a specifier (a bundled barrel aliases its imports through minified local names). */
     private findSourceExport(name: string): string | undefined {
+        return this.declaringModules(name)[0];
+    }
+
+    /**
+     * The sources whose exported declarations bind `name`, the package
+     * index aside, in source order. The index of every source's exported
+     * declarations is built from their syntax the first time one is asked
+     * for, which is also the first time a public export is resolved: a
+     * process that never resolves one parses none of it. The parse is the
+     * index's own, so it retains no tree.
+     */
+    public declaringModules(name: string): readonly string[] {
         if (this.declarationModules.size === 0) {
             for (const path of this.listSources()) {
                 if (path === "src/index.ts") continue;
-                for (const declared of exportedDeclarationNames(
+                for (const declared of exportedDeclarations(
                     ts.createSourceFile(
                         path,
                         this.sources.get(path)!,
                         ts.ScriptTarget.Latest,
                         false,
                     ),
-                )) {
+                ).keys()) {
                     const modules = this.declarationModules.get(declared) ?? [];
                     modules.push(path);
                     this.declarationModules.set(declared, modules);
                 }
             }
         }
-        return this.declarationModules.get(name)?.[0];
+        return this.declarationModules.get(name) ?? [];
     }
 }
 
-/** The names a module's `export`-modified declarations bind. */
-function exportedDeclarationNames(file: ts.SourceFile): string[] {
-    const names: string[] = [];
+/** A module's `export`-modified declarations, by each name they bind. */
+export function exportedDeclarations(
+    file: ts.SourceFile,
+): Map<string, ts.Statement[]> {
+    const names = new Map<string, ts.Statement[]>();
     for (const statement of file.statements) {
-        if (
-            !ts.canHaveModifiers(statement) ||
-            !ts
-                .getModifiers(statement)
-                ?.some(
-                    (modifier) => modifier.kind === ts.SyntaxKind.ExportKeyword,
-                )
-        ) {
-            continue;
-        }
+        if (!hasExportModifier(statement)) continue;
+        const declared: string[] = [];
         if (
             (ts.isFunctionDeclaration(statement) ||
                 ts.isClassDeclaration(statement) ||
@@ -503,15 +490,14 @@ function exportedDeclarationNames(file: ts.SourceFile): string[] {
                 ts.isTypeAliasDeclaration(statement) ||
                 ts.isEnumDeclaration(statement)) &&
             statement.name
-        ) {
-            names.push(statement.name.text);
-        } else if (ts.isVariableStatement(statement)) {
-            for (const declaration of statement.declarationList.declarations) {
-                if (ts.isIdentifier(declaration.name)) {
-                    names.push(declaration.name.text);
-                }
-            }
-        }
+        )
+            declared.push(statement.name.text);
+        else if (ts.isVariableStatement(statement))
+            for (const declaration of statement.declarationList.declarations)
+                if (ts.isIdentifier(declaration.name))
+                    declared.push(declaration.name.text);
+        for (const name of declared)
+            names.set(name, [...(names.get(name) ?? []), statement]);
     }
     return names;
 }

@@ -29,6 +29,7 @@ import {
     startEngine,
 } from "babylon-lite";
 import type { Mesh } from "babylon-lite";
+import { standard } from "./regression-mesh-opacity-planes.js";
 
 async function main(): Promise<void> {
     const __initStart = performance.now();
@@ -42,12 +43,6 @@ async function main(): Promise<void> {
     scene.camera = camera;
     addToScene(scene, createHemisphericLight([0, 1, -1], 0.95));
 
-    const standard = (r: number, g: number, b: number): ReturnType<typeof createStandardMaterial> => {
-        const material = createStandardMaterial();
-        material.diffuseColor = [r, g, b];
-        material.specularColor = [0, 0, 0];
-        return material;
-    };
     const plane = (x: number, y: number, z: number, width: number, height: number): Mesh => {
         const mesh = createPlane(engine, { width, height });
         mesh.position.set(x, y, z);

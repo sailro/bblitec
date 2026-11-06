@@ -1143,6 +1143,48 @@ export class LoweringContext {
         return variableInitializer(scope, variableName);
     }
 
+    /**
+     * The one declaration of `name` a scope holds, with its initializer and
+     * the statement declaring it: anywhere under a node, or among a statement
+     * list's own statements (a body's top level). None, or a second one, is
+     * a contract failure.
+     */
+    public declaredVariable(
+        scope: ts.Node | readonly ts.Statement[],
+        name: string,
+    ): {
+        initializer: ts.Expression;
+        statement: ts.VariableStatement | undefined;
+    } {
+        const named = (node: ts.Node): node is ts.VariableDeclaration =>
+            ts.isVariableDeclaration(node) &&
+            ts.isIdentifier(node.name) &&
+            node.name.text === name;
+        const found = isNodeList(scope)
+            ? scope.flatMap((statement) =>
+                  ts.isVariableStatement(statement)
+                      ? statement.declarationList.declarations.filter(named)
+                      : [],
+              )
+            : findNodes(scope, named);
+        const declaration = found[0];
+        if (found.length !== 1 || !declaration?.initializer) {
+            return this.contractError(
+                isNodeList(scope) ? scope[0]! : scope,
+                `Expected one '${name}' declaration with an initializer.`,
+            );
+        }
+        const list = declaration.parent;
+        return {
+            initializer: declaration.initializer,
+            statement:
+                ts.isVariableDeclarationList(list) &&
+                ts.isVariableStatement(list.parent)
+                    ? list.parent
+                    : undefined,
+        };
+    }
+
     /** The expression a pinned function's `index`th return statement returns. */
     public returnedExpression(
         modulePath: string,

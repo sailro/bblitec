@@ -371,6 +371,7 @@ process.stdout.write(JSON.stringify(await packLocalCubemap(JSON.parse(readFileSy
                   version: "1",
                   module: moduleIdentity(import.meta.url),
                   browser: false,
+                  buildConditions: true,
                   parameters: { ...plan },
                   inputs: [
                       ...modules,

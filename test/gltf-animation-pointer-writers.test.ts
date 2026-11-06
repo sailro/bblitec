@@ -323,7 +323,7 @@ ${lowered.map((_, index) => `    for (const auto& item : cases[${index}]) versio
     );
 });
 
-test("admitted glTF ORM and occlusion replacements cannot reattach their original file wrapper", () => {
+test("glTF ORM and occlusion replacements take a texture of any storage, their own read included", () => {
     const source = (slot: string, replacement: string) => `
         import {addToScene, createEngine, createSceneContext, createSolidTexture2D, loadGltf, registerScene, startEngine} from "@babylonjs/lite";
         import type {PbrMaterialProps} from "@babylonjs/lite";
@@ -335,17 +335,21 @@ test("admitted glTF ORM and occlusion replacements cannot reattach their origina
             await registerScene(scene); await startEngine(engine);
         }
         void main();`;
-    for (const slot of ["ormTexture", "occlusionTexture"]) {
-        assert.throws(
-            () => compileSource(source(slot, "old"), labDeployment),
-            /requires a solid texture|uses createSolidTexture2D/,
-        );
-        assert.match(
-            compileSource(
-                source(slot, "createSolidTexture2D(engine, 1, 1, 1)"),
-                labDeployment,
-            ).cpp,
-            /set_material_orm_file|set_pbr_occlusion_solid_texture/,
-        );
+    for (const [slot, setter] of [
+        ["ormTexture", /bbl::set_pbr_texture\([^;]*MaterialTextureSlot::orm/],
+        [
+            "occlusionTexture",
+            /bbl::set_pbr_texture\([^;]*MaterialTextureSlot::occlusion/,
+        ],
+    ] as const) {
+        for (const replacement of [
+            "old",
+            "createSolidTexture2D(engine, 1, 1, 1)",
+        ]) {
+            assert.match(
+                compileSource(source(slot, replacement), labDeployment).cpp,
+                setter,
+            );
+        }
     }
 });

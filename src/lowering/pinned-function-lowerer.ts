@@ -538,6 +538,44 @@ export function lowerInvertMat4ToRefOrIdentityCpp(
 }
 
 /**
+ * The native spellings of the pinned camera and matrix helpers a lowered
+ * frame function calls (`camera_math.hpp`, `pinned_matrix.hpp`, and
+ * `packMat4IntoF32`'s fast path below), shared by every lowering that reads
+ * a camera per frame.
+ */
+export const PINNED_CAMERA_CALLS: ReadonlyMap<
+    string,
+    (args: readonly string[]) => string
+> = new Map<string, (args: readonly string[]) => string>([
+    [
+        "getEffectiveAspectRatio",
+        (args) => `effective_aspect_ratio(${args.join(", ")})`,
+    ],
+    ["getProjectionMatrix", (args) => `build_projection(${args.join(", ")})`],
+    ["getViewMatrix", (args) => `build_camera_view_matrix(${args.join(", ")})`],
+    [
+        "getViewProjectionMatrix",
+        (args) => `build_view_projection(${args.join(", ")})`,
+    ],
+    [
+        "packMat4IntoF32",
+        (args) =>
+            `pack_mat4_into_f32(${args[0]}.data(), ${args[1]}, ${args[2]})`,
+    ],
+]);
+
+/** `Float32Array.prototype.fill`, over a native float array. */
+export const PINNED_FLOAT_ARRAY_METHODS: NonNullable<
+    PinnedNumericScope["methods"]
+> = new Map([
+    [
+        "fill",
+        (receiver: string, args: readonly string[]) =>
+            `${receiver}.fill(static_cast<float>(${args[0]}))`,
+    ],
+]);
+
+/**
  * `packMat4IntoF32`'s fast path: one sixteen-element matrix at source
  * offset zero, which the pin's own `view.set(src, offsetFloats)` copies.
  * The slab walk behind the guard is asserted present and not translated,

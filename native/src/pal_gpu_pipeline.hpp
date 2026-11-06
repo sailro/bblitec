@@ -4,7 +4,6 @@
 #pragma once
 #include "pal_gpu_frame.hpp"
 #include <bblite/features/has_pbr_renderer.hpp>
-#include <bblite/features/right_handed.hpp>
 
 #include <bblite/runtime.hpp>
 #include <bblite/upstream/render_capabilities.hpp>
@@ -21,13 +20,6 @@
 #endif
 
 namespace bbl::pal {
-
-/**
- * A scene pipeline's front face for geometry its family winds `clockwise`
- * left-handed: a right-handed build's view matrix mirrors Z, which reverses
- * it (`#coordinate-system`).
- */
-inline bool scene_pass_clockwise(bool clockwise) { return clockwise != (BBLITE_RIGHT_HANDED != 0); }
 
 /**
  * The three blend-factor tuples the corpus reaches, stated once. A
@@ -75,11 +67,11 @@ inline bool alpha_to_coverage_enabled(bool wants_a2c, std::uint32_t samples) {
 #if BBLITE_HAS_PBR_RENDERER
 /**
  * The fixed-function facts one `RenderPipelineKind` carries, decoded once
- * for both backends: the material family, whether the draw blends, the
- * cull mode and the front face. The plan's own enums carry the answers,
- * so a backend keeps only its API-enum translation — the same split the
- * depth compare already uses. A new enumerator must be given an arm here
- * rather than inheriting one.
+ * for both backends: the material family, whether the draw blends and the
+ * cull mode (its arm), and the front face (its other axis). The plan's own
+ * enums carry the answers, so a backend keeps only its API-enum
+ * translation — the same split the depth compare already uses. A new arm
+ * must be given a row here rather than inheriting one.
  */
 struct RenderPipelineKindTraits {
     upstream::RenderMaterialKind family{};
@@ -95,7 +87,7 @@ struct RenderPipelineKindTraits {
 
 /** Whether the kind asks for alpha-to-coverage (the `shader_a2c` arm). */
 inline bool pipeline_kind_wants_a2c(upstream::RenderPipelineKind kind) {
-    return kind == upstream::RenderPipelineKind::shader_a2c;
+    return kind.arm == upstream::RenderPipelineArm::shader_a2c;
 }
 
 RenderPipelineKindTraits pipeline_kind_traits(upstream::RenderPipelineKind kind);
@@ -238,6 +230,19 @@ pinned_background_arm_buffers(const PinnedBackgroundDraws& draws, const Scene& s
 #endif
 
 /**
+ * The diagnostic id and cluster passes' pipelines, so each draws an item
+ * with its own pipeline's culling: back-culled at either front face, or
+ * culling nothing for a double-sided item.
+ */
+enum class DiagnosticPipeline : std::uint8_t {
+    back_counter_clockwise,
+    back_clockwise,
+    double_sided,
+};
+
+inline constexpr std::size_t diagnostic_pipeline_count = 3;
+
+/**
  * Cluster ids advance in fixed 128-triangle groups, and the id and
  * cluster buffers are compared against the browser's, so both backends
  * have to number them identically.
@@ -257,6 +262,15 @@ ClusterRange advance_cluster_range(std::uint32_t index_count, std::uint32_t& clu
  */
 std::array<float, 4> diagnostic_alpha_options(const upstream::RenderItem& item,
                                               const MaterialRecord* material);
+
+/** The diagnostic pipeline an item draws with: its kind's cull mode and front face. */
+inline DiagnosticPipeline diagnostic_pipeline(const upstream::RenderItem& item) {
+    if (item.cull_mode == upstream::RenderCullMode::none)
+        return DiagnosticPipeline::double_sided;
+    return upstream::render_pipeline_clockwise(item.material_kind, item.reverse_winding)
+               ? DiagnosticPipeline::back_clockwise
+               : DiagnosticPipeline::back_counter_clockwise;
+}
 
 /**
  * The id and cluster diagnostic uniform blocks. The draw-id RGB packing

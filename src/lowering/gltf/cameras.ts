@@ -4,15 +4,12 @@ import { pinnedRootFlip } from "./shared.js";
 import { recordAt } from "../../compiler/record-access.js";
 
 /** Native storage for source-constructed cameras; live pose scheduling is separate. */
-export function lowerGltfCamerasCpp(
-    parser: ts.SourceFile,
-    rightHanded: boolean,
-): {
+export function lowerGltfCamerasCpp(parser: ts.SourceFile): {
     parentWriter: string;
     loading: string;
     poseRefresh: string;
 } {
-    const flip = pinnedRootFlip(parser, rightHanded);
+    const flip = pinnedRootFlip(parser);
     return {
         parentWriter: `
 void write_gltf_camera_parent_world(CameraRecord& camera, ${flip ? "Matrix" : "const Matrix&"} node_world, const Matrix& local) {${

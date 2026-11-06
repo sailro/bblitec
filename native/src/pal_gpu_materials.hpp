@@ -4,6 +4,7 @@
 #pragma once
 #include "pal_gpu_common.hpp"
 #include "pal_gpu_vertex.hpp"
+#include <bblite/features/geometry_velocity.hpp>
 #include <bblite/features/has_pbr_renderer.hpp>
 #include <bblite/features/has_standard_uv_transform.hpp>
 #include <bblite/features/mesh_opacity.hpp>
@@ -14,11 +15,13 @@
 #include <cstddef>
 #include <cstdint>
 #include <initializer_list>
+#include <optional>
 #include <span>
 #include <string>
 #include <string_view>
 #include <vector>
 #include "pal_gpu_variants.hpp"
+#include "pal_gpu_velocity.hpp"
 #if BBLITE_NODE_VARIANTS > 0
 #include <bblite/node_material.hpp>
 #endif
@@ -43,7 +46,45 @@ inline constexpr std::string_view mesh_opacity_block_name = "meshOpacity";
  */
 upstream::MeshOpacityUniforms mesh_opacity_block(const Engine& engine,
                                                  const upstream::RenderItem& item);
+
+/** Whether `block` differs from what a buffer last received, which it then records. */
+inline bool mesh_opacity_moved(std::optional<upstream::MeshOpacityUniforms>& written,
+                               const upstream::MeshOpacityUniforms& block) {
+    if (written == block)
+        return false;
+    written = block;
+    return true;
+}
 #endif
+
+/**
+ * The resource a composed binding a material feature owns requests, by the
+ * pin's binding name: one table for the names both backends realize --
+ * mesh opacity's block and the velocity arm's block and previous pose.
+ */
+enum class FeatureBinding : std::uint8_t {
+    none,
+    mesh_opacity,
+    velocity_block,
+    previous_morph,
+    previous_bones,
+};
+
+inline FeatureBinding feature_binding([[maybe_unused]] std::string_view name) {
+#if BBLITE_MESH_OPACITY
+    if (name == mesh_opacity_block_name)
+        return FeatureBinding::mesh_opacity;
+#endif
+#if BBLITE_GEOMETRY_VELOCITY
+    if (name == velocity_block_name)
+        return FeatureBinding::velocity_block;
+    if (name == previous_morph_name)
+        return FeatureBinding::previous_morph;
+    if (name == previous_bones_name)
+        return FeatureBinding::previous_bones;
+#endif
+    return FeatureBinding::none;
+}
 
 /** Shader views inherit resource bindings from their source material. */
 inline const MaterialRecord& shader_resource_material(const Engine& engine,
@@ -220,10 +261,6 @@ inline bool pbr_variant_receives_shadows(std::size_t) { return false; }
 std::span<const upstream::PinnedShadowBinding>
 node_shadow_rows(const upstream::NodeVariantEntry& entry);
 #endif
-
-/** Restore source winding after a loader baked a reflected node transform. */
-std::span<const std::uint32_t> node_source_indices(const ModelGeometry& geometry,
-                                                   std::vector<std::uint32_t>& scratch);
 
 #if BBLITE_NODE_VARIANTS > 0
 /**

@@ -10,9 +10,12 @@ import {
     screenSpaceReadsLightDirection,
     type ComposedScreenSpaceTask,
     type ScreenSpaceKindFacts,
-    type ScreenSpaceStageBinding,
     type ScreenSpaceTextureRef,
 } from "../pinned-screen-space.js";
+import {
+    plannedLayoutEntryCpp,
+    type PlannedLayoutEntry,
+} from "../recording-engine.js";
 import type { ScreenSpaceTaskManifest } from "../compiler/types.js";
 import { doubleLiteral, stringLiteral } from "../cpp-literals.js";
 import { LoweredSource, LoweringContext } from "./context.js";
@@ -29,6 +32,8 @@ import {
     lowerObjectComponents,
     lowerPackMat4IntoF32FastPathCpp,
     lowerPinnedFunction,
+    PINNED_CAMERA_CALLS,
+    PINNED_FLOAT_ARRAY_METHODS,
 } from "./pinned-function-lowerer.js";
 import { recordAt } from "../compiler/record-access.js";
 import { sameSource, isOneOfSources } from "../compiler/syntax.js";
@@ -336,7 +341,7 @@ namespace {
 
 ${lowerMat4InvertCpp(this.context)}
 
-${this.packMat4()}
+${lowerPackMat4IntoF32FastPathCpp(this.context)}
 
 ${this.clampHelper()}
 
@@ -403,11 +408,6 @@ ${this.tasks.map((task) => this.taskFactory(task)).join("\n\n")}
 
 } // namespace bbl
 `;
-    }
-
-    /** `packMat4IntoF32`'s fast path: every screen-space pack is of one matrix. */
-    private packMat4(): string {
-        return lowerPackMat4IntoF32FastPathCpp(this.context);
     }
 
     /**
@@ -625,33 +625,26 @@ ${this.tasks.map((task) => this.taskFactory(task)).join("\n\n")}
                     "Expected CLAMP to be a three-parameter expression arrow.",
                 );
             }
-            return { effect, file, initializer };
+            const parameters = initializer.parameters.map((parameter) =>
+                ts.isIdentifier(parameter.name)
+                    ? parameter.name.text
+                    : this.context.contractError(parameter, "CLAMP parameter"),
+            );
+            return { effect, file, initializer, parameters };
         });
         const first = lowered[0]!;
-        const names = first.initializer.parameters.map((parameter) => {
-            if (!ts.isIdentifier(parameter.name)) {
-                return this.context.contractError(parameter, "CLAMP parameter");
-            }
-            return parameter.name.text;
-        });
+        const names = first.parameters;
         const body = ({
             file,
             initializer,
+            parameters,
         }: (typeof lowered)[number]): string => {
             const lowerer = new PinnedNumericLowerer(file, {
                 bindings: new Map(
-                    initializer.parameters.map((parameter, index) => {
-                        if (!ts.isIdentifier(parameter.name)) {
-                            return this.context.contractError(
-                                parameter,
-                                "CLAMP parameter",
-                            );
-                        }
-                        return [
-                            parameter.name.text,
-                            { cpp: names[index]!, type: "scalar" },
-                        ];
-                    }),
+                    parameters.map((parameter, index) => [
+                        parameter,
+                        { cpp: names[index]!, type: "scalar" },
+                    ]),
                 ),
                 calls: new Map(),
             });
@@ -1729,21 +1722,9 @@ class FrameWalker {
     }
 
     private scope(bindings: Map<string, PinnedBinding>) {
-        const calls = new Map<string, PinnedCallSpelling>();
+        const calls = new Map<string, PinnedCallSpelling>(PINNED_CAMERA_CALLS);
 
         calls.set("CLAMP", (args) => `screen_space_clamp(${args.join(", ")})`);
-        calls.set(
-            "getEffectiveAspectRatio",
-            (args) => `effective_aspect_ratio(${args.join(", ")})`,
-        );
-        calls.set(
-            "getViewProjectionMatrix",
-            (args) => `build_view_projection(${args.join(", ")})`,
-        );
-        calls.set(
-            "getViewMatrix",
-            (args) => `build_camera_view_matrix(${args.join(", ")})`,
-        );
         calls.set(
             "getCameraPosition",
             () =>
@@ -1766,11 +1747,6 @@ class FrameWalker {
         );
         calls.set("phaseValue", (args) => `phase_value(${args.join(", ")})`);
         calls.set(
-            "packMat4IntoF32",
-            (args) =>
-                `pack_mat4_into_f32(${args[0]}.data(), ${args[1]}, ${args[2]})`,
-        );
-        calls.set(
             "owner.clearIdentity",
             () => "decision.clear_identity = true",
         );
@@ -1781,13 +1757,7 @@ class FrameWalker {
         return {
             bindings,
             calls,
-            methods: new Map([
-                [
-                    "fill",
-                    (receiver: string, args: readonly string[]) =>
-                        `${receiver}.fill(static_cast<float>(${args[0]}))`,
-                ],
-            ]),
+            methods: PINNED_FLOAT_ARRAY_METHODS,
             matrixCalls: new Set(["getViewProjectionMatrix", "getViewMatrix"]),
             recordCalls: new Map([["getCameraPosition", ["x", "y", "z"]]]),
             returnValue: (expression: ts.Expression | undefined) => {
@@ -2610,7 +2580,7 @@ export interface ScreenSpaceStageRow {
     fragmentEntry: string;
     uniformBytes: number;
     targetFormat: string;
-    bindings: readonly ScreenSpaceStageBinding[];
+    bindings: readonly PlannedLayoutEntry[];
 }
 
 /** One task's frame: its dedicated passes over the stage table. */
@@ -2642,7 +2612,8 @@ function textureRefCpp(texture: ScreenSpaceTextureRef | undefined): string {
                 return "none";
         }
     })();
-    return `ScreenSpaceTextureRef{ScreenSpaceTextureRole::${role}, ${texture?.index ?? 0}u}`;
+    const index = texture?.role === "intermediate" ? texture.index : 0;
+    return `ScreenSpaceTextureRef{ScreenSpaceTextureRole::${role}, ${index}u}`;
 }
 
 /**
@@ -2655,20 +2626,13 @@ export function screenSpaceShadersHeader(
     plans: readonly ScreenSpacePlanRow[],
 ): CppModule {
     const cpp = new CppDefinitions();
-    const kindName = (kind: ScreenSpaceStageBinding["kind"]): string =>
-        kind === "depth-texture" ? "depth_texture" : kind;
     const bindingTables = stages
         .map(
             (stage, index) =>
-                `inline constexpr std::array<ScreenSpaceStageBinding, ${stage.bindings.length}u>\n` +
+                `inline constexpr std::array<PinnedLayoutEntry, ${stage.bindings.length}u>\n` +
                 `    screen_space_bindings_${index}{{\n` +
                 stage.bindings
-                    .map(
-                        (binding) =>
-                            `    ScreenSpaceStageBinding{${binding.binding}u, ` +
-                            `${stringLiteral(binding.name)}, ` +
-                            `ScreenSpaceBindingKind::${kindName(binding.kind)}},`,
-                    )
+                    .map((binding) => `    ${plannedLayoutEntryCpp(binding)},`)
                     .join("\n") +
                 `\n}};`,
         )
@@ -2681,8 +2645,7 @@ export function screenSpaceShadersHeader(
                 `${stringLiteral(stage.fragmentEntry)}, ` +
                 `${stage.uniformBytes}u, ` +
                 `${nativeTextureFormat(stage.targetFormat, stage.stem)}, ` +
-                `screen_space_bindings_${index}.data(), ` +
-                `screen_space_bindings_${index}.size()},`,
+                `screen_space_bindings_${index}},`,
         )
         .join("\n");
     const planTables = plans
@@ -2734,20 +2697,15 @@ export function screenSpaceShadersHeader(
     return cpp.finish(`// ${provenance}
 #pragma once
 
+#include <bblite/pinned_layout.hpp>
 #include <bblite/runtime.hpp>
 
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <span>
 
 namespace bbl::upstream {
-
-enum class ScreenSpaceBindingKind {
-    depth_texture,
-    texture,
-    sampler,
-    uniform,
-};
 
 /** Which frame-graph texture a pass binds or draws into. */
 enum class ScreenSpaceTextureRole {
@@ -2766,14 +2724,6 @@ struct ScreenSpaceTextureRef {
     std::uint32_t index;
 };
 
-struct ScreenSpaceStageBinding {
-    /** The pin's own group-0 binding index. */
-    std::uint32_t binding;
-    /** The identifier the pin declared, which the SDL_GPU sidecar names. */
-    const char* name;
-    ScreenSpaceBindingKind kind;
-};
-
 /** One deployed dedicated stage: a producer, a blur, the resolve. */
 struct ScreenSpaceShaderInfo {
     const char* stem;
@@ -2781,8 +2731,8 @@ struct ScreenSpaceShaderInfo {
     const char* fragment_entry;
     std::uint32_t uniform_bytes;
     TextureFormatClass target_format;
-    const ScreenSpaceStageBinding* bindings;
-    std::size_t binding_count;
+    /** The pin's own group-0 layout, each entry under the identifier the SDL_GPU sidecar names. */
+    std::span<const PinnedLayoutEntry> bindings;
 };
 
 /** One dedicated pass of a task's frame, in the pin's encoding order. */

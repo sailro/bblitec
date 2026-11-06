@@ -7,7 +7,11 @@ import { importPinnedModule } from "../src/pinned-shader-composer.js";
 import { LoweringContext } from "../src/lowering/context.js";
 import { materialShadowReceiverCpp } from "../src/lowering/material-shadow-receiver.js";
 import { lowerMeshFeatures } from "../src/lowering/mesh-attribute-features.js";
-import { rightHandedContext } from "./doctored-store.js";
+import {
+    probeError,
+    probeValue,
+    rightHandedProbes,
+} from "./right-handed-process.js";
 import { pbrMaterialBlendsCpp } from "../src/pinned-pbr-variant-cpp.js";
 import {
     cppFunction,
@@ -21,28 +25,32 @@ const native = optionalNativeFixtureTools(false);
 
 test("a right-handed build's winding bit stays out of the native mesh feature word", () => {
     // `_computeMeshFeatures` ORs in the loader's winding bit right-handed;
-    // the mesh's front face carries it natively, as for the mirrored opt-in.
+    // the native word reads no primitive bits (the render item carries the
+    // mark to the pipeline's front face), so the OR adds nothing.
+    const [rightHanded, edited] = rightHandedProbes([
+        { probe: "meshFeatures" },
+        {
+            probe: "meshFeatures",
+            edits: [
+                [
+                    "src/material/mesh-features.ts",
+                    [
+                        "._primitiveFeatures ?? 0) & (1 << 11);",
+                        "._primitiveBits ?? 0) & (1 << 11);",
+                    ],
+                ],
+            ],
+        },
+    ]);
+    const winding =
+        "    features = bbl::js::bitwise_or(features, bbl::js::bitwise_and(0.0, bbl::js::shift_left(1.0, 11.0)));\n";
+    const word = String(probeValue(rightHanded));
+    assert.ok(word.includes(winding));
     assert.equal(
-        lowerMeshFeatures(rightHandedContext()),
+        word.replace(winding, ""),
         lowerMeshFeatures(new LoweringContext()),
     );
-    assert.throws(
-        () =>
-            lowerMeshFeatures(
-                rightHandedContext(
-                    new Map([
-                        [
-                            "src/material/mesh-features.ts",
-                            [
-                                "._primitiveFeatures ?? 0) & (1 << 11);",
-                                "._primitiveFeatures ?? 0) & (1 << 12);",
-                            ],
-                        ],
-                    ]),
-                ),
-            ),
-        /_primitiveFeatures/,
-    );
+    assert.match(probeError(edited), /_primitiveBits/);
 });
 
 test(
@@ -82,9 +90,10 @@ struct RenderDrawCommand { struct Item {
     RenderMaterialKind material_kind = RenderMaterialKind::pbr;
     MaterialHandle material{0}; MeshHandle mesh{0}; std::uint32_t geometry = invalid_handle;
 } item; };
+using RenderItem = RenderDrawCommand::Item;
 constexpr unsigned pbr_variant_material_count = 4;
 constexpr std::array<std::uint32_t, 1> pbr_scene_material_indices{0};
-struct PbrMaterialStateRow { std::uint32_t source_row; bool blend; std::uint8_t plugin_signature; bool base_color_factor_written; bool bent_normal_texture; std::uint32_t row; };
+struct PbrMaterialStateRow { std::uint32_t source_row; bool blend; std::uint8_t plugin_signature; bool base_color_factor_written; std::optional<bool> bent_normal_texture; std::uint32_t row; };
 // Row 0's own state, its blending state, its state holding plugin list 1
 // and its state holding a bent normal texture.
 constexpr std::array<PbrMaterialStateRow, 4> pbr_material_state_rows{{
@@ -115,6 +124,7 @@ ${["PinnedVariantKey", "StandardVariantKey", "PinnedPbrMaterialRow"].map((name) 
 ${[
     "inline bool pinned_record_instanced(",
     "inline bool pinned_record_instance_colored(",
+    "std::size_t mesh_feature_extra(",
     "PinnedPbrMaterialRow pinned_pbr_material_row(",
     "PinnedVariantKey pinned_variant_key(",
     "StandardVariantKey standard_variant_key(",

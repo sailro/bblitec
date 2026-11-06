@@ -28,11 +28,8 @@ import {
 } from "../executed-module-assets.js";
 import { dataUrlAssetName, isDataUrl } from "../data-url.js";
 import { hostPageDocumentAsset } from "../host-page.js";
-import {
-    notJson,
-    staticJsonValue,
-    type StaticJsonContext,
-} from "./option-helpers.js";
+import { staticJsonValue, type StaticJsonContext } from "./option-helpers.js";
+import { notJson } from "./syntax.js";
 import type { CompileAsset, Feature } from "./types.js";
 import { urlFilePath } from "../asset-source.js";
 

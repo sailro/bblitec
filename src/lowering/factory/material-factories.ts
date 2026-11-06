@@ -1110,12 +1110,9 @@ FileTexture solid_texture_file(const SolidTexture& texture) {
         };
     }
 
-    /**
-     * `alphaCutoff`: the scene reaches `setPbrAlphaCutoff`; `pixelsBaseColor`:
-     * a created material's base colour is a pixels texture.
-     */
+    /** `alphaCutoff`: the scene reaches `setPbrAlphaCutoff`. */
     public lowerPbrMaterialFactory(
-        options: { alphaCutoff?: boolean; pixelsBaseColor?: boolean } = {},
+        options: { alphaCutoff?: boolean } = {},
     ): LoweredSource {
         const pbrModule = "src/material/pbr/pbr-material.ts";
         // The opt-in setters replaced the unlit/skyboxMode options. Each is
@@ -1227,61 +1224,45 @@ FileTexture solid_texture_file(const SolidTexture& texture) {
 namespace bbl {
 
 ${lowerPbrGammaAlbedo(this.context)}${options.alphaCutoff ? lowerPbrAlphaCutoff(this.context) : ""}
-// Attaches a loaded base-color image to a created PBR material. The slot's
-// encoding travels with the image (TextureData::srgb), because upstream
-// keeps the format on the Texture2D its caller loaded: loadTexture2D's own
-// srgb option picked rgba8unorm-srgb or plain rgba8unorm, and a material
-// that decodes the albedo in its own fragment (setPbrGammaAlbedo) loads the
-// second.
-void set_material_base_color_file(
+// createPbrMaterial's texture props and their assignments: the slot takes
+// the texture whole, whatever its storage -- texels, sampler and the
+// texture-object properties (a base colour's encoding travels with the
+// image, as upstream keeps the format on the Texture2D its caller made) --
+// and the base colour keeps its source texture for reads. The pinned
+// collector binds each slot with its own sampler; a counted slot rebinds.
+void set_pbr_texture(
     Engine& engine,
     MaterialHandle material,
-    FileTexture texture) {
+    MaterialTextureSlot slot,
+    StoredTexture texture) {
     MaterialRecord& record = ${recordAt("engine.materials", "material")};
-    record.source_albedo_texture = texture;
-    record.base_color_texture = std::move(texture.data);
-    record.has_public_base_color_texture = true;
-}
-${
-    options.pixelsBaseColor
-        ? `
-// The same slot, filled by a createTexture2DFromPixels texture: the record
-// takes its texels, sampler and texture-object properties.
-void set_material_base_color_pixels(
-    Engine& engine,
-    MaterialHandle material,
-    const PixelsTexture& texture) {
-    MaterialRecord& record = ${recordAt("engine.materials", "material")};
-    record.source_albedo_texture = texture;
-    record.base_color_texture = pixels_texture_data(texture);
-    record.has_public_base_color_texture = true;
-}
-`
-        : ""
-}
-// createPbrMaterial preserves its Texture2D props, and the pinned PBR
-// collector binds ormTexture itself. Keep the loaded image's TextureData
-// whole so its sampler and upload flip reach the linear ORM slot unchanged.
-void set_material_orm_file(
-    Engine& engine,
-    MaterialHandle material,
-    FileTexture texture) {
-    ${recordAt("engine.materials", "material")}.metallic_roughness_texture =
-        std::move(texture.data);
-    ++${recordAt("engine.materials", "material")}.orm_texture_generation;
-}
-
-// createPbrMaterial's normalTexture prop: the pinned collector binds it with
-// its own sampler, its presence composed the normal-map arm, and the pin's
-// UBO writer reads normalTextureScale for it.
-void set_material_normal_file(
-    Engine& engine,
-    MaterialHandle material,
-    FileTexture texture,
-    float scale) {
-    MaterialRecord& record = ${recordAt("engine.materials", "material")};
-    record.normal_texture = std::move(texture.data);
-    record.normal_texture_scale = scale;
+    TextureData data = stored_texture_data(texture);
+    switch (slot) {
+    case MaterialTextureSlot::base_color:
+        record.base_color_texture = std::move(data);
+        record.source_albedo_texture = std::move(texture);
+        record.has_public_base_color_texture = true;
+        return;
+    case MaterialTextureSlot::orm:
+        record.metallic_roughness_texture = std::move(data);
+        ++record.orm_texture_generation;
+        return;
+    case MaterialTextureSlot::normal:
+        record.normal_texture = std::move(data);
+        return;
+    case MaterialTextureSlot::occlusion:
+        record.has_occlusion_texture = data.has_image();
+        record.occlusion_texture = std::move(data);
+        ++record.occlusion_texture_generation;
+        return;
+    case MaterialTextureSlot::bent_normal:
+        record.bent_normal_texture = std::move(data);
+        return;
+    case MaterialTextureSlot::emissive:
+    case MaterialTextureSlot::diffuse:
+        break;
+    }
+    throw std::runtime_error("The texture slot is no PBR texture prop.");
 }
 
 // src/material/pbr/set-unlit.ts and set-skybox.ts: the optional PBR
@@ -1361,20 +1342,7 @@ void set_pbr_subsurface(
 void set_pbr_skybox(Engine& engine, MaterialHandle material) {
     ${recordAt("engine.materials", "material")}.skybox_mode = true;
 }
-
 ${solidTextureDataFunction}
-void set_pbr_occlusion_solid_texture(
-    Engine& engine,
-    MaterialHandle material,
-    const SolidTexture& texture) {
-    if (material.value >= engine.materials.size()) {
-        throw std::runtime_error("Invalid PBR material handle.");
-    }
-    MaterialRecord& record = ${recordAt("engine.materials", "material")};
-    record.occlusion_texture = solid_texture_data(texture);
-    record.has_occlusion_texture = true;
-    ++record.occlusion_texture_generation;
-}
 
 // src/material/pbr/set-sheen.ts, set-clearcoat.ts and set-iridescence.ts
 // store the layer's props whole, and each fragment's writer skips a layer
@@ -1452,16 +1420,6 @@ void set_pbr_lightmap(
     MaterialRecord& record = ${recordAt("engine.materials", "material")};
     record.lightmap_texture = std::move(texture.data);
     record.lightmap_level = level;
-}
-
-// src/material/pbr/fragments/bent-normal-fragment.ts: the texture the IBL
-// extension's bind hook binds; its presence selected the composed state.
-void set_pbr_bent_normal_texture(
-    Engine& engine,
-    MaterialHandle material,
-    FileTexture texture) {
-    ${recordAt("engine.materials", "material")}.bent_normal_texture =
-        std::move(texture.data);
 }
 
 // src/material/pbr/fragments/anisotropy-fragment.ts#pbrExt.writeUbo: the

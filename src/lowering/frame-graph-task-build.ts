@@ -9,23 +9,57 @@ const baseModule = "src/frame-graph/render-task-base.ts";
 const effectModule = "src/effect/effect-renderer.ts";
 
 /**
+ * The task kinds `buildFrameGraphTask` records beside render and copy
+ * tasks, each where the program reaches it: the record its `record()`
+ * lowers to and the member its name is. An effect task's record builds the
+ * wrapper's bind group, which throws for an unset slot (or runs the record
+ * scene code put in its slot); an SSAO task's validates its settings and
+ * decides its working resolution (`ssao_task_record`).
+ */
+const RECORDED_TASK_KINDS = {
+    effect: {
+        name: "task.effect.name",
+        record: (methodSlots: boolean): readonly string[] =>
+            methodSlots
+                ? [
+                      // `task.record()`: one scene code put there, else the pin's.
+                      "record_effect_task(engine, handle);",
+                  ]
+                : [
+                      "require_effect_bind_group(engine, task.effect.effect);",
+                      // The record restores the pipeline dispose cleared.
+                      "task.disposed = false;",
+                  ],
+    },
+    ssao: {
+        name: "task.ssao.name",
+        record: (): readonly string[] => [
+            "upstream::ssao_task_record(task.ssao);",
+        ],
+    },
+} as const;
+
+export type RecordedTaskKind = keyof typeof RECORDED_TASK_KINDS;
+
+/**
  * `buildFrameGraphTask`: record one task already in a live graph. Native
  * graph membership is the scene's task list. A render task records as
  * registration records it (`renderTaskRecord`, the queued renderables'
- * construction); an effect task's record builds the wrapper's bind group,
- * which throws for an unset slot; an SSAO task's validates its settings and
- * decides its working resolution (`ssao_task_record`). A copy task's record
- * binds its source's current texture, which a native copy resolves at every
- * execute. Target allocation, pipelines and pass initialization belong to
- * each backend's next draw-list build, which the epoch moves.
+ * construction), and every reached kind as `RECORDED_TASK_KINDS` states. A
+ * copy task's record binds its source's current texture, which a native copy
+ * resolves at every execute. Target allocation, pipelines and pass
+ * initialization belong to each backend's next draw-list build, which the
+ * epoch moves.
  */
 export function lowerFrameGraphTaskBuild(
     context: LoweringContext,
     renderTaskRecord: string,
-    effectTasks: boolean,
+    reached: Readonly<Partial<Record<RecordedTaskKind, boolean | undefined>>>,
     taskMethodSlots = false,
-    ssaoTasks = false,
 ): string {
+    const kinds = (
+        Object.keys(RECORDED_TASK_KINDS) as RecordedTaskKind[]
+    ).filter((kind) => reached[kind] === true);
     const { file, declaration: build } = context.functionDeclaration(
         graphModule,
         "buildFrameGraphTask",
@@ -84,7 +118,7 @@ export function lowerFrameGraphTaskBuild(
     `,
         "Render task record",
     );
-    if (effectTasks) {
+    if (kinds.includes("effect")) {
         const effectRecord = context.propertyFunction(
             effectModule,
             "createEffectRenderTask",
@@ -127,27 +161,12 @@ export function lowerFrameGraphTaskBuild(
                     // Registration records each queued task once; a
                     // recorded task's next draw-list build re-records it.
                     `${indent}    if (task.record_state != FrameTaskRecordState::recorded) record_render_task(scene, task);`,
-                    ...(effectTasks
-                        ? [
-                              `${indent}} else if (task.kind == FrameTaskKind::effect) {`,
-                              ...(taskMethodSlots
-                                  ? [
-                                        // `task.record()`: one scene code put there, else the pin's.
-                                        `${indent}    record_effect_task(engine, handle);`,
-                                    ]
-                                  : [
-                                        `${indent}    require_effect_bind_group(engine, task.effect.effect);`,
-                                        // The record restores the pipeline dispose cleared.
-                                        `${indent}    task.disposed = false;`,
-                                    ]),
-                          ]
-                        : []),
-                    ...(ssaoTasks
-                        ? [
-                              `${indent}} else if (task.kind == FrameTaskKind::ssao) {`,
-                              `${indent}    upstream::ssao_task_record(task.ssao);`,
-                          ]
-                        : []),
+                    ...kinds.flatMap((kind) => [
+                        `${indent}} else if (task.kind == FrameTaskKind::${kind}) {`,
+                        ...RECORDED_TASK_KINDS[kind]
+                            .record(taskMethodSlots)
+                            .map((line) => `${indent}    ${line}`),
+                    ]),
                     `${indent}} else if (task.kind != FrameTaskKind::copy) {`,
                     `${indent}    throw std::runtime_error("buildFrameGraphTask lowers render, effect render, SSAO and copy tasks.");`,
                     `${indent}}`,
@@ -167,8 +186,7 @@ ${renderTaskRecord}
 
 static std::string frame_task_name(const FrameTaskRecord& task) {
     if (task.kind == FrameTaskKind::render) return task.render.name;
-${effectTasks ? "    if (task.kind == FrameTaskKind::effect) return task.effect.name;\n" : ""}\
-${ssaoTasks ? "    if (task.kind == FrameTaskKind::ssao) return task.ssao.name;\n" : ""}\
+${kinds.map((kind) => `    if (task.kind == FrameTaskKind::${kind}) return ${RECORDED_TASK_KINDS[kind].name};\n`).join("")}\
     if (task.kind == FrameTaskKind::copy) return task.copy.name;
     return {};
 }

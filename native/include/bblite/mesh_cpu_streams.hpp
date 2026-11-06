@@ -92,7 +92,6 @@ public:
 class MeshCpuIndexView {
     std::optional<std::span<const std::uint32_t>> source_;
     std::optional<js::U32Array> retained_;
-    bool reversed_ = false;
 
 public:
     MeshCpuIndexView() = default;
@@ -102,7 +101,6 @@ public:
                 retained_ = **retained;
         } else if (geometry) {
             source_ = geometry->indices;
-            reversed_ = geometry->source_indices_reversed;
         }
     }
     explicit operator bool() const { return retained_.has_value() || source_.has_value(); }
@@ -113,12 +111,9 @@ public:
     std::uint32_t source_at(std::size_t index) const {
         if (index >= size())
             throw std::out_of_range("Mesh CPU index is out of range.");
-        const auto base = index - index % 3;
-        if (reversed_ && base + 2 < size() && index % 3)
-            index = base + 3 - index % 3;
         return retained_ ? retained_->load(index) : (*source_)[index];
     }
-    std::vector<std::uint32_t> copy_raw() const {
+    std::vector<std::uint32_t> copy() const {
         if (retained_) {
             std::vector<std::uint32_t> result;
             result.reserve(retained_->size());
@@ -128,13 +123,6 @@ public:
         }
         const auto values = source_.value_or(std::span<const std::uint32_t>{});
         return {values.begin(), values.end()};
-    }
-    std::vector<std::uint32_t> copy_source() const {
-        auto result = copy_raw();
-        if (reversed_)
-            for (std::size_t index = 0; index + 2 < result.size(); index += 3)
-                std::swap(result[index + 1], result[index + 2]);
-        return result;
     }
 };
 

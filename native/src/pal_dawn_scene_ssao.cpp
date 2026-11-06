@@ -1,5 +1,5 @@
 // Dawn encoding of `createSsaoTask` frames. SDL_GPU's twin is
-// pal_sdl_gpu_scene_ssao.cpp; the plan walk both share is pal_gpu_ssao.hpp.
+// pal_sdl_gpu_scene_ssao.cpp; the frame walk both share is pal_gpu_ssao.hpp.
 #include "pal_gpu_common.hpp"
 #include "pal_gpu_ssao.hpp"
 #include <bblite/features/has_ssao.hpp>
@@ -8,11 +8,12 @@
 
 #if BBLITE_HAS_DAWN && BBLITE_HAS_SSAO
 #include "pal_dawn_gpu_timestamp.hpp"
+#include "pal_dawn_pinned_program.hpp"
 
-#include <map>
+#include <array>
 #include <optional>
 #include <string>
-#include <tuple>
+#include <unordered_map>
 #include <utility>
 
 namespace bbl::pal {
@@ -28,86 +29,47 @@ struct DawnSsaoProgram {
     DawnRenderPipeline render;
 };
 
-/**
- * One task's owned textures and buffers, by their plan index, made for its
- * source extent as the modes it ran first used them: a mode switch keeps
- * what both modes use.
- */
-struct DawnSsaoTask {
-    SsaoTaskTracking tracking;
-    std::vector<DawnTexture> textures;
-    std::vector<SsaoTextureExtent> extents;
-    /** Views by (texture, base level, level count), made once per allocation. */
-    std::map<std::tuple<std::uint32_t, std::uint32_t, std::uint32_t>, DawnTextureView> views;
-    std::vector<DawnBuffer> buffers;
-    std::vector<std::uint32_t> buffer_bytes;
+/** One task's owned textures and buffers (`SsaoTaskResources`) on this device. */
+struct DawnSsaoTask : SsaoTaskResources<DawnTexture, DawnBuffer> {
+    /**
+     * Views by texture, then by base level and level count
+     * (`base * levels + count - 1`), made once per allocation.
+     */
+    std::vector<std::vector<DawnTextureView>> views;
     /** One buffer per uniform block the plan writes, by `SsaoUniformBlock`. */
     std::array<DawnBuffer, 3> uniforms;
+    /**
+     * Each pass instance's bind group, by mode, pass list, pass and level
+     * (`group_key`), as the pin binds its groups once over the textures,
+     * buffers and sources its owner holds (`bindSsaoGpuSources`): dropped
+     * when the task makes a texture or buffer, or the owner or a bound
+     * source changes.
+     */
+    std::unordered_map<std::uint64_t, DawnBindGroup> groups;
+    std::uint64_t group_allocation = 0;
+    SsaoSources<WGPUTextureView> group_sources{};
+};
+
+/** The bindings one pass encodes, reused across passes and frames. */
+struct DawnSsaoScratch {
+    std::vector<WGPUBindGroupEntry> entries;
+    std::vector<WGPURenderPassColorAttachment> attachments;
 };
 
 } // namespace
 
 struct DawnSsaoState {
     WGPUDevice device = nullptr;
-    WGPUQueue queue = nullptr;
     std::vector<std::optional<DawnSsaoProgram>> programs;
     std::vector<DawnSampler> samplers;
     std::vector<DawnSsaoTask> tasks;
     std::uint64_t identities = 0;
+    /** This device's identity, which the owners made on it carry. */
+    std::uint64_t device_identity = ++identities;
+    DawnSsaoScratch scratch;
 };
 
 namespace {
-
-WGPUTextureFormat ssao_format(std::string_view name) {
-    for (const DawnNamedTextureFormat& entry : dawn_webgpu_formats)
-        if (entry.name == name)
-            return entry.format;
-    throw std::runtime_error("SSAO texture format '" + std::string(name) + "' has no Dawn format.");
-}
-
-/**
- * Every texture and buffer the mode uses, made where missing: a resize
- * replaces them all. WebGPU zero-initializes both.
- */
-void prepare_ssao_resources(DawnState& state, DawnSsaoState& ssao, DawnSsaoTask& task,
-                            const upstream::SsaoPlanInfo& plan, const upstream::SsaoModeInfo& mode,
-                            std::uint32_t width, std::uint32_t height, bool resized) {
-    if (resized || task.textures.size() != plan.textures.size()) {
-        task.views.clear();
-        task.textures.clear();
-        task.textures.resize(plan.textures.size());
-        task.extents.clear();
-        for (const upstream::SsaoTextureInfo& info : plan.textures)
-            task.extents.push_back(ssao_texture_extent(info, width, height));
-        task.buffers.clear();
-        task.buffers.resize(plan.buffers.size());
-        task.buffer_bytes.assign(plan.buffers.size(), 0u);
-    }
-    for (const std::uint32_t index : mode.textures) {
-        if (task.textures[index])
-            continue;
-        const upstream::SsaoTextureInfo& info = plan.textures[index];
-        const SsaoTextureExtent& extent = task.extents[index];
-        WGPUTextureDescriptor descriptor = WGPU_TEXTURE_DESCRIPTOR_INIT;
-        descriptor.label = string_view("ssao");
-        descriptor.size = {extent.width, extent.height, 1u};
-        descriptor.format = ssao_format(info.format);
-        descriptor.mipLevelCount = extent.levels;
-        descriptor.usage = static_cast<WGPUTextureUsage>(info.usage);
-        task.textures[index] = DawnTexture{require_dawn_resource(
-            wgpuDeviceCreateTexture(ssao.device, &descriptor), "SSAO texture")};
-    }
-    const SsaoTextureExtent working = ssao_working_extent(mode, width, height);
-    for (const std::uint32_t index : mode.buffers) {
-        const std::uint32_t bytes = ssao_buffer_bytes(plan.buffers[index], working);
-        if (task.buffers[index] && task.buffer_bytes[index] == bytes)
-            continue;
-        // The pin's `GPUBufferUsage` bits are WebGPU's, which Dawn's share.
-        task.buffers[index] = DawnBuffer{create_buffer(
-            state, static_cast<WGPUBufferUsage>(plan.buffers[index].usage), nullptr, bytes)};
-        task.buffer_bytes[index] = bytes;
-    }
-}
 
 WGPUSampler ssao_sampler(DawnSsaoState& ssao, std::uint32_t index) {
     if (ssao.samplers.size() <= index)
@@ -124,58 +86,6 @@ WGPUSampler ssao_sampler(DawnSsaoState& ssao, std::uint32_t index) {
     return ssao.samplers[index];
 }
 
-/** The pin's own layout, entry for entry, at the stage its pipeline runs. */
-DawnBindGroupLayout ssao_group_layout(WGPUDevice device, const upstream::SsaoProgramInfo& info) {
-    std::vector<WGPUBindGroupLayoutEntry> entries;
-    const WGPUShaderStage visibility =
-        info.compute ? WGPUShaderStage_Compute : WGPUShaderStage_Fragment;
-    for (const upstream::SsaoLayoutInfo& binding : info.layout) {
-        WGPUBindGroupLayoutEntry entry = WGPU_BIND_GROUP_LAYOUT_ENTRY_INIT;
-        entry.binding = binding.binding;
-        entry.visibility = visibility;
-        switch (binding.kind) {
-        case upstream::SsaoBindingKind::uniform:
-            entry.buffer.type = WGPUBufferBindingType_Uniform;
-            break;
-        case upstream::SsaoBindingKind::depth_texture:
-            entry.texture.sampleType = WGPUTextureSampleType_Depth;
-            break;
-        case upstream::SsaoBindingKind::float_texture:
-            entry.texture.sampleType = WGPUTextureSampleType_Float;
-            break;
-        case upstream::SsaoBindingKind::unfilterable_texture:
-            entry.texture.sampleType = WGPUTextureSampleType_UnfilterableFloat;
-            break;
-        case upstream::SsaoBindingKind::uint_texture:
-            entry.texture.sampleType = WGPUTextureSampleType_Uint;
-            break;
-        case upstream::SsaoBindingKind::storage_texture:
-            entry.storageTexture.access = WGPUStorageTextureAccess_WriteOnly;
-            entry.storageTexture.format = ssao_format(binding.storage_format);
-            entry.storageTexture.viewDimension = WGPUTextureViewDimension_2D;
-            break;
-        case upstream::SsaoBindingKind::storage_buffer:
-            entry.buffer.type = WGPUBufferBindingType_Storage;
-            break;
-        case upstream::SsaoBindingKind::read_only_storage_buffer:
-            entry.buffer.type = WGPUBufferBindingType_ReadOnlyStorage;
-            break;
-        case upstream::SsaoBindingKind::filtering_sampler:
-            entry.sampler.type = WGPUSamplerBindingType_Filtering;
-            break;
-        case upstream::SsaoBindingKind::non_filtering_sampler:
-            entry.sampler.type = WGPUSamplerBindingType_NonFiltering;
-            break;
-        }
-        entries.push_back(entry);
-    }
-    WGPUBindGroupLayoutDescriptor descriptor = WGPU_BIND_GROUP_LAYOUT_DESCRIPTOR_INIT;
-    descriptor.entryCount = entries.size();
-    descriptor.entries = entries.data();
-    return DawnBindGroupLayout{require_dawn_resource(
-        wgpuDeviceCreateBindGroupLayout(device, &descriptor), "SSAO bind group layout")};
-}
-
 const DawnSsaoProgram& ssao_program(DawnState& state, DawnSsaoState& ssao, std::uint32_t index) {
     if (ssao.programs.size() <= index)
         ssao.programs.resize(index + 1u);
@@ -184,13 +94,12 @@ const DawnSsaoProgram& ssao_program(DawnState& state, DawnSsaoState& ssao, std::
         return *slot;
     const upstream::SsaoProgramInfo& info = upstream::ssao_program_infos[index];
     DawnSsaoProgram program;
-    program.group_layout = ssao_group_layout(ssao.device, info);
-    WGPUPipelineLayoutDescriptor layout = WGPU_PIPELINE_LAYOUT_DESCRIPTOR_INIT;
-    const WGPUBindGroupLayout group = program.group_layout.get();
-    layout.bindGroupLayoutCount = 1;
-    layout.bindGroupLayouts = &group;
-    program.pipeline_layout = DawnPipelineLayout{require_dawn_resource(
-        wgpuDeviceCreatePipelineLayout(ssao.device, &layout), "SSAO pipeline layout")};
+    // The pin's own layout, entry for entry, at the stage its pipeline runs.
+    program.group_layout = create_dawn_pinned_group_layout(
+        ssao.device, info.layout, info.compute ? WGPUShaderStage_Compute : WGPUShaderStage_Fragment,
+        "SSAO bind group layout");
+    program.pipeline_layout = create_dawn_pinned_pipeline_layout(ssao.device, program.group_layout,
+                                                                 "SSAO pipeline layout");
     DawnShaderModule module{load_wgsl_module(state, std::string(info.stem))};
     std::vector<std::string> names;
     std::vector<WGPUConstantEntry> constants;
@@ -202,72 +111,53 @@ const DawnSsaoProgram& ssao_program(DawnState& state, DawnSsaoState& ssao, std::
         entry.value = constant.value;
         constants.push_back(entry);
     }
-    const std::string entry(info.entry);
     if (info.compute) {
         WGPUComputePipelineDescriptor descriptor = WGPU_COMPUTE_PIPELINE_DESCRIPTOR_INIT;
         descriptor.layout = program.pipeline_layout;
         descriptor.compute.module = module;
-        descriptor.compute.entryPoint = WGPUStringView{entry.c_str(), entry.size()};
+        descriptor.compute.entryPoint = WGPUStringView{info.entry.data(), info.entry.size()};
         descriptor.compute.constantCount = constants.size();
         descriptor.compute.constants = constants.data();
         program.compute = DawnOwned<WGPUComputePipeline, wgpuComputePipelineRelease>{
             require_dawn_resource(wgpuDeviceCreateComputePipeline(ssao.device, &descriptor),
                                   "SSAO compute pipeline")};
     } else {
-        std::vector<WGPUColorTargetState> targets;
-        for (const std::string_view format : info.targets) {
-            WGPUColorTargetState target = WGPU_COLOR_TARGET_STATE_INIT;
-            target.format = ssao_format(format);
-            targets.push_back(target);
-        }
-        const std::string vertex_entry(info.vertex_entry);
-        WGPUFragmentState fragment = WGPU_FRAGMENT_STATE_INIT;
-        fragment.module = module;
-        fragment.entryPoint = WGPUStringView{entry.c_str(), entry.size()};
-        fragment.constantCount = constants.size();
-        fragment.constants = constants.data();
-        fragment.targetCount = targets.size();
-        fragment.targets = targets.data();
-        WGPURenderPipelineDescriptor descriptor = WGPU_RENDER_PIPELINE_DESCRIPTOR_INIT;
-        descriptor.layout = program.pipeline_layout;
-        descriptor.vertex.module = module;
-        descriptor.vertex.entryPoint = WGPUStringView{vertex_entry.c_str(), vertex_entry.size()};
-        descriptor.primitive.topology = WGPUPrimitiveTopology_TriangleList;
-        descriptor.primitive.cullMode = WGPUCullMode_None;
-        descriptor.multisample.count = 1;
-        descriptor.fragment = &fragment;
-        program.render = DawnRenderPipeline{require_dawn_resource(
-            wgpuDeviceCreateRenderPipeline(ssao.device, &descriptor), "SSAO render pipeline")};
+        std::vector<WGPUTextureFormat> formats;
+        for (const std::string_view format : info.targets)
+            formats.push_back(dawn_named_texture_format(format));
+        program.render = create_dawn_fullscreen_pipeline(
+            ssao.device, program.pipeline_layout, module, info.vertex_entry, info.entry, constants,
+            formats, "SSAO render pipeline");
     }
     slot = std::move(program);
     return *slot;
 }
 
-/** The task's sources a frame reads: depth, and the normal and velocity inputs it has. */
-struct DawnSsaoSources {
-    WGPUTextureView depth = nullptr;
-    WGPUTextureView normal = nullptr;
-    WGPUTextureView velocity = nullptr;
-};
+/** A pass instance's bind group key: its mode, pass list, pass and chain level. */
+std::uint64_t group_key(const SsaoFrame& frame, const SsaoPassInstance& instance) {
+    const auto pass = static_cast<std::uint64_t>(instance.pass - frame.passes.data());
+    return (static_cast<std::uint64_t>(frame.mode_index) << 32u) |
+           (static_cast<std::uint64_t>(frame.list) << 24u) | (pass << 8u) | instance.level;
+}
 
-/** Encodes one plan frame of one task into the frame's encoder. */
+/** Encodes one pass instance of a plan frame into the frame's encoder. */
 class DawnSsaoEncoder {
 public:
     DawnSsaoEncoder(DawnState& state, DawnSsaoState& ssao, DawnSsaoTask& task,
-                    const upstream::SsaoModeInfo& mode, WGPUCommandEncoder encoder,
-                    const DawnSsaoSources& sources, const SsaoTextureExtent& working)
-        : state_(state), ssao_(ssao), task_(task), mode_(mode), encoder_(encoder),
-          sources_(sources), working_(working) {}
+                    const SsaoFrame& frame, WGPUCommandEncoder encoder,
+                    const SsaoSources<WGPUTextureView>& sources)
+        : state_(state), ssao_(ssao), task_(task), frame_(frame), encoder_(encoder),
+          sources_(sources), scratch_(ssao.scratch) {}
 
-    void pass(const upstream::SsaoPassInfo& pass, std::uint32_t level,
-              const WGPUPassTimestampWrites* timestamps) {
+    void pass(const SsaoPassInstance& instance, const WGPUPassTimestampWrites* timestamps) {
+        const upstream::SsaoPassInfo& pass = *instance.pass;
         switch (pass.stage) {
         case upstream::SsaoPassStage::compute:
-            compute(pass, level, timestamps);
+            compute(instance, timestamps);
             return;
         case upstream::SsaoPassStage::render:
         case upstream::SsaoPassStage::clear:
-            render(pass, level, timestamps);
+            render(instance, timestamps);
             return;
         case upstream::SsaoPassStage::clear_buffer: {
             const auto index = static_cast<std::size_t>(pass.buffer);
@@ -282,30 +172,21 @@ private:
     DawnState& state_;
     DawnSsaoState& ssao_;
     DawnSsaoTask& task_;
-    const upstream::SsaoModeInfo& mode_;
+    const SsaoFrame& frame_;
     WGPUCommandEncoder encoder_;
-    DawnSsaoSources sources_;
-    SsaoTextureExtent working_;
+    const SsaoSources<WGPUTextureView>& sources_;
+    DawnSsaoScratch& scratch_;
 
     WGPUTextureView view(std::uint32_t index, std::uint32_t level) {
-        const SsaoResolvedView resolved = resolve_ssao_view(mode_, index, level, task_.extents);
-        switch (resolved.source) {
-        case upstream::SsaoTextureSource::depth:
-            return sources_.depth;
-        case upstream::SsaoTextureSource::normal:
-            if (!sources_.normal)
-                throw std::runtime_error("An SSAO pass reads a normal input the task has none of.");
-            return sources_.normal;
-        case upstream::SsaoTextureSource::velocity:
-            if (!sources_.velocity)
-                throw std::runtime_error(
-                    "An SSAO pass reads a velocity input the task has none of.");
-            return sources_.velocity;
-        case upstream::SsaoTextureSource::owned:
-            break;
-        }
-        DawnTextureView& view =
-            task_.views[{resolved.texture, resolved.base_mip, resolved.mip_count}];
+        const SsaoResolvedView resolved =
+            resolve_ssao_view(frame_.mode, index, level, task_.extents);
+        if (const auto source = ssao_source_texture(resolved, sources_))
+            return *source;
+        const std::uint32_t levels = task_.extents[resolved.texture].levels;
+        auto& views = task_.views.at(resolved.texture);
+        if (views.size() < levels * levels)
+            views.resize(levels * levels);
+        DawnTextureView& view = views[resolved.base_mip * levels + resolved.mip_count - 1u];
         if (!view) {
             WGPUTextureViewDescriptor descriptor = WGPU_TEXTURE_VIEW_DESCRIPTOR_INIT;
             descriptor.baseMipLevel = resolved.base_mip;
@@ -316,10 +197,14 @@ private:
         return view;
     }
 
-    DawnBindGroup group(const upstream::SsaoPassInfo& pass, const DawnSsaoProgram& program,
-                        std::uint32_t level) {
+    /** The pass instance's bind group: the held one, or one made over this frame's views. */
+    WGPUBindGroup group(const SsaoPassInstance& instance, const DawnSsaoProgram& program) {
+        DawnBindGroup& held = task_.groups[group_key(frame_, instance)];
+        if (held)
+            return held;
+        const upstream::SsaoPassInfo& pass = *instance.pass;
         const upstream::SsaoProgramInfo& info = upstream::ssao_program_infos[pass.program];
-        std::vector<WGPUBindGroupEntry> entries;
+        scratch_.entries.clear();
         for (std::size_t index = 0; index < info.layout.size(); ++index) {
             const upstream::SsaoResourceInfo& resource = pass.resources[index];
             WGPUBindGroupEntry entry = WGPU_BIND_GROUP_ENTRY_INIT;
@@ -330,7 +215,7 @@ private:
                 entry.size = wgpuBufferGetSize(entry.buffer);
                 break;
             case upstream::SsaoResourceKind::view:
-                entry.textureView = view(resource.index, level);
+                entry.textureView = view(resource.index, instance.level);
                 break;
             case upstream::SsaoResourceKind::sampler:
                 entry.sampler = ssao_sampler(ssao_, resource.index);
@@ -340,30 +225,23 @@ private:
                 entry.size = task_.buffer_bytes.at(resource.index);
                 break;
             }
-            entries.push_back(entry);
+            scratch_.entries.push_back(entry);
         }
         WGPUBindGroupDescriptor descriptor = WGPU_BIND_GROUP_DESCRIPTOR_INIT;
         descriptor.layout = program.group_layout;
-        descriptor.entryCount = entries.size();
-        descriptor.entries = entries.data();
-        return DawnBindGroup{require_dawn_resource(
+        descriptor.entryCount = scratch_.entries.size();
+        descriptor.entries = scratch_.entries.data();
+        held = DawnBindGroup{require_dawn_resource(
             wgpuDeviceCreateBindGroup(ssao_.device, &descriptor), "SSAO bind group")};
+        return held;
     }
 
-    void compute(const upstream::SsaoPassInfo& pass, std::uint32_t level,
-                 const WGPUPassTimestampWrites* timestamps) {
-        const upstream::SsaoProgramInfo& info = upstream::ssao_program_infos[pass.program];
+    void compute(const SsaoPassInstance& instance, const WGPUPassTimestampWrites* timestamps) {
+        const upstream::SsaoPassInfo& pass = *instance.pass;
         const DawnSsaoProgram& program = ssao_program(state_, ssao_, pass.program);
-        const DawnBindGroup bound = group(pass, program, level);
-        // A dispatch writing a storage view covers that view's level; one
-        // writing buffers alone covers the working extent.
-        SsaoTextureExtent extent = working_;
-        if (pass.domain >= 0) {
-            const SsaoResolvedView domain = resolve_ssao_view(
-                mode_, pass.resources[static_cast<std::size_t>(pass.domain)].index, level,
-                task_.extents);
-            extent = ssao_level_extent(task_.extents[domain.texture], domain.base_mip);
-        }
+        const WGPUBindGroup bound = group(instance, program);
+        const auto groups =
+            ssao_dispatch_groups(frame_.mode, pass, instance.level, task_.extents, frame_.working);
         WGPUComputePassDescriptor descriptor = WGPU_COMPUTE_PASS_DESCRIPTOR_INIT;
         descriptor.timestampWrites = timestamps;
         DawnOwned<WGPUComputePassEncoder, wgpuComputePassEncoderRelease> encoded{
@@ -371,39 +249,37 @@ private:
                                   "SSAO compute pass")};
         wgpuComputePassEncoderSetPipeline(encoded, program.compute);
         wgpuComputePassEncoderSetBindGroup(encoded, 0, bound, 0, nullptr);
-        wgpuComputePassEncoderDispatchWorkgroups(
-            encoded, (extent.width + info.workgroup_x - 1u) / info.workgroup_x,
-            (extent.height + info.workgroup_y - 1u) / info.workgroup_y, 1u);
+        wgpuComputePassEncoderDispatchWorkgroups(encoded, groups[0], groups[1], 1u);
         wgpuComputePassEncoderEnd(encoded);
     }
 
-    void render(const upstream::SsaoPassInfo& pass, std::uint32_t level,
-                const WGPUPassTimestampWrites* timestamps) {
-        std::vector<WGPURenderPassColorAttachment> attachments;
+    void render(const SsaoPassInstance& instance, const WGPUPassTimestampWrites* timestamps) {
+        const upstream::SsaoPassInfo& pass = *instance.pass;
+        scratch_.attachments.clear();
         for (const upstream::SsaoAttachmentInfo& attachment : pass.attachments) {
             WGPURenderPassColorAttachment color = WGPU_RENDER_PASS_COLOR_ATTACHMENT_INIT;
-            color.view = view(attachment.view, level);
+            color.view = view(attachment.view, instance.level);
             color.loadOp = WGPULoadOp_Clear;
             color.storeOp = WGPUStoreOp_Store;
             color.clearValue = {attachment.clear[0], attachment.clear[1], attachment.clear[2],
                                 attachment.clear[3]};
-            attachments.push_back(color);
+            scratch_.attachments.push_back(color);
         }
         WGPURenderPassDescriptor descriptor = WGPU_RENDER_PASS_DESCRIPTOR_INIT;
-        descriptor.colorAttachmentCount = attachments.size();
-        descriptor.colorAttachments = attachments.data();
+        descriptor.colorAttachmentCount = scratch_.attachments.size();
+        descriptor.colorAttachments = scratch_.attachments.data();
         descriptor.timestampWrites = timestamps;
-        std::optional<DawnBindGroup> bound;
+        WGPUBindGroup bound = nullptr;
         const DawnSsaoProgram* program = nullptr;
         if (pass.stage == upstream::SsaoPassStage::render) {
             program = &ssao_program(state_, ssao_, pass.program);
-            bound = group(pass, *program, level);
+            bound = group(instance, *program);
         }
         DawnRenderPass encoded{require_dawn_resource(
             wgpuCommandEncoderBeginRenderPass(encoder_, &descriptor), "SSAO render pass")};
         if (program) {
             wgpuRenderPassEncoderSetPipeline(encoded, program->render);
-            wgpuRenderPassEncoderSetBindGroup(encoded, 0, *bound, 0, nullptr);
+            wgpuRenderPassEncoderSetBindGroup(encoded, 0, bound, 0, nullptr);
             if (pass.buffer >= 0)
                 wgpuRenderPassEncoderDrawIndirect(
                     encoded, task_.buffers.at(static_cast<std::size_t>(pass.buffer)), 0);
@@ -414,13 +290,25 @@ private:
     }
 };
 
+/** The owned texture a plan row names. WebGPU zero-initializes it. */
+DawnTexture make_ssao_texture(DawnSsaoState& ssao, const upstream::SsaoTextureInfo& info,
+                              const SsaoTextureExtent& extent) {
+    WGPUTextureDescriptor descriptor = WGPU_TEXTURE_DESCRIPTOR_INIT;
+    descriptor.label = string_view("ssao");
+    descriptor.size = {extent.width, extent.height, 1u};
+    descriptor.format = dawn_named_texture_format(info.format);
+    descriptor.mipLevelCount = extent.levels;
+    descriptor.usage = static_cast<WGPUTextureUsage>(info.usage);
+    return DawnTexture{
+        require_dawn_resource(wgpuDeviceCreateTexture(ssao.device, &descriptor), "SSAO texture")};
+}
+
 } // namespace
 
 DawnSsaoState& ssao_state(DawnState& state) {
     if (!state.ssao) {
         state.ssao = std::make_shared<DawnSsaoState>();
         state.ssao->device = state.device;
-        state.ssao->queue = state.queue;
     }
     return *state.ssao;
 }
@@ -430,78 +318,101 @@ void record_ssao_task(DawnState& state, Engine& engine, TaskHandle handle,
                       WGPUTextureView velocity, std::uint32_t velocity_width,
                       std::uint32_t velocity_height, std::uint32_t width, std::uint32_t height,
                       GpuTaskTimingSequence& timing) {
-    SsaoTaskOptions& options = handle_at(engine.frame_tasks, handle).ssao;
     DawnSsaoState& ssao = ssao_state(state);
-    if (ssao.tasks.size() <= handle.value)
-        ssao.tasks.resize(handle.value + 1u);
-    DawnSsaoTask& task = ssao.tasks[handle.value];
-    const SsaoFramePlan frame =
-        plan_ssao_frame(options, task.tracking, ssao.identities, width, height, depth, normal,
-                        velocity, velocity_width, velocity_height);
-    const upstream::SsaoPlanInfo& plan = upstream::ssao_plan_infos[options.plan];
-    const upstream::SsaoModeInfo& mode = plan.modes[frame.mode];
-    prepare_ssao_resources(state, ssao, task, plan, mode, width, height, frame.resized);
-    const SsaoFrameDecision decision = upstream::ssao_frame(engine, options, frame.inputs);
-    // Each buffer the pin writes once per frame, before the frame's commands run.
-    for (const upstream::SsaoUniformInfo& uniform : plan.uniforms) {
-        DawnBuffer& buffer = task.uniforms.at(static_cast<std::size_t>(uniform.block));
-        if (!buffer)
-            buffer = DawnBuffer{create_buffer(
-                state, WGPUBufferUsage_Uniform | WGPUBufferUsage_CopyDst, nullptr, uniform.bytes)};
-        const auto data = ssao_uniform_block(decision, uniform.block);
-        if (data.size() * sizeof(float) != uniform.bytes)
-            throw std::runtime_error("An SSAO uniform block's size disagrees with its buffer.");
-        DawnGpuDevice{state.queue}.write_buffer(buffer, 0, data.data(), uniform.bytes);
-    }
-    DawnSsaoEncoder encoded(state, ssao, task, mode, encoder, {depth, normal, velocity},
-                            ssao_working_extent(mode, width, height));
-    // Each of the pin's passes gets its timestamps on the native passes
-    // that open and close it.
-    std::optional<GpuTaskPassTimestamps> span;
-    for (const SsaoPassInstance& instance :
-         ssao_pass_instances(ssao_decision_passes(mode, decision), task.extents)) {
-        if (instance.opens)
-            span = timing.pass();
-        DawnPassTimestamps timestamps;
-        if (span && instance.opens && span->begin)
-            timestamps.add(*span->begin);
-        if (span && instance.closes)
-            timestamps.add(span->end);
-        encoded.pass(*instance.pass, instance.level, timestamps.get());
-        if (instance.closes)
-            span.reset();
-    }
+    DawnSsaoTask& task = ssao_task_resources(ssao.tasks, handle);
+    const SsaoSources<WGPUTextureView> sources{depth, normal, velocity};
+    record_ssao_frame(
+        engine, handle, task, ssao.identities, ssao.device_identity,
+        {depth, normal, velocity, velocity_width, velocity_height}, width, height, timing,
+        [&](const upstream::SsaoPlanInfo& plan, const upstream::SsaoModeInfo& mode, bool resized) {
+            prepare_ssao_resources(
+                task, plan, mode, width, height, resized,
+                [&] {
+                    task.views.clear();
+                    task.groups.clear();
+                },
+                [&](const upstream::SsaoTextureInfo& info, const SsaoTextureExtent& extent) {
+                    task.groups.clear();
+                    return make_ssao_texture(ssao, info, extent);
+                },
+                [&](const upstream::SsaoBufferInfo& info, std::uint32_t bytes) {
+                    // The pin's `GPUBufferUsage` bits are WebGPU's, which Dawn's share.
+                    task.groups.clear();
+                    return DawnBuffer{create_buffer(state, static_cast<WGPUBufferUsage>(info.usage),
+                                                    nullptr, bytes)};
+                });
+            task.views.resize(plan.textures.size());
+            if (task.group_allocation != task.tracking.allocation ||
+                task.group_sources.depth != depth || task.group_sources.normal != normal ||
+                task.group_sources.velocity != velocity) {
+                task.groups.clear();
+                task.group_allocation = task.tracking.allocation;
+                task.group_sources = sources;
+            }
+        },
+        // Each buffer the pin writes once per frame, before the frame's
+        // commands run.
+        [&](const SsaoFrame& frame) {
+            for (const upstream::SsaoUniformInfo& uniform : frame.plan.uniforms) {
+                DawnBuffer& buffer = task.uniforms.at(static_cast<std::size_t>(uniform.block));
+                if (!buffer)
+                    buffer = DawnBuffer{
+                        create_buffer(state, WGPUBufferUsage_Uniform | WGPUBufferUsage_CopyDst,
+                                      nullptr, uniform.bytes)};
+                DawnGpuDevice{state.queue}.write_buffer(
+                    buffer, 0, ssao_uniform_block(frame.decision, uniform.block).data(),
+                    uniform.bytes);
+            }
+        },
+        [&](const SsaoFrame& frame, const SsaoPassInstance& instance,
+            const GpuTimestampWrite* begin, const GpuTimestampWrite* end) {
+            // Each of the pin's passes gets its timestamps on the native
+            // passes that open and close it.
+            DawnPassTimestamps timestamps;
+            if (begin)
+                timestamps.add(*begin);
+            if (end)
+                timestamps.add(*end);
+            DawnSsaoEncoder(state, ssao, task, frame, encoder, sources)
+                .pass(instance, timestamps.get());
+        });
 }
 
+namespace {
+
+/** The view of the texture a task publishes as `outputTexture`, once it executed. */
 WGPUTextureView ssao_output_view(DawnState& state, const Engine& engine, TaskHandle handle) {
-    const SsaoTaskOptions& options = handle_at(engine.frame_tasks, handle).ssao;
     DawnSsaoState& ssao = ssao_state(state);
-    if (handle.value >= ssao.tasks.size() || ssao.tasks[handle.value].textures.empty())
-        throw std::runtime_error("An SSAO output is read before its task executed.");
+    const std::uint32_t output = ssao_output_index(engine, handle, ssao.tasks);
     DawnSsaoTask& task = ssao.tasks[handle.value];
-    const upstream::SsaoModeInfo& mode =
-        upstream::ssao_plan_infos[options.plan].modes[task.tracking.mode];
-    DawnTextureView& view = task.views[{mode.output, 0u, task.extents.at(mode.output).levels}];
+    const std::uint32_t levels = task.extents.at(output).levels;
+    auto& views = task.views.at(output);
+    if (views.size() < levels * levels)
+        views.resize(levels * levels);
+    DawnTextureView& view = views[levels - 1u];
     if (!view)
         view = DawnTextureView{
-            create_dawn_texture_view(task.textures.at(mode.output), nullptr, "SSAO output view")};
+            create_dawn_texture_view(task.textures.at(output), nullptr, "SSAO output view")};
     return view;
 }
 
-SsaoPbrBinding ssao_pbr_binding(DawnState& state, const Engine& engine, TaskHandle handle,
-                                const ShaderPassMatrices* pass) {
+/** What `enablePbrSsao`'s plugin samples for a material in a pass (`ssao_pbr_sampling`). */
+DawnDynamicPluginBinding ssao_pbr_binding(DawnState& state, const Engine& engine,
+                                          const MaterialRecord& material,
+                                          const ShaderPassMatrices* pass) {
     DawnSsaoState& ssao = ssao_state(state);
-    const SsaoTaskOptions& options = handle_at(engine.frame_tasks, handle).ssao;
-    const SsaoPbrSampling sampling =
-        handle.value < ssao.tasks.size()
-            ? ssao_pbr_sampling(engine, options, ssao.tasks[handle.value].tracking, pass)
-            : SsaoPbrSampling{};
+    const SsaoPbrSampling sampling = ssao_pbr_sampling(engine, material, ssao.tasks, pass);
     // `getNearestSampler` for both, and the neutral `createSolidTexture2D(engine, 1, 1, 1, 1)`.
     if (sampling.use_output)
-        return {ssao_output_view(state, engine, handle), state.nearest_sampler,
-                sampling.allocation};
-    return {state.white_view, state.nearest_sampler, 0};
+        return {ssao_output_view(state, engine, sampling.task), state.nearest_sampler,
+                sampling.version};
+    return {state.white_view, state.nearest_sampler, sampling.version};
 }
+
+[[maybe_unused]] const bool ssao_owner_registered =
+    DawnTaskOutputOwners::add(FrameTaskKind::ssao, {&ssao_output_view, &ssao_pbr_binding});
+
+} // namespace
 
 } // namespace dawn_scene
 } // namespace bbl::pal

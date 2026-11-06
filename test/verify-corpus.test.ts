@@ -2,7 +2,10 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import type { BabylonLiteCorpusManifest } from "../src/upstream-corpus.js";
 import type { ExactCorpusManifest } from "../src/verify-corpus.js";
-import { classifyCorpusChecks } from "../src/verify-corpus.js";
+import {
+    classifyCorpusChecks,
+    rightHandedFlagMismatches,
+} from "../src/verify-corpus.js";
 
 // The classification is the decidable half of `corpus:verify`: which URL
 // answers for a row, and whether the row is an upstream-tree file, a
@@ -172,5 +175,32 @@ test("refuses a generated row whose upstreamPath names no output file", () => {
     assert.throws(
         () => classifyCorpusChecks(generated, exact),
         /declares generatedBy but its upstreamPath names no output file/,
+    );
+});
+
+test("holds the scene rows' right-handed flags to the pinned scene configuration", () => {
+    const twin = {
+        id: "scene2",
+        upstreamPath: "lab/lite/src/lite/scene2.ts",
+        source: "corpus/babylon-lite/lab/lite/src/lite/scene2.ts",
+        sha256: "cc",
+        rightHanded: true,
+    } as const;
+    const flagged = { ...manifest, scenes: [...manifest.scenes, twin] };
+    const config = JSON.stringify([{ id: 1 }, { id: 2, rightHanded: true }]);
+    assert.deepEqual(rightHandedFlagMismatches(flagged, config), []);
+    // A marked scene with no row is no row's to carry.
+    assert.deepEqual(rightHandedFlagMismatches(manifest, config), []);
+    // A flag the configuration does not set, and one a row omits.
+    assert.deepEqual(
+        rightHandedFlagMismatches(flagged, JSON.stringify([{ id: 2 }])),
+        ["scene2"],
+    );
+    assert.deepEqual(
+        rightHandedFlagMismatches(
+            manifest,
+            JSON.stringify([{ id: 1, rightHanded: true }]),
+        ),
+        ["scene1"],
     );
 });

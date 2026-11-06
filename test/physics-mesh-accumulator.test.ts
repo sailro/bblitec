@@ -10,7 +10,11 @@ import { lowerPhysicsMesh } from "../src/lowering/physics-mesh-lowerer.js";
 import { importPinnedModuleWithExports } from "../src/pinned-shader-composer.js";
 import { emitUpstreamGenerated } from "../src/upstream-lower.js";
 import { UpstreamSourceStore } from "../src/upstream-source.js";
-import { rightHandedContext } from "./doctored-store.js";
+import {
+    probeError,
+    probeValue,
+    rightHandedProbes,
+} from "./right-handed-process.js";
 import {
     optionalNativeFixtureTools,
     runNativeFixtureCompiler,
@@ -47,7 +51,7 @@ test("physics mesh source contracts reject traversal, defaults, buffer and index
             "multiplyMat4(rootToBody, node.localMatrix as Mat4)",
         ],
         ["this._vertices.length / 3", "this._vertices.length / 2"],
-        ["this._indices.push(c, b, a)", "this._indices.push(a, b, c)"],
+        ["this._indices.push(c, b, a)", "this._indices.push(c, b, b)"],
         [
             "new Float32Array(hknp.HEAPU8.buffer, offset, numObjects).set(this._vertices)",
             "new Float64Array(hknp.HEAPU8.buffer, offset, numObjects).set(this._vertices)",
@@ -84,29 +88,36 @@ test("a right-handed build hands Havok each triangle in its own order", () => {
             "indices.push_back(c); indices.push_back(b); indices.push_back(a);",
         ),
     );
+    // The order is the folded push's, whatever it is; a push that is no
+    // permutation of the corners refuses.
+    const push = (corners: string) => ({
+        probe: "physicsMeshHelpers" as const,
+        edits: [
+            [
+                module,
+                [
+                    "this._indices.push(a, b, c)",
+                    `this._indices.push(${corners})`,
+                ],
+            ],
+        ] as const,
+    });
+    const [rightHanded, reordered, repeated] = rightHandedProbes([
+        { probe: "physicsMeshHelpers" },
+        push("b, c, a"),
+        push("a, a, c"),
+    ]);
     assert.ok(
-        lowerPhysicsMesh(rightHandedContext()).helpers.includes(
+        String(probeValue(rightHanded)).includes(
             "indices.push_back(a); indices.push_back(b); indices.push_back(c);",
         ),
     );
-    // A right-handed build asserts the right-handed order.
-    assert.throws(
-        () =>
-            lowerPhysicsMesh(
-                rightHandedContext(
-                    new Map([
-                        [
-                            module,
-                            [
-                                "this._indices.push(a, b, c)",
-                                "this._indices.push(c, b, a)",
-                            ],
-                        ],
-                    ]),
-                ),
-            ),
-        /changed|exactly|Expected/,
+    assert.ok(
+        String(probeValue(reordered)).includes(
+            "indices.push_back(b); indices.push_back(c); indices.push_back(a);",
+        ),
     );
+    assert.match(probeError(repeated), /corners a, b and c once/);
 });
 
 const tools = optionalNativeFixtureTools(false);
@@ -279,8 +290,6 @@ int main() {
         g.indices={0,1,2};
     }
     engine.meshes[0].children={MeshHandle{2}};
-    engine.meshes[1].detached_imported_mesh=true;
-    engine.geometries[1].indices={0,2,1};engine.geometries[1].source_indices_reversed=true;
     engine.transform_nodes[0].scaling={2,-3,4};engine.transform_nodes[0].children={MeshHandle{0},TransformNodeHandle{1}};
     engine.transform_nodes[1].children={MeshHandle{1}};
     const auto run=[&](PhysicsNodeRef node,bool children,bool collect) {

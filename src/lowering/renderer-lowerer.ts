@@ -11,7 +11,7 @@ import {
     lowerShaderSystemDependencyConstants,
     lowerShaderSystemMatrixRouting,
     lowerShaderSystemWriter,
-    lowerShaderSystemRightHanded,
+    lowerShaderSystemBlockFinish,
     lowerShaderPacketCameraInitialization,
     shaderSystemLayouts,
 } from "./shader-system-cache.js";
@@ -78,6 +78,10 @@ import {
 } from "./resource-profiles.js";
 import { lowerStandardMeshAlpha } from "./standard-mesh-alpha.js";
 import { lowerRenderBucket } from "./render-bucket.js";
+import {
+    lowerPipelineFrontFaces,
+    renderPipelineClockwiseCpp,
+} from "./pipeline-front-face.js";
 import {
     geometryTaskCameraCpp,
     renderTaskPassCpp,
@@ -964,6 +968,10 @@ ${
         linearToneMapping: number,
         shaderVariantCount: number,
     ): string {
+        const frontFaces = lowerPipelineFrontFaces(
+            this.context,
+            options.mirroredMeshes === true,
+        );
         return `#pragma once
 
 #include <bblite/runtime.hpp>
@@ -1024,23 +1032,17 @@ enum class RenderCullMode {
     none,
 };
 
-enum class RenderPipelineKind {
+// The fixed-function arm a draw's pipeline is built at: the family, the
+// blend state, the cull mode and, for the pin's glTF primitive modes, the
+// topology. The winding is the pipeline kind's other axis.
+enum class RenderPipelineArm {
     pbr_opaque_back,
-    pbr_opaque_back_clockwise,
     pbr_opaque_none,
-    pbr_opaque_none_clockwise,
     pbr_transparent_back,
-    pbr_transparent_back_clockwise,
     pbr_transparent_none,
-    pbr_transparent_none_clockwise,
-    // The glTF loader's authored winding baseline keeps imported primitives
-    // from flipping twice. The back-clockwise arms serve the other reached
-    // path: a procedural single-sided PBR mesh crossing the determinant sign
-    // boundary after its renderable was built.
     // The pin's own primitive state for a non-triangle mode: cull none for
-    // every one of them (points and lines have no faces to cull), and the
-    // winding a triangle kind carries is meaningless here, so the blend
-    // state is the only other axis.
+    // every one of them (points and lines have no faces to cull), so the
+    // blend state is the only other axis.
     pbr_opaque_points,
     pbr_opaque_lines,
     pbr_opaque_line_strip,
@@ -1051,40 +1053,33 @@ enum class RenderPipelineKind {
     standard_opaque_none,
     standard_transparent_back,
     standard_transparent_none,
-    // The Standard family's winding arms, which exist only under the
-    // mirrored-mesh opt-in: std-mirrored-support.ts installs a primitive
-    // resolver whose frontFace follows the mesh's world determinant,
-    // because the Standard pipeline has none of its own. A back-culled
-    // mirrored mesh needs one as much as a double-sided one -- it is the
-    // culled case that renders inside-out.
-    standard_opaque_back_clockwise,
-    standard_opaque_none_clockwise,
-    standard_transparent_back_clockwise,
-    standard_transparent_none_clockwise,
     shader,
     shader_a2c,
     node_opaque_back,
     node_opaque_none,
     node_transparent_back,
     node_transparent_none,
-    // A right-handed graph's pipelines for a glTF-wound or mirrored mesh
-    // (node-renderable.ts \`_pipelineForCcwMesh\`).
-    node_opaque_back_clockwise,
-    node_opaque_none_clockwise,
-    node_transparent_back_clockwise,
-    node_transparent_none_clockwise,
 };
 
 /**
- * How many kinds the enum above names.
+ * How many arms the enum above names.
  *
  * A backend keys its pipeline cache by variant, kind and a handful of
  * per-pass flags, and the multiplier that separates the variant from the
- * kind has to be at least this. Emitted beside the enum so a kind added
+ * kind has to be at least this. Emitted beside the enum so an arm added
  * here widens every key rather than silently colliding with one.
  */
-inline constexpr std::size_t render_pipeline_kind_count =
-    static_cast<std::size_t>(RenderPipelineKind::node_transparent_none_clockwise) + 1;
+inline constexpr std::size_t render_pipeline_arm_count =
+    static_cast<std::size_t>(RenderPipelineArm::node_transparent_none) + 1;
+
+/** A draw's pipeline: its fixed-function arm and its front face, two independent axes. */
+struct RenderPipelineKind {
+    RenderPipelineArm arm = RenderPipelineArm::pbr_opaque_back;
+    bool clockwise_front_face = false;
+    friend constexpr auto operator<=>(const RenderPipelineKind&, const RenderPipelineKind&) = default;
+};
+
+${renderPipelineClockwiseCpp(frontFaces)}
 
 enum class RenderStage {
     skybox,
@@ -1113,7 +1108,11 @@ ${options.gpuInstancing ? "    ThinMaterialBindingOwner thin_binding{};\n" : ""}
     // over its triangle-list default.
     MeshTopology topology = MeshTopology::triangles;
     std::uint32_t shader_variant = 0;
-    bool clockwise_front_face = false;
+    // The mesh's winding mark: its geometry is wound against the
+    // procedural convention (the pin's \`_primitiveFeatures\` bit 11). Each
+    // family's pipeline front face follows from it
+    // (\`render_pipeline_clockwise\`).
+    bool reverse_winding = false;
     bool alpha_to_coverage = false;
     bool transmissive = false;
 ${
@@ -1136,8 +1135,7 @@ ${
 struct RenderDrawCommand {
     std::uint32_t item_index = invalid_handle;
     RenderItem item{};
-    RenderPipelineKind pipeline =
-        RenderPipelineKind::pbr_opaque_back;
+    RenderPipelineKind pipeline{};
     float sort_distance = 0.0f;
 };
 
@@ -1408,7 +1406,7 @@ std::array<float, 16> build_view_matrix(
     const std::array<CameraMatrixScalar, 16>& camera_world);
 std::array<float, 16> build_camera_view_matrix(const CameraRecord& camera);
 ${lowerShaderSystemWriter(this.context)}
-${lowerShaderSystemRightHanded(this.context)}js::F32Array get_camera_view_matrix(const CameraRecord& camera);
+${lowerShaderSystemBlockFinish(this.context)}js::F32Array get_camera_view_matrix(const CameraRecord& camera);
 js::F32Array get_camera_projection_matrix(const CameraRecord& camera, double aspectRatio);
 js::F32Array get_camera_view_projection_matrix(const CameraRecord& camera, double aspectRatio);
 // One mesh's local matrix, from the pin's own composeTrsLocalMatrix: the
@@ -1561,15 +1559,6 @@ PbrUniforms build_pbr_uniforms(
             cameraViewport,
         } = inputs;
         const transparentSortSkip = transparentSortSkipCpp(this.context);
-        // A right-handed pin winds a ShaderMaterial "ccw" for a glTF-wound
-        // or mirrored mesh (`_primitiveFeatures` bit 11, its "|ccw" key);
-        // the shader kinds carry only the "cw" pipeline.
-        const rightHanded = this.context.store.rightHanded();
-        const rightHandedShaderWinding = rightHanded
-            ? `
-            if (item.clockwise_front_face)
-                throw std::runtime_error("A right-handed ShaderMaterial on a glTF-wound or mirrored mesh is not supported.");`
-            : "";
         return `// ${this.context.provenance(
             renderTaskModule,
             "_buildBindings",
@@ -1660,7 +1649,7 @@ ${lowerRenderBucket(this.context, options)}
 
 namespace {
 
-RenderPipelineKind render_pipeline_kind(const RenderItem& item) {
+RenderPipelineArm render_pipeline_arm(const RenderItem& item) {
     const bool transparent =
         item.bucket == RenderBucket::alpha_blend;
     const bool double_sided =
@@ -1669,98 +1658,66 @@ RenderPipelineKind render_pipeline_kind(const RenderItem& item) {
         case RenderMaterialKind::pbr:
             // buildPrimitiveState resolves the whole fixed-function
             // state from the topology index alone, so for a non-triangle
-            // primitive neither the material's cull mode nor a mirrored
-            // node's winding reaches the pipeline: points and lines have no
-            // faces for either to act on.
+            // primitive the material's cull mode does not reach the
+            // pipeline: points and lines have no faces to cull.
             switch (item.topology) {
                 case MeshTopology::points:
                     return transparent
-                        ? RenderPipelineKind::pbr_transparent_points
-                        : RenderPipelineKind::pbr_opaque_points;
+                        ? RenderPipelineArm::pbr_transparent_points
+                        : RenderPipelineArm::pbr_opaque_points;
                 case MeshTopology::lines:
                     return transparent
-                        ? RenderPipelineKind::pbr_transparent_lines
-                        : RenderPipelineKind::pbr_opaque_lines;
+                        ? RenderPipelineArm::pbr_transparent_lines
+                        : RenderPipelineArm::pbr_opaque_lines;
                 case MeshTopology::line_strip:
                     return transparent
-                        ? RenderPipelineKind::pbr_transparent_line_strip
-                        : RenderPipelineKind::pbr_opaque_line_strip;
+                        ? RenderPipelineArm::pbr_transparent_line_strip
+                        : RenderPipelineArm::pbr_opaque_line_strip;
                 case MeshTopology::triangles:
                     break;
             }
             if (transparent) {
-                if (!double_sided) {
-                    return item.clockwise_front_face
-                        ? RenderPipelineKind::pbr_transparent_back_clockwise
-                        : RenderPipelineKind::pbr_transparent_back;
-                }
-                return item.clockwise_front_face
-                    ? RenderPipelineKind::pbr_transparent_none_clockwise
-                    : RenderPipelineKind::pbr_transparent_none;
+                return double_sided
+                    ? RenderPipelineArm::pbr_transparent_none
+                    : RenderPipelineArm::pbr_transparent_back;
             }
-            if (!double_sided) {
-                return item.clockwise_front_face
-                    ? RenderPipelineKind::pbr_opaque_back_clockwise
-                    : RenderPipelineKind::pbr_opaque_back;
-            }
-            return item.clockwise_front_face
-                ? RenderPipelineKind::pbr_opaque_none_clockwise
-                : RenderPipelineKind::pbr_opaque_none;
+            return double_sided
+                ? RenderPipelineArm::pbr_opaque_none
+                : RenderPipelineArm::pbr_opaque_back;
         case RenderMaterialKind::standard:
             if (transparent) {
-                if (double_sided) {
-                    return item.clockwise_front_face
-                        ? RenderPipelineKind::
-                              standard_transparent_none_clockwise
-                        : RenderPipelineKind::standard_transparent_none;
-                }
-                return item.clockwise_front_face
-                    ? RenderPipelineKind::
-                          standard_transparent_back_clockwise
-                    : RenderPipelineKind::standard_transparent_back;
+                return double_sided
+                    ? RenderPipelineArm::standard_transparent_none
+                    : RenderPipelineArm::standard_transparent_back;
             }
-            if (double_sided) {
-                return item.clockwise_front_face
-                    ? RenderPipelineKind::standard_opaque_none_clockwise
-                    : RenderPipelineKind::standard_opaque_none;
-            }
-            return item.clockwise_front_face
-                ? RenderPipelineKind::standard_opaque_back_clockwise
-                : RenderPipelineKind::standard_opaque_back;
-        case RenderMaterialKind::shader:${rightHandedShaderWinding}
+            return double_sided
+                ? RenderPipelineArm::standard_opaque_none
+                : RenderPipelineArm::standard_opaque_back;
+        case RenderMaterialKind::shader:
             return item.alpha_to_coverage
-                ? RenderPipelineKind::shader_a2c
-                : RenderPipelineKind::shader;
+                ? RenderPipelineArm::shader_a2c
+                : RenderPipelineArm::shader;
         // A node graph's blend state is its own. parseNodeMaterialFromSnippet
         // stores the graph-derived alpha-combine mode on the material, so the
         // ordinary bucket axis selects the matching fixed-function arm.
-        case RenderMaterialKind::node:${
-            rightHanded
-                ? `
-            // A right-handed graph winds a glTF-wound or mirrored mesh
-            // "ccw" (\`_pipelineForCcwMesh\`), every other "cw".
-            if (item.clockwise_front_face) {
-                if (transparent) {
-                    return double_sided
-                        ? RenderPipelineKind::node_transparent_none_clockwise
-                        : RenderPipelineKind::node_transparent_back_clockwise;
-                }
-                return double_sided
-                    ? RenderPipelineKind::node_opaque_none_clockwise
-                    : RenderPipelineKind::node_opaque_back_clockwise;
-            }`
-                : ""
-        }
+        case RenderMaterialKind::node:
             if (transparent) {
                 return double_sided
-                    ? RenderPipelineKind::node_transparent_none
-                    : RenderPipelineKind::node_transparent_back;
+                    ? RenderPipelineArm::node_transparent_none
+                    : RenderPipelineArm::node_transparent_back;
             }
             return double_sided
-                ? RenderPipelineKind::node_opaque_none
-                : RenderPipelineKind::node_opaque_back;
+                ? RenderPipelineArm::node_opaque_none
+                : RenderPipelineArm::node_opaque_back;
     }
-    return RenderPipelineKind::pbr_opaque_back;
+    return RenderPipelineArm::pbr_opaque_back;
+}
+
+RenderPipelineKind render_pipeline_kind(const RenderItem& item) {
+    return RenderPipelineKind{
+        render_pipeline_arm(item),
+        render_pipeline_clockwise(item.material_kind, item.reverse_winding),
+    };
 }
 
 void append_draw(
@@ -2003,22 +1960,27 @@ ${shaderVariantTable.length || options.gpuInstancing ? "    publish_render_task_
 // looking at its target. Written once because a camera feature that
 // changes it -- an orthographic volume, a different up axis -- has to
 // change it everywhere at once.
-// The basis is read out of the pinned camera world matrix rather than
-// recomputed: src/math/write-look-at-world-mat4-lh-into-buffer.ts writes columns
-// [xAxis, yAxis, zAxis, eye] and src/camera/camera.ts getCameraPosition
-// reads the eye straight back out of column 3, so these are the same
-// float32 values every pinned consumer sees.
+// The eye is read out of the pinned camera world matrix (src/camera/camera.ts
+// getCameraPosition reads column 3), and the frame out of the pinned view
+// matrix: whatever the handedness, its rows are the world directions of
+// the view space every shader sees (+X right, +Y up, +Z forward), so these
+// are the same float32 values every pinned consumer sees.
 CameraBasis camera_basis(const CameraRecord& camera) {
     const std::array<CameraMatrixScalar, 16> world =
         camera_world_matrix(camera);
-    const auto lane = [&](std::size_t cell) {
-        return static_cast<float>(world[cell]);
+    const std::array<float, 16> view = build_view_matrix(world);
+    const auto row = [&](std::size_t index) {
+        return Vec3{view[index], view[4 + index], view[8 + index]};
     };
     return CameraBasis{
-        Vec3{lane(12), lane(13), lane(14)},
-        Vec3{lane(8), lane(9), lane(10)},
-        Vec3{lane(0), lane(1), lane(2)},
-        Vec3{lane(4), lane(5), lane(6)},
+        Vec3{
+            static_cast<float>(world[12]),
+            static_cast<float>(world[13]),
+            static_cast<float>(world[14]),
+        },
+        row(2),
+        row(0),
+        row(1),
     };
 }
 
@@ -2088,7 +2050,7 @@ RenderPlan build_render_plan(const Scene& scene, const Engine& engine) {
         RenderItem item;
         item.mesh = handle;
         item.geometry = mesh.geometry;
-        item.clockwise_front_face =
+        item.reverse_winding =
             mesh.clockwise_front_face;
         item.topology = engine.geometries[mesh.geometry].topology;
 ${options.meshOpacity ? "        item.mesh_feature_extra = pinned_mesh_feature_extra(mesh);\n" : ""}\
@@ -2098,7 +2060,7 @@ ${options.meshOpacity ? "        item.mesh_feature_extra = pinned_mesh_feature_e
             const auto& primitive = *mesh.primitive_override;
             bound.topology = primitive.topology;
             if (primitive.cull_none) bound.cull_mode = *primitive.cull_none ? RenderCullMode::none : RenderCullMode::back;
-            if (primitive.clockwise_front_face) bound.clockwise_front_face = *primitive.clockwise_front_face;
+            if (primitive.clockwise_front_face) bound.reverse_winding = *primitive.clockwise_front_face;
         }
         bound.material_guard = guard;
         bound.order = mesh.has_render_order
@@ -3375,19 +3337,15 @@ ${options.publicCameraMatrices ? lowerShaderPacketCameraInitialization(this.cont
      * Anchors for the emitted draw-list rules: `append_draw`'s transparent
      * predicate is the pinned buildBindings fork, the bucket order sorts are
      * the pinned comparators, and the per-family transparency, order and
-     * transmissive stamps plus the cull/winding forks behind
-     * `render_pipeline_kind` are each paired with the pinned line they
+     * transmissive stamps plus the cull forks behind
+     * `render_pipeline_arm` are each paired with the pinned line they
      * transcribe, so a pin retune fails generation at the rule that moved.
      *
      * The pinned direct bucket (`r._direct`) is the tail of the native
      * opaque list: `order_draw_lists` sorts direct draws after the others,
      * as the pass replays the opaque bundle before drawing them. Both shader
      * renderables set it exactly when the material declares external
-     * textures, asserted below. The generated glTF loader's authored winding
-     * baseline still prevents its single-sided mirrored primitives from
-     * flipping twice. Separate back-clockwise PBR arms are nevertheless
-     * required when the runtime mirrored-mesh watcher observes a procedural
-     * single-sided PBR mesh cross the determinant sign boundary.
+     * textures, asserted below.
      *
      * `order_draw_lists` adopts the pinned buildBindings rule: opaque and
      * direct draws sort by `renderable.order` alone, and because every
@@ -3512,11 +3470,9 @@ ${options.publicCameraMatrices ? lowerShaderPacketCameraInitialization(this.cont
         // renderables are transparent or transmissive, the order constants
         // behind the fixed skybox/opaque/transparent/ground stage sequence
         // (0 and 200 are asserted with the background renderables above in
-        // `lowerShaders`; 100/150/200 live in these rows), and the
-        // cull/winding forks `render_pipeline_kind` enumerates. A
-        // right-handed build's forks wind every pipeline the other way,
-        // which the shared kind decode (`pipeline_kind_traits`) applies.
-        const rightHanded = this.context.store.rightHanded();
+        // `lowerShaders`; 100/150/200 live in these rows), and the cull
+        // forks `render_pipeline_arm` enumerates. The winding is lowered
+        // from each family's own descriptor (`render_pipeline_clockwise`).
         const drifted: string[] = [];
         for (const [modulePath, marker, label] of [
             [
@@ -3594,23 +3550,17 @@ ${options.publicCameraMatrices ? lowerShaderPacketCameraInitialization(this.cont
             ],
             [
                 "src/material/pbr/pbr-pipeline.ts",
-                rightHanded
-                    ? 'cullMode: hasDoubleSided ? ("none" as GPUCullMode) : "back",\n            ...composed._prim,\n            ...{ frontFace: composed._prim?.frontFace === "cw" ? "ccw" : "cw" },\n        },'
-                    : 'cullMode: hasDoubleSided ? ("none" as GPUCullMode) : "back",\n            ...composed._prim\n        },',
+                'cullMode: hasDoubleSided ? ("none" as GPUCullMode) : "back",',
                 "PBR cull fork",
             ],
             [
                 "src/material/standard/standard-pipeline.ts",
-                rightHanded
-                    ? 'cullMode: features & DOUBLE_SIDED ? "none" : "back",\n                  frontFace: (bindings._meshFeatures & (1 << 11) ? "ccw" : "cw"),\n              },'
-                    : 'cullMode: features & DOUBLE_SIDED ? "none" : "back",\n                  frontFace: "ccw",\n              },',
+                'cullMode: features & DOUBLE_SIDED ? "none" : "back",',
                 "Standard cull fork",
             ],
             [
                 shaderPipelineModule,
-                rightHanded
-                    ? 'cullMode: material.backFaceCulling ? "back" : "none",\n            // Right-handed: procedural geometry is wound "cw" behind the mirroring view matrix; glTF\n            // geometry keeps its own winding, which its renderables key as "|ccw".\n            ...{ frontFace: (variantKey.includes("|ccw") ? "ccw" : "cw") as GPUFrontFace },\n        },'
-                    : 'cullMode: material.backFaceCulling ? "back" : "none"\n        },',
+                'cullMode: material.backFaceCulling ? "back" : "none"',
                 "shader-material cull fork",
             ],
             [

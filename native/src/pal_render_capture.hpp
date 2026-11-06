@@ -486,73 +486,48 @@ inline const char* bucket_name(upstream::RenderBucket bucket) {
     return "unknown";
 }
 
-inline const char* pipeline_name(upstream::RenderPipelineKind kind) {
-    switch (kind) {
-    case upstream::RenderPipelineKind::pbr_opaque_back:
+inline const char* pipeline_arm_name(upstream::RenderPipelineArm arm) {
+    switch (arm) {
+    case upstream::RenderPipelineArm::pbr_opaque_back:
         return "pbr_opaque_back";
-    case upstream::RenderPipelineKind::pbr_opaque_back_clockwise:
-        return "pbr_opaque_back_clockwise";
-    case upstream::RenderPipelineKind::pbr_opaque_none:
+    case upstream::RenderPipelineArm::pbr_opaque_none:
         return "pbr_opaque_none";
-    case upstream::RenderPipelineKind::pbr_opaque_none_clockwise:
-        return "pbr_opaque_none_clockwise";
-    case upstream::RenderPipelineKind::pbr_transparent_back:
+    case upstream::RenderPipelineArm::pbr_transparent_back:
         return "pbr_transparent_back";
-    case upstream::RenderPipelineKind::pbr_transparent_back_clockwise:
-        return "pbr_transparent_back_clockwise";
-    case upstream::RenderPipelineKind::pbr_transparent_none:
+    case upstream::RenderPipelineArm::pbr_transparent_none:
         return "pbr_transparent_none";
-    case upstream::RenderPipelineKind::pbr_transparent_none_clockwise:
-        return "pbr_transparent_none_clockwise";
-    case upstream::RenderPipelineKind::pbr_opaque_points:
+    case upstream::RenderPipelineArm::pbr_opaque_points:
         return "pbr_opaque_points";
-    case upstream::RenderPipelineKind::pbr_opaque_lines:
+    case upstream::RenderPipelineArm::pbr_opaque_lines:
         return "pbr_opaque_lines";
-    case upstream::RenderPipelineKind::pbr_opaque_line_strip:
+    case upstream::RenderPipelineArm::pbr_opaque_line_strip:
         return "pbr_opaque_line_strip";
-    case upstream::RenderPipelineKind::pbr_transparent_points:
+    case upstream::RenderPipelineArm::pbr_transparent_points:
         return "pbr_transparent_points";
-    case upstream::RenderPipelineKind::pbr_transparent_lines:
+    case upstream::RenderPipelineArm::pbr_transparent_lines:
         return "pbr_transparent_lines";
-    case upstream::RenderPipelineKind::pbr_transparent_line_strip:
+    case upstream::RenderPipelineArm::pbr_transparent_line_strip:
         return "pbr_transparent_line_strip";
-    case upstream::RenderPipelineKind::standard_opaque_back:
+    case upstream::RenderPipelineArm::standard_opaque_back:
         return "standard_opaque_back";
-    case upstream::RenderPipelineKind::standard_opaque_none:
+    case upstream::RenderPipelineArm::standard_opaque_none:
         return "standard_opaque_none";
-    case upstream::RenderPipelineKind::standard_transparent_back:
+    case upstream::RenderPipelineArm::standard_transparent_back:
         return "standard_transparent_back";
-    case upstream::RenderPipelineKind::standard_transparent_none:
+    case upstream::RenderPipelineArm::standard_transparent_none:
         return "standard_transparent_none";
-    case upstream::RenderPipelineKind::standard_opaque_back_clockwise:
-        return "standard_opaque_back_clockwise";
-    case upstream::RenderPipelineKind::standard_opaque_none_clockwise:
-        return "standard_opaque_none_clockwise";
-    case upstream::RenderPipelineKind::standard_transparent_back_clockwise:
-        return "standard_transparent_back_clockwise";
-    case upstream::RenderPipelineKind::standard_transparent_none_clockwise:
-        return "standard_transparent_none_clockwise";
-
-    case upstream::RenderPipelineKind::shader:
+    case upstream::RenderPipelineArm::shader:
         return "shader";
-    case upstream::RenderPipelineKind::shader_a2c:
+    case upstream::RenderPipelineArm::shader_a2c:
         return "shader_a2c";
-    case upstream::RenderPipelineKind::node_opaque_back:
+    case upstream::RenderPipelineArm::node_opaque_back:
         return "node_opaque_back";
-    case upstream::RenderPipelineKind::node_opaque_none:
+    case upstream::RenderPipelineArm::node_opaque_none:
         return "node_opaque_none";
-    case upstream::RenderPipelineKind::node_transparent_back:
+    case upstream::RenderPipelineArm::node_transparent_back:
         return "node_transparent_back";
-    case upstream::RenderPipelineKind::node_transparent_none:
+    case upstream::RenderPipelineArm::node_transparent_none:
         return "node_transparent_none";
-    case upstream::RenderPipelineKind::node_opaque_back_clockwise:
-        return "node_opaque_back_clockwise";
-    case upstream::RenderPipelineKind::node_opaque_none_clockwise:
-        return "node_opaque_none_clockwise";
-    case upstream::RenderPipelineKind::node_transparent_back_clockwise:
-        return "node_transparent_back_clockwise";
-    case upstream::RenderPipelineKind::node_transparent_none_clockwise:
-        return "node_transparent_none_clockwise";
     }
     return "unknown";
 }
@@ -1018,12 +993,13 @@ inline void write_draw_list(JsonWriter& json, const char* stage,
         json.begin_object();
         json.field("stage", stage);
         json.handle("itemIndex", draw.item_index);
-        json.field("pipeline", pipeline_name(draw.pipeline));
+        json.field("pipeline", pipeline_arm_name(draw.pipeline.arm));
+        json.field("frontFace", draw.pipeline.clockwise_front_face ? "cw" : "ccw");
         json.field("materialKind", material_kind_name(draw.item.material_kind));
         json.field("bucket", bucket_name(draw.item.bucket));
         json.field("cullMode",
                    draw.item.cull_mode == upstream::RenderCullMode::none ? "none" : "back");
-        json.field("clockwiseFrontFace", draw.item.clockwise_front_face);
+        json.field("reverseWinding", draw.item.reverse_winding);
         json.field("alphaToCoverage", draw.item.alpha_to_coverage);
         json.field("transmissive", draw.item.transmissive);
         json.field("skyboxMode", draw.item.skybox_mode);

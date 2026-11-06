@@ -39,8 +39,9 @@ namespace bbl::pal {
  */
 bool geometry_depth_is_borrowed(const Engine& engine, std::size_t task);
 /**
- * Whether an SSAO task samples a geometry task's depth through a depth-only
- * view: the attachment is then the pin's `depth32float` and is stored.
+ * Whether a task samples a geometry task's depth (`visit_task_textures`),
+ * as SSAO does through a depth-only view: the attachment is then the pin's
+ * `depth32float` and is stored.
  */
 bool geometry_depth_is_sampled(const Engine& engine, std::size_t task);
 

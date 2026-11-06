@@ -10,7 +10,12 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { CameraLowerer } from "../src/lowering/camera-lowerer.js";
 import { LoweringContext } from "../src/lowering/context.js";
-import { doctoredContext, rightHandedContext } from "./doctored-store.js";
+import { doctoredContext } from "./doctored-store.js";
+import {
+    probeError,
+    probeValue,
+    rightHandedProbes,
+} from "./right-handed-process.js";
 
 const LOOK_AT_MODULE = "src/math/write-look-at-world-mat4-lh-into-buffer.ts";
 const ARC_ROTATE_MODULE = "src/camera/arc-rotate.ts";
@@ -52,23 +57,25 @@ test("a right-handed camera world negates its look-at X and Z basis columns", ()
     const negation =
         "for (const double i : std::array<double, 6>{0.0, 1.0, 2.0, 8.0, 9.0, 10.0}) {";
     assert.ok(!arcRotateSource(new LoweringContext()).includes(negation));
-    assert.ok(arcRotateSource(rightHandedContext()).includes(negation));
-    // Every reached factory edits its world the same way.
-    assert.throws(
-        () =>
-            arcRotateSource(
-                rightHandedContext(
-                    new Map([
-                        [
-                            "src/camera/free-camera.ts",
-                            [
-                                "for (const i of [0, 1, 2, 8, 9, 10])",
-                                "for (const i of [0, 1, 2])",
-                            ],
-                        ],
-                    ]),
-                ),
-            ),
+    const [rightHanded, edited] = rightHandedProbes([
+        { probe: "arcRotateFactory" },
+        // Every reached factory edits its world the same way.
+        {
+            probe: "arcRotateFactory",
+            edits: [
+                [
+                    "src/camera/free-camera.ts",
+                    [
+                        "for (const i of [0, 1, 2, 8, 9, 10])",
+                        "for (const i of [0, 1, 2])",
+                    ],
+                ],
+            ],
+        },
+    ]);
+    assert.ok(String(probeValue(rightHanded)).includes(negation));
+    assert.match(
+        probeError(edited),
         /no longer edits its look-at matrix as createArcRotateCamera's does/,
     );
 });

@@ -97,6 +97,11 @@ import { readCharacterProperty } from "./intrinsics/character-controller.js";
 import { readPhysicsProperty } from "./physics-surface.js";
 import { geometryEnumMember } from "./intrinsics/engine-options.js";
 import { VAT_BONE_CAPTURE_FIELDS } from "./intrinsics/vat.js";
+import {
+    SSAO_RECORD_FIELDS,
+    ssaoRecordCpp,
+    ssaoRecordOf,
+} from "./intrinsics/ssao-options.js";
 import type { PhysicsIntrinsicContext } from "./intrinsics/physics.js";
 import type { LoweringServices } from "./lowering-services.js";
 import {
@@ -4422,7 +4427,6 @@ export class PropertyAccessLowerer {
                 kind: "scene",
                 cpp: `bbl::utility_layer_scene(${engine}, ${owner.cpp})`,
                 engineCpp: engine,
-                overlayScene: true,
                 sceneEnvironmentState: {
                     rotationSet: false,
                     hasTexturedSkybox: false,
@@ -4756,7 +4760,7 @@ export class PropertyAccessLowerer {
 
     /**
      * An SSAO task's published records and the settings they hold, read live
-     * off the task the generated factory created.
+     * off the task the generated factory created (`SSAO_RECORD_FIELDS`).
      */
     private readSsaoProperty(
         owner: Value,
@@ -4764,72 +4768,44 @@ export class PropertyAccessLowerer {
         expression: ts.PropertyAccessExpression,
     ): Value | undefined {
         const property = expression.name.text;
+        const record = ssaoRecordOf(owner);
+        if (!record) return undefined;
         const engine = this.context.requireEngine(owner, expression);
         const engineCpp = owner.engineCpp ? { engineCpp: owner.engineCpp } : {};
-        if (owner.kind === "task") {
-            if (property === "temporal") {
-                return {
-                    kind: "ssao-temporal",
-                    cpp: `bbl::SsaoTemporalRef{${owner.cpp}}`,
-                    ssaoTask: manifest,
-                    ...engineCpp,
-                };
-            }
-            if (property === "outputTexture") {
-                // The pin's output target aliases the texture its last pass
-                // writes, which the backend resolves per frame.
-                return {
-                    kind: "render-texture",
-                    cpp: `bbl::ssao_output_texture(${owner.cpp})`,
-                    renderTextureSource: "ssao-output",
-                    ...engineCpp,
-                };
-            }
-            const record = `${recordAt(`${engine}.frame_tasks`, owner.cpp)}.ssao`;
-            if (property === "enabled")
-                return { kind: "boolean", cpp: `${record}.enabled` };
-            if (property === "radius" || property === "intensity") {
-                return { kind: "number", cpp: `${record}.${property}` };
-            }
-            if (property === "quality")
-                return { kind: "string", cpp: `${record}.quality` };
-            if (property === "normalTexture") {
-                // The task's normal input, or null: the attachment it holds.
-                return {
-                    kind: "render-texture",
-                    cpp: `${record}.normal.value()`,
-                    renderTextureSource: "geometry",
-                    optionalStorageCpp: `${record}.normal`,
-                    truthinessCpp: `${record}.normal.has_value()`,
-                    ...engineCpp,
-                };
-            }
-            return undefined;
+        const native = ssaoRecordCpp(record, engine, owner.cpp);
+        const field = SSAO_RECORD_FIELDS[record][property];
+        if (field)
+            return { kind: field.kind, cpp: `${native}.${field.native}` };
+        if (record !== "task") return undefined;
+        if (property === "temporal") {
+            return {
+                kind: "task-record",
+                cpp: `bbl::SsaoTemporalRef{${owner.cpp}}`,
+                taskRecord: "temporal",
+                ssaoTask: manifest,
+                ...engineCpp,
+            };
         }
-        if (owner.kind === "ssao-temporal") {
-            const settings = `bbl::ssao_temporal_settings(${engine}, ${owner.cpp})`;
-            if (property === "enabled")
-                return { kind: "boolean", cpp: `${settings}.enabled` };
-            if (property === "historySamples")
-                return { kind: "number", cpp: `${settings}.history_samples` };
-            if (property === "resetVersion")
-                return { kind: "number", cpp: `${settings}.reset_version` };
-            return undefined;
+        if (property === "outputTexture") {
+            // The pin's output target aliases the texture its last pass
+            // writes, which the backend resolves per frame.
+            return {
+                kind: "render-texture",
+                cpp: `bbl::ssao_output_texture(${owner.cpp})`,
+                renderTextureSource: "task-output",
+                ...engineCpp,
+            };
         }
-        if (owner.kind === "ssao-motion-pruning") {
-            if (property === "enabled")
-                return {
-                    kind: "boolean",
-                    cpp: `bbl::ssao_motion_pruning_settings(${engine}, ${owner.cpp}).enabled`,
-                };
-            return undefined;
-        }
-        if (owner.kind === "ssao-half-resolution") {
-            const settings = `bbl::ssao_half_resolution_settings(${engine}, ${owner.cpp})`;
-            if (property === "enabled")
-                return { kind: "boolean", cpp: `${settings}.enabled` };
-            if (property === "active")
-                return { kind: "boolean", cpp: `${settings}.active` };
+        if (property === "normalTexture") {
+            // The task's normal input, or null: the attachment it holds.
+            return {
+                kind: "render-texture",
+                cpp: `${native}.normal.value()`,
+                renderTextureSource: "geometry",
+                optionalStorageCpp: `${native}.normal`,
+                truthinessCpp: `${native}.normal.has_value()`,
+                ...engineCpp,
+            };
         }
         return undefined;
     }

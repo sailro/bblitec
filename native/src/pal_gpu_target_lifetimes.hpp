@@ -116,6 +116,44 @@ auto& resolve_gpu_target(const Engine& engine, Targets& targets, RenderTargetHan
     return handle_at(targets, handle);
 }
 
+/**
+ * The textures a task's own record reads (`sampled`), and the depth a
+ * render task attaches (`attached`), each as the reference it names.
+ */
+template <class Sampled, class Attached>
+void visit_task_textures(const FrameTaskRecord& task, Sampled&& sampled, Attached&& attached) {
+    const auto passes = [&](const PostProcessTaskOptions& options) {
+        for (const PostProcessPassOptions& pass : options.passes) {
+            sampled(pass.source);
+            for (const RenderTextureRef& extra : pass.extra_textures)
+                sampled(extra);
+        }
+    };
+    switch (task.kind) {
+    case FrameTaskKind::render:
+        attached(task.render.depth);
+        return;
+    case FrameTaskKind::copy:
+        sampled(task.copy.source);
+        return;
+    case FrameTaskKind::post_process:
+    case FrameTaskKind::screen_space:
+        passes(task.post_process);
+        return;
+    case FrameTaskKind::ssao:
+        sampled(task.ssao.depth);
+        if (task.ssao.normal)
+            sampled(*task.ssao.normal);
+        if (task.ssao.velocity)
+            sampled(*task.ssao.velocity);
+        return;
+    case FrameTaskKind::geometry:
+    case FrameTaskKind::effect:
+    case FrameTaskKind::compute:
+        return;
+    }
+}
+
 #if BBLITE_RENDER_TARGET_DISPOSAL
 namespace detail {
 /** Each render target an executed task's own record names, before the frame encodes it. */
@@ -124,13 +162,11 @@ template <class Visit> void visit_task_targets(const FrameTaskRecord& task, Visi
         if (reference.source == RenderTextureSource::render_target)
             visit(reference.target);
     };
+    visit_task_textures(task, texture, texture);
     const auto passes = [&](const PostProcessTaskOptions& options) {
         for (const PostProcessPassOptions& pass : options.passes) {
-            texture(pass.source);
             visit(pass.target);
             visit(pass.output_target);
-            for (const RenderTextureRef& extra : pass.extra_textures)
-                texture(extra);
         }
         visit(options.output_target);
     };
@@ -138,13 +174,11 @@ template <class Visit> void visit_task_targets(const FrameTaskRecord& task, Visi
     case FrameTaskKind::render:
         visit(task.render.target);
         visit(task.render.resolve_target);
-        texture(task.render.depth);
         return;
     case FrameTaskKind::geometry:
         visit(task.geometry.target);
         return;
     case FrameTaskKind::copy:
-        texture(task.copy.source);
         visit(task.copy.target);
         visit(task.copy.resolve_target);
         return;
@@ -157,9 +191,8 @@ template <class Visit> void visit_task_targets(const FrameTaskRecord& task, Visi
             visit(target);
         for (const RenderTargetHandle target : task.screen_space.intermediates)
             visit(target);
-        for (const RenderTargetHandle target : {task.screen_space.stable,
-                                                task.screen_space.history,
-                                                task.screen_space.output_target})
+        for (const RenderTargetHandle target :
+             {task.screen_space.stable, task.screen_space.history, task.screen_space.output_target})
             visit(target);
         passes(task.post_process);
         return;
@@ -167,10 +200,6 @@ template <class Visit> void visit_task_targets(const FrameTaskRecord& task, Visi
         visit(task.effect.target);
         return;
     case FrameTaskKind::ssao:
-        texture(task.ssao.depth);
-        if (task.ssao.normal)
-            texture(*task.ssao.normal);
-        return;
     case FrameTaskKind::compute:
         return;
     }

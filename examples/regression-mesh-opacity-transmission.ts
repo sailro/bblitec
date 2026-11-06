@@ -10,19 +10,16 @@ import {
     createArcRotateCamera,
     createEngine,
     createPbrMaterial,
-    createPlane,
     createSceneContext,
-    createStandardMaterial,
     getFrameGraph,
     loadEnvironment,
     loadGltf,
-    onBeforeRender,
     registerScene,
-    setMeshOpacity,
     startEngine,
     type RenderTask,
 } from "babylon-lite";
-import type { Mesh } from "babylon-lite";
+import type { Mesh, StandardMaterialProps } from "babylon-lite";
+import { fadedPlane, restoreOnThirdFrame, standard } from "./regression-mesh-opacity-planes.js";
 
 async function main(): Promise<void> {
     const __initStart = performance.now();
@@ -52,36 +49,34 @@ async function main(): Promise<void> {
 
     // The camera looks down -z from +z: the planes stand between it and the
     // asset, double-sided so their facing does not matter.
-    const faded = (x: number, y: number, opacity: number, pbr: boolean): Mesh => {
-        const mesh = createPlane(engine, { width: 0.14, height: 0.1 });
-        mesh.position.set(x, y, 0.8);
-        if (pbr) {
-            mesh.material = createPbrMaterial({
-                baseColorFactor: [0.15, 0.4, 0.9, 1],
-                metallicFactor: 0,
-                roughnessFactor: 0.6,
-                doubleSided: true,
-            });
-        } else {
-            const material = createStandardMaterial();
-            material.diffuseColor = [0.9, 0.3, 0.15];
-            material.specularColor = [0, 0, 0];
-            material.backFaceCulling = false;
-            mesh.material = material;
-        }
-        setMeshOpacity(mesh, opacity);
-        addToScene(scene, mesh);
-        return mesh;
+    const doubleSidedStandard = (): StandardMaterialProps => {
+        const material = standard(0.9, 0.3, 0.15);
+        material.backFaceCulling = false;
+        return material;
     };
+    const faded = (x: number, y: number, opacity: number, pbr: boolean): Mesh =>
+        fadedPlane(
+            engine,
+            scene,
+            0.14,
+            0.1,
+            x,
+            y,
+            0.8,
+            pbr
+                ? createPbrMaterial({
+                      baseColorFactor: [0.15, 0.4, 0.9, 1],
+                      metallicFactor: 0,
+                      roughnessFactor: 0.6,
+                      doubleSided: true,
+                  })
+                : doubleSidedStandard(),
+            opacity
+        );
     faded(-0.48, 0.48, 0.5, false);
     faded(-0.3, 0.48, 0.5, true);
     faded(-0.12, 0.48, 0, false);
-    const restored = faded(-0.3, 0.34, 0.5, true);
-    let frame = 0;
-    onBeforeRender(scene, () => {
-        frame += 1;
-        if (frame === 3) setMeshOpacity(restored, 1);
-    });
+    restoreOnThirdFrame(scene, faded(-0.3, 0.34, 0.5, true));
 
     await registerScene(scene);
     await startEngine(engine);

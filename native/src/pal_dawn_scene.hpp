@@ -6,6 +6,7 @@
 #pragma once
 
 #include <bblite/features/device_recovery.hpp>
+#include <bblite/features/geometry_velocity.hpp>
 #include <bblite/features/has_billboards.hpp>
 #include <bblite/features/render_task_transmission.hpp>
 #include <bblite/features/has_clustered_lights.hpp>
@@ -92,6 +93,7 @@
 #include "pal_gpu_surface.hpp"
 #include "pal_gpu_vertex.hpp"
 #include "pal_gpu_materials.hpp"
+#include "pal_gpu_task_outputs.hpp"
 #include "pal_gpu_scene_blocks.hpp"
 #include "pal_gpu_targets.hpp"
 #include "pal_dawn_post_process.hpp"
@@ -282,6 +284,22 @@ inline void release_area_light_emission(const DawnAreaLightEmission& gpu) {
 }
 #endif
 
+/**
+ * A bind group a draw state built for another key -- the variant, and the
+ * plugin texture allocations it binds -- held with the material block its
+ * variant sizes, so draws alternating keys in one frame (a task and the
+ * scene pass drawing a mesh in two variants, two passes binding different
+ * SSAO allocations) swap groups rather than rebuild them.
+ */
+struct DawnHeldGroup {
+    WGPUBindGroup group = nullptr;
+    std::size_t group_key = npos;
+    std::vector<std::uint32_t> plugin_texture_allocations;
+    WGPUBuffer material_uniforms = nullptr;
+    std::optional<std::tuple<std::uint64_t, std::uint64_t, std::size_t, std::uint32_t>>
+        material_upload;
+};
+
 struct DawnDrawResources {
     WGPUBuffer mesh_uniforms = nullptr;
     WGPUBuffer material_uniforms = nullptr;
@@ -295,17 +313,21 @@ struct DawnDrawResources {
     // no marked material -- the same shape the geometry task's `gp` buffer
     // takes, where the reflected binding name decides whether it is bound.
     WGPUBuffer uv_transform_uniforms = nullptr;
-    // Mesh opacity's `meshOpacity` block, bound where the composed variant
+    // Mesh opacity's `meshOpacity` block, made where a composed variant
     // declares it -- the same reflected-name shape as the two above -- and
-    // the value and policy it holds.
+    // the block it holds.
     WGPUBuffer mesh_opacity_uniforms = nullptr;
-    std::optional<std::array<float, 2>> mesh_opacity_written{};
+#if BBLITE_MESH_OPACITY
+    std::optional<upstream::MeshOpacityUniforms> mesh_opacity_written{};
+#endif
     WGPUBindGroup group = nullptr;
     /** The variant, times two plus the Standard unfilterable-emissive bit. */
     std::size_t group_key = npos;
     std::vector<std::uint32_t> plugin_texture_allocations;
     std::optional<std::tuple<std::uint64_t, std::uint64_t, std::size_t, std::uint32_t>>
         material_upload;
+    /** The groups built for the keys this draw alternates with, at most `held_group_limit`. */
+    std::vector<DawnHeldGroup> held_groups;
 #if BBLITE_RECT_AREA_EMISSION
     // The emission allocation of the draw's scene, which the held group
     // binds (`refresh_area_light_group`); id 0 for none.
@@ -319,6 +341,72 @@ struct DawnDrawResources {
 };
 
 using DawnDrawState = OwnedGpuRecord<DawnDrawResources, DawnState>;
+
+inline constexpr std::size_t held_group_limit = 3;
+
+inline void release_held_group(DawnHeldGroup& held) noexcept {
+    if (held.group)
+        wgpuBindGroupRelease(held.group);
+    if (held.material_uniforms)
+        wgpuBufferRelease(held.material_uniforms);
+}
+
+inline void release_held_groups(DawnDrawResources& draw) noexcept {
+    for (DawnHeldGroup& held : draw.held_groups)
+        release_held_group(held);
+    draw.held_groups.clear();
+}
+
+/**
+ * Holds the draw's current group, with its material block when the variant
+ * sizes it (`material`), dropping the oldest held one past the limit.
+ */
+inline void hold_current_group(DawnDrawResources& draw, bool material) {
+    if (!draw.group)
+        return;
+    if (draw.held_groups.size() == held_group_limit) {
+        release_held_group(draw.held_groups.front());
+        draw.held_groups.erase(draw.held_groups.begin());
+    }
+    DawnHeldGroup held;
+    held.group = std::exchange(draw.group, nullptr);
+    held.group_key = draw.group_key;
+    held.plugin_texture_allocations = draw.plugin_texture_allocations;
+    if (material) {
+        held.material_uniforms = std::exchange(draw.material_uniforms, nullptr);
+        held.material_upload = std::exchange(draw.material_upload, std::nullopt);
+    }
+    draw.held_groups.push_back(std::move(held));
+}
+
+/**
+ * Makes the held group of `key` and `allocations` the current one, holding
+ * the current; false when no draw built it.
+ */
+inline bool restore_held_group(DawnDrawResources& draw, std::size_t key,
+                               const std::vector<std::uint32_t>& allocations, bool material) {
+    const auto found =
+        std::find_if(draw.held_groups.begin(), draw.held_groups.end(), [&](const auto& held) {
+            return held.group_key == key && held.plugin_texture_allocations == allocations;
+        });
+    if (found == draw.held_groups.end())
+        return false;
+    DawnHeldGroup restored = std::move(*found);
+    draw.held_groups.erase(found);
+    hold_current_group(draw, material);
+    if (draw.group)
+        wgpuBindGroupRelease(draw.group);
+    draw.group = restored.group;
+    draw.group_key = key;
+    draw.plugin_texture_allocations = std::move(restored.plugin_texture_allocations);
+    if (material) {
+        if (draw.material_uniforms)
+            wgpuBufferRelease(draw.material_uniforms);
+        draw.material_uniforms = restored.material_uniforms;
+        draw.material_upload = restored.material_upload;
+    }
+    return true;
+}
 
 struct DawnSharedShaderGeometry;
 struct DawnSharedMaterialTextures;
@@ -646,7 +734,6 @@ struct DawnGeometryTask {
 struct DawnPbrVelocitySink {
     DawnState& state;
     DawnGeometryTask& task;
-    DawnPbrVelocity& resources(MeshHandle mesh);
     void block(MeshHandle mesh, std::span<const float> floats);
     void bones(MeshHandle mesh, std::span<const float> floats);
     void morph(MeshHandle mesh, std::span<const float> floats);
@@ -1302,12 +1389,12 @@ struct DawnState : DawnDevice {
     std::map<DawnMeshPipelineKey, DawnPipeline> pipelines;
     // Attribution capture resources (scene-1 diagnostics tooling),
     // created lazily on the first requested capture. Pipelines are
-    // keyed by [double_sided]; the PBR diagnostic set adds the MRT
+    // keyed by `DiagnosticPipeline`; the PBR diagnostic set adds the MRT
     // pass index.
     WGPUShaderModule diagnostic_id_module = nullptr;
     WGPUShaderModule diagnostic_cluster_module = nullptr;
-    std::array<WGPURenderPipeline, 2> id_pipelines{};
-    std::array<WGPURenderPipeline, 2> cluster_pipelines{};
+    std::array<WGPURenderPipeline, diagnostic_pipeline_count> id_pipelines{};
+    std::array<WGPURenderPipeline, diagnostic_pipeline_count> cluster_pipelines{};
     std::vector<DawnMesh> meshes;
     /**
      * The uploaded meshes of every swapchain overlay layer.
@@ -1478,6 +1565,7 @@ struct DawnState : DawnDevice {
     }
 
     void release_gpu_resources(DawnDrawResources& draw) noexcept {
+        release_held_groups(draw);
         if (draw.group)
             wgpuBindGroupRelease(draw.group);
         if (draw.mesh_opacity_uniforms)
@@ -2157,6 +2245,13 @@ inline std::span<const upstream::PinnedVariantBinding> standard_variant_rows(std
     return upstream::standard_variant_bindings.subspan(entry.first_binding, entry.binding_count);
 }
 #endif
+
+/** Whether a variant's reflected rows declare `name`. */
+inline bool rows_declare(std::span<const upstream::PinnedVariantBinding> rows,
+                         std::string_view name) {
+    return std::any_of(rows.begin(), rows.end(),
+                       [&](const upstream::PinnedVariantBinding& row) { return row.name == name; });
+}
 
 /**
  * Whether a reflected row claims `binding`.
@@ -2899,9 +2994,9 @@ WGPUBindGroup build_standard_draw_group(
     // The draw's emission allocation (`area_light_emission_of`).
     const DawnAreaLightEmission* area_light_emission);
 
-/** The per-draw uniform buffers for a mesh's Standard draws. */
+/** The per-draw uniform buffers for a mesh's Standard draws of `variant`. */
 DawnDrawState& ensure_standard_draw_buffers(DawnState& state, DawnMesh& mesh,
-                                            std::uint32_t material);
+                                            std::uint32_t material, std::size_t variant);
 
 #if BBLITE_HAS_DAWN && BBLITE_HAS_PBR_RENDERER && BBLITE_MESH_OPACITY
 /** A group's `meshOpacity` entry, refusing a draw state that holds no block. */
@@ -3398,7 +3493,7 @@ DawnShaderBindings& shader_bindings_for(DawnState& state, [[maybe_unused]] const
 // main pass stay valid; only the fragment module, cull mode, sample
 // count, and color target formats vary.
 WGPURenderPipeline create_diagnostic_pipeline(DawnState& state, WGPUShaderModule fragment_module,
-                                              bool double_sided, std::uint32_t samples,
+                                              DiagnosticPipeline culling, std::uint32_t samples,
                                               const WGPUTextureFormat* color_formats,
                                               std::uint32_t color_count);
 
@@ -3637,21 +3732,22 @@ void record_ssao_task(DawnState& state, Engine& engine, TaskHandle handle,
                       WGPUTextureView velocity, std::uint32_t velocity_width,
                       std::uint32_t velocity_height, std::uint32_t width, std::uint32_t height,
                       GpuTaskTimingSequence& timing);
-/** The view of the texture a task publishes as `outputTexture`, once it executed. */
-WGPUTextureView ssao_output_view(DawnState& state, const Engine& engine, TaskHandle handle);
-/**
- * What `enablePbrSsao`'s plugin samples in a pass (`ssao_pbr_sampling`), and
- * the key a held group of it stays valid under: the output's owner, or zero
- * for the neutral texture.
- */
-struct SsaoPbrBinding {
+#endif
+
+/** What a plugin texture its owner resolves binds in a pass, and the version it holds under. */
+struct DawnDynamicPluginBinding {
     WGPUTextureView view = nullptr;
     WGPUSampler sampler = nullptr;
-    std::uint64_t key = 0;
+    std::uint64_t version = 0;
 };
-SsaoPbrBinding ssao_pbr_binding(DawnState& state, const Engine& engine, TaskHandle handle,
-                                const ShaderPassMatrices* pass);
-#endif
+
+/** A task kind's owner of the textures its tasks publish (`TaskOutputOwners`). */
+struct DawnTaskOutputOwner {
+    WGPUTextureView (*view)(DawnState&, const Engine&, TaskHandle) = nullptr;
+    DawnDynamicPluginBinding (*plugin)(DawnState&, const Engine&, const MaterialRecord&,
+                                       const ShaderPassMatrices*) = nullptr;
+};
+using DawnTaskOutputOwners = TaskOutputOwners<DawnTaskOutputOwner>;
 
 } // namespace dawn_scene
 

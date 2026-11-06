@@ -11,6 +11,7 @@ import { argumentAt, conditionalExpression, selectionArms } from "../syntax.js";
 import type {
     GeometryTextureTypeName,
     PostProcessOptionValue,
+    SsaoLiveSetting,
     SsaoTaskManifest,
     Value,
 } from "../types.js";
@@ -18,7 +19,12 @@ import {
     compileOptionalStaticBoolean,
     staticNumberValue,
 } from "../option-helpers.js";
-import { SSAO_MODULE, ssaoPbrPluginManifest } from "../../pinned-ssao.js";
+import { recordAt } from "../record-access.js";
+import {
+    SSAO_INTRINSICS,
+    SSAO_MODULE,
+    ssaoPbrPluginManifest,
+} from "../../pinned-ssao.js";
 import { isPbrMaterialValue } from "../values/model.js";
 import { compileRenderTextureValue } from "./engine-options.js";
 import type { EngineIntrinsicContext } from "./engine.js";
@@ -34,15 +40,72 @@ const HANDLE_OPTIONS = new EmissionSet([
     "temporal",
 ]);
 
-/** The intrinsics this module compiles. */
+/** The intrinsics this module compiles: the family's pinned entry points. */
 export function isSsaoIntrinsic(name: string): boolean {
-    return (
-        name === "createSsaoTask" ||
-        name === "resetSsaoTemporal" ||
-        name === "enableSsaoHalfResolution" ||
-        name === "enablePbrSsao" ||
-        name === "enableSsaoMotionPruning"
-    );
+    return SSAO_INTRINSICS.has(name);
+}
+
+/**
+ * The records an SSAO task publishes: the task itself, `task.temporal`, and
+ * the settings `enableSsaoHalfResolution` and `enableSsaoMotionPruning`
+ * return. A record other than the task is a `task-record` value naming it.
+ */
+export type SsaoRecord = "task" | NonNullable<Value["taskRecord"]>;
+
+/** One setting a record publishes, as the native record holds it. */
+interface SsaoRecordField {
+    native: string;
+    kind: "boolean" | "number" | "string";
+    /** The pin derives it (`active`, `resetVersion`): a read, never a write. */
+    derived?: true;
+    /** Every value it takes selects programs, which composition builds. */
+    live?: SsaoLiveSetting;
+}
+
+/** Each record's settings, read and written through this one table. */
+export const SSAO_RECORD_FIELDS: Readonly<
+    Record<SsaoRecord, Readonly<Record<string, SsaoRecordField>>>
+> = {
+    task: {
+        enabled: { native: "enabled", kind: "boolean" },
+        radius: { native: "radius", kind: "number" },
+        intensity: { native: "intensity", kind: "number" },
+        quality: { native: "quality", kind: "string", live: "quality" },
+    },
+    temporal: {
+        enabled: { native: "enabled", kind: "boolean", live: "temporal" },
+        historySamples: { native: "history_samples", kind: "number" },
+        resetVersion: {
+            native: "reset_version",
+            kind: "number",
+            derived: true,
+        },
+    },
+    "half-resolution": {
+        enabled: { native: "enabled", kind: "boolean" },
+        active: { native: "active", kind: "boolean", derived: true },
+    },
+    "motion-pruning": {
+        enabled: { native: "enabled", kind: "boolean", live: "pruning" },
+    },
+};
+
+/** The record an SSAO value names, if it names one. */
+export function ssaoRecordOf(value: Value): SsaoRecord | undefined {
+    if (!value.ssaoTask) return undefined;
+    if (value.kind === "task") return "task";
+    return value.kind === "task-record" ? value.taskRecord : undefined;
+}
+
+/** The native record an SSAO value names: the task's frame record, or the one its reference names. */
+export function ssaoRecordCpp(
+    record: SsaoRecord,
+    engine: string,
+    owner: string,
+): string {
+    return record === "task"
+        ? `${recordAt(`${engine}.frame_tasks`, owner)}.ssao`
+        : `bbl::ssao_record(${engine}, ${owner})`;
 }
 
 /** What `config.temporal` compiles to beyond the options composition forwards. */
@@ -111,23 +174,11 @@ function compileTemporal(
                     "double",
                 );
         } else if (key === "velocityTexture") {
-            const value = context.compileValue(property.initializer);
-            if (!value.geometryAttachment) {
-                return context.fail(
-                    property.initializer,
-                    "createSsaoTask temporal.velocityTexture must be a geometry renderer task's attachment.",
-                );
-            }
-            velocity = {
-                cpp: compileRenderTextureValue(
-                    context,
-                    property.initializer,
-                    value,
-                    "createSsaoTask temporal.velocityTexture",
-                    { sampling: "color", sources: ["geometry"] },
-                ),
-                attachment: value.geometryAttachment,
-            };
+            velocity = geometryAttachmentInput(
+                context,
+                property.initializer,
+                "createSsaoTask temporal.velocityTexture",
+            );
         } else if (key === "velocityHasPreviousDepth") {
             previousDepth = compileOptionalStaticBoolean(
                 context,
@@ -156,6 +207,28 @@ export interface SsaoNormalInputContext extends Pick<
     "unwrap" | "compileValue" | "conditions" | "fail" | "symbols"
 > {}
 
+/** A geometry renderer task's colour attachment an SSAO input samples. */
+function geometryAttachmentInput(
+    context: Pick<LoweringServices, "compileValue" | "fail">,
+    expression: ts.Expression,
+    what: string,
+): { cpp: string; attachment: GeometryTextureTypeName } {
+    const value = context.compileValue(expression);
+    if (!value.geometryAttachment) {
+        return context.fail(
+            expression,
+            `${what} must be a geometry renderer task's attachment.`,
+        );
+    }
+    return {
+        cpp: compileRenderTextureValue(context, expression, value, what, {
+            sampling: "color",
+            sources: ["geometry"],
+        }),
+        attachment: value.geometryAttachment,
+    };
+}
+
 /**
  * An SSAO normal input (`config.normalTexture`, a `normalTexture` write): a
  * geometry attachment, or a choice only run time makes between one and none
@@ -168,22 +241,8 @@ export function compileNormalInput(
 ): { cpp: string; attachment: GeometryTextureTypeName; known: boolean } {
     const absent = (node: ts.Expression): boolean =>
         context.symbols.isNullishLiteral(context.unwrap(node));
-    const attachment = (node: ts.Expression) => {
-        const value = context.compileValue(node);
-        if (!value.geometryAttachment) {
-            return context.fail(
-                node,
-                `${what} must be a geometry renderer task's attachment.`,
-            );
-        }
-        return {
-            cpp: compileRenderTextureValue(context, node, value, what, {
-                sampling: "color",
-                sources: ["geometry"],
-            }),
-            attachment: value.geometryAttachment,
-        };
-    };
+    const attachment = (node: ts.Expression) =>
+        geometryAttachmentInput(context, node, what);
     const selection = conditionalExpression(context.unwrap(expression));
     const [whenTrue, whenFalse] = selection
         ? selectionArms(selection)
@@ -233,28 +292,18 @@ export function compileSsaoIntrinsic(
     switch (importedName) {
         case "createSsaoTask":
             return compileCreateSsaoTask(context, call, taskEngine());
-        case "enableSsaoHalfResolution": {
-            context.expectArgumentCount(call, 1, 1);
-            const task = context.compileValue(argumentAt(call, 0));
-            const manifest = ssaoTaskOf(
+        case "enableSsaoHalfResolution":
+            return compileSsaoEnabler(
                 context,
-                task,
                 call,
-                "enableSsaoHalfResolution",
+                importedName,
+                "half-resolution",
+                "enable_ssao_half_resolution",
             );
-            context.sceneManifest.recordSsaoEnabler("half", manifest);
-            const engine = context.requireEngine(task, call);
-            return {
-                kind: "ssao-half-resolution",
-                cpp: `bbl::enable_ssao_half_resolution(${engine}, ${task.cpp})`,
-                ssaoTask: manifest,
-                engineCpp: engine,
-            };
-        }
         case "resetSsaoTemporal": {
             context.expectArgumentCount(call, 1, 1);
             const settings = context.compileValue(argumentAt(call, 0));
-            if (settings.kind !== "ssao-temporal" || !settings.ssaoTask) {
+            if (ssaoRecordOf(settings) !== "temporal") {
                 return context.fail(
                     call,
                     "resetSsaoTemporal requires a createSsaoTask task's temporal settings.",
@@ -262,31 +311,47 @@ export function compileSsaoIntrinsic(
             }
             return {
                 kind: "void",
-                cpp: `bbl::upstream::reset_ssao_temporal(bbl::ssao_temporal_settings(${context.requireEngine(settings, call)}, ${settings.cpp}))`,
+                cpp: `bbl::upstream::reset_ssao_temporal(${ssaoRecordCpp("temporal", context.requireEngine(settings, call), settings.cpp)})`,
             };
         }
         case "enablePbrSsao":
             return compileEnablePbrSsao(context, call);
-        case "enableSsaoMotionPruning": {
-            context.expectArgumentCount(call, 1, 1);
-            const task = context.compileValue(argumentAt(call, 0));
-            const manifest = ssaoTaskOf(
+        case "enableSsaoMotionPruning":
+            return compileSsaoEnabler(
                 context,
-                task,
                 call,
-                "enableSsaoMotionPruning",
+                importedName,
+                "motion-pruning",
+                "enable_ssao_motion_pruning",
             );
-            context.sceneManifest.recordSsaoEnabler("motion-pruning", manifest);
-            const engine = context.requireEngine(task, call);
-            return {
-                kind: "ssao-motion-pruning",
-                cpp: `bbl::enable_ssao_motion_pruning(${engine}, ${task.cpp})`,
-                ssaoTask: manifest,
-                engineCpp: engine,
-            };
-        }
     }
     return context.fail(call, `'${importedName}' is not an SSAO entry point.`);
+}
+
+/**
+ * An enabler that installs settings on the task once and returns them
+ * (`enableSsaoHalfResolution`, `enableSsaoMotionPruning`): composition
+ * builds the modes it reaches, and the native call installs the same state.
+ */
+function compileSsaoEnabler(
+    context: EngineIntrinsicContext,
+    call: ts.CallExpression,
+    intrinsic: string,
+    record: "half-resolution" | "motion-pruning",
+    native: string,
+): Value {
+    context.expectArgumentCount(call, 1, 1);
+    const task = context.compileValue(argumentAt(call, 0));
+    const manifest = ssaoTaskOf(context, task, call, intrinsic);
+    context.sceneManifest.recordSsaoEnabler(record, manifest);
+    const engine = context.requireEngine(task, call);
+    return {
+        kind: "task-record",
+        cpp: `bbl::${native}(${engine}, ${task.cpp})`,
+        taskRecord: record,
+        ssaoTask: manifest,
+        engineCpp: engine,
+    };
 }
 
 /**
@@ -306,7 +371,7 @@ function compileEnablePbrSsao(
     const scene = context.compileValue(argumentAt(call, 0));
     context.expectKind(scene, "scene", argumentAt(call, 0));
     const task = context.compileValue(argumentAt(call, 1));
-    const manifest = ssaoTaskOf(context, task, call, "enablePbrSsao");
+    ssaoTaskOf(context, task, call, "enablePbrSsao");
     context.expectSameEngine(scene, task, call);
     const plugin = ssaoPbrPluginManifest();
     const [binding, ...others] = plugin.samplers ?? [];
@@ -359,7 +424,6 @@ function compileEnablePbrSsao(
         });
         context.sceneManifest.recordPbrStateWrite({}, { pluginAppend: id });
     }
-    context.sceneManifest.recordSsaoEnabler("pbr", manifest);
     context.reachFeature("material:pbr", call);
     // The pin's enabler calls `enableMaterialPlugins(scene)` itself.
     context.reachFeature("material:plugins", call);
@@ -458,7 +522,6 @@ function compileCreateSsaoTask(
               }
             : {}),
         halfResolution: false,
-        pbr: false,
         motionPruning: false,
         live: [],
     };

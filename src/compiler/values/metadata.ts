@@ -167,9 +167,7 @@ const resourceMetadataFields = {
         "screenSpaceTask",
         "ssaoTask",
     ],
-    "ssao-temporal": ["ssaoTask"],
-    "ssao-half-resolution": ["ssaoTask"],
-    "ssao-motion-pruning": ["ssaoTask"],
+    "task-record": ["ssaoTask", "taskRecord"],
     "render-target": ["renderTargetSignature"],
     camera: ["cameraProgram", "cameraKind"],
     scene: [

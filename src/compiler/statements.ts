@@ -3786,7 +3786,18 @@ export class StatementLowerer {
             statement,
             head,
             resolved.target,
-            { assetWholeMeshList: resolved.asset },
+            {
+                assetWholeMeshList: {
+                    asset: resolved.asset,
+                    ...(resolved.container !== undefined
+                        ? { container: resolved.container }
+                        : {}),
+                    ...(!context.isInRuntimeControlFlow() &&
+                    !context.isInParameterizedResourceLoop()
+                        ? { definiteBody: statement.statement }
+                        : {}),
+                },
+            },
         );
         return true;
     }

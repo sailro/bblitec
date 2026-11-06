@@ -1573,10 +1573,11 @@ export interface StandardSceneCompositionInput {
     /** Morph storage/deformation reached for scene meshes. */
     morphTargets: boolean;
     /**
-     * `setMeshOpacity` reached: its encoder's mesh-feature bit, which any
-     * mesh can carry at run time (`meshOpacityFeatureBit`).
+     * `setMeshOpacity` reached: its encoder's mesh-feature bit
+     * (`meshOpacityFeatureBit`) and the scene mesh values a call reaches;
+     * without them, a target is unknown and every value can carry it.
      */
-    meshOpacityBit?: number;
+    meshOpacity?: { bit: number; values?: readonly number[] };
     /** Whether the scene creates Standard materials from scene code. */
     sceneMaterials: boolean;
     /** Distinct mesh-feature values of the scene-code meshes. */
@@ -1870,7 +1871,14 @@ export async function composeSceneStandardVariants(
     // The mesh half: `.babylon` renderables carry no composition-relevant
     // bits (zero rows), scene meshes their own recorded sets, plus the
     // runtime-attachable pool and deformation arms.
-    const expandMeshValues = (initial: readonly number[]): number[] => {
+    // The opacity arm decorates the reached values' own expansions, or every
+    // value.
+    const expandMeshValues = (
+        initial: readonly number[],
+        opacity:
+            | StandardSceneCompositionInput["meshOpacity"]
+            | null = input.meshOpacity,
+    ): number[] => {
         const values: number[] = [];
         const add = (bits: number): void => {
             if (!values.includes(bits)) values.push(bits);
@@ -1896,9 +1904,12 @@ export async function composeSceneStandardVariants(
                 add(bits | meshBits.MSH_HAS_MORPH_TARGETS);
             }
         }
-        if (input.meshOpacityBit !== undefined) {
+        if (opacity) {
+            const reached =
+                opacity.values &&
+                new Set(expandMeshValues(opacity.values, null));
             for (const bits of [...values]) {
-                add(bits | input.meshOpacityBit);
+                if (!reached || reached.has(bits)) add(bits | opacity.bit);
             }
         }
         return values;
@@ -1911,18 +1922,7 @@ export async function composeSceneStandardVariants(
     const pluginMeshValues = (
         input.standardMaterialPluginMeshFeatureValues ??
         input.standardMaterialPlugins.map(() => [])
-    ).map((values) =>
-        input.meshOpacityBit === undefined
-            ? [...new Set(values)]
-            : [
-                  ...new Set(
-                      values.flatMap((bits) => [
-                          bits,
-                          bits | input.meshOpacityBit!,
-                      ]),
-                  ),
-              ],
-    );
+    ).map((values) => [...new Set(values)]);
     // Compose, deduplicating by composed text.
     const variants: PinnedStandardVariantManifestEntry[] = [];
     const byText = new Map<string, number>();

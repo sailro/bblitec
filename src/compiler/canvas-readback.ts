@@ -345,6 +345,7 @@ export function bakeCanvasReadback(
             version: "1",
             module: moduleIdentity(import.meta.url),
             browser: true,
+            buildConditions: false,
             parameters: {
                 module: graph.entry,
                 function: owner.name.text,

@@ -14,14 +14,10 @@
  */
 import { existsSync, readFileSync } from "node:fs";
 import { join, posix, relative, resolve } from "node:path";
-import ts from "typescript";
 import { compilerRepositoryRoot } from "./repository-root.js";
+import { sourceMapSources } from "./source-maps.js";
 import { listFiles } from "./tooling/records.js";
-
-interface SourceMapFile {
-    sources?: string[];
-    sourcesContent?: Array<string | null>;
-}
+import { reexportsOnly } from "./typescript-module-specifiers.js";
 
 interface PackageManifest {
     name?: string;
@@ -61,24 +57,6 @@ function storeVersion(source: string, name: string): string | undefined {
     return store?.startsWith(prefix)
         ? store.slice(prefix.length).split("_")[0]
         : undefined;
-}
-
-/** Whether every statement only imports or re-exports. */
-function reexportsOnly(path: string, text: string): boolean {
-    const statements = ts.createSourceFile(
-        path,
-        text,
-        ts.ScriptTarget.Latest,
-        false,
-    ).statements;
-    return (
-        statements.length > 0 &&
-        statements.every(
-            (statement) =>
-                ts.isImportDeclaration(statement) ||
-                ts.isExportDeclaration(statement),
-        )
-    );
 }
 
 /**
@@ -132,7 +110,6 @@ function readPackage(
     name: string,
     version: string,
     bundled: ReadonlyMap<string, string>,
-    repositoryRoot: string,
 ): VendoredPackage {
     const unavailable = (reason: string): VendoredPackage => ({
         name,
@@ -140,7 +117,11 @@ function readPackage(
         available: false,
         reason,
     });
-    const root = resolve(repositoryRoot, "node_modules", ...name.split("/"));
+    const root = resolve(
+        compilerRepositoryRoot(),
+        "node_modules",
+        ...name.split("/"),
+    );
     const manifestPath = join(root, "package.json");
     if (!existsSync(manifestPath))
         return unavailable(`${name}@${version} is not installed`);
@@ -158,14 +139,11 @@ function readPackage(
                 `${name}@${version} ${file} differs from the pin's vendored copy`,
             );
         const map = `${installed}.map`;
-        const sources = existsSync(map)
-            ? (JSON.parse(readFileSync(map, "utf8")) as SourceMapFile)
-            : undefined;
+        const sources = existsSync(map) ? sourceMapSources(map) : [];
         if (
-            !sources?.sources?.length ||
-            sources.sources.some(
-                (source, index) =>
-                    !source.endsWith(".ts") || !sources.sourcesContent?.[index],
+            sources.length === 0 ||
+            sources.some(
+                ({ source, content }) => !source.endsWith(".ts") || !content,
             )
         )
             return unavailable(
@@ -176,19 +154,14 @@ function readPackage(
         relative(root, path).replaceAll("\\", "/"),
     );
     const modules = new Map<string, string>();
-    for (const file of files.filter((path) => path.endsWith(".js.map"))) {
-        const map = JSON.parse(
-            readFileSync(join(root, file), "utf8"),
-        ) as SourceMapFile;
-        map.sources?.forEach((source, index) => {
-            const content = map.sourcesContent?.[index];
+    for (const file of files.filter((path) => path.endsWith(".js.map")))
+        for (const { source, content } of sourceMapSources(join(root, file))) {
             const path = posix.normalize(
                 posix.join(posix.dirname(file), source),
             );
             if (content && source.endsWith(".ts") && !path.startsWith("../"))
                 modules.set(path, content);
-        });
-    }
+        }
     const declarations = files.filter((path) => path.endsWith(".d.ts"));
     const roots = declarationRoots(declarations, new Set(modules.keys()));
     if (!roots)
@@ -238,7 +211,6 @@ const vendored = new Map<string, ReadonlyMap<string, VendoredPackage>>();
  */
 export function vendoredPackages(
     packageRoot: string,
-    repositoryRoot = compilerRepositoryRoot(),
 ): ReadonlyMap<string, VendoredPackage> {
     const known = vendored.get(packageRoot);
     if (known) return known;
@@ -250,27 +222,25 @@ export function vendoredPackages(
     for (const mapPath of existsSync(chunks)
         ? listFiles(chunks).filter((path) => path.endsWith(".js.map"))
         : []) {
-        const map = JSON.parse(readFileSync(mapPath, "utf8")) as SourceMapFile;
-        map.sources?.forEach((source, index) => {
+        for (const { source, content } of sourceMapSources(mapPath)) {
             const normalized = source.replaceAll("\\", "/");
             const match = normalized.match(VENDORED_FILE);
-            const content = map.sourcesContent?.[index];
-            if (!match || content == null) return;
+            if (!match || content === undefined) continue;
             const [, name, file] = match;
             const version = storeVersion(normalized, name!);
-            if (!version) return;
+            if (!version) continue;
             const entry = bundled.get(name!) ?? {
                 version,
                 files: new Map<string, string>(),
             };
             entry.files.set(file!, content);
             bundled.set(name!, entry);
-        });
+        }
     }
     const packages = new Map(
         [...bundled].map(([name, { version, files }]) => [
             name,
-            readPackage(name, version, files, repositoryRoot),
+            readPackage(name, version, files),
         ]),
     );
     vendored.set(packageRoot, packages);

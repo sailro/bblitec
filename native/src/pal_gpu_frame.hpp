@@ -302,11 +302,30 @@ public:
                 !options_->cluster_buffer_path.empty() || !options_->render_capture_path.empty());
     }
 
-    [[nodiscard]] bool pending() const {
-        return (!options_->screenshot_path.empty() && !screenshot_saved) ||
-               (!options_->id_buffer_path.empty() && !id_buffer_saved) ||
+    [[nodiscard]] bool screenshot_pending() const {
+        return !options_->screenshot_path.empty() && !screenshot_saved;
+    }
+
+    /** Whether a capture other than the screenshot is still waiting. */
+    [[nodiscard]] bool buffers_pending() const {
+        return (!options_->id_buffer_path.empty() && !id_buffer_saved) ||
                (!options_->cluster_buffer_path.empty() && !cluster_buffer_saved) ||
                (!options_->render_capture_path.empty() && !render_capture_saved);
+    }
+
+    [[nodiscard]] bool pending() const { return screenshot_pending() || buffers_pending(); }
+
+    /** Whether `frame` is the requested screenshot's, or a stopped engine's last (`conduct_frame`). */
+    [[nodiscard]] bool screenshot_frame_reached(long frame) const {
+        return frame >= options_->screenshot_frame || engine_stopped();
+    }
+
+    /**
+     * Whether the scene loops capture `frame`: its screenshot frame is
+     * reached, no topology update defers it, and the drains resolved.
+     */
+    [[nodiscard]] bool frame_capture_ready(long frame, bool topology_updated) const {
+        return screenshot_frame_reached(frame) && !topology_updated && drains_resolved();
     }
 
     /**

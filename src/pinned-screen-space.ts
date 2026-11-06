@@ -31,11 +31,21 @@ import type { ComposedPostProcess } from "./pinned-post-process.js";
 import { variantBindings } from "./pinned-pbr-variant-cpp.js";
 import { importPinnedModule } from "./pinned-shader-composer.js";
 import {
-    createRecordingDevice,
     RecordedTextureView,
     type RecordedRenderPass,
-    type Recorder,
 } from "./recording-device.js";
+import {
+    builtRenderTarget,
+    createRecordingEngine,
+    pinnedCameras,
+    pinnedRenderTargets,
+    plannedLayoutResource,
+    type PinnedTaskRecorder,
+    type PinnedTaskShapes,
+    type PlannedLayoutEntry,
+    type PlannedLayoutResource,
+    type RecordedLayoutEntry,
+} from "./recording-engine.js";
 
 /**
  * What one entry point decides, keyed by the entry point: the temporal
@@ -201,26 +211,17 @@ interface ScreenSpaceCompositionRequest {
  * there: the depth source, the lit source colour, one of the targets the
  * factory owns between its dedicated passes, or the temporal pair.
  */
-type ScreenSpaceTextureRole =
-    "depth" | "source-color" | "intermediate" | "history" | "stable";
-
-export interface ScreenSpaceTextureRef {
-    role: ScreenSpaceTextureRole;
-    /**
-     * For an intermediate, its index among the task's owned intermediates,
-     * which is the order the pin's passes first draw into them (`raw`,
-     * then ambient occlusion's two blur targets); zero otherwise.
-     */
-    index: number;
-}
-
-export interface ScreenSpaceStageBinding {
-    /** The WGSL `@binding` index, which is the pin's own group-0 slot. */
-    binding: number;
-    /** The WGSL identifier declared at that binding. */
-    name: string;
-    kind: "depth-texture" | "texture" | "sampler" | "uniform";
-}
+export type ScreenSpaceTextureRef =
+    | { role: "depth" | "source-color" | "history" | "stable" }
+    | {
+          role: "intermediate";
+          /**
+           * Its index among the task's owned intermediates, which is the
+           * order the pin's passes first draw into them (`raw`, then
+           * ambient occlusion's two blur targets).
+           */
+          index: number;
+      };
 
 /**
  * One dedicated pipeline the factory built -- a producer, a blur, the
@@ -238,7 +239,8 @@ export interface ComposedScreenSpaceStage {
     targetFormat: string;
     /** The byte size of the uniform buffer every pass drawing it binds. */
     uniformBytes: number;
-    bindings: readonly ScreenSpaceStageBinding[];
+    /** The pin's own group-0 layout, each entry under its WGSL identifier. */
+    bindings: readonly PlannedLayoutEntry[];
 }
 
 /** One dedicated pass the factory encodes, in its own order. */
@@ -300,108 +302,55 @@ const SOURCE_LABEL = "bblitec-sourceTexture";
 const DEPTH_LABEL = "bblitec-depthTexture";
 const TARGET_LABEL = "bblitec-targetTexture";
 
-/** One bind-group layout entry as the pin declares it. */
-interface RecordedLayoutEntry {
-    binding: number;
-    texture?: { sampleType?: string };
-    sampler?: unknown;
-    buffer?: unknown;
-}
-
-/**
- * The descriptor members this composition reads back off the recording:
- * a pipeline's module, entry points, layout and colour target, and a bind
- * group's resources. The device returns each handle as a copy of its
- * descriptor, so the pipeline the pin stores carries the layout handle and
- * the module handle it was built from.
- */
-interface ScreenSpaceShapes {
-    sampler: { magFilter?: string };
-    shaderModule: { code: string };
-    bindGroupLayout: { entries: readonly RecordedLayoutEntry[] };
-    pipelineLayout: {
-        bindGroupLayouts: readonly ScreenSpaceShapes["bindGroupLayout"][];
-    };
-    renderPipeline: {
-        layout: ScreenSpaceShapes["pipelineLayout"];
-        vertex: {
-            module: ScreenSpaceShapes["shaderModule"];
-            entryPoint: string;
-        };
-        fragment: {
-            entryPoint: string;
-            targets: readonly { format: string; blend?: unknown }[];
-        };
-    };
-    bindGroup: { entries: readonly { binding: number; resource: unknown }[] };
-}
-
-type ScreenSpaceRecorder = Recorder<ScreenSpaceShapes>;
+type ScreenSpaceShapes = PinnedTaskShapes;
+type ScreenSpaceRecorder = PinnedTaskRecorder;
 type RecordedPass = RecordedRenderPass<ScreenSpaceShapes>;
 
 /**
- * A device that answers every call the pin's `record()` and `execute()`
- * make and remembers what was asked. Anything the pin started calling
- * beyond this surface refuses rather than composing quietly differently,
- * which is the property that makes the recording safe.
+ * The calls the pin's `record()` and `execute()` make. Anything the pin
+ * started calling beyond this surface refuses rather than composing quietly
+ * differently, which is the property that makes the recording safe.
  */
-function recordingEngine(canvas: { width: number; height: number }): {
-    engine: unknown;
-    recorder: ScreenSpaceRecorder;
-} {
-    const { device, encoder, recorder } =
-        createRecordingDevice<ScreenSpaceShapes>({
-            producer: "screen-space",
-            device: [
-                "createShaderModule",
-                "createTexture",
-                "createBuffer",
-                "createSampler",
-                "createBindGroupLayout",
-                "createPipelineLayout",
-                "createRenderPipeline",
-                "createBindGroup",
-            ],
-            queue: ["writeBuffer"],
-            encoder: ["beginRenderPass"],
-            renderPass: [
-                "setPipeline",
-                "setBindGroup",
-                "draw",
-                "setViewport",
-                "setScissorRect",
-                "end",
-            ],
-        });
-    return {
-        recorder,
-        engine: {
-            canvas,
-            msaaSamples: 1,
-            useHighPrecisionMatrix: false,
-            useFloatingOrigin: false,
-            _device: device,
-            _currentEncoder: encoder,
-            _currentDelta: 0,
-            _cbs: [],
-        },
-    };
-}
+const SCREEN_SPACE_CONTRACT = {
+    producer: "screen-space",
+    device: [
+        "createShaderModule",
+        "createTexture",
+        "createBuffer",
+        "createSampler",
+        "createBindGroupLayout",
+        "createPipelineLayout",
+        "createRenderPipeline",
+        "createBindGroup",
+    ],
+    queue: ["writeBuffer"],
+    encoder: ["beginRenderPass"],
+    renderPass: [
+        "setPipeline",
+        "setBindGroup",
+        "draw",
+        "setViewport",
+        "setScissorRect",
+        "end",
+    ],
+} as const;
 
-function layoutKind(
-    entry: RecordedLayoutEntry,
-): ScreenSpaceStageBinding["kind"] {
-    if (entry.texture) {
-        return entry.texture.sampleType === "depth"
-            ? "depth-texture"
-            : "texture";
+/**
+ * What a layout entry binds, of the kinds the stages and passes carry: a
+ * sampled texture, a sampler, or the uniform block.
+ */
+function layoutResource(entry: RecordedLayoutEntry): PlannedLayoutResource {
+    const resource = plannedLayoutResource(entry, "Pinned screen-space task");
+    if (
+        resource.storageTexture ||
+        (resource.bufferType !== undefined && resource.bufferType !== "uniform")
+    ) {
+        throw new Error(
+            "Pinned screen-space task declared a bind group entry this port " +
+                "does not recognise.",
+        );
     }
-    if (entry.sampler) return "sampler";
-    if (entry.buffer) return "uniform";
-    throw new Error(
-        "Pinned screen-space task declared a bind group entry this port " +
-            "does not recognise.",
-    );
+    return resource;
 }
 
 /**
@@ -410,7 +359,7 @@ function layoutKind(
  */
 function assertRecordedShapes(recorder: ScreenSpaceRecorder): void {
     for (const layout of recorder.bindGroupLayouts) {
-        for (const entry of layout.entries) layoutKind(entry);
+        for (const entry of layout.entries) layoutResource(entry);
     }
     for (const pipeline of recorder.renderPipelines) {
         if (
@@ -463,20 +412,6 @@ function passBinding(
     return { pipeline, group: bound.group };
 }
 
-interface PinnedRenderTargetModule {
-    createRenderTarget: (descriptor: Record<string, unknown>) => unknown;
-    buildRenderTarget: (target: unknown, engine: unknown) => void;
-}
-
-interface PinnedCameraModule {
-    createArcRotateCamera: (
-        alpha: number,
-        beta: number,
-        radius: number,
-        target: { x: number; y: number; z: number },
-    ) => unknown;
-}
-
 interface PinnedScreenSpaceTask {
     enabled: boolean;
     record(): void;
@@ -503,16 +438,16 @@ function textureRole(
                     `'${view.texture.label}', which is not its depth source.`,
             );
         }
-        return { role: "depth", index: 0 };
+        return { role: "depth" };
     }
     if (view.texture.label === SOURCE_LABEL) {
-        return { role: "source-color", index: 0 };
+        return { role: "source-color" };
     }
     if (view.texture.label === `${name}-history`) {
-        return { role: "history", index: 0 };
+        return { role: "history" };
     }
     if (view.texture.label === `${name}-stable`) {
-        return { role: "stable", index: 0 };
+        return { role: "stable" };
     }
     const intermediate = intermediates.get(view.texture.label);
     if (intermediate !== undefined) {
@@ -551,7 +486,7 @@ function stageOf(
         ]),
     );
     const bindings = pipeline.layout.bindGroupLayouts[0]!.entries.map(
-        (entry): ScreenSpaceStageBinding => {
+        (entry): PlannedLayoutEntry => {
             const declared = names.get(entry.binding);
             if (declared === undefined) {
                 throw new Error(
@@ -562,7 +497,7 @@ function stageOf(
             return {
                 binding: entry.binding,
                 name: declared,
-                kind: layoutKind(entry),
+                ...layoutResource(entry),
             };
         },
     );
@@ -625,7 +560,7 @@ function stagePassFrom(
     }
     const textures = pipeline.layout.bindGroupLayouts[0]!.entries.map(
         (entry): ScreenSpaceTextureRef | undefined => {
-            const kind = layoutKind(entry);
+            const sampled = layoutResource(entry).sampleType !== undefined;
             const bound = group.entries.find(
                 (candidate) => candidate.binding === entry.binding,
             );
@@ -635,7 +570,7 @@ function stagePassFrom(
                         `${entry.binding} is not bound.`,
                 );
             }
-            if (kind !== "depth-texture" && kind !== "texture") {
+            if (!sampled) {
                 return undefined;
             }
             if (!(bound.resource instanceof RecordedTextureView)) {
@@ -686,7 +621,7 @@ function postProcessPassFrom(
         );
     }
     const uniformEntry = pipeline.layout.bindGroupLayouts[0]!.entries.find(
-        (entry) => layoutKind(entry) === "uniform",
+        (entry) => layoutResource(entry).bufferType !== undefined,
     );
     const uniform = recorder.buffers.find(
         (buffer) => buffer.label === `${name}-${suffix}-uniforms`,
@@ -811,25 +746,21 @@ export async function composeScreenSpaceTask(
             `Pinned module ${module} no longer exports ${request.intrinsic}.`,
         );
     }
-    const renderTargets = await importPinnedModule<PinnedRenderTargetModule>(
-        "engine/render-target.js",
-    );
-    const cameras = await importPinnedModule<PinnedCameraModule>(
-        "camera/arc-rotate.js",
-    );
+    const renderTargets = await pinnedRenderTargets();
+    const cameras = await pinnedCameras();
     const canvas = { width: 1280, height: 720 };
-    const { engine, recorder } = recordingEngine(canvas);
-    const built = (label: string, depth: boolean): unknown => {
-        const target = renderTargets.createRenderTarget({
+    const { engine, recorder } = createRecordingEngine(
+        SCREEN_SPACE_CONTRACT,
+        canvas,
+    );
+    const built = (label: string, depth: boolean): unknown =>
+        builtRenderTarget(renderTargets, engine, {
             lbl: label,
             format: "bgra8unorm",
             ...(depth ? { dFormat: "depth24plus-stencil8" } : {}),
             samples: 1,
             size: { width: canvas.width, height: canvas.height },
         });
-        renderTargets.buildRenderTarget(target, engine);
-        return target;
-    };
     const name = COMPOSITION_NAME;
     const config: Record<string, unknown> = {
         ...request.options,

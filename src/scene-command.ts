@@ -3,7 +3,6 @@
 // First, so the modules evaluated after it are compiled through the cache.
 import "./tooling/compile-cache.js";
 import { spawn, spawnSync } from "node:child_process";
-import { buildConditionsEnvironment } from "./pinned-build-conditions.js";
 import {
     oldNativeCacheEntries,
     oldResultCacheEntries,
@@ -162,6 +161,7 @@ import {
     type OfflineShaderTarget,
 } from "./build-options.js";
 import { resolveBrowserPath } from "./browser-path.js";
+import { compilerDistSource } from "./repository-root.js";
 import {
     dependencyPatchRecords,
     discoverDevelopmentTools,
@@ -177,7 +177,10 @@ import {
     type VcpkgManifestInstall,
 } from "./vcpkg-install.js";
 import { runConcurrently } from "./run-concurrently.js";
-import { COMPILER_NODE_FLAGS } from "./compiler-node-flags.js";
+import {
+    buildConditionsEnvironment,
+    COMPILER_NODE_FLAGS,
+} from "./compiler-node-flags.js";
 import { pinnedLabPublicUrl } from "./pinned-lab-public.js";
 import {
     historicalBuildCostMs,
@@ -289,7 +292,7 @@ async function runBuffered(
  *  options its registry entry declares. */
 function compilerArguments(scene: SceneDefinition): string[] {
     const arguments_ = [
-        resolve("dist/src/cli.js"),
+        join(compilerDistSource(), "cli.js"),
         ...(scene.page
             ? [
                   scene.page.path,
@@ -542,7 +545,7 @@ async function specializePhysicsDebugGeometry(
     const sourceAndAssets = contentFingerprint([
         ...manifest.inputs,
         join(scene.output, "assets"),
-        "dist/src",
+        compilerDistSource(),
         "package-lock.json",
         "upstream",
     ]);
@@ -665,7 +668,7 @@ async function parity(
                         },
                         (run) =>
                             run(process.execPath, [
-                                resolve("dist/src/scene-command.js"),
+                                join(compilerDistSource(), "scene-command.js"),
                                 "parity",
                                 scene.id,
                                 ...rest,
@@ -2687,7 +2690,7 @@ async function runSurvey(entry: string): Promise<boolean> {
     try {
         run(process.execPath, [
             ...COMPILER_NODE_FLAGS,
-            resolve("dist/src/cli.js"),
+            join(compilerDistSource(), "cli.js"),
             entryPath,
             "--survey",
             census,

@@ -873,9 +873,13 @@ export class HandleCollections {
      * Native loading retains that permutation separately from its flat mesh
      * table, preserving source order without allocating transform nodes.
      */
-    public assetFlattenedMeshesIterationTarget(
-        expression: ts.Expression,
-    ): { target: HandleCollectionTarget; asset: CompileAsset } | undefined {
+    public assetFlattenedMeshesIterationTarget(expression: ts.Expression):
+        | {
+              target: HandleCollectionTarget;
+              asset: CompileAsset;
+              container: number | undefined;
+          }
+        | undefined {
         const call = this.context.unwrap(expression);
         if (
             !ts.isCallExpression(call) ||
@@ -919,6 +923,7 @@ export class HandleCollections {
         return {
             target: this.sourceMeshWalk(owner, collection, descriptor),
             asset: owner.asset,
+            container: owner.assetContainer,
         };
     }
 

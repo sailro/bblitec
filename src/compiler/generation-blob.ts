@@ -1,13 +1,14 @@
 /**
  * `Blob` in a generation realm (`executed-application-function.ts`).
  *
- * Construction is the File API's own: the parts are copied when the Blob is
- * made (an ArrayBuffer or a view's bytes, a Blob's bytes, any other value as
- * its USVString in UTF-8) and the type is lowercased, or emptied when it holds
- * a character outside U+0020-U+007E. Nothing about it reads host state, so a
- * run that builds one builds the browser's bytes. Reading a Blob back is
- * asynchronous in the browser and is not carried: its readers throw, and the
- * bytes leave the realm only through `generationBlobBytes`.
+ * Construction is the File API's own: the parts are converted in order (an
+ * ArrayBuffer or a view as its bytes, a Blob as its bytes, any other value
+ * as its USVString in UTF-8), their bytes copied into the Blob once all are,
+ * and the type is lowercased, or emptied when it holds a character outside
+ * U+0020-U+007E. Nothing about it reads host state, so a run that builds one
+ * builds the browser's bytes. Reading a Blob back is asynchronous in the
+ * browser and is not carried: its readers throw, and the bytes leave the
+ * realm only through `generationBlobBytes`.
  */
 import { types } from "node:util";
 
@@ -17,16 +18,15 @@ function unsupported(member: string): never {
     throw new Error(`Blob.${member} is not carried at generation.`);
 }
 
-function partBytes(part: unknown): Buffer {
+/** A part's bytes, viewed in place: the Blob copies them all at once. */
+function partBytes(part: unknown): Uint8Array {
     if (part instanceof GenerationBlob) return contents.get(part)!.bytes;
-    if (types.isArrayBuffer(part)) return Buffer.from(new Uint8Array(part));
+    if (types.isArrayBuffer(part)) return new Uint8Array(part);
     if (ArrayBuffer.isView(part)) {
         if (types.isSharedArrayBuffer(part.buffer)) {
             throw new TypeError("A Blob part cannot view a SharedArrayBuffer.");
         }
-        return Buffer.from(
-            new Uint8Array(part.buffer, part.byteOffset, part.byteLength),
-        );
+        return new Uint8Array(part.buffer, part.byteOffset, part.byteLength);
     }
     if (types.isSharedArrayBuffer(part)) {
         throw new TypeError("A Blob part cannot be a SharedArrayBuffer.");

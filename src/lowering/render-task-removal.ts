@@ -218,8 +218,8 @@ export function renderTaskRemovalHeader(context: LoweringContext): string {
             // Each backend rebuilds its bucketed draw lists from
             // `render_meshes`; the batch state is the pin's optional
             // instancing collector, which no native target signature installs,
-            // and the binding lifecycle the dynamic PBR bindings plugin's,
-            // which no lowered API installs.
+            // and the binding lifecycle `enablePbrSsao` installs retires
+            // texture leases, which a backend's mesh draw states do not hold.
             if (node === bindings) return [];
             if (ts.isVariableStatement(node) && node.parent !== base.body)
                 return [];

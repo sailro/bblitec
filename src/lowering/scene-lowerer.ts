@@ -1930,7 +1930,7 @@ std::vector<std::uint32_t> mesh_cpu_indices(
     const Engine& engine,
     MeshHandle mesh) {
     const auto& record = ${recordAt("engine.meshes", "mesh")};
-    return MeshCpuStreamsView(record, record.cpu_streams ? nullptr : &engine.geometries.at(record.geometry)).indices.copy_raw();
+    return MeshCpuStreamsView(record, record.cpu_streams ? nullptr : &engine.geometries.at(record.geometry)).indices.copy();
 }
 
 js::Array<double> asset_root_world_matrix_array(Engine& engine, AssetHandle asset) {
@@ -2459,15 +2459,11 @@ MeshHandle clone_mesh_node(Engine& engine, MeshHandle mesh) {
             "and no reached scene clones a parented mesh.");
     }
     MeshRecord record = ${recordAt("engine.meshes", "mesh")};
-    if (record.parent_world) {
-        // The pin's clone starts a fresh world state with no parent: it
-        // keeps the imported mesh's local lanes and its own TRS but leaves
-        // the node hierarchy, root mirror included.
-        record.parent_world.reset();
-        record.detached_imported_mesh = true;
-        record.clockwise_front_face = false;
-        record.authored_clockwise_front_face = false;
-    }
+    // The pin's clone starts a fresh world state with no parent: it keeps
+    // the imported mesh's local lanes, its own TRS and its spread fields
+    // (the winding mark, the authored sign) but leaves the node hierarchy,
+    // root mirror included.
+    record.parent_world.reset();
     if (record.geometry < engine.geometries.size()) {
         ++engine.geometries[record.geometry].owners;
     }
@@ -3051,7 +3047,7 @@ ${
 
 ${
     options.taskBuild
-        ? `${lowerFrameGraphTaskBuild(this.context, this.renderTaskRecordSource(options), options.effectTasks ?? false, options.taskMethodSlots ?? false, options.ssaoTasks ?? false)}
+        ? `${lowerFrameGraphTaskBuild(this.context, this.renderTaskRecordSource(options), { effect: options.effectTasks, ssao: options.ssaoTasks }, options.taskMethodSlots ?? false)}
 `
         : ""
 }${options.liveTaskAdd ? this.liveTaskAddSource() : ""}${

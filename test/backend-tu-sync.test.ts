@@ -231,7 +231,7 @@ test("scene replacement restarts both backends without retaining a dead root", (
             shared,
             "bool request_renderer_restart_if_scene_set_changed(",
         ),
-        /engine\.renderer_restart_requested =\s*!composited_scenes\(engine\)\.empty\(\) \|\| engine\.offscreen_run != nullptr;/,
+        /engine\.renderer_restart_requested =\s*composited_root\(engine\) != nullptr \|\| engine\.offscreen_run != nullptr;/,
     );
 });
 
@@ -347,8 +347,8 @@ test("auxiliary surface scenes render in independent panes", () => {
         const backend = sceneBackendSource(file);
         assert.match(
             backend,
-            /scene_surface_extent\(\s*engine, \*overlay_scene, width, height\)/,
-            `${file} builds auxiliary projections at the full target aspect`,
+            /scene_surface_extent\(\s*engine, (?:graph_scene|overlay), width, height\)/,
+            `${file} builds each later scene's projection at the full target aspect`,
         );
         assert.match(
             backend,

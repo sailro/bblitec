@@ -11,7 +11,7 @@ import {
 } from "./compiler/symbols.js";
 import { sourceLocation } from "./source-location.js";
 import {
-    isLibraryTyping,
+    isInstalledPackageFile,
     libraryTypingFile,
 } from "./typescript-library-files.js";
 import {
@@ -231,7 +231,8 @@ export class PinnedProgram implements PinnedNames {
             if (sources.hasSource(path)) return sources.getSourceFile(path);
             const load = () =>
                 getSourceFile(path, languageVersion, onError, create);
-            return isLibraryTyping(path) && resolve(path) !== declarations
+            return isInstalledPackageFile(path) &&
+                resolve(path) !== declarations
                 ? libraryTypingFile(path, load)
                 : load();
         };

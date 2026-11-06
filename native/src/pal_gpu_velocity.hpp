@@ -9,6 +9,7 @@
 #include <optional>
 #include <span>
 #include <stdexcept>
+#include <string_view>
 #include <vector>
 #if BBLITE_PINNED_MATERIALS && BBLITE_PINNED_MATERIAL_VARIANTS
 #include <bblite/upstream/renderer_plan.hpp>
@@ -72,6 +73,8 @@ struct PinnedVelocityHistory {
         std::optional<upstream::PbrGeometryVelocity> pbr;
         std::optional<upstream::GeometryDeformationVelocity> deformation;
         std::array<float, 16> packed_world{};
+        /** The mesh's morph weights, read each frame into reused storage. */
+        std::vector<float> morph_weights;
 #endif
     };
     /**
@@ -180,6 +183,21 @@ update_pinned_velocity(PinnedVelocityHistory& history, MeshHandle mesh,
     return renderable;
 }
 
+#if BBLITE_GEOMETRY_VELOCITY
+/** The composed velocity arm's bindings: the PBR renderable's block and the deformation's previous pose. */
+inline constexpr std::string_view velocity_block_name = "gm";
+inline constexpr std::string_view previous_morph_name = "previousMorph";
+inline constexpr std::string_view previous_bones_name = "previousBoneSampler";
+
+/** A task's per-mesh velocity resources, grown to reach `mesh`. */
+template <typename Resources>
+Resources& mesh_velocity_resources(std::vector<Resources>& slots, MeshHandle mesh) {
+    if (slots.size() <= mesh.value)
+        slots.resize(static_cast<std::size_t>(mesh.value) + 1u);
+    return slots[mesh.value];
+}
+#endif
+
 #if BBLITE_PINNED_MATERIALS && BBLITE_PINNED_MATERIAL_VARIANTS
 /**
  * What a backend uploads for a PBR velocity renderable
@@ -219,14 +237,15 @@ inline void update_pbr_geometry_velocity(PinnedVelocityHistory& history, const S
         record.bone_matrices.empty() ? std::span<const float>{}
                                      : std::span<const float>(record.bone_matrices.data()->data(),
                                                               record.bone_matrices.size() * 16u);
-    std::vector<float> weights;
-#if BBLITE_GPU_MORPH_STORAGE
-    if (record.morph_targets_attached && record.geometry < engine.geometries.size())
-        weights = morph_weight_values(engine.geometries[record.geometry], record);
-#endif
     bool rebuilt = false;
     PinnedVelocityHistory::Renderable& renderable =
         sync_pinned_velocity(history, item.mesh, item.source_identity, rebuilt);
+    std::vector<float>& weights = renderable.morph_weights;
+    weights.clear();
+#if BBLITE_GPU_MORPH_STORAGE
+    if (record.morph_targets_attached && record.geometry < engine.geometries.size())
+        morph_weight_values(engine.geometries[record.geometry], record, weights);
+#endif
     if (rebuilt || !renderable.pbr) {
         renderable.pbr = upstream::create_pbr_geometry_velocity(world, tracked);
         renderable.packed_world = world;

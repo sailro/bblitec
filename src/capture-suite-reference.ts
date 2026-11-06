@@ -273,14 +273,16 @@ function pinnedPackageImportMapScript(
     conditions: readonly string[] | undefined,
 ): string {
     const packageUrl = pinnedBrowserEntryUrl.replace(/lib\/index\.js$/, "");
-    const { packageRoot } = upstreamSource().sharedUpstreamStore();
     const imports = Object.fromEntries(
-        [...packageImportTargets(packageRoot, conditions)].map(
-            ([specifier, target]) => [
-                specifier,
-                packageUrl + target.replace(/^\.\//, ""),
-            ],
-        ),
+        [
+            ...packageImportTargets(
+                upstreamSource().pinnedPackageRoot(),
+                conditions,
+            ),
+        ].map(([specifier, target]) => [
+            specifier,
+            packageUrl + target.replace(/^\.\//, ""),
+        ]),
     );
     return `<script type="importmap">${JSON.stringify({ scopes: { [packageUrl]: imports } })}</script>\n`;
 }

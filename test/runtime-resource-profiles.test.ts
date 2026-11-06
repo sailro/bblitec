@@ -602,7 +602,6 @@ test("Node instance layout without a pool does not reach thin synchronization", 
         const headers = featureMacroHeaders({
             features: result.manifest.features,
             imageCodecs: [],
-            rightHanded: false,
         });
         assert.match(
             headers.get("bblite/features/thin_instances.hpp")!,
@@ -613,4 +612,29 @@ test("Node instance layout without a pool does not reach thin synchronization", 
             new RegExp(`#define BBLITE_GPU_RETIREMENT ${retirement ? 1 : 0}`),
         );
     }
+});
+
+test("a static loop's callback returns early without counting its constructions", () => {
+    const result =
+        compileSource(`import {createEngine,createSceneContext,createBox,addToScene,removeFromScene,registerScene,startEngine} from "@babylonjs/lite";
+import type { Mesh } from "@babylonjs/lite";
+async function main(){
+    const engine=await createEngine(document.getElementById("renderCanvas") as HTMLCanvasElement);
+    const scene=createSceneContext(engine);
+    let overlays:Mesh[]=[];
+    let enabled=true;
+    async function rebuild():Promise<void>{
+        if(!enabled)return;
+        for(const mesh of overlays)removeFromScene(scene,mesh);
+        overlays=[];
+        const count=Number((document.getElementById("count") as HTMLInputElement).value);
+        for(let i=0;i<count;i++){const box=createBox(engine,1);overlays.push(box);addToScene(scene,box);}
+        await registerScene(scene);
+    }
+    for(const id of ["a","b"])document.getElementById(id)!.addEventListener("click",()=>{enabled=id==="a";void rebuild();});
+    await rebuild();
+    await startEngine(engine);
+}
+void main();`);
+    assert.match(result.cpp, /bbl::upstream::begin_scene_mesh_profile\(/);
 });

@@ -643,6 +643,7 @@ export async function packagedAreaLightImage(
             version: "1",
             module: moduleIdentity(import.meta.url),
             browser: true,
+            buildConditions: true,
             parameters: {
                 loaderOptions: request.loaderOptions,
                 bake: moduleIdentity(

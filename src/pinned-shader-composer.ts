@@ -450,6 +450,35 @@ export async function geometryAttachmentTypes(
     });
 }
 
+/**
+ * A geometry attachment's pinned default colour format
+ * (`GEOMETRY_TEXTURE_DESCRIPTIONS[type].defaultFormat`), synchronously, for
+ * the compiler and composition alike.
+ */
+export function geometryAttachmentDefaultFormat(name: string): string {
+    const types = requirePinnedModule<{
+        GeometryTextureType: Record<string, number>;
+        GEOMETRY_TEXTURE_DESCRIPTIONS: readonly { defaultFormat: string }[];
+    }>("frame-graph/geometry-types.js");
+    const index = types.GeometryTextureType[name];
+    const description =
+        index === undefined
+            ? undefined
+            : types.GEOMETRY_TEXTURE_DESCRIPTIONS[index];
+    if (!description)
+        throw new Error(`Pinned geometry types have no '${name}' description.`);
+    return description.defaultFormat;
+}
+
+/**
+ * The packaged module `importPinnedModule` loads for a pinned source: its
+ * own facade, which re-exports a module Vite moved into a shared chunk
+ * under its public names.
+ */
+export function pinnedSourceModule(sourcePath: string): string {
+    return sourcePath.replace(/^src\//, "").replace(/\.ts$/, ".js");
+}
+
 const augmentedModules = new Map<string, Promise<unknown>>();
 
 /**

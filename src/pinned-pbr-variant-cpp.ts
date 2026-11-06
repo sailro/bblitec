@@ -1525,7 +1525,8 @@ export interface PbrMaterialStateRow {
     blend: boolean;
     pluginSignature: number;
     baseColorFactorWritten: boolean;
-    bentNormalTexture: boolean;
+    /** Whether the record holds a bent normal texture, keyed under `enableBentNormals`. */
+    bentNormalTexture?: boolean;
     row: number;
 }
 
@@ -2191,15 +2192,15 @@ ${cpp.table("std::uint32_t", "pbr_scene_material_indices", scenePbrMaterialIndic
  * \`plugins\`) the row composed for it.
  */
 struct PbrMaterialStateRow {
-    std::uint32_t source_row;
-    bool blend;
-    std::uint8_t plugin_signature;
-    bool base_color_factor_written;
-    /** The record holds a bent normal texture. */
-    bool bent_normal_texture;
-    std::uint32_t row;
+    std::uint32_t source_row = 0;
+    bool blend = false;
+    std::uint8_t plugin_signature = 0;
+    bool base_color_factor_written = false;
+    /** The record holds a bent normal texture; unkeyed without \`enableBentNormals\`. */
+    std::optional<bool> bent_normal_texture;
+    std::uint32_t row = 0;
 };
-${cpp.table("PbrMaterialStateRow", "pbr_material_state_rows", materialStateRows.length, materialStateRows.map((state) => `    {${state.sourceRow}u, ${state.blend}, ${state.pluginSignature}u, ${state.baseColorFactorWritten}, ${state.bentNormalTexture}, ${state.row}u},`).join("\n"))}
+${cpp.table("PbrMaterialStateRow", "pbr_material_state_rows", materialStateRows.length, materialStateRows.map((state) => `    {${state.sourceRow}u, ${state.blend}, ${state.pluginSignature}u, ${state.baseColorFactorWritten}, ${state.bentNormalTexture ?? "std::nullopt"}, ${state.row}u},`).join("\n"))}
 
 ${pbrMaterialBlendsCpp(context)}
 

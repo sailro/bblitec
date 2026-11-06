@@ -84,6 +84,12 @@ struct ShaderPassMatrices {
     const CameraRecord* camera = nullptr;
     double target_width = 0.0, target_height = 0.0;
     bool shadow_camera_facade = false;
+    /**
+     * The aspect the pass packed its scene block with, which the pin's
+     * dynamic bindings publish to `_prepareDraw` (`_setProjectionAspect`);
+     * empty for a pass that packs none.
+     */
+    std::optional<double> projection_aspect{};
 };
 
 /**
@@ -153,6 +159,8 @@ struct CameraPassMatrices {
         matrices.camera = camera;
         matrices.target_width = target_width;
         matrices.target_height = target_height;
+        if (camera)
+            matrices.projection_aspect = aspect;
         return matrices;
     }
 };

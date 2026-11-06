@@ -55,6 +55,11 @@ inline WGPUTextureFormat depth_texture_format(const RenderTargetRecord& record) 
     throw std::runtime_error("Unrepresented depth texture format.");
 }
 
+/** A front face in this API's enum. */
+inline WGPUFrontFace dawn_front_face(bool clockwise) {
+    return clockwise ? WGPUFrontFace_CW : WGPUFrontFace_CCW;
+}
+
 /**
  * The pin's depth compare in this API's enum.
  *

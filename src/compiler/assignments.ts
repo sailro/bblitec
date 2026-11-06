@@ -979,7 +979,7 @@ function emitScreenSpaceSettingAssignment(
     if (setting === "enabled") {
         context.emit({
             kind: "expression",
-            code: `${record}.enabled = ${context.compileBoolean(expression.right)};`,
+            code: `${record}.enabled = ${context.conditions.compileCondition(expression.right)};`,
         });
         return true;
     }
@@ -1001,8 +1001,8 @@ function emitScreenSpaceSettingAssignment(
 }
 
 /**
- * Writes an SSAO task's live settings, or its temporal, half-resolution and
- * motion-pruning records'. The pin samples each inside `execute`, so a write
+ * Writes an SSAO task's live settings, or a record's it publishes
+ * (`SSAO_RECORD_FIELDS`). The pin samples each inside `execute`, so a write
  * is the record field the generated frame function reads; a write of a
  * setting that selects programs (quality, normal input, temporal
  * reconstruction, pruning) makes composition build every value's mode.
@@ -1015,127 +1015,90 @@ function emitSsaoSettingAssignment(
     owner: Value,
 ): boolean {
     const manifest = owner.ssaoTask;
-    if (
-        !manifest ||
-        (owner.kind !== "task" &&
-            owner.kind !== "ssao-temporal" &&
-            owner.kind !== "ssao-half-resolution" &&
-            owner.kind !== "ssao-motion-pruning")
-    ) {
-        return false;
-    }
+    const record = ssaoRecordOf(owner);
+    if (!manifest || !record) return false;
     const engine = context.requireEngine(owner, expression);
     requireSimpleAssignment(context, expression, "SSAO setting");
     const refuse = (why: string): never =>
         context.fail(
             left,
-            `SSAO ${owner.kind === "task" ? "task" : owner.kind} '${setting}' write is not lowered: ${why}.`,
+            `SSAO ${record} '${setting}' write is not lowered: ${why}.`,
         );
-    if (owner.kind === "task") {
-        const record = `${recordAt(`${engine}.frame_tasks`, owner.cpp)}.ssao`;
-        if (setting === "enabled") {
-            context.emit({
-                kind: "expression",
-                code: `${record}.enabled = ${context.conditions.compileCondition(expression.right)};`,
-            });
-            return true;
-        }
-        if (setting === "radius" || setting === "intensity") {
-            context.emit({
-                kind: "expression",
-                code: `${record}.${setting} = ${context.compileNumber(expression.right, "double")};`,
-            });
-            return true;
-        }
-        if (setting === "quality") {
-            context.sceneManifest.recordSsaoLiveSetting("quality", manifest);
-            context.emit({
-                kind: "expression",
-                code: `${record}.quality = ${context.dataLowerer.compileForSink(expression.right, { kind: "string" })};`,
-            });
-            return true;
-        }
-        if (setting === "normalTexture") {
-            const right = context.unwrap(expression.right);
-            const cleared =
-                right.kind === ts.SyntaxKind.NullKeyword ||
-                (ts.isIdentifier(right) && right.text === "undefined");
-            const normal = cleared
-                ? undefined
-                : compileNormalInput(
-                      context,
-                      expression.right,
-                      "SSAO task normalTexture",
-                  );
-            if (normal) {
-                const known =
-                    context.sceneManifest.ssaoNormalAttachment(manifest);
-                if (known !== undefined && known !== normal.attachment) {
-                    return refuse(
-                        `the task's normal input is its ${known} attachment, and one plan composes one normal format`,
-                    );
-                }
-                context.sceneManifest.recordSsaoNormalAttachment(
-                    normal.attachment,
-                    manifest,
+    const native = ssaoRecordCpp(record, engine, owner.cpp);
+    if (record === "task" && setting === "normalTexture") {
+        const normal = context.symbols.isNullishLiteral(
+            context.unwrap(expression.right),
+        )
+            ? undefined
+            : compileNormalInput(
+                  context,
+                  expression.right,
+                  "SSAO task normalTexture",
+              );
+        if (normal) {
+            const known = context.sceneManifest.ssaoNormalAttachment(manifest);
+            if (known !== undefined && known !== normal.attachment) {
+                return refuse(
+                    `the task's normal input is its ${known} attachment, and one plan composes one normal format`,
                 );
             }
-            context.sceneManifest.recordSsaoLiveSetting("normal", manifest);
-            context.emit({
-                kind: "expression",
-                code: `${record}.normal = ${normal ? normal.cpp : "std::nullopt"};`,
-            });
-            return true;
+            context.sceneManifest.recordSsaoNormalAttachment(
+                normal.attachment,
+                manifest,
+            );
         }
-        return refuse("the task publishes no such setting");
-    }
-    if (owner.kind === "ssao-temporal") {
-        if (setting === "historySamples") {
-            context.emit({
-                kind: "expression",
-                code: `bbl::ssao_temporal_settings(${engine}, ${owner.cpp}).history_samples = ${context.compileNumber(expression.right, "double")};`,
-            });
-            return true;
-        }
-        if (setting === "enabled") {
-            context.sceneManifest.recordSsaoLiveSetting("temporal", manifest);
-            context.emit({
-                kind: "expression",
-                code: `bbl::ssao_temporal_settings(${engine}, ${owner.cpp}).enabled = ${context.conditions.compileCondition(expression.right)};`,
-            });
-            return true;
-        }
-        return refuse("the record publishes no such setting");
-    }
-    if (owner.kind === "ssao-motion-pruning") {
-        if (setting === "enabled") {
-            context.sceneManifest.recordSsaoLiveSetting("pruning", manifest);
-            context.emit({
-                kind: "expression",
-                code: `bbl::ssao_motion_pruning_settings(${engine}, ${owner.cpp}).enabled = ${context.conditions.compileCondition(expression.right)};`,
-            });
-            return true;
-        }
-        return refuse("the record publishes no such setting");
-    }
-    if (setting === "enabled") {
+        context.sceneManifest.recordSsaoLiveSetting("normal", manifest);
         context.emit({
             kind: "expression",
-            code: `bbl::ssao_half_resolution_settings(${engine}, ${owner.cpp}).enabled = ${context.conditions.compileCondition(expression.right)};`,
+            code: `${native}.normal = ${normal ? normal.cpp : "std::nullopt"};`,
         });
         return true;
     }
-    return refuse("the record publishes no such setting");
+    const field = SSAO_RECORD_FIELDS[record][setting];
+    if (!field) {
+        return refuse(
+            `the ${record === "task" ? "task" : "record"} publishes no such setting`,
+        );
+    }
+    if (field.derived) return refuse("the pin derives it");
+    if (field.live)
+        context.sceneManifest.recordSsaoLiveSetting(field.live, manifest);
+    const value =
+        field.kind === "boolean"
+            ? context.conditions.compileCondition(expression.right)
+            : field.kind === "number"
+              ? context.compileNumber(expression.right, "double")
+              : context.dataLowerer.compileForSink(expression.right, {
+                    kind: "string",
+                });
+    context.emit({
+        kind: "expression",
+        code: `${native}.${field.native} = ${value};`,
+    });
+    return true;
 }
 
 /**
- * `task[key] = value` on an SSAO task's records: the setting write its
- * property spelling makes, for a key generation knows, or for each name of
- * the key's string-literal type (`for (const name of ["radius",
- * "intensity"] as const)`), selected by the key at run time. The key
- * evaluates once, before the value.
+ * A member write by name, for the owners whose writer takes the member as a
+ * name rather than its property access: an SSAO task and its records.
  */
-function emitStaticKeySsaoSettingAssignment(
+function emitNamedMemberAssignment(
+    context: AssignmentContext,
+    expression: ts.BinaryExpression,
+    member: string,
+    left: ts.Expression,
+    owner: Value,
+): boolean {
+    return emitSsaoSettingAssignment(context, expression, member, left, owner);
+}
+
+/**
+ * `owner[key] = value`: the write the member's name makes, for a key
+ * generation knows, or for each name of the key's string-literal type
+ * (`for (const name of ["radius", "intensity"] as const)`), selected by the
+ * key at run time. The key evaluates once, before the value.
+ */
+function emitComputedKeyAssignment(
     context: AssignmentContext,
     expression: ts.BinaryExpression,
 ): boolean {
@@ -1146,10 +1109,10 @@ function emitStaticKeySsaoSettingAssignment(
     )
         return false;
     const owner = context.bindings.lookupOptional(left.expression);
-    if (!owner?.ssaoTask) return false;
+    if (!owner || ssaoRecordOf(owner) === undefined) return false;
     const known = context.compileValue(left.argumentExpression).staticString;
     if (known !== undefined)
-        return emitSsaoSettingAssignment(
+        return emitNamedMemberAssignment(
             context,
             expression,
             known,
@@ -1163,10 +1126,10 @@ function emitStaticKeySsaoSettingAssignment(
     if (names.length === 0 || names.some((name) => name === undefined)) {
         return context.fail(
             left.argumentExpression,
-            "An SSAO setting written by a computed key needs a key of string-literal type.",
+            "A member written by a computed key needs a key of string-literal type.",
         );
     }
-    const key = context.allocateTemporaryCppName("ssao_setting");
+    const key = context.allocateTemporaryCppName("member_key");
     context.emit({
         kind: "declaration",
         type: "const std::string",
@@ -1185,7 +1148,7 @@ function emitStaticKeySsaoSettingAssignment(
                 code: `if (${key} == ${context.cppString(name!)}) {`,
             });
             context.increaseIndent();
-            emitSsaoSettingAssignment(context, expression, name!, left, owner);
+            emitNamedMemberAssignment(context, expression, name!, left, owner);
             context.decreaseIndent();
             context.emit({ kind: "close", code: "}" });
         }
@@ -1470,10 +1433,17 @@ export function emitUnobservedErrorPropertyWrite(
         !propertyNeverRead(context.program, context.checker, left.name.text)
     )
         return false;
+    // Only an Error owner answers the probe: any other receiver's
+    // evaluation is left to the write that owns it.
+    const isError = (owner: Value | undefined): owner is Value =>
+        !!owner?.nativeError || owner?.dataType?.kind === "error";
     const owner = unlessRefused(() =>
-        context.probeEmission(() => context.compileValue(left.expression)),
+        context.probeEmission(
+            () => context.compileValue(left.expression),
+            isError,
+        ),
     );
-    if (!owner?.nativeError && owner?.dataType?.kind !== "error") return false;
+    if (!isError(owner)) return false;
     context.emitDiscardedValue(context.compileValue(expression.right));
     return true;
 }
@@ -1538,7 +1508,7 @@ export function emitPropertyAssignment(
         // A retained element's member by a static key (`el.dataset["k"]`)
         // is the UI owner's, as its property spelling is.
         if (context.emitUiPropertyAssignment(expression)) return;
-        if (emitStaticKeySsaoSettingAssignment(context, expression)) return;
+        if (emitComputedKeyAssignment(context, expression)) return;
         context.fail(
             expression.left,
             "Only property assignments are supported.",
@@ -1889,7 +1859,7 @@ export function emitPropertyAssignment(
     }
     if (
         ts.isIdentifier(left.expression) &&
-        emitSsaoSettingAssignment(
+        emitNamedMemberAssignment(
             context,
             expression,
             left.name.text,
@@ -2850,7 +2820,12 @@ import {
 import { noteCameraRecordWrite } from "./intrinsics/camera.js";
 import { absentReceiverMessage, cameraRecordField } from "./properties.js";
 import { compileRenderTextureValue } from "./intrinsics/engine-options.js";
-import { compileNormalInput } from "./intrinsics/ssao-options.js";
+import {
+    compileNormalInput,
+    SSAO_RECORD_FIELDS,
+    ssaoRecordCpp,
+    ssaoRecordOf,
+} from "./intrinsics/ssao-options.js";
 import { postProcessEffect } from "../post-process-effects.js";
 import {
     SCREEN_SPACE_SCALAR_SETTINGS,
@@ -2868,7 +2843,12 @@ import {
     sceneNodeTransformDescriptor,
 } from "../scene-node-transform-descriptor.js";
 import { lightKindFacts } from "./types.js";
-import type { Feature, LightKind, Value } from "./types.js";
+import type { AssetMeshWalk, Feature, LightKind, Value } from "./types.js";
+import {
+    setPbrTextureCpp,
+    storedTextureCpp,
+    type PbrTextureSlot,
+} from "./pbr-texture-slots.js";
 import {
     absenceOfNull,
     staticKeyOf,
@@ -4543,119 +4523,114 @@ function emitPbrAlphaBlendAssignment(
 }
 
 /**
- * The `bbl::FileTexture` a PBR texture-slot write stores: a loaded, solid or
- * stored texture. A pixels texture refuses rather than binding a slot the
- * setter cannot fill.
+ * The PBR texture props an assignment writes (`createPbrMaterial`'s), by the
+ * native slot each fills, and when the write is admitted: before scene
+ * registration, also definitely, or live.
  */
-function pbrFileTexture(
+const PBR_TEXTURE_SLOT_PROPS: ReadonlyMap<
+    string,
+    { slot: PbrTextureSlot; setup: "registration" | "definite" | "live" }
+> = new Map([
+    // Every PBR variant binds the base-color slot (an absent texture binds
+    // the factor's fallback texel), so the swap composes nothing.
+    ["baseColorTexture", { slot: "base_color", setup: "registration" }],
+    // The pinned PBR fragment always samples its ORM texture.
+    ["ormTexture", { slot: "orm", setup: "definite" }],
+    // Rebound live: a loaded material's composed variant carries the slot.
+    ["occlusionTexture", { slot: "occlusion", setup: "live" }],
+    // Composition input: the IBL extension's `detect` reads its presence
+    // when the material is first built (bent-normal-fragment.ts).
+    ["bentNormalTexture", { slot: "bent_normal", setup: "registration" }],
+]);
+
+/**
+ * Whether `expression`'s statement runs for every renderable `walk` visits:
+ * directly in the body of a walk that definitely runs, which holds no
+ * statement that skips an element.
+ */
+function runsForEveryRenderable(
+    expression: ts.Expression,
+    walk: AssetMeshWalk,
+): boolean {
+    const body = walk.definiteBody;
+    if (!body) return false;
+    const statements = ts.isBlock(body) ? body.statements : [body];
+    const skips = (node: ts.Node): boolean =>
+        ts.isContinueStatement(node) ||
+        ts.isReturnStatement(node) ||
+        ts.isThrowStatement(node) ||
+        (!ts.isFunctionLike(node) &&
+            ts.forEachChild(node, (child) => skips(child) || undefined) ===
+                true);
+    return (
+        ts.isExpressionStatement(expression.parent) &&
+        statements.includes(expression.parent) &&
+        !skips(body)
+    );
+}
+
+/**
+ * `pbr.<texture prop> = texture`: the record's slot takes the texture,
+ * whatever its storage. A bent normal texture's presence is composition
+ * input, so its write reaches composition as a state of the materials it
+ * can reach.
+ */
+function emitPbrTextureSlotAssignment(
     context: AssignmentContext,
-    target: Value,
-    expression: ts.BinaryExpression,
-    property: string,
-): { texture: Value; file: string } {
+    state: TargetPropertyAssignment,
+): boolean {
+    const { expression, left, target, property } = state;
+    const prop = PBR_TEXTURE_SLOT_PROPS.get(property);
+    if (target.kind !== "material" || !prop) return false;
+    requireSimpleAssignment(context, expression, `PBR ${property}`);
+    if (
+        prop.setup !== "live" &&
+        (context.hasRegisteredScene() ||
+            context.engineLifecycle.engineHasStarted() ||
+            (prop.setup === "definite" &&
+                context.isRuntimeResourceConstruction()))
+    ) {
+        context.fail(
+            expression,
+            `PBR ${property} requires static setup before scene registration: the pin binds it when the material is first built.`,
+        );
+    }
+    if (materialFamily(context, target, left.expression) !== "pbr")
+        context.fail(left, `${property} requires a known PBR material.`);
+    if (prop.slot === "occlusion" && !target.assetPbrMaterial) {
+        context.fail(
+            left,
+            "Replacing occlusionTexture is lowered for a PBR material read from a loaded asset, whose composed variant already carries that slot.",
+        );
+    }
+    // The setter is the PBR factory's own (createPbrMaterial's texture props).
+    context.reachFeature("material:pbr", expression);
     const texture = context.compileValue(expression.right);
     context.expectKind(texture, "texture", expression.right);
     context.expectSameEngine(target, texture, expression);
-    // A texture stored as data is the `StoredTexture` variant.
-    const stored =
-        texture.dataType?.kind === "handle" &&
-        texture.dataType.handle === "texture" &&
-        texture.textureStorage === undefined &&
-        !texture.textureFile;
-    const file =
-        texture.textureStorage === "solid"
-            ? `bbl::solid_texture_file(${texture.cpp})`
-            : texture.textureFile || texture.textureStorage === "file"
-              ? texture.cpp
-              : stored
-                ? `std::get<bbl::FileTexture>(${texture.cpp})`
-                : context.fail(
-                      expression.right,
-                      `PBR ${property} takes a loaded or solid texture; received ${texture.textureStorage ?? "an unknown"} storage.`,
-                  );
-    return { texture, file };
-}
-
-/**
- * `pbr.bentNormalTexture = texture` before scene registration
- * (bent-normal-fragment.ts). The texture's presence is composition input:
- * the IBL extension's `detect` reads it when the material is first built,
- * so each write reaches composition as a state of the materials it can
- * reach, and the record holds the texture the extension's `bind` binds.
- */
-function emitBentNormalTextureAssignment(
-    context: AssignmentContext,
-    state: TargetPropertyAssignment,
-): boolean {
-    const { expression, left, target, property } = state;
-    if (target.kind !== "material" || property !== "bentNormalTexture")
-        return false;
-    requireSimpleAssignment(context, expression, "PBR bentNormalTexture");
-    if (
-        context.hasRegisteredScene() ||
-        context.engineLifecycle.engineHasStarted()
-    ) {
-        context.fail(
-            expression,
-            "PBR bentNormalTexture requires static setup before scene registration: the pin composes it when the material is first built.",
-        );
-    }
-    if (materialFamily(context, target, left.expression) !== "pbr")
-        context.fail(left, "bentNormalTexture requires a known PBR material.");
-    // The setter is emitted into the PBR material factory's unit.
-    context.reachFeature("material:pbr", expression);
-    const { texture, file } = pbrFileTexture(
+    const stored = storedTextureCpp(
         context,
-        target,
-        expression,
+        texture,
+        expression.right,
         property,
     );
-    // The record takes a copy, so a later write to the texture object
-    // would not reach the bound one.
-    context.boundPixelsTextures.add(texture.cpp);
-    context.sceneManifest.recordPbrStateWrite(target, {
-        bentNormalTexture: true,
-    });
-    context.emit({
-        kind: "expression",
-        code: `bbl::set_pbr_bent_normal_texture(${context.requireEngine(target, expression)}, ${target.cpp}, ${file});`,
-    });
-    return true;
-}
-
-/**
- * `pbr.baseColorTexture = texture` before scene registration. Every PBR
- * variant binds the base-color slot (an absent texture binds the factor's
- * fallback texel), so the swap composes nothing; registration binds the
- * record's slot.
- */
-function emitBaseColorTextureAssignment(
-    context: AssignmentContext,
-    state: TargetPropertyAssignment,
-): boolean {
-    const { expression, left, target, property } = state;
-    if (target.kind !== "material" || property !== "baseColorTexture")
-        return false;
-    requireSimpleAssignment(context, expression, "PBR baseColorTexture");
-    if (
-        context.hasRegisteredScene() ||
-        context.engineLifecycle.engineHasStarted()
-    ) {
-        context.fail(
-            expression,
-            "PBR baseColorTexture replacement requires static setup before scene registration; live texture rebinding is not represented.",
-        );
+    if (prop.slot === "bent_normal") {
+        // A write every material of its target definitely takes before its
+        // first build composes that state alone.
+        const definite =
+            target.scenePbrMaterialIndex !== undefined
+                ? !context.isInRuntimeControlFlow() && !target.runtimeIteration
+                : target.assetWholeMeshList !== undefined &&
+                  runsForEveryRenderable(expression, target.assetWholeMeshList);
+        context.sceneManifest.recordPbrStateWrite(target, {
+            bentNormalTexture: definite ? "definite" : true,
+        });
     }
-    if (materialFamily(context, target, left.expression) !== "pbr")
-        context.fail(left, "baseColorTexture requires a known PBR material.");
-    // The setter is the PBR factory's own (createPbrMaterial's texture props).
-    context.reachFeature("material:pbr", expression);
-    const { file } = pbrFileTexture(context, target, expression, property);
     const engine = context.requireEngine(target, expression);
     if (isPbrMaterialValue(target)) {
         context.emit({
             kind: "expression",
-            code: `bbl::set_material_base_color_file(${engine}, ${target.cpp}, ${file});`,
+            code: setPbrTextureCpp(engine, target.cpp, prop.slot, stored),
         });
         return true;
     }
@@ -4669,80 +4644,9 @@ function emitBaseColorTextureAssignment(
     });
     context.emit({
         kind: "expression",
-        code: `if (!${recordAt(`${engine}.materials`, material)}.standard_material) bbl::set_material_base_color_file(${engine}, ${material}, ${file});`,
+        code: `if (!${recordAt(`${engine}.materials`, material)}.standard_material) ${setPbrTextureCpp(engine, material, prop.slot, stored)}`,
     });
     return true;
-}
-
-function emitOrmTextureAssignment(
-    context: AssignmentContext,
-    state: TargetPropertyAssignment,
-): boolean {
-    const { expression, left, target, property } = state;
-    if (target.kind === "material" && property === "ormTexture") {
-        requireSimpleAssignment(context, expression, "PBR ormTexture");
-        if (
-            context.hasRegisteredScene() ||
-            context.engineLifecycle.engineHasStarted() ||
-            context.isRuntimeResourceConstruction()
-        ) {
-            context.fail(
-                expression,
-                "PBR ormTexture replacement requires static setup before scene registration; live texture rebinding is not represented.",
-            );
-        }
-        if (!isPbrMaterialValue(target)) {
-            context.fail(left, "ormTexture requires a known PBR material.");
-        }
-        const texture = context.compileValue(expression.right);
-        context.expectKind(texture, "texture", expression.right);
-        context.expectSameEngine(target, texture, expression);
-        if (texture.textureStorage !== "solid")
-            context.fail(
-                expression.right,
-                "PBR ormTexture replacement currently requires a solid texture.",
-            );
-        context.emit({
-            kind: "expression",
-            code: `bbl::set_material_orm_file(${context.requireEngine(target, expression)}, ${target.cpp}, bbl::solid_texture_file(${texture.cpp}));`,
-        });
-        return true;
-    }
-    return false;
-}
-
-function emitOcclusionTextureAssignment(
-    context: AssignmentContext,
-    state: TargetPropertyAssignment,
-): boolean {
-    const { expression, left, target, property } = state;
-    if (target.kind === "material" && property === "occlusionTexture") {
-        requireSimpleAssignment(context, expression, "PBR occlusionTexture");
-        if (!target.assetPbrMaterial) {
-            context.fail(
-                left,
-                "Replacing occlusionTexture is lowered for a PBR material read from a loaded asset, whose composed variant already carries that slot.",
-            );
-        }
-        const texture = context.compileValue(expression.right);
-        context.expectKind(texture, "texture", expression.right);
-        if (texture.textureStorage !== "solid") {
-            context.fail(
-                expression.right,
-                "Reached PBR occlusionTexture replacement uses createSolidTexture2D.",
-            );
-        }
-        context.expectSameEngine(target, texture, expression);
-        context.emit({
-            kind: "expression",
-            code:
-                `bbl::set_pbr_occlusion_solid_texture(` +
-                `${context.requireEngine(target, expression)}, ` +
-                `${target.cpp}, ${texture.cpp});`,
-        });
-        return true;
-    }
-    return false;
 }
 
 function emitDiffuseTextureAssignment(
@@ -5096,11 +5000,10 @@ const targetPropertyHandlers2 = new EmissionMap<
     string,
     (context: AssignmentContext, state: TargetPropertyAssignment) => boolean
 >([
-    ["ormTexture", emitOrmTextureAssignment],
+    ...[...PBR_TEXTURE_SLOT_PROPS.keys()].map(
+        (property) => [property, emitPbrTextureSlotAssignment] as const,
+    ),
     ["alphaBlend", emitPbrAlphaBlendAssignment],
-    ["baseColorTexture", emitBaseColorTextureAssignment],
-    ["bentNormalTexture", emitBentNormalTextureAssignment],
-    ["occlusionTexture", emitOcclusionTextureAssignment],
     ["diffuseTexture", emitDiffuseTextureAssignment],
     ["parent", emitParentAssignment],
 ]);

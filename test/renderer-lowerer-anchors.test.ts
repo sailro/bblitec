@@ -4,6 +4,8 @@ import ts from "typescript";
 import { LoweringContext } from "../src/lowering/context.js";
 import { pinnedMatrixHeader } from "../src/lowering/pinned-matrix.js";
 import { pinnedWorldTransformHeader } from "../src/lowering/pinned-world-transform.js";
+import { lowerPipelineFrontFaces } from "../src/lowering/pipeline-front-face.js";
+import { probeValue, rightHandedProbes } from "./right-handed-process.js";
 import {
     RendererLowerer,
     lowerOpaqueOrderStamp,
@@ -314,21 +316,52 @@ test("anchors the draw-list rules to the pinned bucket fork", () => {
         plan.source,
         /return left\.sort_distance > right\.sort_distance \|\|\s*\r?\n\s*\(left\.sort_distance == right\.sort_distance &&\s*\r?\n\s*left\.item\.order < right\.item\.order\);/,
     );
-    // The loader-authored baseline prevents glTF single-sided primitives
-    // from flipping twice, while a procedural PBR mesh can still cross the
-    // determinant sign boundary at runtime. Both cull modes therefore carry
-    // the watcher-resolved clockwise state into the pipeline key.
-    assert.match(plan.header, /pbr_opaque_back_clockwise/);
-    assert.match(plan.header, /pbr_transparent_back_clockwise/);
+    // The winding is the kind's own axis beside its arm, lowered from each
+    // family's folded descriptor: a left-handed PBR pipeline spreads the
+    // mesh's primitive state, so the watcher-resolved mark winds it in
+    // either cull mode; the other families state "ccw".
+    assert.doesNotMatch(plan.header, /_clockwise,/);
     assert.match(
-        plan.source,
-        /if \(!double_sided\) \{\s*return item\.clockwise_front_face\s*\? RenderPipelineKind::pbr_transparent_back_clockwise\s*: RenderPipelineKind::pbr_transparent_back;/,
+        plan.header,
+        /struct RenderPipelineKind \{\s*RenderPipelineArm arm = RenderPipelineArm::pbr_opaque_back;\s*bool clockwise_front_face = false;/,
+    );
+    assert.match(
+        plan.header,
+        /case RenderMaterialKind::pbr:\s*return reverse_winding;\s*case RenderMaterialKind::standard:\s*return false;\s*case RenderMaterialKind::shader:\s*return false;\s*case RenderMaterialKind::node:\s*return false;/,
     );
     assert.match(
         plan.source,
-        /if \(!double_sided\) \{\s*return item\.clockwise_front_face\s*\? RenderPipelineKind::pbr_opaque_back_clockwise\s*: RenderPipelineKind::pbr_opaque_back;/,
+        /render_pipeline_clockwise\(item\.material_kind, item\.reverse_winding\)/,
     );
-    assert.match(plan.header, /pbr_opaque_none_clockwise/);
+});
+
+test("each family's front face follows its folded pipeline descriptor", () => {
+    const context = new LoweringContext();
+    // Left-handed, only PBR spreads the mesh's primitive state; the
+    // mirrored opt-in installs the Standard resolver that winds by the mark.
+    assert.deepEqual(lowerPipelineFrontFaces(context, false), {
+        pbr: ["ccw", "cw"],
+        standard: ["ccw", "ccw"],
+        shader: ["ccw", "ccw"],
+        node: ["ccw", "ccw"],
+    });
+    assert.deepEqual(lowerPipelineFrontFaces(context, true).standard, [
+        "ccw",
+        "cw",
+    ]);
+    // Right-handed, every family reverses: procedural meshes "cw", marked
+    // (glTF-wound or mirrored) ones "ccw", with or without the opt-in.
+    const reversed = ["cw", "ccw"];
+    for (const outcome of rightHandedProbes([
+        { probe: "pipelineFrontFaces", argument: false },
+        { probe: "pipelineFrontFaces", argument: true },
+    ]))
+        assert.deepEqual(probeValue(outcome), {
+            pbr: reversed,
+            standard: reversed,
+            shader: reversed,
+            node: reversed,
+        });
 });
 
 test("adopts pinned defaults and transports explicit render order", () => {
@@ -454,24 +487,33 @@ test("adopts the pinned transparent sort center: the draw world's translation", 
             `pinned ${modulePath} no longer stores the world-translation sort center`,
         );
     }
+    // sortTransparentBindings sorts by that center's depth in the pinned
+    // view matrix (anchored by `assertPinnedTransparentSort`).
+    assert.ok(
+        sharedStore
+            .getSource("src/frame-graph/render-task-base.ts")
+            .includes(
+                "b._sortDistance = wc ? wc[0]! * v[2]! + wc[1]! * v[6]! + wc[2]! * v[10]! + v[14]! : 0;",
+            ),
+        "pinned sortTransparentBindings no longer sorts by view-space depth",
+    );
     const plan = new RendererLowerer(new LoweringContext()).lowerRenderPlan({});
     assert.match(plan.source, /pin-adopted\(sort-center\)/);
     assert.match(
         plan.source,
-        /const std::array<float, 16> world = mesh_world_matrix\(engine, mesh\);\s*const Vec3 center\{world\[12\], world\[13\], world\[14\]\};/,
+        /const std::array<float, 16> view = build_camera_view_matrix\(\*camera\);/,
+    );
+    assert.match(
+        plan.source,
+        /const std::array<float, 16> world = mesh_world_matrix\(engine, mesh\);[\s\S]*?command\.sort_distance = static_cast<float>\(\s*static_cast<double>\(world\[12\]\) \* view\[2\] \+\s*static_cast<double>\(world\[13\]\) \* view\[6\] \+\s*static_cast<double>\(world\[14\]\) \* view\[10\] \+ view\[14\]\);/,
     );
     assert.match(
         plan.source,
         /#include <bblite\/upstream\/pinned_world_transform\.hpp>/,
     );
-    // The bounds-center derivation and its euler helper are gone; the
-    // anchored comparator and view-forward distance stay.
+    // The bounds-center derivation and its euler helper are gone.
     assert.ok(!plan.source.includes("rotate_euler"));
     assert.ok(!plan.source.includes("bounds_min"));
-    assert.match(
-        plan.source,
-        /command\.sort_distance = dot\(delta, forward\);/,
-    );
 });
 
 test("anchors the light-slot packing to the pinned lights-ubo module", () => {

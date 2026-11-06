@@ -134,32 +134,82 @@ function standardPluginMeshFeatureValues(
     meshFeatures: readonly number[],
     thinInstancesBit: number,
     instanceColorBit: number,
+    meshOpacity: MeshOpacityReach,
 ): number[][] {
     return Array.from({ length: pluginCount }, (_, pluginIndex) => {
         const values = new Set<number>();
         for (let meshIndex = 0; meshIndex < meshes.length; meshIndex++) {
             const mesh = meshes[meshIndex]!;
             if (mesh.standardMaterialPluginIndex !== pluginIndex + 1) continue;
+            const reached = meshOpacity.reaches(meshIndex);
+            const add = (features: number): void => {
+                for (const each of meshOpacity.decorate(
+                    [features],
+                    reached ? [features] : [],
+                ))
+                    values.add(each);
+            };
             const base = meshFeatures[meshIndex] ?? 0;
             if (mesh.thinInstances === undefined) {
-                values.add(base);
+                add(base);
                 continue;
             }
             const thin = base | thinInstancesBit;
             if (mesh.thinInstances === "always") {
-                values.add(
-                    mesh.thinInstanceColors ? thin | instanceColorBit : thin,
-                );
+                add(mesh.thinInstanceColors ? thin | instanceColorBit : thin);
                 continue;
             }
-            values.add(base);
-            values.add(thin);
+            add(base);
+            add(thin);
             if (mesh.thinInstanceColors) {
-                values.add(thin | instanceColorBit);
+                add(thin | instanceColorBit);
             }
         }
         return [...values];
     });
+}
+
+/**
+ * Which renderables the opacity encoder's bit can decorate: the scene
+ * meshes `setMeshOpacity` reached, or every renderable when a target is a
+ * handle generation cannot name.
+ */
+interface MeshOpacityReach {
+    /** The encoder's bit, when the scene reached `setMeshOpacity`. */
+    readonly bit?: number;
+    /** Whether a call can reach the scene mesh; none names an asset's. */
+    reaches(sceneMeshIndex?: number): boolean;
+    /**
+     * `sets` with the opacity arm of `reached`, the sets of the renderables
+     * a call reaches -- by default an asset renderable's.
+     */
+    decorate(sets: readonly number[], reached?: readonly number[]): number[];
+}
+
+function meshOpacityReach(
+    bit: number | undefined,
+    manifest: Pick<
+        CompileResult["manifest"],
+        "meshOpacityMeshes" | "dynamicMeshOpacity"
+    >,
+): MeshOpacityReach {
+    const targets = new Set(manifest.meshOpacityMeshes);
+    const reaches = (sceneMeshIndex?: number): boolean =>
+        bit !== undefined &&
+        (manifest.dynamicMeshOpacity ||
+            (sceneMeshIndex !== undefined && targets.has(sceneMeshIndex)));
+    return {
+        ...(bit !== undefined ? { bit } : {}),
+        reaches,
+        decorate: (sets, reached = reaches() ? sets : []) => [
+            ...new Set([
+                ...sets,
+                ...(bit !== undefined
+                    ? reached.map((features) => features | bit)
+                    : []),
+            ]),
+        ],
+    };
 }
 
 /** The values `main`'s remainder (emit options, activation inventory)
@@ -583,13 +633,17 @@ export async function composeScenePipeline({
         ? await pinnedInstanceColorBit()
         : 0;
     // Mesh opacity is another runtime arm: `setMeshOpacity` below 1 sets the
-    // encoder's bit on any mesh, whenever it runs, and both PALs OR it from
+    // encoder's bit on its mesh, whenever it runs, and both PALs OR it from
     // the record at the draw (`pinned_mesh_feature_extra`). Its two
     // extensions compose for that bit alone, so registering them is what the
-    // scene's own `ensureInstalled` does.
-    const meshOpacityBits = result.manifest.features.includes("mesh:opacity")
-        ? (await registerPinnedMeshOpacity(), [meshOpacityFeatureBit()])
-        : [];
+    // scene's own `ensureInstalled` does. The bit decorates the meshes a call
+    // reaches; with an unknown target it is a runtime bit of every mesh.
+    const meshOpacity = meshOpacityReach(
+        result.manifest.features.includes("mesh:opacity")
+            ? (await registerPinnedMeshOpacity(), meshOpacityFeatureBit())
+            : undefined,
+        result.manifest,
+    );
     // `_computeMeshFeatures` nests the colour test under `mesh.thinInstances`:
     // 32 never exists by itself. Treat the coloured pool as a composite
     // runtime mask so the generic product below emits {plain, TI, TI+colour}
@@ -599,7 +653,6 @@ export async function composeScenePipeline({
         ...(instanceColorBit !== 0
             ? [thinInstancesBit | instanceColorBit]
             : []),
-        ...meshOpacityBits,
     ];
     // A baked mesh composes under MSH_VAT where its own attributes say
     // MSH_HAS_SKELETON: `_computeMeshFeatures` writes the two as one
@@ -628,10 +681,22 @@ export async function composeScenePipeline({
             ),
         ),
     );
+    // The sets of the scene meshes `keep` selects, and their opacity arms.
+    const sceneMeshSets = (
+        keep: (mesh: SceneMeshManifest) => boolean,
+        sets: (index: number) => readonly number[] = (index) =>
+            sceneMeshFeatureSets[index]!,
+    ): number[] => {
+        const selected = (reached: boolean): number[] =>
+            result.manifest.sceneMeshes.flatMap((mesh, index) =>
+                keep(mesh) && (!reached || meshOpacity.reaches(index))
+                    ? sets(index)
+                    : [],
+            );
+        return meshOpacity.decorate(selected(false), selected(true));
+    };
     const assetMaterialMeshFeatures = runtimePbrAssetFeatureSets(
-        result.manifest.sceneMeshes.flatMap((mesh, index) =>
-            mesh.assetPbrMaterial ? sceneMeshFeatureSets[index]! : [],
-        ),
+        sceneMeshSets((mesh) => mesh.assetPbrMaterial !== undefined),
         runtimePbrMeshBits,
         dynamicReceiverBits,
     );
@@ -654,14 +719,14 @@ export async function composeScenePipeline({
     }
     const dynamicCasterSceneMeshFeatures =
         sceneMeshFeatureSets.length > 0
-            ? [
-                  ...new Set(
-                      sceneMeshFeatureSets
-                          .flat()
-                          .map((features) => features & ~receiveShadowsBit),
-                  ),
-              ]
-            : [await proceduralRenderableFeatures()];
+            ? sceneMeshSets(
+                  () => true,
+                  (index) =>
+                      sceneMeshFeatureSets[index]!.map(
+                          (features) => features & ~receiveShadowsBit,
+                      ),
+              )
+            : meshOpacity.decorate([await proceduralRenderableFeatures()]);
     const gltfMaterialCounts = await Promise.all(
         gltfAssets.map(async (asset) => {
             const cached = gltfMaterialCountsByAsset.get(asset);
@@ -743,20 +808,6 @@ export async function composeScenePipeline({
     };
     for (const writes of result.manifest.pbrMaterialStates ?? []) {
         const { target } = writes;
-        // Without the opt-in the pin's IBL extension has no `detect` and the
-        // texture composes nothing; this port composes the texture's state
-        // only for a program that installs the hooks.
-        if (
-            writes.bentNormalTexture &&
-            !result.manifest.features.includes("material:bent-normal")
-        )
-            refuseGeneration(
-                "material:bent-normal",
-                "bentNormalTexture is written but enableBentNormals() is " +
-                    "never reached; the pin then ignores the texture, which " +
-                    "this port does not represent.",
-                result.manifest.featureSites,
-            );
         if (target.kind === "scene") {
             reachStateRow(
                 absoluteScenePbrMaterials[target.index]!.materialsBefore,
@@ -766,6 +817,15 @@ export async function composeScenePipeline({
         }
         for (const [assetIndex, asset] of gltfAssets.entries()) {
             if (target.kind === "asset" && asset.output !== target.output)
+                continue;
+            // A profiled document composes once for all its containers.
+            if (
+                target.kind === "asset" &&
+                target.container !== undefined &&
+                !profiledGltfLoads &&
+                gltfAssets.slice(0, assetIndex).filter((each) => each === asset)
+                    .length !== target.container
+            )
                 continue;
             for (let at = 0; at < gltfMaterialCounts[assetIndex]!; at += 1)
                 reachStateRow(assetMaterialBases[assetIndex]! + at, writes);
@@ -778,6 +838,7 @@ export async function composeScenePipeline({
         stateWrites,
         result.manifest.pbrPluginSignatures ?? [],
         result.manifest.pbrPluginAppends ?? [],
+        result.manifest.features.includes("material:bent-normal"),
     );
     let assetMetallicReflectanceRegistered = false;
     for (const [assetIndex, asset] of gltfAssets.entries()) {
@@ -845,11 +906,13 @@ export async function composeScenePipeline({
                 // rewrite first, then the widening, then the light lists
                 // ride along when there are receivers.
                 meshFeatureSets: runtimePbrAssetFeatureSets(
-                    hasVat
-                        ? await vatFeatureSets(
-                              gltfRenderableFeatureSets[assetIndex] ?? [],
-                          )
-                        : (gltfRenderableFeatureSets[assetIndex] ?? []),
+                    meshOpacity.decorate(
+                        hasVat
+                            ? await vatFeatureSets(
+                                  gltfRenderableFeatureSets[assetIndex] ?? [],
+                              )
+                            : (gltfRenderableFeatureSets[assetIndex] ?? []),
+                    ),
                     // The runtime product beside the rewrite: a baked mesh
                     // that is also thin-instanced takes the per-instance VAT
                     // arm, while receiving shadows remains an independent
@@ -894,7 +957,9 @@ export async function composeScenePipeline({
                         ...assetVariantOptions,
                         materialView,
                         meshFeatureSets: dynamicCasterFeatureSets(
-                            gltfRenderableFeatureSets[assetIndex] ?? [],
+                            meshOpacity.decorate(
+                                gltfRenderableFeatureSets[assetIndex] ?? [],
+                            ),
                             dynamicCasterSceneMeshFeatures,
                             runtimePbrMeshBits,
                         ),
@@ -953,23 +1018,26 @@ export async function composeScenePipeline({
                 pinnedShadowFilter(generator.kind) === "esm"
                     ? pbrEsmShadowView(source, materialsBefore)
                     : pbrNoColorView(source, materialsBefore);
+            // Without the receive bit, whatever the caster's own row says.
+            // `rebuildSingle` derives `receiveShadows` as
+            // `!shadowOutput && ...`, so a caster pass composes no shadow
+            // fragment even for a mesh that receives one in the colour pass
+            // -- which is exactly what both PALs strip from the key before
+            // the lookup. A mesh that both casts and receives is where the
+            // two halves have to agree.
+            const casterFeatures = [
+                (renderableMeshFeatures[sceneMeshRows[caster.meshIndex]!] ??
+                    0) & ~receiveShadowsBit,
+            ];
             casterViews.push({
                 ...view,
                 meshFeatureSets: expandRuntimeMeshFeatureSets(
-                    [
-                        // Without the receive bit, whatever the caster's
-                        // own row says. `rebuildSingle` derives
-                        // `receiveShadows` as `!shadowOutput && ...`, so a
-                        // caster pass composes no shadow fragment even for
-                        // a mesh that receives one in the colour pass --
-                        // which is exactly what both PALs strip from the
-                        // key before the lookup. A mesh that both casts
-                        // and receives is where the two halves have to
-                        // agree.
-                        (renderableMeshFeatures[
-                            sceneMeshRows[caster.meshIndex]!
-                        ] ?? 0) & ~receiveShadowsBit,
-                    ],
+                    meshOpacity.decorate(
+                        casterFeatures,
+                        meshOpacity.reaches(caster.meshIndex)
+                            ? casterFeatures
+                            : [],
+                    ),
                     runtimePbrMeshBits,
                 ),
             });
@@ -989,26 +1057,26 @@ export async function composeScenePipeline({
         if (material.unknownSceneMesh || !material.sceneMeshIndices) {
             return material;
         }
-        const featureSets = new Set<number>();
+        const featureSets: number[] = [];
+        const reached: number[] = [];
         for (const meshIndex of material.sceneMeshIndices) {
             const row = result.manifest.sceneMeshes[meshIndex];
             const base = renderableMeshFeatures[sceneMeshRows[meshIndex]!] ?? 0;
-            for (const features of scenePbrMeshFeatureSets(
+            const sets = scenePbrMeshFeatureSets(
                 base,
                 row?.thinInstances,
                 row?.thinInstanceColors === true,
                 thinInstancesBit,
                 instanceColorBit,
-            )) {
-                featureSets.add(features);
-            }
+            );
+            featureSets.push(...sets);
+            if (meshOpacity.reaches(meshIndex)) reached.push(...sets);
         }
         return {
             ...material,
-            meshFeatureSets: expandRuntimeMeshFeatureSets(
-                [...featureSets],
-                meshOpacityBits,
-            ).sort((left, right) => left - right),
+            meshFeatureSets: meshOpacity
+                .decorate(featureSets, reached)
+                .sort((left, right) => left - right),
         };
     });
     const scenePbrMaterials = [...exactScenePbrMaterials, ...casterViews];
@@ -1019,10 +1087,23 @@ export async function composeScenePipeline({
                 sceneArms,
                 0,
                 runtimePbrAssetFeatureSets(
-                    [
-                        ...renderableMeshFeatures,
-                        await proceduralRenderableFeatures(),
-                    ],
+                    meshOpacity.decorate(
+                        [
+                            ...renderableMeshFeatures,
+                            await proceduralRenderableFeatures(),
+                        ],
+                        meshOpacity.reaches()
+                            ? undefined
+                            : result.manifest.sceneMeshes.flatMap((_, index) =>
+                                  meshOpacity.reaches(index)
+                                      ? [
+                                            renderableMeshFeatures[
+                                                sceneMeshRows[index]!
+                                            ] ?? 0,
+                                        ]
+                                      : [],
+                              ),
+                    ),
                     runtimePbrMeshBits,
                     dynamicReceiverBits,
                 ),
@@ -1148,11 +1229,33 @@ export async function composeScenePipeline({
                         standardSceneMeshFeatures,
                         thinInstancesBit,
                         instanceColorBit,
+                        meshOpacity,
                     ),
                 thinInstances: hasRuntimeThinInstances,
                 thinInstanceColors: hasRuntimeThinInstanceColors,
-                ...(meshOpacityBits.length > 0
-                    ? { meshOpacityBit: meshOpacityBits[0]! }
+                ...(meshOpacity.bit !== undefined
+                    ? {
+                          meshOpacity: {
+                              bit: meshOpacity.bit,
+                              ...(meshOpacity.reaches()
+                                  ? {}
+                                  : {
+                                        values: [
+                                            ...new Set(
+                                                expandRuntimeMeshFeatureSets(
+                                                    standardSceneMeshFeatures.filter(
+                                                        (_, index) =>
+                                                            meshOpacity.reaches(
+                                                                index,
+                                                            ),
+                                                    ),
+                                                    dynamicReceiverBits,
+                                                ),
+                                            ),
+                                        ],
+                                    }),
+                          },
+                      }
                     : {}),
                 morphTargets:
                     result.manifest.features.includes("mesh:morph-targets"),

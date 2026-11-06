@@ -188,7 +188,6 @@ struct Run {
 
     SceneSyncOutcome synchronize(Hooks& hooks) {
         SceneSyncState<Row> sync{engine,
-                                 scene,
                                  scenes,
                                  ++frame,
                                  16.0,

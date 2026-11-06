@@ -1,5 +1,5 @@
-// The overlay regressions' shared root: a scene without its default render
-// task, whose own tasks present a box, and an overlay sphere over it.
+// The overlay regressions' shared root: a scene drawing a box, without its
+// default render task unless asked, and an overlay sphere over it.
 import {
     addMeshToTask,
     addTask,
@@ -17,12 +17,14 @@ import {
     type EngineContext,
     type Mesh,
     type NormalizedViewport,
+    registerScene,
     type SceneContext,
+    startEngine,
 } from "@babylonjs/lite";
 
-/** The root scene and its box, which its tasks draw. */
-export function createOverlayRoot(engine: EngineContext): { root: SceneContext; box: Mesh } {
-    const root = createSceneContext(engine, { defaultRenderTask: false });
+/** The root scene and its box, which its own tasks draw without its default render task. */
+export function createOverlayRoot(engine: EngineContext, defaultRenderTask = false): { root: SceneContext; box: Mesh } {
+    const root = createSceneContext(engine, { defaultRenderTask });
     root.clearColor = { r: 0.1, g: 0.12, b: 0.2, a: 1 };
     root.camera = createArcRotateCamera(-Math.PI / 2, 1.1, 5, { x: 0, y: 0, z: 0 });
     addToScene(root, createHemisphericLight([0, 1, 0], 1));
@@ -76,4 +78,14 @@ export function createOverlaySphere(engine: EngineContext, root: SceneContext): 
     sphere.material = material;
     addToScene(overlay, sphere);
     return overlay;
+}
+
+/** The post-process regressions' frame: the root presents through a whole-surface black-and-white pass under an overlay sphere. */
+export async function startOverlayOverPostProcess(engine: EngineContext): Promise<void> {
+    const { root, box } = createOverlayRoot(engine);
+    addBlackAndWhitePass(engine, root, box, { x: 0, y: 0, width: 1, height: 1 });
+    const overlay = createOverlaySphere(engine, root);
+    await registerScene(root);
+    await registerScene(overlay);
+    await startEngine(engine);
 }

@@ -158,6 +158,7 @@ export async function prefilterEquirectGgx(
             version: "3",
             module: moduleIdentity(import.meta.url),
             browser: true,
+            buildConditions: true,
             parameters: {
                 faceSize,
                 width: equirect.width,

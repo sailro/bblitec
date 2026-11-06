@@ -875,8 +875,8 @@ void tick_document() {
 void dispatch_camera_input(Engine& engine, const SDL_Event& event,
                            WindowDocument::InputTarget& target) {
     CameraRecord* primary = nullptr;
-    if (const auto scenes = composited_scenes(engine); !scenes.empty()) {
-        const auto camera = scenes.front()->camera;
+    if (const auto root = composited_root(engine)) {
+        const auto camera = root->camera;
         if (camera.value < engine.cameras.size())
             primary = &handle_at(engine.cameras, camera);
     }

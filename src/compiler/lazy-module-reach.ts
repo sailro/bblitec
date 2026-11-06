@@ -1,5 +1,5 @@
-import { resolve, sep } from "node:path";
 import ts from "typescript";
+import { isInstalledPackageFile } from "../typescript-library-files.js";
 import {
     aliasTarget,
     calledFunction,
@@ -177,18 +177,20 @@ function computeReadable(
                 !evaluationOrder.writesStorage(declaration.initializer) &&
                 readsInitialized(declaration.initializer)));
     /**
-     * Whether evaluating `initializer` reads only module bindings that are
-     * initialized by then, so it cannot throw a temporal-dead-zone error:
-     * function declarations, an evaluated module's bindings and those its
-     * own module declares before it, through the functions it calls.
+     * The module-scope `const`/`let`/`var` and class statements a node
+     * reads when it runs, through the bodies of the functions it calls (a
+     * function it only creates runs nowhere). A body's reads are kept once
+     * complete: a body still being read, reached through a cycle, leaves
+     * the bodies between it and the call unkept, the outermost keeping
+     * them all. Returns the depth of the shallowest open body reached.
      */
-    const readsInitialized = (initializer: ts.Expression): boolean => {
-        const statement = ts.findAncestor(initializer, ts.isVariableStatement)!;
-        const file = statement.getSourceFile();
-        const called = new Set<ts.Node>();
-        let initialized = true;
+    const collectReads = (
+        root: ts.Node,
+        depth: number,
+        statements: Set<ts.Node>,
+    ): number => {
+        let open = Infinity;
         const read = (node: ts.Node): void => {
-            if (!initialized) return;
             // A function's body runs when it is called, not where it is created.
             if (ts.isFunctionLike(node)) return;
             if (ts.isIdentifier(node))
@@ -198,31 +200,70 @@ function computeReadable(
                         ? declaration.parent.parent
                         : declaration;
                     if (
-                        (!ts.isVariableStatement(owner) &&
-                            !ts.isClassDeclaration(owner)) ||
-                        !ts.isSourceFile(owner.parent) ||
+                        (ts.isVariableStatement(owner) ||
+                            ts.isClassDeclaration(owner)) &&
+                        ts.isSourceFile(owner.parent) &&
                         // A declared global exists before any module runs.
-                        owner.parent.isDeclarationFile
+                        !owner.parent.isDeclarationFile
                     )
-                        continue;
-                    if (!(
-                        (evaluated.has(owner.parent) &&
-                            !lazy.has(owner.parent)) ||
-                        (owner.parent === file && owner.end <= statement.pos)
-                    ))
-                        initialized = false;
+                        statements.add(owner);
                 }
             if (ts.isCallExpression(node) || ts.isNewExpression(node)) {
-                const callee = calledFunction(checker, node);
-                if (callee?.body && !called.has(callee)) {
-                    called.add(callee);
-                    read(callee.body);
+                const body = calledFunction(checker, node)?.body;
+                if (body) {
+                    const called = bodyReads(body, depth + 1);
+                    for (const statement of called.statements)
+                        statements.add(statement);
+                    open = Math.min(open, called.open);
                 }
             }
             ts.forEachChild(node, read);
         };
-        read(initializer);
-        return initialized;
+        read(root);
+        return open;
+    };
+    const keptReads = new Map<ts.Node, ReadonlySet<ts.Node>>();
+    const openReads = new Map<
+        ts.Node,
+        { depth: number; statements: Set<ts.Node> }
+    >();
+    const bodyReads = (
+        body: ts.Node,
+        depth: number,
+    ): { statements: ReadonlySet<ts.Node>; open: number } => {
+        const kept = keptReads.get(body);
+        if (kept) return { statements: kept, open: Infinity };
+        const reading = openReads.get(body);
+        if (reading)
+            return { statements: reading.statements, open: reading.depth };
+        const statements = new Set<ts.Node>();
+        openReads.set(body, { depth, statements });
+        const open = collectReads(body, depth, statements);
+        openReads.delete(body);
+        if (open < depth) return { statements, open };
+        keptReads.set(body, statements);
+        return { statements, open: Infinity };
+    };
+    /**
+     * Whether evaluating `initializer` reads only module bindings that are
+     * initialized by then, so it cannot throw a temporal-dead-zone error:
+     * function declarations, an evaluated module's bindings and those its
+     * own module declares before it, through the functions it calls.
+     */
+    const readsInitialized = (initializer: ts.Expression): boolean => {
+        const statement = ts.findAncestor(initializer, ts.isVariableStatement)!;
+        const file = statement.getSourceFile();
+        const reads = new Set<ts.Node>();
+        collectReads(initializer, 0, reads);
+        for (const owner of reads) {
+            const module = owner.getSourceFile();
+            if (!(
+                (evaluated.has(module) && !lazy.has(module)) ||
+                (module === file && owner.end <= statement.pos)
+            ))
+                return false;
+        }
+        return true;
     };
     // What runs: the statements of every module that evaluates (a package
     // module nothing evaluates runs none), a lazy module's bindings with
@@ -234,7 +275,7 @@ function computeReadable(
             !(
                 lazy.has(file) ||
                 evaluated.has(file) ||
-                !resolve(file.fileName).includes(`${sep}node_modules${sep}`)
+                !isInstalledPackageFile(file.fileName)
             )
         )
             continue;

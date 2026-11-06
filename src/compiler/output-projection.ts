@@ -140,7 +140,6 @@ export const featureSources: Record<Feature, string[]> = {
     "material:clearcoat-f0-remap": [],
     "material:pbr-gamma-albedo": [],
     "material:pbr-alpha-cutoff": [],
-    "material:pbr-base-color-pixels": [],
     "material:iridescence": [],
     "material:lightmap": [],
     "material:bent-normal": [],

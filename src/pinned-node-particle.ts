@@ -1100,6 +1100,7 @@ export async function bakeNodeParticles(
                 version: "2",
                 module: moduleIdentity(import.meta.url),
                 browser: true,
+                buildConditions: true,
                 parameters: {},
                 inputs: [Buffer.from(driver, "utf8"), ...closure],
             },

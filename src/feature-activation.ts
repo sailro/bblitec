@@ -754,12 +754,6 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
         // stamp; the name selects the lowered setter.
         consumers: INVENTORY,
     },
-    "material:pbr-base-color-pixels": {
-        provenance:
-            "src/material/pbr/pbr-material.ts createPbrMaterial (a " +
-            "createTexture2DFromPixels baseColorTexture)",
-        consumers: INVENTORY,
-    },
     "material:iridescence": {
         provenance: "src/material/pbr/set-iridescence.ts",
         // The arm is read off the composed variants, never from this name.

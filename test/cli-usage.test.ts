@@ -24,7 +24,7 @@ test("bblitec usage names exactly the options the parser accepts", () => {
     );
     const parsed = new Set(
         [
-            ...readFileSync("src/cli.ts", "utf8").matchAll(
+            ...readFileSync("src/cli-arguments.ts", "utf8").matchAll(
                 /case "(--[a-z-]+)":/g,
             ),
         ].map((match) => match[1]),

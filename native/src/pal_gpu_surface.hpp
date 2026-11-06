@@ -63,19 +63,20 @@ inline void require_page_filling_engine_canvas(const Engine& engine, std::uint32
 }
 #endif
 
-/**
- * A registered scene that runs its own frame graph -- a surface scene, or
- * one with tasks -- is no utility layer of the scene pass before it: it
- * clears and presents through its own tasks.
- */
-inline bool scene_runs_own_graph(const Scene& scene) {
-    return scene.surface_canvas || scene.has_frame_passes();
-}
-
 /** Whether any of `scenes` runs a frame graph, which the task resources serve. */
 inline bool scenes_run_frame_graphs(std::span<const std::shared_ptr<Scene>> scenes) {
     return std::any_of(scenes.begin(), scenes.end(),
                        [](const auto& scene) { return scene->has_frame_passes(); });
+}
+
+/**
+ * Whether a scene after the root (`scenes.front()`) records anything once
+ * the root's direct pass ends: its own frame graph, or an overlay's pass.
+ */
+inline bool scenes_record_after_root(std::span<const std::shared_ptr<Scene>> scenes) {
+    return std::any_of(std::next(scenes.begin()), scenes.end(), [](const auto& scene) {
+        return scene->has_frame_passes() || scene->state->overlay_base != nullptr;
+    });
 }
 
 /**

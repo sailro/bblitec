@@ -243,11 +243,8 @@ export function lowerMatrixComposeCpp(
  * exactly as the pin's own world does. A right-handed build's root is the
  * identity, which leaves the world as it is.
  */
-export function lowerRootedWorldCpp(
-    file: ts.SourceFile,
-    rightHanded: boolean,
-): string {
-    const flip = pinnedRootFlip(file, rightHanded);
+export function lowerRootedWorldCpp(file: ts.SourceFile): string {
+    const flip = pinnedRootFlip(file);
     if (!flip)
         return [
             "Matrix gltf_rooted_world(const Matrix& world) {",

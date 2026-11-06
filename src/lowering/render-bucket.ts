@@ -14,6 +14,21 @@ const PBR_RENDERABLE = "src/material/pbr/pbr-renderable.ts";
 const PBR_FEATURES = "src/material/pbr/pbr-material-features.ts";
 const PBR_FLAGS = "src/material/pbr/pbr-flag-bits.ts";
 
+/**
+ * A PBR record's `features2` past composition: the pass bits of its no-colour
+ * and ESM caster views.
+ */
+export function pbrPassFeatures2Cpp(
+    context: LoweringContext,
+    material: string,
+): string {
+    const [noColor, esm] = [
+        "PBR2_NO_COLOR_OUTPUT",
+        "PBR2_ESM_SHADOW_OUTPUT",
+    ].map((name) => context.pinnedNumber(PBR_FLAGS, name));
+    return `(${material}.no_color ? ${noColor}u : 0u) | (${material}.esm_shadow ? ${esm}u : 0u)`;
+}
+
 function isTransparentInitializer(
     context: LoweringContext,
     modulePath: string,
@@ -190,10 +205,6 @@ export function lowerRenderBucket(
             "PBR2_ESM_SHADOW_OUTPUT",
         ]),
     ]);
-    const [noColorFlag, esmFlag] = [
-        "PBR2_NO_COLOR_OUTPUT",
-        "PBR2_ESM_SHADOW_OUTPUT",
-    ].map((name) => context.pinnedNumber(PBR_FLAGS, name));
     // The colour alpha bits, through the pin's own lowered decision where
     // the scene reached vertex alpha; without it there are none.
     const colorAlphaFeatures = options.standardVertexAlpha
@@ -235,7 +246,7 @@ export function lowerRenderBucket(
     } else if (item.material_kind == RenderMaterialKind::pbr) {
         const std::uint32_t features = static_cast<std::uint32_t>(${pbrAlphaBlendFeatures(context)});
         const std::uint32_t features2 =
-            (material.no_color ? ${noColorFlag}u : 0u) | (material.esm_shadow ? ${esmFlag}u : 0u);
+            ${pbrPassFeatures2Cpp(context, "material")};
         transparent = ${pbrTransparent};
     }
     item.bucket = transparent

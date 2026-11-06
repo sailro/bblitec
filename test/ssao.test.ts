@@ -96,7 +96,10 @@ test("each dispatch names the storage view its workgroups cover, and estimators 
             assert.deepEqual(program.workgroup, [8, 8]);
             assert.notEqual(pass.domain, undefined, pass.label);
             assert.equal(pass.resources[pass.domain!]!.kind, "view");
-            assert.equal(program.layout[pass.domain!]!.kind, "storage-texture");
+            assert.equal(
+                program.layout[pass.domain!]!.storageTexture?.access,
+                "write-only",
+            );
         }
     const estimator = task.programs.find((program) =>
         program.constants.some((constant) => constant.name === "SLICE_COUNT"),
@@ -310,10 +313,7 @@ test("SSAO live settings, the velocity input and live builds compile to the task
         /create_ssao_task_0\([^;]*std::ceil|create_ssao_task_0\([^;]*ceil/,
     );
     assert.match(result.cpp, /enable_ssao_motion_pruning\(/);
-    assert.match(
-        result.cpp,
-        /ssao_motion_pruning_settings\([^;]*\)\.enabled = /,
-    );
+    assert.match(result.cpp, /ssao_record\([^;]*pruning[^;]*\)\.enabled = /);
     assert.match(result.cpp, /\.ssao\.quality = /);
     assert.match(result.cpp, /\.ssao\.normal = /);
     assert.match(result.cpp, /== "radius"\) \{/);

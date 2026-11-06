@@ -79,21 +79,19 @@ test("moveRenderingContext and an engine-first utility layer refuse", () => {
     );
 });
 
-test("overlay shapes a native layer does not stand for refuse at generation", () => {
-    const refuses = (source: string, message: RegExp): void =>
-        assert.throws(() => compileSource(`${preamble}${source}`), message);
-    // An overlay running tasks of its own.
-    refuses(
+test("an overlay with tasks of its own or under GPU task timing compiles its own scene task", () => {
+    for (const source of [
         `const overlay = createOverlayScene(base);
         await registerSceneWithShadowSupport(overlay);`,
-        /An overlay scene with its own frame-graph tasks is not supported/,
-    );
-    // Timing reads each registered scene's own scene task.
-    refuses(
-        `createOverlayScene(base);
+        `const overlay = createOverlayScene(base);
+        await registerScene(base);
+        await registerScene(overlay);
         await setRenderTaskGpuTimingEnabled(engine, true);`,
-        /Overlay scenes are not supported with GPU task timing/,
-    );
+    ]) {
+        const result = compileSource(`${preamble}${source}`);
+        assert.match(result.cpp, /bbl_ensure_default_render_task\(/);
+        assert.ok(result.manifest.features.includes("scene:overlay"));
+    }
 });
 
 test("registration runs the overlay hook only where an overlay is built", () => {
@@ -222,19 +220,9 @@ test(
             "overlay-scene-composite",
             `#include <bblite/runtime.hpp>
 #include <cassert>
-#include <initializer_list>
-#include <vector>
 using bbl::OverlayComposite;
 using bbl::TaskHandle;
-bool passes(const std::vector<TaskHandle>& actual, std::initializer_list<std::uint32_t> expected) {
-    if (actual.size() != expected.size()) return false;
-    auto at = actual.begin();
-    for (const std::uint32_t value : expected)
-        if ((at++)->value != value) return false;
-    return true;
-}
 int main() {
-    const std::uint32_t layers = bbl::overlay_layers_pass.value;
     // A root without a frame graph: the renderer's own scene pass, which
     // always runs and resolves into the swapchain.
     bbl::Engine engine;
@@ -242,19 +230,12 @@ int main() {
     root.engine = &engine;
     assert(bbl::overlay_composition(engine, root, true).mode == OverlayComposite::root_attachment);
     assert(bbl::overlay_composition(engine, root, false).mode == OverlayComposite::swapchain);
-    assert(bbl::root_frame_passes(engine, root, bbl::overlay_composition(engine, root, true)).empty());
     // Transmission retargets the scene pass to a linear target that resolves
-    // nowhere: skipped at MSAA; at one sample the overlay would load the
-    // processed swapchain, which refuses.
+    // nowhere: skipped at MSAA; at one sample the overlay loads the
+    // swapchain the image processing wrote.
     root.transmission_enabled = true;
     assert(bbl::overlay_composition(engine, root, true).mode == OverlayComposite::skipped);
-    bool transmission_refused = false;
-    try {
-        static_cast<void>(bbl::overlay_composition(engine, root, false));
-    } catch (const std::runtime_error&) {
-        transmission_refused = true;
-    }
-    assert(transmission_refused);
+    assert(bbl::overlay_composition(engine, root, false).mode == OverlayComposite::swapchain);
     root.transmission_enabled = false;
     // Without its default render task and with no task of its own, it draws nothing.
     root.state->default_render_task = false;
@@ -272,27 +253,19 @@ int main() {
     root.tasks.push_back(TaskHandle{3});
     bbl::add_pass_after(*root.state, TaskHandle{1}, TaskHandle{0});
     bbl::add_pass_after(*root.state, TaskHandle{2}, TaskHandle{0});
-    // MSAA: composited into while it renders, and its copies resolve the
-    // layers into the swapchain after the whole graph.
+    // MSAA: composited into, after the root's whole graph, and resolved again.
     const auto msaa = bbl::overlay_composition(engine, root, true);
     assert(msaa.mode == OverlayComposite::root_attachment && msaa.task.value == 0);
-    assert(passes(bbl::root_frame_passes(engine, root, msaa), {0, 3, layers, 1, 2}));
-    // One sample: the layers load the swapchain after the whole graph.
-    const auto single = bbl::overlay_composition(engine, root, false);
-    assert(single.mode == OverlayComposite::swapchain);
-    assert(passes(bbl::root_frame_passes(engine, root, single), {0, 1, 2, 3, layers}));
+    assert(bbl::overlay_composition(engine, root, false).mode == OverlayComposite::swapchain);
     // A record the scene pass does not render skips the layers at MSAA.
     engine.frame_tasks[0].render_enabled = false;
-    const auto disabled = bbl::overlay_composition(engine, root, true);
-    assert(disabled.mode == OverlayComposite::skipped);
-    assert(passes(bbl::root_frame_passes(engine, root, disabled), {0, 1, 2, 3}));
+    assert(bbl::overlay_composition(engine, root, true).mode == OverlayComposite::skipped);
     assert(bbl::overlay_composition(engine, root, false).mode == OverlayComposite::swapchain);
     engine.frame_tasks[0].render_enabled = true;
     engine.frame_tasks[0].execution_enabled = false;
     assert(bbl::overlay_composition(engine, root, true).mode == OverlayComposite::skipped);
     // A first swapchain task drawing into the swapchain itself resolves
-    // nothing into it; one resolving into it is composited into, with the
-    // layers after the whole graph.
+    // nothing into it; one resolving into it is composited into.
     bbl::Engine other;
     bbl::Scene post;
     post.engine = &other;
@@ -310,14 +283,26 @@ int main() {
     other.frame_tasks[0].render.resolve_target = bbl::RenderTargetHandle{0};
     const auto resolving = bbl::overlay_composition(other, post, true);
     assert(resolving.mode == OverlayComposite::root_attachment && resolving.task.value == 0);
-    assert(passes(bbl::root_frame_passes(other, post, resolving), {0, 1, layers}));
     // A root whose render tasks never reach the swapchain -- a post-process
     // writes it -- has no swapchain task: skipped at MSAA, loaded at one sample.
     other.frame_tasks[0].render.resolve_target = bbl::RenderTargetHandle{};
     assert(bbl::overlay_composition(other, post, true).mode == OverlayComposite::skipped);
-    const auto loaded = bbl::overlay_composition(other, post, false);
-    assert(loaded.mode == OverlayComposite::swapchain);
-    assert(passes(bbl::root_frame_passes(other, post, loaded), {0, 1, layers}));
+    assert(bbl::overlay_composition(other, post, false).mode == OverlayComposite::swapchain);
+    // The layer clears the surface's depth while it fits the root task's
+    // target, else the target's own cleared depth; anything else refuses.
+    bbl::FrameTaskRecord task;
+    task.render.depth_clear = true;
+    const bbl::OverlayAttachmentExtent surface{1280, 720, 4};
+    assert(!bbl::overlay_lends_target_depth(task, surface, surface, false));
+    assert(bbl::overlay_lends_target_depth(task, {640, 360, 4}, surface, true));
+    assert(bbl::overlay_lends_target_depth(task, {1280, 720, 1}, surface, true));
+    bool refused = false;
+    try {
+        static_cast<void>(bbl::overlay_lends_target_depth(task, {640, 360, 4}, surface, false));
+    } catch (const std::runtime_error&) {
+        refused = true;
+    }
+    assert(refused);
 }
 `,
         );

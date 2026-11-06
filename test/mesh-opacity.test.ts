@@ -57,7 +57,7 @@ test("the setter lowers the pin's guard, clamp, validation, flag and crossing", 
     // `typeof opacity !== "number"` cannot hold for a native double.
     assert.match(
         source,
-        /if \(!std::isfinite\(opacity\)\) \{\n\s+throw bbl::js::NamedError\("RangeError", std::string\("setMeshOpacity: opacity must be a finite number, got "\) \+ bbl::js::number_to_string\(opacity\)\);/,
+        /if \(\(\(false\) \|\| \(!\(std::isfinite\(static_cast<double>\(opacity\)\)\)\)\)\) \{\n\s+throw bbl::js::NamedError\("RangeError", \(std::string\("setMeshOpacity: opacity must be a finite number, got "\) \+ bbl::js::number_to_string\(static_cast<double>\(opacity\)\)\)\);/,
     );
     assert.match(source, /if \(record\.retired\) \{/);
     assert.match(
@@ -202,9 +202,6 @@ await registerScene(scene);
 await startEngine(engine);
 `);
     assert.ok(result.manifest.features.includes("material:pbr-alpha-cutoff"));
-    assert.ok(
-        result.manifest.features.includes("material:pbr-base-color-pixels"),
-    );
     assert.equal(result.manifest.scenePbrMaterials[0]?.alphaCutOff, 0.5);
     // The spread's lanes reach both the factor and its retained array.
     assert.equal(
@@ -216,7 +213,10 @@ await startEngine(engine);
         /\.base_color_factor = bbl::Color4\{static_cast<float>\(v_bblite_spread_lane_0\)/,
     );
     assert.match(result.cpp, /bbl::set_pbr_alpha_cutoff\([^;]*, 0\.5\)/);
-    assert.match(result.cpp, /bbl::set_material_base_color_pixels\(/);
+    assert.match(
+        result.cpp,
+        /bbl::set_pbr_texture\([^;]*MaterialTextureSlot::base_color, v_mask\)/,
+    );
     assert.match(result.cpp, /\.alpha_to_coverage = true/);
     assert.throws(
         () =>

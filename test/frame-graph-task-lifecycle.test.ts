@@ -96,7 +96,9 @@ test("buildFrameGraphTask records a live task and refuses one outside the graph 
         message = (error as Error).message;
     }
     assert.deepEqual(events, ["live record", "live initialize"]);
-    const native = lowerFrameGraphTaskBuild(new LoweringContext(), "", true);
+    const native = lowerFrameGraphTaskBuild(new LoweringContext(), "", {
+        effect: true,
+    });
     assert.ok(
         native.includes(
             `throw std::runtime_error(${JSON.stringify(message)});`,
@@ -115,7 +117,7 @@ test("buildFrameGraphTask records a live task and refuses one outside the graph 
         /require_effect_bind_group\(engine, task\.effect\.effect\)/,
     );
     assert.doesNotMatch(
-        lowerFrameGraphTaskBuild(new LoweringContext(), "", false),
+        lowerFrameGraphTaskBuild(new LoweringContext(), "", {}),
         /FrameTaskKind::effect/,
     );
 });
@@ -410,7 +412,7 @@ test("an effect task's dispose clears its pipeline until the next record, as the
         }).includes(`throw std::runtime_error(${JSON.stringify(message)});`),
     );
     assert.match(
-        lowerFrameGraphTaskBuild(new LoweringContext(), "", true),
+        lowerFrameGraphTaskBuild(new LoweringContext(), "", { effect: true }),
         /require_effect_bind_group\(engine, task\.effect\.effect\);\n\s+task\.disposed = false;/,
     );
 });

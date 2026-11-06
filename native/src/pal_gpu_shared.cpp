@@ -15,7 +15,6 @@
 #include <bblite/features/has_standard_uv_transform.hpp>
 #include <bblite/features/has_ui.hpp>
 #include <bblite/features/mesh_opacity.hpp>
-#include <bblite/features/right_handed.hpp>
 #include <bblite/features/shadow_morph_bounds.hpp>
 #include <bblite/features/shadow_skeleton_bounds.hpp>
 #include <bblite/features/shadows_csm.hpp>
@@ -141,23 +140,18 @@ std::optional<PixelViewport> equal_surface_pane(const Engine& engine, const Scen
                                                 std::uint32_t target_width,
                                                 std::uint32_t target_height) {
 #if BBLITE_HAS_UI
-    const auto scenes = composited_scenes(engine);
-    if (scenes.empty())
-        return std::nullopt;
-    std::size_t pane_count = 1;
+    // The root takes the first pane, then each unplaced surface scene after it.
+    std::size_t pane_count = 0;
     std::size_t pane_index = npos;
-    const std::shared_ptr<Scene>& primary = scenes.front();
-    if (primary && primary->shares_identity(scene))
-        pane_index = 0;
-    for (auto at = std::next(scenes.begin()); at != scenes.end(); ++at) {
-        const auto& registered = *at;
-        if (!registered || !unplaced_surface_scene(engine, *registered))
-            continue;
+    visit_composited_scenes(engine, [&](const std::shared_ptr<Scene>& registered) {
+        if (pane_count != 0 && !unplaced_surface_scene(engine, *registered))
+            return true;
         if (registered->shares_identity(scene))
             pane_index = pane_count;
         ++pane_count;
-    }
-    if (pane_count == 1 || pane_index == npos)
+        return true;
+    });
+    if (pane_count <= 1 || pane_index == npos)
         return std::nullopt;
     // The panes split the page viewport, the area a browser lays the canvases out in.
     const PixelViewport page =
@@ -208,11 +202,8 @@ std::optional<PixelViewport> surface_canvas_pane(const Engine& engine,
         return laid_out_canvas_pane(engine, *surface_canvas, target_width, target_height);
     }
     for (const auto& registered : engine.scenes()) {
-        if (!registered || !registered->surface_canvas)
-            continue;
-        if (registered->surface_canvas->value != surface_canvas->value)
-            continue;
-        return equal_surface_pane(engine, *registered, target_width, target_height);
+        if (registered && scene_on_surface(*registered, surface_canvas))
+            return equal_surface_pane(engine, *registered, target_width, target_height);
     }
     return std::nullopt;
 #else
@@ -681,16 +672,15 @@ PinnedVertexInput pinned_vertex_input(std::string_view name) {
 #endif
 
 #if BBLITE_GPU_MORPH_STORAGE
-std::vector<float> morph_weight_values(const ModelGeometry& geometry,
-                                       const MeshRecord& mesh_record) {
+void morph_weight_values(const ModelGeometry& geometry, const MeshRecord& mesh_record,
+                         std::vector<float>& weights) {
     const std::size_t target_count = geometry.morph_positions.size();
-    std::vector<float> weights(target_count, 0.0f);
+    weights.assign(target_count, 0.0f);
     for (std::size_t target = 0; target < target_count; ++target) {
         weights[target] = target < mesh_record.morph_storage_weights.size()
                               ? mesh_record.morph_storage_weights[target]
                               : 0.0f;
     }
-    return weights;
 }
 
 std::vector<std::uint8_t> pack_morph_weights(const ModelGeometry& geometry,
@@ -703,7 +693,8 @@ std::vector<std::uint8_t> pack_morph_weights(const ModelGeometry& geometry,
         static_cast<std::uint32_t>(vertex_count),
     };
     std::memcpy(weights_blob.data(), header, sizeof(header));
-    const std::vector<float> weights = morph_weight_values(geometry, mesh_record);
+    std::vector<float> weights;
+    morph_weight_values(geometry, mesh_record, weights);
     if (target_count > 0) {
         std::memcpy(weights_blob.data() + 16, weights.data(), target_count * sizeof(float));
     }
@@ -718,7 +709,8 @@ std::vector<std::uint8_t> pack_morph_weights(const ModelGeometry& geometry,
 std::size_t variant_pipeline_key(std::size_t variant, upstream::RenderPipelineKind kind,
                                  std::initializer_list<bool> flags) {
     std::size_t key =
-        variant * upstream::render_pipeline_kind_count + static_cast<std::size_t>(kind);
+        (variant * upstream::render_pipeline_arm_count + static_cast<std::size_t>(kind.arm)) * 2 +
+        (kind.clockwise_front_face ? 1 : 0);
     for (const bool flag : flags)
         key = key * 2 + (flag ? 1 : 0);
     return key;
@@ -925,17 +917,6 @@ node_shadow_rows(const upstream::NodeVariantEntry& entry) {
 }
 #endif
 
-std::span<const std::uint32_t> node_source_indices(const ModelGeometry& geometry,
-                                                   std::vector<std::uint32_t>& scratch) {
-    if (!geometry.source_indices_reversed)
-        return geometry.indices;
-    scratch = geometry.indices;
-    for (std::size_t index = 0; index < scratch.size(); index += 3) {
-        std::swap(scratch.at(index + 1), scratch.at(index + 2));
-    }
-    return scratch;
-}
-
 #if BBLITE_NODE_VARIANTS > 0 && BBLITE_NODE_GEOMETRY_VARIANTS > 0
 std::size_t require_node_geometry_variant(std::size_t variant, std::size_t geometry_task) {
     const std::size_t geometry_variant =
@@ -978,6 +959,22 @@ upstream::NodeVariantStems node_variant_stems(std::size_t slot) {
 #endif
     return {entry.vertex_stem, entry.fragment_stem};
 }
+#endif
+
+#if BBLITE_PBR_VARIANTS > 0 || BBLITE_STANDARD_VARIANTS > 0
+namespace {
+/**
+ * `_meshFeatureExtra`: the installed encoders' bits the binding resolved.
+ * Mesh opacity's rides the word; the mirrored opt-in's rides the winding.
+ */
+std::size_t mesh_feature_extra([[maybe_unused]] const upstream::RenderItem& item) {
+#if BBLITE_MESH_OPACITY
+    return item.mesh_feature_extra;
+#else
+    return 0;
+#endif
+}
+} // namespace
 #endif
 
 #if BBLITE_PBR_VARIANTS > 0
@@ -1032,11 +1029,13 @@ PinnedPbrMaterialRow pinned_pbr_material_row(const Engine& engine, MaterialHandl
     };
     if (std::any_of(states.begin(), states.end(), of_row)) {
         const bool blends = upstream::pbr_material_blends(drawn);
+        const bool bent_normal = drawn.bent_normal_texture.has_image();
         const auto composed = std::find_if(states.begin(), states.end(), [&](const auto& state) {
+            // A row keys bent-normal presence only under enableBentNormals.
             return of_row(state) && state.blend == blends &&
                    state.plugin_signature == drawn.plugin_signature_index &&
                    state.base_color_factor_written == drawn.base_color_factor_written &&
-                   state.bent_normal_texture == drawn.bent_normal_texture.has_image();
+                   state.bent_normal_texture.value_or(bent_normal) == bent_normal;
         });
         if (composed == states.end()) {
             row.refusal = "material " + std::to_string(row.index) +
@@ -1118,12 +1117,7 @@ PinnedVariantKey pinned_variant_key(const Scene& scene, const Engine& engine,
         key.mesh_features |=
             upstream::pinned_mesh_features(false, false, false, pinned_record_instanced(record),
                                            pinned_record_instance_colored(record));
-#if BBLITE_MESH_OPACITY
-        // `_meshFeatureExtra`: the installed encoders' bits the binding
-        // resolved. Mesh opacity's rides the word; the mirrored opt-in's
-        // rides the winding.
-        key.mesh_features |= draw.item.mesh_feature_extra;
-#endif
+        key.mesh_features |= mesh_feature_extra(draw.item);
         const std::size_t receive_shadows =
             static_cast<std::size_t>(upstream::pinned_msh_receive_shadows);
         if (upstream::pinned_material_receives_shadows(
@@ -1300,12 +1294,7 @@ StandardVariantKey standard_variant_key(const Scene& scene, const Engine& engine
         key.mesh_features |=
             upstream::pinned_mesh_features(false, false, false, pinned_record_instanced(record),
                                            pinned_record_instance_colored(record));
-#if BBLITE_MESH_OPACITY
-        // `_meshFeatureExtra`: the installed encoders' bits the binding
-        // resolved. Mesh opacity's rides the word; the mirrored opt-in's
-        // rides the winding.
-        key.mesh_features |= draw.item.mesh_feature_extra;
-#endif
+        key.mesh_features |= mesh_feature_extra(draw.item);
         const std::size_t receive_shadows =
             static_cast<std::size_t>(upstream::pinned_msh_receive_shadows);
         if (upstream::pinned_material_receives_shadows(
@@ -2087,26 +2076,31 @@ PickingInfo resolve_gpu_pick([[maybe_unused]] const Engine& engine, const PickRe
 // ---------------------------------------------------------------------------
 // Render targets (pal_gpu_targets.hpp)
 
-bool geometry_depth_is_borrowed(const Engine& engine, std::size_t task) {
+namespace {
+/** Whether a task's record reads a geometry task's depth, sampled or attached. */
+bool geometry_depth_read(const Engine& engine, std::size_t task, bool attached) {
+    bool read = false;
+    const auto names = [&](const RenderTextureRef& reference) {
+        read = read || (reference.source == RenderTextureSource::geometry_depth &&
+                        reference.task.value == task);
+    };
+    const auto ignore = [](const RenderTextureRef&) {};
     for (const FrameTaskRecord& record : engine.frame_tasks) {
-        if (record.kind == FrameTaskKind::render &&
-            record.render.depth.source == RenderTextureSource::geometry_depth &&
-            record.render.depth.task.value == task) {
-            return true;
-        }
+        if (attached)
+            visit_task_textures(record, ignore, names);
+        else
+            visit_task_textures(record, names, ignore);
     }
-    return geometry_depth_is_sampled(engine, task);
+    return read;
+}
+} // namespace
+
+bool geometry_depth_is_borrowed(const Engine& engine, std::size_t task) {
+    return geometry_depth_read(engine, task, true) || geometry_depth_is_sampled(engine, task);
 }
 
 bool geometry_depth_is_sampled(const Engine& engine, std::size_t task) {
-    for (const FrameTaskRecord& record : engine.frame_tasks) {
-        if (record.kind == FrameTaskKind::ssao &&
-            record.ssao.depth.source == RenderTextureSource::geometry_depth &&
-            record.ssao.depth.task.value == task) {
-            return true;
-        }
-    }
-    return false;
+    return geometry_depth_read(engine, task, false);
 }
 
 const EffectTextureSlot& effect_texture_slot(const EffectWrapperRecord& wrapper,
@@ -2183,95 +2177,66 @@ TextureFormatClass geometry_format_class(const GeometryTextureDescription& descr
 #if BBLITE_HAS_PBR_RENDERER
 namespace {
 
-/** A kind's facts with the left-handed winding its family's pinned pipeline states. */
-RenderPipelineKindTraits left_handed_kind_traits(upstream::RenderPipelineKind kind) {
-    using Kind = upstream::RenderPipelineKind;
+/** An arm's facts: its family, blend state, cull mode and topology. */
+RenderPipelineKindTraits arm_traits(upstream::RenderPipelineArm arm) {
+    using Arm = upstream::RenderPipelineArm;
     using Family = upstream::RenderMaterialKind;
     using Cull = upstream::RenderCullMode;
     using Topology = MeshTopology;
-    switch (kind) {
-    case Kind::pbr_opaque_back:
-        return {Family::pbr, false, Cull::back, false};
-    case Kind::pbr_opaque_back_clockwise:
-        return {Family::pbr, false, Cull::back, true};
-    case Kind::pbr_opaque_none:
-        return {Family::pbr, false, Cull::none, false};
-    case Kind::pbr_opaque_none_clockwise:
-        return {Family::pbr, false, Cull::none, true};
-    case Kind::pbr_transparent_back:
-        return {Family::pbr, true, Cull::back, false};
-    case Kind::pbr_transparent_back_clockwise:
-        return {Family::pbr, true, Cull::back, true};
-    case Kind::pbr_transparent_none:
-        return {Family::pbr, true, Cull::none, false};
-    case Kind::pbr_transparent_none_clockwise:
-        return {Family::pbr, true, Cull::none, true};
-    // Points and lines cull nothing and have no winding, so each is one
-    // arm per blend state.
-    case Kind::pbr_opaque_points:
+    switch (arm) {
+    case Arm::pbr_opaque_back:
+        return {Family::pbr, false, Cull::back};
+    case Arm::pbr_opaque_none:
+        return {Family::pbr, false, Cull::none};
+    case Arm::pbr_transparent_back:
+        return {Family::pbr, true, Cull::back};
+    case Arm::pbr_transparent_none:
+        return {Family::pbr, true, Cull::none};
+    // Points and lines cull nothing, so each is one arm per blend state.
+    case Arm::pbr_opaque_points:
         return {Family::pbr, false, Cull::none, false, Topology::points};
-    case Kind::pbr_opaque_lines:
+    case Arm::pbr_opaque_lines:
         return {Family::pbr, false, Cull::none, false, Topology::lines};
-    case Kind::pbr_opaque_line_strip:
+    case Arm::pbr_opaque_line_strip:
         return {Family::pbr, false, Cull::none, false, Topology::line_strip};
-    case Kind::pbr_transparent_points:
+    case Arm::pbr_transparent_points:
         return {Family::pbr, true, Cull::none, false, Topology::points};
-    case Kind::pbr_transparent_lines:
+    case Arm::pbr_transparent_lines:
         return {Family::pbr, true, Cull::none, false, Topology::lines};
-    case Kind::pbr_transparent_line_strip:
+    case Arm::pbr_transparent_line_strip:
         return {Family::pbr, true, Cull::none, false, Topology::line_strip};
-    case Kind::standard_opaque_back:
-        return {Family::standard, false, Cull::back, false};
-    case Kind::standard_opaque_none:
-        return {Family::standard, false, Cull::none, false};
-    case Kind::standard_transparent_back:
-        return {Family::standard, true, Cull::back, false};
-    case Kind::standard_transparent_none:
-        return {Family::standard, true, Cull::none, false};
-    // The mirrored-mesh opt-in's own arms: same family, same blend and
-    // cull, clockwise front face.
-    case Kind::standard_opaque_back_clockwise:
-        return {Family::standard, false, Cull::back, true};
-    case Kind::standard_opaque_none_clockwise:
-        return {Family::standard, false, Cull::none, true};
-    case Kind::standard_transparent_back_clockwise:
-        return {Family::standard, true, Cull::back, true};
-    case Kind::standard_transparent_none_clockwise:
-        return {Family::standard, true, Cull::none, true};
-    // A shader kind's concrete fixed-function state comes from the
-    // emitted variant table (cull, blend, depth write, topology); the
-    // kind itself carries only the family and the a2c request.
-    case Kind::shader:
-    case Kind::shader_a2c:
-        return {Family::shader, false, Cull::back, false};
-    case Kind::node_opaque_back:
-        return {Family::node, false, Cull::back, false};
-    case Kind::node_opaque_none:
-        return {Family::node, false, Cull::none, false};
-    case Kind::node_transparent_back:
-        return {Family::node, true, Cull::back, false};
-    case Kind::node_transparent_none:
-        return {Family::node, true, Cull::none, false};
-    // A right-handed graph's arms for a glTF-wound or mirrored mesh
-    // (`_pipelineForCcwMesh`).
-    case Kind::node_opaque_back_clockwise:
-        return {Family::node, false, Cull::back, true};
-    case Kind::node_opaque_none_clockwise:
-        return {Family::node, false, Cull::none, true};
-    case Kind::node_transparent_back_clockwise:
-        return {Family::node, true, Cull::back, true};
-    case Kind::node_transparent_none_clockwise:
-        return {Family::node, true, Cull::none, true};
+    case Arm::standard_opaque_back:
+        return {Family::standard, false, Cull::back};
+    case Arm::standard_opaque_none:
+        return {Family::standard, false, Cull::none};
+    case Arm::standard_transparent_back:
+        return {Family::standard, true, Cull::back};
+    case Arm::standard_transparent_none:
+        return {Family::standard, true, Cull::none};
+    // A shader arm's concrete fixed-function state comes from the emitted
+    // variant table (cull, blend, depth write, topology); the arm itself
+    // carries only the family and the a2c request.
+    case Arm::shader:
+    case Arm::shader_a2c:
+        return {Family::shader, false, Cull::back};
+    case Arm::node_opaque_back:
+        return {Family::node, false, Cull::back};
+    case Arm::node_opaque_none:
+        return {Family::node, false, Cull::none};
+    case Arm::node_transparent_back:
+        return {Family::node, true, Cull::back};
+    case Arm::node_transparent_none:
+        return {Family::node, true, Cull::none};
     }
-    throw std::runtime_error("render pipeline kind " + std::to_string(static_cast<int>(kind)) +
+    throw std::runtime_error("render pipeline arm " + std::to_string(static_cast<int>(arm)) +
                              " is not implemented yet.");
 }
 
 } // namespace
 
 RenderPipelineKindTraits pipeline_kind_traits(upstream::RenderPipelineKind kind) {
-    RenderPipelineKindTraits traits = left_handed_kind_traits(kind);
-    traits.clockwise_front_face = scene_pass_clockwise(traits.clockwise_front_face);
+    RenderPipelineKindTraits traits = arm_traits(kind.arm);
+    traits.clockwise_front_face = kind.clockwise_front_face;
     return traits;
 }
 
@@ -2600,9 +2565,8 @@ void shader_stage_block_floats(const upstream::ShaderVariantStageBlock& block,
             break;
         }
     }
-#if BBLITE_RIGHT_HANDED
-    upstream::to_right_handed_shader_system_uniforms(floats, block.system_uniforms);
-#endif
+    // What the pin does to the block once its writer filled it.
+    upstream::finish_shader_system_block(floats, block.system_uniforms);
     const auto& uniform_values = material.shader_uniform_snapshot
                                      ? material.shader_uniform_snapshot(material)
                                      : material.shader_uniform_values;

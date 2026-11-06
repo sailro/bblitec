@@ -182,8 +182,8 @@ cancel })` is a program source; `new Response(stream, { status, statusText, head
 - `setGpuTimingEnabled` times each frame's commands on the task-timing device (application realm).
 - Compute: generation-known WGSL, f32/u32/i32 writers (no f16), uniform/storage buffers, textures and samplers. Six-layer
   storage views with cube sampling need Dawn or patched SDL D3D12/Vulkan/Metal.
-- Right-handed programs (`babylon-lite-rh`) build the pin's right-handed variant; `BBLITE_RIGHT_HANDED` reverses every
-  scene pipeline's winding. A right-handed ShaderMaterial on a glTF-wound or mirrored mesh refuses at run time.
+- Right-handed programs (`babylon-lite-rh`) build the pin's right-handed variant: lowered sources read its folded
+  bodies, including each family's pipeline front face.
 
 ## Cameras and input
 

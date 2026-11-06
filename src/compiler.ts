@@ -146,7 +146,6 @@ import {
     stringLiteral,
 } from "./cpp-literals.js";
 import { jsonToValue, type JsonValuePolicy } from "./compiler/json-value.js";
-import { overlayRefusals } from "./lowering/overlay-scene-lowerer.js";
 import { compileAdaptations } from "./compiler/adaptations.js";
 import {
     emitPropertyAssignment,
@@ -10388,7 +10387,6 @@ class Compiler implements LoweringServices {
         scene: Value,
         node: ts.Node,
     ): DefaultRenderTaskEmission {
-        if (scene.overlayScene) this.fail(node, overlayRefusals.frameGraph);
         this.reachFeature("renderer:scene", node);
         this.reachFeature("renderer:geometry-output", node);
         this.reachFeature("frame-graph:resources", node);
@@ -10399,7 +10397,6 @@ class Compiler implements LoweringServices {
                 [
                     "void bbl_ensure_default_render_task(bbl::Scene& scene) {",
                     '    if (!scene.engine) throw std::runtime_error("A scene render task requires its owning engine.");',
-                    `    if (scene.state->overlay_base) throw std::runtime_error(${stringLiteral(overlayRefusals.frameGraph)});`,
                     "    if (scene.state->default_render_task && !scene.state->default_render_task_created) {",
                     "        auto& engine = *scene.engine;",
                     "        auto target = bbl::create_render_target(engine, " +
