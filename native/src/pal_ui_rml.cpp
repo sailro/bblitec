@@ -373,12 +373,6 @@ std::string normalized_css_keyword(std::string_view value) {
     return js::string_lower(std::string(trim_css_token(value)));
 }
 
-bool is_concrete_authored_width(std::string_view value) {
-    const std::string keyword = normalized_css_keyword(value);
-    return !keyword.empty() && keyword != "auto" && keyword != "initial" && keyword != "inherit" &&
-           keyword != "revert" && keyword != "revert-layer" && keyword != "unset";
-}
-
 void replace_all(std::string& text, std::string_view needle, std::string_view replacement) {
     std::size_t position = 0;
     while ((position = text.find(needle, position)) != std::string::npos) {
@@ -1946,27 +1940,31 @@ void ui_set_style_property(Engine& engine, UiElementHandle element, std::string 
 }
 
 std::string ui_background_longhand(std::string_view shorthand, std::string_view initial) {
-    return std::string(pal::ui_css_wide_keyword(shorthand).value_or(initial));
+    std::string value(shorthand);
+    using Keyword = Rml::PropertySpecification::CssWideKeyword;
+    if (Rml::PropertySpecification::ParseCssWideKeyword(value) == Keyword::None)
+        value = initial;
+    return value;
 }
 
 void ui_set_background(Engine& engine, UiElementHandle element, std::string value) {
     // `none` is the image layer alone, which the shorthand's reset already wrote: the colour
     // takes its initial value.
     if (js::string_lower(std::string(trim_css_token(value))) == "none") {
-        ui_set_style_property(engine, element, "--bbl-background-color", "transparent");
+        ui_set_style_property(engine, element, "background-color", "transparent");
         return;
     }
     // Gradient layers are the image the background cascade paints (pal_ui_background.hpp).
     if (pal::ui_background_gradient_layers(value)) {
-        ui_set_style_property(engine, element, "--bbl-background-color", "transparent");
-        ui_set_style_property(engine, element, "--bbl-background-image", std::move(value));
+        ui_set_style_property(engine, element, "background-color", "transparent");
+        ui_set_style_property(engine, element, "bbl-background-image", std::move(value));
         return;
     }
     if (js::string_lower(value).find("gradient(") != std::string::npos)
         throw std::runtime_error("Native UI background writes represent a colour or plain "
                                  "gradient layers, not: " +
                                  value);
-    ui_set_style_property(engine, element, "--bbl-background-color", std::move(value));
+    ui_set_style_property(engine, element, "background-color", std::move(value));
 }
 
 std::string ui_get_style_property(Engine& engine, UiElementHandle element, std::string_view name) {
@@ -4562,7 +4560,6 @@ std::string take_css_declaration(std::string& style, std::string_view requested_
 bool is_private_ui_declaration(std::string_view declaration) {
     const std::size_t first = declaration.find_first_not_of(" \t\r\n");
     return first != std::string_view::npos && declaration.substr(first).starts_with("--bbl-") &&
-           !declaration.substr(first).starts_with("--bbl-background-") &&
            !declaration.substr(first).starts_with("--bbl-text-gradient");
 }
 
@@ -6607,14 +6604,15 @@ struct UiRmlRuntime {
                              name == "margin-right" || name == "box-shadow" ||
                              name == "accent-color" || name == "color-scheme" ||
                              name == "text-decoration" || name == "order";
-        // Motion values keep their case (keyframes names) and refuse rather than drop.
+        // Motion values keep their case (keyframes names) and refuse rather than drop, as a
+        // background colour (custom property names keep their case) does.
         const bool motion = is_ui_motion_property(name);
         const bool accepted = element.SetInlineProperty(
             name, project_css(checked && name != "box-shadow" && name != "filter"
                                   ? js::string_lower(value)
                                   : value,
                               name));
-        if ((checked || motion) && !accepted)
+        if ((checked || motion || name == "background-color") && !accepted)
             throw std::runtime_error("Unsupported retained UI " + name + " value: " + value);
     }
 
@@ -6803,13 +6801,16 @@ struct UiRmlRuntime {
         if (!viewport_changed && projected_style_revision == engine.ui_style_revision &&
             document->GetStyleSheetContainer())
             return;
-        // Browser user-agent defaults belong below author rules. Keeping them
-        // in this sheet rather than on each element also lets :hover and media
-        // rules participate in the ordinary RmlUi cascade.
-        std::string source(ui_user_agent_css);
-        source +=
+        // Browser user-agent defaults belong below author rules, in the
+        // user-agent origin revert rolls back to. Keeping them in this cascade
+        // rather than on each element also lets :hover and media rules
+        // participate in the ordinary RmlUi cascade.
+        std::string user_agent(ui_user_agent_css);
+        user_agent +=
             "html{width:100%;height:100%;font-family:" + css_font_family +
             ";font-size:16dp;line-height:normal;pointer-events:none;}head{display:none;}body{display:block;height:100%;}\n";
+        user_agent = project_css(std::move(user_agent));
+        std::string source;
         std::vector<Rml::String> selectors;
         std::vector<MediaTheme> themes;
         observes_focus_within = false;
@@ -6869,20 +6870,21 @@ struct UiRmlRuntime {
         for_each_active_style_element(
             [&source](const UiElementRecord& record) { source += keyframes_from(record.text); });
         source = project_css(std::move(source));
-        if (source == projected_style_sheet_source && document->GetStyleSheetContainer()) {
+        if (user_agent + source == projected_style_sheet_source &&
+            document->GetStyleSheetContainer()) {
             projected_style_revision = engine.ui_style_revision;
             return;
         }
-        projected_style_sheet_source = source;
+        projected_style_sheet_source = user_agent + source;
         invalidate_gradient_text();
-        // Inline decorators still need a StyleSheet instance to resolve
-        // their registered instancers. Keep an empty container when no
-        // reached <style> element contributes keyframes.
-        const std::string style_sheet_source = source.empty() ? "body {}" : source;
-        auto style_sheet = Rml::Factory::InstanceStyleSheetString(style_sheet_source);
-        if (!style_sheet) {
+        auto style_sheet = Rml::Factory::InstanceStyleSheetString(user_agent);
+        auto author = source.empty() ? nullptr : Rml::Factory::InstanceStyleSheetString(source);
+        if (!style_sheet || (!source.empty() && !author)) {
             throw std::runtime_error("RmlUi could not create the retained UI stylesheet.");
         }
+        style_sheet->SetUserAgentOrigin();
+        if (author)
+            style_sheet = style_sheet->CombineStyleSheetContainer(*author);
         document->SetStyleSheetContainer(std::move(style_sheet));
         projected_style_revision = engine.ui_style_revision;
     }
@@ -8012,14 +8014,10 @@ struct UiRmlRuntime {
         projected_text_revision = engine.ui_text_revision;
     }
 
-    bool has_active_authored_width(UiElementHandle handle, const UiElementRecord& record) const {
-        const std::string width = cascaded_declaration(handle, record, "width");
-        // inherit is the parent's width (RmlUi patch 0066).
-        if (normalized_css_keyword(width) == "inherit")
-            return record.parent.value != invalid_handle &&
-                   has_active_authored_width(record.parent,
-                                             handle_at(engine.ui_elements, record.parent));
-        return !width.empty() && is_concrete_authored_width(width);
+    /** A declared width other than auto, its CSS-wide keywords resolved (RmlUi patch 0066). */
+    static bool has_active_authored_width(Rml::Element& element) {
+        const Rml::Property* width = element.GetLocalProperty(Rml::PropertyId::Width);
+        return width && width->unit != Rml::Unit::KEYWORD;
     }
 
     bool sync_container_queries() {
@@ -8340,7 +8338,7 @@ struct UiRmlRuntime {
             if (!projected.element || projected.intrinsic_min_width.empty()) {
                 continue;
             }
-            if (has_active_authored_width(UiElementHandle{index}, engine.ui_elements[index])) {
+            if (has_active_authored_width(*projected.element)) {
                 continue;
             }
 

@@ -9408,7 +9408,7 @@ test("folds a static CSS fragment array joined into retained UI cssText", () => 
 
     assert.match(
         result.cpp,
-        /position:absolute;top:16px;background-clip:border-box;[^"]*--bbl-background-color:rgba\(10,12,20,0\.75\)/,
+        /position:absolute;top:16px;background-clip:border-box;[^"]*background-color:rgba\(10,12,20,0\.75\)/,
     );
 });
 
@@ -10682,7 +10682,11 @@ test("switches synthetic intrinsic width with active hover width rules", () => {
         projection.indexOf("bool has_active_authored_width"),
         projection.indexOf("void render_canvas("),
     );
-    assert.match(intrinsic, /cascaded_declaration\(handle, record, "width"\)/);
+    // RmlUi's cascade, hover rules and CSS-wide keywords included, gives the width.
+    assert.match(
+        intrinsic,
+        /element\.GetLocalProperty\(Rml::PropertyId::Width\)/,
+    );
     // The element cascade reads the matching rules through the shared core.
     const cascade = cppFunction(
         projection,
@@ -11572,7 +11576,7 @@ test("refuses retained style properties outside the reviewed surface", () => {
     );
     assert.match(
         compileSource(withCss("background-size:cover;")).cpp,
-        /--bbl-background-size:cover/,
+        /bbl-background-size:cover/,
     );
     assert.match(
         compileSource(withCss("color:transparent;")).cpp,
@@ -11792,7 +11796,7 @@ test("lowers conditional retained UI gradients to RmlUi decorators", () => {
 
     assert.match(
         result.cpp,
-        /v_lit \? "[^"]*--bbl-background-color:transparent;--bbl-background-image:linear-gradient\(#ff8a5d,#ff4d4d\);"/,
+        /v_lit \? "[^"]*background-color:transparent;bbl-background-image:linear-gradient\(#ff8a5d,#ff4d4d\);"/,
     );
     assert.match(result.cpp, /background-color:rgba\(40,40,48,.7\)/);
 });
@@ -11818,9 +11822,9 @@ test("projects independently sized gradient layers into RmlUi decorators", () =>
 
     assert.match(
         result.cpp,
-        /--bbl-background-image:linear-gradient\(#fff,#fff\) padding-box \/ 2px 22px \/ 50% 50%,linear-gradient\(#fff,#fff\) padding-box \/ 22px 2px \/ 50% 50%/,
+        /bbl-background-image:linear-gradient\(#fff,#fff\) padding-box \/ 2px 22px \/ 50% 50%,linear-gradient\(#fff,#fff\) padding-box \/ 22px 2px \/ 50% 50%/,
     );
-    assert.doesNotMatch(result.cpp, /--bbl-background-image:[^";]*no-repeat/);
+    assert.doesNotMatch(result.cpp, /bbl-background-image:[^";]*no-repeat/);
     assert.doesNotMatch(result.cpp, /mix-blend-mode/);
 });
 
@@ -12107,7 +12111,7 @@ test("projects host page chrome without changing scene source", () => {
     assert.match(result.cpp, /ui_set_text[^\n]*"Keyboard help"/);
     assert.match(
         result.cpp,
-        /position:absolute;background-clip:border-box;[^"]*--bbl-background-color:rgba\(0,0,0,0\.5\)/,
+        /position:absolute;background-clip:border-box;[^"]*background-color:rgba\(0,0,0,0\.5\)/,
     );
     assert.match(result.cpp, /ui_append_to_root/);
 });

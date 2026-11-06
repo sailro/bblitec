@@ -134,12 +134,12 @@ test("image controls retain transparent text, composed transforms, empty clips a
         compile(
             ".hub{background-image:radial-gradient(circle at 38% 32%, rgba(255,255,255,0.55), rgba(255,255,255,0) 60%),linear-gradient(red,blue)}",
         ).cpp,
-        /--bbl-background-image:radial-gradient\(circle at 38% 32%, rgba\(255,255,255,0\.55\), rgba\(255,255,255,0\) 60%\),linear-gradient\(red,blue\)/,
+        /bbl-background-image:radial-gradient\(circle at 38% 32%, rgba\(255,255,255,0\.55\), rgba\(255,255,255,0\) 60%\),linear-gradient\(red,blue\)/,
     );
     // An explicit size is a decorator layer's own box.
     assert.match(
         compile(".panel{background-size:20px 40px}").cpp,
-        /--bbl-background-size:20px 40px/,
+        /bbl-background-size:20px 40px/,
     );
     for (const declaration of [
         "background-image:linear-gradient(red,blue) no-repeat",

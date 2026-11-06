@@ -500,8 +500,8 @@
     },
     {
       "library": "rmlui",
-      "file": "native/patches/rmlui/0066-css-inherit.patch",
-      "purpose": "the CSS-wide inherit keyword takes the parent's computed value on every property and shorthand",
+      "file": "native/patches/rmlui/0066-css-wide-keywords.patch",
+      "purpose": "the CSS-wide inherit, initial, unset and revert keywords resolve on every property, shorthand and keyframe, revert to the user-agent origin's declaration",
       "upstream": { "state": "unsubmitted" },
       "variants": ["all"]
     },

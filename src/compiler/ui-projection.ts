@@ -2228,6 +2228,31 @@ export class UiProjection {
         ["justify-self", ["auto", "start", "end", "center", "stretch"]],
     ]);
 
+    /**
+     * The keywords reaching a CSS initial value RmlUi's registration does not
+     * carry: canvastext, medium, normal and the default font family, which
+     * the user-agent root rule gives the inherited properties, and a border
+     * colour's currentcolor, which unset and revert reach too.
+     */
+    private static readonly UI_UNREPRESENTED_INITIAL_VALUES: ReadonlyMap<
+        string,
+        readonly string[]
+    > = new Map<string, readonly string[]>([
+        ...["color", "font", "font-family", "font-size", "line-height"].map(
+            (property): [string, readonly string[]] => [property, ["initial"]],
+        ),
+        ...[
+            "border-color",
+            "border-top-color",
+            "border-right-color",
+            "border-bottom-color",
+            "border-left-color",
+        ].map((property): [string, readonly string[]] => [
+            property,
+            ["initial", "unset", "revert"],
+        ]),
+    ]);
+
     private static readonly INERT_UI_STYLE_PROPERTIES = new EmissionSet<string>(
         [
             "-webkit-user-select",
@@ -2493,6 +2518,21 @@ export class UiProjection {
         this.context.failAtFile(message);
     }
 
+    /** RmlUi keeps a custom property's value as text, a CSS-wide keyword included. */
+    private refuseCustomPropertyKeyword(
+        property: string,
+        value: string,
+        site: ts.Node | undefined,
+    ): void {
+        const keyword = cssWideKeyword(value);
+        if (keyword !== undefined)
+            this.uiStyleRefusal(
+                site,
+                property,
+                `the CSS-wide ${keyword} keyword is not represented on a custom property, which the style engine keeps as text`,
+            );
+    }
+
     /**
      * Enforce the reviewed style surface over one static CSS declaration
      * list (AP-3): a projected property lowers, a reached degraded property
@@ -2525,7 +2565,10 @@ export class UiProjection {
                 .toLowerCase();
             if (property.length === 0) return;
             this.refuseUnresolvableMath(property, literalValue, site);
-            if (UiProjection.isCustomStyleProperty(property)) return;
+            if (UiProjection.isCustomStyleProperty(property)) {
+                this.refuseCustomPropertyKeyword(property, literalValue, site);
+                return;
+            }
             if (
                 property === "place-items" &&
                 !/^(?:start|end|center|stretch)(?:\s+(?:start|end|center|stretch))?$/.test(
@@ -2559,18 +2602,19 @@ export class UiProjection {
                     );
                 return;
             }
-            // RmlUi resolves `inherit` on every property (patch 0066); the
-            // background longhands resolve `initial` and `unset` too, through
-            // the PAL's own cascade.
+            // RmlUi's cascade resolves the CSS-wide keywords (patch 0066),
+            // except where they reach an initial value it does not carry.
+            const keyword = cssWideKeyword(literalValue);
             if (
-                /^(?:revert|revert-layer)$/.test(literalValue) ||
-                (/^(?:initial|unset)$/.test(literalValue) &&
-                    !/^background(?:-color|-clip)?$/.test(property))
+                keyword !== undefined &&
+                UiProjection.UI_UNREPRESENTED_INITIAL_VALUES.get(
+                    property,
+                )?.includes(keyword)
             )
                 this.uiStyleRefusal(
                     site,
                     property,
-                    `the CSS-wide ${literalValue} keyword is not represented`,
+                    `the CSS-wide ${keyword} keyword is not represented: RmlUi's initial value is not CSS's (canvastext, medium, normal, the default font family or currentcolor)`,
                 );
             if (property === "accent-color") {
                 if (!UiProjection.UI_ACCENT_COLOR.test(literalValue))
@@ -2710,7 +2754,12 @@ export class UiProjection {
                         "only a nonnegative finite number or percentage, literal or through var() with an optional literal fallback, is represented",
                     );
             }
-            if (supportedUiLayoutValue(property, literalValue) === false) {
+            // RmlUi's cascade resolves the layout properties' CSS-wide keywords;
+            // the PAL wraps text by display's authored value.
+            if (
+                supportedUiLayoutValue(property, literalValue) === false &&
+                (keyword === undefined || property === "display")
+            ) {
                 this.uiStyleRefusal(
                     site,
                     property,
@@ -3049,7 +3098,7 @@ export class UiProjection {
         if (cssName === "webkit-appearance" || cssName === "-webkit-appearance")
             return "appearance";
         return cssName === "background"
-            ? "--bbl-background-color"
+            ? "background-color"
             : cssName === "word-wrap"
               ? "overflow-wrap"
               : nativeUiImageProperty(cssName);
@@ -3312,11 +3361,10 @@ export class UiProjection {
         value = authoredDeclarations.join(";");
         for (const declaration of customDeclarations) {
             const colon = declaration.indexOf(":");
-            this.refuseUnresolvableMath(
-                declaration.slice(0, colon).trim(),
-                declaration.slice(colon + 1).toLowerCase(),
-                site,
-            );
+            const property = declaration.slice(0, colon).trim();
+            const literal = declaration.slice(colon + 1).toLowerCase();
+            this.refuseUnresolvableMath(property, literal, site);
+            this.refuseCustomPropertyKeyword(property, literal, site);
         }
         const authoredDisplay = /(?:^|;)\s*display\s*:/i.test(value);
         this.auditUiStyleDeclarations(value, site);
@@ -3594,7 +3642,7 @@ export class UiProjection {
             }
             const property = declaration.slice(0, colon).trim().toLowerCase();
             let literal = declaration.slice(colon + 1).trim();
-            let nativeProperty = nativeUiImageProperty(property, literal);
+            let nativeProperty = nativeUiImageProperty(property);
             if (property === "background-image") {
                 const source = uiBackgroundImageSource(literal);
                 if (source !== undefined) {
@@ -3707,7 +3755,6 @@ export class UiProjection {
                 );
             if (
                 property.startsWith("--bbl-") &&
-                !property.startsWith("--bbl-background-") &&
                 property !== "--bbl-authored-display"
             )
                 this.uiStyleRefusal(
@@ -3825,9 +3872,37 @@ export class UiProjection {
             if (site) this.context.fail(site, message);
             this.context.failAtFile(message);
         };
-        const source = UiProjection.splitUiKeyframesBlocks(
-            stripUiCssComments(value),
-        ).rules;
+        const { rules: source, keyframes } =
+            UiProjection.splitUiKeyframesBlocks(stripUiCssComments(value));
+        // Keyframe declarations reach RmlUi as written, within the surface
+        // the rules' declarations meet.
+        const auditKeyframes = (): void => {
+            for (let cursor = 0; cursor < keyframes.length;) {
+                const opening = findUiCssSyntax(keyframes, "{", cursor);
+                const end =
+                    opening === undefined
+                        ? undefined
+                        : uiCssBlockEnd(keyframes, opening);
+                if (opening === undefined || end === undefined) return;
+                enter(keyframes.slice(cursor, opening).trim());
+                const body = keyframes.slice(opening + 1, end - 1);
+                for (let inner = 0; inner < body.length;) {
+                    const start = findUiCssSyntax(body, "{", inner);
+                    const close =
+                        start === undefined
+                            ? undefined
+                            : uiCssBlockEnd(body, start);
+                    if (start === undefined || close === undefined) break;
+                    this.auditUiStyleDeclarations(
+                        body.slice(start + 1, close - 1),
+                        site,
+                    );
+                    inner = close;
+                }
+                cursor = end;
+            }
+            searched = 0;
+        };
 
         const parseBlocks = (
             text: string,
@@ -3969,8 +4044,12 @@ export class UiProjection {
                 }
             }
         };
-        if (at) this.context.attributeRefusalsTo(at, () => parseBlocks(source));
-        else parseBlocks(source);
+        const lower = (): void => {
+            auditKeyframes();
+            parseBlocks(source);
+        };
+        if (at) this.context.attributeRefusalsTo(at, lower);
+        else lower();
         return rules;
     }
 
@@ -6562,11 +6641,11 @@ export class UiProjection {
     }
 
     /**
-     * A `background` write: RmlUi's clip reset and each PAL longhand at the
-     * value's CSS-wide keyword (the PAL resolves it; a clip one overrides
-     * RmlUi's) or else its initial value (no clip override), chosen at
-     * generation for a `known` value and else at run time; then the value,
-     * which the PAL tells apart as a colour or plain gradient layers.
+     * A `background` write: each longhand but the colour at the value's
+     * CSS-wide keyword (RmlUi's cascade resolves it) or else its initial
+     * value, chosen at generation for a `known` value and else at run time;
+     * then the value, which the PAL tells apart as a colour or plain gradient
+     * layers.
      */
     private emitUiBackgroundShorthand(
         engine: string,
@@ -6582,16 +6661,10 @@ export class UiProjection {
             known === undefined
                 ? `bbl::ui_background_longhand(${shorthand}, ${this.context.cppString(initial)})`
                 : this.context.cppString(cssWideKeyword(known) ?? initial);
-        const declarations: (readonly [string, string])[] = [
-            ["background-clip", this.context.cppString("border-box")],
-            ...UiProjection.UI_BACKGROUND_RESETS.map(
-                ([name, initial]) =>
-                    [
-                        `--bbl-${name}`,
-                        keywordOr(name === "background-clip" ? "" : initial),
-                    ] as const,
-            ),
-        ];
+        const declarations = UiProjection.UI_BACKGROUND_RESETS.map(
+            ([name, initial]) =>
+                [nativeUiImageProperty(name), keywordOr(initial)] as const,
+        );
         for (const [name, cpp] of declarations)
             this.context.emit({
                 kind: "expression",

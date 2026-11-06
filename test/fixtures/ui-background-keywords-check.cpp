@@ -39,12 +39,12 @@ int main() {
                    Rml::Colourb(0x12, 0x34, 0x56));
             assert(clip(id) == clip("parent"));
         }
-        for (const auto* id : {"initial", "unset"}) {
+        for (const auto* id : {"initial", "unset", "revert"}) {
             assert(raw(id)->GetComputedValues().background_color().alpha == 0);
             assert(clip(id) == 0);
         }
-        ui_set_style_property(engine, ui_get_element_by_id(engine, "parent"),
-                              "--bbl-background-color", "#abcdef");
+        ui_set_style_property(engine, ui_get_element_by_id(engine, "parent"), "background-color",
+                              "#abcdef");
         pal::update_ui_rml_runtime(runtime, 640, 480);
         for (const auto* id : {"inherit", "written"})
             assert(raw(id)->GetComputedValues().background_color() ==

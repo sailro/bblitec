@@ -6,11 +6,12 @@
 #include <cstdio>
 
 namespace bbl::pal {
+double fixture_time = 1000;
 std::string asset_path(std::string_view) {
     throw std::runtime_error("Unexpected fixture asset read");
 }
 std::string environment_variable(const char*) { return {}; }
-double performance_milliseconds() { return 1000; }
+double performance_milliseconds() { return fixture_time; }
 Engine& window_document_engine() {
     static Engine document;
     return document;
@@ -47,6 +48,9 @@ int main() try {
         const auto radius = [&](const char* id) {
             return element(id)->GetComputedValues().border_top_left_radius().value.x;
         };
+        // Animations start on one update and apply their keys once time moves.
+        update();
+        pal::fixture_time += 100;
         update();
         for (const char* id : {"select", "button"}) {
             const auto& values = element(id)->GetComputedValues();
@@ -68,6 +72,25 @@ int main() try {
         check(close_to(element("pad")->GetComputedValues().padding_top().value, 20.f, "pad"),
               "an inherited em length is the parent's computed length");
         check(panel_color(element("written")), "a CSSOM inherit beats the stylesheet's color");
+        check(close_to(radius("keyword-initial"), 0.f, "keyword-initial") &&
+                  close_to(radius("keyword-unset"), 0.f, "keyword-unset"),
+              "initial and unset on a property that does not inherit replace a lower declaration");
+        check(panel_color(element("keyword-unset")),
+              "unset on an inherited property inherits over a lower declaration");
+        const auto& heading = element("heading")->GetComputedValues();
+        check(close_to(heading.margin_top().value, 0.67f * 28.f, "heading margin") &&
+                  close_to(heading.padding_left().value, 0.f, "heading padding") &&
+                  panel_color(element("heading")),
+              "revert takes the user-agent declaration, its em at the element, or none");
+        check(close_to(element("written-heading")->GetComputedValues().margin_top().value,
+                       0.83f * 21.f, "written heading margin"),
+              "a CSSOM revert takes the user-agent declaration");
+        check(close_to(radius("taken"), 12.f, "taken"),
+              "a keyframe's inherit takes the parent's value");
+        check(close_to(radius("cleared"), 0.f, "cleared"),
+              "a keyframe's initial and unset take the initial value");
+        check(close_to(element("keyed")->GetComputedValues().padding_top().value, 20.f, "keyed"),
+              "a keyframe's inherited em length is the parent's computed length");
         ui_toggle_class(engine, ui_get_element_by_id(engine, "panel"), "wide", true);
         update();
         check(close_to(radius("round"), 20.f, "round after") &&
