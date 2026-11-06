@@ -9,7 +9,9 @@ import { runApplicationRmlUiFixture } from "./rmlui-application-fixture.js";
 // declares none) and followed when the parent changes, and a CSSOM inherit;
 // initial, unset and revert over lower declarations, revert reaching the
 // user-agent sheet's declaration (its em computed at the element) from a
-// rule and from CSSOM; keyframe keywords resolved as their animations start.
+// rule and from CSSOM; CSS's initial CanvasText, medium and currentcolor; a
+// custom property's inherit and guaranteed-invalid initial; keyframe keywords
+// resolved as their animations start.
 const program = `
     const sheet = document.createElement("style");
     sheet.textContent = \`
@@ -25,6 +27,12 @@ const program = `
         .rounded.unset { border-radius: unset; color: unset; }
         .flat { margin: 0; color: #ff0000; padding-left: 4px; }
         .flat.reverted { margin: revert; color: revert; padding-left: revert-layer; }
+        .canvas-text { color: initial; font-size: initial; line-height: initial; }
+        .edge { color: #00ff00; border-top: 2px solid; border-right: 2px solid #ff0000; }
+        .edge.reset { border-right-color: initial; }
+        .tones { --tone: #ff0000; }
+        .tones .tone-initial { --tone: initial; color: var(--tone, #0000ff); }
+        .tones .tone-inherit { --tone: inherit; color: var(--tone, #0000ff); }
         @keyframes take { from { border-radius: inherit; } to { border-radius: inherit; } }
         @keyframes clear { from { border-radius: initial; } to { border-radius: unset; } }
         @keyframes pad { from { padding: inherit; } to { padding: inherit; } }
@@ -90,6 +98,22 @@ const program = `
         element.className = className;
         panel.appendChild(element);
     }
+    for (const [id, className, parent] of [
+        ["canvas-text", "canvas-text", panel],
+        ["edge", "edge reset", panel],
+        ["tones", "tones", panel],
+    ] as const) {
+        const element = document.createElement("div");
+        element.id = id;
+        element.className = className;
+        parent.appendChild(element);
+    }
+    for (const className of ["tone-initial", "tone-inherit"]) {
+        const element = document.createElement("div");
+        element.id = className;
+        element.className = className;
+        document.getElementById("tones")!.appendChild(element);
+    }
     const heading = document.createElement("h1");
     heading.id = "heading";
     heading.className = "flat reverted";
@@ -104,7 +128,7 @@ const program = `
     globalThis.close();
 `;
 
-test("CSS-wide keywords lower as written; those reaching an initial value RmlUi does not carry refuse", () => {
+test("CSS-wide keywords lower as written", () => {
     const result = compileSource(program);
     assert.match(
         result.cpp,
@@ -116,41 +140,43 @@ test("CSS-wide keywords lower as written; those reaching an initial value RmlUi 
         () => compileSource(sheet(".box { display: inherit; }")),
         /'display' is not lowered: the value requires layout/,
     );
-    assert.throws(
-        () => compileSource(sheet(".box { --tone: unset; }")),
-        /CSS-wide unset keyword is not represented on a custom property/,
-    );
-    for (const [rules, keyword] of [
-        [".box { color: initial; }", "initial"],
-        [".box { font: initial; }", "initial"],
-        [".box { border-top-color: unset; }", "unset"],
-        [".box { border-color: revert-layer; }", "revert"],
-        ["@keyframes fade { to { line-height: initial; } }", "initial"],
-    ] as const)
-        assert.throws(
-            () => compileSource(sheet(rules)),
-            new RegExp(
-                `CSS-wide ${keyword} keyword is not represented: RmlUi's initial value is not CSS's`,
-            ),
-            rules,
-        );
     assert.doesNotThrow(() =>
         compileSource(
             sheet(
-                ".box { width: unset; padding: revert; margin: revert-layer; padding-top: initial; flex-grow: unset; color: unset; font-size: revert; background-color: initial; background-clip: unset; } @keyframes grow { to { width: inherit; } }",
+                ".box { width: unset; padding: revert; margin: revert-layer; padding-top: initial; flex-grow: unset; color: initial; font: initial; border-top-color: unset; border-color: revert-layer; --tone: unset; font-size: revert; background-color: initial; background-clip: unset; } @keyframes grow { to { width: inherit; line-height: initial; } }",
             ),
         ),
     );
 });
 
-test("keyframe declarations meet the rules' surface", () => {
+test("keyframe declarations lower as rules do and refuse what RmlUi does not key", () => {
+    const sheet = (rules: string) =>
+        `const sheet = document.createElement("style"); sheet.textContent = ${JSON.stringify(rules)}; document.head.appendChild(sheet);`;
     assert.throws(
-        () =>
-            compileSource(
-                `const sheet = document.createElement("style"); sheet.textContent = "@keyframes spin { to { scale: 2 3; } }"; document.head.appendChild(sheet);`,
-            ),
+        () => compileSource(sheet("@keyframes spin { to { scale: 2 3; } }")),
         /'scale' is not lowered/,
     );
+    const { cpp } = compileSource(
+        sheet(
+            "@keyframes shimmer { 0% { background-position: 0% 0; } 100% { background-position: 200% 0; transform: rotate(360deg); } }",
+        ),
+    );
+    assert.match(
+        cpp,
+        /ui_set_style_keyframes\([^;]+"@keyframes shimmer\{0%\{bbl-background-position:0% 0;\}100%\{bbl-background-position:200% 0;bbl-transform:rotate\(360deg\);\}\}\\n"\);/,
+    );
+    for (const [declaration, property] of [
+        ["box-shadow: 0 0 2px red", "box-shadow"],
+        ["background-size: 10px 20px", "bbl-background-size"],
+        ["outline: 1px solid red", "--bbl-outline"],
+        ["--tone: red", "--tone"],
+    ] as const)
+        assert.throws(
+            () =>
+                compileSource(sheet(`@keyframes k { to { ${declaration}; } }`)),
+            new RegExp(`a keyframe's '${property}' is not keyed`),
+            declaration,
+        );
 });
 
 test("the CSS-wide keywords resolve natively in the cascade and in keyframes", (t) => {

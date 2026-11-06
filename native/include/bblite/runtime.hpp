@@ -4523,6 +4523,8 @@ struct UiElementRecord {
     std::vector<std::string> style_property_order;
     /** Rules owned by this retained <style> element, in source order. */
     std::vector<UiStyleRule> style_rules;
+    /** Its `@keyframes` blocks as RmlUi reads them. */
+    std::string style_keyframes;
     UiElementHandle parent{};
     std::vector<UiElementHandle> children;
     /**

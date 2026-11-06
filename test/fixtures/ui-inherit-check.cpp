@@ -85,6 +85,19 @@ int main() try {
         check(close_to(element("written-heading")->GetComputedValues().margin_top().value,
                        0.83f * 21.f, "written heading margin"),
               "a CSSOM revert takes the user-agent declaration");
+        const auto& canvas_text = element("canvas-text")->GetComputedValues();
+        check(canvas_text.color() == Rml::Colourb(0, 0, 0) &&
+                  close_to(canvas_text.font_size(), 16.f, "canvas-text font size") &&
+                  canvas_text.line_height().inherit_type == Rml::Style::LineHeight::Normal,
+              "initial is CSS's CanvasText, medium and normal");
+        const auto& edge = element("edge")->GetComputedValues();
+        check(edge.border_top_color() == Rml::Colourb(0, 255, 0) &&
+                  edge.border_right_color() == Rml::Colourb(0, 255, 0),
+              "an undeclared or initial border colour is currentcolor");
+        check(element("tone-initial")->GetComputedValues().color() == Rml::Colourb(0, 0, 255),
+              "a custom property's initial is the guaranteed-invalid value");
+        check(element("tone-inherit")->GetComputedValues().color() == Rml::Colourb(255, 0, 0),
+              "a custom property's inherit takes the parent's value");
         check(close_to(radius("taken"), 12.f, "taken"),
               "a keyframe's inherit takes the parent's value");
         check(close_to(radius("cleared"), 0.f, "cleared"),

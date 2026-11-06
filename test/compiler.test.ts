@@ -10649,8 +10649,12 @@ test("recomputes retained UI intrinsic width without overriding responsive width
         projection.indexOf("bool has_active_authored_width"),
         projection.indexOf("void render_canvas("),
     );
-    assert.match(intrinsic, /intrinsic_width_applied/);
-    assert.match(intrinsic, /RemoveProperty\("width"\)/);
+    // The pass's widths restore the element's own inline width when cleared.
+    assert.match(
+        intrinsic,
+        /intrinsic_width\.set\(\*projected\.element, Rml::PropertyId::Width, std::nullopt\)/,
+    );
+    assert.match(intrinsic, /intrinsic_width\.set_string\(/);
     assert.match(intrinsic, /has_active_authored_width/);
 });
 

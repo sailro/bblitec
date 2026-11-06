@@ -25,11 +25,24 @@ inline void register_ui_background_properties() {
     // resolves their CSS-wide keywords (RmlUi patch 0066).
     for (const auto& [name, initial] :
          {std::pair{"bbl-background-image", "none"}, std::pair{"bbl-background-size", "auto"},
-          std::pair{"bbl-background-position", "0% 0%"},
           std::pair{"bbl-background-repeat", "repeat"},
           std::pair{"bbl-background-origin", "padding-box"},
           std::pair{"bbl-background-attachment", "scroll"}})
         Rml::StyleSheetSpecification::RegisterProperty(name, initial, false).AddParser("string");
+    // The position's two offsets, which animations interpolate, set through the shorthand once
+    // the projection gives it both (ui_background_offsets).
+    for (const char* axis : {"bbl-background-position-x", "bbl-background-position-y"})
+        Rml::StyleSheetSpecification::RegisterProperty(axis, "0%", false)
+            .AddParser("length_percent");
+    Rml::StyleSheetSpecification::RegisterShorthand(
+        "bbl-background-position", "bbl-background-position-x, bbl-background-position-y",
+        Rml::ShorthandType::FallThrough);
+}
+
+/** The element's background position as its two offsets. */
+inline Rml::String ui_background_position(Rml::Element& element) {
+    return element.GetProperty("bbl-background-position-x")->ToString() + " " +
+           element.GetProperty("bbl-background-position-y")->ToString();
 }
 
 /**
@@ -213,15 +226,14 @@ public:
                         if (repeat == "repeat" && size != "auto")
                             throw std::runtime_error(
                                 "Repeating sized UI backgrounds are not represented.");
-                        const auto position =
-                            element.GetProperty<Rml::String>("bbl-background-position");
+                        const auto position = ui_background_position(element);
                         // The style engine keeps the image path unquoted.
                         const auto source = '"' + image + '"';
                         // An explicit size is a layer with its own box the image fills,
                         // placed at the position's offsets (RmlUi patch 0025).
                         if (size != "auto" && size != "contain" && size != "cover")
                             decorator = "image(" + source + " fill) padding-box / " + size + " / " +
-                                        ui_background_offsets(position);
+                                        position;
                         else
                             decorator = "image(" + source + " " +
                                         (repeat == "repeat" ? "repeat"

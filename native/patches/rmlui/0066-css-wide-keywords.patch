@@ -1,12 +1,15 @@
-Resolve the CSS-wide keywords on every property and shorthand (CSS Cascade 4): a declaration whose whole value is
-inherit, initial, unset, revert or revert-layer (revert in a cascade without layers) parsed as invalid and was dropped,
-so a lower declaration such as the user-agent `select { color }` stood where a page's `select { color: inherit }` reads
-its container's.
-unset is inherit or initial as the property inherits. An inherited property's initial is its initial value; that of a
-property that does not inherit reads as no declaration, as its initial value does where layout tells an undeclared
-property (an automatic minimum width) from a declared one. revert is the declaration the user-agent origin's rules alone
-give the element (StyleSheetContainer::SetUserAgentOrigin marks a sheet's rules as that origin), or none: an element
-definition resolves a revert winning among its rules, the cascade a local one.
+Resolve the CSS-wide keywords on every property, shorthand and custom property (CSS Cascade 4): a declaration whose
+whole value is inherit, initial, unset, revert or revert-layer (revert in a cascade without layers) parsed as invalid
+and was dropped, so a lower declaration such as the user-agent `select { color }` stood where a page's
+`select { color: inherit }` reads its container's.
+unset is inherit or initial as the property inherits. An inherited property's initial is its CSS initial value, which
+an application gives where it differs from the default value (StyleSheetSpecification::SetInitialValue, var()
+included); that of a property that does not inherit reads as no declaration, as its initial value does where layout
+tells an undeclared property (an automatic minimum width) from a declared one. A border colour the cascade leaves
+undeclared is its initial currentcolor, the element's color. revert is the declaration the user-agent origin's rules
+alone give the element (StyleSheetContainer::SetUserAgentOrigin marks a sheet's rules as that origin), or none: an
+element definition resolves a revert winning among its rules, the cascade a local one. A custom property's inherit,
+unset and revert take the parent's value, its initial the guaranteed-invalid value.
 An inherited property's inherit is its parent's computed value already. One that does not inherit takes the declaration
 giving the parent its value (an inherit there defers further up; the initial value where the parent declares none),
 computed in the declaring element's font size, zoom and viewport; vertical-align and the border widths, whose computed
@@ -21,11 +24,36 @@ A shorthand's keyword sets every longhand, with the ones its value syntax here l
 for font, the border-image longhands for border; removing the shorthand removes them too.
 PropertySpecification::ParseCssWideKeyword names the keyword a value is.
 
+diff --git a/Include/RmlUi/Core/PropertyDefinition.h b/Include/RmlUi/Core/PropertyDefinition.h
+index 1f912ba..f6e335b 100644
+--- a/Include/RmlUi/Core/PropertyDefinition.h
++++ b/Include/RmlUi/Core/PropertyDefinition.h
+@@ -41,6 +41,9 @@ public:
+ 
+ 	/// Returns the default defined for this property.
+ 	const Property* GetDefaultValue() const;
++	/// Returns the CSS initial value the initial keyword gives an inherited property: the one an application sets
++	/// (StyleSheetSpecification::SetInitialValue), else the default value.
++	const Property* GetInitialValue() const;
+ 
+ 	/// Returns the target for resolving values with percent and possibly number units.
+ 	RelativeTarget GetRelativeTarget() const;
+@@ -52,6 +55,10 @@ private:
+ 	PropertyId id;
+ 
+ 	Property default_value;
++	Property initial_value;
++	bool has_initial_value = false;
++
++	friend class PropertySpecification;
+ 	bool inherited;
+ 	bool forces_layout;
+ 
 diff --git a/Include/RmlUi/Core/PropertySpecification.h b/Include/RmlUi/Core/PropertySpecification.h
-index c544ac3..d001626 100644
+index c544ac3..c16366c 100644
 --- a/Include/RmlUi/Core/PropertySpecification.h
 +++ b/Include/RmlUi/Core/PropertySpecification.h
-@@ -97,6 +97,14 @@ public:
+@@ -97,6 +97,18 @@ public:
  	/// Returns the properties of dictionary converted to a string.
  	String PropertiesToString(const PropertyDictionary& dictionary, bool include_name, char delimiter) const;
  
@@ -37,10 +65,14 @@ index c544ac3..d001626 100644
 +	/// not inherit, and revert.
 +	static CssWideKeyword GetCssWideKeyword(const Property& property);
 +
++	/// Gives an inherited property the CSS initial value `value`, a declaration's value (var() included), where it
++	/// differs from the default value. Returns false when the value does not parse.
++	bool SetInitialValue(PropertyId id, const String& value);
++
  private:
  	using Properties = Vector<UniquePtr<PropertyDefinition>>;
  	using Shorthands = Vector<UniquePtr<ShorthandDefinition>>;
-@@ -111,6 +119,9 @@ private:
+@@ -111,6 +123,9 @@ private:
  	PropertyIdSet property_ids_inherited;
  	PropertyIdSet property_ids_forcing_layout;
  
@@ -64,6 +96,19 @@ index dd312cd..262bd1e 100644
  private:
  	MediaBlockList media_blocks;
  
+diff --git a/Include/RmlUi/Core/StyleSheetSpecification.h b/Include/RmlUi/Core/StyleSheetSpecification.h
+index 97c32e6..1bb0cd4 100644
+--- a/Include/RmlUi/Core/StyleSheetSpecification.h
++++ b/Include/RmlUi/Core/StyleSheetSpecification.h
+@@ -38,6 +38,8 @@ public:
+ 	/// @param[in] property_name The name of the desired property.
+ 	/// @return The appropriate property definition if it could be found, nullptr otherwise.
+ 	static const PropertyDefinition* GetProperty(const String& property_name);
++	/// Gives an inherited property the CSS initial value its initial keyword takes (PropertySpecification).
++	static bool SetInitialValue(const String& property_name, const String& value);
+ 	static const PropertyDefinition* GetProperty(PropertyId id);
+ 
+ 	/// Returns the id set of all registered property definitions.
 diff --git a/Include/RmlUi/Core/Unit.h b/Include/RmlUi/Core/Unit.h
 index 2fa3b66..92cfd94 100644
 --- a/Include/RmlUi/Core/Unit.h
@@ -167,7 +212,7 @@ index ff80bf1..ebccde2 100644
  };
  
 diff --git a/Source/Core/ElementStyle.cpp b/Source/Core/ElementStyle.cpp
-index 7aa27f2..459581c 100644
+index 7aa27f2..9ad5898 100644
 --- a/Source/Core/ElementStyle.cpp
 +++ b/Source/Core/ElementStyle.cpp
 @@ -13,6 +13,7 @@
@@ -203,7 +248,7 @@ index 7aa27f2..459581c 100644
  }
  
  const Property* ElementStyle::GetLocalCustomProperty(const String& name, const PropertyDictionary& inline_properties,
-@@ -86,31 +97,37 @@ const Property* ElementStyle::GetLocalShorthand(ShorthandId id, const PropertyDi
+@@ -86,45 +97,59 @@ const Property* ElementStyle::GetLocalShorthand(ShorthandId id, const PropertyDi
  ElementStyle::PropertyElementPair ElementStyle::GetSpecifiedProperty(const PropertySources& sources, PropertyId id)
  {
  	const Property* local_property = GetLocalProperty(id, sources.inline_properties, sources.definition);
@@ -254,8 +299,37 @@ index 7aa27f2..459581c 100644
 +
  ElementStyle::PropertyElementPair ElementStyle::GetSpecifiedCustomProperty(const PropertySources& sources, const String& name)
  {
- 	if (const Property* local_property = GetLocalCustomProperty(name, sources.inline_properties, sources.definition))
-@@ -437,8 +454,10 @@ void ElementStyle::TransitionPropertyChanges(const PropertySources& sources, Pro
+-	if (const Property* local_property = GetLocalCustomProperty(name, sources.inline_properties, sources.definition))
+-		return {local_property, sources.element};
++	// The nearest declaration, an inherit deferring to the next; initial is the guaranteed-invalid value, none.
++	const auto declaration = [&name](const Property* property, Element* element) -> std::optional<PropertyElementPair> {
++		if (!property)
++			return std::nullopt;
++		if (property->unit != Unit::CSS_WIDE_KEYWORD)
++			return PropertyElementPair{property, element};
++		if (PropertySpecification::GetCssWideKeyword(*property) == PropertySpecification::CssWideKeyword::Initial)
++			return PropertyElementPair{};
++		return std::nullopt;
++	};
++	if (const auto local = declaration(GetLocalCustomProperty(name, sources.inline_properties, sources.definition), sources.element))
++		return *local;
+ 
+ 	Element* parent = sources.element->GetParentNode();
+ 	while (parent)
+ 	{
+ 		ElementStyle* parent_style = parent->GetStyle();
+-		if (const Property* variable_property =
+-				ElementStyle::GetLocalCustomProperty(name, parent_style->inline_properties, parent_style->definition.get()))
+-		{
+-			return {variable_property, parent};
+-		}
++		if (const auto inherited =
++				declaration(ElementStyle::GetLocalCustomProperty(name, parent_style->inline_properties, parent_style->definition.get()), parent))
++			return *inherited;
+ 
+ 		parent = parent->GetParentNode();
+ 	}
+@@ -437,8 +462,10 @@ void ElementStyle::TransitionPropertyChanges(const PropertySources& sources, Pro
  
  std::optional<Transition> ElementStyle::FindTransition(const PropertySources& after, PropertyId id, const TransitionTimes& times)
  {
@@ -267,7 +341,7 @@ index 7aa27f2..459581c 100644
  	if (!transition_property || transition_property->value.GetType() != Variant::TRANSITIONLIST)
  		return std::nullopt;
  	const TransitionList& transition_list = transition_property->value.GetReference<TransitionList>();
-@@ -467,10 +486,16 @@ ElementStyle::TransitionTimes ElementStyle::DeclaredTransitionTimes(const Proper
+@@ -467,10 +494,16 @@ ElementStyle::TransitionTimes ElementStyle::DeclaredTransitionTimes(const Proper
  {
  	const auto declared = [&](PropertyId id, bool durations) {
  		const Property* property = GetLocalProperty(id, after.inline_properties, after.definition);
@@ -285,7 +359,7 @@ index 7aa27f2..459581c 100644
  		return durations ? PropertyParserAnimation::GetDurations(property, resolved) : PropertyParserAnimation::GetDelays(property, resolved);
  	};
  	return {declared(PropertyId::TransitionDelay, false), declared(PropertyId::TransitionDuration, true)};
-@@ -754,7 +779,14 @@ const Property* ElementStyle::GetCustomProperty(const String& name) const
+@@ -754,7 +787,14 @@ const Property* ElementStyle::GetCustomProperty(const String& name) const
  
  const Property* ElementStyle::GetLocalProperty(PropertyId id) const
  {
@@ -301,7 +375,7 @@ index 7aa27f2..459581c 100644
  }
  
  const Property* ElementStyle::GetLocalPropertyWithResolvedVariables(PropertyId id) const
-@@ -764,7 +796,23 @@ const Property* ElementStyle::GetLocalPropertyWithResolvedVariables(PropertyId i
+@@ -764,7 +804,23 @@ const Property* ElementStyle::GetLocalPropertyWithResolvedVariables(PropertyId i
  		return nullptr;
  
  	SmallUnorderedSet<String> variable_dependencies;
@@ -326,13 +400,19 @@ index 7aa27f2..459581c 100644
  }
  
  const Property* ElementStyle::GetLocalCustomProperty(const String& name) const
-@@ -877,7 +925,18 @@ float ElementStyle::ResolveRelativeLength(NumericValue value, RelativeTarget rel
+@@ -877,7 +933,24 @@ float ElementStyle::ResolveRelativeLength(NumericValue value, RelativeTarget rel
  
  void ElementStyle::DirtyInheritedProperties()
  {
 -	dirty_properties |= StyleSheetSpecification::GetRegisteredInheritedProperties();
 +	// The properties declared inherit read the parent too.
 +	dirty_properties |= StyleSheetSpecification::GetRegisteredInheritedProperties() | inherit_declarations;
++}
++
++bool ElementStyle::IsCurrentColorInitial(PropertyId id)
++{
++	return id == PropertyId::BorderTopColor || id == PropertyId::BorderRightColor || id == PropertyId::BorderBottomColor ||
++		id == PropertyId::BorderLeftColor;
 +}
 +
 +void ElementStyle::ReparentInheritDeclarations(Element* previous_parent, Element* next_parent)
@@ -346,7 +426,7 @@ index 7aa27f2..459581c 100644
  }
  
  void ElementStyle::DirtyPropertiesWithUnits(Units units)
-@@ -887,8 +946,10 @@ void ElementStyle::DirtyPropertiesWithUnits(Units units)
+@@ -887,8 +960,10 @@ void ElementStyle::DirtyPropertiesWithUnits(Units units)
  	{
  		auto name_property_pair = *it;
  		PropertyId id = name_property_pair.first;
@@ -359,7 +439,7 @@ index 7aa27f2..459581c 100644
  			DirtyProperty(id);
  	}
  }
-@@ -912,10 +973,50 @@ const Property* ElementStyle::ResolveKeyFrameProperty(PropertyId id, const Prope
+@@ -912,10 +987,59 @@ const Property* ElementStyle::ResolveKeyFrameProperty(PropertyId id, const Prope
  	std::optional<PropertyDictionary>& block_substituted_shorthands, SmallUnorderedSet<String>& variable_dependencies, Property& property_storage)
  {
  	variable_dependencies.clear();
@@ -387,7 +467,16 @@ index 7aa27f2..459581c 100644
 +			return ResolveVariables(id, user_agent, variable_dependencies, property_storage);
 +	}
 +	if (resolved == Keyword::Initial)
-+		return property_definition->GetDefaultValue();
++	{
++		// A border colour's initial value is currentcolor.
++		if (IsCurrentColorInitial(id))
++		{
++			property_storage = Property(element->GetComputedValues().color(), Unit::COLOUR);
++			property_storage.definition = property_definition;
++			return &property_storage;
++		}
++		return property_definition->IsInherited() ? property_definition->GetInitialValue() : property_definition->GetDefaultValue();
++	}
 +	const PropertyElementPair parent = GetParentDeclaration(element, id, property_definition->IsInherited());
 +	if (!parent.element)
 +		return parent.property;
@@ -410,7 +499,7 @@ index 7aa27f2..459581c 100644
  PlainPropertiesIterator ElementStyle::Iterate() const
  {
  	return PlainPropertiesIterator{
-@@ -944,6 +1045,22 @@ void ElementStyle::DirtyProperty(PropertyId id)
+@@ -944,6 +1068,22 @@ void ElementStyle::DirtyProperty(PropertyId id)
  	dirty_properties.Insert(id);
  }
  
@@ -433,7 +522,7 @@ index 7aa27f2..459581c 100644
  PropertyIdSet ElementStyle::ComputeValues(Style::ComputedValues& values, const Style::ComputedValues* parent_values,
  	const Style::ComputedValues* document_values, bool values_are_default_initialized, float dp_ratio, Vector2f vp_dimensions)
  {
-@@ -989,11 +1106,30 @@ PropertyIdSet ElementStyle::ComputeValues(Style::ComputedValues& values, const S
+@@ -989,11 +1129,30 @@ PropertyIdSet ElementStyle::ComputeValues(Style::ComputedValues& values, const S
  	SmallUnorderedSet<String> variable_dependencies;
  	bool dirty_em_properties = false;
  
@@ -466,7 +555,7 @@ index 7aa27f2..459581c 100644
  		const float zoom = property ? property->Get<float>() * (property->unit == Unit::PERCENT ? 0.01f : 1.f) : 1.f;
  		// A zero zoom is no zoom; a negative or non-finite one substituted through a variable is invalid.
  		if (zoom > 0.f && zoom < FLT_MAX)
-@@ -1015,7 +1151,7 @@ PropertyIdSet ElementStyle::ComputeValues(Style::ComputedValues& values, const S
+@@ -1015,7 +1174,7 @@ PropertyIdSet ElementStyle::ComputeValues(Style::ComputedValues& values, const S
  	// Always do font-size first if dirty, because of em-relative values
  	if (dirty_properties.Contains(PropertyId::FontSize))
  	{
@@ -475,7 +564,7 @@ index 7aa27f2..459581c 100644
  		{
  			variable_dependencies.clear();
  			property = ResolveVariables(PropertyId::FontSize, property, variable_dependencies, property_storage);
-@@ -1043,7 +1179,7 @@ PropertyIdSet ElementStyle::ComputeValues(Style::ComputedValues& values, const S
+@@ -1043,7 +1202,7 @@ PropertyIdSet ElementStyle::ComputeValues(Style::ComputedValues& values, const S
  	// Since vertical-align depends on line-height we compute this before iteration
  	if (dirty_properties.Contains(PropertyId::LineHeight))
  	{
@@ -484,7 +573,7 @@ index 7aa27f2..459581c 100644
  		{
  			variable_dependencies.clear();
  			property = ResolveVariables(PropertyId::LineHeight, property, variable_dependencies, property_storage);
-@@ -1074,12 +1210,46 @@ PropertyIdSet ElementStyle::ComputeValues(Style::ComputedValues& values, const S
+@@ -1074,12 +1233,46 @@ PropertyIdSet ElementStyle::ComputeValues(Style::ComputedValues& values, const S
  
  	bool dirty_font_face_handle = false;
  
@@ -532,7 +621,7 @@ index 7aa27f2..459581c 100644
  		if (!property)
  			continue;
  
-@@ -1092,10 +1262,15 @@ PropertyIdSet ElementStyle::ComputeValues(Style::ComputedValues& values, const S
+@@ -1092,10 +1285,15 @@ PropertyIdSet ElementStyle::ComputeValues(Style::ComputedValues& values, const S
  		if (dirty_em_properties && property->unit == Unit::EM)
  			dirty_properties.Insert(id);
  
@@ -550,7 +639,7 @@ index 7aa27f2..459581c 100644
  	{
  		using BorderWidthSetter = void (Style::ComputedValues::*)(int16_t);
  		struct BorderSide {
-@@ -1113,7 +1288,7 @@ PropertyIdSet ElementStyle::ComputeValues(Style::ComputedValues& values, const S
+@@ -1113,11 +1311,30 @@ PropertyIdSet ElementStyle::ComputeValues(Style::ComputedValues& values, const S
  		{
  			if (side.style == Style::BorderStyle::None || side.style == Style::BorderStyle::Hidden)
  				(values.*side.set_width)(0);
@@ -559,7 +648,30 @@ index 7aa27f2..459581c 100644
  				(values.*side.set_width)(ComputeBorderWidth(ComputeLength(NumericValue(3.f, Unit::PX), font_size, document_font_size, dp_ratio, vp_dimensions)));
  		}
  	}
-@@ -1137,7 +1312,10 @@ PropertyIdSet ElementStyle::ComputeValues(Style::ComputedValues& values, const S
+ 
++	// A border colour the cascade leaves undeclared is its initial currentcolor, the element's color.
++	{
++		using BorderColorSetter = void (Style::ComputedValues::*)(Colourb);
++		const std::pair<PropertyId, BorderColorSetter> border_colors[] = {
++			{PropertyId::BorderTopColor, &Style::ComputedValues::border_top_color},
++			{PropertyId::BorderRightColor, &Style::ComputedValues::border_right_color},
++			{PropertyId::BorderBottomColor, &Style::ComputedValues::border_bottom_color},
++			{PropertyId::BorderLeftColor, &Style::ComputedValues::border_left_color},
++		};
++		for (const auto& [id, set_color] : border_colors)
++		{
++			if (declared(id))
++				continue;
++			(values.*set_color)(values.color());
++			if (dirty_properties.Contains(PropertyId::Color))
++				dirty_properties.Insert(id);
++		}
++	}
++
+ 	// The font-face handle is nulled when local font properties are set. In that case we need to retrieve a new handle.
+ 	if (dirty_font_face_handle)
+ 	{
+@@ -1137,7 +1354,10 @@ PropertyIdSet ElementStyle::ComputeValues(Style::ComputedValues& values, const S
  		{
  			dirty_properties.Insert(PropertyId::LineHeight);
  			dirty_properties.Insert(PropertyId::VerticalAlign);
@@ -571,7 +683,7 @@ index 7aa27f2..459581c 100644
  			{
  				variable_dependencies.clear();
  				property = ResolveVariables(PropertyId::VerticalAlign, property, variable_dependencies, property_storage);
-@@ -1163,14 +1341,18 @@ PropertyIdSet ElementStyle::ComputeValues(Style::ComputedValues& values, const S
+@@ -1163,14 +1383,18 @@ PropertyIdSet ElementStyle::ComputeValues(Style::ComputedValues& values, const S
  	if (dirty_properties.Contains(PropertyId::TextOverflow))
  		dirty_inherited_properties.Insert(PropertyId::TextOverflow);
  
@@ -596,7 +708,7 @@ index 7aa27f2..459581c 100644
  	}
  
 diff --git a/Source/Core/ElementStyle.h b/Source/Core/ElementStyle.h
-index 443a647..561a9c7 100644
+index 443a647..a2b2565 100644
 --- a/Source/Core/ElementStyle.h
 +++ b/Source/Core/ElementStyle.h
 @@ -124,6 +124,8 @@ public:
@@ -608,10 +720,12 @@ index 443a647..561a9c7 100644
  
  	// Sets a single property as dirty.
  	void DirtyProperty(PropertyId id);
-@@ -186,8 +188,15 @@ private:
+@@ -186,8 +188,17 @@ private:
  
  	void DirtyProperties(const PropertyIdSet& properties);
  
++	// Whether a property's initial value is currentcolor, the element's color.
++	static bool IsCurrentColorInitial(PropertyId id);
 +	// A keyframe's CSS-wide keyword as the value the element animates.
 +	const Property* ResolveKeyFrameKeyword(PropertyId id, const Property& keyword, SmallUnorderedSet<String>& variable_dependencies,
 +		Property& property_storage) const;
@@ -624,7 +738,7 @@ index 443a647..561a9c7 100644
  
  	void ComputeValue(Style::ComputedValues& values, float dp_ratio, Vector2f vp_dimensions, float font_size, float document_font_size,
  		bool& dirty_font_face_handle, PropertyId id, const Property* p);
-@@ -201,6 +210,8 @@ private:
+@@ -201,6 +212,8 @@ private:
  	static PropertyElementPair GetSpecifiedProperty(const PropertySources& sources, PropertyId id);
  	static PropertyElementPair GetSpecifiedCustomProperty(const PropertySources& sources, const String& name);
  	static PropertyElementPair GetSpecifiedShorthand(const PropertySources& sources, ShorthandId id);
@@ -633,7 +747,7 @@ index 443a647..561a9c7 100644
  
  	enum class SubstitutionResult { Substituted, NoVariablesFound, Error };
  	static SubstitutionResult SubstituteVariableOnce(const PropertySources& sources, const String& value,
-@@ -241,6 +252,10 @@ private:
+@@ -241,6 +254,10 @@ private:
  	PropertyDictionary expanded_shorthands;
  
  	PropertyIdSet dirty_properties;
@@ -644,6 +758,22 @@ index 443a647..561a9c7 100644
  	UnorderedSet<String> dirty_variables;
  	UnorderedSet<ShorthandId> dirty_var_shorthands;
  };
+diff --git a/Source/Core/PropertyDefinition.cpp b/Source/Core/PropertyDefinition.cpp
+index cce6d3b..2acbb79 100644
+--- a/Source/Core/PropertyDefinition.cpp
++++ b/Source/Core/PropertyDefinition.cpp
+@@ -149,6 +149,11 @@ const Property* PropertyDefinition::GetDefaultValue() const
+ 	return &default_value;
+ }
+ 
++const Property* PropertyDefinition::GetInitialValue() const
++{
++	return has_initial_value ? &initial_value : &default_value;
++}
++
+ RelativeTarget PropertyDefinition::GetRelativeTarget() const
+ {
+ 	return relative_target;
 diff --git a/Source/Core/PropertyShorthandDefinition.h b/Source/Core/PropertyShorthandDefinition.h
 index f336854..f540e0f 100644
 --- a/Source/Core/PropertyShorthandDefinition.h
@@ -659,10 +789,10 @@ index f336854..f540e0f 100644
  
  } // namespace Rml
 diff --git a/Source/Core/PropertySpecification.cpp b/Source/Core/PropertySpecification.cpp
-index 0004789..76c864f 100644
+index 0004789..ac3907c 100644
 --- a/Source/Core/PropertySpecification.cpp
 +++ b/Source/Core/PropertySpecification.cpp
-@@ -31,6 +31,53 @@ static void SetShorthandPropertiesToPendingSubstitution(PropertyDictionary& dict
+@@ -31,6 +31,65 @@ static void SetShorthandPropertiesToPendingSubstitution(PropertyDictionary& dict
  	}
  }
  
@@ -698,6 +828,18 @@ index 0004789..76c864f 100644
 +	return property.unit == Unit::CSS_WIDE_KEYWORD ? ParseCssWideKeyword(property.value.GetReference<String>()) : CssWideKeyword::None;
 +}
 +
++bool PropertySpecification::SetInitialValue(PropertyId id, const String& value)
++{
++	PropertyDictionary dictionary;
++	if ((size_t)id >= properties.size() || !properties[(size_t)id] || !ParsePropertyDeclaration(dictionary, id, value))
++		return false;
++	Property initial = *dictionary.GetProperty(id);
++	initial.definition = properties[(size_t)id].get();
++	properties[(size_t)id]->initial_value = std::move(initial);
++	properties[(size_t)id]->has_initial_value = true;
++	return true;
++}
++
 +// A CSS-wide keyword's declaration: unset is inherit or initial as the property inherits, and an inherited property's
 +// initial its initial value. The cascade resolves the others; initial is the absence of a declaration there, which the
 +// initial value of a property that does not inherit stands for.
@@ -707,7 +849,7 @@ index 0004789..76c864f 100644
 +	if (keyword == Keyword::Unset)
 +		keyword = definition->IsInherited() ? Keyword::Inherit : Keyword::Initial;
 +	if (keyword == Keyword::Initial && definition->IsInherited())
-+		return *definition->GetDefaultValue();
++		return *definition->GetInitialValue();
 +	Property property(String(keyword == Keyword::Inherit ? "inherit" : keyword == Keyword::Initial ? "initial" : "revert"), Unit::CSS_WIDE_KEYWORD);
 +	property.definition = definition;
 +	return property;
@@ -716,7 +858,7 @@ index 0004789..76c864f 100644
  PropertySpecification::PropertySpecification(size_t reserve_num_properties, size_t reserve_num_shorthands) :
  	// Increment reserve numbers by one because the 'invalid' property occupies the first element
  	properties(reserve_num_properties + 1), shorthands(reserve_num_shorthands + 1),
-@@ -205,6 +252,12 @@ ShorthandId PropertySpecification::RegisterShorthand(const String& shorthand_nam
+@@ -205,6 +264,12 @@ ShorthandId PropertySpecification::RegisterShorthand(const String& shorthand_nam
  	return id;
  }
  
@@ -729,7 +871,21 @@ index 0004789..76c864f 100644
  const ShorthandDefinition* PropertySpecification::GetShorthand(ShorthandId id) const
  {
  	if (id == ShorthandId::Invalid || (size_t)id >= shorthands.size())
-@@ -259,6 +312,12 @@ bool PropertySpecification::ParsePropertyDeclaration(PropertyDictionary& diction
+@@ -245,7 +310,12 @@ bool PropertySpecification::ParsePropertyDeclaration(PropertyDictionary& diction
+ 		case ParsePropertyResult::ContainsVariable: unit = Unit::VAR_EXPRESSION; break;
+ 		case ParsePropertyResult::Error: return false;
+ 		}
+-		dictionary.SetCustomProperty(property_name, Property{property_value, unit});
++		// A custom property inherits: unset and revert are inherit, initial its guaranteed-invalid value (ElementStyle).
++		if (const CssWideKeyword keyword = ParseCssWideKeyword(property_value); keyword != CssWideKeyword::None)
++			dictionary.SetCustomProperty(property_name,
++				Property{String(keyword == CssWideKeyword::Initial ? "initial" : "inherit"), Unit::CSS_WIDE_KEYWORD});
++		else
++			dictionary.SetCustomProperty(property_name, Property{property_value, unit});
+ 		return true;
+ 	}
+ 
+@@ -259,6 +329,12 @@ bool PropertySpecification::ParsePropertyDeclaration(PropertyDictionary& diction
  	if (!property_definition)
  		return false;
  
@@ -742,7 +898,7 @@ index 0004789..76c864f 100644
  	// The area grid is a list of CSS strings: the layout reads every string, quotes included.
  	const bool string_list = (property_id == PropertyId::GridTemplateAreas);
  	StringList property_values;
-@@ -300,6 +359,24 @@ bool PropertySpecification::ParseShorthandDeclaration(PropertyDictionary& dictio
+@@ -300,6 +376,24 @@ bool PropertySpecification::ParseShorthandDeclaration(PropertyDictionary& dictio
  	if (!shorthand_definition)
  		return false;
  
@@ -856,10 +1012,23 @@ index 0292c38..5dd040a 100644
  	StyleSheetNodeList children;
  };
 diff --git a/Source/Core/StyleSheetSpecification.cpp b/Source/Core/StyleSheetSpecification.cpp
-index 68df8f0..fd8a9e1 100644
+index 68df8f0..c76f2aa 100644
 --- a/Source/Core/StyleSheetSpecification.cpp
 +++ b/Source/Core/StyleSheetSpecification.cpp
-@@ -229,6 +229,8 @@ PropertyIdSet StyleSheetSpecification::GetShorthandUnderlyingProperties(Shorthan
+@@ -133,6 +133,12 @@ const PropertyDefinition* StyleSheetSpecification::GetProperty(const String& pro
+ 	return instance->properties.GetProperty(property_name);
+ }
+ 
++bool StyleSheetSpecification::SetInitialValue(const String& property_name, const String& value)
++{
++	const PropertyDefinition* definition = instance->properties.GetProperty(property_name);
++	return definition && instance->properties.SetInitialValue(definition->GetId(), value);
++}
++
+ const PropertyDefinition* StyleSheetSpecification::GetProperty(PropertyId id)
+ {
+ 	return instance->properties.GetProperty(id);
+@@ -229,6 +235,8 @@ PropertyIdSet StyleSheetSpecification::GetShorthandUnderlyingProperties(Shorthan
  			result |= GetShorthandUnderlyingProperties(item.shorthand_id);
  		}
  	}
@@ -868,7 +1037,7 @@ index 68df8f0..fd8a9e1 100644
  	return result;
  }
  
-@@ -394,6 +396,8 @@ void StyleSheetSpecification::RegisterDefaultProperties()
+@@ -394,6 +402,8 @@ void StyleSheetSpecification::RegisterDefaultProperties()
  	RegisterProperty(PropertyId::FontKerning, "font-kerning", "auto", true, true).AddParser("keyword", "auto, normal, none");
  	RegisterProperty(PropertyId::LetterSpacing, "letter-spacing", "normal", true, true).AddParser("keyword", "normal").AddParser("length");
  	RegisterShorthand(ShorthandId::Font, "font", "font-style, font-weight, font-size, font-family", ShorthandType::FallThrough);
@@ -877,7 +1046,7 @@ index 68df8f0..fd8a9e1 100644
  
  	RegisterProperty(PropertyId::TextAlign, "text-align", "left", true, true).AddParser("keyword", "left, right, center, justify");
  	RegisterProperty(PropertyId::TextDecoration, "text-decoration", "none", true, false).AddParser("keyword", "none, underline, overline, line-through");
-@@ -470,6 +474,10 @@ void StyleSheetSpecification::RegisterDefaultProperties()
+@@ -470,6 +480,10 @@ void StyleSheetSpecification::RegisterDefaultProperties()
  	RegisterShorthand(ShorthandId::GridArea, "grid-area", "grid-row, grid-column", ShorthandType::GridArea);
  	RegisterShorthand(ShorthandId::BorderImage, "border-image",
  		"border-image-source, border-image-slice, border-image-width, border-image-outset, border-image-repeat", ShorthandType::BorderImage);

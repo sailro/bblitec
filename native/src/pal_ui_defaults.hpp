@@ -9,9 +9,11 @@ namespace bbl::pal {
 // Control colors are Chromium 152's light palette; each :bbl-dark-scheme
 // (color-scheme: dark) variant follows its light rule at the same specificity.
 inline constexpr std::string_view ui_user_agent_css =
-    // The root's CanvasText: text without an authored color inherits it.
-    "html{color:#000000;}\n"
-    "html:where(:bbl-dark-scheme){color:#ffffff;}\n"
+    // CanvasText per scheme, the color's initial value (pal_ui_rml.cpp), which the root takes:
+    // text without an authored color inherits it.
+    ":where(:not(:bbl-dark-scheme)){--bbl-canvastext:#000000;}\n"
+    ":where(:bbl-dark-scheme){--bbl-canvastext:#ffffff;}\n"
+    "html{color:initial;}\n"
     "div,canvas{display:block;}\n"
     "details,summary{display:block;}\n"
     "summary{tab-index:auto;pointer-events:auto;cursor:pointer;}\n"

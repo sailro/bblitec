@@ -2228,31 +2228,6 @@ export class UiProjection {
         ["justify-self", ["auto", "start", "end", "center", "stretch"]],
     ]);
 
-    /**
-     * The keywords reaching a CSS initial value RmlUi's registration does not
-     * carry: canvastext, medium, normal and the default font family, which
-     * the user-agent root rule gives the inherited properties, and a border
-     * colour's currentcolor, which unset and revert reach too.
-     */
-    private static readonly UI_UNREPRESENTED_INITIAL_VALUES: ReadonlyMap<
-        string,
-        readonly string[]
-    > = new Map<string, readonly string[]>([
-        ...["color", "font", "font-family", "font-size", "line-height"].map(
-            (property): [string, readonly string[]] => [property, ["initial"]],
-        ),
-        ...[
-            "border-color",
-            "border-top-color",
-            "border-right-color",
-            "border-bottom-color",
-            "border-left-color",
-        ].map((property): [string, readonly string[]] => [
-            property,
-            ["initial", "unset", "revert"],
-        ]),
-    ]);
-
     private static readonly INERT_UI_STYLE_PROPERTIES = new EmissionSet<string>(
         [
             "-webkit-user-select",
@@ -2518,21 +2493,6 @@ export class UiProjection {
         this.context.failAtFile(message);
     }
 
-    /** RmlUi keeps a custom property's value as text, a CSS-wide keyword included. */
-    private refuseCustomPropertyKeyword(
-        property: string,
-        value: string,
-        site: ts.Node | undefined,
-    ): void {
-        const keyword = cssWideKeyword(value);
-        if (keyword !== undefined)
-            this.uiStyleRefusal(
-                site,
-                property,
-                `the CSS-wide ${keyword} keyword is not represented on a custom property, which the style engine keeps as text`,
-            );
-    }
-
     /**
      * Enforce the reviewed style surface over one static CSS declaration
      * list (AP-3): a projected property lowers, a reached degraded property
@@ -2565,10 +2525,7 @@ export class UiProjection {
                 .toLowerCase();
             if (property.length === 0) return;
             this.refuseUnresolvableMath(property, literalValue, site);
-            if (UiProjection.isCustomStyleProperty(property)) {
-                this.refuseCustomPropertyKeyword(property, literalValue, site);
-                return;
-            }
+            if (UiProjection.isCustomStyleProperty(property)) return;
             if (
                 property === "place-items" &&
                 !/^(?:start|end|center|stretch)(?:\s+(?:start|end|center|stretch))?$/.test(
@@ -2602,20 +2559,8 @@ export class UiProjection {
                     );
                 return;
             }
-            // RmlUi's cascade resolves the CSS-wide keywords (patch 0066),
-            // except where they reach an initial value it does not carry.
+            // RmlUi's cascade resolves the CSS-wide keywords (patch 0066).
             const keyword = cssWideKeyword(literalValue);
-            if (
-                keyword !== undefined &&
-                UiProjection.UI_UNREPRESENTED_INITIAL_VALUES.get(
-                    property,
-                )?.includes(keyword)
-            )
-                this.uiStyleRefusal(
-                    site,
-                    property,
-                    `the CSS-wide ${keyword} keyword is not represented: RmlUi's initial value is not CSS's (canvastext, medium, normal, the default font family or currentcolor)`,
-                );
             if (property === "accent-color") {
                 if (!UiProjection.UI_ACCENT_COLOR.test(literalValue))
                     this.uiStyleRefusal(
@@ -3364,7 +3309,6 @@ export class UiProjection {
             const property = declaration.slice(0, colon).trim();
             const literal = declaration.slice(colon + 1).toLowerCase();
             this.refuseUnresolvableMath(property, literal, site);
-            this.refuseCustomPropertyKeyword(property, literal, site);
         }
         const authoredDisplay = /(?:^|;)\s*display\s*:/i.test(value);
         this.auditUiStyleDeclarations(value, site);
@@ -3413,11 +3357,6 @@ export class UiProjection {
                   ?.match(/#[0-9a-f]{3,8}/gi) ?? [])
             : [];
         const gradientTextColor = gradientTextColors[0];
-        const gradientTextDuration = clipsGradientToText
-            ? value.match(
-                  /\banimation\s*:[^;]*?\b([0-9]+(?:\.[0-9]*)?)s\b/i,
-              )?.[1]
-            : undefined;
         const gradientTextBackgroundScale = clipsGradientToText
             ? value.match(
                   /\bbackground-size\s*:\s*([0-9]+(?:\.[0-9]*)?)%/i,
@@ -3576,10 +3515,9 @@ export class UiProjection {
         if (gradientTextColors.length > 1) {
             // RmlUi has no background-clip:text. Preserve the declarative
             // intent as private PAL metadata so native UI can materialize a
-            // per-glyph gradient and advance the reached shimmer animation.
+            // per-glyph gradient at the element's background position.
             lowered +=
                 `;--bbl-text-gradient:${gradientTextColors.join("|")};` +
-                `--bbl-text-gradient-duration:${gradientTextDuration ?? "0"}s;` +
                 `--bbl-text-gradient-scale:${gradientTextBackgroundScale ?? "100"}%;`;
             if (gradientFontEffects.length > 0) {
                 lowered += `font-effect:${gradientFontEffects.join(",")};`;
@@ -3687,11 +3625,9 @@ export class UiProjection {
     }
 
     /**
-     * `@keyframes` blocks are not sheet rules: the whole sheet text also
-     * rides `ui_set_text`, and the PAL extracts and projects the keyframes
-     * from there (`pal_ui_rml.cpp` `keyframes_from`), so their interior
-     * percentage blocks must not reach the rule parser. Mirrors the PAL's
-     * brace-depth walk.
+     * `@keyframes` blocks are not sheet rules: their interior percentage
+     * blocks lower apart (`ui_set_style_keyframes`), never through the rule
+     * parser.
      */
     private static splitUiKeyframesBlocks(source: string): {
         rules: string;
@@ -3799,9 +3735,8 @@ export class UiProjection {
     }
 
     /**
-     * The statements that replace a retained `<style>` element's rules with
-     * those of `sheet`; the sheet text itself rides `ui_set_text`, from
-     * which the PAL reads its keyframes.
+     * The statements that replace a retained `<style>` element's rules and
+     * keyframes with those of `sheet`.
      */
     private uiStyleSheetRuleStatements(
         engine: string,
@@ -3814,12 +3749,17 @@ export class UiProjection {
         const statements = [
             `bbl::ui_clear_style_rules(${engine}, ${styleElement});`,
         ];
-        for (const rule of this.lowerUiStyleSheetLiteral(
+        const { rules, keyframes } = this.lowerUiStyleSheetLiteral(
             sheet,
             site,
             ownerId,
             origin,
-        )) {
+        );
+        if (keyframes)
+            statements.push(
+                `bbl::ui_set_style_keyframes(${engine}, ${styleElement}, ${this.context.cppString(keyframes)});`,
+            );
+        for (const rule of rules) {
             statements.push(
                 (rule.kind === "class" || rule.kind === "id") &&
                     !uiStyleRuleNeedsRuntimeMatch(rule) &&
@@ -3837,12 +3777,77 @@ export class UiProjection {
         return statements;
     }
 
+    /**
+     * One keyframe's declarations, lowered as a rule's, each a property RmlUi
+     * keys: its animations interpolate numbers, lengths, colours, transforms,
+     * decorators and filters and swap keywords (ElementAnimation), never the
+     * strings and lists below or the PAL's private declarations.
+     */
+    private lowerUiKeyframeDeclarations(
+        declarations: string,
+        site?: ts.Node,
+    ): string {
+        const { style, content } = this.lowerUiRuleDeclarations(
+            declarations,
+            site,
+        );
+        if (content) this.uiKeyframeRefusal(site, "content");
+        UiProjection.forEachUiStyleDeclaration(style, (declaration) => {
+            const colon = declaration.indexOf(":");
+            if (colon < 0) return;
+            const property = declaration.slice(0, colon).trim().toLowerCase();
+            if (
+                property.startsWith("--") ||
+                UiProjection.UI_UNKEYED_PROPERTIES.has(property)
+            )
+                this.uiKeyframeRefusal(site, property);
+        });
+        return style.trim();
+    }
+
+    private uiKeyframeRefusal(
+        site: ts.Node | undefined,
+        property: string,
+    ): never {
+        return this.uiStyleRefusal(
+            site,
+            property,
+            `a keyframe's '${property}' is not keyed: RmlUi animations interpolate numbers, lengths, colours, transforms, decorators and filters and swap keywords`,
+        );
+    }
+
+    /** RmlUi string and list values its animations do not key. */
+    private static readonly UI_UNKEYED_PROPERTIES = new EmissionSet<string>([
+        "bbl-background-image",
+        "bbl-background-size",
+        "bbl-background-repeat",
+        "bbl-background-origin",
+        "bbl-background-attachment",
+        "font",
+        "font-family",
+        "font-effect",
+        "cursor",
+        "box-shadow",
+        "aspect-ratio",
+        "border-image",
+        ...UI_BORDER_IMAGE_LONGHANDS,
+        "grid-area",
+        "grid-column",
+        "grid-row",
+        "grid-template-areas",
+        "grid-template-columns",
+        "grid-template-rows",
+        "grid-auto-columns",
+        "grid-auto-rows",
+        "grid-auto-flow",
+    ]);
+
     private lowerUiStyleSheetLiteral(
         value: string,
         site?: ts.Node,
         ownerId?: number,
         origin?: RefusalSite,
-    ): LoweredUiStyleRule[] {
+    ): { rules: LoweredUiStyleRule[]; keyframes: string } {
         const rules: LoweredUiStyleRule[] = [];
         // A host file's sheet: refusals point at the line of the rule being
         // lowered, found in the sheet as written.
@@ -3874,18 +3879,20 @@ export class UiProjection {
         };
         const { rules: source, keyframes } =
             UiProjection.splitUiKeyframesBlocks(stripUiCssComments(value));
-        // Keyframe declarations reach RmlUi as written, within the surface
-        // the rules' declarations meet.
-        const auditKeyframes = (): void => {
+        // Keyframe declarations lower as the rules' do.
+        let loweredKeyframes = "";
+        const lowerKeyframes = (): void => {
             for (let cursor = 0; cursor < keyframes.length;) {
                 const opening = findUiCssSyntax(keyframes, "{", cursor);
                 const end =
                     opening === undefined
                         ? undefined
                         : uiCssBlockEnd(keyframes, opening);
-                if (opening === undefined || end === undefined) return;
-                enter(keyframes.slice(cursor, opening).trim());
+                if (opening === undefined || end === undefined) break;
+                const header = keyframes.slice(cursor, opening).trim();
+                enter(header);
                 const body = keyframes.slice(opening + 1, end - 1);
+                let blocks = "";
                 for (let inner = 0; inner < body.length;) {
                     const start = findUiCssSyntax(body, "{", inner);
                     const close =
@@ -3893,12 +3900,10 @@ export class UiProjection {
                             ? undefined
                             : uiCssBlockEnd(body, start);
                     if (start === undefined || close === undefined) break;
-                    this.auditUiStyleDeclarations(
-                        body.slice(start + 1, close - 1),
-                        site,
-                    );
+                    blocks += `${body.slice(inner, start).trim()}{${this.lowerUiKeyframeDeclarations(body.slice(start + 1, close - 1), site)}}`;
                     inner = close;
                 }
+                loweredKeyframes += `${header}{${blocks}}\n`;
                 cursor = end;
             }
             searched = 0;
@@ -4045,12 +4050,12 @@ export class UiProjection {
             }
         };
         const lower = (): void => {
-            auditKeyframes();
+            lowerKeyframes();
             parseBlocks(source);
         };
         if (at) this.context.attributeRefusalsTo(at, lower);
         else lower();
-        return rules;
+        return { rules, keyframes: loweredKeyframes };
     }
 
     public uiStaticDescendants(rootId: number): {
@@ -7006,7 +7011,6 @@ export class UiProjection {
         const ids = new EmissionSet<string>(primaryIds);
 
         // The document's own sheets precede its markup, as a page's head does.
-        // Its rules are lowered here; the PAL reads only its keyframes.
         const sheets = page?.hostUi
             ? (page.hostUi.styleSheets ?? []).map((sheet) => ({
                   text: sheet.text,
@@ -7016,9 +7020,6 @@ export class UiProjection {
         for (const { text, origin } of sheets) {
             const handle =
                 this.context.allocateTemporaryCppName("host_ui_style");
-            const { keyframes } = UiProjection.splitUiKeyframesBlocks(
-                stripUiCssComments(text),
-            );
             emitted.push(
                 `${indent}const auto ${handle} = bbl::ui_create_element(${engine}, "style");`,
                 ...this.uiStyleSheetRuleStatements(
@@ -7029,11 +7030,6 @@ export class UiProjection {
                     undefined,
                     origin,
                 ).map((statement) => indent + statement),
-                ...(keyframes
-                    ? [
-                          `${indent}bbl::ui_set_text(${engine}, ${handle}, ${this.context.cppString(keyframes)});`,
-                      ]
-                    : []),
                 `${indent}bbl::ui_append_child(${engine}, bbl::ui_document_root(${engine}, bbl::UiDocumentPart::Head), ${handle});`,
             );
         }

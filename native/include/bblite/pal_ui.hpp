@@ -175,6 +175,8 @@ bool ui_has_class(Engine& engine, UiElementHandle element, std::string_view name
 void ui_add_class_style(Engine& engine, UiElementHandle stylesheet, std::string class_name,
                         std::string style);
 void ui_clear_style_rules(Engine& engine, UiElementHandle stylesheet);
+/** The `<style>` element's `@keyframes` blocks, their declarations lowered as its rules' are. */
+void ui_set_style_keyframes(Engine& engine, UiElementHandle stylesheet, std::string keyframes);
 void ui_add_id_style(Engine& engine, UiElementHandle stylesheet, std::string id, std::string style);
 /** Appends `rule` to the `<style>` element `stylesheet`. */
 void ui_add_style_rule(Engine& engine, UiElementHandle stylesheet, UiStyleRule rule);

@@ -369,6 +369,21 @@ std::string with_specified_custom_properties(std::string_view source) {
     return result;
 }
 
+/** Each background position as the two offsets its longhands take (`ui_background_offsets`). */
+std::string rml_css_background_positions(std::string value) {
+    static constexpr std::string_view name = "bbl-background-position:";
+    for (std::size_t at = value.find(name); at != std::string::npos; at = value.find(name, at)) {
+        const std::size_t begin = at + name.size();
+        const std::size_t end = std::min(value.find(';', begin), value.find('}', begin));
+        const std::size_t length = (end == std::string::npos ? value.size() : end) - begin;
+        const std::string offsets =
+            pal::ui_background_offsets(std::string_view(value).substr(begin, length));
+        value.replace(begin, length, offsets);
+        at = begin + offsets.size();
+    }
+    return value;
+}
+
 std::string normalized_css_keyword(std::string_view value) {
     return js::string_lower(std::string(trim_css_token(value)));
 }
@@ -2083,9 +2098,21 @@ void ui_clear_style_rules(Engine& engine, UiElementHandle stylesheet) {
     if (owner.tag != "style") {
         throw std::runtime_error("Native UI stylesheet rules require a <style> element.");
     }
-    if (owner.style_rules.empty())
+    if (owner.style_rules.empty() && owner.style_keyframes.empty())
         return;
     owner.style_rules.clear();
+    owner.style_keyframes.clear();
+    mark_ui_changed(engine, owner);
+}
+
+void ui_set_style_keyframes(Engine& engine, UiElementHandle stylesheet, std::string keyframes) {
+    UiElementRecord& owner = ui_element(engine, stylesheet);
+    if (owner.tag != "style") {
+        throw std::runtime_error("Native UI keyframes require a <style> element.");
+    }
+    if (owner.style_keyframes == keyframes)
+        return;
+    owner.style_keyframes = std::move(keyframes);
     mark_ui_changed(engine, owner);
 }
 
@@ -5045,7 +5072,8 @@ struct ProjectedUiElement {
     std::optional<float> form_spacing;
     bool text_wrapped = false;
     bool markup_content_overridden = false;
-    bool intrinsic_width_applied = false;
+    /** The shrink-to-fit width the intrinsic pass sets, over the element's own inline width. */
+    UiScopedStyleProperty intrinsic_width;
     std::uint8_t interaction_states = 0;
     bool outline_positioned_parent = false;
     bool click_listener_attached = false;
@@ -5059,7 +5087,7 @@ struct ProjectedGradientText {
     std::vector<std::uint32_t> rendered_colors;
     std::vector<double> rendered_positions;
     std::vector<double> rendered_half_extents;
-    double duration = 0.0;
+    double rendered_phase = 0.0;
     double scale = 1.0;
 };
 
@@ -6192,7 +6220,6 @@ struct UiRmlRuntime {
             // markup, including innerHTML nodes with no JavaScript handle.
             for (const auto& [name, value] :
                  std::array{std::pair{"bbl-text-gradient", ""},
-                            std::pair{"bbl-text-gradient-duration", "0s"},
                             std::pair{"bbl-text-gradient-scale", "100%"}}) {
                 Rml::StyleSheetSpecification::RegisterProperty(name, value, false)
                     .AddParser("string");
@@ -6290,6 +6317,17 @@ struct UiRmlRuntime {
                     load_rml_font(*courier_bold, "Courier New", 700);
                 }
             }
+            // The CSS initial values RmlUi's registration lacks, which the root takes: medium,
+            // normal, the default family and CanvasText (the user-agent sheet's per scheme).
+            for (const auto& [name, value] :
+                 {std::pair<const char*, std::string>{"font-size", "16dp"},
+                  std::pair<const char*, std::string>{"line-height", "normal"},
+                  std::pair<const char*, std::string>{"font-family",
+                                                      project_css(css_font_family, "font-family")},
+                  std::pair<const char*, std::string>{"color", "var(--bbl-canvastext)"}})
+                if (!Rml::StyleSheetSpecification::SetInitialValue(name, value))
+                    throw std::runtime_error("RmlUi refused the CSS initial " + std::string(name) +
+                                             ": " + value);
             context = Rml::CreateContext(
                 "bblite-ui", Rml::Vector2i{static_cast<int>(width), static_cast<int>(height)});
             if (!context) {
@@ -6332,7 +6370,7 @@ struct UiRmlRuntime {
                 context->Update();
             if (refresh_gradient_text())
                 context->Update();
-            if (update_gradient_text().changed)
+            if (update_gradient_text())
                 context->Update();
             static_cast<void>(sync_hover_states());
             if (sync_svg_current_colors()) {
@@ -6525,8 +6563,11 @@ struct UiRmlRuntime {
             return value;
         if (property.empty())
             return project_css_outside_filters(
-                rml_css_time_longhand_resets(with_specified_custom_properties(value)),
+                rml_css_time_longhand_resets(
+                    with_specified_custom_properties(rml_css_background_positions(value))),
                 [this](std::string part) { return project_css_fragment(std::move(part), {}); });
+        if (property == "bbl-background-position")
+            value = ui_background_offsets(value);
         return project_css_fragment(std::move(value), property);
     }
 
@@ -6653,48 +6694,6 @@ struct UiRmlRuntime {
         return value;
     }
 
-    static std::string keyframes_from(std::string_view source) {
-        std::string keyframes;
-        std::optional<std::size_t> start;
-        std::size_t depth = 0;
-        char quote = 0;
-        for (std::size_t index = 0; index < source.size(); ++index) {
-            const char token = source[index];
-            if (token == '\\') {
-                ++index;
-                continue;
-            }
-            if (quote) {
-                if (token == quote)
-                    quote = 0;
-                continue;
-            }
-            if (token == '\'' || token == '"') {
-                quote = token;
-                continue;
-            }
-            if (token == '/' && index + 1 < source.size() && source[index + 1] == '*') {
-                const auto end = source.find("*/", index + 2);
-                if (end == std::string_view::npos)
-                    break;
-                index = end + 1;
-                continue;
-            }
-            if (!depth && token == '@' &&
-                js::string_lower(std::string(source.substr(index, 10))) == "@keyframes" &&
-                (index + 10 == source.size() || !css_identifier_character(source[index + 10])))
-                start = index;
-            if (token == '{')
-                ++depth;
-            else if (token == '}' && depth && --depth == 0 && start) {
-                keyframes.append(source.substr(*start, index + 1 - *start));
-                keyframes.push_back('\n');
-                start.reset();
-            }
-        }
-        return keyframes;
-    }
-
     template <typename Callback> void for_each_active_style_element(Callback&& callback) const {
         const auto visit = [&](auto&& self, UiElementHandle handle) -> void {
             const auto& record = handle_at(engine.ui_elements, handle);
@@ -6807,8 +6806,8 @@ struct UiRmlRuntime {
         // participate in the ordinary RmlUi cascade.
         std::string user_agent(ui_user_agent_css);
         user_agent +=
-            "html{width:100%;height:100%;font-family:" + css_font_family +
-            ";font-size:16dp;line-height:normal;pointer-events:none;}head{display:none;}body{display:block;height:100%;}\n";
+            "html{width:100%;height:100%;font-family:initial;font-size:initial;line-height:initial;"
+            "pointer-events:none;}head{display:none;}body{display:block;height:100%;}\n";
         user_agent = project_css(std::move(user_agent));
         std::string source;
         std::vector<Rml::String> selectors;
@@ -6868,7 +6867,7 @@ struct UiRmlRuntime {
             media_themes_changed = true;
         }
         for_each_active_style_element(
-            [&source](const UiElementRecord& record) { source += keyframes_from(record.text); });
+            [&source](const UiElementRecord& record) { source += record.style_keyframes; });
         source = project_css(std::move(source));
         if (user_agent + source == projected_style_sheet_source &&
             document->GetStyleSheetContainer()) {
@@ -7594,8 +7593,7 @@ struct UiRmlRuntime {
                            : new_value == record.style_properties.end() ||
                                  old_value->second != new_value->second;
             };
-            return changed("bbl-text-gradient") || changed("bbl-text-gradient-duration") ||
-                   changed("bbl-text-gradient-scale");
+            return changed("bbl-text-gradient") || changed("bbl-text-gradient-scale");
         };
         if (selector_changed || resolved_style_changed || gradient_property_changed() ||
             inner_rml_changed || markup_content_changed ||
@@ -7603,9 +7601,8 @@ struct UiRmlRuntime {
              (had_gradient || resolved_style.find("bbl-text-gradient:") != std::string::npos))) {
             invalidate_gradient_text();
         }
-        if (!projected.intrinsic_min_width.empty() && intrinsic_min_width.empty()) {
-            raw.RemoveProperty("width");
-        }
+        if (!projected.intrinsic_min_width.empty() && intrinsic_min_width.empty())
+            projected.intrinsic_width.set(raw, Rml::PropertyId::Width, std::nullopt);
         for (const auto& [name, old_value] : projected.style_properties) {
             static_cast<void>(old_value);
             if (!record.style_properties.contains(name)) {
@@ -8318,15 +8315,10 @@ struct UiRmlRuntime {
         for (std::uint32_t index = 0;
              index < projected_elements.size() && index < engine.ui_elements.size(); ++index) {
             ProjectedUiElement& projected = projected_elements[index];
-            if (!projected.element || !projected.intrinsic_width_applied) {
+            if (!projected.element || !projected.intrinsic_width.applied) {
                 continue;
             }
-            projected.element->RemoveProperty("width");
-            if (const auto dynamic_width = engine.ui_elements[index].style_properties.find("width");
-                dynamic_width != engine.ui_elements[index].style_properties.end()) {
-                projected.element->SetProperty("width", project_css(dynamic_width->second));
-            }
-            projected.intrinsic_width_applied = false;
+            projected.intrinsic_width.set(*projected.element, Rml::PropertyId::Width, std::nullopt);
             cleared_width = true;
         }
         if (cleared_width)
@@ -8378,7 +8370,8 @@ struct UiRmlRuntime {
         // containing block is itself shrink-to-fit. RmlUi exposes no intrinsic
         // measurement API, so perform the equivalent bounded layout pass.
         for (IntrinsicParent& parent : parents) {
-            parent.element->SetProperty("width", parent.minimum);
+            handle_at(projected_elements, parent.handle)
+                .intrinsic_width.set_string(*parent.element, "width", parent.minimum);
             for (const IntrinsicChild& child : parent.children) {
                 child.element->SetProperty("width", "auto");
             }
@@ -8415,8 +8408,9 @@ struct UiRmlRuntime {
                 }
             }
             max_content_width = std::max(max_content_width, inline_run_width);
-            parent.element->SetProperty("width", std::to_string(max_content_width) + "px");
-            handle_at(projected_elements, parent.handle).intrinsic_width_applied = true;
+            handle_at(projected_elements, parent.handle)
+                .intrinsic_width.set_string(*parent.element, "width",
+                                            std::to_string(max_content_width) + "px");
 
             for (const IntrinsicChild& child : parent.children) {
                 if (child.width.empty()) {
@@ -8660,16 +8654,11 @@ struct UiRmlRuntime {
                 }
             }
             if (!projected.gradient_text_elements.empty()) {
-                const auto parse_positive = [](const Rml::String& value) {
-                    char* end = nullptr;
-                    const double parsed = std::strtod(value.c_str(), &end);
-                    return end != value.c_str() && parsed > 0.0 ? parsed : 0.0;
-                };
-                projected.duration =
-                    parse_positive(element->GetProperty<Rml::String>("bbl-text-gradient-duration"));
-                const double scale =
-                    parse_positive(element->GetProperty<Rml::String>("bbl-text-gradient-scale"));
-                projected.scale = scale > 0.0 ? scale / 100.0 : 1.0;
+                const Rml::String scale_value =
+                    element->GetProperty<Rml::String>("bbl-text-gradient-scale");
+                char* end = nullptr;
+                const double scale = std::strtod(scale_value.c_str(), &end);
+                projected.scale = end != scale_value.c_str() && scale > 0.0 ? scale / 100.0 : 1.0;
                 projected.rendered_colors.resize(projected.gradient_text_elements.size(),
                                                  invalid_handle);
                 projected.rendered_positions.resize(projected.gradient_text_elements.size());
@@ -8680,31 +8669,29 @@ struct UiRmlRuntime {
         return true;
     }
 
-    /** Whether this update changed a glyph color, and whether any ran animated. */
-    struct GradientTextUpdate {
+    /** Whether this update changed a glyph color. */
+    bool update_gradient_text() {
         bool changed = false;
-        bool animated = false;
-    };
-
-    GradientTextUpdate update_gradient_text() {
-        if (gradient_text.empty())
-            return {};
-        bool changed = false;
-        double now = 0.0;
-        bool sampled_time = false;
         for (ProjectedGradientText& projected : gradient_text) {
             const std::size_t glyph_count = projected.gradient_text_elements.size();
             const std::size_t color_count = projected.gradient_text_colors.size();
             if (glyph_count == 0 || color_count < 2)
                 continue;
-            double phase = 0.0;
-            if (projected.duration > 0.0) {
-                if (!sampled_time) {
-                    now = system_interface.GetElapsedTime();
-                    sampled_time = true;
-                }
-                phase = std::fmod((now / projected.duration) * 2.0, 1.0);
-            }
+            const auto origin = projected.element->GetAbsoluteOffset(Rml::BoxArea::Border);
+            const double width =
+                std::max(1.0f, projected.element->GetBox().GetSize(Rml::BoxArea::Border).x);
+            // The image spans `scale` box widths; its horizontal position, animated as authored,
+            // places its left edge at a percentage of the box width less its own (CSS Backgrounds 3).
+            const Rml::Property* offset =
+                projected.element->GetProperty("bbl-background-position-x");
+            if (!Rml::Any(offset->unit & Rml::Unit::NUMBER_LENGTH_PERCENT))
+                throw std::runtime_error("Gradient text represents a length or percentage "
+                                         "background position, not: " +
+                                         offset->ToString());
+            const double image_left = projected.element->ResolveNumericValue(
+                offset->GetNumericValue(), static_cast<float>(width * (1.0 - projected.scale)));
+            const double phase = -image_left / (width * projected.scale);
+            const bool shifted = phase != 0.0;
             const auto sample_palette = [color_count, &projected](double position) {
                 position = std::clamp(position, 0.0, 1.0);
                 const double palette_position = position * static_cast<double>(color_count - 1);
@@ -8717,9 +8704,6 @@ struct UiRmlRuntime {
                                          a.green + (b.green - a.green) * amount,
                                          a.blue + (b.blue - a.blue) * amount};
             };
-            const auto origin = projected.element->GetAbsoluteOffset(Rml::BoxArea::Border);
-            const double width =
-                std::max(1.0f, projected.element->GetBox().GetSize(Rml::BoxArea::Border).x);
             for (std::size_t index = 0; index < glyph_count; ++index) {
                 Rml::Element& glyph = *projected.gradient_text_elements[index];
                 const double glyph_width = glyph.GetBox().GetSize(Rml::BoxArea::Border).x;
@@ -8732,7 +8716,7 @@ struct UiRmlRuntime {
                 GradientTextColor average{};
                 constexpr int sample_count = 5;
                 const double half_extent = glyph_width * 0.5 / width / projected.scale;
-                if (projected.duration <= 0.0 &&
+                if (projected.rendered_phase == phase &&
                     projected.rendered_colors[index] != invalid_handle &&
                     projected.rendered_positions[index] == glyph_position &&
                     projected.rendered_half_extents[index] == half_extent) {
@@ -8745,9 +8729,9 @@ struct UiRmlRuntime {
                         static_cast<double>(sample) / static_cast<double>(sample_count - 1) * 2.0 -
                         1.0;
                     double position = glyph_position + phase + across * half_extent;
-                    if (projected.duration > 0.0) {
+                    // A shifted image repeats.
+                    if (shifted)
                         position -= std::floor(position);
-                    }
                     const GradientTextColor color = sample_palette(position);
                     average.red += color.red / sample_count;
                     average.green += color.green / sample_count;
@@ -8768,8 +8752,9 @@ struct UiRmlRuntime {
                 projected.gradient_text_elements[index]->SetProperty("color", color);
                 changed = true;
             }
+            projected.rendered_phase = phase;
         }
-        return {changed, sampled_time};
+        return changed;
     }
 
     void sync_client_rects(bool all_elements) {
@@ -9347,12 +9332,8 @@ void update_ui_rml_runtime(UiRmlRuntime& runtime, std::uint32_t width, std::uint
                               generated_changed);
         runtime.context->Update();
     }
-    const auto gradient = runtime.update_gradient_text();
-    if (gradient.changed)
+    if (runtime.update_gradient_text())
         runtime.context->Update();
-    // Animated gradient text changes with time, as RmlUi's own animations do.
-    if (gradient.animated)
-        runtime.context->RequestNextUpdate(0);
     cpu.split(cpu.sample.outlines, checkpoint);
 }
 
