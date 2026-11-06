@@ -41,10 +41,7 @@ function declarationEvaluatesNothing(
         declaredIn(symbol, "babylon") ||
         (symbol !== undefined &&
             checker.getExportsOfModule(symbol).every((exported) => {
-                const target =
-                    (exported.flags & ts.SymbolFlags.Alias) !== 0
-                        ? checker.getAliasedSymbol(exported)
-                        : exported;
+                const target = aliasTarget(checker, exported);
                 return (target.flags & ts.SymbolFlags.Value) === 0;
             }))
     );

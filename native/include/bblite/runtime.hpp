@@ -5313,6 +5313,14 @@ struct Engine {
     std::vector<FileTexture> render_texture_facades;
 };
 
+/** A new frame task's handle; handles are never reused. */
+inline TaskHandle append_frame_task(Engine& engine, FrameTaskRecord task) {
+    if (engine.frame_tasks.size() >= invalid_handle)
+        throw std::runtime_error("Native frame task handle space exhausted.");
+    engine.frame_tasks.push_back(std::move(task));
+    return TaskHandle{static_cast<std::uint32_t>(engine.frame_tasks.size() - 1)};
+}
+
 /** Engine identity in source data. Realm engines retain their actual owner;
  * entry engines are borrowed only while their native lifetime is live. */
 class StoredEngine {

@@ -1157,7 +1157,7 @@ function emitStaticKeySsaoSettingAssignment(
             owner,
         );
     const type = context.checker.getTypeAtLocation(left.argumentExpression);
-    const names = (type.isUnion() ? type.types : [type]).map((member) =>
+    const names = unionMembers(type).map((member) =>
         member.isStringLiteral() ? member.value : undefined,
     );
     if (names.length === 0 || names.some((name) => name === undefined)) {
@@ -2841,6 +2841,7 @@ import { ApplicationRealmRequired } from "./worker-modules.js";
 import { stringLiteral } from "../cpp-literals.js";
 import { PINNED_ASSIGNMENT_OPERATORS } from "../lowering/pinned-operators.js";
 import { unwrappedIdentifier } from "./syntax.js";
+import { unionMembers } from "./type-facts.js";
 import { isGlobalUndefined, libraryName } from "./symbols.js";
 import {
     emitDeterministicRandomInstall,

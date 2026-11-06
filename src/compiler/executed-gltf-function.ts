@@ -26,7 +26,8 @@ import {
 } from "./intrinsics/asset.js";
 import type { LoweringServices } from "./lowering-services.js";
 import { declaredSymbol, libraryGlobal } from "./symbols.js";
-import { isValueReference } from "./syntax.js";
+import { isValueReference, unwrapExpression } from "./syntax.js";
+import { finalReturn } from "./loop-control.js";
 import type { Value } from "./types.js";
 import { tryResolveFunctionDeclaration } from "./user-functions.js";
 
@@ -43,16 +44,7 @@ type ExecutedGltfCallContext = AssetIntrinsicContext &
 const shapes = new EmissionWeakMap<ts.Node, ExecutedGltfShape | null>();
 
 function unwrapped(expression: ts.Expression): ts.Expression {
-    let node = expression;
-    while (
-        ts.isParenthesizedExpression(node) ||
-        ts.isAwaitExpression(node) ||
-        ts.isNonNullExpression(node) ||
-        ts.isAsExpression(node)
-    ) {
-        node = node.expression;
-    }
-    return node;
+    return unwrapExpression(expression, { await: true });
 }
 
 /** The returned `loadGltf(p, new Blob(...))` of a module-scope function, or undefined. */
@@ -68,10 +60,9 @@ function producerShape(
     ) {
         return undefined;
     }
-    const last = declaration.body.statements.at(-1);
-    if (!last || !ts.isReturnStatement(last) || !last.expression)
-        return undefined;
-    const load = unwrapped(last.expression);
+    const returned = finalReturn(declaration.body)?.expression;
+    if (!returned) return undefined;
+    const load = unwrapped(returned);
     if (
         !ts.isCallExpression(load) ||
         !ts.isIdentifier(load.expression) ||

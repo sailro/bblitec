@@ -6630,11 +6630,11 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             const key =
                 dataType.dictionary &&
                 dataType.key.kind === "number" &&
-                (this.context.checker.getTypeAtLocation(
-                    access.argumentExpression,
-                ).flags &
-                    ts.TypeFlags.StringLike) !==
-                    0
+                valueKindOf(
+                    this.context.checker.getTypeAtLocation(
+                        access.argumentExpression,
+                    ),
+                ) === "string"
                     ? `bbl::js::number_property_key(${this.compileForSink(
                           access.argumentExpression,
                           { kind: "string" },

@@ -1,10 +1,12 @@
 import { resolve, sep } from "node:path";
 import ts from "typescript";
 import {
+    aliasTarget,
     calledFunction,
     libraryStaticMember,
     resolvedSymbol,
 } from "./symbols.js";
+import { valueKindOf } from "./type-facts.js";
 import type { EvaluationOrder } from "./evaluation-order.js";
 
 /**
@@ -119,9 +121,8 @@ function computeReadable(
             ts.isElementAccessExpression(node) &&
             !ts.isStringLiteralLike(node.argumentExpression) &&
             // No export is named by a number.
-            (checker.getTypeAtLocation(node.argumentExpression).flags &
-                ts.TypeFlags.NumberLike) ===
-                0
+            valueKindOf(checker.getTypeAtLocation(node.argumentExpression)) !==
+                "number"
         )
             return [node.expression];
         if (ts.isCallExpression(node)) {
@@ -146,12 +147,7 @@ function computeReadable(
                 .getTypeAtLocation(node.expression)
                 .getProperty(node.argumentExpression.text);
             const declaration =
-                member &&
-                moduleDeclaration(
-                    (member.flags & ts.SymbolFlags.Alias) !== 0
-                        ? checker.getAliasedSymbol(member)
-                        : member,
-                );
+                member && moduleDeclaration(aliasTarget(checker, member));
             if (declaration) keep(declaration);
         }
         if (
@@ -164,11 +160,8 @@ function computeReadable(
             return;
         wholesaleOperands(node).forEach(readsWholesale);
         if (everything) return;
-        if (ts.isShorthandPropertyAssignment(node)) {
-            const value = checker.getShorthandAssignmentValueSymbol(node);
-            const declaration = moduleDeclaration(value);
-            if (declaration) keep(declaration);
-        } else if (ts.isIdentifier(node)) {
+        // A shorthand `{ x }`'s name resolves to the value it reads.
+        if (ts.isIdentifier(node)) {
             const declaration = moduleDeclaration(
                 resolvedSymbol(checker, node),
             );

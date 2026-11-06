@@ -10,6 +10,7 @@ import {
     libraryTypingFile,
 } from "../typescript-library-files.js";
 import { repositoryRelativePath } from "../upstream-source.js";
+import { specifierSourceName } from "./syntax.js";
 import {
     pinnedProgramExportNames,
     pinnedProgramSources,
@@ -215,9 +216,7 @@ function importedNames(
         visit(statement.getSourceFile());
         return names;
     }
-    return bindings.elements.map(
-        (element) => (element.propertyName ?? element.name).text,
-    );
+    return bindings.elements.map(specifierSourceName);
 }
 
 export function createCompilerProgram(

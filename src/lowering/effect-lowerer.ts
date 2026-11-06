@@ -410,9 +410,7 @@ TaskHandle create_effect_render_task(
     FrameTaskRecord task;
     task.kind = FrameTaskKind::effect;
     task.effect = std::move(options);
-    engine.frame_tasks.push_back(std::move(task));
-    return TaskHandle{
-        static_cast<std::uint32_t>(engine.frame_tasks.size() - 1)};
+    return append_frame_task(engine, std::move(task));
 }
 ${disposal || taskBuild ? lowerEffectWrapperDisposal(this.context, disposal) : ""}${taskDisposal ? lowerEffectTaskDisposal(this.context, taskMethodSlots) : ""}${taskMethodSlots ? lowerEffectTaskMethods(disposal || taskBuild, taskDisposal) : ""}
 } // namespace bbl

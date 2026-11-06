@@ -899,6 +899,33 @@ export class LoweringContext {
         return { file, declaration: found[0]! };
     }
 
+    /**
+     * The method an object literal's last writer of `name` is
+     * ({@link lastWriter}; a spread is the caller's contract), with a body.
+     */
+    public objectMethod(
+        object: ts.ObjectLiteralExpression,
+        name: string,
+    ): ts.MethodDeclaration & { body: ts.Block } {
+        const writer = lastWriter(
+            objectLiteralMembers(object),
+            name,
+            () => false,
+        );
+        const method =
+            writer !== "unknown" &&
+            writer?.kind === "method" &&
+            ts.isMethodDeclaration(writer.node)
+                ? writer.node
+                : undefined;
+        if (!method?.body)
+            return this.contractError(
+                object,
+                `Expected a '${name}' method with a body.`,
+            );
+        return method as ts.MethodDeclaration & { body: ts.Block };
+    }
+
     public objectInitializer(
         declaration: ts.Node,
         variableName: string,

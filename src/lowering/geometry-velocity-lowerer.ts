@@ -26,6 +26,7 @@
 import ts from "typescript";
 import { stringLiteral } from "../cpp-literals.js";
 import { sameSource } from "../compiler/syntax.js";
+import { finalReturn } from "../compiler/loop-control.js";
 import {
     GEOMETRY_DEFORMATION_VELOCITY_MODULE,
     GEOMETRY_VELOCITY_MODULE,
@@ -56,29 +57,15 @@ function returnedMethod(
     context: LoweringContext,
     declaration: ts.FunctionDeclaration,
     name: string,
-): ts.MethodDeclaration {
-    const returned = declaration.body!.statements.at(-1);
-    const literal =
-        returned && ts.isReturnStatement(returned) && returned.expression
-            ? context.unwrapExpression(returned.expression)
-            : undefined;
-    const method =
-        literal && ts.isObjectLiteralExpression(literal)
-            ? literal.properties.find(
-                  (property): property is ts.MethodDeclaration =>
-                      ts.isMethodDeclaration(property) &&
-                      ts.isIdentifier(property.name) &&
-                      property.name.text === name &&
-                      property.body !== undefined,
-              )
-            : undefined;
-    if (!method) {
+): ts.MethodDeclaration & { body: ts.Block } {
+    const returned = finalReturn(declaration.body)?.expression;
+    const literal = returned && context.unwrapExpression(returned);
+    if (!literal || !ts.isObjectLiteralExpression(literal))
         return context.contractError(
             declaration,
-            `Expected ${declaration.name?.text ?? "the factory"} to return a record with '${name}'.`,
+            `Expected ${declaration.name?.text ?? "the factory"} to return a record.`,
         );
-    }
-    return method;
+    return context.objectMethod(literal, name);
 }
 
 /** The pin's error call spelling `message` inside `owner`, as its source reads. */

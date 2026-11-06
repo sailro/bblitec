@@ -7,7 +7,7 @@
 // emit the native call that installs the same state at run time.
 import ts from "typescript";
 import { EmissionSet } from "../emission-transaction.js";
-import { argumentAt } from "../syntax.js";
+import { argumentAt, conditionalExpression, selectionArms } from "../syntax.js";
 import type {
     GeometryTextureTypeName,
     PostProcessOptionValue,
@@ -153,7 +153,7 @@ function compileTemporal(
 /** What compiling an SSAO normal input reads: values, the condition, refusals. */
 export interface SsaoNormalInputContext extends Pick<
     LoweringServices,
-    "unwrap" | "compileValue" | "conditions" | "fail"
+    "unwrap" | "compileValue" | "conditions" | "fail" | "symbols"
 > {}
 
 /**
@@ -166,15 +166,8 @@ export function compileNormalInput(
     expression: ts.Expression,
     what: string,
 ): { cpp: string; attachment: GeometryTextureTypeName; known: boolean } {
-    const unwrapped = context.unwrap(expression);
-    const absent = (node: ts.Expression): boolean => {
-        const inner = context.unwrap(node);
-        return (
-            inner.kind === ts.SyntaxKind.NullKeyword ||
-            (ts.isIdentifier(inner) && inner.text === "undefined") ||
-            ts.isVoidExpression(inner)
-        );
-    };
+    const absent = (node: ts.Expression): boolean =>
+        context.symbols.isNullishLiteral(context.unwrap(node));
     const attachment = (node: ts.Expression) => {
         const value = context.compileValue(node);
         if (!value.geometryAttachment) {
@@ -191,20 +184,23 @@ export function compileNormalInput(
             attachment: value.geometryAttachment,
         };
     };
+    const selection = conditionalExpression(context.unwrap(expression));
+    const [whenTrue, whenFalse] = selection
+        ? selectionArms(selection)
+        : [undefined, undefined];
     if (
-        ts.isConditionalExpression(unwrapped) &&
-        absent(unwrapped.whenTrue) !== absent(unwrapped.whenFalse)
+        selection &&
+        whenTrue &&
+        whenFalse &&
+        absent(whenTrue) !== absent(whenFalse)
     ) {
         const condition = context.conditions.compileCondition(
-            unwrapped.condition,
+            selection.condition,
         );
-        const present = absent(unwrapped.whenTrue)
-            ? unwrapped.whenFalse
-            : unwrapped.whenTrue;
-        const input = attachment(present);
+        const input = attachment(absent(whenTrue) ? whenFalse : whenTrue);
         const some = `std::optional<bbl::RenderTextureRef>{${input.cpp}}`;
         return {
-            cpp: absent(unwrapped.whenTrue)
+            cpp: absent(whenTrue)
                 ? `((${condition}) ? std::optional<bbl::RenderTextureRef>{} : ${some})`
                 : `((${condition}) ? ${some} : std::optional<bbl::RenderTextureRef>{})`,
             attachment: input.attachment,

@@ -5,7 +5,7 @@ import {
     unwrapExpression,
 } from "./syntax.js";
 import { staticAccessKey, libraryStaticMember } from "./symbols.js";
-import { unionMembers } from "./type-facts.js";
+import { unionMembers, valueKindOf } from "./type-facts.js";
 import type { PatternRead } from "./syntax.js";
 import { unlessRefused } from "./compile-error.js";
 import type { LoweringServices } from "./lowering-services.js";
@@ -119,9 +119,9 @@ function unobserved(
                 !(
                     key === undefined &&
                     !numericName &&
-                    (checker.getTypeAtLocation(node.argumentExpression).flags &
-                        ts.TypeFlags.NumberLike) !==
-                        0
+                    valueKindOf(
+                        checker.getTypeAtLocation(node.argumentExpression),
+                    ) === "number"
                 ) &&
                 carries(node.expression)
             )

@@ -44,14 +44,10 @@ inline TaskHandle retain_compute_frame_task(Engine& engine,
     for (std::size_t index = 0; index < engine.frame_tasks.size(); ++index)
         if (engine.frame_tasks[index].compute == task)
             return {static_cast<std::uint32_t>(index)};
-    if (engine.frame_tasks.size() >= invalid_handle)
-        throw std::runtime_error("Native frame task handle space exhausted.");
-    const TaskHandle handle{static_cast<std::uint32_t>(engine.frame_tasks.size())};
     FrameTaskRecord record;
     record.kind = FrameTaskKind::compute;
     record.compute = task;
-    engine.frame_tasks.push_back(std::move(record));
-    return handle;
+    return append_frame_task(engine, std::move(record));
 }
 inline void add_task(Scene& scene, const std::shared_ptr<ComputeTask>& task) {
     if (!scene.engine)

@@ -30,6 +30,8 @@ import {
 import { lowerPinnedBody } from "./pinned-body-lowerer.js";
 import { jsToUint32Call } from "./pinned-operators.js";
 import { recordAt } from "../compiler/record-access.js";
+import { finalReturn } from "../compiler/loop-control.js";
+import { conditionalExpression, selectionArms } from "../compiler/syntax.js";
 import { stringLiteral } from "../cpp-literals.js";
 import { javascriptModuleUrl } from "../data-url.js";
 import { transpileForBrowser } from "../typescript-transpile.js";
@@ -92,13 +94,10 @@ function featureEncoder(context: LoweringContext): {
         arrow && ts.isArrowFunction(arrow) && ts.isBlock(arrow.body)
             ? arrow.body
             : undefined;
-    const returned = body?.statements.at(-1);
-    const encoder =
-        returned && ts.isReturnStatement(returned) && returned.expression
-            ? context.unwrapExpression(returned.expression)
-            : undefined;
-    if (!encoder || !ts.isConditionalExpression(encoder))
-        context.contractError(
+    const returned = finalReturn(body)?.expression;
+    const encoder = returned && conditionalExpression(returned);
+    if (!encoder)
+        return context.contractError(
             declaration,
             "Expected the mesh opacity feature encoder.",
         );
@@ -114,7 +113,7 @@ export function meshOpacityFeatureBit(
     context: LoweringContext = sharedPinnedContext(),
 ): number {
     const { file, encoder } = featureEncoder(context);
-    const bit = context.numericValue(encoder.whenTrue, file);
+    const bit = context.numericValue(selectionArms(encoder)[0], file);
     if (context.pinnedNumber(PBR_MODULE, "MESH_OPACITY_MESH_BIT") !== bit)
         context.contractError(
             encoder,
@@ -235,19 +234,10 @@ function extensionMethod(
     name: string,
 ): ts.MethodDeclaration & { body: ts.Block } {
     const file = context.sourceFile(module);
-    const method = context
-        .objectInitializer(file, extension)
-        .properties.find(
-            (property): property is ts.MethodDeclaration =>
-                ts.isMethodDeclaration(property) &&
-                context.propertyName(property.name) === name,
-        );
-    if (!method?.body)
-        context.contractError(
-            file,
-            `Expected ${extension}.${name} as a method with a body.`,
-        );
-    return method as ts.MethodDeclaration & { body: ts.Block };
+    return context.objectMethod(
+        context.objectInitializer(file, extension),
+        name,
+    );
 }
 
 /** The expression a one-statement method returns. */
@@ -383,20 +373,19 @@ const policy = features && !(features.features & (PBR_HAS_ALPHA_BLEND | PBR_HAS_
 return _bindMeshOpacity(ctx._mesh, ctx._engine, entries, binding, ctx._disposers, "PBR", policy);`,
         "PBR mesh opacity binding",
     );
-    const policy = context.unwrapExpression(
+    // The asserted shape makes the policy `features && test ? 1 : 0`;
+    // every PBR record carries its feature word, so its condition is `test`.
+    const policy = conditionalExpression(
         context.variableInitializer(method, "policy"),
     );
-    // Every PBR record carries its feature word, so `features && x` is x.
-    const test =
-        ts.isConditionalExpression(policy) &&
-        ts.isBinaryExpression(policy.condition) &&
-        policy.condition.operatorToken.kind ===
-            ts.SyntaxKind.AmpersandAmpersandToken &&
-        context.expressionMatchesShape(policy.condition.left, "features")
-            ? policy.condition.right
-            : undefined;
-    if (!test || !ts.isConditionalExpression(policy))
-        context.contractError(policy, "Expected the PBR mesh opacity policy.");
+    const condition = policy && context.unwrapExpression(policy.condition);
+    if (!policy || !condition || !ts.isBinaryExpression(condition))
+        return context.contractError(
+            method,
+            "Expected the PBR mesh opacity policy.",
+        );
+    const test = condition.right;
+    const [whenTrue, whenFalse] = selectionArms(policy);
     const lowerer = new PinnedNumericLowerer(file, {
         bindings: new Map<string, PinnedBinding>([
             ["features.features", { cpp: "material_features", type: "scalar" }],
@@ -407,7 +396,7 @@ return _bindMeshOpacity(ctx._mesh, ctx._engine, entries, binding, ctx._disposers
     });
     return `// ${context.provenance(PBR_MODULE, "meshOpacityPbrExt.bind", "policy")}
 inline double pbr_mesh_opacity_policy(std::uint32_t material_features) {
-    return ${lowerer.expression(test)} ? ${lowerer.expression(policy.whenTrue)} : ${lowerer.expression(policy.whenFalse)};
+    return ${lowerer.expression(test)} ? ${lowerer.expression(whenTrue)} : ${lowerer.expression(whenFalse)};
 }`;
 }
 

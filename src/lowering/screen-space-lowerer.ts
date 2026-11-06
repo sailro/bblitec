@@ -1461,9 +1461,7 @@ TaskHandle create_screen_space_task(
     task.kind = FrameTaskKind::screen_space;
     task.post_process = std::move(passes);
     task.screen_space = std::move(options);
-    engine.frame_tasks.push_back(std::move(task));
-    return TaskHandle{
-        static_cast<std::uint32_t>(engine.frame_tasks.size() - 1)};
+    return append_frame_task(engine, std::move(task));
 }`;
     }
 

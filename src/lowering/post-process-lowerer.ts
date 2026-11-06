@@ -588,9 +588,7 @@ TaskHandle create_post_process_task(
     FrameTaskRecord task;
     task.kind = FrameTaskKind::post_process;
     task.post_process = std::move(options);
-    engine.frame_tasks.push_back(std::move(task));
-    return TaskHandle{
-        static_cast<std::uint32_t>(engine.frame_tasks.size() - 1)};
+    return append_frame_task(engine, std::move(task));
 }
 
 void update_post_process_uniforms(Engine& engine, TaskHandle handle) {

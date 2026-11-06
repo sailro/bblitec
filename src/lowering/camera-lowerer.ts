@@ -20,6 +20,7 @@ import {
     type PinnedFunctionParameter,
 } from "./pinned-function-lowerer.js";
 import { recordAt } from "../compiler/record-access.js";
+import { finalReturn } from "../compiler/loop-control.js";
 import {
     cameraControlLifecycleHelpers,
     cameraControlPublication,
@@ -216,20 +217,14 @@ export class CameraLowerer {
                         "writeLookAtWorldMat4LHIntoBuffer",
                     ),
             );
-            const last = statements.at(-1);
-            if (
-                !local ||
-                writer < 0 ||
-                !last ||
-                !ts.isReturnStatement(last) ||
-                !last.expression
-            )
+            const returned = finalReturn(local?.body)?.expression;
+            if (!local || writer < 0 || !returned)
                 return this.context.contractError(
                     declaration,
                     `Expected ${symbol}'s cameraLocalWorldMatrix to write a look-at matrix and return it.`,
                 );
             this.context.assertExpressionShape(
-                last.expression,
+                returned,
                 "_localMat",
                 `${symbol} local world return`,
             );

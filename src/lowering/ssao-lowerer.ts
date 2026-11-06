@@ -18,6 +18,7 @@
 import ts from "typescript";
 import { CppDefinitions, type CppModule } from "../cpp-definitions.js";
 import { doubleLiteral, stringLiteral } from "../cpp-literals.js";
+import { jsToUint32Call } from "./pinned-operators.js";
 import type { SsaoTaskManifest } from "../compiler/types.js";
 import {
     SSAO_GPU_MODULE,
@@ -287,26 +288,6 @@ function temporalFilter(context: LoweringContext): {
         initialize: declaration,
         filter: assignments[0]!.right as ts.ObjectLiteralExpression,
     };
-}
-
-/** A method of an object literal, by name. */
-function objectMethod(
-    context: LoweringContext,
-    object: ts.ObjectLiteralExpression,
-    name: string,
-): ts.MethodDeclaration {
-    const method = object.properties.find(
-        (property): property is ts.MethodDeclaration =>
-            ts.isMethodDeclaration(property) &&
-            ts.isIdentifier(property.name) &&
-            property.name.text === name,
-    );
-    if (!method?.body)
-        return context.contractError(
-            object,
-            `Expected a '${name}' method with a body.`,
-        );
-    return method;
 }
 
 /** The task object literal `createSsaoTask` builds. */
@@ -1168,7 +1149,7 @@ ${this.tasks.map((task) => this.taskFactory(task)).join("\n\n")}
                     cpp: "data",
                     type: "u32",
                     indexedStore: (_owner, index, value) =>
-                        `data[static_cast<std::size_t>(${index})] = std::bit_cast<float>(bbl::js::to_uint32(${value}))`,
+                        `data[static_cast<std::size_t>(${index})] = std::bit_cast<float>(${jsToUint32Call(value)})`,
                 },
             ],
             ["gpu.width", { cpp: "width", type: "scalar" }],
@@ -1661,7 +1642,7 @@ ${body}
     private temporalPrepare(): string {
         const { file, initialize, filter } = temporalFilter(this.context);
         this.assertTemporalClosure(initialize);
-        const prepare = objectMethod(this.context, filter, "prepare");
+        const prepare = this.context.objectMethod(filter, "prepare");
         const body = lowerPinnedBody(file, prepare.body!.statements, {
             ...this.temporalScope(),
             returnValue: () => "",
@@ -1674,7 +1655,7 @@ ${body}
 
     private temporalExecute(): string {
         const { file, filter } = temporalFilter(this.context);
-        const execute = objectMethod(this.context, filter, "execute");
+        const execute = this.context.objectMethod(filter, "execute");
         const body = lowerPinnedBody(file, execute.body!.statements, {
             ...this.temporalScope(),
             returnValue: () => "",
@@ -1711,7 +1692,7 @@ ${body}
     private prepareResolution(): string {
         const { file, adapter, enable } = halfAdapter(this.context);
         assertClosureLet(this.context, enable, "active", "false");
-        const prepare = objectMethod(this.context, adapter, "prepare");
+        const prepare = this.context.objectMethod(adapter, "prepare");
         const [activation, change] = prepare.body!.statements;
         this.context.assertStatementShapes(
             prepare,
@@ -1800,7 +1781,7 @@ ${body}
     /** `before`: the full-size block, then the reduced owner's passes. */
     private assertResolutionBefore(): void {
         const { adapter } = halfAdapter(this.context);
-        const before = objectMethod(this.context, adapter, "before");
+        const before = this.context.objectMethod(adapter, "before");
         this.context.assertStatementShapes(
             before,
             before.body!.statements,
@@ -1820,7 +1801,7 @@ ${body}
         assertClosureLet(context, factory, "wasEnabled", "false");
         assertClosureLet(context, factory, "neutral", "false");
         this.assertResolutionBefore();
-        const execute = objectMethod(context, task, "execute");
+        const execute = context.objectMethod(task, "execute");
         const bindings = new Map<string, PinnedBinding>([
             ["task.enabled", { cpp: "task.enabled", type: "bool" }],
             ["task.radius", { cpp: "task.radius", type: "scalar" }],
@@ -2048,7 +2029,7 @@ ${body}
     private taskRecord(): string {
         const context = this.context;
         const { task } = ssaoTaskObject(context);
-        const record = objectMethod(context, task, "record");
+        const record = context.objectMethod(task, "record");
         context.assertStatementShapes(
             record,
             record.body!.statements,
@@ -2070,8 +2051,7 @@ void ssao_task_record(SsaoTaskOptions& task) {
     FrameTaskRecord task;
     task.kind = FrameTaskKind::ssao;
     task.ssao = std::move(options);
-    engine.frame_tasks.push_back(std::move(task));
-    return TaskHandle{static_cast<std::uint32_t>(engine.frame_tasks.size() - 1)};
+    return append_frame_task(engine, std::move(task));
 }`;
     }
 

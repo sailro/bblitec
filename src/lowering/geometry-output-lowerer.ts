@@ -356,12 +356,6 @@ FrameTaskRecord& task_record(Engine& engine, TaskHandle handle) {
     return ${recordAt("engine.frame_tasks", "handle")};
 }
 
-TaskHandle append_task(Engine& engine, FrameTaskRecord task) {
-    engine.frame_tasks.push_back(std::move(task));
-    return TaskHandle{
-        static_cast<std::uint32_t>(engine.frame_tasks.size() - 1)};
-}
-
 } // namespace
 
 static void initialize_render_task_shader_material(Engine& engine, FrameTaskRecord& task,
@@ -395,7 +389,7 @@ TaskHandle create_render_task(
     task.kind = FrameTaskKind::render;
     task.render = std::move(options);
     task.source_scene = scene.state;
-    return append_task(engine, std::move(task));
+    return append_frame_task(engine, std::move(task));
 }
 
 TaskHandle create_geometry_renderer_task(
@@ -427,7 +421,7 @@ TaskHandle create_geometry_renderer_task(
     FrameTaskRecord task;
     task.kind = FrameTaskKind::geometry;
     task.geometry = std::move(options);
-    return append_task(engine, std::move(task));
+    return append_frame_task(engine, std::move(task));
 }
 
 TaskHandle create_copy_to_texture_task(
@@ -443,7 +437,7 @@ TaskHandle create_copy_to_texture_task(
     FrameTaskRecord task;
     task.kind = FrameTaskKind::copy;
     task.copy = std::move(options);
-    return append_task(engine, std::move(task));
+    return append_frame_task(engine, std::move(task));
 }
 
 RenderTextureRef geometry_task_texture(
