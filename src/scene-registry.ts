@@ -856,13 +856,10 @@ const authoredInputs: readonly SceneInput[] = [
         sourceOrigin: "bblitec-regression",
         title: "Babylon Lite Native - Host Page",
         page: { path: "examples/regression-host-page/page.html" },
-        // The foreground is the page's own text: the heading and canvas
-        // match exactly; text after an inline element and centred button
-        // labels sit at whole pixels where Chromium places them at
-        // fractional ones (the UI text residual, TODO.md).
+        // The foreground isolates the page's text and controls.
         parity: {
             maxFullMad: 0.08,
-            maxForegroundMad: 7,
+            maxForegroundMad: 0.5,
             backgroundColor: [35, 40, 30],
             backgroundThreshold: 30,
         },
@@ -874,12 +871,10 @@ const authoredInputs: readonly SceneInput[] = [
         sourceOrigin: "bblitec-regression",
         title: "Babylon Lite Native - Page Scene Canvas",
         page: { path: "examples/regression-page-scene-canvas/page.html" },
-        // The scene, the page paint around it and the intrinsic canvas
-        // match exactly; the note's line box with its monospace run sits
-        // 4px higher (the UI text residual).
+        // Authored canvas layout, page paint and mixed-font inline text.
         parity: {
             maxFullMad: 0.4,
-            maxForegroundMad: 0.7,
+            maxForegroundMad: 0.5,
             backgroundColor: [47, 74, 58],
             backgroundThreshold: 30,
         },
@@ -5390,8 +5385,7 @@ const authoredInputs: readonly SceneInput[] = [
         title: "Babylon Lite Native - Platformer",
         parity: {
             referenceFrame: 180,
-            // Measured 0.664 / 0.664 on both backends; the residual is
-            // text rasterization and the title's clipped gradient (docs/ui.md).
+            // The title's gradient-clipped text remains approximate (docs/ui.md).
             maxFullMad: 0.8,
             maxForegroundMad: 0.8,
             // Canvas-only lane: pixel-perfect on both backends
@@ -5446,9 +5440,8 @@ const authoredInputs: readonly SceneInput[] = [
         title: "Babylon Lite Native - Antigravity Racer",
         parity: {
             referenceFrame: 180,
-            // Measured 1.018 full / 1.035 foreground on both backends. The
-            // residual is retained text rasterization; the canvas-only lane
-            // below isolates the renderer.
+            // Retained menu text, gradients and rounded edges; the canvas
+            // lane isolates the renderer.
             maxFullMad: 2.8,
             maxForegroundMad: 2.85,
             canvasThresholds: {
@@ -5607,19 +5600,11 @@ const authoredInputs: readonly SceneInput[] = [
         source: "corpus/babylon-lite/lab/lite/src/demos/minecraft.ts",
         sourceOrigin: "babylon-lite-application",
         title: "Babylon Lite Native - Voxel Sandbox",
-        // The browser and both native backends agree on the voxel canvas to
-        // 0.001 canvas MAD on SDL_GPU and 0.000 on Dawn, against a 0.01
-        // gate: 274 of 921,600 pixels differ at all and the largest is 26
-        // counts. That asymmetry appeared when scene code moved onto
-        // `bbl::js::hypot_js` -- the demo reaches Math.hypot on its own
-        // camera math -- and it stays well inside the gate. The remaining
-        // 1.104 / 1.103 full-page residual is retained-UI text
-        // rasterization (docs/ui.md); the two backends are within one
-        // count of each other there, so one gate pair covers both.
+        // Shadowed HUD text and block selectors are included in the full-page gate.
         parity: {
             referenceFrame: 180,
-            maxFullMad: 1.2,
-            maxForegroundMad: 1.2,
+            maxFullMad: 0.5,
+            maxForegroundMad: 0.5,
             canvasThresholds: { maxFullMad: 0.002, maxForegroundMad: 0.002 },
             backgroundColor: [179, 209, 235],
             backgroundThreshold: 30,
@@ -5799,13 +5784,9 @@ const authoredInputs: readonly SceneInput[] = [
                 values: ["true"],
                 settleMilliseconds: 8000,
             },
-            // The canvas matches the settled browser frame (0.000 on both
-            // backends); the full-page residual is the HUD (1.107 / 1.785
-            // measured): glyph rasterization, the live GPU timing, and the
-            // left panel's rows, which sit up to 3 px higher from its first
-            // range slider down.
-            maxFullMad: 1.15,
-            maxForegroundMad: 1.85,
+            // The full-page gate includes the HUD and its live GPU timing.
+            maxFullMad: 0.5,
+            maxForegroundMad: 0.5,
             canvasThresholds: { maxFullMad: 0.01, maxForegroundMad: 0.01 },
             backgroundColor: [51, 51, 77],
             backgroundThreshold: 30,
@@ -5863,15 +5844,11 @@ const authoredInputs: readonly SceneInput[] = [
             },
             // The skin and morph animation and the temporal AO history are
             // a frame count from the fixed clock; frame 180 is past the
-            // history's 16-sample convergence. The canvas matches the
-            // browser frame; the full-page residual is the control panel
-            // (glyph rasterization, and each label's text sitting lower
-            // beside its select and checkbox than Chromium's flex rows
-            // centre it, docs/ui.md) and the live GPU timing values, which
-            // move it by up to 0.02 between runs.
+            // history's 16-sample convergence. The full-page gate includes
+            // the control panel and live GPU timing values.
             referenceFrame: 180,
-            maxFullMad: 3.8,
-            maxForegroundMad: 5,
+            maxFullMad: 0.5,
+            maxForegroundMad: 0.5,
             canvasThresholds: { maxFullMad: 0.01, maxForegroundMad: 0.01 },
             // The demo clears to (0.045, 0.055, 0.075): 11, 14, 19 in 8-bit.
             backgroundColor: [11, 14, 19],

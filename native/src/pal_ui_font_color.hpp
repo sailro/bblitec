@@ -1,6 +1,7 @@
 #pragma once
 #include <SDL3/SDL_platform_defines.h>
 #if defined(__ANDROID__) || defined(SDL_PLATFORM_IOS)
+#include "pal_ui_font_effect.hpp"
 #include <RmlUi/Core/CallbackTexture.h>
 #include <RmlUi/Core/FontEngineInterface.h>
 #include <RmlUi/Core/FontFaceCache.h>
@@ -41,10 +42,6 @@ class ColorUiFontEngine final : public Rml::FontEngineInterface {
         std::shared_ptr<const std::vector<Rml::byte>> pixels;
         std::unique_ptr<Rml::CallbackTextureSource> texture;
     };
-    struct EffectRaster {
-        Rml::Vector2i offset, dimensions;
-        std::unique_ptr<Rml::CallbackTextureSource> texture;
-    };
     using RasterKey = std::pair<std::string, float>;
 #if defined(SDL_PLATFORM_IOS)
     using AppleFont = FontOwner<CTFontRef, &CFRelease>;
@@ -56,7 +53,7 @@ class ColorUiFontEngine final : public Rml::FontEngineInterface {
         std::map<RasterKey, float> advances;
         std::map<RasterKey, Raster> rasters;
         std::map<Rml::FontEffectsHandle, Rml::FontEffectList> effects;
-        std::map<std::pair<Raster*, size_t>, EffectRaster> effect_rasters;
+        std::map<std::pair<Raster*, size_t>, UiFontEffectRaster> effect_rasters;
 #if defined(SDL_PLATFORM_IOS)
         AppleFont apple_font{nullptr, CFRelease};
 #endif
@@ -299,37 +296,13 @@ class ColorUiFontEngine final : public Rml::FontEngineInterface {
             glyph.color_format = Rml::ColorFormat::RGBA8;
             glyph.advance = base.advance;
             glyph.bearing = {base.origin.x, -base.origin.y};
-            EffectRaster value{{0, 0}, base.dimensions, {}};
-            if (!effect.GetGlyphMetrics(value.offset, value.dimensions, glyph))
+            auto value = ui_font_effect_raster(glyph, effect);
+            if (!value)
                 return;
-            if (effect.HasUniqueTexture()) {
-                std::vector<Rml::byte> pixels(static_cast<size_t>(value.dimensions.x) *
-                                              value.dimensions.y * 4);
-                effect.GenerateGlyphTexture(pixels.data(), value.dimensions, value.dimensions.x * 4,
-                                            glyph);
-                value.texture =
-                    texture(std::make_shared<const std::vector<Rml::byte>>(std::move(pixels)),
-                            value.dimensions);
-            } else {
-                auto pixels = *base.pixels;
-                for (size_t i = 0; i < pixels.size(); i += 4)
-                    pixels[i] = pixels[i + 1] = pixels[i + 2] = pixels[i + 3];
-                value.dimensions = base.dimensions;
-                value.texture =
-                    texture(std::make_shared<const std::vector<Rml::byte>>(std::move(pixels)),
-                            value.dimensions);
-            }
-            found = face.effect_rasters.emplace(key, std::move(value)).first;
+            found = face.effect_rasters.emplace(key, std::move(*value)).first;
         }
-        const auto& value = found->second;
-        meshes.emplace_back();
-        meshes.back().texture = value.texture->GetTexture(manager);
-        auto color = effect.GetColour();
-        color.alpha =
-            static_cast<Rml::byte>(std::clamp(std::lround(color.alpha * opacity), 0l, 255l));
-        Rml::MeshUtilities::GenerateQuad(
-            meshes.back().mesh, position + Rml::Vector2f(base.origin + value.offset),
-            Rml::Vector2f(value.dimensions), color.ToPremultiplied(), {0, 0}, {1, 1});
+        ui_font_effect_mesh(manager, found->second, *base.texture,
+                            position + Rml::Vector2f(base.origin), effect, opacity, meshes);
     }
 
 public:

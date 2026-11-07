@@ -164,10 +164,13 @@ the write; host-page sheets still need admission.
 
 ## Fonts
 
-- DirectWrite on Windows; FreeType with CoreText (macOS/iOS), Fontconfig (Linux) or Android discovery.
+- DirectWrite on Windows, including text effects through RmlUi's effect kernels; FreeType with CoreText
+  (macOS/iOS), Fontconfig (Linux) or Android discovery.
 - Color glyphs: CoreText on iOS, Android's text renderer. Android bundles Noto Sans Symbols 2.
 - Missing glyphs fall back per glyph. Sizes stay fractional (FreeType quantizes to 1/64 px); sizes above 16384 px refuse.
 - Font selection, kerning, line-height rounding and rasterization can differ from Chromium.
+- Gradient-clipped text uses per-glyph averaged colours, not a continuous gradient; its text strokes use RmlUi's
+  outward outline.
 
 ## Rendering
 

@@ -1,0 +1,68 @@
+Include the absolute subpixel origin when rasterizing text. Keep the integer
+translation outside the glyph geometry and invalidate it when its fractional
+origin changes. Geometry::Render rounds its translation, so rasterizing before
+accounting for that fraction selects the wrong glyph coverage and position.
+
+--- a/Include/RmlUi/Core/ElementText.h
++++ b/Include/RmlUi/Core/ElementText.h
+@@ -87,6 +87,7 @@
+ 		Texture texture;
+ 	};
+ 	Vector<TexturedGeometry> geometry;
++	Vector2f geometry_origin = {0, 0};
+ 
+ 	// The decoration geometry we've generated for this string.
+ 	UniquePtr<Geometry> decoration;
+--- a/Source/Core/ElementText.cpp
++++ b/Source/Core/ElementText.cpp
+@@ -139,6 +139,14 @@
+ 
+ 	RenderManager& render_manager = GetContext()->GetRenderManager();
+ 
++	const Vector2f translation = GetAbsoluteOffset();
++	const Vector2f raster_origin = translation - Vector2f(Math::RoundDown(translation.x), Math::RoundDown(translation.y));
++	if (raster_origin != geometry_origin)
++	{
++		geometry_origin = raster_origin;
++		geometry_dirty = true;
++	}
++
+ 	// If our font effects have potentially changed, update it and force a geometry generation if necessary.
+ 	if (font_effects_dirty && UpdateFontEffects())
+ 		geometry_dirty = true;
+@@ -178,8 +187,6 @@
+ 		generated_decoration = decoration_property;
+ 	}
+ 
+-	const Vector2f translation = GetAbsoluteOffset();
+-
+ 	bool render = true;
+ 
+ 	// Do a visibility test against the scissor region to avoid unnecessary render calls. Instead of handling
+@@ -211,7 +218,7 @@
+ 	if (render)
+ 	{
+ 		for (size_t i = 0; i < geometry.size(); ++i)
+-			geometry[i].geometry.Render(translation, geometry[i].texture);
++			geometry[i].geometry.Render(translation - geometry_origin, geometry[i].texture);
+ 	}
+ 
+ 	if (decoration)
+@@ -537,7 +544,7 @@
+ 
+ 	for (Line& line : lines)
+ 	{
+-		line.width = GetFontEngineInterface()->GenerateString(render_manager, font_face_handle, font_effects_handle, line.text, line.position, colour,
++		line.width = GetFontEngineInterface()->GenerateString(render_manager, font_face_handle, font_effects_handle, line.text, line.position + geometry_origin, colour,
+ 			opacity, text_shaping_context, mesh_list);
+ 	}
+ 
+@@ -570,7 +577,7 @@
+ 			}
+ 
+ 			line.width = GetFontEngineInterface()->GenerateString(render_manager, font_face_handle, font_effects_handle, text_submit_view,
+-				line.position, colour, opacity, text_shaping_context, mesh_list);
++				line.position + geometry_origin, colour, opacity, text_shaping_context, mesh_list);
+ 		}
+ 	}
+ 

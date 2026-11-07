@@ -14,7 +14,9 @@ inline constexpr std::string_view ui_user_agent_css =
     ":where(:not(:bbl-dark-scheme)){--bbl-canvastext:#000000;}\n"
     ":where(:bbl-dark-scheme){--bbl-canvastext:#ffffff;}\n"
     "html{color:initial;}\n"
-    "div,canvas{display:block;}\n"
+    "div{display:block;}\n"
+    // Authored canvases are inline replaced elements unless a page makes them blocks.
+    "canvas{display:inline;}\n"
     "details,summary{display:block;}\n"
     "summary{tab-index:auto;pointer-events:auto;cursor:pointer;}\n"
     // Chromium's inside disclosure marker: a 0.66em symbol and 0.4em before the text.

@@ -1,6 +1,6 @@
 {
   "scene": "ambient-occlusion",
-  "notes": "Live controls at the golden pose (registry referenceFrame 180): each toggle is clicked at frame 120 and measured at 180. The checkboxes' client positions are read off the golden and the native capture, whose rows sit up to 3 px lower. Each toggle selects another composed mode (AO-only copy, direct light, spatial-only frames, reconstructed normals, the unpruned transport); both backends encode it alike. The live GPU timing values are the backends' only difference.",
+  "notes": "Live controls at the golden pose (registry referenceFrame 180): each toggle is clicked at frame 120 and measured at 180. Each toggle selects another composed mode (AO-only copy, direct light, spatial-only frames, reconstructed normals, the unpruned transport); both backends encode it alike. GPU timing values are live measurements.",
   "capture": false,
   "timeoutMs": 120000,
   "phases": [
@@ -12,7 +12,7 @@
     { "id": "pruning-off", "frame": 180, "tape": ["-*120", "UiClick@550:197"] }
   ],
   "expect": [
-    { "kind": "golden-mad", "phase": "baseline", "max": 3.8, "foregroundMax": 5 },
+    { "kind": "golden-mad", "phase": "baseline", "max": 0.5, "foregroundMax": 0.5 },
     { "kind": "image-mad", "phase": "ao-only", "vs": "baseline", "changedPixelsMin": 100000, "notes": "the AO-only copy replaces the lit scene" },
     { "kind": "image-mad", "phase": "direct-light", "vs": "baseline", "changedPixelsMin": 10000, "notes": "the sun lights the room" },
     { "kind": "image-mad", "phase": "temporal-off", "vs": "baseline", "changedPixelsMin": 100, "notes": "spatial-only AO and the unchecked box" },

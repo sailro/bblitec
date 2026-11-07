@@ -60,6 +60,38 @@ int main() {
         update_ui_rml_runtime(runtime, 320, 240);
         assert(first_draw(0, 0, 255) < first_draw(255, 0, 0));
     }
+    {
+        Engine engine;
+        const auto parent = ui_create_element(engine, "div");
+        ui_set_attribute(engine, parent, "style",
+                         "font-size:16px;line-height:20px;font-family:Arial;");
+        ui_append_to_root(engine, parent);
+        const auto first = ui_create_element(engine, "canvas");
+        ui_canvas_set_width(engine, first, 40);
+        ui_canvas_set_height(engine, first, 20);
+        ui_append_child(engine, parent, first);
+        const auto second = ui_create_element(engine, "canvas");
+        ui_canvas_set_width(engine, second, 60);
+        ui_canvas_set_height(engine, second, 10);
+        ui_append_child(engine, parent, second);
+        const auto next = ui_create_element(engine, "div");
+        ui_set_attribute(engine, next, "style", "height:1px;");
+        ui_append_child(engine, parent, next);
+        UiRmlRuntime runtime(engine, window, 320, 240);
+        update_ui_rml_runtime(runtime, 320, 240);
+        const auto raw = [&](UiElementHandle handle) {
+            return runtime.projected_elements.at(handle.value).element;
+        };
+        // Chromium's unstyled canvases share an inline baseline. The strut
+        // leaves 5px below that baseline before the following block.
+        assert(raw(first)->GetComputedValues().display() == Rml::Style::Display::Inline);
+        assert(raw(second)->GetAbsoluteOffset(Rml::BoxArea::Border) == Rml::Vector2f(40, 10));
+        assert(raw(next)->GetAbsoluteOffset(Rml::BoxArea::Border).y == 25.f);
+        ui_set_style_property(engine, first, "display", "block");
+        update_ui_rml_runtime(runtime, 320, 240);
+        assert(raw(second)->GetAbsoluteOffset(Rml::BoxArea::Border).x == 0.f);
+        assert(raw(next)->GetAbsoluteOffset(Rml::BoxArea::Border).y > 25.f);
+    }
     SDL_DestroyWindow(window);
     SDL_Quit();
 }

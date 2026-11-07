@@ -1,0 +1,71 @@
+Measure a row flex item's first line using the shared layout result instead of
+half its line-height. A baseline-sharing group's largest ascent and descent
+contribute to the flex line's cross size (CSS Flexbox 9.4).
+
+--- a/Source/Core/Layout/FlexFormattingContext.cpp
++++ b/Source/Core/Layout/FlexFormattingContext.cpp
+@@ -158,6 +158,7 @@
+ 
+ 	// Used for resolving cross size
+ 	float hypothetical_cross_size; // Outer size
++	float hypothetical_baseline_top = 0.f; // First baseline measured from the top margin edge.
+ 	float used_cross_size;         // Outer size
+ 	float cross_offset;            // Offset within line
+ 	float cross_baseline_top;      // Only used for baseline cross alignment
+@@ -940,4 +941,8 @@
+ 		const bool single_line_definite_cross_size = (cross_available_size >= 0.f && flex_single_line);
+ 		return stretched && single_line_definite_cross_size;
+ 	};
++	auto SharesRowBaseline = [=](const FlexItem& item) {
++		return !is_grid && main_axis_horizontal && item.align_self == Style::AlignSelf::Baseline &&
++			!item.cross.auto_margin_a && !item.cross.auto_margin_b;
++	};
+ 
+@@ -955,11 +960,19 @@
+ 
+ 			if (main_axis_horizontal)
+ 			{
+-				if (content_size.y < 0.0f)
++				if (content_size.y < 0.0f || SharesRowBaseline(item))
+ 				{
+ 					item.box.SetContent(Vector2f(GetInnerUsedMainSize(item), content_size.y));
+-					FormattingContext::FormatIndependent(flex_container_box, item.element, &item.box, FormattingContextType::Block);
++					auto layout = FormattingContext::FormatIndependent(flex_container_box, item.element, &item.box, FormattingContextType::Block);
+ 					item.hypothetical_cross_size = item.element->GetBox().GetSize().y + item.cross.sum_edges;
++					if (SharesRowBaseline(item))
++					{
++						float baseline = 0.f;
++						const Box& formatted_box = item.element->GetBox();
++						if (!layout->GetBaselineOfFirstLine(baseline))
++							baseline = formatted_box.GetSize(BoxArea::Border).y;
++						item.hypothetical_baseline_top = formatted_box.GetEdge(BoxArea::Margin, BoxEdge::Top) + baseline;
++					}
+ 				}
+ 				else
+ 				{
+@@ -998,8 +1011,14 @@
+ 			for (const auto& item : line.items) if (!is_grid || item.grid_row_span == 1)
+ 				largest_hypothetical_cross_size = Math::Max(largest_hypothetical_cross_size, item.hypothetical_cross_size);
+ 
+-			// Currently, we don't handle the case where baseline alignment could extend the line's cross size, see CSS specs 9.4.8.
+-			line.cross_size = Math::Max(0.0f, largest_hypothetical_cross_size);
++			float baseline_ascent = 0.f, baseline_descent = 0.f;
++			for (const auto& item : line.items) if (SharesRowBaseline(item))
++			{
++				baseline_ascent = Math::Max(baseline_ascent, item.hypothetical_baseline_top);
++				baseline_descent = Math::Max(baseline_descent, item.hypothetical_cross_size - item.hypothetical_baseline_top);
++			}
++			// CSS Flexbox 9.4: a baseline-sharing group contributes its largest ascent plus descent.
++			line.cross_size = Math::Max(largest_hypothetical_cross_size, baseline_ascent + baseline_descent);
+ 
+ 			if (flex_single_line)
+ 				line.cross_size = Math::Clamp(line.cross_size, cross_min_size, cross_max_size);
+@@ -1117,7 +1136,7 @@
+ 					const float baseline_heuristic = 0.5f * item.element->GetLineHeight();
+ 					const float sum_edges_top = (wrap_reverse ? item.cross.sum_edges - item.cross.sum_edges_a : item.cross.sum_edges_a);
+ 
+-					item.cross_baseline_top = sum_edges_top + baseline_heuristic;
++					item.cross_baseline_top = SharesRowBaseline(item) ? item.hypothetical_baseline_top : sum_edges_top + baseline_heuristic;
+ 
+ 					const float baseline_edge_distance = (wrap_reverse ? item.used_cross_size - item.cross_baseline_top : item.cross_baseline_top);
+ 					if (baseline_edge_distance > max_baseline_edge_distance)

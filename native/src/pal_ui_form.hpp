@@ -45,6 +45,13 @@ inline constexpr float ui_select_inset_start = 4.f, ui_select_inset_end = 16.f,
 inline constexpr float ui_select_arrow_from_right = 9.f;
 
 class UiSelectElement final : public Rml::ElementFormControlSelect {
+    float baseline = 0.f;
+
+    Rml::Style::FontKerning menu_kerning() const {
+        const auto kerning = GetComputedValues().font_kerning();
+        return kerning == Rml::Style::FontKerning::Auto ? Rml::Style::FontKerning::None : kerning;
+    }
+
     static void append_text(Rml::Element& element, Rml::String& output) {
         if (const auto* text = rmlui_dynamic_cast<Rml::ElementText*>(&element))
             output += text->GetText();
@@ -54,16 +61,23 @@ class UiSelectElement final : public Rml::ElementFormControlSelect {
 
 public:
     explicit UiSelectElement(const Rml::String& tag) : ElementFormControlSelect(tag) {}
+    float GetBaseline() const override { return baseline; }
     bool GetIntrinsicDimensions(Rml::Vector2f& dimensions, float& ratio) override {
+        const auto face = GetFontFaceHandle();
+        const auto& computed = GetComputedValues();
+        // Chromium's menulist disables automatic kerning, while authored
+        // font-kerning:normal still applies to its measurement and label.
+        const Rml::TextShapingContext shaping{computed.language(), computed.direction(),
+                                              menu_kerning(), computed.letter_spacing()};
         float label_width = 0;
         for (int index = 0; index < GetNumOptions(); ++index) {
             Rml::String text;
             append_text(*GetOption(index), text);
-            label_width = std::max(
-                label_width, static_cast<float>(Rml::ElementUtilities::GetStringWidth(this, text)));
+            if (face)
+                label_width = std::max(label_width, Rml::GetFontEngineInterface()->GetStringWidth(
+                                                        face, text, shaping, Rml::Character::Null));
         }
         const float density = Rml::ElementUtilities::GetDensityIndependentPixelRatio(this);
-        const auto face = GetFontFaceHandle();
         const float line = face ? Rml::GetFontEngineInterface()->GetFontMetrics(face).line_spacing
                                 : GetLineHeight();
         dimensions = {std::ceil(label_width / density) * density +
@@ -76,6 +90,21 @@ public:
 protected:
     void OnLayout() override {
         ElementFormControlSelect::OnLayout();
+        if (auto* value = GetChild(1))
+            value->SetProperty(Rml::PropertyId::FontKerning,
+                               Rml::Property(static_cast<int>(menu_kerning()), Rml::Unit::KEYWORD));
+        baseline = ElementFormControlSelect::GetBaseline();
+        if (const auto face = GetFontFaceHandle()) {
+            // RmlUi measures from the bottom margin edge. Chromium's menulist
+            // centers its font's baseline in the content box, independently
+            // of an authored line-height.
+            const auto& metrics = Rml::GetFontEngineInterface()->GetFontMetrics(face);
+            const auto& box = GetBox();
+            baseline = box.GetEdge(Rml::BoxArea::Margin, Rml::BoxEdge::Bottom) +
+                       box.GetEdge(Rml::BoxArea::Border, Rml::BoxEdge::Bottom) +
+                       box.GetEdge(Rml::BoxArea::Padding, Rml::BoxEdge::Bottom) +
+                       (box.GetSize().y - metrics.line_spacing) * .5f + metrics.descent;
+        }
         if (auto* arrow = GetChild(0)) {
             const float density = Rml::ElementUtilities::GetDensityIndependentPixelRatio(this);
             const auto size = GetBox().GetSize(Rml::BoxArea::Border);
