@@ -96,6 +96,11 @@ export function mergePbrStateWrites(
         alphaBlend: merged(known.alphaBlend, added.alphaBlend),
         alphaBelowOne: merged(known.alphaBelowOne, added.alphaBelowOne),
         baseColorFactor: known.baseColorFactor || added.baseColorFactor,
+        bentNormalTexture:
+            known.bentNormalTexture === "definite" ||
+            added.bentNormalTexture === "definite"
+                ? "definite"
+                : known.bentNormalTexture || added.bentNormalTexture,
         pluginSignatures: merged(
             known.pluginSignatures,
             added.pluginSignatures,
@@ -249,6 +254,7 @@ export class SceneMaterialRecorder {
             alphaBlend?: readonly boolean[];
             alphaBelowOne?: readonly boolean[];
             baseColorFactor?: true;
+            bentNormalTexture?: true | "definite";
             pluginSignature?: number;
             pluginAppend?: number;
         },
@@ -257,13 +263,14 @@ export class SceneMaterialRecorder {
             target.kind === "scene"
                 ? `scene:${target.index}`
                 : target.kind === "asset"
-                  ? `asset:${target.output}`
+                  ? `asset:${target.output}:${target.container ?? ""}`
                   : "assets";
         const added: PbrMaterialStateWrites = {
             target,
             alphaBlend: write.alphaBlend ?? [],
             alphaBelowOne: write.alphaBelowOne ?? [],
             baseColorFactor: write.baseColorFactor === true,
+            bentNormalTexture: write.bentNormalTexture ?? false,
             pluginSignatures:
                 write.pluginSignature === undefined
                     ? []
@@ -387,6 +394,18 @@ export class SceneMaterialRecorder {
     public recordScenePbrGammaAlbedo(index: number | undefined): void {
         this.sceneMaterialForSetter("setPbrGammaAlbedo", index).gammaAlbedo =
             true;
+    }
+
+    public recordScenePbrAlphaCutoff(
+        index: number | undefined,
+        cutoff: number,
+    ): Readonly<ScenePbrMaterialManifest> {
+        const material = this.sceneMaterialForSetter(
+            "setPbrAlphaCutoff",
+            index,
+        );
+        material.alphaCutOff = cutoff;
+        return material;
     }
 
     public recordScenePbrShadowOnly(

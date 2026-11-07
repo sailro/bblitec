@@ -11,6 +11,11 @@ export function compilerRepositoryRoot(): string {
     ));
 }
 
+/** The emitted compiler (`<dist>/src`) this process runs, whatever the working directory. */
+export function compilerDistSource(): string {
+    return dirname(fileURLToPath(import.meta.url));
+}
+
 export function findRepositoryRoot(start = process.cwd()): string {
     let current = resolve(start);
     while (true) {

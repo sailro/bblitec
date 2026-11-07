@@ -6,7 +6,10 @@ import {
 import { LoweredSource } from "../context.js";
 import { MeshBuilderLowerer } from "./mesh-builders.js";
 import { assertAsyncSceneBuilder } from "../scene-deferred.js";
-import { lowerPbrGammaAlbedo } from "../pbr-scene-hooks.js";
+import {
+    lowerPbrAlphaCutoff,
+    lowerPbrGammaAlbedo,
+} from "../pbr-scene-hooks.js";
 import { materialGroupIdentity } from "../material-group-identity.js";
 import { recordAt } from "../../compiler/record-access.js";
 import { pbrMaterialRecordSeedCpp } from "../pinned-material-defaults.js";
@@ -1107,7 +1110,10 @@ FileTexture solid_texture_file(const SolidTexture& texture) {
         };
     }
 
-    public lowerPbrMaterialFactory(): LoweredSource {
+    /** `alphaCutoff`: the scene reaches `setPbrAlphaCutoff`. */
+    public lowerPbrMaterialFactory(
+        options: { alphaCutoff?: boolean } = {},
+    ): LoweredSource {
         const pbrModule = "src/material/pbr/pbr-material.ts";
         // The opt-in setters replaced the unlit/skyboxMode options. Each is
         // one stamp plus an unconditional extension registration, and the
@@ -1204,7 +1210,8 @@ FileTexture solid_texture_file(const SolidTexture& texture) {
         return {
             modulePath: pbrModule,
             symbolName:
-                "createPbrMaterial,setPbrUnlit,setPbrSkybox,setPbrEmissive,setPbrIridescence,setPbrLightmap,setPbrMetallicReflectance,setPbrSubsurface",
+                "createPbrMaterial,setPbrUnlit,setPbrSkybox,setPbrEmissive,setPbrIridescence,setPbrLightmap,setPbrMetallicReflectance,setPbrSubsurface" +
+                (options.alphaCutoff ? ",setPbrAlphaCutoff" : ""),
             header: "",
             source: `// ${this.context.provenance(pbrModule, "createPbrMaterial")}
 #include <bblite/runtime.hpp>
@@ -1216,46 +1223,46 @@ FileTexture solid_texture_file(const SolidTexture& texture) {
 
 namespace bbl {
 
-${lowerPbrGammaAlbedo(this.context)}
-// Attaches a loaded base-color image to a created PBR material. The slot's
-// encoding travels with the image (TextureData::srgb), because upstream
-// keeps the format on the Texture2D its caller loaded: loadTexture2D's own
-// srgb option picked rgba8unorm-srgb or plain rgba8unorm, and a material
-// that decodes the albedo in its own fragment (setPbrGammaAlbedo) loads the
-// second.
-void set_material_base_color_file(
+${lowerPbrGammaAlbedo(this.context)}${options.alphaCutoff ? lowerPbrAlphaCutoff(this.context) : ""}
+// createPbrMaterial's texture props and their assignments: the slot takes
+// the texture whole, whatever its storage -- texels, sampler and the
+// texture-object properties (a base colour's encoding travels with the
+// image, as upstream keeps the format on the Texture2D its caller made) --
+// and the base colour keeps its source texture for reads. The pinned
+// collector binds each slot with its own sampler; a counted slot rebinds.
+void set_pbr_texture(
     Engine& engine,
     MaterialHandle material,
-    FileTexture texture) {
+    MaterialTextureSlot slot,
+    StoredTexture texture) {
     MaterialRecord& record = ${recordAt("engine.materials", "material")};
-    record.source_albedo_texture = texture;
-    record.base_color_texture = std::move(texture.data);
-    record.has_public_base_color_texture = true;
-}
-
-// createPbrMaterial preserves its Texture2D props, and the pinned PBR
-// collector binds ormTexture itself. Keep the loaded image's TextureData
-// whole so its sampler and upload flip reach the linear ORM slot unchanged.
-void set_material_orm_file(
-    Engine& engine,
-    MaterialHandle material,
-    FileTexture texture) {
-    ${recordAt("engine.materials", "material")}.metallic_roughness_texture =
-        std::move(texture.data);
-    ++${recordAt("engine.materials", "material")}.orm_texture_generation;
-}
-
-// createPbrMaterial's normalTexture prop: the pinned collector binds it with
-// its own sampler, its presence composed the normal-map arm, and the pin's
-// UBO writer reads normalTextureScale for it.
-void set_material_normal_file(
-    Engine& engine,
-    MaterialHandle material,
-    FileTexture texture,
-    float scale) {
-    MaterialRecord& record = ${recordAt("engine.materials", "material")};
-    record.normal_texture = std::move(texture.data);
-    record.normal_texture_scale = scale;
+    TextureData data = stored_texture_data(texture);
+    switch (slot) {
+    case MaterialTextureSlot::base_color:
+        record.base_color_texture = std::move(data);
+        record.source_albedo_texture = std::move(texture);
+        record.has_public_base_color_texture = true;
+        return;
+    case MaterialTextureSlot::orm:
+        record.metallic_roughness_texture = std::move(data);
+        ++record.orm_texture_generation;
+        return;
+    case MaterialTextureSlot::normal:
+        record.normal_texture = std::move(data);
+        return;
+    case MaterialTextureSlot::occlusion:
+        record.has_occlusion_texture = data.has_image();
+        record.occlusion_texture = std::move(data);
+        ++record.occlusion_texture_generation;
+        return;
+    case MaterialTextureSlot::bent_normal:
+        record.bent_normal_texture = std::move(data);
+        return;
+    case MaterialTextureSlot::emissive:
+    case MaterialTextureSlot::diffuse:
+        break;
+    }
+    throw std::runtime_error("The texture slot is no PBR texture prop.");
 }
 
 // src/material/pbr/set-unlit.ts and set-skybox.ts: the optional PBR
@@ -1335,20 +1342,7 @@ void set_pbr_subsurface(
 void set_pbr_skybox(Engine& engine, MaterialHandle material) {
     ${recordAt("engine.materials", "material")}.skybox_mode = true;
 }
-
 ${solidTextureDataFunction}
-void set_pbr_occlusion_solid_texture(
-    Engine& engine,
-    MaterialHandle material,
-    const SolidTexture& texture) {
-    if (material.value >= engine.materials.size()) {
-        throw std::runtime_error("Invalid PBR material handle.");
-    }
-    MaterialRecord& record = ${recordAt("engine.materials", "material")};
-    record.occlusion_texture = solid_texture_data(texture);
-    record.has_occlusion_texture = true;
-    ++record.occlusion_texture_generation;
-}
 
 // src/material/pbr/set-sheen.ts, set-clearcoat.ts and set-iridescence.ts
 // store the layer's props whole, and each fragment's writer skips a layer

@@ -103,6 +103,7 @@ interface AsyncContext extends Pick<
     | "dataTypes"
     | "compileValue"
     | "compileBrowserTextureFunctionCall"
+    | "compileExecutedGltfFunctionCall"
     | "compileCallbackWithValues"
     | "captureManagedClosureLines"
     | "withOwnedCallbackBody"
@@ -637,6 +638,11 @@ export class AsyncLowerer {
                 callee,
             );
             if (textures) return this.asPromise(textures, node);
+            const document = context.compileExecutedGltfFunctionCall(
+                node,
+                callee,
+            );
+            if (document) return this.asPromise(document, node);
         }
         const values = node.arguments.map((argument, index) =>
             this.pinArgument(

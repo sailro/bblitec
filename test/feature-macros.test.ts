@@ -35,12 +35,14 @@ test("every feature macro is a header of its own, 0 until its row is reached", (
     // Equal facts are equal bytes: a header does not depend on anything
     // else the scene reaches.
     assert.equal(
-        featureMacroHeaders({ features: ["ui:rml"], imageCodecs: [] }).get(
-            featureMacroInclude("BBLITE_WORKERS"),
-        ),
-        featureMacroHeaders({ features: [], imageCodecs: [] }).get(
-            featureMacroInclude("BBLITE_WORKERS"),
-        ),
+        featureMacroHeaders({
+            features: ["ui:rml"],
+            imageCodecs: [],
+        }).get(featureMacroInclude("BBLITE_WORKERS")),
+        featureMacroHeaders({
+            features: [],
+            imageCodecs: [],
+        }).get(featureMacroInclude("BBLITE_WORKERS")),
     );
 });
 

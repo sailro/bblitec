@@ -18,7 +18,7 @@ test("editor proxy registers identity-preserving listeners and live drag predica
         import { createEngine, createSceneContext, createUtilityLayer, createPositionGizmo, registerPointerDrag, isGizmoDragging } from "babylon-lite";
         const engine = await createEngine({});
         const scene = createSceneContext(engine);
-        const layer = createUtilityLayer(engine, scene);
+        const layer = createUtilityLayer(scene);
         const gizmo = createPositionGizmo(engine, layer);
         const handlers = new Map<string, EventListener[]>();
         const proxy = {
@@ -69,7 +69,7 @@ test("rotation factories reach host pointer input and lower their quaternion upd
         import { createEngine, createSceneContext, createUtilityLayer, createRotationGizmo } from "babylon-lite";
         const engine = await createEngine({});
         const scene = createSceneContext(engine);
-        const layer = createUtilityLayer(engine, scene);
+        const layer = createUtilityLayer(scene);
         const gizmo = createRotationGizmo(engine, layer);
     `);
     assert(compiled.manifest.features.includes("gizmo:pointer-drag"));
@@ -90,7 +90,7 @@ test("returned canvas proxy keeps its dispatcher in orbit-control closures", () 
             createArcRotateCamera, attachControl, registerPointerDrag, isGizmoDragging, isGizmoPickPending } from "babylon-lite";
         const engine = await createEngine({});
         const scene = createSceneContext(engine);
-        const layer = createUtilityLayer(engine, scene);
+        const layer = createUtilityLayer(scene);
         const gizmo = createPositionGizmo(engine, layer);
         function attachPointer() {
             const handlers = new Map<string, EventListener[]>();

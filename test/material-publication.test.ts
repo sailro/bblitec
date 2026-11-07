@@ -20,6 +20,7 @@ import { CameraLowerer } from "../src/lowering/camera-lowerer.js";
 import { pinnedSurfaceHeader } from "../src/lowering/pinned-surface.js";
 import { meshFeaturesNamespace } from "../src/lowering/mesh-attribute-features.js";
 import { featurelessPbrMaterialFeatures } from "./variant-headers.js";
+import { lightKindsHeader } from "../src/pinned-pbr-variant-cpp.js";
 import { sceneContextSource } from "./pinned-scene.js";
 import { pinnedDeclaration, pinnedModuleSource } from "./pinned-source.js";
 
@@ -223,6 +224,7 @@ test("material output publication and captured draw identity follow source frame
         resolve(headers, "pinned_surface.hpp"),
         pinnedSurfaceHeader(context, 4),
     );
+    writeFileSync(resolve(headers, "light_kinds.hpp"), lightKindsHeader());
     writeFileSync(
         resolve(headers, "camera_math.hpp"),
         new CameraLowerer(context).lowerArcRotateFactory().header,
@@ -233,6 +235,7 @@ test("material output publication and captured draw identity follow source frame
         integrated,
         `#include "renderer-plan.hpp"
     #include <bblite/js_data.hpp>
+    #include <bblite/upstream/light_kinds.hpp>
     #include <cassert>
     #include <iostream>
     namespace bbl::upstream {
@@ -241,9 +244,9 @@ test("material output publication and captured draw identity follow source frame
         item.bucket = engine.materials.at(material.value).alpha_mode == MaterialAlphaMode::blend ? RenderBucket::alpha_blend : RenderBucket::opaque;
         return item;
     }
-    RenderPipelineKind render_pipeline_kind(const RenderItem&) { return RenderPipelineKind::pbr_opaque_back; }
+    RenderPipelineKind render_pipeline_kind(const RenderItem&) { return {}; }
     double default_render_order(const RenderItem&) { return 0; }
-    ${["bool mesh_draws(", "bool render_item_material_draws(", "bool render_item_draws_now(", "void append_draw(", "void order_draw_lists(", "RenderDrawLists build_render_draw_lists(", "RenderPlan build_render_plan("].map((name) => cppFunction(renderer.source, name)).join("\n")}
+    ${["bool mesh_draws(", "bool render_item_material_draws(", "bool render_item_draws_now(", "void append_draw(", "void order_draw_lists(", "RenderDrawLists build_render_draw_lists(", "RenderPlan build_render_plan(", "bool light_affects_mesh(", "MeshLightSelection mesh_light_selection("].map((name) => cppFunction(renderer.source, name)).join("\n")}
     }
     ${meshFeaturesNamespace(context)}
     namespace bbl {

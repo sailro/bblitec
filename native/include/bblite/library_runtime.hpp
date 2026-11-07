@@ -666,6 +666,7 @@ enum class MaterialTextureSlot : std::size_t {
     emissive,
     lightmap,
     spec_gloss,
+    bent_normal,
 };
 
 /** A texture slot: absent without an image, else its `Texture2D`. */
@@ -769,6 +770,11 @@ pbr_base_color_texture(const PbrMaterial& material) {
 [[nodiscard]] inline std::shared_ptr<Texture2D> pbr_lightmap_texture(const PbrMaterial& material) {
     return material_texture(material, material.record().lightmap_texture,
                             MaterialTextureSlot::lightmap);
+}
+[[nodiscard]] inline std::shared_ptr<Texture2D>
+pbr_bent_normal_texture(const PbrMaterial& material) {
+    return material_texture(material, material.record().bent_normal_texture,
+                            MaterialTextureSlot::bent_normal);
 }
 [[nodiscard]] inline std::shared_ptr<Texture2D>
 pbr_spec_gloss_texture(const PbrMaterial& material) {

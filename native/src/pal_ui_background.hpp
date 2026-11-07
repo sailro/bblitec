@@ -1,11 +1,9 @@
 #pragma once
 
-#include "pal_ui_length_math.hpp"
 #include <RmlUi/Core/Element.h>
 #include <RmlUi/Core/PropertyDefinition.h>
 #include <RmlUi/Core/StyleSheetSpecification.h>
 #include <RmlUi/Core/Transform.h>
-#include <algorithm>
 #include <bblite/js_data.hpp>
 #include <cctype>
 #include <optional>
@@ -23,42 +21,28 @@ inline void register_ui_background_properties() {
         .AddParser("transform");
     Rml::StyleSheetSpecification::RegisterProperty("scale", "1", false).AddParser("number");
     Rml::StyleSheetSpecification::RegisterProperty("bbl-zero-clip", "0", false).AddParser("number");
+    // The image longhands the PAL paints as a decorator, at their CSS initial values; the cascade
+    // resolves their CSS-wide keywords (RmlUi patch 0066).
+    for (const auto& [name, initial] :
+         {std::pair{"bbl-background-image", "none"}, std::pair{"bbl-background-size", "auto"},
+          std::pair{"bbl-background-repeat", "repeat"},
+          std::pair{"bbl-background-origin", "padding-box"},
+          std::pair{"bbl-background-attachment", "scroll"}})
+        Rml::StyleSheetSpecification::RegisterProperty(name, initial, false).AddParser("string");
+    // The position's two offsets, which animations interpolate, set through the shorthand once
+    // the projection gives it both (ui_background_offsets).
+    for (const char* axis : {"bbl-background-position-x", "bbl-background-position-y"})
+        Rml::StyleSheetSpecification::RegisterProperty(axis, "0%", false)
+            .AddParser("length_percent");
+    Rml::StyleSheetSpecification::RegisterShorthand(
+        "bbl-background-position", "bbl-background-position-x, bbl-background-position-y",
+        Rml::ShorthandType::FallThrough);
 }
 
-inline Rml::String ui_background_default(const Rml::String& name) {
-    if (name == "bbl-background-image")
-        return "none";
-    if (name == "bbl-background-size")
-        return "auto";
-    if (name == "bbl-background-position")
-        return "0% 0%";
-    if (name == "bbl-background-repeat")
-        return "repeat";
-    if (name == "bbl-background-origin")
-        return "padding-box";
-    if (name == "bbl-background-attachment")
-        return "scroll";
-    return "";
-}
-
-/** A longhand's CSS initial value; colour and clip have their own spelled out. */
-inline Rml::String ui_background_initial(const Rml::String& name) {
-    if (name == "bbl-background-color")
-        return "transparent";
-    if (name == "bbl-background-clip")
-        return "border-box";
-    return ui_background_default(name);
-}
-
-/** The CSS-wide keyword `value` is, lowercased (`src/ui-image-background.ts` `cssWideKeyword`). */
-inline std::optional<std::string_view> ui_css_wide_keyword(std::string_view value) {
-    const auto token = detail::trim_css_token(value);
-    for (const std::string_view keyword : {"inherit", "initial", "unset"})
-        if (std::ranges::equal(token, keyword, [](char left, char right) {
-                return js::ascii_lower(left) == right;
-            }))
-            return keyword;
-    return std::nullopt;
+/** The element's background position as its two offsets. */
+inline Rml::String ui_background_position(Rml::Element& element) {
+    return element.GetProperty("bbl-background-position-x")->ToString() + " " +
+           element.GetProperty("bbl-background-position-y")->ToString();
 }
 
 /**
@@ -121,7 +105,7 @@ inline std::optional<std::size_t> ui_background_gradient_at(std::string_view val
     return std::nullopt;
 }
 
-/** A cascaded image led by a gradient is RmlUi decorator text; a raster image is a quoted path. */
+/** A cascaded image led by a gradient is RmlUi decorator text; a raster image is a path. */
 inline bool ui_background_gradient(std::string_view image) {
     const auto start = image.find_first_not_of(" \t\r\n");
     return start != std::string_view::npos && ui_background_gradient_at(image, start).has_value();
@@ -144,29 +128,6 @@ inline bool ui_background_gradient_layers(std::string_view value) {
             return false;
         ++index;
     }
-}
-
-/**
- * Resolve the CSS-wide keywords through the original, cascaded custom property: `inherit` takes
- * the parent's value, `initial` and `unset` (no background longhand inherits) the initial one.
- */
-inline Rml::String ui_background_value(Rml::Element& element, const Rml::String& name) {
-    const auto key = "--" + name;
-    const auto value = element.GetLocalProperty(key) ? element.GetProperty<Rml::String>(key)
-                                                     : ui_background_default(name);
-    const auto keyword = ui_css_wide_keyword(value);
-    if (!keyword)
-        return value;
-    if (*keyword != "inherit")
-        return ui_background_initial(name);
-    if (auto* parent = element.GetParentNode()) {
-        if (name == "bbl-background-color" || name == "bbl-background-clip") {
-            const auto inherited = ui_background_value(*parent, name);
-            return inherited.empty() ? parent->GetProperty(name.substr(4))->ToString() : inherited;
-        }
-        return ui_background_value(*parent, name);
-    }
-    return ui_background_initial(name);
 }
 
 /** One PAL-owned override restores the live stylesheet and source inline value on removal. */
@@ -219,7 +180,7 @@ struct UiScopedStyleProperty {
 
 struct UiBackgroundElementState {
     Rml::ObserverPtr<Rml::Element> element;
-    UiScopedStyleProperty image, color, clip, transform, opacity, pointer_events, display;
+    UiScopedStyleProperty image, transform, opacity, pointer_events, display;
     Rml::TransformPtr source_transform;
     float source_scale = 1;
 };
@@ -232,16 +193,14 @@ public:
         bool changed = false;
         const auto visit = [&](const auto& self, Rml::Element& element, bool clipped) -> void {
             clipped = clipped || element.GetProperty<float>("bbl-zero-clip") != 0;
-            const auto image = ui_background_value(element, "bbl-background-image");
-            const auto color = ui_background_value(element, "bbl-background-color");
-            const auto clip = ui_background_value(element, "bbl-background-clip");
+            const auto image = element.GetProperty<Rml::String>("bbl-background-image");
             const float scale = element.GetProperty<float>("scale");
             const bool transformed =
                 element.GetLocalProperty("bbl-transform") || element.GetLocalProperty("scale");
             const bool shrink_to_fit = element.GetLocalProperty("--bbl-absolute-inline") &&
                                        !element.GetLocalProperty("--bbl-authored-display");
-            if (clipped || image != "none" || !color.empty() || !clip.empty() || transformed ||
-                shrink_to_fit || states.contains(&element)) {
+            if (clipped || image != "none" || transformed || shrink_to_fit ||
+                states.contains(&element)) {
                 auto& state = states[&element];
                 if (state.element != &element) {
                     state = {};
@@ -249,8 +208,8 @@ public:
                 }
                 std::optional<Rml::String> decorator;
                 if (image != "none") {
-                    const auto size = ui_background_value(element, "bbl-background-size");
-                    const auto repeat = ui_background_value(element, "bbl-background-repeat");
+                    const auto size = element.GetProperty<Rml::String>("bbl-background-size");
+                    const auto repeat = element.GetProperty<Rml::String>("bbl-background-repeat");
                     if (size == "0px 0px" || size == "0dp 0dp" || size == "0 0")
                         decorator = "none";
                     // Gradient layers fill their box, as they do for the auto, contain and cover
@@ -259,9 +218,7 @@ public:
                     // border-box clip's repetition under the border is not represented).
                     else if (ui_background_gradient(image)) {
                         if (ui_background_gradient_layers(image) &&
-                            (clip.empty() ? element.GetProperty(Rml::PropertyId::BackgroundClip)
-                                                    ->Get<int>() == 2
-                                          : clip == "content-box"))
+                            element.GetProperty(Rml::PropertyId::BackgroundClip)->Get<int>() == 2)
                             throw std::runtime_error("A content-box clip of padding-box gradient "
                                                      "layers is not represented.");
                         decorator = image;
@@ -269,15 +226,16 @@ public:
                         if (repeat == "repeat" && size != "auto")
                             throw std::runtime_error(
                                 "Repeating sized UI backgrounds are not represented.");
-                        const auto position =
-                            ui_background_value(element, "bbl-background-position");
+                        const auto position = ui_background_position(element);
+                        // The style engine keeps the image path unquoted.
+                        const auto source = '"' + image + '"';
                         // An explicit size is a layer with its own box the image fills,
                         // placed at the position's offsets (RmlUi patch 0025).
                         if (size != "auto" && size != "contain" && size != "cover")
-                            decorator = "image(" + image + " fill) padding-box / " + size + " / " +
-                                        ui_background_offsets(position);
+                            decorator = "image(" + source + " fill) padding-box / " + size + " / " +
+                                        position;
                         else
-                            decorator = "image(" + image + " " +
+                            decorator = "image(" + source + " " +
                                         (repeat == "repeat" ? "repeat"
                                          : size == "auto"   ? "scale-none"
                                                             : size) +
@@ -285,14 +243,6 @@ public:
                     }
                 }
                 changed = state.image.set_string(element, "decorator", decorator) || changed;
-                changed =
-                    state.color.set_string(element, "background-color",
-                                           color.empty() ? std::nullopt : std::optional{color}) ||
-                    changed;
-                changed =
-                    state.clip.set_string(element, "background-clip",
-                                          clip.empty() ? std::nullopt : std::optional{clip}) ||
-                    changed;
                 changed = state.opacity.set_string(element, "opacity",
                                                    clipped ? std::optional<Rml::String>{"0"}
                                                            : std::nullopt) ||

@@ -10,6 +10,8 @@ namespace bbl::pal {
 struct WindowCanvasFrame {
     UiElementHandle element;
     OffscreenFrame frame;
+    /** Its engine stopped: this frame is the canvas's last (`OffscreenSurface::frozen`). */
+    bool frozen = false;
 };
 
 /** Canvas views share a submitted image; only their own quad's texture coordinates change. */

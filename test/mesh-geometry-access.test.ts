@@ -179,7 +179,7 @@ namespace changed_features::upstream {${lowerMeshFeatures(doctoredContext("src/m
 int main(){Engine engine;engine.geometries.emplace_back();engine.meshes.emplace_back().geometry=0;
 for(unsigned index=0;index<8;++index){const bool tangent=(index&1)!=0,color=(index&2)!=0,uv2=(index&4)!=0;const auto expected=(tangent?${featureBits[0]}u:0u)|(color?${featureBits[1]}u:0u)|(uv2?${featureBits[2]}u:0u);
 if(original_features::upstream::pinned_mesh_features(tangent,color,uv2,false,false)!=expected||changed_features::upstream::pinned_mesh_features(tangent,color,uv2,false,false)!=(expected^${featureBits[0]}u))throw std::runtime_error("Source attribute features");}
-auto& geometry=engine.geometries[0];geometry.vertices.resize(1);geometry.vertices[0].position={1,2,3};geometry.vertices[0].normal={0,1,0};geometry.vertices[0].uv={0.25f,0.75f};geometry.vertices[0].uv2={0.5f,1};geometry.vertices[0].tangent={1,0,0,-1};geometry.vertices[0].color={0.1f,0.2f,0.3f,1};geometry.indices={0,2,1};geometry.source_indices_reversed=true;
+auto& geometry=engine.geometries[0];geometry.vertices.resize(1);geometry.vertices[0].position={1,2,3};geometry.vertices[0].normal={0,1,0};geometry.vertices[0].uv={0.25f,0.75f};geometry.vertices[0].uv2={0.5f,1};geometry.vertices[0].tangent={1,0,0,-1};geometry.vertices[0].color={0.1f,0.2f,0.3f,1};geometry.indices={0,1,2};
 auto absent=original::get_mesh_geometry(engine,MeshHandle{0});if(!absent||absent->tangents.has_value()||absent->uvs2.has_value()||absent->colors.has_value()||!absent->uvs.has_value())throw std::runtime_error("optional streams");
 geometry.cpu_tangents=true;geometry.cpu_uv2s=true;geometry.cpu_colors=true;
 auto first=original::get_mesh_geometry(engine,MeshHandle{0});auto second=original::get_mesh_geometry(engine,MeshHandle{0});

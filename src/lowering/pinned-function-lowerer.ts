@@ -500,6 +500,127 @@ export function lowerMat4InvertCpp(
     );
 }
 
+/**
+ * `invertMat4ToRefOrIdentity`, over any 16-element matrix the caller holds
+ * (`Matrix`), into an f32 result: one lowering for every translation unit
+ * that reaches it.
+ */
+export function lowerInvertMat4ToRefOrIdentityCpp(
+    context: LoweringContext,
+    calls: ReadonlyMap<string, (args: readonly string[]) => string>,
+): string {
+    return lowerPinnedFunction(
+        context,
+        "src/math/invert-mat4-to-ref-or-identity.ts",
+        "invertMat4ToRefOrIdentity",
+        [
+            {
+                pinned: "input",
+                kind: "mat4Const",
+                cpp: "input",
+                cppType: "Matrix",
+            },
+            {
+                pinned: "result",
+                kind: "mat4",
+                annotation: "Mat4",
+                cpp: "result",
+            },
+        ],
+        {
+            cppName: "mat4_invert_to_ref_or_identity",
+            inline: true,
+            templateParameters: ["typename Matrix"],
+            calls,
+            returns: "void",
+        },
+    );
+}
+
+/**
+ * The native spellings of the pinned camera and matrix helpers a lowered
+ * frame function calls (`camera_math.hpp`, `pinned_matrix.hpp`, and
+ * `packMat4IntoF32`'s fast path below), shared by every lowering that reads
+ * a camera per frame.
+ */
+export const PINNED_CAMERA_CALLS: ReadonlyMap<
+    string,
+    (args: readonly string[]) => string
+> = new Map<string, (args: readonly string[]) => string>([
+    [
+        "getEffectiveAspectRatio",
+        (args) => `effective_aspect_ratio(${args.join(", ")})`,
+    ],
+    ["getProjectionMatrix", (args) => `build_projection(${args.join(", ")})`],
+    ["getViewMatrix", (args) => `build_camera_view_matrix(${args.join(", ")})`],
+    [
+        "getViewProjectionMatrix",
+        (args) => `build_view_projection(${args.join(", ")})`,
+    ],
+    [
+        "packMat4IntoF32",
+        (args) =>
+            `pack_mat4_into_f32(${args[0]}.data(), ${args[1]}, ${args[2]})`,
+    ],
+]);
+
+/** `Float32Array.prototype.fill`, over a native float array. */
+export const PINNED_FLOAT_ARRAY_METHODS: NonNullable<
+    PinnedNumericScope["methods"]
+> = new Map([
+    [
+        "fill",
+        (receiver: string, args: readonly string[]) =>
+            `${receiver}.fill(static_cast<float>(${args[0]}))`,
+    ],
+]);
+
+/**
+ * `packMat4IntoF32`'s fast path: one sixteen-element matrix at source
+ * offset zero, which the pin's own `view.set(src, offsetFloats)` copies.
+ * The slab walk behind the guard is asserted present and not translated,
+ * so a caller reaching it is a pin change this lowering refuses.
+ */
+export function lowerPackMat4IntoF32FastPathCpp(
+    context: LoweringContext,
+): string {
+    const module = "src/math/pack-mat4-into-f32.ts";
+    const { declaration } = context.functionDeclaration(
+        module,
+        "packMat4IntoF32",
+    );
+    const guard = context.findNodes(
+        declaration,
+        (node): node is ts.IfStatement =>
+            ts.isIfStatement(node) &&
+            sameSource(
+                node.expression,
+                "srcOffsetFloats === 0 && src.length === 16",
+            ),
+    );
+    if (
+        guard.length !== 1 ||
+        !context.hasCall(guard[0]!.thenStatement, "set")
+    ) {
+        context.contractError(
+            declaration,
+            "Expected packMat4IntoF32 to copy a sixteen-element matrix " +
+                "at source offset zero through view.set.",
+        );
+    }
+    return `// ${context.provenance(module, "packMat4IntoF32")}
+// The fast path: one matrix, source offset zero, \`view.set(src, offset)\`.
+void pack_mat4_into_f32(
+    float* view,
+    const std::array<float, 16>& mat,
+    double offset_floats) {
+    std::copy_n(
+        mat.data(),
+        16,
+        view + static_cast<std::size_t>(offset_floats));
+}`;
+}
+
 /** A pinned function of scalars (and at most a Mat4Storage target), as C++. */
 export function lowerPinnedFunction(
     context: LoweringContext,

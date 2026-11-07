@@ -294,6 +294,7 @@ export async function bakeAreaLightTexture(
                 version: "2",
                 module: moduleIdentity(import.meta.url),
                 browser: true,
+                buildConditions: true,
                 parameters: { loaderOptions },
                 inputs: [source],
             },

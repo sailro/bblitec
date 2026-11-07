@@ -1,15 +1,18 @@
 /**
  * Composes a screen-space effect task by running Babylon Lite's own factory.
  *
- * `screen-space-contact-shadows.ts` and `screen-space-global-illumination.ts`
- * each build one frame-graph task out of four GPU programs: a producer that
- * raymarches the scene depth through a depth-only view, the shared temporal
- * resolve (`screen-space-temporal.ts`), a history copy and an optional
- * composite. The last two are ordinary `createPostProcessTask` passes; the
- * first two are dedicated pipelines the factory builds itself. None of it
- * touches a real device: `record()` and `execute()` create everything through
- * `engine._device` and encode through `engine._currentEncoder`, which is what
- * the pin's own unit tests exploit with a mock device.
+ * `screen-space-contact-shadows.ts`, `screen-space-global-illumination.ts`
+ * and `screen-space-ambient-occlusion.ts` each build one frame-graph task
+ * out of dedicated GPU programs and two ordinary passes: one or more
+ * dedicated passes that read the scene depth through a depth-only view (a
+ * producer, and for ambient occlusion two bilateral blur passes over one
+ * pipeline), the shared temporal resolve (`screen-space-temporal.ts`), a
+ * history copy and an optional composite. The last two are ordinary
+ * `createPostProcessTask` passes; the rest are dedicated pipelines the
+ * factory builds itself. None of it touches a real device: `record()` and
+ * `execute()` create everything through `engine._device` and encode through
+ * `engine._currentEncoder`, which is what the pin's own unit tests exploit
+ * with a mock device.
  *
  * So composition does the same, against a device that RECORDS. Running the
  * factory, `record()`, one enabled `execute()` and one disabled `execute()`
@@ -18,31 +21,42 @@
  * size and the pass sequence of both states -- all read off the pin's own
  * calls rather than restated. What generation then lowers from the pinned
  * ASTs (`screen-space-lowerer.ts`) is the arithmetic those calls carry: the
- * temporal state machine and the two uniform blocks.
+ * temporal state machine and the uniform blocks.
  */
 import { pinnedEffectModule } from "./post-process-effects.js";
 import { snakeCase } from "./cpp-literals.js";
+import { pinnedOptionNames } from "./compiler/intrinsics/pinned-options.js";
 import type { PostProcessOptionValue } from "./compiler/types.js";
 import type { ComposedPostProcess } from "./pinned-post-process.js";
 import { variantBindings } from "./pinned-pbr-variant-cpp.js";
 import { importPinnedModule } from "./pinned-shader-composer.js";
 import {
-    createRecordingDevice,
     RecordedTextureView,
     type RecordedRenderPass,
-    type Recorder,
 } from "./recording-device.js";
+import {
+    builtRenderTarget,
+    createRecordingEngine,
+    pinnedCameras,
+    pinnedRenderTargets,
+    plannedLayoutResource,
+    type PinnedTaskRecorder,
+    type PinnedTaskShapes,
+    type PlannedLayoutEntry,
+    type PlannedLayoutResource,
+    type RecordedLayoutEntry,
+} from "./recording-engine.js";
 
 /**
  * What one entry point decides, keyed by the entry point: the temporal
  * kind, the pinned module and the symbols this port reads out of it, the
  * generated frame function and enumerator, and the name the pin publishes
- * its stable target under. Every consumer that branches on the kind reads
- * this table, so a third effect is one row rather than one more arm at
+ * its stable target under. Every consumer that branches on the effect reads
+ * this table, so another effect is one row rather than one more arm at
  * each of them.
  */
 export interface ScreenSpaceKindFacts {
-    /** The temporal owner's kind: scalar contact shadows or colour GI. */
+    /** The temporal owner's kind: a scalar effect or colour GI. */
     kind: "scalar" | "color";
     /** The pinned module, relative to the package's `src`. */
     module: string;
@@ -50,8 +64,6 @@ export interface ScreenSpaceKindFacts {
     configType: string;
     /** The pinned clamp the factory applies at creation. */
     clamp: string;
-    /** The module constant sizing the producer's uniform block, in floats. */
-    producerUniformFloats: string;
     /** The generated per-frame function. */
     frameFunction: string;
     /** The native `ScreenSpaceEffectKind` enumerator. */
@@ -68,7 +80,6 @@ export const SCREEN_SPACE_KINDS: Readonly<
         module: "src/post-process/screen-space-contact-shadows.ts",
         configType: "ScreenSpaceContactShadowsPostProcessTaskConfig",
         clamp: "clampScreenSpaceContactShadowsConfig",
-        producerUniformFloats: "SS_CONTACT_PRODUCER_UNIFORM_FLOATS",
         frameFunction: "contact_shadows_frame",
         enumerator: "contact_shadows",
         stableTexture: "shadowTexture",
@@ -78,18 +89,24 @@ export const SCREEN_SPACE_KINDS: Readonly<
         module: "src/post-process/screen-space-global-illumination.ts",
         configType: "ScreenSpaceGlobalIlluminationPostProcessTaskConfig",
         clamp: "clampScreenSpaceGlobalIlluminationConfig",
-        producerUniformFloats: "SS_GI_PRODUCER_UNIFORM_FLOATS",
         frameFunction: "global_illumination_frame",
         enumerator: "global_illumination",
         stableTexture: "illuminationTexture",
     },
+    createScreenSpaceAmbientOcclusionPostProcessTask: {
+        kind: "scalar",
+        module: "src/post-process/screen-space-ambient-occlusion.ts",
+        configType: "ScreenSpaceAmbientOcclusionPostProcessTaskConfig",
+        clamp: "clampScreenSpaceAmbientOcclusionConfig",
+        frameFunction: "ambient_occlusion_frame",
+        enumerator: "ambient_occlusion",
+        stableTexture: "occlusionTexture",
+    },
 };
 
-/** The shared temporal module and the constant sizing its uniform block. */
+/** The shared temporal module. */
 export const SCREEN_SPACE_TEMPORAL_MODULE =
     "src/post-process/screen-space-temporal.ts";
-export const SCREEN_SPACE_TEMPORAL_UNIFORM_FLOATS =
-    "SS_TEMPORAL_UNIFORM_FLOATS";
 
 /** Whether an imported name is one of the screen-space entry points. */
 export function isScreenSpaceIntrinsic(intrinsic: string): boolean {
@@ -107,19 +124,21 @@ export function screenSpaceFacts(intrinsic: string): ScreenSpaceKindFacts {
     return facts;
 }
 
-/** The row of the entry point creating a temporal kind. */
-export function screenSpaceFactsOfKind(
-    kind: "scalar" | "color",
-): ScreenSpaceKindFacts & { intrinsic: string } {
-    for (const [intrinsic, facts] of Object.entries(SCREEN_SPACE_KINDS)) {
-        if (facts.kind === kind) return { ...facts, intrinsic };
-    }
-    throw new Error(`No screen-space entry point creates a ${kind} task.`);
+/**
+ * Whether the entry point's pinned config declares a `lightDirection`: the
+ * contact producer keeps one by reference and normalizes it every frame,
+ * and no other effect reads one.
+ */
+export function screenSpaceReadsLightDirection(intrinsic: string): boolean {
+    return pinnedOptionNames({
+        module: screenSpaceFacts(intrinsic).module,
+        factory: intrinsic,
+    }).includes("lightDirection");
 }
 
 /**
  * The scalar settings the pin keeps on its task object, as it spells them.
- * Both kinds share the first group; each publishes its own after that. The
+ * The effects share the first group; each publishes its own after that. The
  * compiler writes them for a scene's setter and the lowerer reads them for
  * the factory and the composite writer; the native record spells each in
  * snake case (`nativeSettingName`). A pinned setting outside these lists is
@@ -142,6 +161,9 @@ export const SCREEN_SPACE_SCALAR_SETTINGS: readonly string[] = [
     "edgeFade",
     "colorBleedGain",
     "colorBleedMax",
+    "radius",
+    "power",
+    "sliceCount",
 ];
 
 /** The one triple the contact task publishes, carried as three lanes. */
@@ -184,21 +206,27 @@ interface ScreenSpaceCompositionRequest {
     hasDepthTexture: boolean;
 }
 
-/** Which texture a stage's binding reads, by what the pin bound there. */
-type ScreenSpaceTextureRole =
-    "depth" | "source-color" | "raw" | "history" | "stable";
+/**
+ * Which texture a binding reads or a pass draws into, by what the pin bound
+ * there: the depth source, the lit source colour, one of the targets the
+ * factory owns between its dedicated passes, or the temporal pair.
+ */
+export type ScreenSpaceTextureRef =
+    | { role: "depth" | "source-color" | "history" | "stable" }
+    | {
+          role: "intermediate";
+          /**
+           * Its index among the task's owned intermediates, which is the
+           * order the pin's passes first draw into them (`raw`, then
+           * ambient occlusion's two blur targets).
+           */
+          index: number;
+      };
 
-export interface ScreenSpaceStageBinding {
-    /** The WGSL `@binding` index, which is the pin's own group-0 slot. */
-    binding: number;
-    /** The WGSL identifier declared at that binding. */
-    name: string;
-    kind: "depth-texture" | "texture" | "sampler" | "uniform";
-    /** For a texture binding, which frame-graph texture the pin bound. */
-    role?: ScreenSpaceTextureRole;
-}
-
-/** One dedicated pipeline: the producer or the temporal resolve. */
+/**
+ * One dedicated pipeline the factory built -- a producer, a blur, the
+ * temporal resolve -- shared by every pass that draws with it.
+ */
 export interface ComposedScreenSpaceStage {
     /** The module both stages compile from, the pin's own text. */
     wgsl: string;
@@ -209,9 +237,26 @@ export interface ComposedScreenSpaceStage {
      * checked is the format of the target the pin draws it into.
      */
     targetFormat: string;
-    /** The uniform buffer's byte size. */
+    /** The byte size of the uniform buffer every pass drawing it binds. */
     uniformBytes: number;
-    bindings: readonly ScreenSpaceStageBinding[];
+    /** The pin's own group-0 layout, each entry under its WGSL identifier. */
+    bindings: readonly PlannedLayoutEntry[];
+}
+
+/** One dedicated pass the factory encodes, in its own order. */
+export interface ComposedScreenSpaceStagePass {
+    /** The pin's pass label after the task name: `producer`, `resolve`. */
+    label: string;
+    stage: ComposedScreenSpaceStage;
+    /** What the pass clears and draws into: an intermediate or stable. */
+    target: ScreenSpaceTextureRef;
+    /**
+     * What each of the stage's bindings reads in this pass, in binding
+     * order; undefined for a sampler or the uniform block. Two passes over
+     * one pipeline bind different textures here, the way the pin's two
+     * blur bind groups do.
+     */
+    textures: readonly (ScreenSpaceTextureRef | undefined)[];
 }
 
 /** One ordinary post-process pass the task built: history copy or composite. */
@@ -220,13 +265,13 @@ interface ComposedScreenSpacePass extends ComposedPostProcess {
     /** Whether the pin's pipeline blends into its target. */
     blended: boolean;
     clear: boolean;
-    /** The textures bound after the source, by role, in binding order. */
-    extraTextures: readonly ScreenSpaceTextureRole[];
+    /** The textures bound after the source, in binding order. */
+    extraTextures: readonly ScreenSpaceTextureRef[];
 }
 
 export interface ComposedScreenSpaceTask {
     intrinsic: string;
-    /** The temporal owner's kind: scalar contact shadows or colour GI. */
+    /** The temporal owner's kind: a scalar effect or colour GI. */
     kind: "scalar" | "color";
     /**
      * The live settings the factory published on its task object, after
@@ -236,8 +281,13 @@ export interface ComposedScreenSpaceTask {
     settings: Readonly<Record<string, number | readonly number[]>>;
     /** The creation-time settings the pin keeps in `params` alone. */
     clamped: { resolutionScale: number; temporalSamples: number };
-    producer: ComposedScreenSpaceStage;
-    resolve: ComposedScreenSpaceStage;
+    /**
+     * The dedicated passes of an enabled frame, in the pin's order: the
+     * producer first, the temporal resolve into the stable target last.
+     */
+    passes: readonly ComposedScreenSpaceStagePass[];
+    /** The owned intermediate targets' formats, by intermediate index. */
+    intermediates: readonly string[];
     historyCopy: ComposedScreenSpacePass;
     composite: ComposedScreenSpacePass | null;
 }
@@ -252,108 +302,55 @@ const SOURCE_LABEL = "bblitec-sourceTexture";
 const DEPTH_LABEL = "bblitec-depthTexture";
 const TARGET_LABEL = "bblitec-targetTexture";
 
-/** One bind-group layout entry as the pin declares it. */
-interface RecordedLayoutEntry {
-    binding: number;
-    texture?: { sampleType?: string };
-    sampler?: unknown;
-    buffer?: unknown;
-}
-
-/**
- * The descriptor members this composition reads back off the recording:
- * a pipeline's module, entry points, layout and colour target, and a bind
- * group's resources. The device returns each handle as a copy of its
- * descriptor, so the pipeline the pin stores carries the layout handle and
- * the module handle it was built from.
- */
-interface ScreenSpaceShapes {
-    sampler: { magFilter?: string };
-    shaderModule: { code: string };
-    bindGroupLayout: { entries: readonly RecordedLayoutEntry[] };
-    pipelineLayout: {
-        bindGroupLayouts: readonly ScreenSpaceShapes["bindGroupLayout"][];
-    };
-    renderPipeline: {
-        layout: ScreenSpaceShapes["pipelineLayout"];
-        vertex: {
-            module: ScreenSpaceShapes["shaderModule"];
-            entryPoint: string;
-        };
-        fragment: {
-            entryPoint: string;
-            targets: readonly { format: string; blend?: unknown }[];
-        };
-    };
-    bindGroup: { entries: readonly { binding: number; resource: unknown }[] };
-}
-
-type ScreenSpaceRecorder = Recorder<ScreenSpaceShapes>;
+type ScreenSpaceShapes = PinnedTaskShapes;
+type ScreenSpaceRecorder = PinnedTaskRecorder;
 type RecordedPass = RecordedRenderPass<ScreenSpaceShapes>;
 
 /**
- * A device that answers every call the pin's `record()` and `execute()`
- * make and remembers what was asked. Anything the pin started calling
- * beyond this surface refuses rather than composing quietly differently,
- * which is the property that makes the recording safe.
+ * The calls the pin's `record()` and `execute()` make. Anything the pin
+ * started calling beyond this surface refuses rather than composing quietly
+ * differently, which is the property that makes the recording safe.
  */
-function recordingEngine(canvas: { width: number; height: number }): {
-    engine: unknown;
-    recorder: ScreenSpaceRecorder;
-} {
-    const { device, encoder, recorder } =
-        createRecordingDevice<ScreenSpaceShapes>({
-            producer: "screen-space",
-            device: [
-                "createShaderModule",
-                "createTexture",
-                "createBuffer",
-                "createSampler",
-                "createBindGroupLayout",
-                "createPipelineLayout",
-                "createRenderPipeline",
-                "createBindGroup",
-            ],
-            queue: ["writeBuffer"],
-            encoder: ["beginRenderPass"],
-            renderPass: [
-                "setPipeline",
-                "setBindGroup",
-                "draw",
-                "setViewport",
-                "setScissorRect",
-                "end",
-            ],
-        });
-    return {
-        recorder,
-        engine: {
-            canvas,
-            msaaSamples: 1,
-            useHighPrecisionMatrix: false,
-            useFloatingOrigin: false,
-            _device: device,
-            _currentEncoder: encoder,
-            _currentDelta: 0,
-            _cbs: [],
-        },
-    };
-}
+const SCREEN_SPACE_CONTRACT = {
+    producer: "screen-space",
+    device: [
+        "createShaderModule",
+        "createTexture",
+        "createBuffer",
+        "createSampler",
+        "createBindGroupLayout",
+        "createPipelineLayout",
+        "createRenderPipeline",
+        "createBindGroup",
+    ],
+    queue: ["writeBuffer"],
+    encoder: ["beginRenderPass"],
+    renderPass: [
+        "setPipeline",
+        "setBindGroup",
+        "draw",
+        "setViewport",
+        "setScissorRect",
+        "end",
+    ],
+} as const;
 
-function layoutKind(
-    entry: RecordedLayoutEntry,
-): ScreenSpaceStageBinding["kind"] {
-    if (entry.texture) {
-        return entry.texture.sampleType === "depth"
-            ? "depth-texture"
-            : "texture";
+/**
+ * What a layout entry binds, of the kinds the stages and passes carry: a
+ * sampled texture, a sampler, or the uniform block.
+ */
+function layoutResource(entry: RecordedLayoutEntry): PlannedLayoutResource {
+    const resource = plannedLayoutResource(entry, "Pinned screen-space task");
+    if (
+        resource.storageTexture ||
+        (resource.bufferType !== undefined && resource.bufferType !== "uniform")
+    ) {
+        throw new Error(
+            "Pinned screen-space task declared a bind group entry this port " +
+                "does not recognise.",
+        );
     }
-    if (entry.sampler) return "sampler";
-    if (entry.buffer) return "uniform";
-    throw new Error(
-        "Pinned screen-space task declared a bind group entry this port " +
-            "does not recognise.",
-    );
+    return resource;
 }
 
 /**
@@ -362,7 +359,7 @@ function layoutKind(
  */
 function assertRecordedShapes(recorder: ScreenSpaceRecorder): void {
     for (const layout of recorder.bindGroupLayouts) {
-        for (const entry of layout.entries) layoutKind(entry);
+        for (const entry of layout.entries) layoutResource(entry);
     }
     for (const pipeline of recorder.renderPipelines) {
         if (
@@ -415,31 +412,22 @@ function passBinding(
     return { pipeline, group: bound.group };
 }
 
-interface PinnedRenderTargetModule {
-    createRenderTarget: (descriptor: Record<string, unknown>) => unknown;
-    buildRenderTarget: (target: unknown, engine: unknown) => void;
-}
-
-interface PinnedCameraModule {
-    createArcRotateCamera: (
-        alpha: number,
-        beta: number,
-        radius: number,
-        target: { x: number; y: number; z: number },
-    ) => unknown;
-}
-
 interface PinnedScreenSpaceTask {
     enabled: boolean;
     record(): void;
     execute(): number;
 }
 
-/** A texture's role from what the pin labelled it and how it is viewed. */
+/**
+ * A texture's role from what the pin labelled it and how it is viewed. The
+ * intermediates are the targets the dedicated passes draw into before the
+ * resolve, keyed by label in the order the pin first draws into them.
+ */
 function textureRole(
     view: RecordedTextureView,
     name: string,
-): ScreenSpaceTextureRole {
+    intermediates: ReadonlyMap<string, number>,
+): ScreenSpaceTextureRef {
     if ((view.descriptor.aspect ?? "all") === "depth-only") {
         if (
             view.texture.label !== SOURCE_LABEL &&
@@ -450,12 +438,21 @@ function textureRole(
                     `'${view.texture.label}', which is not its depth source.`,
             );
         }
-        return "depth";
+        return { role: "depth" };
     }
-    if (view.texture.label === SOURCE_LABEL) return "source-color";
-    if (view.texture.label === `${name}-raw`) return "raw";
-    if (view.texture.label === `${name}-history`) return "history";
-    if (view.texture.label === `${name}-stable`) return "stable";
+    if (view.texture.label === SOURCE_LABEL) {
+        return { role: "source-color" };
+    }
+    if (view.texture.label === `${name}-history`) {
+        return { role: "history" };
+    }
+    if (view.texture.label === `${name}-stable`) {
+        return { role: "stable" };
+    }
+    const intermediate = intermediates.get(view.texture.label);
+    if (intermediate !== undefined) {
+        return { role: "intermediate", index: intermediate };
+    }
     throw new Error(
         `Pinned screen-space task bound '${view.texture.label}', which this ` +
             "port does not know as one of its textures.",
@@ -463,32 +460,22 @@ function textureRole(
 }
 
 /**
- * A dedicated stage, read off its pass: the pipeline's entry points and
- * target format, and each layout entry paired with what the bind group put
- * there and the identifier the module declares at that binding -- SDL_GPU
- * binds the compiled stage by the identifiers its `.slots` sidecar names,
- * so every role has to be carried under the pin's own name for it.
+ * A dedicated pipeline, read off the first pass that draws with it: its
+ * entry points and target format, and each layout entry paired with the
+ * identifier the module declares at that binding -- SDL_GPU binds the
+ * compiled stage by the identifiers its `.slots` sidecar names, so every
+ * binding has to be carried under the pin's own name for it.
  */
-function stageFrom(
-    pass: RecordedPass,
-    name: string,
-    recorder: ScreenSpaceRecorder,
+function stageOf(
+    pipeline: ScreenSpaceShapes["renderPipeline"],
     suffix: string,
+    uniformBytes: number,
 ): ComposedScreenSpaceStage {
-    const { pipeline, group } = passBinding(pass, suffix);
     const target = pipeline.fragment.targets[0]!;
-    const attachment = passAttachment(pass).texture;
     if (target.blend !== undefined) {
         throw new Error(
             `Pinned screen-space task's '${suffix}' pipeline blends, which ` +
                 "this port does not carry for a dedicated stage.",
-        );
-    }
-    if (target.format !== attachment.format) {
-        throw new Error(
-            `Pinned screen-space task's '${suffix}' pipeline targets ` +
-                `'${target.format}' but draws into ` +
-                `'${attachment.format}'.`,
         );
     }
     const wgsl = pipeline.vertex.module.code;
@@ -499,36 +486,59 @@ function stageFrom(
         ]),
     );
     const bindings = pipeline.layout.bindGroupLayouts[0]!.entries.map(
-        (entry): ScreenSpaceStageBinding => {
-            const kind = layoutKind(entry);
-            const bound = group.entries.find(
-                (candidate) => candidate.binding === entry.binding,
-            );
+        (entry): PlannedLayoutEntry => {
             const declared = names.get(entry.binding);
-            if (!bound || declared === undefined) {
+            if (declared === undefined) {
                 throw new Error(
                     `Pinned screen-space task's '${suffix}' layout binding ` +
-                        `${entry.binding} is not bound or not declared.`,
+                        `${entry.binding} is not declared by its module.`,
                 );
             }
-            const resource = bound.resource;
-            if (kind === "depth-texture" || kind === "texture") {
-                if (!(resource instanceof RecordedTextureView)) {
-                    throw new Error(
-                        `Pinned screen-space task bound binding ` +
-                            `${entry.binding} of '${suffix}' to a non-texture.`,
-                    );
-                }
-                return {
-                    binding: entry.binding,
-                    name: declared,
-                    kind,
-                    role: textureRole(resource, name),
-                };
-            }
-            return { binding: entry.binding, name: declared, kind };
+            return {
+                binding: entry.binding,
+                name: declared,
+                ...layoutResource(entry),
+            };
         },
     );
+    return {
+        wgsl,
+        vertexEntry: pipeline.vertex.entryPoint,
+        fragmentEntry: pipeline.fragment.entryPoint,
+        targetFormat: target.format,
+        uniformBytes,
+        bindings,
+    };
+}
+
+/**
+ * One dedicated pass: the stage it draws with (shared by every pass over
+ * the same recorded pipeline), what it draws into, and what the bind group
+ * it set put at each of the stage's bindings.
+ */
+function stagePassFrom(
+    pass: RecordedPass,
+    name: string,
+    recorder: ScreenSpaceRecorder,
+    intermediates: ReadonlyMap<string, number>,
+    stages: Map<ScreenSpaceShapes["renderPipeline"], ComposedScreenSpaceStage>,
+): ComposedScreenSpaceStagePass {
+    const suffix = strippedLabel(pass.descriptor.label ?? "", name);
+    const { pipeline, group } = passBinding(pass, suffix);
+    const attachment = passAttachment(pass);
+    const format = pipeline.fragment.targets[0]!.format;
+    if (format !== attachment.texture.format) {
+        throw new Error(
+            `Pinned screen-space task's '${suffix}' pipeline targets ` +
+                `'${format}' but draws into '${attachment.texture.format}'.`,
+        );
+    }
+    if (pass.descriptor.colorAttachments[0]!.loadOp !== "clear") {
+        throw new Error(
+            `Pinned screen-space task's '${suffix}' pass loads its target, ` +
+                "where both backends clear it.",
+        );
+    }
     const uniform = recorder.buffers.find(
         (buffer) => buffer.label === `${name}-${suffix}-uniforms`,
     );
@@ -537,14 +547,49 @@ function stageFrom(
             `Pinned screen-space task created no '${suffix}' uniform buffer.`,
         );
     }
-    return {
-        wgsl,
-        vertexEntry: pipeline.vertex.entryPoint,
-        fragmentEntry: pipeline.fragment.entryPoint,
-        targetFormat: target.format,
-        uniformBytes: uniform.size,
-        bindings,
-    };
+    let stage = stages.get(pipeline);
+    if (!stage) {
+        stage = stageOf(pipeline, suffix, uniform.size);
+        stages.set(pipeline, stage);
+    } else if (stage.uniformBytes !== uniform.size) {
+        throw new Error(
+            `Pinned screen-space task's '${suffix}' pass binds a ` +
+                `${uniform.size}-byte block to a pipeline another pass ` +
+                `binds ${stage.uniformBytes} bytes to.`,
+        );
+    }
+    const textures = pipeline.layout.bindGroupLayouts[0]!.entries.map(
+        (entry): ScreenSpaceTextureRef | undefined => {
+            const sampled = layoutResource(entry).sampleType !== undefined;
+            const bound = group.entries.find(
+                (candidate) => candidate.binding === entry.binding,
+            );
+            if (!bound) {
+                throw new Error(
+                    `Pinned screen-space task's '${suffix}' layout binding ` +
+                        `${entry.binding} is not bound.`,
+                );
+            }
+            if (!sampled) {
+                return undefined;
+            }
+            if (!(bound.resource instanceof RecordedTextureView)) {
+                throw new Error(
+                    `Pinned screen-space task bound binding ` +
+                        `${entry.binding} of '${suffix}' to a non-texture.`,
+                );
+            }
+            return textureRole(bound.resource, name, intermediates);
+        },
+    );
+    const target = textureRole(attachment, name, intermediates);
+    if (target.role !== "intermediate" && target.role !== "stable") {
+        throw new Error(
+            `Pinned screen-space task's '${suffix}' pass draws into its ` +
+                `${target.role} texture.`,
+        );
+    }
+    return { label: suffix, stage, target, textures };
 }
 
 /**
@@ -557,6 +602,7 @@ function postProcessPassFrom(
     name: string,
     recorder: ScreenSpaceRecorder,
     suffix: string,
+    intermediates: ReadonlyMap<string, number>,
 ): ComposedScreenSpacePass {
     const { pipeline, group } = passBinding(pass, suffix);
     const bound = group.entries.find((entry) => entry.binding === 0);
@@ -575,7 +621,7 @@ function postProcessPassFrom(
         );
     }
     const uniformEntry = pipeline.layout.bindGroupLayouts[0]!.entries.find(
-        (entry) => layoutKind(entry) === "uniform",
+        (entry) => layoutResource(entry).bufferType !== undefined,
     );
     const uniform = recorder.buffers.find(
         (buffer) => buffer.label === `${name}-${suffix}-uniforms`,
@@ -586,14 +632,18 @@ function postProcessPassFrom(
                 "block without a buffer, or the reverse.",
         );
     }
-    const extraTextures: ScreenSpaceTextureRole[] = [];
+    const extraTextures: ScreenSpaceTextureRef[] = [];
     for (const entry of group.entries) {
         if (
             entry.binding < 2 ||
             !(entry.resource instanceof RecordedTextureView)
         )
             continue;
-        extraTextures[entry.binding - 2] = textureRole(entry.resource, name);
+        extraTextures[entry.binding - 2] = textureRole(
+            entry.resource,
+            name,
+            intermediates,
+        );
     }
     return {
         wgsl: pipeline.vertex.module.code,
@@ -618,9 +668,10 @@ function strippedLabel(label: string, name: string): string {
 
 /**
  * The pass order both backends encode by hand, asserted against what the
- * pin encoded: an enabled frame runs producer, resolve and history copy
- * and then the composite; the frame after `enabled` went false clears both
- * temporal targets once and still composites the source through.
+ * pin encoded: an enabled frame runs the factory's dedicated passes ending
+ * in the resolve, then the history copy and then the composite; the frame
+ * after `enabled` went false clears both temporal targets once and still
+ * composites the source through.
  */
 function assertPassSequence(
     intrinsic: string,
@@ -638,6 +689,40 @@ function assertPassSequence(
             )}], where this port's backends encode [${expected.join(", ")}].`,
         );
     }
+}
+
+/**
+ * The targets the dedicated passes before the resolve draw into, numbered
+ * in the order the pin first draws into each; every one must be a target
+ * the factory owns, never the temporal pair.
+ */
+function intermediateTargets(
+    intrinsic: string,
+    name: string,
+    passes: readonly RecordedPass[],
+): { indices: Map<string, number>; formats: string[] } {
+    const indices = new Map<string, number>();
+    const formats: string[] = [];
+    for (const pass of passes) {
+        const texture = passAttachment(pass).texture;
+        const label = texture.label;
+        if (
+            !label.startsWith(`${name}-`) ||
+            label === `${name}-stable` ||
+            label === `${name}-history`
+        ) {
+            throw new Error(
+                `Pinned ${intrinsic}'s '${pass.descriptor.label}' pass draws ` +
+                    `into '${label}', which is not a target it owns between ` +
+                    "its passes.",
+            );
+        }
+        if (!indices.has(label)) {
+            indices.set(label, formats.length);
+            formats.push(texture.format);
+        }
+    }
+    return { indices, formats };
 }
 
 /**
@@ -661,25 +746,21 @@ export async function composeScreenSpaceTask(
             `Pinned module ${module} no longer exports ${request.intrinsic}.`,
         );
     }
-    const renderTargets = await importPinnedModule<PinnedRenderTargetModule>(
-        "engine/render-target.js",
-    );
-    const cameras = await importPinnedModule<PinnedCameraModule>(
-        "camera/arc-rotate.js",
-    );
+    const renderTargets = await pinnedRenderTargets();
+    const cameras = await pinnedCameras();
     const canvas = { width: 1280, height: 720 };
-    const { engine, recorder } = recordingEngine(canvas);
-    const built = (label: string, depth: boolean): unknown => {
-        const target = renderTargets.createRenderTarget({
+    const { engine, recorder } = createRecordingEngine(
+        SCREEN_SPACE_CONTRACT,
+        canvas,
+    );
+    const built = (label: string, depth: boolean): unknown =>
+        builtRenderTarget(renderTargets, engine, {
             lbl: label,
             format: "bgra8unorm",
             ...(depth ? { dFormat: "depth24plus-stencil8" } : {}),
             samples: 1,
             size: { width: canvas.width, height: canvas.height },
         });
-        renderTargets.buildRenderTarget(target, engine);
-        return target;
-    };
     const name = COMPOSITION_NAME;
     const config: Record<string, unknown> = {
         ...request.options,
@@ -694,7 +775,7 @@ export async function composeScreenSpaceTask(
             y: 1,
             z: 0,
         }),
-        ...(kind === "scalar"
+        ...(screenSpaceReadsLightDirection(request.intrinsic)
             ? { lightDirection: { x: 0.3, y: -1, z: 0.18 } }
             : {}),
     };
@@ -754,45 +835,68 @@ export async function composeScreenSpaceTask(
     const disabled = recorder.renderPasses.slice(beforeDisabled);
     assertRecordedShapes(recorder);
 
-    const label = (pass: RecordedPass): string => pass.descriptor.label ?? "";
-    const find = (
-        passes: readonly RecordedPass[],
-        suffix: string,
-    ): RecordedPass | undefined =>
-        passes.find((pass) => label(pass) === `${name}-${suffix}`);
-    const producerPass = find(enabled, "producer");
-    const resolvePass = find(enabled, "resolve");
-    const historyPass = find(enabled, "history-copy");
-    if (!producerPass || !resolvePass || !historyPass) {
+    const label = (pass: RecordedPass): string =>
+        strippedLabel(pass.descriptor.label ?? "", name);
+    // An enabled frame is the factory's own dedicated passes ending in the
+    // owner's resolve, then the owner's history copy and the composite.
+    const historyIndex = enabled.findIndex(
+        (pass) => label(pass) === "history-copy",
+    );
+    const dedicated = historyIndex > 0 ? enabled.slice(0, historyIndex) : [];
+    const dedicatedLabels = dedicated.map(label);
+    if (
+        dedicated.length < 2 ||
+        dedicatedLabels.at(-1) !== "resolve" ||
+        new Set(dedicatedLabels).size !== dedicatedLabels.length
+    ) {
         throw new Error(
-            `Pinned ${request.intrinsic} encoded an enabled frame without a ` +
-                "producer, resolve and history-copy pass.",
+            `Pinned ${request.intrinsic} encoded an enabled frame as ` +
+                `[${enabled.map(label).join(", ")}], not as its own passes ` +
+                "ending in one resolve before the history copy.",
         );
     }
-    const compositePass = find(enabled, "composite");
+    const compositePass = enabled
+        .slice(historyIndex + 1)
+        .find((pass) => label(pass) === "composite");
     const compositeLabels = compositePass ? ["composite"] : [];
-    assertPassSequence(
+    assertPassSequence(request.intrinsic, "enabled", enabled.map(label), [
+        ...dedicatedLabels,
+        "history-copy",
+        ...compositeLabels,
+    ]);
+    assertPassSequence(request.intrinsic, "disabled", disabled.map(label), [
+        "clear-stable",
+        "clear-history",
+        ...compositeLabels,
+    ]);
+    const intermediates = intermediateTargets(
         request.intrinsic,
-        "enabled",
-        enabled.map((pass) => strippedLabel(label(pass), name)),
-        ["producer", "resolve", "history-copy", ...compositeLabels],
+        name,
+        dedicated.slice(0, -1),
     );
-    assertPassSequence(
-        request.intrinsic,
-        "disabled",
-        disabled.map((pass) => strippedLabel(label(pass), name)),
-        ["clear-stable", "clear-history", ...compositeLabels],
+    const stages = new Map<
+        ScreenSpaceShapes["renderPipeline"],
+        ComposedScreenSpaceStage
+    >();
+    const passes = dedicated.map((pass) =>
+        stagePassFrom(pass, name, recorder, intermediates.indices, stages),
     );
-    const producer = stageFrom(producerPass, name, recorder, "producer");
-    const resolve = stageFrom(resolvePass, name, recorder, "resolve");
+    const historyPass = enabled[historyIndex]!;
     const historyCopy = postProcessPassFrom(
         historyPass,
         name,
         recorder,
         "history-copy",
+        intermediates.indices,
     );
     const composite = compositePass
-        ? postProcessPassFrom(compositePass, name, recorder, "composite")
+        ? postProcessPassFrom(
+              compositePass,
+              name,
+              recorder,
+              "composite",
+              intermediates.indices,
+          )
         : null;
     if (
         historyCopy.uniformByteLength !== 0 ||
@@ -809,7 +913,7 @@ export async function composeScreenSpaceTask(
                 "port does not carry.",
         );
     }
-    const stable = passAttachment(resolvePass).texture;
+    const stable = passAttachment(dedicated.at(-1)!).texture;
     const history = passAttachment(historyPass).texture;
     if (
         stable.label !== `${name}-stable` ||
@@ -834,8 +938,8 @@ export async function composeScreenSpaceTask(
             resolutionScale: clamped.resolutionScale,
             temporalSamples: clamped.temporalSamples,
         },
-        producer,
-        resolve,
+        passes,
+        intermediates: intermediates.formats,
         historyCopy,
         composite,
     };

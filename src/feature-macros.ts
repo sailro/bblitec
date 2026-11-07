@@ -39,6 +39,7 @@ export const featureMacros: readonly FeatureMacro[] = [
     { macro: "BBLITE_GPU_TASK_TIMING", anyOf: ["engine:gpu-task-timing"] },
     { macro: "BBLITE_GPU_RETIREMENT", anyOf: ["engine:gpu-retirement"] },
     { macro: "BBLITE_THIN_INSTANCES", anyOf: ["mesh:thin-instances"] },
+    { macro: "BBLITE_MESH_OPACITY", anyOf: ["mesh:opacity"] },
     { macro: "BBLITE_SOURCE_PROFILE", anyOf: ["profile:source"] },
     { macro: "BBLITE_COMPUTE_TEXTURES", anyOf: ["compute:storage-texture"] },
     { macro: "BBLITE_COMPUTE_MIPMAPS", anyOf: ["compute:texture-mipmaps"] },
@@ -221,6 +222,11 @@ export const featureMacros: readonly FeatureMacro[] = [
     },
     { macro: "BBLITE_HAS_POST_PROCESS", anyOf: ["renderer:post-process"] },
     { macro: "BBLITE_HAS_SCREEN_SPACE", anyOf: ["renderer:screen-space"] },
+    { macro: "BBLITE_HAS_SSAO", anyOf: ["renderer:ssao"] },
+    {
+        macro: "BBLITE_GEOMETRY_VELOCITY",
+        anyOf: ["renderer:geometry-velocity"],
+    },
 ];
 
 /** Where a macro's header is included from: `bblite/features/has_ui.hpp`. */

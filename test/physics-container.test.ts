@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, readFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import HavokPhysics, {
     type HP_BodyId,
@@ -15,6 +15,7 @@ import {
     optionalNativeFixtureTools,
     runNativeFixtureCompiler,
 } from "./native-fixture.js";
+import { pinnedError, pinnedErrorsCpp } from "./pinned-errors.js";
 
 const tools = optionalNativeFixtureTools();
 
@@ -141,11 +142,21 @@ test(
             "physics:world",
             "physics:container",
         ]);
+        writeFileSync(
+            join(output, "pinned_errors.hpp"),
+            `#include <string>\n${pinnedErrorsCpp({
+                singular_parent: pinnedError(
+                    "Cannot add physics child shape from a singular parent transform.",
+                ),
+            })}`,
+        );
         const executable = join(output, "physics-container-check.exe");
         runNativeFixtureCompiler(tools!, [
             "/O2",
             `/Fo:${output}\\`,
             `/Fe:${executable}`,
+            "/I",
+            output,
             "/I",
             "native/src",
             "/I",

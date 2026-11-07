@@ -20,6 +20,7 @@ import {
 } from "../src/pinned-standard-variants.js";
 import { importPinnedModule } from "../src/pinned-shader-composer.js";
 import { LoweringContext } from "../src/lowering/context.js";
+import { pinnedErrorCodeOf } from "../src/lowering/pinned-error.js";
 import { UpstreamSourceStore } from "../src/upstream-source.js";
 
 test("registers the pin's eleven Standard material extensions", async () => {
@@ -338,7 +339,7 @@ test("the geometry MRT arm is the pin's own rewrite", async () => {
     );
 });
 
-test("a skinned Standard mesh refuses a LINEAR_VELOCITY geometry task", async () => {
+test("a skinned Standard view refuses a LINEAR_VELOCITY task before a preload loaded its feature", async () => {
     const meshBits = await importPinnedModule<{ MSH_HAS_SKELETON: number }>(
         "material/mesh-features.js",
     );
@@ -351,11 +352,20 @@ test("a skinned Standard mesh refuses a LINEAR_VELOCITY geometry task", async ()
                 geometry: { attachments, emitColor: false },
             },
         );
-    // The composer's skeletal velocity arm samples the previous frame's
-    // bone texture, which neither backend keeps.
+    // Before any preload loaded the deformation feature, the pin's composer
+    // refuses the skeletal velocity arm.
+    const context = new LoweringContext();
+    const notPreloaded = pinnedErrorCodeOf(
+        context,
+        "Standard geometry deformation velocity was not preloaded.",
+        context.functionDeclaration(
+            "src/material/standard/standard-geometry-output-shader.ts",
+            "createGeometryParamsFragment",
+        ).declaration,
+    );
     await assert.rejects(
         skinned(["LINEAR_VELOCITY"]),
-        /previous frame's bone texture/,
+        new RegExp(`#${notPreloaded}\\b`),
     );
     const normal = await skinned(["WORLD_NORMAL"]);
     assert.doesNotMatch(normal.vertexWgsl, /previousBoneSampler/);

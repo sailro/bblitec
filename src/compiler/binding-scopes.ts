@@ -1684,12 +1684,29 @@ export class BindingScopes {
         // Each call retains the argument's value. Borrowing a mutable caller
         // binding would let its later reassignment change this parameter,
         // including reads in a returned callback or after a reentrant call.
-        const ownsParameterValue =
-            parameter &&
+        const reseats =
             value.dataType !== undefined &&
             reseatsOnAssignment(value.dataType, (name) =>
                 this.context.dataTypes.isReferenceStruct(name),
             );
+        // A tuple parameter the body writes through (`out[0] = x`, or a
+        // callee that does) names its argument's own storage, as the array
+        // it is: a copy of its value storage would take the writes.
+        const writesThroughParameter =
+            parameter &&
+            value.dataType?.kind === "tuple" &&
+            !reboundParameter &&
+            !sharedStorage &&
+            parameterDeclaration !== undefined &&
+            ts.isIdentifier(identifier) &&
+            isSupportedFunction(parameterDeclaration.parent) &&
+            parameterIsMutated(
+                this.context.checker,
+                parameterDeclaration.parent,
+                identifier,
+            );
+        const ownsParameterValue =
+            parameter && reseats && !writesThroughParameter;
         const borrowsImmutableBinding =
             !sharedStorage &&
             stableNativeBinding &&
@@ -1718,18 +1735,20 @@ export class BindingScopes {
                   : "auto&"
               : borrowsImmutableBinding
                 ? "auto&"
-                : value.kind === "number"
-                  ? "double"
-                  : value.kind === "boolean"
-                    ? "bool"
-                    : isStringValue(value)
-                      ? "std::string"
-                      : parameter &&
-                          !copiesHandle &&
-                          !reboundParameter &&
-                          !ownsParameterValue
-                        ? "auto&&"
-                        : "auto";
+                : writesThroughParameter
+                  ? "auto&&"
+                  : value.kind === "number"
+                    ? "double"
+                    : value.kind === "boolean"
+                      ? "bool"
+                      : isStringValue(value)
+                        ? "std::string"
+                        : parameter &&
+                            !copiesHandle &&
+                            !reboundParameter &&
+                            !ownsParameterValue
+                          ? "auto&&"
+                          : "auto";
         const ownsTemporaryArgument =
             parameter &&
             !sharedStorage &&
@@ -1743,6 +1762,7 @@ export class BindingScopes {
         if (
             !sharedStorage &&
             !borrowsImmutableBinding &&
+            !writesThroughParameter &&
             referenceValue &&
             !reference &&
             (nativeType !== "std::string" || readsNativeStorage(value)) &&

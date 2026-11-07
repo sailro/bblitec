@@ -388,10 +388,14 @@ function registerGltfContainer(
     context: AssetIntrinsicContext,
     call: ts.CallExpression,
     source: string,
-): CompileAsset {
+): Pick<Value, "asset" | "assetContainer"> & { asset: CompileAsset } {
     const asset = context.assetRegistry.registerAsset(source, "gltf");
-    context.assetRegistry.recordGltfContainerLoad(asset);
-    if (!context.options.readAssetBytes) return asset;
+    const container = context.assetRegistry.recordGltfContainerLoad(asset);
+    const identity = {
+        asset,
+        ...(container !== undefined ? { assetContainer: container } : {}),
+    };
+    if (!context.options.readAssetBytes) return identity;
     let instancing = gltfThinInstanceSelections.get(asset);
     if (instancing === undefined) {
         const document = gltfDocumentFromBytes(
@@ -409,7 +413,7 @@ function registerGltfContainer(
         gltfThinInstanceSelections.set(asset, instancing);
     }
     if (instancing) context.reachFeature("mesh:thin-instances", call);
-    return asset;
+    return identity;
 }
 
 /** `loadGltf`'s value: the container load of `pathCpp` (a promise in a realm). */
@@ -418,7 +422,7 @@ function gltfLoadValue(
     call: ts.CallExpression,
     engine: Value,
     pathCpp: string,
-    identity: Pick<Value, "asset" | "assetKind">,
+    identity: Pick<Value, "asset" | "assetContainer" | "assetKind">,
 ): Value {
     context.reachFeature("loader:gltf", call);
     context.reachFeature("renderer:scene", call);
@@ -438,6 +442,37 @@ function gltfLoadValue(
               promiseResult: result,
           }
         : result;
+}
+
+/**
+ * `loadGltf(engine, blob)` over a document generation built (`data:` URL),
+ * parsed as the pin parses raw data: with no base URL, so it must be
+ * self-contained.
+ */
+export function compileGeneratedGltfLoad(
+    context: AssetIntrinsicContext,
+    call: ts.CallExpression,
+    engine: Value,
+    document: string,
+): Value {
+    const external = externalGltfResourceUri(
+        readAssetBytesSync(document, context.options.fileName),
+    );
+    if (external !== undefined) {
+        context.fail(
+            call,
+            `The glTF document built at generation has no base URL to resolve '${external}'; ` +
+                "it must be a GLB or use data: URIs.",
+        );
+    }
+    const identity = registerGltfContainer(context, call, document);
+    return gltfLoadValue(
+        context,
+        call,
+        engine,
+        `bbl::asset_path(${context.cppString(identity.asset.output)})`,
+        identity,
+    );
 }
 
 function compileLoadGltf(
@@ -474,7 +509,7 @@ function compileLoadGltf(
             { assetKind: "gltf" },
         );
     }
-    const asset = registerGltfContainer(
+    const identity = registerGltfContainer(
         context,
         call,
         fetched ?? context.compileStringLiteral(argumentAt(call, 1)),
@@ -483,8 +518,8 @@ function compileLoadGltf(
         context,
         call,
         engine,
-        `bbl::asset_path(${context.cppString(asset.output)})`,
-        { asset },
+        `bbl::asset_path(${context.cppString(identity.asset.output)})`,
+        identity,
     );
 }
 

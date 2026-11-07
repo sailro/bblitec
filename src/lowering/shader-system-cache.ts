@@ -6,7 +6,11 @@ import {
     type PinnedBinding,
     type PinnedCallSpelling,
 } from "./pinned-numeric-lowerer.js";
-import { isShaderSystemMatrix, shaderSystemMatrixTable } from "../shader-ir.js";
+import {
+    isShaderSystemMatrix,
+    shaderSystemMatrixEnumerator,
+    shaderSystemMatrixTable,
+} from "../shader-ir.js";
 import { sameSource, propertyPath } from "../compiler/syntax.js";
 
 const rendererModule = "src/material/shader/shader-renderable.ts";
@@ -278,6 +282,11 @@ export function lowerShaderSystemCache(context: LoweringContext): string {
         ]),
     ]);
     const prefix = statements.slice(0, statements.indexOf(publication) + 1);
+    // The PAL packs the block this publishes and finishes it there
+    // (`finish_shader_system_block`).
+    const finish = new Set<ts.Statement>(
+        systemBlockFinish(context, "updatePacket").statements,
+    );
     const body = lowerPinnedBody(file, prefix, {
         bindings,
         calls: new Map([
@@ -370,6 +379,7 @@ export function lowerShaderSystemCache(context: LoweringContext): string {
                 );
                 return [];
             }
+            if (finish.has(statement)) return [];
             if (
                 ts.isExpressionStatement(statement) &&
                 ts.isCallExpression(statement.expression) &&
@@ -602,6 +612,197 @@ void write_shader_packet_system(const CameraRecord* camera, std::span<const std:
     std::optional<std::array<float, 16>> view;
     std::optional<std::array<float, 16>> viewProjection;
     for (const std::uint32_t dependency : layout) {
+${body.replace(/^/gm, "    ")}
+    }
+}
+`;
+}
+
+/**
+ * Where each system-block writer of the pin hands the block on (its
+ * buffer creation, its upload gate), and the names it spells the block and
+ * its layout offsets with.
+ */
+const systemBlockWriters = {
+    createPacket: {
+        upload: (context: LoweringContext, statement: ts.Statement) =>
+            ts.isVariableStatement(statement) &&
+            statement.declarationList.declarations.some(
+                (declaration) =>
+                    declaration.initializer !== undefined &&
+                    context.expressionMatchesShape(
+                        declaration.initializer,
+                        'createUniformBuffer(engine, systemData, "shader-system-ubo")',
+                    ),
+            ),
+        block: "systemData",
+        offsets: "systemSpec._offsets",
+    },
+    updatePacket: {
+        upload: (context: LoweringContext, statement: ts.Statement) =>
+            ts.isIfStatement(statement) &&
+            context.expressionMatchesShape(
+                statement.expression,
+                "uniformBatch",
+            ),
+        block: "packet.systemData",
+        offsets: "state._shaderBindings!.systemSpec._offsets",
+    },
+} as const;
+
+/**
+ * The statements a pinned writer runs over its packet's system block
+ * between `systemUniformWriter` filling it and the block's upload, as the
+ * build folds them.
+ */
+function systemBlockFinish(
+    context: LoweringContext,
+    symbol: keyof typeof systemBlockWriters,
+): { file: ts.SourceFile; statements: readonly ts.Statement[] } {
+    const { file, declaration } = context.functionDeclaration(
+        rendererModule,
+        symbol,
+    );
+    const writer = context.findNodes(
+        declaration,
+        (node): node is ts.ExpressionStatement =>
+            ts.isExpressionStatement(node) &&
+            ts.isCallExpression(node.expression) &&
+            context.expressionMatchesShape(
+                node.expression.expression,
+                "systemUniformWriter",
+            ),
+    );
+    const list = writer[0]?.parent;
+    const statements: readonly ts.Statement[] =
+        list && ts.isBlock(list) ? list.statements : [];
+    const first = writer[0] ? statements.indexOf(writer[0]) + 1 : 0;
+    const upload = statements.findIndex(
+        (statement, index) =>
+            index >= first &&
+            systemBlockWriters[symbol].upload(context, statement),
+    );
+    if (writer.length !== 1 || first === 0 || upload < 0)
+        return context.contractError(
+            declaration,
+            `Expected ${symbol} to write its system block and then upload it.`,
+        );
+    return { file, statements: statements.slice(first, upload) };
+}
+
+/**
+ * `finish_shader_system_block`: what the pin does to a packet's system
+ * block once `systemUniformWriter` has filled it, lowered once from
+ * `createPacket` (and asserted the same in `updatePacket`); the PAL runs
+ * it on every block it packs. A right-handed build converts the block
+ * (`_toRightHandedShaderSystemUniforms`, lowered beside it); a left-handed
+ * one does nothing to it.
+ */
+export function lowerShaderSystemBlockFinish(context: LoweringContext): string {
+    const conversion = "_toRightHandedShaderSystemUniforms";
+    let converts = false;
+    const lowered = (symbol: keyof typeof systemBlockWriters): string => {
+        const { file, statements } = systemBlockFinish(context, symbol);
+        const { block, offsets } = systemBlockWriters[symbol];
+        return lowerPinnedBody(file, statements, {
+            bindings: new Map<string, PinnedBinding>([
+                [block, { cpp: "data", type: "opaque" }],
+                [offsets, { cpp: "offsets", type: "opaque" }],
+            ]),
+            calls: new Map([
+                [
+                    conversion,
+                    (args: readonly string[]) => {
+                        converts = true;
+                        return `to_right_handed_shader_system_uniforms(${args.join(", ")})`;
+                    },
+                ],
+            ]),
+        });
+    };
+    const body = lowered("createPacket");
+    if (lowered("updatePacket") !== body)
+        context.contractError(
+            context.functionDeclaration(rendererModule, "updatePacket")
+                .declaration,
+            "updatePacket no longer finishes its system block as createPacket does.",
+        );
+    return `${converts ? lowerShaderSystemRightHanded(context, conversion) : ""}// ${context.provenance(rendererModule, "createPacket", "system block after its writer")}
+inline void finish_shader_system_block([[maybe_unused]] std::vector<float>& data,
+    [[maybe_unused]] const std::vector<ShaderSystemUniform>& offsets) {
+${body ? `${body.trimEnd()}\n` : ""}}
+`;
+}
+
+/**
+ * `_toRightHandedShaderSystemUniforms` over a packed system block: a
+ * right-handed build hands user shaders Babylon.js's right-handed `view`,
+ * `worldView` and `projection`, converted after the block is written.
+ */
+function lowerShaderSystemRightHanded(
+    context: LoweringContext,
+    symbol: string,
+): string {
+    const { file, declaration } = context.functionDeclaration(
+        rendererModule,
+        symbol,
+    );
+    const [loop, ...after] = declaration.body!.statements;
+    if (
+        !loop ||
+        after.length !== 0 ||
+        !ts.isForOfStatement(loop) ||
+        !ts.isBlock(loop.statement) ||
+        !ts.isVariableDeclarationList(loop.initializer) ||
+        !loop.initializer.declarations[0] ||
+        !sameSource(loop.initializer.declarations[0].name, "[name, offset]")
+    )
+        return context.contractError(
+            declaration,
+            "Expected one loop over the block's named offsets.",
+        );
+    context.assertExpressionShape(loop.expression, "offsets", "System layout");
+    const [offset, ...arms] = loop.statement.statements;
+    if (!offset)
+        return context.contractError(loop, "Expected the slot's offset.");
+    context.assertStatementShapes(
+        loop,
+        [offset],
+        "const f = offset / 4;",
+        "System slot float offset",
+    );
+    const body = lowerPinnedBody(file, arms, {
+        bindings: new Map<string, PinnedBinding>([
+            ["data", { cpp: "data", type: "f32" }],
+            ["f", { cpp: "f", type: "scalar" }],
+        ]),
+        calls: new Map(),
+        // `name === "<system uniform>"`: the slot's generated enumerator.
+        expression(node) {
+            if (
+                ts.isBinaryExpression(node) &&
+                node.operatorToken.kind ===
+                    ts.SyntaxKind.EqualsEqualsEqualsToken &&
+                sameSource(node.left, "name") &&
+                ts.isStringLiteral(node.right)
+            ) {
+                const name = node.right.text;
+                if (!isShaderSystemMatrix(name))
+                    return context.contractError(
+                        node,
+                        `'${name}' is not a system uniform.`,
+                    );
+                return `(name == ShaderSystemMatrix::${shaderSystemMatrixEnumerator(name)})`;
+            }
+            return undefined;
+        },
+    });
+    return `// ${context.provenance(rendererModule, symbol)}
+inline void to_right_handed_shader_system_uniforms(std::vector<float>& data,
+    const std::vector<ShaderSystemUniform>& offsets) {
+    for (const ShaderSystemUniform& slot : offsets) {
+        const ShaderSystemMatrix name = slot.source;
+        const double f = static_cast<double>(slot.float_offset);
 ${body.replace(/^/gm, "    ")}
     }
 }

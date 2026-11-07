@@ -12,9 +12,13 @@ export function lowerGltfCamerasCpp(parser: ts.SourceFile): {
     const flip = pinnedRootFlip(parser);
     return {
         parentWriter: `
-void write_gltf_camera_parent_world(CameraRecord& camera, Matrix node_world, const Matrix& local) {
+void write_gltf_camera_parent_world(CameraRecord& camera, ${flip ? "Matrix" : "const Matrix&"} node_world, const Matrix& local) {${
+            flip
+                ? `
     for (std::size_t column = 0; column < 4; ++column)
-        node_world[column * 4 + ${flip.lane}] *= ${floatLiteral(flip.sign)};
+        node_world[column * 4 + ${flip.lane}] *= ${floatLiteral(flip.sign)};`
+                : ""
+        }
     camera.parent_world = upstream::matrix_product(node_world, local);
     camera.has_parent_world = true;
 }

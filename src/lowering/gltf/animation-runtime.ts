@@ -9,7 +9,7 @@ import { recordAt } from "../../compiler/record-access.js";
  * An animated KHR_lights_punctual light, as the pin builds it: the light is
  * parented to its source node at the node's origin with the glTF forward
  * (`gltf-feature-lights-punctual.ts`, the `sourceNode` arm), so its world is
- * the node's world under the parser's `RH_TO_LH_ROOT`, and its direction is
+ * the node's world under the parser's `GLTF_ROOT`, and its direction is
  * `writeWorldLightDirection` over that world. The helper, the root matrix
  * and the local forward all come from the pin.
  */
@@ -56,7 +56,7 @@ export function gltfAnimatedLightCpp(): {
     const parser = "src/loader-gltf/gltf-parser.ts";
     const parserFile = context.sourceFile(parser);
     const rootMatrix = context.unwrapExpression(
-        context.variableInitializer(parserFile, "RH_TO_LH_ROOT"),
+        context.variableInitializer(parserFile, "GLTF_ROOT"),
     );
     const rootValues =
         ts.isNewExpression(rootMatrix) &&
@@ -66,7 +66,7 @@ export function gltfAnimatedLightCpp(): {
             ? rootMatrix.arguments[0].elements
             : context.contractError(
                   rootMatrix,
-                  "Expected RH_TO_LH_ROOT to be a sixteen-lane F32 matrix.",
+                  "Expected GLTF_ROOT to be a sixteen-lane F32 matrix.",
               );
     const lights = "src/loader-gltf/gltf-feature-lights-punctual.ts";
     const lightsFile = context.sourceFile(lights);

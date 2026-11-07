@@ -46,6 +46,13 @@ import {
 import { refuseGeneration } from "./generation-refusal.js";
 import { thinInstanceOwnershipFailure } from "./thin-instance-admission.js";
 
+/**
+ * What a geometry task's preload joins: the join records it in the place of
+ * an asset, as the loader trigger it is.
+ */
+const GEOMETRY_TASK_DEFORMATION_PRELOAD =
+    "a LINEAR_VELOCITY geometry task's preload";
+
 /** A merged capability and every reason that turned it on. */
 export interface Activation {
     readonly value: boolean;
@@ -230,6 +237,23 @@ export async function joinAssetFeatures({
         if (lights.some((light) => light.type === 0))
             join("light:point", asset.output);
     }
+
+    // A LINEAR_VELOCITY geometry task's Standard preload loads the
+    // deformation velocity feature when its mesh list holds a skinned or
+    // morphed mesh (`preloadGeometryDeformationVelocity`), from which every
+    // later Standard velocity view composes its previous pose. Whether it
+    // loads is the run-time list's; the native state compiles in wherever a
+    // Standard material and a deformed mesh can both reach such a task.
+    if (
+        manifest.geometryOutputTasks.some((task) =>
+            task.attachments.includes("LINEAR_VELOCITY"),
+        ) &&
+        manifest.features.includes("material:standard") &&
+        (specialization.gpuDeformation ||
+            manifest.features.includes("mesh:morph-targets") ||
+            manifest.features.includes("mesh:skeleton"))
+    )
+        join("renderer:geometry-velocity", GEOMETRY_TASK_DEFORMATION_PRELOAD);
 
     const thinInstanceFailure = thinInstanceOwnershipFailure(
         new Set(manifest.features),

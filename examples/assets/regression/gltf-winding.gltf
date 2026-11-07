@@ -1,0 +1,418 @@
+{
+  "asset": {
+    "version": "2.0",
+    "generator": "bblitec tools/fixtures/build-gltf-winding.mjs"
+  },
+  "scene": 0,
+  "scenes": [
+    {
+      "nodes": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        11
+      ]
+    }
+  ],
+  "nodes": [
+    {
+      "name": "StandardSinglePlain",
+      "mesh": 0,
+      "translation": [
+        -2.0999999999999996,
+        1.4,
+        0
+      ]
+    },
+    {
+      "name": "StandardSingleMirrored",
+      "mesh": 1,
+      "translation": [
+        -0.7,
+        1.4,
+        0
+      ],
+      "scale": [
+        -1,
+        1,
+        1
+      ]
+    },
+    {
+      "name": "StandardDoublePlain",
+      "mesh": 2,
+      "translation": [
+        0.7,
+        1.4,
+        0
+      ]
+    },
+    {
+      "name": "StandardDoubleMirrored",
+      "mesh": 3,
+      "translation": [
+        2.0999999999999996,
+        1.4,
+        0
+      ],
+      "scale": [
+        -1,
+        1,
+        1
+      ]
+    },
+    {
+      "name": "ShaderSinglePlain",
+      "mesh": 4,
+      "translation": [
+        -2.0999999999999996,
+        0,
+        0
+      ]
+    },
+    {
+      "name": "ShaderSingleMirrored",
+      "mesh": 5,
+      "translation": [
+        -0.7,
+        0,
+        0
+      ],
+      "scale": [
+        -1,
+        1,
+        1
+      ]
+    },
+    {
+      "name": "ShaderDoublePlain",
+      "mesh": 6,
+      "translation": [
+        0.7,
+        0,
+        0
+      ]
+    },
+    {
+      "name": "ShaderDoubleMirrored",
+      "mesh": 7,
+      "translation": [
+        2.0999999999999996,
+        0,
+        0
+      ],
+      "scale": [
+        -1,
+        1,
+        1
+      ]
+    },
+    {
+      "name": "NodeSinglePlain",
+      "mesh": 8,
+      "translation": [
+        -2.0999999999999996,
+        -1.4,
+        0
+      ]
+    },
+    {
+      "name": "NodeSingleMirrored",
+      "mesh": 9,
+      "translation": [
+        -0.7,
+        -1.4,
+        0
+      ],
+      "scale": [
+        -1,
+        1,
+        1
+      ]
+    },
+    {
+      "name": "NodeDoublePlain",
+      "mesh": 10,
+      "translation": [
+        0.7,
+        -1.4,
+        0
+      ]
+    },
+    {
+      "name": "NodeDoubleMirrored",
+      "mesh": 11,
+      "translation": [
+        2.0999999999999996,
+        -1.4,
+        0
+      ],
+      "scale": [
+        -1,
+        1,
+        1
+      ]
+    }
+  ],
+  "meshes": [
+    {
+      "name": "StandardSinglePlain",
+      "primitives": [
+        {
+          "mode": 4,
+          "attributes": {
+            "POSITION": 0,
+            "NORMAL": 1
+          },
+          "indices": 2,
+          "material": 0
+        }
+      ]
+    },
+    {
+      "name": "StandardSingleMirrored",
+      "primitives": [
+        {
+          "mode": 4,
+          "attributes": {
+            "POSITION": 0,
+            "NORMAL": 1
+          },
+          "indices": 2,
+          "material": 0
+        }
+      ]
+    },
+    {
+      "name": "StandardDoublePlain",
+      "primitives": [
+        {
+          "mode": 4,
+          "attributes": {
+            "POSITION": 0,
+            "NORMAL": 1
+          },
+          "indices": 2,
+          "material": 1
+        }
+      ]
+    },
+    {
+      "name": "StandardDoubleMirrored",
+      "primitives": [
+        {
+          "mode": 4,
+          "attributes": {
+            "POSITION": 0,
+            "NORMAL": 1
+          },
+          "indices": 2,
+          "material": 1
+        }
+      ]
+    },
+    {
+      "name": "ShaderSinglePlain",
+      "primitives": [
+        {
+          "mode": 4,
+          "attributes": {
+            "POSITION": 0,
+            "NORMAL": 1
+          },
+          "indices": 2,
+          "material": 0
+        }
+      ]
+    },
+    {
+      "name": "ShaderSingleMirrored",
+      "primitives": [
+        {
+          "mode": 4,
+          "attributes": {
+            "POSITION": 0,
+            "NORMAL": 1
+          },
+          "indices": 2,
+          "material": 0
+        }
+      ]
+    },
+    {
+      "name": "ShaderDoublePlain",
+      "primitives": [
+        {
+          "mode": 4,
+          "attributes": {
+            "POSITION": 0,
+            "NORMAL": 1
+          },
+          "indices": 2,
+          "material": 1
+        }
+      ]
+    },
+    {
+      "name": "ShaderDoubleMirrored",
+      "primitives": [
+        {
+          "mode": 4,
+          "attributes": {
+            "POSITION": 0,
+            "NORMAL": 1
+          },
+          "indices": 2,
+          "material": 1
+        }
+      ]
+    },
+    {
+      "name": "NodeSinglePlain",
+      "primitives": [
+        {
+          "mode": 4,
+          "attributes": {
+            "POSITION": 0,
+            "NORMAL": 1
+          },
+          "indices": 2,
+          "material": 0
+        }
+      ]
+    },
+    {
+      "name": "NodeSingleMirrored",
+      "primitives": [
+        {
+          "mode": 4,
+          "attributes": {
+            "POSITION": 0,
+            "NORMAL": 1
+          },
+          "indices": 2,
+          "material": 0
+        }
+      ]
+    },
+    {
+      "name": "NodeDoublePlain",
+      "primitives": [
+        {
+          "mode": 4,
+          "attributes": {
+            "POSITION": 0,
+            "NORMAL": 1
+          },
+          "indices": 2,
+          "material": 1
+        }
+      ]
+    },
+    {
+      "name": "NodeDoubleMirrored",
+      "primitives": [
+        {
+          "mode": 4,
+          "attributes": {
+            "POSITION": 0,
+            "NORMAL": 1
+          },
+          "indices": 2,
+          "material": 1
+        }
+      ]
+    }
+  ],
+  "materials": [
+    {
+      "name": "SingleSidedMaterial",
+      "doubleSided": false,
+      "pbrMetallicRoughness": {
+        "baseColorFactor": [
+          1,
+          1,
+          1,
+          1
+        ],
+        "metallicFactor": 0,
+        "roughnessFactor": 0.6
+      }
+    },
+    {
+      "name": "DoubleSidedMaterial",
+      "doubleSided": true,
+      "pbrMetallicRoughness": {
+        "baseColorFactor": [
+          1,
+          1,
+          1,
+          1
+        ],
+        "metallicFactor": 0,
+        "roughnessFactor": 0.6
+      }
+    }
+  ],
+  "accessors": [
+    {
+      "bufferView": 0,
+      "componentType": 5126,
+      "count": 24,
+      "type": "VEC3",
+      "min": [
+        -0.5,
+        -0.5,
+        -0.5
+      ],
+      "max": [
+        0.5,
+        0.5,
+        0.5
+      ]
+    },
+    {
+      "bufferView": 1,
+      "componentType": 5126,
+      "count": 24,
+      "type": "VEC3"
+    },
+    {
+      "bufferView": 2,
+      "componentType": 5123,
+      "count": 36,
+      "type": "SCALAR"
+    }
+  ],
+  "bufferViews": [
+    {
+      "buffer": 0,
+      "byteOffset": 0,
+      "byteLength": 288
+    },
+    {
+      "buffer": 0,
+      "byteOffset": 288,
+      "byteLength": 288
+    },
+    {
+      "buffer": 0,
+      "byteOffset": 576,
+      "byteLength": 72
+    }
+  ],
+  "buffers": [
+    {
+      "uri": "data:application/octet-stream;base64,AAAAPwAAAL8AAAA/AAAAPwAAAL8AAAC/AAAAPwAAAD8AAAC/AAAAPwAAAD8AAAA/AAAAvwAAAL8AAAC/AAAAvwAAAL8AAAA/AAAAvwAAAD8AAAA/AAAAvwAAAD8AAAC/AAAAvwAAAD8AAAA/AAAAPwAAAD8AAAA/AAAAPwAAAD8AAAC/AAAAvwAAAD8AAAC/AAAAvwAAAL8AAAC/AAAAPwAAAL8AAAC/AAAAPwAAAL8AAAA/AAAAvwAAAL8AAAA/AAAAvwAAAL8AAAA/AAAAPwAAAL8AAAA/AAAAPwAAAD8AAAA/AAAAvwAAAD8AAAA/AAAAPwAAAL8AAAC/AAAAvwAAAL8AAAC/AAAAvwAAAD8AAAC/AAAAPwAAAD8AAAC/AACAPwAAAAAAAAAAAACAPwAAAAAAAAAAAACAPwAAAAAAAAAAAACAPwAAAAAAAAAAAACAvwAAAAAAAAAAAACAvwAAAAAAAAAAAACAvwAAAAAAAAAAAACAvwAAAAAAAAAAAAAAAAAAgD8AAAAAAAAAAAAAgD8AAAAAAAAAAAAAgD8AAAAAAAAAAAAAgD8AAAAAAAAAAAAAgL8AAAAAAAAAAAAAgL8AAAAAAAAAAAAAgL8AAAAAAAAAAAAAgL8AAAAAAAAAAAAAAAAAAIA/AAAAAAAAAAAAAIA/AAAAAAAAAAAAAIA/AAAAAAAAAAAAAIA/AAAAAAAAAAAAAIC/AAAAAAAAAAAAAIC/AAAAAAAAAAAAAIC/AAAAAAAAAAAAAIC/AAABAAIAAAACAAMABAAFAAYABAAGAAcACAAJAAoACAAKAAsADAANAA4ADAAOAA8AEAARABIAEAASABMAFAAVABYAFAAWABcA",
+      "byteLength": 648
+    }
+  ]
+}

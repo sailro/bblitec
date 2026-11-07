@@ -1,4 +1,5 @@
 import ts from "typescript";
+import { hasExportModifier } from "./compiler/syntax.js";
 import { LoweringContext } from "./lowering/context.js";
 import { PinnedShaderBuilders } from "./lowering/pinned-shader-builders.js";
 import {
@@ -85,14 +86,9 @@ function pinnedModuleNamespace(
     builders: PinnedShaderBuilders,
     modulePath: string,
 ): Readonly<Record<string, unknown>> {
-    const exported = (statement: ts.Statement): boolean =>
-        ts.canHaveModifiers(statement) &&
-        (ts.getModifiers(statement) ?? []).some(
-            (modifier) => modifier.kind === ts.SyntaxKind.ExportKeyword,
-        );
     const names = context
         .sourceFile(modulePath)
-        .statements.filter(exported)
+        .statements.filter(hasExportModifier)
         .flatMap((statement) =>
             ts.isFunctionDeclaration(statement) && statement.name
                 ? [statement.name.text]

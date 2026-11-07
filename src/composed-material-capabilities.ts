@@ -42,6 +42,8 @@ interface ComposedMaterialCapabilities {
     lightmap: boolean;
     /** The Standard half of `lightmap` alone: some variant binds `lT`. */
     standardLightmap: boolean;
+    /** Some PBR variant binds the IBL extension's bent-normal pair (`bentNormalTexture_`). */
+    bentNormal: boolean;
     metallicReflectanceMap: boolean;
     reflectanceMap: boolean;
     /**
@@ -110,6 +112,7 @@ export function composedMaterialCapabilities(
         occlusionUv2: pbrBindingNames.has("occlusionTexture"),
         lightmap: pbrBindingNames.has("lmTexture") || standardLightmap,
         standardLightmap,
+        bentNormal: pbrBindingNames.has("bentNormalTexture_"),
         metallicReflectanceMap: pbrBindingNames.has("metallicReflectanceMap"),
         reflectanceMap: pbrBindingNames.has("reflectanceMap"),
         transmissionMap: pbrBindingNames.has("refractionMapTexture"),

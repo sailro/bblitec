@@ -182,12 +182,13 @@ struct Run {
     CameraTraceState trace;
     RetainedSceneBlocks pass_blocks;
     long frame = 0;
+    std::vector<std::shared_ptr<Scene>> scenes{std::make_shared<Scene>(scene)};
 
-    Run() { engine.rendering_contexts.push_back("scene", std::make_shared<Scene>(scene)); }
+    Run() { engine.rendering_contexts.push_back("scene", scenes.front()); }
 
     SceneSyncOutcome synchronize(Hooks& hooks) {
         SceneSyncState<Row> sync{engine,
-                                 scene,
+                                 scenes,
                                  ++frame,
                                  16.0,
                                  640,

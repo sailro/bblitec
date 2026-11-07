@@ -12,6 +12,7 @@ import { joinAssetFeatures } from "../src/asset-feature-join.js";
 import { GeneratedTree } from "../src/generated-tree.js";
 import { importPinnedModule } from "../src/pinned-shader-composer.js";
 import type { PinnedVariantManifestEntry } from "../src/pinned-pbr-variant-output.js";
+import type { PbrMaterialStateRow } from "../src/pinned-pbr-variant-cpp.js";
 import { writeGlbFixture } from "./glb-fixture.js";
 import { TINT_PLUGIN } from "./program-snippets.js";
 import { packageGltfLoadPlan } from "../src/gltf-load-plan.js";
@@ -286,6 +287,129 @@ test("a PBR material's grown plugin list and alpha compose every state they reac
             (variant) => !/baseColor \* 0\.5/.test(variant.fragmentWgsl),
         ),
     );
+});
+
+/**
+ * Scene 230's shape: one document loaded twice, the second given a bent
+ * normal map by a walk over its renderables -- the proven whole-container
+ * walk, or `getContainerMeshes`, which iterates the same handles unproven.
+ */
+const bentNormalProgram = (
+    enable: boolean,
+    { write = "material.bentNormalTexture = bent;", proven = true } = {},
+) => `
+        import {createEngine, enableBentNormals, getContainerMeshes, loadGltf, loadTexture2D} from "@babylonjs/lite";
+        import type {AssetContainer, Mesh, PbrMaterialProps} from "@babylonjs/lite";
+        function collectMeshes(container: AssetContainer): Mesh[] {
+            const out: Mesh[] = [];
+            const stack: unknown[] = [...container.entities];
+            while (stack.length > 0) {
+                const node = stack.pop() as { _gpu?: unknown; material?: unknown; children?: unknown[] } | undefined;
+                if (!node) {
+                    continue;
+                }
+                if ("_gpu" in node && "material" in node) {
+                    out.push(node as unknown as Mesh);
+                }
+                if (node.children?.length) {
+                    stack.push(...node.children);
+                }
+            }
+            return out;
+        }
+        const engine = await createEngine({});
+        await loadGltf(engine, "level.glb");
+        const right = await loadGltf(engine, "level.glb");
+        const bent = await loadTexture2D(engine, "bent.png", {invertY: false});
+        for (const mesh of ${proven ? "collectMeshes" : "getContainerMeshes"}(right)) {
+            const material = mesh.material as PbrMaterialProps;
+            ${write}
+            material.bentNormalStrength = 0.5;
+        }
+        ${enable ? "enableBentNormals();" : ""}
+    `;
+
+/** Each written state row as `[source row, bent normal texture, row]`. */
+const bentStateRows = (
+    rows: readonly PbrMaterialStateRow[],
+): (number | boolean | undefined)[][] =>
+    rows.map((state) => [state.sourceRow, state.bentNormalTexture, state.row]);
+
+test("a definite bent normal write composes its own container's materials with the texture alone", async () => {
+    const outputPath = resolve("artifacts/pbr-bent-normal-states");
+    writeImportedMeshFixture(outputPath);
+    const { result, composed } = await composeImportedMesh(
+        outputPath,
+        bentNormalProgram(true),
+    );
+    assert.ok(result.manifest.features.includes("material:bent-normal"));
+    assert.match(
+        result.cpp,
+        /bbl::set_pbr_texture\([^;]*MaterialTextureSlot::bent_normal/,
+    );
+    assert.match(result.cpp, /\.bent_normal_strength = 0\.5f;/);
+    assert.deepEqual(
+        result.manifest.pbrMaterialStates?.map(
+            ({ target, bentNormalTexture }) => [target, bentNormalTexture],
+        ),
+        [
+            [
+                {
+                    kind: "asset",
+                    output: result.manifest.assets[0]!.output,
+                    container: 1,
+                },
+                "definite",
+            ],
+        ],
+    );
+    // The left copy keeps its own row, the right one holds the texture from
+    // its first build: no state is left for a row to select.
+    assert.deepEqual(composed.pbrMaterialStateRows, []);
+    assert.equal(composed.pinnedMaterialCount, 2);
+});
+
+test("a conditional bent normal write composes both states of its container's materials", async () => {
+    const outputPath = resolve("artifacts/pbr-bent-normal-conditional");
+    writeImportedMeshFixture(outputPath);
+    const { composed } = await composeImportedMesh(
+        outputPath,
+        bentNormalProgram(true, {
+            write: 'if (mesh.name === "level") material.bentNormalTexture = bent;',
+        }),
+    );
+    assert.deepEqual(bentStateRows(composed.pbrMaterialStateRows), [
+        [1, false, 1],
+        [1, true, 2],
+    ]);
+    assert.equal(composed.pinnedMaterialCount, 3);
+});
+
+test("an unproven walk's bent normal write composes both states of every container's material", async () => {
+    const outputPath = resolve("artifacts/pbr-bent-normal-unproven");
+    writeImportedMeshFixture(outputPath);
+    const { composed } = await composeImportedMesh(
+        outputPath,
+        bentNormalProgram(true, { proven: false }),
+    );
+    assert.deepEqual(bentStateRows(composed.pbrMaterialStateRows), [
+        [0, false, 0],
+        [0, true, 2],
+        [1, false, 1],
+        [1, true, 3],
+    ]);
+    assert.equal(composed.pinnedMaterialCount, 4);
+});
+
+test("a bent normal write without enableBentNormals composes nothing, as the pin ignores it", async () => {
+    const outputPath = resolve("artifacts/pbr-bent-normal-disabled");
+    writeImportedMeshFixture(outputPath);
+    const { composed } = await composeImportedMesh(
+        outputPath,
+        bentNormalProgram(false),
+    );
+    assert.deepEqual(composed.pbrMaterialStateRows, []);
+    assert.equal(composed.pinnedMaterialCount, 2);
 });
 
 test("runtime shadow caster lists compose node material caster views", async () => {

@@ -197,10 +197,7 @@ test("transparent button borders and backgrounds are not gradient text colors", 
         button.style.cssText = "border-color:transparent;background-color:transparent;";
         document.body.appendChild(button);
     `).cpp;
-    assert.match(
-        cpp,
-        /border-color:transparent;--bbl-background-color:transparent/,
-    );
+    assert.match(cpp, /border-color:transparent;background-color:transparent/);
     assert.doesNotMatch(cpp, /color:#fff/);
 });
 
@@ -212,7 +209,7 @@ test("native links retain browser user-agent decoration below author rules", () 
     );
     assert.match(
         readFileSync("native/src/pal_ui_rml.cpp", "utf8"),
-        /std::string source\(ui_user_agent_css\)/,
+        /std::string user_agent\(ui_user_agent_css\)[\s\S]*?style_sheet->SetUserAgentOrigin\(\);\s*if \(author\)\s*style_sheet = style_sheet->CombineStyleSheetContainer\(\*author\);/,
     );
 });
 

@@ -89,7 +89,7 @@ interface GltfLoaderLoweredSegments {
     matrixCompose: string;
     /**
      * `gltf_rooted_world`, the left multiply by
-     * `src/loader-gltf/gltf-parser.ts#RH_TO_LH_ROOT` that parents every
+     * `src/loader-gltf/gltf-parser.ts#GLTF_ROOT` that parents every
      * hierarchy root.
      */
     rootedWorld: string;
@@ -707,26 +707,9 @@ ${options.cpuGeometry ? "    GltfCpuStreamCache cpu_stream_cache;" : ""}
                         : `unsigned_value(required(planned, "material"))`
                 };
             if (material_index >= materials.size()) throw std::runtime_error("Invalid glTF mesh material slot.");
-            const bool clockwise_front_face =
-                source_clockwise &&
-                materials[material_index].value <
-                    engine.materials.size() &&
-                ${recordAt("engine.materials", "materials[material_index]")}
-                    .double_sided;
             ModelGeometry geometry = take_prepared(&file.geometries, gltf_mesh_counter, [&] {
                 return decode_planned_primitive(buffer, container, views, accessors, mesh_plan, gltf_mesh_counter);
             });
-            // The winding swap is a triangle fact: a mirrored transform
-            // reverses a face's winding.
-            if (
-                geometry.topology == MeshTopology::triangles &&
-                source_clockwise &&
-                !clockwise_front_face) {
-                for (std::size_t index = 0; index < geometry.indices.size(); index += 3) {
-                    std::swap(geometry.indices[index + 1], geometry.indices[index + 2]);
-                }
-                geometry.source_indices_reversed = true;
-            }
             const std::uint32_t geometry_slot =
                 store_geometry_record(engine, std::move(geometry));
             MeshRecord record;
@@ -742,14 +725,16 @@ ${options.cpuGeometry ? `            record.cpu_streams = read_gltf_cpu_streams(
             // load-gltf.ts sets boundMin/boundMax on every primitive.
             record.has_bounds = true;
             record.material = materials[material_index];
-            // The mirrored-mesh watcher XORs the live world's handedness
-            // against this baseline; the loaded world already carries the
-            // root mirror, so the baseline is the loaded winding with that
-            // handedness taken back out.
+            // The primitive's winding mark (gltf-feature-primitive.ts
+            // stamps \`frontFace: "cw"\` on a mirrored primitive) over the
+            // file's own indices; each material family winds it as its
+            // pipeline states (\`render_pipeline_clockwise\`). The
+            // mirrored-mesh watcher XORs the live world's handedness against
+            // the baseline: the loaded world already carries the root mirror,
+            // so the baseline is the mark with that handedness taken back out.
             record.authored_clockwise_front_face =
-                clockwise_front_face != mirrored_world;
-            record.clockwise_front_face =
-                clockwise_front_face;
+                source_clockwise != mirrored_world;
+            record.clockwise_front_face = source_clockwise;
             const auto* visible_defined = optional(setup, "visibleDefined");
             if (!visible_defined || visible_defined->as_boolean())
                 record.visible = required(setup, "visible").as_boolean();${

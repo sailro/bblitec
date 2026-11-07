@@ -97,6 +97,11 @@ import { readCharacterProperty } from "./intrinsics/character-controller.js";
 import { readPhysicsProperty } from "./physics-surface.js";
 import { geometryEnumMember } from "./intrinsics/engine-options.js";
 import { VAT_BONE_CAPTURE_FIELDS } from "./intrinsics/vat.js";
+import {
+    SSAO_RECORD_FIELDS,
+    ssaoRecordCpp,
+    ssaoRecordOf,
+} from "./intrinsics/ssao-options.js";
 import type { PhysicsIntrinsicContext } from "./intrinsics/physics.js";
 import type { LoweringServices } from "./lowering-services.js";
 import {
@@ -127,6 +132,7 @@ import {
     valueForKind,
     type Feature,
     type GeometryOutputTaskManifest,
+    type SsaoTaskManifest,
     type GeometryTextureTypeName,
     type Value,
     type ValueKind,
@@ -4710,6 +4716,9 @@ export class PropertyAccessLowerer {
                 ...(owner.engineCpp ? { engineCpp: owner.engineCpp } : {}),
             };
         }
+        if (owner.ssaoTask) {
+            return this.readSsaoProperty(owner, owner.ssaoTask, expression);
+        }
         if (owner.kind === "task" && owner.screenSpaceTask) {
             // The pin publishes three targets on a screen-space task: its
             // output (the composite's, or the stable effect target when it
@@ -4747,6 +4756,58 @@ export class PropertyAccessLowerer {
             cpp: `bbl::effect_task_method(${this.context.requireEngine(owner, expression)}, ${owner.cpp}, ${dispose})`,
             dataType: { kind: "function", parameters: [], identity: true },
         };
+    }
+
+    /**
+     * An SSAO task's published records and the settings they hold, read live
+     * off the task the generated factory created (`SSAO_RECORD_FIELDS`).
+     */
+    private readSsaoProperty(
+        owner: Value,
+        manifest: SsaoTaskManifest,
+        expression: ts.PropertyAccessExpression,
+    ): Value | undefined {
+        const property = expression.name.text;
+        const record = ssaoRecordOf(owner);
+        if (!record) return undefined;
+        const engine = this.context.requireEngine(owner, expression);
+        const engineCpp = owner.engineCpp ? { engineCpp: owner.engineCpp } : {};
+        const native = ssaoRecordCpp(record, engine, owner.cpp);
+        const field = SSAO_RECORD_FIELDS[record][property];
+        if (field)
+            return { kind: field.kind, cpp: `${native}.${field.native}` };
+        if (record !== "task") return undefined;
+        if (property === "temporal") {
+            return {
+                kind: "task-record",
+                cpp: `bbl::SsaoTemporalRef{${owner.cpp}}`,
+                taskRecord: "temporal",
+                ssaoTask: manifest,
+                ...engineCpp,
+            };
+        }
+        if (property === "outputTexture") {
+            // The pin's output target aliases the texture its last pass
+            // writes, which the backend resolves per frame.
+            return {
+                kind: "render-texture",
+                cpp: `bbl::ssao_output_texture(${owner.cpp})`,
+                renderTextureSource: "task-output",
+                ...engineCpp,
+            };
+        }
+        if (property === "normalTexture") {
+            // The task's normal input, or null: the attachment it holds.
+            return {
+                kind: "render-texture",
+                cpp: `${native}.normal.value()`,
+                renderTextureSource: "geometry",
+                optionalStorageCpp: `${native}.normal`,
+                truthinessCpp: `${native}.normal.has_value()`,
+                ...engineCpp,
+            };
+        }
+        return undefined;
     }
 
     /**
@@ -4812,6 +4873,7 @@ export class PropertyAccessLowerer {
             kind: "render-texture",
             cpp: `bbl::geometry_task_texture(${owner.cpp}, bbl::GeometryTextureType::${geometryEnumMember(type)})`,
             renderTextureSource: "geometry",
+            geometryAttachment: type,
             ...engineCpp,
         };
     }

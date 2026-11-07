@@ -57,7 +57,7 @@ test("an element whose tag only run time knows becomes a surface in the Window r
 
 test("a surface program's primary scene keeps its direct pass", () => {
     // The renderer runs the surface scene's own graph after the primary
-    // scene's direct pass (`scene_runs_own_graph`), so the primary scene
+    // scene's direct pass (`scenes_record_after_root`), so the primary scene
     // pays no default render task.
     const result = compileSource(`
         import { createEngine, createSurface, createSceneContext, registerScene } from "@babylonjs/lite";

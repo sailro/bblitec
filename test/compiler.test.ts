@@ -5760,7 +5760,7 @@ test("compiles generated mesh data and the file-texture contract", () => {
     );
     assert.match(
         result.cpp,
-        /bbl::set_material_base_color_file\(v_engine, v_bblite_material_\d+, v_decalTexture\);/,
+        /bbl::set_pbr_texture\(v_engine, v_bblite_material_\d+, bbl::MaterialTextureSlot::base_color, v_decalTexture\);/,
     );
     assert.ok(
         result.manifest.assets.some((asset) =>
@@ -5898,7 +5898,10 @@ test("carries a base-color image's own encoding, either way", () => {
     );
     assert.match(load(""), /bbl::load_file_texture\([^\n]+, false, false\)/);
     for (const options of [", { srgb: true }", ""]) {
-        assert.match(load(options), /bbl::set_material_base_color_file\(/);
+        assert.match(
+            load(options),
+            /bbl::set_pbr_texture\([^;]*MaterialTextureSlot::base_color/,
+        );
     }
 });
 
@@ -5929,7 +5932,7 @@ test("compiles scene17's file ORM and matrix-constructor chain", () => {
     );
     assert.match(
         result.cpp,
-        /bbl::set_material_orm_file\(v_engine, v_bblite_material_\d+, v_ormTex\);/,
+        /bbl::set_pbr_texture\(v_engine, v_bblite_material_\d+, bbl::MaterialTextureSlot::orm, v_ormTex\);/,
     );
     assert.match(
         result.cpp,
@@ -5968,7 +5971,10 @@ test("binds an sRGB file texture in PBR's ORM slot through its own encoding", ()
         labDeployment,
     );
     assert.match(result.cpp, /bbl::load_file_texture\([^;]*, true, false\)/);
-    assert.match(result.cpp, /bbl::set_material_orm_file\(/);
+    assert.match(
+        result.cpp,
+        /bbl::set_pbr_texture\([^;]*MaterialTextureSlot::orm/,
+    );
 });
 
 test("reaches scene transmission only from the pin's transmission calls", () => {
@@ -9402,7 +9408,7 @@ test("folds a static CSS fragment array joined into retained UI cssText", () => 
 
     assert.match(
         result.cpp,
-        /position:absolute;top:16px;background-clip:border-box;[^"]*--bbl-background-color:rgba\(10,12,20,0\.75\)/,
+        /position:absolute;top:16px;background-clip:border-box;[^"]*background-color:rgba\(10,12,20,0\.75\)/,
     );
 });
 
@@ -9567,24 +9573,14 @@ test("resolves flex text wrappers through specificity, inline, and hover cascade
         projection.indexOf("std::string resolved_style_attribute"),
         projection.indexOf("void append_text_content"),
     );
-    assert.match(
-        resolver,
-        /resolved_style_attribute\([\s\S]*std::string\* resolved_display/,
-    );
     assert.match(resolver, /ui_style_rule_specificity\(rule\)/);
-    assert.match(
-        resolver,
-        /inline_specificity[\s\S]*consider_cascaded_declaration\(\s*display/,
-    );
-    assert.match(resolver, /\*resolved_display = display\.value/);
-    const wrapper = resolver.slice(
-        resolver.indexOf("bool text_needs_flex_wrapper"),
-    );
+    // Text wrapping follows the display RmlUi computes, re-projected when it moves.
+    const wrapper = cppFunction(projection, "bool text_needs_flex_wrapper(");
     assert.doesNotMatch(wrapper, /for_each_active_style_rule/);
-    assert.match(wrapper, /normalized_css_keyword\(resolved_display\)/);
+    assert.match(wrapper, /element\.GetComputedValues\(\)\.display\(\)/);
     assert.match(
-        projection,
-        /resolved_style_attribute\(handle, record, &resolved_display\)(?:(?!\n {4}void ).)*text_needs_flex_wrapper\(\s*resolved_display\)/s,
+        cppFunction(projection, "bool sync_text_wrappers("),
+        /update_element\(UiElementHandle\{index\}\)/,
     );
 });
 
@@ -10159,13 +10155,11 @@ test("resolves fixed-grid activation and alignment through the complete cascade"
     `);
     assert.match(aligned.cpp, /ui_add_id_style[^\n]*justify-content:end/);
 
-    const projection = palUiRmlSource;
-    const resolver = projection.slice(
-        projection.indexOf("std::string resolved_style_attribute"),
-        projection.indexOf("bool text_needs_flex_wrapper"),
+    // The grid's display is RmlUi's cascade, which text wrapping reads.
+    assert.match(
+        cppFunction(palUiRmlSource, "bool text_needs_flex_wrapper("),
+        /Rml::Style::Display::Grid/,
     );
-    assert.match(resolver, /CascadedUiDeclaration display/);
-    assert.match(resolver, /record\.style_properties\.find\("display"\)/);
 
     const inheritedAlignment = compileSource(`
         import { createEngine } from "@babylonjs/lite";
@@ -10643,8 +10637,12 @@ test("recomputes retained UI intrinsic width without overriding responsive width
         projection.indexOf("bool has_active_authored_width"),
         projection.indexOf("void render_canvas("),
     );
-    assert.match(intrinsic, /intrinsic_width_applied/);
-    assert.match(intrinsic, /RemoveProperty\("width"\)/);
+    // The pass's widths restore the element's own inline width when cleared.
+    assert.match(
+        intrinsic,
+        /intrinsic_width\.set\(\*projected\.element, Rml::PropertyId::Width, std::nullopt\)/,
+    );
+    assert.match(intrinsic, /intrinsic_width\.set_string\(/);
     assert.match(intrinsic, /has_active_authored_width/);
 });
 
@@ -10676,7 +10674,11 @@ test("switches synthetic intrinsic width with active hover width rules", () => {
         projection.indexOf("bool has_active_authored_width"),
         projection.indexOf("void render_canvas("),
     );
-    assert.match(intrinsic, /cascaded_declaration\(handle, record, "width"\)/);
+    // RmlUi's cascade, hover rules and CSS-wide keywords included, gives the width.
+    assert.match(
+        intrinsic,
+        /element\.GetLocalProperty\(Rml::PropertyId::Width\)/,
+    );
     // The element cascade reads the matching rules through the shared core.
     const cascade = cppFunction(
         projection,
@@ -11566,7 +11568,7 @@ test("refuses retained style properties outside the reviewed surface", () => {
     );
     assert.match(
         compileSource(withCss("background-size:cover;")).cpp,
-        /--bbl-background-size:cover/,
+        /bbl-background-size:cover/,
     );
     assert.match(
         compileSource(withCss("color:transparent;")).cpp,
@@ -11786,7 +11788,7 @@ test("lowers conditional retained UI gradients to RmlUi decorators", () => {
 
     assert.match(
         result.cpp,
-        /v_lit \? "[^"]*--bbl-background-color:transparent;--bbl-background-image:linear-gradient\(#ff8a5d,#ff4d4d\);"/,
+        /v_lit \? "[^"]*background-color:transparent;bbl-background-image:linear-gradient\(#ff8a5d,#ff4d4d\);"/,
     );
     assert.match(result.cpp, /background-color:rgba\(40,40,48,.7\)/);
 });
@@ -11812,9 +11814,9 @@ test("projects independently sized gradient layers into RmlUi decorators", () =>
 
     assert.match(
         result.cpp,
-        /--bbl-background-image:linear-gradient\(#fff,#fff\) padding-box \/ 2px 22px \/ 50% 50%,linear-gradient\(#fff,#fff\) padding-box \/ 22px 2px \/ 50% 50%/,
+        /bbl-background-image:linear-gradient\(#fff,#fff\) padding-box \/ 2px 22px \/ 50% 50%,linear-gradient\(#fff,#fff\) padding-box \/ 22px 2px \/ 50% 50%/,
     );
-    assert.doesNotMatch(result.cpp, /--bbl-background-image:[^";]*no-repeat/);
+    assert.doesNotMatch(result.cpp, /bbl-background-image:[^";]*no-repeat/);
     assert.doesNotMatch(result.cpp, /mix-blend-mode/);
 });
 
@@ -12101,7 +12103,7 @@ test("projects host page chrome without changing scene source", () => {
     assert.match(result.cpp, /ui_set_text[^\n]*"Keyboard help"/);
     assert.match(
         result.cpp,
-        /position:absolute;background-clip:border-box;[^"]*--bbl-background-color:rgba\(0,0,0,0\.5\)/,
+        /position:absolute;background-clip:border-box;[^"]*background-color:rgba\(0,0,0,0\.5\)/,
     );
     assert.match(result.cpp, /ui_append_to_root/);
 });
@@ -18221,6 +18223,7 @@ test("compiles Babylon Lite scene 146 geometry outputs and frame graph", () => {
                 "LINEAR_VELOCITY",
             ],
             emitColor: false,
+            velocityFormat: "rgba16float",
         },
     ]);
     assert.match(result.cpp, /bbl::create_geometry_renderer_task/);
@@ -20800,7 +20803,10 @@ test("fuses a mesh-material map/find and replaces an asset occlusion texture bef
         /v_material\.has_value\(\) && bbl::handle_at\([^;]+occlusion_texture\.has_image\(\)/,
     );
     assert.match(result.cpp, /optional_compare[^\n]*== "metalmat"/);
-    assert.match(result.cpp, /bbl::set_pbr_occlusion_solid_texture\(/);
+    assert.match(
+        result.cpp,
+        /bbl::set_pbr_texture\([^;]*MaterialTextureSlot::occlusion, bbl::solid_texture_file\(/,
+    );
     assert.doesNotMatch(result.cpp, /rebuild_material/);
 });
 

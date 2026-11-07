@@ -1,6 +1,7 @@
 import { EmissionSet } from "../emission-transaction.js";
 import { nativeTextureFormats } from "../../native-texture-format.js";
 import { sharedPinnedContext } from "../../lowering/context.js";
+import { geometryAttachmentDefaultFormat } from "../../pinned-shader-composer.js";
 import {
     nativeDepthCompare,
     pinnedDepthClearValue,
@@ -94,6 +95,29 @@ const geometryTextureFormat: TableOption = {
     name: "geometry texture format",
     label: "geometry_format",
 };
+
+/**
+ * A geometry description's `format`: the attachment's own pinned default
+ * (`GEOMETRY_TEXTURE_DESCRIPTIONS[type].defaultFormat`, which the pin's
+ * `format ?? defaultFormat` lands on either way) is the automatic format;
+ * any other is an override the native table carries or refuses.
+ */
+function compileGeometryTextureFormat(
+    context: Pick<LoweringServices, "compileStringLiteral" | "fail">,
+    type: GeometryTextureTypeName,
+    expression: ts.Expression,
+): string {
+    const table = {
+        ...geometryTextureFormat.table,
+        [geometryAttachmentDefaultFormat(type)]:
+            "bbl::GeometryTextureFormat::automatic",
+    };
+    return staticTableEntry(
+        context,
+        { ...geometryTextureFormat, table },
+        expression,
+    );
+}
 
 export interface EngineOptionContext
     extends
@@ -506,6 +530,7 @@ export function compileGeometryTaskOptions(
         );
     }
     const attachments: GeometryTextureTypeName[] = [];
+    let velocityFormat: string | undefined;
     const compiledDescriptions = descriptions.elements.map((element) => {
         const description = context.expectObjectLiteral(element);
         validateObjectProperties(
@@ -531,8 +556,13 @@ export function compileGeometryTaskOptions(
         attachments.push(type);
         const formatExpression = context.objectProperty(description, "format");
         const format = formatExpression
-            ? staticTableEntry(context, geometryTextureFormat, formatExpression)
+            ? compileGeometryTextureFormat(context, type, formatExpression)
             : "bbl::GeometryTextureFormat::automatic";
+        if (type === "LINEAR_VELOCITY") {
+            velocityFormat = formatExpression
+                ? context.compileStringLiteral(formatExpression)
+                : geometryAttachmentDefaultFormat(type);
+        }
         // An attachment's clear value is the pin's own, per lane
         // (`GEOMETRY_TEXTURE_DESCRIPTIONS`), and the runtime already carries
         // that table. A descriptor may restate it -- scene 148 spells out
@@ -583,13 +613,14 @@ export function compileGeometryTaskOptions(
         shaderIndex: context.sceneManifest.geometryOutputTasks.length,
         attachments,
         emitColor: target !== undefined,
+        ...(velocityFormat !== undefined ? { velocityFormat } : {}),
     };
     return {
         cpp: `bbl::GeometryTaskOptions{${context.cppString(
             nameExpression
                 ? context.compileStringLiteral(nameExpression)
                 : `geometry-${manifest.shaderIndex}`,
-        )}, ${manifest.shaderIndex}u, ${samplesExpression ? compilePositiveInteger(context, samplesExpression) : "1u"}, {${compiledDescriptions.join(", ")}}, ${target?.cpp ?? "bbl::RenderTargetHandle{}"}, ${clearColorExpression ? "true" : "false"}, ${clearColorExpression ? context.compileColor4(clearColorExpression) : "bbl::Color4{}"}}`,
+        )}, ${manifest.shaderIndex}u, ${samplesExpression ? compilePositiveInteger(context, samplesExpression) : "1u"}, {${compiledDescriptions.join(", ")}}, ${target?.cpp ?? "bbl::RenderTargetHandle{}"}, ${clearColorExpression ? "true" : "false"}, ${clearColorExpression ? context.compileColor4(clearColorExpression) : "bbl::Color4{}"}, {}}`,
         manifest,
     };
 }

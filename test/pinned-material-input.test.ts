@@ -307,6 +307,29 @@ test("occlusion becomes the ORM texture when there is no metallic-roughness imag
     assert.ok(uv2["occlusionTexture"]);
 });
 
+test("carries the ORM carrier the bent-normal detect reads", async () => {
+    const imageOf = gltfImageResolver({ textures: [{ source: 0 }] });
+    // Scene 230's material: one image is metallic-roughness and occlusion,
+    // so the ORM texture is the only occlusion carrier.
+    const shared = await pinnedMaterialInputFromGltf(
+        {
+            pbrMetallicRoughness: { metallicRoughnessTexture: { index: 0 } },
+            occlusionTexture: { index: 0 },
+        },
+        { imageOf },
+    );
+    assert.ok(shared["ormTexture"]);
+    assert.equal(shared["occlusionTexture"], undefined);
+    const { PBR_HAS_ENV } = await importPinnedModule<{ PBR_HAS_ENV: number }>(
+        "material/pbr/pbr-flag-bits.js",
+    );
+    const bent = await composePinnedPbrVariant(
+        { ...shared, bentNormalTexture: {} },
+        { sceneFeatures: PBR_HAS_ENV },
+    );
+    assert.match(bent.fragmentWgsl, /var bentNormalTexture_:texture_2d<f32>/);
+});
+
 test("alternate texture sources preserve the pin's image sharing and occlusion carriers", async () => {
     const imageOf = gltfImageResolver({
         textures: [

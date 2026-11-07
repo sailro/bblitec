@@ -4,12 +4,17 @@ import {
 } from "./ui-gradient-background.js";
 
 /**
- * The CSS-wide keyword `value` is, lowercased. The PAL resolves it on every
- * background longhand (`pal_ui_background.hpp` `ui_css_wide_keyword`).
+ * The CSS-wide keyword `value` is, lowercased, revert-layer as revert (no
+ * cascade layers). RmlUi's cascade resolves it on every property (patch 0066
+ * `PropertySpecification::ParseCssWideKeyword`).
  */
 export function cssWideKeyword(value: string): string | undefined {
     const keyword = value.trim().toLowerCase();
-    return keyword === "inherit" || keyword === "initial" || keyword === "unset"
+    if (keyword === "revert-layer") return "revert";
+    return keyword === "inherit" ||
+        keyword === "initial" ||
+        keyword === "unset" ||
+        keyword === "revert"
         ? keyword
         : undefined;
 }
@@ -60,21 +65,11 @@ export function uiBackgroundImageSource(value: string): string | undefined {
 }
 
 /**
- * The PAL property a background longhand declaration writes: the image
- * longhands and the colour are always the PAL's, the clip when its value is a
- * CSS-wide keyword RmlUi cannot parse.
+ * The native property a declaration writes: the image longhands are the
+ * PAL's registered `bbl-` ones, which it paints as a decorator.
  */
-export function nativeUiImageProperty(
-    property: string,
-    value?: string,
-): string {
-    if (
-        supportedUiImageBackground(property, "inherit") !== undefined ||
-        property === "background-color" ||
-        (property === "background-clip" &&
-            value !== undefined &&
-            cssWideKeyword(value) !== undefined)
-    )
-        return `--bbl-${property}`;
+export function nativeUiImageProperty(property: string): string {
+    if (supportedUiImageBackground(property, "inherit") !== undefined)
+        return `bbl-${property}`;
     return property === "transform" ? "bbl-transform" : property;
 }

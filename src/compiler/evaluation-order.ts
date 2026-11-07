@@ -45,6 +45,7 @@ import {
     accessedPropertySymbol,
 } from "./symbols.js";
 import { doubleCpp } from "../cpp-literals.js";
+import { foldNumericBinary } from "../lowering/pinned-operators.js";
 import type { LoweringServices } from "./lowering-services.js";
 import { readsNativeStorage, snapshotReadCpp, type Value } from "./types.js";
 import { isRebound } from "./binding-rebinds.js";
@@ -1209,6 +1210,17 @@ export class EvaluationOrder {
                         valueKindOf(this.checker.getTypeAtLocation(element)) ===
                             "number",
                 )
+            );
+        }
+        // `new Array(n)` throws only for a length no array can have.
+        if (owner.name.text === "ArrayConstructor" && args.length <= 1) {
+            if (args.length === 0) return true;
+            const length = literalNumber(args[0]!);
+            return (
+                length !== undefined &&
+                Number.isInteger(length) &&
+                length >= 0 &&
+                length <= 2 ** 32 - 1
             );
         }
         if (
@@ -2398,4 +2410,16 @@ export function readScalarOperand(
         nativeCaptures: [context.registerNativeConstBinding(name)],
         nativeBinding: true,
     };
+}
+
+/** A number literal, or arithmetic over number literals, folded. */
+function literalNumber(expression: ts.Expression): number | undefined {
+    const node = unwrapExpression(expression);
+    if (ts.isNumericLiteral(node)) return Number(node.text);
+    if (!ts.isBinaryExpression(node)) return undefined;
+    const left = literalNumber(node.left);
+    const right = literalNumber(node.right);
+    return left === undefined || right === undefined
+        ? undefined
+        : foldNumericBinary(node.operatorToken.kind, left, right);
 }

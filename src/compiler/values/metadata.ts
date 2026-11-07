@@ -78,7 +78,11 @@ const resourceMetadataFields = {
         "pixelsTexture",
         "isDepthTexture",
     ],
-    "render-texture": ["isDepthTexture", "renderTextureSource"],
+    "render-texture": [
+        "isDepthTexture",
+        "renderTextureSource",
+        "geometryAttachment",
+    ],
     "render-target-texture": [
         "isDepthTexture",
         "renderTextureSource",
@@ -159,8 +163,11 @@ const resourceMetadataFields = {
         "postProcessComposite",
         "renderTask",
         "effectTask",
+        "copyTask",
         "screenSpaceTask",
+        "ssaoTask",
     ],
+    "task-record": ["ssaoTask", "taskRecord"],
     "render-target": ["renderTargetSignature"],
     camera: ["cameraProgram", "cameraKind"],
     scene: [

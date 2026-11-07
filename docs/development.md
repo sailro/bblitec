@@ -291,7 +291,16 @@ generation, `npm run corpus:verify` and validation. Preview with
 - Diff the upstream `lab/` inventory between the two commits; new scenes and demos join the catalog's `staged` list until
   registered.
 - Lab files the pin fetches instead of committing come from its corpus `tooling` scripts (`src/pinned-lab-materializers.ts`).
+- Package modules the pin emits empty (types only) are corpus `packageSources` rows, read as pinned sources.
+- A vendored package compiled as program code needs its exact version as a devDependency (`navcat`).
 - Error codes (`#N`) are numbered by the package build; tests look them up by message (`test/pinned-errors.ts`).
+- The pin's `#` imports resolve per bundler condition (`#coordinate-system`: left-handed by default, right-handed under
+  `babylon-lite-rh`). `src/pinned-build-conditions.ts` selects them as an application's bundler does: lowered sources
+  fold the selected constants, executed modules and served pages import the selected files. A registry entry's
+  `conditions` names them per program; a compiler process builds under Node's own `--conditions` (flags or
+  `NODE_OPTIONS`), and `bblitec --condition <name>` starts it under them.
+- Corpus scene rows carry the pin's `scene-config.json` `"rightHanded": true` (checked by `corpus:verify`); each
+  flagged row registers as the right-handed twin of the scene its file imports.
 
 ## API coverage
 

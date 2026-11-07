@@ -79,21 +79,23 @@ test("reads closed descriptor helpers with scalar arguments and local bindings",
     }
 });
 
-test("refuses recursive and asynchronous descriptor helpers", () => {
-    for (const [prelude, call, expected] of [
-        [
-            `function uniforms(): readonly string[] { return uniforms(); }`,
-            "uniforms()",
-            /Builder 'uniforms' threw at generation: Maximum call stack size exceeded/,
-        ],
-        [
-            `async function uniforms() { return ["worldViewProjection"] as const; }`,
-            "await uniforms()",
-            /Builder 'uniforms' returned a value that is not plain data/,
-        ],
-    ] as const) {
-        assert.throws(() => program(prelude, `uniforms: ${call},`), expected);
-    }
+test("refuses a recursive descriptor helper", () => {
+    assert.throws(
+        () =>
+            program(
+                `function uniforms(): readonly string[] { return uniforms(); }`,
+                "uniforms: uniforms(),",
+            ),
+        /Builder 'uniforms' threw at generation: Maximum call stack size exceeded/,
+    );
+});
+
+test("an awaited asynchronous descriptor helper settles at generation", () => {
+    const compiled = program(
+        `async function uniforms() { return ["worldViewProjection"] as const; }`,
+        "uniforms: await uniforms(),",
+    );
+    assert.deepEqual(compiled.uniforms, ["worldViewProjection"]);
 });
 
 test("reads option-record spreads generation settles, the later write winning", () => {

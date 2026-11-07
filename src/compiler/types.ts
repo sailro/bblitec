@@ -263,6 +263,7 @@ export interface CompileManifest {
     postProcessTasks: PostProcessTaskManifest[];
     postProcessComposites: PostProcessCompositeManifest[];
     screenSpaceTasks: ScreenSpaceTaskManifest[];
+    ssaoTasks: SsaoTaskManifest[];
     adaptations: CompileAdaptation[];
     scenePbrMaterials: ScenePbrMaterialManifest[];
     /**
@@ -342,6 +343,10 @@ export interface CompileManifest {
     /** A runtime handle collection may mark imported or otherwise dynamic
      *  meshes as receivers, so composition must retain both receiver states. */
     dynamicShadowReceivers: boolean;
+    /** The `sceneMeshes` entries a `setMeshOpacity` call can reach. */
+    meshOpacityMeshes: number[];
+    /** A `setMeshOpacity` target generation cannot name: any mesh. */
+    dynamicMeshOpacity: boolean;
     /**
      * The clustered light field this scene added, if it added one.
      *
@@ -547,7 +552,7 @@ export interface SceneMeshManifest {
      * collection loop: `getContainerMeshes(a)` bound to a variable, or
      * `a.meshes ?? []`, iterate the same handles without that proof.
      */
-    assetWholeMeshList?: CompileAsset;
+    assetWholeMeshList?: AssetMeshWalk;
     /** For `from-data` meshes: which optional streams the call passes, in
      *  the pin's own argument order (uvs, uv2s, tangents, colors). */
     hasUv2?: boolean;
@@ -736,7 +741,12 @@ export interface ScenePbrMetallicReflectanceManifest {
  */
 export type PbrStateTarget =
     | { readonly kind: "scene"; readonly index: number }
-    | { readonly kind: "asset"; readonly output: string }
+    | {
+          readonly kind: "asset";
+          readonly output: string;
+          /** The one container reached, when generation knows it. */
+          readonly container?: number;
+      }
     | { readonly kind: "assets" };
 
 /** The composition-relevant values writes give the materials of one target. */
@@ -755,6 +765,12 @@ export interface PbrMaterialStateWrites {
     readonly alphaBelowOne: readonly boolean[];
     /** Whether a `baseColorFactor` is written (its presence composes). */
     readonly baseColorFactor: boolean;
+    /**
+     * Whether a `bentNormalTexture` is written (its presence composes under
+     * `enableBentNormals`): `definite` when every material of the target
+     * holds one from its first build.
+     */
+    readonly bentNormalTexture: boolean | "definite";
     /** The plugin lists written, by PBR plugin signature (from one). */
     readonly pluginSignatures: readonly number[];
     /** The plugins appended to the list a material holds, by PBR plugin id. */
@@ -876,6 +892,12 @@ export interface ScenePbrMaterialManifest {
      * `pow(baseColorSample.rgb, 2.2)`.
      */
     readonly gammaAlbedo?: boolean;
+    /**
+     * Stamped by the pin's `setPbrAlphaCutoff`: `mat._alphaCutOff`, whose
+     * positive value the alpha-test extension's `detect` turns into
+     * `PBR_HAS_ALPHA_TEST`.
+     */
+    readonly alphaCutOff?: number;
     readonly shadowOnly?: {
         color: readonly [number, number, number];
         opacity: number;
@@ -1170,6 +1192,19 @@ export interface HandleCollectionInfo {
     asset?: CompileAsset;
 }
 
+/** A proven whole-list walk over one container's renderables. */
+export interface AssetMeshWalk {
+    readonly asset: CompileAsset;
+    /** The container among its document's, when its load is definite. */
+    readonly container?: number;
+    /**
+     * The walk's body when the walk itself definitely runs: a statement
+     * directly in it, with nothing that skips an element, runs for every
+     * renderable.
+     */
+    readonly definiteBody?: ts.Statement;
+}
+
 export interface CompileAsset {
     /** Present only for an explicitly selected, verified device atlas bundle. */
     spriteAtlasProducer?: import("../sprite-atlas-bundle.js").SpriteAtlasProvenance;
@@ -1394,6 +1429,10 @@ export interface GeometryOutputTaskManifest {
     shaderIndex: number;
     attachments: GeometryTextureTypeName[];
     emitColor: boolean;
+    /** The LINEAR_VELOCITY attachment's format, when the task has one. */
+    velocityFormat?: string;
+    /** `enableGeometryVelocity`'s contract, when the task reached it. */
+    velocity?: { previousDepth: boolean };
 }
 
 /**
@@ -1494,6 +1533,42 @@ export interface ScreenSpaceTaskManifest {
     /** Whether the scene named a depth source apart from the colour source. */
     hasDepthTexture: boolean;
 }
+
+/**
+ * One reached `createSsaoTask` task, in reach order. Composition runs the
+ * pinned factory and its reached enablers over these settings.
+ */
+export interface SsaoTaskManifest {
+    taskIndex: number;
+    name?: string;
+    /** Every setting the scene wrote, statically resolved and forwarded whole. */
+    options: Record<string, PostProcessOptionValue>;
+    /** The normal input's geometry attachment, when one is supplied at creation or later. */
+    normalAttachment?: GeometryTextureTypeName;
+    /** The normal input is supplied at creation (a runtime choice records it live). */
+    initialNormal: boolean;
+    /** `temporal.velocityTexture`'s geometry attachment and `velocityHasPreviousDepth`. */
+    velocity?: { attachment: GeometryTextureTypeName; previousDepth: boolean };
+    /** `enableSsaoHalfResolution` reaches the task. */
+    halfResolution: boolean;
+    /** `enableSsaoMotionPruning` reaches the task. */
+    motionPruning: boolean;
+    /** The program-selecting settings the program writes after creation. */
+    live: SsaoLiveSetting[];
+}
+
+/**
+ * A setting the program writes after creation whose every value selects
+ * other SSAO programs or passes (`pinned-ssao.ts` composes each): the quality
+ * preset, the normal input's presence, temporal reconstruction, pruning.
+ */
+export const SSAO_LIVE_SETTINGS = [
+    "quality",
+    "normal",
+    "temporal",
+    "pruning",
+] as const;
+export type SsaoLiveSetting = (typeof SSAO_LIVE_SETTINGS)[number];
 
 export interface CompileResult {
     /** Standalone inspection/fixture projection; generation writes cppFiles. */
@@ -1722,6 +1797,12 @@ export type ValueKind =
     | "compute-dispatch"
     | "compute-task"
     | "compute-one-shot"
+    /**
+     * A record a pinned task publishes beside its own settings, by its task:
+     * `taskRecord` names which (a `createSsaoTask` task's `temporal`, the
+     * settings an enabler returns).
+     */
+    | "task-record"
     | "uniform-buffer"
     | "compute-uniform-arena"
     | "compute-uniform-writer"
@@ -2725,7 +2806,7 @@ export interface ValueFields {
      * collection loop: `getContainerMeshes(a)` bound to a variable, or
      * `a.meshes ?? []`, iterate the same handles without that proof.
      */
-    assetWholeMeshList?: CompileAsset;
+    assetWholeMeshList?: AssetMeshWalk;
     /**
      * A `createStandardMaterial` result, which is the family question
      * `material.plugins` has to answer: the pin's Standard plugin bridge
@@ -2802,6 +2883,11 @@ export interface ValueFields {
      * `container.materialVariants`: through the object, not by name.
      */
     asset?: CompileAsset;
+    /**
+     * Which of its document's containers a definite `loadGltf` made, in
+     * load order: the composed rows follow it (`CompileAsset.containerCount`).
+     */
+    assetContainer?: number;
     /**
      * Compile-time state of one loaded glTF container's synthetic root.
      *
@@ -2953,6 +3039,8 @@ export interface ValueFields {
         readonly bound?: true;
     };
     geometryTask?: GeometryOutputTaskManifest;
+    /** A geometry task attachment's pinned type, on the render texture naming it. */
+    geometryAttachment?: GeometryTextureTypeName;
     /**
      * Set on a `render-texture` or `render-target-texture` whose texture is
      * a depth attachment rather than a colour one. Two things make one: a
@@ -2971,7 +3059,12 @@ export interface ValueFields {
      * than leaving a backend to fail a binding at run time.
      */
     renderTextureSource?:
-        "render-target" | "geometry" | "geometry-output" | "geometry-depth";
+        | "render-target"
+        | "geometry"
+        | "geometry-output"
+        | "geometry-depth"
+        /** A texture a task publishes (an SSAO task's `outputTexture`). */
+        | "task-output";
     /**
      * Which post-process pass a `task` value names. `outputTexture` reads it
      * to resolve the internal target the pin's `prepareOutputTarget` creates,
@@ -2989,6 +3082,8 @@ export interface ValueFields {
     renderTask?: true;
     /** Proven `createEffectRenderTask` result. */
     effectTask?: true;
+    /** Proven `createCopyToTextureTask` result. */
+    copyTask?: true;
     /** Proven target descriptor retained by aliases for pass-signature admission. */
     renderTargetSignature?: {
         readonly surfaceFormat: boolean;
@@ -3002,6 +3097,13 @@ export interface ValueFields {
      * settings are live record fields a scene may write.
      */
     screenSpaceTask?: ScreenSpaceTaskManifest;
+    /**
+     * Set when a `task` or `task-record` value names a `createSsaoTask`
+     * task, or a record it publishes.
+     */
+    ssaoTask?: SsaoTaskManifest;
+    /** Which record a `task-record` value names. */
+    taskRecord?: "temporal" | "half-resolution" | "motion-pruning";
     lightKind?: LightKind;
     /**
      * A camera's own construction, as static numbers, and the scene's
@@ -3198,7 +3300,8 @@ export interface ValueFields {
         readonly normalsCpp: string;
         readonly vertexCountCpp: string;
         readonly weightCpp: string;
-        readonly meshCpp?: string;
+        /** The mesh the data is attached to, which a weights update names. */
+        readonly mesh?: Value;
     };
 }
 
@@ -3322,8 +3425,12 @@ export type Feature =
     | "material:sheen-albedo-scaling"
     | "material:clearcoat-f0-remap"
     | "material:pbr-gamma-albedo"
+    | "material:pbr-alpha-cutoff"
+    // `createPbrMaterial({ baseColorTexture })` over a pixels texture.
     | "material:iridescence"
     | "material:lightmap"
+    // `enableBentNormals`: the IBL extension's bent-normal arm.
+    | "material:bent-normal"
     | "material:local-cubemap"
     | "renderer:surface"
     | "material:anisotropy"
@@ -3377,6 +3484,8 @@ export type Feature =
     | "mesh:clone"
     | "mesh:geometry-access"
     | "mesh:visible"
+    // `setMeshOpacity`/`getMeshOpacity` (src/mesh/opacity/).
+    | "mesh:opacity"
     | "mesh:pickable"
     // Baked vertex animation. `bakeVat` is the pin's own opt-in trigger --
     // the whole subsystem is a dynamic-import chunk behind it -- and the
@@ -3432,6 +3541,8 @@ export type Feature =
     | "physics:thin-instances"
     | "scene:remove"
     | "scene:node-transforms"
+    // `src/scene/overlay-scene.ts`: scenes that composite over a base scene.
+    | "scene:overlay"
     // `src/math/normalize-vec3.ts`, which a scene calls directly and the
     // pin's detailed picking imports. Its own row because the header
     // carrying the translated declaration is emitted only where one of the
@@ -3557,12 +3668,22 @@ export type Feature =
     | "renderer:geometry-output"
     | "renderer:post-process"
     /**
-     * The pin's screen-space contact-shadow and global-illumination tasks:
-     * two dedicated pipelines over a depth-only view plus the ordinary
-     * post-process passes they build, which is why reaching one also reaches
-     * `renderer:post-process`.
+     * The pin's screen-space contact-shadow, global-illumination and
+     * ambient-occlusion tasks: dedicated pipelines over a depth-only view
+     * plus the ordinary post-process passes they build, which is why
+     * reaching one also reaches `renderer:post-process`.
      */
     | "renderer:screen-space"
+    /**
+     * `createSsaoTask`: XeGTAO estimation and temporal reconstruction as the
+     * pin's own compute and render passes over its owned textures.
+     */
+    | "renderer:ssao"
+    /**
+     * `enableGeometryVelocity`: per-mesh previous-world and previous-pose
+     * velocity in a geometry task's PBR views.
+     */
+    | "renderer:geometry-velocity"
     /**
      * A glTF asset carries `KHR_interactivity` graphs: the pin's flow-graph
      * runtime, lowered per graph from its block definitions, plus the scene

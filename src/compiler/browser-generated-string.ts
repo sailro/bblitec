@@ -176,6 +176,7 @@ export function cachedBrowserGeneratedString(
             version: "1",
             module: moduleIdentity(import.meta.url),
             browser: true,
+            buildConditions: false,
             parameters: {
                 functionName,
                 arguments: argumentsText,

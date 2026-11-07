@@ -39,7 +39,10 @@ export function lowerRenderTaskDisposal(context: LoweringContext): string {
             return;
         }
         task._disposed = true;
-        const pending = task._pendingMeshes;
+        if (drawBindingLifecycle) {
+            drawBindingLifecycle._retire([task._opaqueBindings, task._directBindings, task._transparentBindings]);
+        }
+        const pending = (task as RenderTask)._pendingMeshes;
         if (pending) {
             pending.length = 0;
         }
@@ -124,6 +127,9 @@ void dispose_render_task(Engine& engine, TaskHandle handle) {
         dispose_render_target(engine, task.render.target);
         dispose_render_target(engine, task.render.resolve_target);
     }
+    // \`drawBindingLifecycle\`, which \`enablePbrSsao\` installs, retires the
+    // task's draw bindings and the texture leases they hold; a backend's
+    // groups belong to its mesh draw states and lease nothing.
     // \`config.depth\` is only a geometry task's eager depth, which
     // disposeRenderTarget skips. No native target signature installs the
     // \`_batchState\` collector. A backend keeps the task's pass block

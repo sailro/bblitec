@@ -148,8 +148,10 @@ export class AssetRegistry {
      * record by `containerCount`. Contiguous repeats therefore preserve
      * A,A,B,B exactly, while an interleaved repeat such as A,B,A would be
      * emitted as A,A,B; such a program profiles its containers instead.
+     * Returns the container's place among its document's when the load is
+     * definite.
      */
-    public recordGltfContainerLoad(asset: CompileAsset): void {
+    public recordGltfContainerLoad(asset: CompileAsset): number | undefined {
         if (
             (asset.containerCount ?? 0) > 0 &&
             this.lastGltfContainerAsset !== asset
@@ -164,6 +166,11 @@ export class AssetRegistry {
         if (this.context.hasFeature("loader:gltf-cameras"))
             writable(asset).gltfCameras = true;
         this.lastGltfContainerAsset = asset;
+        // A load in runtime control flow can run any number of times.
+        return this.context.runtimeControlFlowDepth === 0 &&
+            this.context.definiteCollectionMutation()
+            ? asset.containerCount! - 1
+            : undefined;
     }
 
     /**

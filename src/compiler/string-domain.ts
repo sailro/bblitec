@@ -33,6 +33,7 @@ import {
     objectLiteralMembers,
     testsTruthinessOnly,
     functionOfDeclaration,
+    hasExportModifier,
     isSupportedFunction,
     type SupportedFunction,
     variableKind,
@@ -505,12 +506,7 @@ function mapRegistry(
     )
         return undefined;
     const statement = declaration.parent.parent;
-    if (
-        ts.isVariableStatement(statement) &&
-        statement.modifiers?.some(
-            (modifier) => modifier.kind === ts.SyntaxKind.ExportKeyword,
-        )
-    )
+    if (ts.isVariableStatement(statement) && hasExportModifier(statement))
         return undefined;
     const symbol = resolvedSymbol(checker, declaration.name);
     if (!symbol) return undefined;

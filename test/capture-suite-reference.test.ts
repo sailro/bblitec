@@ -260,6 +260,43 @@ test("a canvas-only screenshot keeps the host page's primary canvas in its wrapp
     }
 });
 
+// A module worker never sees its document's import map: the server resolves
+// the pinned package's own `#` imports into every module it serves.
+test("served pinned package modules resolve their # imports for every realm", async () => {
+    for (const [conditions, target] of [
+        [undefined, "coordinate-system.js"],
+        [["babylon-lite-rh"], "coordinate-system-rh.js"],
+    ] as const) {
+        const server = createSuiteSceneServer("export {};\n", {
+            ...(conditions ? { conditions } : {}),
+        });
+        try {
+            await new Promise<void>((done) =>
+                server.listen(0, "127.0.0.1", done),
+            );
+            const address = server.address();
+            assert.ok(address && typeof address !== "string");
+            const origin = `http://127.0.0.1:${address.port}`;
+            const module = await (
+                await fetch(
+                    `${origin}/node_modules/@babylonjs/lite/lib/camera/arc-rotate.js`,
+                )
+            ).text();
+            assert.doesNotMatch(module, /["']#coordinate-system["']/);
+            assert.match(
+                module,
+                new RegExp(
+                    `["']/node_modules/@babylonjs/lite/lib/engine/${regexText(target)}["']`,
+                ),
+            );
+            const html = await (await fetch(`${origin}/scene.html`)).text();
+            assert.doesNotMatch(html, /importmap/);
+        } finally {
+            await new Promise<void>((done) => server.close(() => done()));
+        }
+    }
+});
+
 test("a host page's inline loader imports the served scene module", async () => {
     const server = createSuiteSceneServer("export {};\n", {
         sourcePath: "examples/regression-host-page/src/main.ts",
@@ -293,7 +330,10 @@ test("a page outside the repository is served from its site root and public dire
         resolve(site, "page.html"),
         '<!doctype html><html><head></head><body><canvas id="c"></canvas><script type="module">await import("/src/main.ts");</script></body></html>\n',
     );
-    writeFileSync(resolve(site, "src/main.ts"), 'import "./dep";\n');
+    writeFileSync(
+        resolve(site, "src/main.ts"),
+        'import "./dep";\nexport {};\n',
+    );
     writeFileSync(
         resolve(site, "src/dep.ts"),
         "export const value: number = 1;\n",
@@ -340,7 +380,7 @@ test("external TypeScript entries and relative imports use the effective source 
     const site = mkdtempSync(resolve(tmpdir(), "bblite-source-"));
     mkdirSync(resolve(site, "src"));
     const source = resolve(site, "src/main.ts");
-    writeFileSync(source, 'import "./dep.js";');
+    writeFileSync(source, 'import "./dep.js";\nexport {};');
     writeFileSync(
         resolve(site, "src/dep.ts"),
         "export const value: number = 2;",
@@ -626,12 +666,15 @@ test("serves entry modules from their source-relative URL", async () => {
     const entry = resolve(root, "nested", "entry.ts");
     const helper = resolve(root, "nested", "helper.ts");
     mkdirSync(resolve(root, "nested"));
-    writeFileSync(entry, 'import "./helper.js";\n');
+    writeFileSync(entry, 'import "./helper.js";\nexport {};\n');
     writeFileSync(helper, "export const value: number = 1;\n");
 
-    const server = createSuiteSceneServer('import "./helper.js";\n', {
-        sourcePath: entry,
-    });
+    const server = createSuiteSceneServer(
+        'import "./helper.js";\nexport {};\n',
+        {
+            sourcePath: entry,
+        },
+    );
     try {
         await new Promise<void>((done) => server.listen(0, "127.0.0.1", done));
         const address = server.address();

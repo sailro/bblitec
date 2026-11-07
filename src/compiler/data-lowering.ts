@@ -169,11 +169,7 @@ import {
     recordFieldIsWritten,
 } from "./record-observations.js";
 import { sceneRelativeSourceLabel } from "../source-location.js";
-import {
-    notJson,
-    staticJsonValue,
-    staticNumberValue,
-} from "./option-helpers.js";
+import { staticJsonValue, staticNumberValue } from "./option-helpers.js";
 import {
     isObjectIdentityFunction,
     numberFromOptionalCpp,
@@ -291,6 +287,7 @@ import {
     isMemberAccess,
     localCallback,
     type LocalCallback,
+    notJson,
 } from "./syntax.js";
 import {
     namespaceMemberName,
@@ -1834,15 +1831,20 @@ export class DataLowerer {
                     `${label} spread lanes past its parameters require a numeric tuple.`,
                 );
             const argumentsCpp = leading.map((argument, index) => {
+                const boundary = this.context.nativeBindingCheckpoint();
+                const value = this.compileForSink(
+                    argument,
+                    functionType.parameters[index]!,
+                );
                 const name =
                     this.context.allocateTemporaryCppName("call_argument");
                 this.context.emit({
                     kind: "declaration",
                     type: "const auto",
                     name,
-                    initializer: this.compileForSink(
-                        argument,
-                        functionType.parameters[index]!,
+                    initializer: this.context.takeNativeTemporary(
+                        value,
+                        boundary,
                     ),
                 });
                 return name;
@@ -1958,18 +1960,24 @@ export class DataLowerer {
                 break;
             }
             if (argument) {
+                const boundary = this.context.nativeBindingCheckpoint();
                 const value = this.compileForSink(argument, parameter);
                 if (
                     functionType.restParameter !== undefined ||
                     ordered[sourceIndex]
                 ) {
+                    // A temporary this argument created is its own: the
+                    // snapshot takes it rather than copying it.
                     const name =
                         this.context.allocateTemporaryCppName("call_argument");
                     this.context.emit({
                         kind: "declaration",
                         type: "const auto",
                         name,
-                        initializer: value,
+                        initializer: this.context.takeNativeTemporary(
+                            value,
+                            boundary,
+                        ),
                     });
                     argumentsCpp.push(name);
                 } else argumentsCpp.push(value);
@@ -6625,10 +6633,24 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             );
         }
         if (dataType.kind === "map") {
-            const key = this.compileForSink(
-                access.argumentExpression,
-                dataType.key,
-            );
+            // A number-keyed dictionary read by property name (a `for...in`
+            // key) finds the number that name spells.
+            const key =
+                dataType.dictionary &&
+                dataType.key.kind === "number" &&
+                valueKindOf(
+                    this.context.checker.getTypeAtLocation(
+                        access.argumentExpression,
+                    ),
+                ) === "string"
+                    ? `bbl::js::number_property_key(${this.compileForSink(
+                          access.argumentExpression,
+                          { kind: "string" },
+                      )})`
+                    : this.compileForSink(
+                          access.argumentExpression,
+                          dataType.key,
+                      );
             return this.mapPropertyValue(owner.cpp, key, dataType.value);
         }
         if (dataType.kind === "enummap") {

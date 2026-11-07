@@ -106,7 +106,6 @@ static void recover_retained_mesh(Engine& engine, MeshHandle mesh) {
     replacement.attribute_capacities = recovered_mesh_attribute_capacities(
         static_cast<double>(retained.positions.size()), static_cast<double>(retained.normals.size()),
         ${["uvs", "uvs2", "tangents", "colors"].map((stream) => `retained.${stream} ? std::optional<double>{static_cast<double>(retained.${stream}.size())} : std::nullopt`).join(",\n        ")});
-    replacement.source_indices_reversed = previous.source_indices_reversed;
     replacement.morph_positions = previous.morph_positions;
     replacement.morph_bounds = previous.morph_bounds;
     replacement.morph_normals = previous.morph_normals;
@@ -120,7 +119,7 @@ static void recover_retained_mesh(Engine& engine, MeshHandle mesh) {
         retained.uvs2 ? retained.uvs2.copy() : std::vector<float>{},
         retained.tangents ? retained.tangents.copy() : std::vector<float>{},
         retained.colors ? retained.colors.copy() : std::vector<float>{});
-    replacement.indices = retained.indices.copy_raw();
+    replacement.indices = retained.indices.copy();
 ${writes.join("\n")}
     replacement.cpu_tangents = replacement.has_tangents;
     replacement.cpu_colors = replacement.has_vertex_colors;

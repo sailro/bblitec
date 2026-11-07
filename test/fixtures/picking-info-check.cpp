@@ -34,7 +34,8 @@ Scene create_scene_context(Engine& engine) {
     return scene;
 }
 // Graphics factories expose only engine/scene association at this seam.
-UtilityLayerHandle create_utility_layer(Engine& engine, Scene&) {
+UtilityLayerHandle create_utility_layer(Scene& main_scene) {
+    Engine& engine = *main_scene.engine;
     auto layer = std::make_unique<UtilityLayerRecord>();
     layer->scene = create_scene_context(engine);
     const auto index = static_cast<std::uint32_t>(engine.utility_layers.size());

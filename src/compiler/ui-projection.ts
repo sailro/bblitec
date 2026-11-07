@@ -2559,6 +2559,8 @@ export class UiProjection {
                     );
                 return;
             }
+            // RmlUi's cascade resolves the CSS-wide keywords (patch 0066).
+            const keyword = cssWideKeyword(literalValue);
             if (property === "accent-color") {
                 if (!UiProjection.UI_ACCENT_COLOR.test(literalValue))
                     this.uiStyleRefusal(
@@ -2697,7 +2699,11 @@ export class UiProjection {
                         "only a nonnegative finite number or percentage, literal or through var() with an optional literal fallback, is represented",
                     );
             }
-            if (supportedUiLayoutValue(property, literalValue) === false) {
+            // RmlUi's cascade resolves the layout properties' CSS-wide keywords.
+            if (
+                supportedUiLayoutValue(property, literalValue) === false &&
+                keyword === undefined
+            ) {
                 this.uiStyleRefusal(
                     site,
                     property,
@@ -3036,7 +3042,7 @@ export class UiProjection {
         if (cssName === "webkit-appearance" || cssName === "-webkit-appearance")
             return "appearance";
         return cssName === "background"
-            ? "--bbl-background-color"
+            ? "background-color"
             : cssName === "word-wrap"
               ? "overflow-wrap"
               : nativeUiImageProperty(cssName);
@@ -3299,11 +3305,9 @@ export class UiProjection {
         value = authoredDeclarations.join(";");
         for (const declaration of customDeclarations) {
             const colon = declaration.indexOf(":");
-            this.refuseUnresolvableMath(
-                declaration.slice(0, colon).trim(),
-                declaration.slice(colon + 1).toLowerCase(),
-                site,
-            );
+            const property = declaration.slice(0, colon).trim();
+            const literal = declaration.slice(colon + 1).toLowerCase();
+            this.refuseUnresolvableMath(property, literal, site);
         }
         const authoredDisplay = /(?:^|;)\s*display\s*:/i.test(value);
         this.auditUiStyleDeclarations(value, site);
@@ -3352,11 +3356,6 @@ export class UiProjection {
                   ?.match(/#[0-9a-f]{3,8}/gi) ?? [])
             : [];
         const gradientTextColor = gradientTextColors[0];
-        const gradientTextDuration = clipsGradientToText
-            ? value.match(
-                  /\banimation\s*:[^;]*?\b([0-9]+(?:\.[0-9]*)?)s\b/i,
-              )?.[1]
-            : undefined;
         const gradientTextBackgroundScale = clipsGradientToText
             ? value.match(
                   /\bbackground-size\s*:\s*([0-9]+(?:\.[0-9]*)?)%/i,
@@ -3515,10 +3514,9 @@ export class UiProjection {
         if (gradientTextColors.length > 1) {
             // RmlUi has no background-clip:text. Preserve the declarative
             // intent as private PAL metadata so native UI can materialize a
-            // per-glyph gradient and advance the reached shimmer animation.
+            // per-glyph gradient at the element's background position.
             lowered +=
                 `;--bbl-text-gradient:${gradientTextColors.join("|")};` +
-                `--bbl-text-gradient-duration:${gradientTextDuration ?? "0"}s;` +
                 `--bbl-text-gradient-scale:${gradientTextBackgroundScale ?? "100"}%;`;
             if (gradientFontEffects.length > 0) {
                 lowered += `font-effect:${gradientFontEffects.join(",")};`;
@@ -3581,7 +3579,7 @@ export class UiProjection {
             }
             const property = declaration.slice(0, colon).trim().toLowerCase();
             let literal = declaration.slice(colon + 1).trim();
-            let nativeProperty = nativeUiImageProperty(property, literal);
+            let nativeProperty = nativeUiImageProperty(property);
             if (property === "background-image") {
                 const source = uiBackgroundImageSource(literal);
                 if (source !== undefined) {
@@ -3626,11 +3624,9 @@ export class UiProjection {
     }
 
     /**
-     * `@keyframes` blocks are not sheet rules: the whole sheet text also
-     * rides `ui_set_text`, and the PAL extracts and projects the keyframes
-     * from there (`pal_ui_rml.cpp` `keyframes_from`), so their interior
-     * percentage blocks must not reach the rule parser. Mirrors the PAL's
-     * brace-depth walk.
+     * `@keyframes` blocks are not sheet rules: their interior percentage
+     * blocks lower apart (`ui_set_style_keyframes`), never through the rule
+     * parser.
      */
     private static splitUiKeyframesBlocks(source: string): {
         rules: string;
@@ -3694,7 +3690,6 @@ export class UiProjection {
                 );
             if (
                 property.startsWith("--bbl-") &&
-                !property.startsWith("--bbl-background-") &&
                 property !== "--bbl-authored-display"
             )
                 this.uiStyleRefusal(
@@ -3739,9 +3734,8 @@ export class UiProjection {
     }
 
     /**
-     * The statements that replace a retained `<style>` element's rules with
-     * those of `sheet`; the sheet text itself rides `ui_set_text`, from
-     * which the PAL reads its keyframes.
+     * The statements that replace a retained `<style>` element's rules and
+     * keyframes with those of `sheet`.
      */
     private uiStyleSheetRuleStatements(
         engine: string,
@@ -3754,12 +3748,17 @@ export class UiProjection {
         const statements = [
             `bbl::ui_clear_style_rules(${engine}, ${styleElement});`,
         ];
-        for (const rule of this.lowerUiStyleSheetLiteral(
+        const { rules, keyframes } = this.lowerUiStyleSheetLiteral(
             sheet,
             site,
             ownerId,
             origin,
-        )) {
+        );
+        if (keyframes)
+            statements.push(
+                `bbl::ui_set_style_keyframes(${engine}, ${styleElement}, ${this.context.cppString(keyframes)});`,
+            );
+        for (const rule of rules) {
             statements.push(
                 (rule.kind === "class" || rule.kind === "id") &&
                     !uiStyleRuleNeedsRuntimeMatch(rule) &&
@@ -3777,12 +3776,77 @@ export class UiProjection {
         return statements;
     }
 
+    /**
+     * One keyframe's declarations, lowered as a rule's, each a property RmlUi
+     * keys: its animations interpolate numbers, lengths, colours, transforms,
+     * decorators and filters and swap keywords (ElementAnimation), never the
+     * strings and lists below or the PAL's private declarations.
+     */
+    private lowerUiKeyframeDeclarations(
+        declarations: string,
+        site?: ts.Node,
+    ): string {
+        const { style, content } = this.lowerUiRuleDeclarations(
+            declarations,
+            site,
+        );
+        if (content) this.uiKeyframeRefusal(site, "content");
+        UiProjection.forEachUiStyleDeclaration(style, (declaration) => {
+            const colon = declaration.indexOf(":");
+            if (colon < 0) return;
+            const property = declaration.slice(0, colon).trim().toLowerCase();
+            if (
+                property.startsWith("--") ||
+                UiProjection.UI_UNKEYED_PROPERTIES.has(property)
+            )
+                this.uiKeyframeRefusal(site, property);
+        });
+        return style.trim();
+    }
+
+    private uiKeyframeRefusal(
+        site: ts.Node | undefined,
+        property: string,
+    ): never {
+        return this.uiStyleRefusal(
+            site,
+            property,
+            `a keyframe's '${property}' is not keyed: RmlUi animations interpolate numbers, lengths, colours, transforms, decorators and filters and swap keywords`,
+        );
+    }
+
+    /** RmlUi string and list values its animations do not key. */
+    private static readonly UI_UNKEYED_PROPERTIES = new EmissionSet<string>([
+        "bbl-background-image",
+        "bbl-background-size",
+        "bbl-background-repeat",
+        "bbl-background-origin",
+        "bbl-background-attachment",
+        "font",
+        "font-family",
+        "font-effect",
+        "cursor",
+        "box-shadow",
+        "aspect-ratio",
+        "border-image",
+        ...UI_BORDER_IMAGE_LONGHANDS,
+        "grid-area",
+        "grid-column",
+        "grid-row",
+        "grid-template-areas",
+        "grid-template-columns",
+        "grid-template-rows",
+        "grid-auto-columns",
+        "grid-auto-rows",
+        "grid-auto-flow",
+    ]);
+
     private lowerUiStyleSheetLiteral(
         value: string,
         site?: ts.Node,
         ownerId?: number,
         origin?: RefusalSite,
-    ): LoweredUiStyleRule[] {
+    ): { rules: LoweredUiStyleRule[]; keyframes: string } {
         const rules: LoweredUiStyleRule[] = [];
         // A host file's sheet: refusals point at the line of the rule being
         // lowered, found in the sheet as written.
@@ -3812,9 +3876,37 @@ export class UiProjection {
             if (site) this.context.fail(site, message);
             this.context.failAtFile(message);
         };
-        const source = UiProjection.splitUiKeyframesBlocks(
-            stripUiCssComments(value),
-        ).rules;
+        const { rules: source, keyframes } =
+            UiProjection.splitUiKeyframesBlocks(stripUiCssComments(value));
+        // Keyframe declarations lower as the rules' do.
+        let loweredKeyframes = "";
+        const lowerKeyframes = (): void => {
+            for (let cursor = 0; cursor < keyframes.length;) {
+                const opening = findUiCssSyntax(keyframes, "{", cursor);
+                const end =
+                    opening === undefined
+                        ? undefined
+                        : uiCssBlockEnd(keyframes, opening);
+                if (opening === undefined || end === undefined) break;
+                const header = keyframes.slice(cursor, opening).trim();
+                enter(header);
+                const body = keyframes.slice(opening + 1, end - 1);
+                let blocks = "";
+                for (let inner = 0; inner < body.length;) {
+                    const start = findUiCssSyntax(body, "{", inner);
+                    const close =
+                        start === undefined
+                            ? undefined
+                            : uiCssBlockEnd(body, start);
+                    if (start === undefined || close === undefined) break;
+                    blocks += `${body.slice(inner, start).trim()}{${this.lowerUiKeyframeDeclarations(body.slice(start + 1, close - 1), site)}}`;
+                    inner = close;
+                }
+                loweredKeyframes += `${header}{${blocks}}\n`;
+                cursor = end;
+            }
+            searched = 0;
+        };
 
         const parseBlocks = (
             text: string,
@@ -3956,9 +4048,13 @@ export class UiProjection {
                 }
             }
         };
-        if (at) this.context.attributeRefusalsTo(at, () => parseBlocks(source));
-        else parseBlocks(source);
-        return rules;
+        const lower = (): void => {
+            lowerKeyframes();
+            parseBlocks(source);
+        };
+        if (at) this.context.attributeRefusalsTo(at, lower);
+        else lower();
+        return { rules, keyframes: loweredKeyframes };
     }
 
     public uiStaticDescendants(rootId: number): {
@@ -6549,11 +6645,11 @@ export class UiProjection {
     }
 
     /**
-     * A `background` write: RmlUi's clip reset and each PAL longhand at the
-     * value's CSS-wide keyword (the PAL resolves it; a clip one overrides
-     * RmlUi's) or else its initial value (no clip override), chosen at
-     * generation for a `known` value and else at run time; then the value,
-     * which the PAL tells apart as a colour or plain gradient layers.
+     * A `background` write: each longhand but the colour at the value's
+     * CSS-wide keyword (RmlUi's cascade resolves it) or else its initial
+     * value, chosen at generation for a `known` value and else at run time;
+     * then the value, which the PAL tells apart as a colour or plain gradient
+     * layers.
      */
     private emitUiBackgroundShorthand(
         engine: string,
@@ -6569,16 +6665,10 @@ export class UiProjection {
             known === undefined
                 ? `bbl::ui_background_longhand(${shorthand}, ${this.context.cppString(initial)})`
                 : this.context.cppString(cssWideKeyword(known) ?? initial);
-        const declarations: (readonly [string, string])[] = [
-            ["background-clip", this.context.cppString("border-box")],
-            ...UiProjection.UI_BACKGROUND_RESETS.map(
-                ([name, initial]) =>
-                    [
-                        `--bbl-${name}`,
-                        keywordOr(name === "background-clip" ? "" : initial),
-                    ] as const,
-            ),
-        ];
+        const declarations = UiProjection.UI_BACKGROUND_RESETS.map(
+            ([name, initial]) =>
+                [nativeUiImageProperty(name), keywordOr(initial)] as const,
+        );
         for (const [name, cpp] of declarations)
             this.context.emit({
                 kind: "expression",
@@ -6920,7 +7010,6 @@ export class UiProjection {
         const ids = new EmissionSet<string>(primaryIds);
 
         // The document's own sheets precede its markup, as a page's head does.
-        // Its rules are lowered here; the PAL reads only its keyframes.
         const sheets = page?.hostUi
             ? (page.hostUi.styleSheets ?? []).map((sheet) => ({
                   text: sheet.text,
@@ -6930,9 +7019,6 @@ export class UiProjection {
         for (const { text, origin } of sheets) {
             const handle =
                 this.context.allocateTemporaryCppName("host_ui_style");
-            const { keyframes } = UiProjection.splitUiKeyframesBlocks(
-                stripUiCssComments(text),
-            );
             emitted.push(
                 `${indent}const auto ${handle} = bbl::ui_create_element(${engine}, "style");`,
                 ...this.uiStyleSheetRuleStatements(
@@ -6943,11 +7029,6 @@ export class UiProjection {
                     undefined,
                     origin,
                 ).map((statement) => indent + statement),
-                ...(keyframes
-                    ? [
-                          `${indent}bbl::ui_set_text(${engine}, ${handle}, ${this.context.cppString(keyframes)});`,
-                      ]
-                    : []),
                 `${indent}bbl::ui_append_child(${engine}, bbl::ui_document_root(${engine}, bbl::UiDocumentPart::Head), ${handle});`,
             );
         }

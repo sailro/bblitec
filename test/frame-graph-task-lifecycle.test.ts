@@ -96,7 +96,9 @@ test("buildFrameGraphTask records a live task and refuses one outside the graph 
         message = (error as Error).message;
     }
     assert.deepEqual(events, ["live record", "live initialize"]);
-    const native = lowerFrameGraphTaskBuild(new LoweringContext(), "", true);
+    const native = lowerFrameGraphTaskBuild(new LoweringContext(), "", {
+        effect: true,
+    });
     assert.ok(
         native.includes(
             `throw std::runtime_error(${JSON.stringify(message)});`,
@@ -115,7 +117,7 @@ test("buildFrameGraphTask records a live task and refuses one outside the graph 
         /require_effect_bind_group\(engine, task\.effect\.effect\)/,
     );
     assert.doesNotMatch(
-        lowerFrameGraphTaskBuild(new LoweringContext(), "", false),
+        lowerFrameGraphTaskBuild(new LoweringContext(), "", {}),
         /FrameTaskKind::effect/,
     );
 });
@@ -138,16 +140,25 @@ test("the live outline build lowers in strict mode and other task kinds refuse p
             ?.length,
         2,
     );
+    // A copy task's record binds its source's current texture, which a
+    // native copy resolves at every execute: its build records nothing else.
+    const copied = compileSource(
+        `${prefix}const t=createRenderTargetTexture(engine,{lbl:"c",format:"rgba8unorm",samples:1,size:{width:4,height:4}});
+        const u=createRenderTargetTexture(engine,{lbl:"d",format:"rgba8unorm",samples:1,size:{width:4,height:4}});
+        const copy=createCopyToTextureTask({name:"copy",sourceTexture:t.texture,targetTexture:u.rt},engine,scene);
+        addTask(scene,copy);
+        buildFrameGraphTask(getFrameGraph(scene),copy);`,
+    );
+    assert.match(copied.cpp, /bbl::build_frame_graph_task\(/);
     assert.throws(
         () =>
             compileSource(
-                `${prefix}const t=createRenderTargetTexture(engine,{lbl:"c",format:"rgba8unorm",samples:1,size:{width:4,height:4}});
-                const u=createRenderTargetTexture(engine,{lbl:"d",format:"rgba8unorm",samples:1,size:{width:4,height:4}});
-                const copy=createCopyToTextureTask({name:"copy",sourceTexture:t.texture,targetTexture:u.rt},engine,scene);
-                addTask(scene,copy);
-                buildFrameGraphTask(getFrameGraph(scene),copy);`,
+                `${prefix}import {createGeometryRendererTask,GeometryTextureType} from "@babylonjs/lite";
+                const geometry=createGeometryRendererTask({name:"g",samples:1,textureDescriptions:[{type:GeometryTextureType.VIEW_DEPTH}]},engine,scene);
+                addTask(scene,geometry);
+                buildFrameGraphTask(getFrameGraph(scene),geometry);`,
             ),
-        /buildFrameGraphTask lowers render tasks and effect render tasks\./,
+        /buildFrameGraphTask lowers render, effect render, SSAO and copy tasks\./,
     );
     // The application's removal of a half-built task: no view of the native
     // list keeps the pin's indices, so the private read refuses.
@@ -401,7 +412,7 @@ test("an effect task's dispose clears its pipeline until the next record, as the
         }).includes(`throw std::runtime_error(${JSON.stringify(message)});`),
     );
     assert.match(
-        lowerFrameGraphTaskBuild(new LoweringContext(), "", true),
+        lowerFrameGraphTaskBuild(new LoweringContext(), "", { effect: true }),
         /require_effect_bind_group\(engine, task\.effect\.effect\);\n\s+task\.disposed = false;/,
     );
 });

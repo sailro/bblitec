@@ -6,6 +6,7 @@
 #include "pal_gpu_surface.hpp"
 #include "pal_gpu_targets.hpp"
 #include "pal_gpu_pipeline.hpp"
+#include <bblite/features/geometry_velocity.hpp>
 #include <bblite/features/has_effect_task.hpp>
 #include <bblite/features/has_pbr_renderer.hpp>
 #include <bblite/features/has_post_process.hpp>
@@ -243,6 +244,9 @@ void release_frame_graph_textures(GpuState& state, const Engine* preserve) {
             SDL_ReleaseGPUTexture(state.device, task.depth);
         if (task.params)
             SDL_ReleaseGPUBuffer(state.device, task.params);
+#if BBLITE_GEOMETRY_VELOCITY
+        release_geometry_velocity(state, task);
+#endif
         task.colors.clear();
         task.sampled_colors.clear();
         task.depth = nullptr;
@@ -454,8 +458,10 @@ void create_frame_graph_textures(GpuState& state, const Engine& engine,
                           state.device, format, SDL_GPU_SAMPLECOUNT_1, width, height,
                           SDL_GPU_TEXTUREUSAGE_COLOR_TARGET | SDL_GPU_TEXTUREUSAGE_SAMPLER));
         }
-        task.depth = create_frame_texture(state.device, state.depth_format, samples, width, height,
-                                          SDL_GPU_TEXTUREUSAGE_DEPTH_STENCIL_TARGET);
+        task.depth = create_frame_texture(
+            state.device, state.depth_format, samples, width, height,
+            SDL_GPU_TEXTUREUSAGE_DEPTH_STENCIL_TARGET |
+                (geometry_depth_is_sampled(engine, index) ? SDL_GPU_TEXTUREUSAGE_SAMPLER : 0));
     }
     state.frame_graph_width = width;
     state.render_targets_version = engine.render_targets_version;
@@ -519,12 +525,9 @@ void save_geometry_id_buffer_png(GpuState& state, std::uint32_t width, std::uint
     depth_target.stencil_load_op = SDL_GPU_LOADOP_DONT_CARE;
     depth_target.stencil_store_op = SDL_GPU_STOREOP_DONT_CARE;
     SdlRenderPass pass{SDL_BeginGPURenderPass(command, &target, 1, &depth_target)};
+    const auto& pipelines = cluster_ids ? state.cluster_pipelines : state.id_pipelines;
+    SDL_GPUGraphicsPipeline* bound_pipeline = nullptr;
     for (int sided_mode = 0; sided_mode < 2; ++sided_mode) {
-        SDL_BindGPUGraphicsPipeline(
-            pass,
-            cluster_ids
-                ? (sided_mode == 0 ? state.cluster_pipeline : state.cluster_double_sided_pipeline)
-                : (sided_mode == 0 ? state.id_pipeline : state.id_double_sided_pipeline));
         std::uint32_t cluster_id_base = 1;
         for (std::size_t mesh_index = 0;
              mesh_index < state.meshes.size() && mesh_index < render_plan.size(); ++mesh_index) {
@@ -533,9 +536,13 @@ void save_geometry_id_buffer_png(GpuState& state, std::uint32_t width, std::uint
             const std::uint32_t current_cluster_base = cluster.id_start;
             const upstream::RenderItem& item = render_plan[mesh_index];
             const MaterialRecord* material = handle_find(engine.materials, item.material);
-            const bool double_sided = item.cull_mode == upstream::RenderCullMode::none;
-            if (double_sided != (sided_mode == 1))
+            const DiagnosticPipeline culling = diagnostic_pipeline(item);
+            if ((culling == DiagnosticPipeline::double_sided) != (sided_mode == 1))
                 continue;
+            if (pipelines[static_cast<std::size_t>(culling)] != bound_pipeline) {
+                bound_pipeline = pipelines[static_cast<std::size_t>(culling)];
+                SDL_BindGPUGraphicsPipeline(pass, bound_pipeline);
+            }
 
             const std::array<float, 4> alpha_options = diagnostic_alpha_options(item, material);
             if (cluster_ids) {

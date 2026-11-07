@@ -218,7 +218,7 @@ int main() {
                         try {
                             std::rethrow_exception(error);
                         } catch (const std::exception& value) {
-                            disposed_update = std::string(value.what()) == "#201";
+                            disposed_update = value.what() == pinned_errors::sky_disposed;
                         }
                         disposal.close();
                     });
@@ -228,7 +228,8 @@ int main() {
                !world.scene.state->environment_identity && !world.scene.environment.specular_gpu);
         assert(world.device->counters.images == 0 && world.device->counters.buffers == 0 &&
                !procedural_sky_generation(world.scene));
-        rejects([&] { assert_procedural_sky_environment_active(environment); }, "#201");
+        rejects([&] { assert_procedural_sky_environment_active(environment); },
+                pinned_errors::sky_disposed);
     }
     for (const std::string path : {"corrupt", "missing"}) {
         World world;
@@ -290,7 +291,7 @@ int main() {
                         try {
                             std::rethrow_exception(error);
                         } catch (const std::exception& value) {
-                            cancelled = std::string(value.what()) == "#207";
+                            cancelled = value.what() == pinned_errors::sky_cancelled;
                         }
                         loop.close();
                     });
@@ -316,7 +317,7 @@ int main() {
                         try {
                             std::rethrow_exception(error);
                         } catch (const std::exception& value) {
-                            cancelled = std::string(value.what()) == "#207";
+                            cancelled = value.what() == pinned_errors::sky_cancelled;
                         }
                         loop.close();
                     });
@@ -326,7 +327,7 @@ int main() {
                           try {
                               std::rethrow_exception(error);
                           } catch (const std::exception& value) {
-                              duplicate = std::string(value.what()) == "#206";
+                              duplicate = value.what() == pinned_errors::sky_loading;
                           }
                       });
             loop.post([&] { world.dispose(); });

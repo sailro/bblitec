@@ -27,7 +27,7 @@ export function lowerGltfSkeletonPose(context: LoweringContext): string {
         "currentTRS",
         "localMat",
         "worldMat",
-        "RH_TO_LH",
+        "ROOT_TRANSFORM",
         "_boneTmp",
     ])
         bind(name, `state.${name}`, "f32");
@@ -332,7 +332,7 @@ export function lowerGltfSkeletonPose(context: LoweringContext): string {
         });
         return `size = ${numeric.expression(initializer.arguments[0]!)};`;
     };
-    const root = context.moduleScopeConstant(file, "RH_TO_LH");
+    const root = context.moduleScopeConstant(file, "ROOT_TRANSFORM");
     if (
         !root ||
         !ts.isNewExpression(root) ||
@@ -353,7 +353,7 @@ template<class State> void gltf_initialize_skeleton_pose(State& state) {
     ${allocation("currentTRS")} state.currentTRS.resize(static_cast<std::size_t>(size));
     ${allocation("localMat")} state.localMat.resize(static_cast<std::size_t>(size));
     ${allocation("worldMat")} state.worldMat.resize(static_cast<std::size_t>(size));
-    state.RH_TO_LH = {${rootValues.join(", ")}};
+    state.ROOT_TRANSFORM = {${rootValues.join(", ")}};
 }
 // ${context.provenance(module, "resetTRS")}
 template<class State> void gltf_reset_skeleton_trs(State& state) {

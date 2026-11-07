@@ -878,7 +878,7 @@ export async function recordMeshPlan(
             "dispatchWorkgroups",
             "end",
         ],
-        textureOperations: "submitted",
+        order: "submitted",
     });
     try {
         const materials: number[] = [];

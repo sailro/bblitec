@@ -13,7 +13,8 @@ import {
     GLTF_SOURCE_ALBEDO_IDENTITIES,
     parseGlbJson,
 } from "../src/gltf-document.js";
-import { readUpstreamPin } from "../src/upstream-source.js";
+import { downloadCached } from "../src/asset-download-cache.js";
+import { pinnedLabPublicUrl } from "../src/pinned-lab-public.js";
 import {
     buildGlb,
     readGlbFixture,
@@ -553,12 +554,13 @@ test("resolves meshopt packaging shapes in pinned order without leaking decoder 
             // eviction then lets two concurrent retries share one success.
             const retryFixture = join(directory, "retry.glb");
             writeFileSync(retryFixture, glb);
-            const decoderArtifact = join(
-                process.cwd(),
-                ".cache",
-                "pinned-decoders",
-                readUpstreamPin().sourceVersion,
-                "meshopt_decoder.js",
+            // The pin's decoder glue, through the download cache that owns it.
+            const decoderArtifact = join(directory, "meshopt_decoder.js");
+            writeFileSync(
+                decoderArtifact,
+                await downloadCached(
+                    `${pinnedLabPublicUrl()}meshopt_decoder.js`,
+                ),
             );
             const geometryResolverModule = new URL(
                 "./glb-fixture.js",

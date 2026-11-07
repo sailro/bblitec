@@ -50,7 +50,10 @@ import {
 } from "./pinned-option-defaults.js";
 import { lowerPhysicsQueries } from "./physics-query-lowerer.js";
 import { lowerPhysicsContainer } from "./physics-container-lowerer.js";
-import { lowerPhysicsMesh } from "./physics-mesh-lowerer.js";
+import {
+    lowerPhysicsMesh,
+    physicsTriangleCorners,
+} from "./physics-mesh-lowerer.js";
 import { lowerPhysicsViewer } from "./physics-viewer-lowerer.js";
 import { lowerPhysicsConstraints } from "./physics-constraint-lowerer.js";
 import { lowerPhysicsGravity } from "./physics-gravity-lowerer.js";
@@ -952,14 +955,19 @@ ${locals}            return pal::${palFunction}(${args.join(", ")});
      * `MeshAccumulator`, whose rules the emitted accumulator restates: how it
      * addresses a vertex and how it winds a triangle.
      */
-    private static readonly meshAccumulatorContracts: ReadonlyArray<
+    private meshAccumulatorContracts(): ReadonlyArray<
         readonly [string, readonly string[]]
-    > = [
-        [
-            "MeshAccumulator",
-            ["this._vertices.length / 3", "this._indices.push(c, b, a)"],
-        ],
-    ];
+    > {
+        return [
+            [
+                "MeshAccumulator",
+                [
+                    "this._vertices.length / 3",
+                    `this._indices.push(${physicsTriangleCorners(this.context).join(", ")})`,
+                ],
+            ],
+        ];
+    }
 
     private static readonly shapeContracts: ReadonlyArray<
         readonly [string, readonly string[]]
@@ -1236,7 +1244,7 @@ ${locals}            return pal::${palFunction}(${args.join(", ")});
         // loop.
         this.assertShapeContracts(
             () => this.context.sourceFile(havokModule),
-            PhysicsLowerer.meshAccumulatorContracts,
+            this.meshAccumulatorContracts(),
         );
         this.assertOrderContracts(resolve, PhysicsLowerer.orderContracts);
         // The scene's world discovery list is read only by getPhysicsWorlds

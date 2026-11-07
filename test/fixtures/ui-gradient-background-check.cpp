@@ -94,15 +94,14 @@ int main() try {
         ui_set_attribute(
             engine, owner, "style",
             "position:absolute;left:20px;top:30px;width:160px;height:60px;"
-            "--bbl-background-image:linear-gradient(red,blue) padding-box / calc(100% - 6px) "
+            "bbl-background-image:linear-gradient(red,blue) padding-box / calc(100% - 6px) "
             "calc(100% - 12px) / 6px 6px;");
         update();
         bounds(pal::record_ui_rml_frame(runtime, 640, 480), 0, 26, 36, 154, 48);
-        ui_set_attribute(
-            engine, owner, "style",
-            "position:absolute;left:20px;top:30px;width:160px;height:60px;"
-            "--bbl-background-image:linear-gradient(red,blue) padding-box / 40px 10px / "
-            "calc(100% - 4px) 0px;");
+        ui_set_attribute(engine, owner, "style",
+                         "position:absolute;left:20px;top:30px;width:160px;height:60px;"
+                         "bbl-background-image:linear-gradient(red,blue) padding-box / 40px 10px / "
+                         "calc(100% - 4px) 0px;");
         update();
         bounds(pal::record_ui_rml_frame(runtime, 640, 480), 0, 136, 30, 40, 10);
         // A repeating layer tiles its paint box from its placed position (columns from 10 - 40 =
@@ -110,7 +109,7 @@ int main() try {
         ui_set_attribute(
             engine, owner, "style",
             "position:absolute;left:20px;top:30px;width:160px;height:60px;"
-            "--bbl-background-image:linear-gradient(red,blue) padding-box repeat / 40px 20px / "
+            "bbl-background-image:linear-gradient(red,blue) padding-box repeat / 40px 20px / "
             "10px 0px;");
         update();
         {
@@ -135,7 +134,7 @@ int main() try {
             engine, owner, "style",
             "position:absolute;left:20px;top:30px;width:160px;height:60px;"
             "border:6px solid transparent;border-radius:20px;"
-            "--bbl-background-image:linear-gradient(red,blue) border-box / calc(100% + 4px) "
+            "bbl-background-image:linear-gradient(red,blue) border-box / calc(100% + 4px) "
             "calc(100% + 4px) / -2px -2px / padding-box;");
         update();
         const auto& rounded = pal::record_ui_rml_frame(runtime, 640, 480);
@@ -153,12 +152,12 @@ int main() try {
         }
         ui_set_attribute(
             engine, owner, "style",
-            "width:160px;height:60px;--bbl-background-image:linear-gradient(red,blue) padding-box / 0dp 10dp / 50% 50%;");
+            "width:160px;height:60px;bbl-background-image:linear-gradient(red,blue) padding-box / 0dp 10dp / 50% 50%;");
         update();
         check(pal::record_ui_rml_frame(runtime, 640, 480).draws.size() == 1,
               "Zero-sized image paints nothing");
         ui_set_attribute(engine, owner, "style",
-                         "width:160px;height:60px;--bbl-background-image:none;");
+                         "width:160px;height:60px;bbl-background-image:none;");
         update();
         check(pal::record_ui_rml_frame(runtime, 640, 480).draws.size() == 1 &&
                   raw->GetNumChildren(true) == 1,
@@ -172,7 +171,7 @@ int main() try {
         update();
         check(pal::record_ui_rml_frame(runtime, 640, 480).draws.size() == 3,
               "Written gradient layers paint");
-        ui_set_style_property(engine, owner, "--bbl-background-image", "none");
+        ui_set_style_property(engine, owner, "bbl-background-image", "none");
         ui_set_background(engine, owner, "#cdaa6b");
         update();
         const auto& colored = pal::record_ui_rml_frame(runtime, 640, 480);
@@ -186,7 +185,7 @@ int main() try {
         ui_set_attribute(
             engine, owner, "style",
             "position:absolute;left:20px;top:30px;width:160px;height:60px;padding:10px;"
-            "--bbl-background-image:linear-gradient(red,blue);background-clip:padding-box;");
+            "bbl-background-image:linear-gradient(red,blue);background-clip:padding-box;");
         update();
         const auto& padded = pal::record_ui_rml_frame(runtime, 640, 480);
         const auto clipped = static_cast<std::size_t>(

@@ -77,6 +77,7 @@ export async function cachedIblBrdfLut(
             version: "1",
             module: moduleIdentity(import.meta.url),
             browser: true,
+            buildConditions: false,
             parameters: { lutSize, format: "rgba16float" },
             inputs: [Buffer.from(shader, "utf8")],
         },

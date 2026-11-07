@@ -79,6 +79,7 @@ test("records the blend, alpha and base colour states a material can reach", () 
             alphaBlend: [true],
             alphaBelowOne: [true],
             baseColorFactor: true,
+            bentNormalTexture: false,
             pluginSignatures: [],
             pluginAppends: [],
         },
@@ -117,4 +118,63 @@ test("grows a PBR material's plugin list through the program's signature algebra
     assert.match(result.cpp, /case 256u: return true;/);
     assert.match(result.cpp, /case 0u: return 1;/);
     assert.doesNotMatch(result.cpp, /case 256u: return \d+;/);
+});
+
+const BENT_NORMAL_IMPORTS = `import { addToScene, createSceneContext, enableBentNormals, loadTexture2D, registerScene } from "@babylonjs/lite";`;
+
+test("records a bent normal texture as a state its material can reach", () => {
+    const result = compileSource(
+        pbrScene(
+            `
+            const bent = await loadTexture2D(engine, "bent.png", { invertY: false });
+            material.bentNormalTexture = bent;
+            material.bentNormalStrength = 0.25;
+            enableBentNormals();
+        `,
+            BENT_NORMAL_IMPORTS,
+        ),
+    );
+    assert.ok(result.manifest.features.includes("material:bent-normal"));
+    assert.deepEqual(result.manifest.pbrMaterialStates, [
+        {
+            target: { kind: "scene", index: 0 },
+            alphaBlend: [],
+            alphaBelowOne: [],
+            baseColorFactor: false,
+            bentNormalTexture: "definite",
+            pluginSignatures: [],
+            pluginAppends: [],
+        },
+    ]);
+    assert.match(
+        result.cpp,
+        /bbl::set_pbr_texture\(v_engine, v_material, bbl::MaterialTextureSlot::bent_normal, v_bent\);/,
+    );
+    assert.match(result.cpp, /\.bent_normal_strength = 0\.25f;/);
+});
+
+test("refuses bent normal setup the pin would not compose", () => {
+    const refuses = (body: string, message: RegExp) =>
+        assert.throws(
+            () => compileSource(pbrScene(body, BENT_NORMAL_IMPORTS)),
+            (error) =>
+                error instanceof CompileError && message.test(error.message),
+        );
+    const registered = `
+        const scene = createSceneContext(engine);
+        addToScene(scene, box);
+        await registerScene(scene);
+    `;
+    refuses(`${registered} enableBentNormals();`, /before scene registration/);
+    refuses(
+        `const bent = await loadTexture2D(engine, "bent.png");
+        ${registered} material.bentNormalTexture = bent;`,
+        /bentNormalTexture requires static setup before scene registration/,
+    );
+    refuses(
+        `const bent = await loadTexture2D(engine, "bent.png");
+        const standard = createStandardMaterial();
+        (standard as unknown as { bentNormalTexture: unknown }).bentNormalTexture = bent;`,
+        /bentNormalTexture requires a known PBR material/,
+    );
 });

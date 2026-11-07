@@ -15,7 +15,7 @@ export function lowerGltfAnimationRootFlip(
 ): string {
     const file = context.sourceFile(module);
     const expression = context.unwrapExpression(
-        context.variableInitializer(file, "RH_TO_LH"),
+        context.variableInitializer(file, "ROOT_TRANSFORM"),
     );
     if (
         !ts.isNewExpression(expression) ||
@@ -93,7 +93,7 @@ export function lowerGltfAnimationPose(context: LoweringContext): string {
         "localMat",
         "worldMat",
         "_boneTmp",
-        "RH_TO_LH",
+        "ROOT_TRANSFORM",
     ])
         bind(name, `state.${name}`, "f32");
     for (const name of ["pointerScratch", "morphUploadF32"])

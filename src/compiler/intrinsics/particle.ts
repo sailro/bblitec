@@ -17,7 +17,7 @@ import type { LoweringServices } from "../lowering-services.js";
 import { createHash } from "node:crypto";
 import ts from "typescript";
 import { staticBooleanOf } from "../values/model.js";
-import { argumentAt } from "../syntax.js";
+import { argumentAt, notJson } from "../syntax.js";
 import { requireParticleBakeWritable } from "../particle-buffer.js";
 import {
     staticGraphDocument,
@@ -26,7 +26,6 @@ import {
 import {
     compileOptionalStaticBoolean,
     compileStaticNumber,
-    notJson,
     staticJsonValue,
     staticNumberPair,
     staticVec3Value,

@@ -87,7 +87,7 @@ export function lowerMeshGeometryAccess(context: LoweringContext): string {
                         `${field}.slice()`,
                         "Caller-owned geometry stream copy",
                     );
-                    return `${prefix}result.${field} = js::${field === "indices" ? "U32Array" : "F32Array"}(${field}.${field === "indices" ? "copy_source" : "copy"}());`;
+                    return `${prefix}result.${field} = js::${field === "indices" ? "U32Array" : "F32Array"}(${field}.copy());`;
                 };
                 for (const property of node.expression.properties) {
                     if (!ts.isSpreadAssignment(property)) {

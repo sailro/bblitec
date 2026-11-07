@@ -198,6 +198,7 @@ async function transcodeTexture(
             version: "1",
             module: moduleIdentity(import.meta.url),
             browser: true,
+            buildConditions: true,
             parameters: decoder
                 ? { decoder: { url: decoder.url, wasmUrls: decoder.wasmUrls } }
                 : {},

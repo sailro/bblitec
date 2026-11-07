@@ -34,11 +34,11 @@ test("background shorthands draw SVG images at an explicit size and contained", 
     // The layer's components are the PAL's longhands, the image a packaged file.
     assert.match(
         result.cpp,
-        /--bbl-background-image:\\"[0-9a-f]+-inline\.svg\\";--bbl-background-size:8px 6px;--bbl-background-position:50% 50%;--bbl-background-repeat:no-repeat;/,
+        /bbl-background-image:\\"[0-9a-f]+-inline\.svg\\";bbl-background-size:8px 6px;bbl-background-position:50% 50%;bbl-background-repeat:no-repeat;/,
     );
     assert.match(
         result.cpp,
-        /--bbl-background-size:contain;--bbl-background-position:50% 50%;/,
+        /bbl-background-size:contain;bbl-background-position:50% 50%;/,
     );
     const svgs = result.manifest.assets.filter((asset) =>
         asset.output.endsWith(".svg"),

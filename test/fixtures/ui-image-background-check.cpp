@@ -31,12 +31,12 @@ int main() try {
         const auto parent = ui_create_element(engine, "div");
         ui_set_attribute(
             engine, parent, "style",
-            "position:absolute;left:20px;top:20px;width:100px;height:80px;--bbl-background-image:\"fixture.png\";--bbl-background-size:0px 0px;--bbl-background-repeat:no-repeat;--bbl-background-position:center center;--bbl-background-color:#123456;");
+            "position:absolute;left:20px;top:20px;width:100px;height:80px;bbl-background-image:\"fixture.png\";bbl-background-size:0px 0px;bbl-background-repeat:no-repeat;bbl-background-position:center center;background-color:#123456;");
         ui_append_to_root(engine, parent);
         const auto child = ui_create_element(engine, "button");
         ui_set_attribute(
             engine, child, "style",
-            "position:absolute;left:0px;top:0px;width:100px;height:80px;border-width:0px;padding:0px;--bbl-background-image:inherit;--bbl-background-size:contain;--bbl-background-repeat:inherit;--bbl-background-position:inherit;--bbl-background-color:inherit;scale:0.5;bbl-transform:translate(10px, 20px);");
+            "position:absolute;left:0px;top:0px;width:100px;height:80px;border-width:0px;padding:0px;bbl-background-image:inherit;bbl-background-size:contain;bbl-background-repeat:inherit;bbl-background-position:inherit;background-color:inherit;scale:0.5;bbl-transform:translate(10px, 20px);");
         ui_append_child(engine, parent, child);
         const auto unstyled = ui_create_element(engine, "span");
         ui_append_child(engine, parent, unstyled);
@@ -55,14 +55,15 @@ int main() try {
         const auto keywords = ui_create_element(engine, "div");
         ui_set_attribute(
             engine, keywords, "style",
-            "position:absolute;left:200px;top:20px;width:100px;height:80px;background-clip:padding-box;--bbl-background-image:\"fixture.png\";--bbl-background-size:contain;--bbl-background-repeat:no-repeat;--bbl-background-position:center center;--bbl-background-color:#123456;");
+            "position:absolute;left:200px;top:20px;width:100px;height:80px;background-clip:padding-box;bbl-background-image:\"fixture.png\";bbl-background-size:contain;bbl-background-repeat:no-repeat;bbl-background-position:center center;background-color:#123456;");
         ui_append_to_root(engine, keywords);
         const auto keyword_child = [&](std::string_view keyword) {
             std::string style = "position:absolute;left:0px;top:0px;width:50px;height:40px;";
             for (const std::string_view longhand :
-                 {"clip", "image", "size", "position", "repeat", "origin", "attachment", "color"})
-                style +=
-                    "--bbl-background-" + std::string(longhand) + ":" + std::string(keyword) + ";";
+                 {"background-clip", "bbl-background-image", "bbl-background-size",
+                  "bbl-background-position", "bbl-background-repeat", "bbl-background-origin",
+                  "bbl-background-attachment", "background-color"})
+                style += std::string(longhand) + ":" + std::string(keyword) + ";";
             const auto child = ui_create_element(engine, "div");
             ui_set_attribute(engine, child, "style", style);
             ui_append_child(engine, keywords, child);
@@ -71,20 +72,24 @@ int main() try {
         const auto inherits = keyword_child("inherit");
         const auto initial = keyword_child("initial");
         const auto unset = keyword_child("UNSET");
+        const auto reverted = keyword_child("revert");
         const auto written = ui_create_element(engine, "div");
         ui_append_child(engine, keywords, written);
         // The declarations src/compiler/ui-projection.ts emitUiBackgroundShorthand emits.
         const auto write_background = [&](const std::string& shorthand) {
-            ui_set_style_property(engine, written, "--bbl-background-color", shorthand);
-            ui_set_style_property(engine, written, "background-clip", "border-box");
             for (const auto& [longhand, initial_value] :
-                 {std::pair{"clip", ""}, std::pair{"image", "none"}, std::pair{"size", "auto"},
-                  std::pair{"position", "0% 0%"}, std::pair{"repeat", "repeat"},
-                  std::pair{"origin", "padding-box"}, std::pair{"attachment", "scroll"}})
-                ui_set_style_property(engine, written, "--bbl-background-" + std::string(longhand),
+                 {std::pair{"background-clip", "border-box"},
+                  std::pair{"bbl-background-image", "none"},
+                  std::pair{"bbl-background-size", "auto"},
+                  std::pair{"bbl-background-position", "0% 0%"},
+                  std::pair{"bbl-background-repeat", "repeat"},
+                  std::pair{"bbl-background-origin", "padding-box"},
+                  std::pair{"bbl-background-attachment", "scroll"}})
+                ui_set_style_property(engine, written, longhand,
                                       ui_background_longhand(shorthand, initial_value));
+            ui_set_background(engine, written, shorthand);
         };
-        assert(ui_background_longhand(" Inherit ", "none") == "inherit");
+        assert(ui_background_longhand(" Inherit ", "none") == " Inherit ");
         assert(ui_background_longhand("#123456", "none") == "none");
         write_background("inherit");
 
@@ -128,7 +133,7 @@ int main() try {
                    std::string::npos);
             assert(clip(element) == padding_box);
         }
-        for (auto* element : {raw(initial), raw(unset)}) {
+        for (auto* element : {raw(initial), raw(unset), raw(reverted)}) {
             assert(element->GetComputedValues().background_color().alpha == 0);
             assert(!element->GetLocalProperty("decorator"));
             assert(clip(element) == 0);
@@ -136,14 +141,14 @@ int main() try {
         const auto& frame = pal::record_ui_rml_frame(runtime, 640, 480);
         assert(std::any_of(frame.draws.begin(), frame.draws.end(),
                            [](const auto& draw) { return draw.texture_id != 0; }));
-        // A colour after a keyword clears the keyword's clip override.
+        // A colour after a keyword resets the clip.
         write_background("#abcdef");
         update();
         assert(raw(written)->GetComputedValues().background_color() ==
                Rml::Colourb(0xab, 0xcd, 0xef));
         assert(!raw(written)->GetLocalProperty("decorator"));
         assert(clip(raw(written)) == 0);
-        ui_set_style_property(engine, parent, "--bbl-background-color", "#abcdef");
+        ui_set_style_property(engine, parent, "background-color", "#abcdef");
         ui_set_style_property(engine, parent, "bbl-zero-clip", "1");
         update();
         assert(rawChild->GetComputedValues().background_color() == Rml::Colourb(0xab, 0xcd, 0xef));
@@ -155,7 +160,7 @@ int main() try {
         ui_set_style_property(engine, parent, "bbl-zero-clip", "0");
         ui_set_style_property(engine, child, "scale", "1");
         ui_set_style_property(engine, child, "bbl-transform", "none");
-        ui_set_style_property(engine, child, "--bbl-background-image", "none");
+        ui_set_style_property(engine, child, "bbl-background-image", "none");
         update();
         assert(rawParent->GetComputedValues().group_opacity() == 1);
         assert(rawChild->GetComputedValues().group_opacity() == 1);

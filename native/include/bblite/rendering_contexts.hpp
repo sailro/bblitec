@@ -5,6 +5,7 @@
 #include <iterator>
 #include <stdexcept>
 #include <string>
+#include <utility>
 #include <variant>
 
 namespace bbl {
@@ -107,6 +108,16 @@ public:
     void erase_at(std::size_t index) {
         const auto first = entries_.begin();
         entries_.erase(first + index, first + index + 1);
+    }
+    /** `list.splice(index, 1)`: the entry at `index`, removed. */
+    Entry take_at(std::size_t index) {
+        Entry entry = entries_[index];
+        erase_at(index);
+        return entry;
+    }
+    /** `list.splice(index, 0, entry)`. */
+    void insert_at(std::size_t index, Entry entry) {
+        entries_.insert(entries_.begin() + static_cast<std::ptrdiff_t>(index), std::move(entry));
     }
 
 private:

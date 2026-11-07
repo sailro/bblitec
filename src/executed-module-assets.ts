@@ -131,6 +131,7 @@ async function evaluateModuleExport(
                 version: "1",
                 module: moduleIdentity(import.meta.url),
                 browser: true,
+                buildConditions: true,
                 parameters: {
                     module: relativePath,
                     exportName: source.exportName,

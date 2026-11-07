@@ -16,8 +16,13 @@ export interface CorpusFile {
     sha256: string;
 }
 
-interface CorpusScene extends CorpusFile {
+export interface CorpusScene extends CorpusFile {
     id: string;
+    /**
+     * `"rightHanded": true` in the pin's `scene-config.json`: the lab builds
+     * the scene under `babylon-lite-rh` (`corpus:verify` checks the flag).
+     */
+    rightHanded?: true;
 }
 
 interface CorpusApplication {
@@ -60,6 +65,12 @@ export interface BabylonLiteCorpusManifest {
      * says why); they ride the git-blob pin like every other row.
      */
     tooling?: CorpusFile[];
+    /**
+     * Package modules the published package empties: modules of types only,
+     * whose source no package source map carries. The source store reads
+     * them as the pinned modules' own (`upstream-source.ts`).
+     */
+    packageSources?: CorpusFile[];
     applications: CorpusApplication[];
 }
 

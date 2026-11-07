@@ -658,8 +658,7 @@ void initialize_dawn_backgrounds(DawnState& state, const EnvironmentState& envir
         descriptor.vertex.bufferCount = buffers.size();
         descriptor.vertex.buffers = buffers.data();
         descriptor.primitive.topology = WGPUPrimitiveTopology_TriangleList;
-        descriptor.primitive.frontFace =
-            arm.clockwise_front_face ? WGPUFrontFace_CW : WGPUFrontFace_CCW;
+        descriptor.primitive.frontFace = dawn_front_face(arm.clockwise_front_face);
         descriptor.primitive.cullMode =
             arm.cull == upstream::RenderCullMode::back ? WGPUCullMode_Back : WGPUCullMode_None;
         WGPUDepthStencilState depth_stencil = WGPU_DEPTH_STENCIL_STATE_INIT;

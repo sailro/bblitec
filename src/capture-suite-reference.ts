@@ -17,9 +17,14 @@ import {
     waitForCapturedEngines,
 } from "./capture-engine-frames.js";
 import ts from "typescript";
-import { moduleSpecifiers } from "./typescript-module-specifiers.js";
+import {
+    isPackageImportSpecifier,
+    moduleSpecifiers,
+} from "./typescript-module-specifiers.js";
 import { rewriteModuleSpecifiers } from "./module-specifier-rewrite.js";
 import { pinnedLabPublicFile, servedFile } from "./pinned-lab-materializers.js";
+import { packageImportTargets } from "./pinned-build-conditions.js";
+import { evaluatedEntryPath } from "./bake-cache.js";
 
 // ---------------------------------------------------------------------------
 // Lazy module loads
@@ -262,6 +267,36 @@ export function pinnedBrowserModuleUrl(relativePath: string): string {
     return pinnedBrowserEntryUrl.replace(/index\.js$/, relativePath);
 }
 
+/** The served URL of the pinned package's root. */
+const pinnedPackageUrl = pinnedBrowserEntryUrl.replace(/lib\/index\.js$/, "");
+
+/**
+ * A pinned package module as every realm loading it reads it: its own `#`
+ * imports (the package's `imports` field) rewritten to the served targets
+ * the build conditions select, as a bundler resolves them. A document's
+ * import map would not reach a module worker, whose own map is empty.
+ */
+function pinnedPackageModule(
+    path: string,
+    targets: ReadonlyMap<string, string>,
+): string {
+    return rewriteModuleSpecifiers(
+        readFileSync(path, "utf8"),
+        path,
+        ({ text }) => {
+            if (!isPackageImportSpecifier(text)) return undefined;
+            const target = targets.get(text);
+            if (target === undefined)
+                throw new Error(
+                    `${path}: the pinned package declares no '${text}' import.`,
+                );
+            return {
+                specifier: pinnedPackageUrl + target.replace(/^\.\//, ""),
+            };
+        },
+    );
+}
+
 /**
  * The scene source as the reference capture runs it: transpiled for the
  * browser, with the pinned package and asset URLs rewritten, and — for a
@@ -301,7 +336,9 @@ export function suiteBrowserModule(
                 "Applied animation capture requires one local scene engine.",
             );
     }
-    const input = readFileSync(resolve(sourcePath), "utf8");
+    // A side-effect entry (`import "./scene2";`) runs the module it imports.
+    const entryPath = evaluatedEntryPath(resolve(sourcePath));
+    const input = readFileSync(entryPath, "utf8");
     const transformed = transform ? transform(input) : input;
     if (
         animationPoseProtocol !== undefined &&
@@ -380,7 +417,7 @@ export function suiteBrowserModule(
         fixedAnimationFrame === undefined || independentEngines !== undefined
             ? readySource
             : markFixedEngineStart(readySource, documentMarkers);
-    return browserHarness().transpileForBrowser(fixedFrameSource, sourcePath);
+    return browserHarness().transpileForBrowser(fixedFrameSource, entryPath);
 }
 
 /**
@@ -502,6 +539,11 @@ const engineCanvasRecorderScript =
     " engines.add(this); return transfer.call(this); }; })();";
 
 interface SuiteCaptureOptions {
+    /**
+     * The bundler conditions the page resolves the pin's `#` imports under
+     * (a right-handed twin's `babylon-lite-rh`); this process's own by default.
+     */
+    conditions?: readonly string[];
     /** Preserve browser scrollbars, including their layout width. */
     showScrollbars?: boolean;
     /** CSS canvas size for device-local diagnostics; canonical references use 1280x720. */
@@ -620,7 +662,10 @@ export function createSuiteSceneServer(
         );
     }
     const entryPath = options.sourcePath
-        ? `/${relative(siteRoot, resolve(options.sourcePath))
+        ? `/${relative(
+              siteRoot,
+              evaluatedEntryPath(resolve(options.sourcePath)),
+          )
               .split(sep)
               .join("/")
               .replace(/\.ts$/, ".js")}`
@@ -662,6 +707,11 @@ ${startScripts}${fixedFrameScript}<script type="module" src="${entryPath}"></scr
         string,
         { bytes: Uint8Array; contentType: string }
     >();
+    const packageImports = packageImportTargets(
+        upstreamSource().pinnedPackageRoot(),
+        options.conditions,
+    );
+    const packageModules = new Map<string, string>();
     const handleRequest = async (
         request: IncomingMessage,
         response: ServerResponse,
@@ -798,6 +848,21 @@ ${startScripts}${fixedFrameScript}<script type="module" src="${entryPath}"></scr
                     );
                     return;
                 }
+            } else if (
+                url.pathname.startsWith(pinnedPackageUrl) &&
+                path.endsWith(".js") &&
+                url.search !== "?raw"
+            ) {
+                let source = packageModules.get(path);
+                if (source === undefined) {
+                    source = pinnedPackageModule(path, packageImports);
+                    packageModules.set(path, source);
+                }
+                response.writeHead(200, {
+                    "Content-Type": "text/javascript; charset=utf-8",
+                });
+                response.end(source);
+                return;
             } else {
                 serveLocalFile(
                     response,

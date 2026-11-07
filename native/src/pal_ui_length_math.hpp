@@ -113,7 +113,12 @@ inline bool css_layout_percentage_property(std::string_view property) {
 
 /** RmlUi decorator text: the decorator itself, or the background image the PAL paints as one. */
 inline bool css_decorator_property(std::string_view property) {
-    return property == "decorator" || property == "--bbl-background-image";
+    return property == "decorator" || property == "bbl-background-image";
+}
+
+/** Text a later projection reads: a custom property, or a background longhand the PAL paints. */
+inline bool css_carried_property(std::string_view property) {
+    return property.starts_with("--") || property.starts_with("bbl-background-");
 }
 
 /** The index of the `)` closing the parenthesis at `open`, or the size when it is unclosed. */
@@ -485,11 +490,12 @@ inline std::string rml_css_length_math(std::string value, double width, double h
         const std::size_t end = detail::css_function_end(value, value.find('(', index));
         const auto function = std::string_view(value).substr(index, end - index);
         // Math over var() resolves once the style engine substitutes the variables; clip-path math keeps its
-        // percentages for the shape to resolve against its reference box; a custom property's percentage
-        // is one of the length its substitution lands in.
+        // percentages for the shape to resolve against its reference box; a carried value's percentage
+        // is one of the length its later projection lands in.
         const bool decorator = detail::css_decorator_property(property);
+        const bool carried = detail::css_carried_property(property);
         if (property == "clip-path" || function.find("var(") != std::string::npos ||
-            (property.starts_with("--") && !decorator && function.find('%') != std::string::npos))
+            (carried && !decorator && function.find('%') != std::string::npos))
             return end;
         // A decorator's own math sizes and places its layer box (RmlUi patch 0025); math inside its
         // image function is the image's.
@@ -497,8 +503,8 @@ inline std::string rml_css_length_math(std::string value, double width, double h
                           detail::css_layout_percentage_property(property) ||
                               (decorator && depth == 0));
         const auto [replacement, consumed] = math.resolve();
-        if (math.uses_root_font() && (property == "font" || property == "font-size" ||
-                                      (property.starts_with("--") && !decorator)))
+        if (math.uses_root_font() &&
+            (property == "font" || property == "font-size" || (carried && !decorator)))
             throw std::runtime_error(
                 "Root-relative CSS math in font sizing or custom properties is not represented.");
         value.replace(index, consumed, replacement);

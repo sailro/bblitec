@@ -276,6 +276,25 @@ template <typename Map>
     return names;
 }
 
+/**
+ * The number a number-keyed dictionary stores property `name` under: the
+ * number whose string `name` is, or none when no number spells it (its
+ * `get` then misses).
+ */
+[[nodiscard]] inline Nullable<double> number_property_key(const std::string& name) {
+    const double key = number_from_string(name);
+    if (number_to_string(key) != name)
+        return Nullable<double>{std::nullopt};
+    return Nullable<double>{key};
+}
+
+/** Whether a number-keyed dictionary owns property `name`. */
+template <typename Map>
+[[nodiscard]] inline bool has_number_property(const Map& map, const std::string& name) {
+    const auto key = number_property_key(name);
+    return key.has_value() && map.has(*key);
+}
+
 /** Sort references, avoiding repeated linear lookups in parsed object storage. */
 template <typename Entries, typename Visitor>
 inline void json_for_each_object_entry(const Entries& entries, Visitor&& visitor) {
@@ -1039,6 +1058,8 @@ class JsonArrayView {
     JsonValue value_;
 
 public:
+    /** The elements' type, which the array searches (`includes`, `indexOf`) compare. */
+    using value_type = JsonValue;
     explicit JsonArrayView(JsonValue value) : value_(std::move(value)) {}
     [[nodiscard]] std::size_t size() const {
         return value_.is_array() ? static_cast<std::size_t>(value_.length()) : 0;

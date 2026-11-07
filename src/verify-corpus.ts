@@ -15,7 +15,9 @@
 // member -- the LibreQuake corpus files live inside `.pak` containers the
 // release zip carries -- so an archive is verified by content: every
 // member is hashed, one level of `.pak` nesting included, and a row
-// matches when its digest names bytes the pinned archive holds.
+// matches when its digest names bytes the pinned archive holds. The scene
+// rows' `rightHanded` flags are re-derived from the pinned tree's
+// `scene-config.json`.
 //
 // It lives beside `status:verify` in the `verify-*` family rather than in
 // the unit suite because the published package ships no `lab/` sources --
@@ -27,6 +29,7 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { inflateRawSync } from "node:zlib";
 import { downloadCached, readCachedDownload } from "./asset-download-cache.js";
+import { isRecord } from "./json-fields.js";
 import { runConcurrently } from "./run-concurrently.js";
 import type {
     BabylonLiteCorpusManifest,
@@ -191,6 +194,9 @@ export function classifyCorpusChecks(
     for (const file of manifest.tooling ?? []) {
         checks.push(fileCheck("tooling", file, manifest.sourceVersion));
     }
+    for (const file of manifest.packageSources ?? []) {
+        checks.push(fileCheck("packageSources", file, manifest.sourceVersion));
+    }
     for (const application of manifest.applications) {
         for (const file of application.files) {
             checks.push(
@@ -213,6 +219,32 @@ export function classifyCorpusChecks(
         });
     }
     return checks;
+}
+
+/**
+ * The corpus scene rows whose `rightHanded` flag disagrees with the pinned
+ * `scene-config.json`, by id: a row carries the flag exactly when the pin's
+ * configuration marks its scene `"rightHanded": true`.
+ */
+export function rightHandedFlagMismatches(
+    manifest: BabylonLiteCorpusManifest,
+    sceneConfig: string,
+): string[] {
+    const scenes: unknown = JSON.parse(sceneConfig);
+    if (!Array.isArray(scenes))
+        throw new Error("The pinned scene-config.json is not a scene list.");
+    const marked = new Set(
+        scenes.flatMap((scene) =>
+            isRecord(scene) &&
+            scene.rightHanded === true &&
+            typeof scene.id === "number"
+                ? [`scene${scene.id}`]
+                : [],
+        ),
+    );
+    return manifest.scenes
+        .filter((row) => (row.rightHanded === true) !== marked.has(row.id))
+        .map((row) => row.id);
 }
 
 function sha256Hex(bytes: Uint8Array): string {
@@ -623,11 +655,39 @@ async function main(): Promise<void> {
                 `${count("unverifiable")} unverifiable (of ${rows.length})`,
         );
     }
+    // The scene rows' `rightHanded` flags are the pinned configuration's.
+    const sceneConfigUrl = rawUpstreamUrl(
+        manifest.sourceVersion,
+        "scene-config.json",
+    );
+    const sceneConfig = await classifiedFetch(sceneConfigUrl, offline);
+    const flagMismatches =
+        sceneConfig.state === "fetched"
+            ? rightHandedFlagMismatches(
+                  manifest,
+                  Buffer.from(sceneConfig.bytes).toString("utf8"),
+              )
+            : undefined;
+    console.log(
+        `right-handed flags: ${
+            flagMismatches === undefined
+                ? `unverifiable -- ${"message" in sceneConfig ? sceneConfig.message : uncachedDetail(sceneConfigUrl)}`
+                : `${flagMismatches.length === 0 ? "match" : `mismatch for ${flagMismatches.join(", ")}`} -- ${sceneConfigUrl}`
+        }`,
+    );
 
     const mismatches = verdicts.filter((row) => row.status === "mismatch");
-    const unverifiable = verdicts.filter(
-        (row) => row.status === "unverifiable",
-    );
+    const unverifiable = [
+        ...verdicts.filter((row) => row.status === "unverifiable"),
+        ...(flagMismatches === undefined ? [sceneConfigUrl] : []),
+    ];
+    if (flagMismatches?.length) {
+        console.error(
+            `\nThe corpus scene rows' rightHanded flags disagree with ${sceneConfigUrl}: ${flagMismatches.join(", ")}.`,
+        );
+        process.exitCode = 1;
+        return;
+    }
     if (mismatches.length > 0) {
         console.error(
             `\n${mismatches.length} corpus digest(s) disagree with the pinned upstream bytes:`,
@@ -662,8 +722,9 @@ async function main(): Promise<void> {
             `upstream tree at ${manifest.sourceVersion} and the pinned origins` +
             (provenanceOnly > 0
                 ? `; the ${provenanceOnly} generated row(s) verify by ` +
-                  "provenance only (their digests are adoption-time renders)."
-                : "."),
+                  "provenance only (their digests are adoption-time renders)"
+                : "") +
+            "; the scene rows' right-handed flags match its scene-config.json.",
     );
 }
 

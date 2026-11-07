@@ -934,6 +934,8 @@ export interface PinnedGeometryTaskRequest {
     index: number;
     attachments: readonly string[];
     emitColor: boolean;
+    /** The task reached `enableGeometryVelocity`. */
+    velocity?: boolean;
 }
 
 export async function composeRenderableVariants(
@@ -1080,54 +1082,76 @@ export async function composeRenderableVariants(
                         variant,
                     ),
                 });
-                // The pin composes each geometry task's MRT arm from the
-                // same inputs through `composePbrGeometryShader`; only the
-                // fragment's return differs, one write per attachment.
-                for (const task of geometryTasks) {
-                    const geometry = await composePinnedPbrVariant(
-                        state.input,
-                        {
-                            ...arm.options,
-                            meshFeatures,
-                            uv2Mask: subject.uv2Mask,
-                            geometry: {
-                                attachments: task.attachments,
-                                emitColor: task.emitColor,
-                            },
-                        },
-                    );
-                    variants.push({
-                        materialIndex: state.row,
-                        materialName: subject.name,
+                variants.push(
+                    ...(await composeGeometryTaskVariants(
+                        state,
+                        subject.name,
                         meshFeatures,
-                        materialFeatures: geometry.features,
-                        lightMode: arm.lightMode,
-                        singleLightType: arm.singleLightType,
-                        toneMapping: arm.toneMapping,
-                        ...(arm.areaLighting !== undefined
-                            ? { areaLighting: arm.areaLighting }
-                            : {}),
-                        geometryTask: task.index,
-                        armLabel: `${arm.label} geometry ${task.index}`,
-                        fragmentKey: geometry.fragmentKey,
-                        arms: pinnedVariantArms(
-                            state.input,
-                            subject.uv2Mask,
-                            geometry,
-                            bits,
-                        ),
-                        vertexWgsl: geometry.vertexWgsl,
-                        fragmentWgsl: geometry.fragmentWgsl,
-                        materialUboSpec: plainUboSpec(geometry.materialUboSpec),
-                        ...pluginVariantFields(
-                            state.plugins,
-                            scene.pluginsRegistered,
-                            geometry,
-                        ),
-                    });
-                }
+                        subject.uv2Mask,
+                        arm,
+                        geometryTasks,
+                        scene.pluginsRegistered,
+                        bits,
+                    )),
+                );
             }
         }
+    }
+    return variants;
+}
+
+/**
+ * The pin composes each geometry task's MRT arm from the same inputs as the
+ * colour arm through `composePbrGeometryShader`; only the fragment's return
+ * differs, one write per attachment. A material scene code made reaches a
+ * geometry task as an asset's does, so both composers take these rows.
+ */
+async function composeGeometryTaskVariants(
+    state: {
+        row: number;
+        input: PinnedMaterialInput;
+        plugins?: readonly MaterialPluginManifest[];
+    },
+    materialName: string,
+    meshFeatures: number,
+    uv2Mask: number,
+    arm: PinnedSceneArm,
+    geometryTasks: readonly PinnedGeometryTaskRequest[],
+    pluginsRegistered: boolean | undefined,
+    bits: Awaited<ReturnType<typeof pinnedArmBits>>,
+): Promise<PinnedRenderableVariant[]> {
+    const variants: PinnedRenderableVariant[] = [];
+    for (const task of geometryTasks) {
+        const geometry = await composePinnedPbrVariant(state.input, {
+            ...arm.options,
+            meshFeatures,
+            uv2Mask,
+            geometry: {
+                attachments: task.attachments,
+                emitColor: task.emitColor,
+                ...(task.velocity ? { velocity: true } : {}),
+            },
+        });
+        variants.push({
+            materialIndex: state.row,
+            materialName,
+            meshFeatures,
+            materialFeatures: geometry.features,
+            lightMode: arm.lightMode,
+            singleLightType: arm.singleLightType,
+            toneMapping: arm.toneMapping,
+            ...(arm.areaLighting !== undefined
+                ? { areaLighting: arm.areaLighting }
+                : {}),
+            geometryTask: task.index,
+            armLabel: `${arm.label} geometry ${task.index}`,
+            fragmentKey: geometry.fragmentKey,
+            arms: pinnedVariantArms(state.input, uv2Mask, geometry, bits),
+            vertexWgsl: geometry.vertexWgsl,
+            fragmentWgsl: geometry.fragmentWgsl,
+            materialUboSpec: plainUboSpec(geometry.materialUboSpec),
+            ...pluginVariantFields(state.plugins, pluginsRegistered, geometry),
+        });
     }
     return variants;
 }
@@ -1215,6 +1239,7 @@ interface ScenePbrSetters {
     setPbrMetallicReflectance: PinnedLayerSetter<Record<string, unknown>>;
     /** The only one that takes the material alone: it stamps a boolean. */
     setPbrGammaAlbedo: (material: Record<string, unknown>) => void;
+    setPbrAlphaCutoff: PinnedLayerSetter<number>;
     setShadowOnly: PinnedLayerSetter<Record<string, unknown>>;
 }
 
@@ -1233,6 +1258,7 @@ function scenePbrSetters(): Promise<ScenePbrSetters> {
             emissive,
             reflectance,
             gammaAlbedo,
+            alphaCutoff,
             lightmap,
             shadowOnly,
         ] = await Promise.all([
@@ -1266,6 +1292,9 @@ function scenePbrSetters(): Promise<ScenePbrSetters> {
             importPinnedModule<Pick<ScenePbrSetters, "setPbrGammaAlbedo">>(
                 "material/pbr/set-gamma-albedo.js",
             ),
+            importPinnedModule<Pick<ScenePbrSetters, "setPbrAlphaCutoff">>(
+                "material/pbr/set-alpha-cutoff.js",
+            ),
             // The lightmap's setter shares its module with the opt-in
             // that registers the extension, which `pinned-pbr-variants`
             // already performs.
@@ -1287,6 +1316,7 @@ function scenePbrSetters(): Promise<ScenePbrSetters> {
             setPbrEmissive: emissive.setPbrEmissive,
             setPbrMetallicReflectance: reflectance.setPbrMetallicReflectance,
             setPbrGammaAlbedo: gammaAlbedo.setPbrGammaAlbedo,
+            setPbrAlphaCutoff: alphaCutoff.setPbrAlphaCutoff,
             setPbrLightmap: lightmap.setPbrLightmap,
             setShadowOnly: shadowOnly.setShadowOnly,
         };
@@ -1319,6 +1349,7 @@ export async function composeScenePbrVariants(
         /** The states program writes give the scene's materials. */
         materialStates?: PbrMaterialStates;
     } = {},
+    geometryTasks: readonly PinnedGeometryTaskRequest[] = [],
 ): Promise<readonly PinnedRenderableVariant[]> {
     if (materials.length === 0 || arms.length === 0) return [];
     // Scene code can assign its material to any renderable the scene has --
@@ -1549,6 +1580,8 @@ export async function composeScenePbrVariants(
         if (material.gammaAlbedo) {
             setters.setPbrGammaAlbedo(input);
         }
+        if (material.alphaCutOff !== undefined)
+            setters.setPbrAlphaCutoff(input, material.alphaCutOff);
         if (material.shadowOnly)
             setters.setShadowOnly(input, material.shadowOnly);
         const noColor = material.noColorView
@@ -1678,6 +1711,20 @@ export async function composeScenePbrVariants(
                         variant,
                     ),
                 });
+                // A caster view draws only in its caster pass.
+                if (material.noColorView || material.esmShadowView) continue;
+                variants.push(
+                    ...(await composeGeometryTaskVariants(
+                        state,
+                        `scene-material-${materialIndexBase + material.materialsBefore}`,
+                        meshFeatures,
+                        composeOptions.uv2Mask ?? 0,
+                        arm,
+                        geometryTasks,
+                        scene.pluginsRegistered,
+                        bits,
+                    )),
+                );
             }
         }
     }

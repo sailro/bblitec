@@ -87,14 +87,15 @@ int main() {
     const auto cloned = bbl::clone_mesh_node(engine, bbl::MeshHandle{0});
     const auto second = bbl::clone_mesh_node(engine, cloned);
     const auto& result = engine.meshes.at(second.value);
-    // The pin's clone keeps its own TRS and its local lanes, and leaves the
-    // node hierarchy: no parent, no loaded parent world, no root edit.
+    // The pin's clone keeps its own TRS, its local lanes and its spread
+    // winding fields, and leaves the node hierarchy: no parent, no loaded
+    // parent world, no root edit.
     assert(result.parent.value == bbl::invalid_handle && result.transform_parent.value == bbl::invalid_handle);
-    assert(result.detached_imported_mesh && result.outer_position.x == 0 && result.outer_rotation.y == 0);
-    assert(!result.parent_world && !result.clockwise_front_face && !result.authored_clockwise_front_face);
+    assert(result.outer_position.x == 0 && result.outer_rotation.y == 0);
+    assert(!result.parent_world && result.clockwise_front_face && result.authored_clockwise_front_face);
     assert(result.position.x == 7 && result.position.y == 8 && result.position.z == 9);
     assert(result.geometry == 0 && engine.geometries[0].owners == 3);
-    assert(!engine.meshes[0].detached_imported_mesh && engine.meshes[0].parent.value == 12);
+    assert(engine.meshes[0].parent.value == 12);
     assert(engine.meshes[0].parent_world && engine.meshes[0].clockwise_front_face);
     assert(engine.geometries[0].vertices[0].position.x == 1 && engine.geometries[0].vertices[0].normal.x == -1);
     // A .babylon mesh keeps its own TRS on the record; its clone drops the
@@ -108,7 +109,7 @@ int main() {
     const auto babylon_clone = bbl::clone_mesh_node(engine, babylon_source);
     auto& cloned_babylon = engine.meshes.at(babylon_clone.value);
     assert(cloned_babylon.position.x == 9 && cloned_babylon.rotation.y == .5f && cloned_babylon.scaling.z == 4);
-    assert(!cloned_babylon.parent_world && cloned_babylon.detached_imported_mesh);
+    assert(!cloned_babylon.parent_world);
     cloned_babylon.position = {1,1,1};
     const auto recloned_babylon = bbl::clone_mesh_node(engine, babylon_clone);
     assert(engine.meshes.at(recloned_babylon.value).position.x == 1);
@@ -175,7 +176,6 @@ int main() {
         geometry.morph_tangents, geometry.indices);
     std::apply([](auto&... values) { (values.resize(4), ...); }, arrays);
     geometry.bounds_min = {-1,-2,-3}; geometry.attribute_version = 17;
-    geometry.source_indices_reversed = true;
     // A factory mesh: createMeshFromData's record over its own packed streams.
     geometry.owned_packed_geometry = true;
     bbl::MeshRecord source;
@@ -202,7 +202,7 @@ int main() {
     std::apply([](auto&... values) { assert(((values.size() == 4) && ...)); }, arrays);
     bbl::remove_from_scene(scene, third);
     std::apply([](auto&... values) { assert(((values.empty() && values.capacity() == 0) && ...)); }, arrays);
-    assert(!geometry.source_indices_reversed && geometry.attribute_version == 17);
+    assert(geometry.attribute_version == 17);
     assert(geometry.bounds_min.x == -1 && geometry.bounds_min.z == -3);
     assert(scene.meshes.empty() && scene.render_topology_version == version + 3);
     bbl::remove_from_scene(scene, third);

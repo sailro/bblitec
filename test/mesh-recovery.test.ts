@@ -213,7 +213,6 @@ int main() {
     const auto skippedGeometry = handle_at(engine.meshes, skipped).geometry;
     scene->meshes = {mesh, clone, skipped};
     auto& metadata = engine.geometries.at(old);
-    metadata.source_indices_reversed = true;
     metadata.topology = MeshTopology::lines;
     metadata.morph_positions = {{Vec3{1,2,3}}};
     metadata.morph_normals = {{Vec3{4,5,6}}};
@@ -227,7 +226,7 @@ int main() {
     const auto& geometry = engine.geometries.at(geometryIndex);
     assert(!geometry.render_vertices_override);
     const auto verifyMetadata = [](const ModelGeometry& value, std::uint64_t version) {
-        assert(value.owned_packed_geometry && value.source_indices_reversed);
+        assert(value.owned_packed_geometry);
         assert(value.topology == MeshTopology::lines && value.attribute_version == version);
         assert(value.morph_positions.size() == 1 && value.morph_positions[0][0].x == 1);
         assert(value.morph_normals.size() == 1 && value.morph_normals[0][0].y == 5);

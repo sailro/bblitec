@@ -6,6 +6,7 @@
 #pragma once
 
 #include <bblite/features/device_recovery.hpp>
+#include <bblite/features/geometry_velocity.hpp>
 #include <bblite/features/has_billboards.hpp>
 #include <bblite/features/render_task_transmission.hpp>
 #include <bblite/features/has_clustered_lights.hpp>
@@ -17,12 +18,14 @@
 #include <bblite/features/has_picking.hpp>
 #include <bblite/features/has_post_process.hpp>
 #include <bblite/features/has_screen_space.hpp>
+#include <bblite/features/has_ssao.hpp>
 #include <bblite/features/external_renderables.hpp>
 #include <bblite/features/has_splats.hpp>
 #include <bblite/features/has_sprite_renderer.hpp>
 #include <bblite/features/has_text.hpp>
 #include <bblite/features/has_ui.hpp>
 #include <bblite/features/mesh_geometry_update.hpp>
+#include <bblite/features/mesh_opacity.hpp>
 #include <bblite/features/offscreen_surfaces.hpp>
 #include <bblite/features/workers.hpp>
 
@@ -90,6 +93,7 @@
 #include "pal_gpu_surface.hpp"
 #include "pal_gpu_vertex.hpp"
 #include "pal_gpu_materials.hpp"
+#include "pal_gpu_task_outputs.hpp"
 #include "pal_gpu_scene_blocks.hpp"
 #include "pal_gpu_targets.hpp"
 #include "pal_dawn_post_process.hpp"
@@ -128,6 +132,8 @@
 #include <vector>
 
 namespace bbl::pal {
+
+struct ShaderPassMatrices;
 
 inline namespace dawn_scene {
 
@@ -210,7 +216,8 @@ constexpr std::size_t material_extension_slots =
     (BBLITE_MATERIAL_REFLECTANCE_MAP ? 1 : 0) + (BBLITE_MATERIAL_ANISOTROPY_MAP ? 1 : 0) +
     (BBLITE_MATERIAL_TRANSLUCENCY_COLOR_MAP ? 1 : 0) +
     (BBLITE_MATERIAL_TRANSLUCENCY_INTENSITY_MAP ? 1 : 0) + (BBLITE_MATERIAL_SPEC_GLOSS ? 1 : 0) +
-    (BBLITE_MATERIAL_OCCLUSION_UV2 ? 1 : 0) + (BBLITE_MATERIAL_LIGHTMAP ? 1 : 0);
+    (BBLITE_MATERIAL_OCCLUSION_UV2 ? 1 : 0) + (BBLITE_MATERIAL_LIGHTMAP ? 1 : 0) +
+    (BBLITE_MATERIAL_BENT_NORMAL ? 1 : 0);
 // The Standard bump slot appends after everything the PBR path owns, so a
 // scene that compiles it shifts no existing slot.
 constexpr std::size_t standard_bump_slots = BBLITE_MATERIAL_STANDARD_BUMP ? 1 : 0;
@@ -234,6 +241,9 @@ static_assert(mesh_texture_slots == upstream::material_texture_mesh_slots,
  * built for, so a draw arriving with another answer rebuilds.
  */
 struct DawnState;
+#if BBLITE_HAS_SSAO
+struct DawnSsaoState;
+#endif
 struct DawnAreaLightEmission;
 
 #if BBLITE_RECT_AREA_EMISSION
@@ -274,6 +284,22 @@ inline void release_area_light_emission(const DawnAreaLightEmission& gpu) {
 }
 #endif
 
+/**
+ * A bind group a draw state built for another key -- the variant, and the
+ * plugin texture allocations it binds -- held with the material block its
+ * variant sizes, so draws alternating keys in one frame (a task and the
+ * scene pass drawing a mesh in two variants, two passes binding different
+ * SSAO allocations) swap groups rather than rebuild them.
+ */
+struct DawnHeldGroup {
+    WGPUBindGroup group = nullptr;
+    std::size_t group_key = npos;
+    std::vector<std::uint32_t> plugin_texture_allocations;
+    WGPUBuffer material_uniforms = nullptr;
+    std::optional<std::tuple<std::uint64_t, std::uint64_t, std::size_t, std::uint32_t>>
+        material_upload;
+};
+
 struct DawnDrawResources {
     WGPUBuffer mesh_uniforms = nullptr;
     WGPUBuffer material_uniforms = nullptr;
@@ -287,21 +313,100 @@ struct DawnDrawResources {
     // no marked material -- the same shape the geometry task's `gp` buffer
     // takes, where the reflected binding name decides whether it is bound.
     WGPUBuffer uv_transform_uniforms = nullptr;
+    // Mesh opacity's `meshOpacity` block, made where a composed variant
+    // declares it -- the same reflected-name shape as the two above -- and
+    // the block it holds.
+    WGPUBuffer mesh_opacity_uniforms = nullptr;
+#if BBLITE_MESH_OPACITY
+    std::optional<upstream::MeshOpacityUniforms> mesh_opacity_written{};
+#endif
     WGPUBindGroup group = nullptr;
     /** The variant, times two plus the Standard unfilterable-emissive bit. */
     std::size_t group_key = npos;
     std::vector<std::uint32_t> plugin_texture_allocations;
     std::optional<std::tuple<std::uint64_t, std::uint64_t, std::size_t, std::uint32_t>>
         material_upload;
+    /** The groups built for the keys this draw alternates with, at most `held_group_limit`. */
+    std::vector<DawnHeldGroup> held_groups;
 #if BBLITE_RECT_AREA_EMISSION
     // The emission allocation of the draw's scene, which the held group
     // binds (`refresh_area_light_group`); id 0 for none.
     const DawnAreaLightEmission* area_light_emission = nullptr;
     std::uint64_t area_light_emission_id = 0;
 #endif
+#if BBLITE_GEOMETRY_VELOCITY
+    // The velocity resources the held group binds (`DawnGeometryVelocity::generation`).
+    std::uint64_t velocity_generation = 0;
+#endif
 };
 
 using DawnDrawState = OwnedGpuRecord<DawnDrawResources, DawnState>;
+
+inline constexpr std::size_t held_group_limit = 3;
+
+inline void release_held_group(DawnHeldGroup& held) noexcept {
+    if (held.group)
+        wgpuBindGroupRelease(held.group);
+    if (held.material_uniforms)
+        wgpuBufferRelease(held.material_uniforms);
+}
+
+inline void release_held_groups(DawnDrawResources& draw) noexcept {
+    for (DawnHeldGroup& held : draw.held_groups)
+        release_held_group(held);
+    draw.held_groups.clear();
+}
+
+/**
+ * Holds the draw's current group, with its material block when the variant
+ * sizes it (`material`), dropping the oldest held one past the limit.
+ */
+inline void hold_current_group(DawnDrawResources& draw, bool material) {
+    if (!draw.group)
+        return;
+    if (draw.held_groups.size() == held_group_limit) {
+        release_held_group(draw.held_groups.front());
+        draw.held_groups.erase(draw.held_groups.begin());
+    }
+    DawnHeldGroup held;
+    held.group = std::exchange(draw.group, nullptr);
+    held.group_key = draw.group_key;
+    held.plugin_texture_allocations = draw.plugin_texture_allocations;
+    if (material) {
+        held.material_uniforms = std::exchange(draw.material_uniforms, nullptr);
+        held.material_upload = std::exchange(draw.material_upload, std::nullopt);
+    }
+    draw.held_groups.push_back(std::move(held));
+}
+
+/**
+ * Makes the held group of `key` and `allocations` the current one, holding
+ * the current; false when no draw built it.
+ */
+inline bool restore_held_group(DawnDrawResources& draw, std::size_t key,
+                               const std::vector<std::uint32_t>& allocations, bool material) {
+    const auto found =
+        std::find_if(draw.held_groups.begin(), draw.held_groups.end(), [&](const auto& held) {
+            return held.group_key == key && held.plugin_texture_allocations == allocations;
+        });
+    if (found == draw.held_groups.end())
+        return false;
+    DawnHeldGroup restored = std::move(*found);
+    draw.held_groups.erase(found);
+    hold_current_group(draw, material);
+    if (draw.group)
+        wgpuBindGroupRelease(draw.group);
+    draw.group = restored.group;
+    draw.group_key = key;
+    draw.plugin_texture_allocations = std::move(restored.plugin_texture_allocations);
+    if (material) {
+        if (draw.material_uniforms)
+            wgpuBufferRelease(draw.material_uniforms);
+        draw.material_uniforms = restored.material_uniforms;
+        draw.material_upload = restored.material_upload;
+    }
+    return true;
+}
 
 struct DawnSharedShaderGeometry;
 struct DawnSharedMaterialTextures;
@@ -576,6 +681,28 @@ struct DawnRenderTask {
     DawnBindGroup pinned_frame_group{};
 };
 
+/** A geometry velocity renderable's GPU state (`BBLITE_GEOMETRY_VELOCITY`). */
+struct DawnGeometryVelocity;
+
+#if BBLITE_GEOMETRY_VELOCITY
+/**
+ * A velocity renderable's GPU state, by mesh slot: a PBR renderable's `gm`
+ * block and the previous bone palette and morph weights either family's
+ * deformation snapshots.
+ * `generation` moves whenever a resource is replaced, so a held group
+ * binding the old one is rebuilt.
+ */
+struct DawnGeometryVelocity {
+    DawnBuffer block;
+    DawnTexture bones;
+    DawnTextureView bones_view;
+    std::uint32_t bone_texels = 0;
+    DawnBuffer morph;
+    std::uint64_t morph_bytes = 0;
+    std::uint64_t generation = 0;
+};
+#endif
+
 struct DawnGeometryTask {
     std::vector<DawnTexture> colors;
     std::vector<DawnTextureView> color_views;
@@ -588,11 +715,31 @@ struct DawnGeometryTask {
     DawnBuffer pinned_geometry_params;
     std::array<float, 16> previous_view_projection{};
     bool has_previous_view_projection = false;
-    /** The task's Standard renderables' previous worlds. */
+    /** The task's renderables' velocity state (`PinnedVelocityHistory`). */
     PinnedVelocityHistory velocity;
+#if BBLITE_GEOMETRY_VELOCITY
+    std::vector<DawnGeometryVelocity> mesh_velocity;
+#endif
     /** Set with the textures: another task binds this task's depth. */
     bool depth_borrowed = false;
 };
+
+#if BBLITE_GEOMETRY_VELOCITY
+/**
+ * The writes of a geometry task's velocity renderables
+ * (`VelocitySink`), through the queue: the `gm` block, the previous
+ * palette into an rgba32float row and the previous weights into a storage
+ * buffer, each resource made at its first write and remade when its size
+ * moves.
+ */
+struct DawnVelocitySink {
+    DawnState& state;
+    DawnGeometryTask& task;
+    void block(MeshHandle mesh, std::span<const float> floats);
+    void bones(MeshHandle mesh, std::span<const float> floats);
+    void morph(MeshHandle mesh, std::span<const float> floats);
+};
+#endif
 
 #if BBLITE_HAS_POST_PROCESS
 /**
@@ -645,9 +792,10 @@ struct PreparedDawnPostProcessPass {
 
 #if BBLITE_HAS_SCREEN_SPACE
 /**
- * A screen-space producer or temporal resolve: the pin's own dedicated
- * pipeline (`ensureProducerPipeline`, `ensurePipeline`) over the layout the
- * generated table declares, shared by every task drawing the same stage.
+ * A screen-space producer, blur or temporal resolve: the pin's own
+ * dedicated pipeline (`ensureProducerPipeline`, `ensurePipeline`) over the
+ * layout the generated table declares, shared by every pass drawing the
+ * same stage.
  */
 struct DawnScreenSpaceProgram {
     std::uint32_t stage = 0;
@@ -658,11 +806,12 @@ struct DawnScreenSpaceProgram {
 };
 
 /**
- * One stage of one task: its program, its uniform buffer and the bind group
- * over the frame-graph textures it reads. The pin rebuilds that group when
- * any bound `GPUTexture` identity changed; here a texture changes identity
- * only through the frame-graph rebuild that resets this stage, so an empty
- * group is the whole test.
+ * One dedicated pass of one task: its program, its uniform buffer and the
+ * bind group over the frame-graph textures it reads -- two passes over one
+ * program keep their own, as the pin's two blur passes do. The pin rebuilds
+ * a group when any bound `GPUTexture` identity changed; here a texture
+ * changes identity only through the frame-graph rebuild that resets this
+ * pass, so an empty group is the whole test.
  */
 struct DawnScreenSpaceStage {
     std::size_t program = npos;
@@ -670,9 +819,9 @@ struct DawnScreenSpaceStage {
     DawnBindGroup group{};
 };
 
+/** A task's dedicated passes, in its generated plan's order. */
 struct DawnScreenSpaceTask {
-    DawnScreenSpaceStage producer;
-    DawnScreenSpaceStage resolve;
+    std::vector<DawnScreenSpaceStage> passes;
 };
 #endif
 
@@ -1055,17 +1204,16 @@ struct DawnState : DawnDevice {
     std::vector<std::vector<DawnPostProcessTask>> post_process_tasks;
     /** The distinct programs those passes draw with. */
     std::vector<DawnPostProcessProgram> post_process_programs;
-#if BBLITE_HAS_TAA
-    WGPUTexture temporal_presented = nullptr;
-    WGPUTextureView temporal_presented_view = nullptr;
-    WGPUBindGroup temporal_presented_group = nullptr;
-#endif
 #endif
 #if BBLITE_HAS_SCREEN_SPACE
     /** The distinct producer/resolve stages the screen-space tasks draw. */
     std::vector<DawnScreenSpaceProgram> screen_space_programs;
     // Per frame task, a screen-space task's two stages.
     std::vector<DawnScreenSpaceTask> screen_space_tasks;
+#endif
+#if BBLITE_HAS_SSAO
+    /** The SSAO plan programs and each task's owned textures (pal_dawn_scene_ssao.cpp). */
+    std::shared_ptr<DawnSsaoState> ssao;
 #endif
 #if BBLITE_HAS_POST_PROCESS
     // The pin's own `getBilinearSampler`: linear magnification and
@@ -1242,12 +1390,12 @@ struct DawnState : DawnDevice {
     std::map<DawnMeshPipelineKey, DawnPipeline> pipelines;
     // Attribution capture resources (scene-1 diagnostics tooling),
     // created lazily on the first requested capture. Pipelines are
-    // keyed by [double_sided]; the PBR diagnostic set adds the MRT
+    // keyed by `DiagnosticPipeline`; the PBR diagnostic set adds the MRT
     // pass index.
     WGPUShaderModule diagnostic_id_module = nullptr;
     WGPUShaderModule diagnostic_cluster_module = nullptr;
-    std::array<WGPURenderPipeline, 2> id_pipelines{};
-    std::array<WGPURenderPipeline, 2> cluster_pipelines{};
+    std::array<WGPURenderPipeline, diagnostic_pipeline_count> id_pipelines{};
+    std::array<WGPURenderPipeline, diagnostic_pipeline_count> cluster_pipelines{};
     std::vector<DawnMesh> meshes;
     /**
      * The uploaded meshes of every swapchain overlay layer.
@@ -1391,29 +1539,18 @@ struct DawnState : DawnDevice {
             program = {};
         }
         post_process_programs.clear();
-#if BBLITE_HAS_TAA
-        if (temporal_presented_group)
-            wgpuBindGroupRelease(temporal_presented_group);
-        if (temporal_presented_view)
-            wgpuTextureViewRelease(temporal_presented_view);
-        if (temporal_presented)
-            wgpuTextureRelease(temporal_presented);
-        temporal_presented_group = nullptr;
-        temporal_presented_view = nullptr;
-        temporal_presented = nullptr;
-#endif
 #endif
 #if BBLITE_HAS_SCREEN_SPACE
         // A stage's bind group names the attachments the graph just
         // released, so it goes with them; its program keys only the
         // generated stage table's formats and outlives every rebuild.
         for (DawnScreenSpaceTask& task : screen_space_tasks) {
-            for (DawnScreenSpaceStage* stage : {&task.producer, &task.resolve}) {
-                if (stage->group)
-                    stage->group.reset();
-                if (stage->uniforms)
-                    stage->uniforms.reset();
-                *stage = {};
+            for (DawnScreenSpaceStage& stage : task.passes) {
+                if (stage.group)
+                    stage.group.reset();
+                if (stage.uniforms)
+                    stage.uniforms.reset();
+                stage = {};
             }
         }
         screen_space_tasks.clear();
@@ -1429,8 +1566,11 @@ struct DawnState : DawnDevice {
     }
 
     void release_gpu_resources(DawnDrawResources& draw) noexcept {
+        release_held_groups(draw);
         if (draw.group)
             wgpuBindGroupRelease(draw.group);
+        if (draw.mesh_opacity_uniforms)
+            wgpuBufferRelease(draw.mesh_opacity_uniforms);
         if (draw.uv_transform_uniforms)
             wgpuBufferRelease(draw.uv_transform_uniforms);
         if (draw.uv_uniforms)
@@ -1743,6 +1883,9 @@ struct DawnState : DawnDevice {
         release_frame_graph_textures();
 #if BBLITE_HAS_SCREEN_SPACE
         release_screen_space_programs();
+#endif
+#if BBLITE_HAS_SSAO
+        ssao.reset();
 #endif
 #if BBLITE_SHADOW_RECEIVERS
         // The receiver group already went with the frame-graph textures it
@@ -2104,6 +2247,13 @@ inline std::span<const upstream::PinnedVariantBinding> standard_variant_rows(std
 }
 #endif
 
+/** Whether a variant's reflected rows declare `name`. */
+inline bool rows_declare(std::span<const upstream::PinnedVariantBinding> rows,
+                         std::string_view name) {
+    return std::any_of(rows.begin(), rows.end(),
+                       [&](const upstream::PinnedVariantBinding& row) { return row.name == name; });
+}
+
 /**
  * Whether a reflected row claims `binding`.
  *
@@ -2461,6 +2611,7 @@ inline WGPUBindGroup pinned_geometry_frame_group(DawnState& state) {
 [[maybe_unused]] void write_pinned_geometry_prologue(DawnState& state, const Scene& scene,
                                                      const Engine& engine,
                                                      const CameraRecord& camera,
+                                                     const GeometryTaskOptions& task,
                                                      DawnGeometryTask& geometry,
                                                      const std::array<float, 16>& geometry_matrix);
 
@@ -2493,7 +2644,10 @@ state_resource_for(const DawnState& state, upstream::MaterialTextureSource sourc
  */
 PinnedResource pinned_resource_for(DawnState& state, const DawnMesh& mesh, std::string_view name,
                                    const DawnAreaLightEmission* area_light_emission,
-                                   [[maybe_unused]] const MaterialRecord* material = nullptr);
+                                   [[maybe_unused]] const MaterialRecord* material = nullptr,
+                                   // The pass the draw belongs to, which a pass-dependent
+                                   // plugin texture reads.
+                                   [[maybe_unused]] const ShaderPassMatrices* pass = nullptr);
 
 #endif
 
@@ -2541,20 +2695,28 @@ WGPUBindGroup
 build_pinned_draw_group(DawnState& state, DawnMesh& mesh, std::size_t variant,
                         WGPUBuffer mesh_uniforms, WGPUBuffer material_uniforms,
                         WGPUBuffer geometry_params,
+                        // The draw state's `meshOpacity` block, null where none is composed.
+                        WGPUBuffer mesh_opacity_uniforms,
                         // The draw's emission allocation (`area_light_emission_of`).
                         const DawnAreaLightEmission* area_light_emission,
                         // The material this group is built for, whose ESM caster view names the
                         // generator its `shadowParams` block belongs to.
-                        [[maybe_unused]] const MaterialRecord* material = nullptr);
+                        [[maybe_unused]] const MaterialRecord* material = nullptr,
+                        // The pass it binds for (`pinned_resource_for`).
+                        const ShaderPassMatrices* pass = nullptr,
+                        // A velocity task's renderable state, which a velocity view binds.
+                        const DawnGeometryVelocity* velocity = nullptr);
 
 /**
  * The per-draw buffers and, with `build_group`, the group-1 bind group for one
  * material's variant. The group binds resources the first frame creates, so
- * setup preparation makes the buffers only.
+ * setup preparation makes the buffers only; a pass-dependent plugin texture
+ * rebuilds it when what `pass` selects changes.
  */
 DawnDrawState& ensure_pinned_draw_bindings(DawnState& state, DawnMesh& mesh, std::uint32_t material,
                                            std::size_t variant, const MaterialRecord* record,
-                                           bool build_group, const Scene& scene);
+                                           bool build_group, const Scene& scene,
+                                           const ShaderPassMatrices* pass = nullptr);
 
 /**
  * The per-draw buffers and group-1 bind group for one geometry-output MRT
@@ -2564,7 +2726,9 @@ DawnDrawState& ensure_pinned_draw_bindings(DawnState& state, DawnMesh& mesh, std
  */
 DawnDrawState& ensure_pinned_geometry_bindings(DawnState& state, DawnMesh& mesh,
                                                std::size_t variant, WGPUBuffer geometry_params,
-                                               const Scene& scene);
+                                               const Scene& scene,
+                                               // A velocity task's renderable state for the mesh.
+                                               const DawnGeometryVelocity* velocity = nullptr);
 
 /**
  * The pin's two per-draw blocks for one resolved variant — the mesh block
@@ -2819,21 +2983,32 @@ struct StandardRenderViews {
 };
 
 /** The group-1 bind group for one Standard variant of a mesh. */
-WGPUBindGroup
-build_standard_draw_group(DawnState& state, DawnMesh& mesh, const MaterialRecord* material,
-                          std::size_t variant, WGPUBuffer mesh_uniforms,
-                          WGPUBuffer material_uniforms, WGPUBuffer uv_uniforms,
-                          // Bound only when the composed variant declares the extension's block,
-                          // which is a reflected binding name rather than a compile-time fact --
-                          // the same shape `geometry_params` takes below.
-                          [[maybe_unused]] WGPUBuffer uv_transform_uniforms,
-                          WGPUBuffer geometry_params, StandardRenderViews render_views,
-                          // The draw's emission allocation (`area_light_emission_of`).
-                          const DawnAreaLightEmission* area_light_emission);
+WGPUBindGroup build_standard_draw_group(
+    DawnState& state, DawnMesh& mesh, const MaterialRecord* material, std::size_t variant,
+    WGPUBuffer mesh_uniforms, WGPUBuffer material_uniforms, WGPUBuffer uv_uniforms,
+    // Bound only when the composed variant declares the extension's block,
+    // which is a reflected binding name rather than a compile-time fact --
+    // the same shape `geometry_params` takes below.
+    [[maybe_unused]] WGPUBuffer uv_transform_uniforms,
+    // The colour draw state's `meshOpacity` block, likewise.
+    WGPUBuffer mesh_opacity_uniforms, WGPUBuffer geometry_params, StandardRenderViews render_views,
+    // The draw's emission allocation (`area_light_emission_of`).
+    const DawnAreaLightEmission* area_light_emission,
+    // A geometry task's renderable state, whose previous pose a velocity view binds.
+    const DawnGeometryVelocity* velocity = nullptr);
 
-/** The per-draw uniform buffers for a mesh's Standard draws. */
+/** The per-draw uniform buffers for a mesh's Standard draws of `variant`. */
 DawnDrawState& ensure_standard_draw_buffers(DawnState& state, DawnMesh& mesh,
-                                            std::uint32_t material);
+                                            std::uint32_t material, std::size_t variant);
+
+#if BBLITE_HAS_DAWN && BBLITE_HAS_PBR_RENDERER && BBLITE_MESH_OPACITY
+/** A group's `meshOpacity` entry, refusing a draw state that holds no block. */
+void bind_mesh_opacity(WGPUBuffer mesh_opacity_uniforms, WGPUBindGroupEntry& entry);
+
+/** The draw state's `meshOpacity` block, written for a mesh below 1. */
+void write_mesh_opacity_block(DawnState& state, const Engine& engine,
+                              const upstream::RenderItem& item, DawnDrawResources& draw);
+#endif
 
 /**
  * The attachments one material hands its Standard render-texture slots.
@@ -3037,7 +3212,9 @@ pinned_variant_pipeline(DawnState& state, std::size_t variant, upstream::RenderP
                         // colour format is that generator's own recorded row, so two generators
                         // whose factories returned different formats build different pipelines.
                         std::uint32_t esm_shadow_index = invalid_handle,
-                        std::optional<DawnTaskTarget> target = {});
+                        std::optional<DawnTaskTarget> target = {},
+                        // `setAlphaToCoverage` on the drawn material (`RenderItem`).
+                        bool alpha_to_coverage = false);
 #endif
 
 #if BBLITE_STANDARD_VARIANTS > 0
@@ -3057,7 +3234,9 @@ WGPURenderPipeline standard_variant_pipeline(
     // Which ESM generator's map this pass writes, when it writes one. The
     // colour format is that generator's own recorded row, so two generators
     // whose factories returned different formats build different pipelines.
-    std::uint32_t esm_shadow_index = invalid_handle, std::optional<DawnTaskTarget> target = {});
+    std::uint32_t esm_shadow_index = invalid_handle, std::optional<DawnTaskTarget> target = {},
+    // `setAlphaToCoverage` on the drawn material (`RenderItem`).
+    bool alpha_to_coverage = false);
 #endif
 
 #if BBLITE_NODE_VARIANTS > 0
@@ -3267,14 +3446,6 @@ WGPURenderPipeline blit_pipeline_for(DawnState& state, WGPUTextureFormat format,
 
 WGPUBindGroup blit_group_for(DawnState& state, WGPURenderPipeline pipeline, WGPUTextureView source);
 
-#if BBLITE_HAS_TAA
-void retain_temporal_presentation(DawnState& state, WGPUCommandEncoder encoder, WGPUTexture surface,
-                                  std::uint32_t width, std::uint32_t height);
-
-void present_stopped_temporal_frame(DawnState& state, WGPUCommandEncoder encoder,
-                                    WGPUTextureView surface);
-#endif
-
 /**
  * A mesh's groups for the ID-diagnostic program, built once over its
  * layout: each binding the program's stages declare (their `.slots`
@@ -3325,7 +3496,7 @@ DawnShaderBindings& shader_bindings_for(DawnState& state, [[maybe_unused]] const
 // main pass stay valid; only the fragment module, cull mode, sample
 // count, and color target formats vary.
 WGPURenderPipeline create_diagnostic_pipeline(DawnState& state, WGPUShaderModule fragment_module,
-                                              bool double_sided, std::uint32_t samples,
+                                              DiagnosticPipeline culling, std::uint32_t samples,
                                               const WGPUTextureFormat* color_formats,
                                               std::uint32_t color_count);
 
@@ -3474,13 +3645,13 @@ DawnScreenSpaceProgram build_screen_space_program(DawnState& state, std::uint32_
 std::size_t screen_space_program(DawnState& state, std::uint32_t stage);
 
 /**
- * The view a stage binding reads, by the role the pin bound there: the
- * depth attachment's depth-only view, the lit source colour, or one of the
- * task's owned targets.
+ * The view a pass binding reads, by what the pin bound there: the depth
+ * attachment's depth-only view, the lit source colour, or one of the task's
+ * owned targets.
  */
 WGPUTextureView screen_space_binding_view(DawnState& state, const Engine& engine,
                                           const ScreenSpaceTaskOptions& task,
-                                          upstream::ScreenSpaceTextureRole role);
+                                          upstream::ScreenSpaceTextureRef texture);
 
 /**
  * A pass over one temporal target, cleared to zero: what every dedicated
@@ -3489,16 +3660,16 @@ WGPUTextureView screen_space_binding_view(DawnState& state, const Engine& engine
 WGPURenderPassEncoder begin_screen_space_pass(WGPUCommandEncoder encoder, WGPUTextureView target);
 
 /**
- * One dedicated stage: the block written to its buffer, the bind group
- * built over the frame-graph textures it names (the pin's
- * `rebuildProducerBindGroup`/`rebuildBindGroup` identity test, which here
- * the frame-graph rebuild answers by resetting the stage), then the pin's
- * clear-and-draw over a fullscreen triangle.
+ * One dedicated pass: the block written to its buffer, the bind group
+ * built over the frame-graph textures its plan row names (the pin's
+ * `rebuild*BindGroup` identity tests, which here the frame-graph rebuild
+ * answers by resetting the pass), then the pin's clear-and-draw over a
+ * fullscreen triangle into the pass's target.
  */
 void record_screen_space_stage(DawnState& state, const Engine& engine,
                                const ScreenSpaceTaskOptions& task, DawnScreenSpaceStage& stage,
-                               std::uint32_t stage_index, WGPUCommandEncoder encoder,
-                               WGPUTextureView target, const float* uniforms);
+                               const upstream::ScreenSpacePassInfo& pass,
+                               WGPUCommandEncoder encoder, const float* uniforms);
 
 /** The pin's `clearIdentity`: one clear-only pass over a temporal target. */
 void clear_screen_space_target(WGPUCommandEncoder encoder, WGPUTextureView view);
@@ -3508,8 +3679,8 @@ void clear_screen_space_target(WGPUCommandEncoder encoder, WGPUTextureView view)
  * frame function samples the task's live settings and advances its temporal
  * state, and what it decided is encoded here -- the identity clear on the
  * enabled-to-disabled transition or a singular view-projection inverse,
- * then producer, resolve and history copy when the effect runs, then the
- * composite whenever the task has one.
+ * then the plan's dedicated passes and the history copy when the effect
+ * runs, then the composite whenever the task has one.
  */
 template <typename SourceTextureView>
 void record_screen_space_task(DawnState& state, Engine& engine, TaskHandle handle,
@@ -3518,10 +3689,15 @@ void record_screen_space_task(DawnState& state, Engine& engine, TaskHandle handl
                               SourceTextureView source_texture_view, bool& frame_graph_presented) {
     FrameTaskRecord& record = handle_at(engine.frame_tasks, handle);
     const ScreenSpaceTaskOptions& task = record.screen_space;
+    const upstream::ScreenSpacePlanInfo& plan = upstream::screen_space_plan_infos.at(task.plan);
     DawnScreenSpaceTask& gpu = handle_at(state.screen_space_tasks, handle);
+    if (gpu.passes.size() < plan.pass_count) {
+        gpu.passes.resize(plan.pass_count);
+    }
     const pal::TargetUser user = pal::task_target_user(record);
-    const DawnRenderTarget& raw =
-        pal::resolve_gpu_target(engine, state.render_targets, task.raw, user);
+    for (const RenderTargetHandle intermediate : task.intermediates) {
+        pal::resolve_gpu_target(engine, state.render_targets, intermediate, user);
+    }
     const DawnRenderTarget& stable =
         pal::resolve_gpu_target(engine, state.render_targets, task.stable, user);
     const DawnRenderTarget& history =
@@ -3529,15 +3705,13 @@ void record_screen_space_task(DawnState& state, Engine& engine, TaskHandle handl
     const ScreenSpaceFrameDecision decision = upstream::screen_space_frame(
         engine, handle, screen_space_frame_inputs(state.render_targets, task));
     record_screen_space_decision(
-        decision, record.post_process.passes.size() > 1,
+        decision, plan.pass_count, record.post_process.passes.size() > 1,
         [&](bool previous) {
             clear_screen_space_target(encoder, previous ? history.color_view : stable.color_view);
         },
-        [&](bool producer, const float* uniforms) {
-            record_screen_space_stage(state, engine, task, producer ? gpu.producer : gpu.resolve,
-                                      producer ? task.producer_shader : task.resolve_shader,
-                                      encoder, producer ? raw.color_view : stable.color_view,
-                                      uniforms);
+        [&](std::size_t pass, const float* uniforms) {
+            record_screen_space_stage(state, engine, task, gpu.passes[pass], plan.passes[pass],
+                                      encoder, uniforms);
         },
         [&](std::size_t child) {
             record_post_process_pass(state, engine, handle, encoder, surface_view, width, height,
@@ -3550,6 +3724,33 @@ void record_screen_space_task(DawnState& state, Engine& engine, TaskHandle handl
         });
 }
 #endif
+
+#if BBLITE_HAS_SSAO
+/**
+ * One `createSsaoTask` frame: the generated decision, encoded from the plan.
+ * `velocity` is the temporal velocity input with its built extent, or null.
+ */
+void record_ssao_task(DawnState& state, Engine& engine, TaskHandle handle,
+                      WGPUCommandEncoder encoder, WGPUTextureView depth, WGPUTextureView normal,
+                      WGPUTextureView velocity, std::uint32_t velocity_width,
+                      std::uint32_t velocity_height, std::uint32_t width, std::uint32_t height,
+                      GpuTaskTimingSequence& timing);
+#endif
+
+/** What a plugin texture its owner resolves binds in a pass, and the version it holds under. */
+struct DawnDynamicPluginBinding {
+    WGPUTextureView view = nullptr;
+    WGPUSampler sampler = nullptr;
+    std::uint64_t version = 0;
+};
+
+/** A task kind's owner of the textures its tasks publish (`TaskOutputOwners`). */
+struct DawnTaskOutputOwner {
+    WGPUTextureView (*view)(DawnState&, const Engine&, TaskHandle) = nullptr;
+    DawnDynamicPluginBinding (*plugin)(DawnState&, const Engine&, const MaterialRecord&,
+                                       const ShaderPassMatrices*) = nullptr;
+};
+using DawnTaskOutputOwners = TaskOutputOwners<DawnTaskOutputOwner>;
 
 } // namespace dawn_scene
 

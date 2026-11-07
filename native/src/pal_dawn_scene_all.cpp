@@ -9,5 +9,6 @@
 #include "pal_dawn_scene_textures.cpp"
 #include "pal_dawn_scene_targets.cpp"
 #include "pal_dawn_scene_post_process.cpp"
+#include "pal_dawn_scene_ssao.cpp"
 #include "pal_dawn_scene_picking.cpp"
 #include "pal_dawn.cpp"

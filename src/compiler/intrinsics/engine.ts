@@ -1,6 +1,7 @@
 import type { LoweringServices } from "../lowering-services.js";
 import ts from "typescript";
 import { engineSampleCountCpp } from "../engine-samples.js";
+import { overlayRefusals } from "../../lowering/overlay-scene-lowerer.js";
 import { argumentAt } from "../syntax.js";
 import {
     postProcessComposite,
@@ -15,6 +16,8 @@ import {
     compilePostProcessTaskOptions,
 } from "./post-process-options.js";
 import { isScreenSpaceIntrinsic } from "../../pinned-screen-space.js";
+import { compileSsaoIntrinsic, isSsaoIntrinsic } from "./ssao-options.js";
+import { compileEnableGeometryVelocity } from "./geometry-velocity.js";
 import { sharedPinnedContext } from "../../lowering/context.js";
 import { ApplicationRealmRequired } from "../worker-modules.js";
 
@@ -182,6 +185,9 @@ export interface EngineIntrinsicContext
             | "dataLowerer"
             | "enterRuntimeControlFlow"
             | "leaveRuntimeControlFlow"
+            | "engineLifecycle"
+            | "hasRegisteredScene"
+            | "isRuntimeResourceConstruction"
         > {}
 
 /** The pinned RTT provider is an optional capability, selected in source order. */
@@ -306,6 +312,27 @@ function compileRenderTaskTransmission(
             `${optional("grabDepth", (e) => context.compileBoolean(e))}})`,
         engineCpp,
     };
+}
+
+/**
+ * The base scene of `createOverlayScene`, which `createUtilityLayer` builds
+ * on. A scene of an auxiliary surface presents through its own frame graph,
+ * which an overlay's default task would clear rather than composite onto
+ * (create_overlay_scene refuses it at run time too).
+ */
+export function compileOverlayBase(
+    context: Pick<
+        LoweringServices,
+        "compileValue" | "expectKind" | "reachFeature" | "fail"
+    >,
+    argument: ts.Expression,
+): Value {
+    const base = context.compileValue(argument);
+    context.expectKind(base, "scene", argument);
+    if (base.surfaceCanvas)
+        context.fail(argument, overlayRefusals.auxiliarySurface);
+    context.reachFeature("scene:overlay", argument);
+    return base;
 }
 
 export function compileEngineIntrinsic(
@@ -502,6 +529,36 @@ export function compileEngineIntrinsic(
                           msaaSamples: engine.msaaSamples,
                       }
                     : {}),
+            };
+        }
+
+        case "createOverlayScene": {
+            // `createSceneContext(baseScene.surface)`: its default render
+            // task, at the base surface's sample count.
+            context.expectArgumentCount(call, 1, 1);
+            const base = compileOverlayBase(context, argumentAt(call, 0));
+            context.admissions.noteTemporalRecordBoundary(
+                call,
+                "implicit default scene passes",
+                "always",
+            );
+            const create = `bbl::create_overlay_scene(${base.cpp})`;
+            return {
+                kind: "scene",
+                ...(base.scenePrimarySurface
+                    ? { scenePrimarySurface: true as const }
+                    : {}),
+                cpp:
+                    (base.msaaSamples ?? 4) === 4
+                        ? create
+                        : `bbl::configure_scene_render_defaults(${create}, true, ${engineSampleCountCpp(base)})`,
+                sceneEnvironmentState: {
+                    rotationSet: false,
+                    hasTexturedSkybox: false,
+                },
+                sceneTopologyState: { lights: [] },
+                engineCpp: context.requireEngine(base, call),
+                ...(base.msaaSamples ? { msaaSamples: base.msaaSamples } : {}),
             };
         }
 
@@ -761,6 +818,9 @@ export function compileEngineIntrinsic(
             };
         }
 
+        case "enableGeometryVelocity":
+            return compileEnableGeometryVelocity(context, call);
+
         case "createCopyToTextureTask": {
             context.admissions.noteTemporalRecordBoundary(
                 call,
@@ -783,12 +843,23 @@ export function compileEngineIntrinsic(
                     `bbl::create_copy_to_texture_task(` +
                     `${engine.cpp}, ${scene.cpp}, ${options})`,
                 engineCpp: engine.engineCpp ?? engine.cpp,
+                copyTask: true,
             };
         }
 
         default:
             if (isScreenSpaceIntrinsic(importedName)) {
                 return compileScreenSpaceIntrinsic(context, importedName, call);
+            }
+            if (isSsaoIntrinsic(importedName)) {
+                return compileSsaoIntrinsic(context, importedName, call, () =>
+                    compileTaskEngineAndScene(
+                        context,
+                        importedName,
+                        call,
+                        "the AO frame function reads the scene renderer's camera matrices.",
+                    ),
+                );
             }
             return compilePostProcessIntrinsic(context, importedName, call);
     }

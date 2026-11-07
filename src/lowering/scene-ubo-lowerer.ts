@@ -1,7 +1,7 @@
 import ts from "typescript";
 import { cameraChangeKeyHeader } from "./camera-change-key-lowerer.js";
 import { LoweringContext } from "./context.js";
-import { type PinnedBinding } from "./pinned-numeric-lowerer.js";
+import { absentBinding, type PinnedBinding } from "./pinned-numeric-lowerer.js";
 
 import { lowerPinnedFunction } from "./pinned-function-lowerer.js";
 import { lowerPinnedBody } from "./pinned-body-lowerer.js";
@@ -397,6 +397,10 @@ ${this.contributor("writeEnvUbo", "write_environment_scene_uniforms")}`,
                 { cpp: "scene.environment_identity", type: "opaque" },
             ],
             ["task._sceneUboCacheKey", { cpp: "source.cache", type: "opaque" }],
+            // The lifecycle `enablePbrSsao` installs publishes this aspect
+            // to its plugin's `_prepareDraw`; natively each pass carries the
+            // aspect it packs (`ShaderPassMatrices::projection_aspect`).
+            ["drawBindingLifecycle", absentBinding()],
             ...[
                 "camera",
                 "fog",

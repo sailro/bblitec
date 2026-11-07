@@ -620,10 +620,15 @@ export function compileSceneIntrinsic(
             context.expectKind(frameGraph, "frame-graph", argumentAt(call, 0));
             const task = context.compileValue(argumentAt(call, 1));
             context.expectKind(task, "task", argumentAt(call, 1));
-            if (!task.renderTask && !task.effectTask)
+            if (
+                !task.renderTask &&
+                !task.effectTask &&
+                !task.ssaoTask &&
+                !task.copyTask
+            )
                 context.fail(
                     argumentAt(call, 1),
-                    "buildFrameGraphTask lowers render tasks and effect render tasks.",
+                    "buildFrameGraphTask lowers render, effect render, SSAO and copy tasks.",
                 );
             context.expectSameEngine(frameGraph, task, call);
             context.admissions.noteTemporalRecordBoundary(

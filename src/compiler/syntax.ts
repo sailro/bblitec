@@ -127,6 +127,13 @@ export function unwrapTypePreserving(expression: ts.Expression): ts.Expression {
     return current;
 }
 
+/** Whether a node is grouping parentheses, which group without changing value or type. */
+export function isGroupingParentheses(
+    node: ts.Node,
+): node is ts.ParenthesizedExpression {
+    return ts.isParenthesizedExpression(node);
+}
+
 /** Whether a wrapper exists only in TypeScript: `as`, `<T>`, `!`, `satisfies`. */
 export function isTypeOnlyWrapper(
     node: ts.Node,
@@ -2277,6 +2284,52 @@ export function variableKind(node: ts.Node): VariableKind | undefined {
     if (!ts.isVariableDeclarationList(list)) return undefined;
     if (list.flags & (ts.NodeFlags.Const | ts.NodeFlags.Using)) return "const";
     return list.flags & ts.NodeFlags.Let ? "let" : "var";
+}
+
+/**
+ * "Not a JSON literal", distinct from every value one can hold.
+ *
+ * `null` is a value the graphs carry (`tags: null`), so it cannot double as
+ * the miss signal — and a signal the caller has to re-test for `object`,
+ * `null` and `Array` is a signal that leaks.
+ */
+export const notJson = Symbol("not a JSON literal");
+
+/** A JSON value that is not a container. */
+export type JsonScalar = null | boolean | number | string;
+
+/** The JSON scalar a literal node spells, or `notJson`. */
+export function jsonScalarLiteral(
+    node: ts.Expression,
+): JsonScalar | typeof notJson {
+    if (ts.isStringLiteralLike(node)) {
+        return node.text;
+    }
+    if (ts.isNumericLiteral(node)) return Number(node.text);
+    if (
+        ts.isPrefixUnaryExpression(node) &&
+        node.operator === ts.SyntaxKind.MinusToken &&
+        ts.isNumericLiteral(node.operand)
+    ) {
+        return -Number(node.operand.text);
+    }
+    if (node.kind === ts.SyntaxKind.TrueKeyword) return true;
+    if (node.kind === ts.SyntaxKind.FalseKeyword) return false;
+    if (node.kind === ts.SyntaxKind.NullKeyword) return null;
+    return notJson;
+}
+
+/** Whether a node carries the `export` modifier (a module's own exported statement). */
+export function hasExportModifier(node: ts.Node): boolean {
+    return (
+        ts.canHaveModifiers(node) &&
+        (ts
+            .getModifiers(node)
+            ?.some(
+                (modifier) => modifier.kind === ts.SyntaxKind.ExportKeyword,
+            ) ??
+            false)
+    );
 }
 
 /** Whether a variable is `let` or `const`: scoped to its block, a fresh binding per loop iteration. */

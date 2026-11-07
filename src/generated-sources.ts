@@ -132,6 +132,7 @@ export const generatedSourceRules: readonly GeneratedSourceRule[] = [
     },
     { source: "upstream/src/engine_dispose.cpp", features: ["engine:dispose"] },
     { source: "upstream/src/scene_core.cpp", features: [] },
+    { source: "upstream/src/mesh_opacity.cpp", features: ["mesh:opacity"] },
     { source: "upstream/src/variant_data.cpp", features: [] },
     { source: "upstream/src/text_data.cpp", features: ["text:data"] },
     {
@@ -310,6 +311,10 @@ export const generatedSourceRules: readonly GeneratedSourceRule[] = [
     {
         source: "upstream/src/frame_graph_screen_space.cpp",
         features: ["renderer:screen-space"],
+    },
+    {
+        source: "upstream/src/frame_graph_ssao.cpp",
+        features: ["renderer:ssao"],
     },
     {
         source: "upstream/src/flow_graph.cpp",

@@ -6986,10 +6986,12 @@ export class UserFunctionLowerer {
                           path.length === 1 && unchangedFields.has(path[0]!),
                   )
                 : ir.returnNeedsSnapshot
-                  ? context.bindings.pinValueToTemporary(
+                  ? // The snapshot is the call's own result.
+                    context.bindings.pinValueToTemporary(
                         returned,
                         label,
                         expression,
+                        true,
                     )
                   : context.bindings.materializeEscapingValue(
                         returned,

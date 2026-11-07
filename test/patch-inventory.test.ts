@@ -6,6 +6,7 @@ import {
     mkdirSync,
     mkdtempSync,
     readFileSync,
+    readdirSync,
     renameSync,
     rmSync,
     statSync,
@@ -103,7 +104,12 @@ test(
             "subpixel-rendering.patch",
         );
         const rmlui = names("rmlui", []);
-        assert.equal(rmlui.length, 65);
+        assert.equal(
+            rmlui.length,
+            readdirSync("native/patches/rmlui").filter((name) =>
+                name.endsWith(".patch"),
+            ).length,
+        );
         assert.deepEqual(
             rmlui.map((name) => Number(name.slice(0, 4))),
             Array.from({ length: rmlui.length }, (_, index) => index + 1),

@@ -149,6 +149,7 @@ interface StatementLoweringContext extends Pick<
     | "reachThrow"
     | "reachFeature"
     | "reachJsData"
+    | "registerNativeTemporary"
     | "reachJson"
     | "propertyName"
     | "cppString"
@@ -499,6 +500,21 @@ export class StatementLowerer {
     private readonly neverTerminators = new EmissionWeakSet<ts.Statement>();
     /** The constructs jumps can bind, innermost last. */
     private readonly jumpTargets = emissionArray<JumpTarget>([]);
+    /** Where each callback body's own jump targets begin. */
+    private readonly callbackTargetBases = emissionArray<number>([]);
+
+    /**
+     * A closure that outlives its creating scope (a callback) starts: the
+     * loops around its creation do not run its statements. A body borrowed
+     * for its scope (a helper a loop calls) keeps the call site's loops.
+     */
+    public enterCallbackBody(): void {
+        this.callbackTargetBases.push(this.jumpTargets.length);
+    }
+
+    public leaveCallbackBody(): void {
+        this.callbackTargetBases.pop();
+    }
     /** Runtime branches being emitted: an exit below one is not settled. */
     @journaled private accessor runtimeBranchDepth = 0;
 
@@ -1857,7 +1873,13 @@ export class StatementLowerer {
                 this.loweredBreakTerminators.add(statement);
             return;
         }
-        if (this.jumpTargets.some(({ iteration }) => iteration)) {
+        // A static loop of this body: one around the function that created
+        // a callback does not run the callback's statements.
+        if (
+            this.jumpTargets
+                .slice(this.callbackTargetBases.at(-1) ?? 0)
+                .some(({ iteration }) => iteration)
+        ) {
             if (
                 firstReturn([statement.thenStatement]) ||
                 (statement.elseStatement &&
@@ -3245,7 +3267,7 @@ export class StatementLowerer {
         if (
             dataType?.kind === "map" &&
             dataType.dictionary &&
-            dataType.key.kind === "string"
+            (dataType.key.kind === "string" || dataType.key.kind === "number")
         ) {
             // The dictionary is read in place, as the loop body writes it.
             const object = context.bindings.pinValueToTemporary(
@@ -3256,7 +3278,10 @@ export class StatementLowerer {
             context.reachJson();
             return {
                 keysCpp: `bbl::js::property_names(${object})`,
-                presentCpp: (key) => `${object}.has(${key})`,
+                presentCpp: (key) =>
+                    dataType.key.kind === "string"
+                        ? `${object}.has(${key})`
+                        : `bbl::js::has_number_property(${object}, ${key})`,
             };
         }
         if (dataType?.kind === "struct") {
@@ -3766,7 +3791,18 @@ export class StatementLowerer {
             statement,
             head,
             resolved.target,
-            { assetWholeMeshList: resolved.asset },
+            {
+                assetWholeMeshList: {
+                    asset: resolved.asset,
+                    ...(resolved.container !== undefined
+                        ? { container: resolved.container }
+                        : {}),
+                    ...(!context.isInRuntimeControlFlow() &&
+                    !context.isInParameterizedResourceLoop()
+                        ? { definiteBody: statement.statement }
+                        : {}),
+                },
+            },
         );
         return true;
     }
@@ -4831,11 +4867,21 @@ export class StatementLowerer {
             }
             if (ts.isIdentifier(unwrapped.operand)) {
                 const target = context.bindings.lookup(unwrapped.operand);
-                context.expectKind(target, "number", unwrapped.operand);
                 const operator =
                     unwrapped.operator === ts.SyntaxKind.PlusPlusToken
                         ? "++"
                         : "--";
+                // A parsed document's binding holds the number its
+                // update computes from the value's ToNumber.
+                if (isJsonValue(target)) {
+                    context.reachJson();
+                    context.emit({
+                        kind: "expression",
+                        code: `${target.cpp} = bbl::js::json_value(${target.cpp}.to_number() ${operator[0]} 1.0);`,
+                    });
+                    return;
+                }
+                context.expectKind(target, "number", unwrapped.operand);
                 context.emit({
                     kind: "expression",
                     code: ts.isPrefixUnaryExpression(unwrapped)

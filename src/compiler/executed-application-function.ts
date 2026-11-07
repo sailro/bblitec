@@ -24,7 +24,7 @@
  * the reason the in-process module passes give: anything else is a value two
  * engines need not agree on.
  */
-import { isDeepStrictEqual } from "node:util";
+import { isDeepStrictEqual, types } from "node:util";
 import vm from "node:vm";
 import ts from "typescript";
 import { forEachAnalysisNode } from "./analysis-walk.js";
@@ -52,6 +52,7 @@ import { syntaxKindName } from "../source-location.js";
 import { transpileCommonJs } from "../typescript-transpile.js";
 import { sharedUpstreamStore } from "../upstream-source.js";
 import { mathMemberAccess, mathMemberIsImpure } from "./math-intrinsics.js";
+import { GenerationBlob } from "./generation-blob.js";
 
 /** A value generation hands the function or binds to a name it closes over. */
 export type ExecutedScalar = string | number | boolean;
@@ -85,15 +86,28 @@ interface ExecutedFunctionContext {
     deploymentValue?(
         expression: ts.Expression,
     ): string | boolean | null | undefined;
+    /**
+     * The value a pinned import is bound to for this run instead of being
+     * refused: the caller's own model of that export (a loader recording
+     * what it is handed), or undefined to refuse it.
+     */
+    pinnedStandIn?(name: string): unknown;
 }
 
 /**
- * Host globals a generation run may read: pure WHATWG URL parsing, which the
- * realm receives from Node and which reads no host state.
+ * Host globals a generation run may read, none of which reads host state:
+ * WHATWG URL parsing and base64, which the realm receives from Node, and
+ * Blob construction (`generation-blob.ts`).
  */
-const GENERATION_HOST_GLOBALS: ReadonlySet<string> = new Set([
-    "URL",
-    "URLSearchParams",
+const GENERATION_HOST_GLOBALS: ReadonlyMap<string, unknown> = new Map<
+    string,
+    unknown
+>([
+    ["URL", URL],
+    ["URLSearchParams", URLSearchParams],
+    ["Blob", GenerationBlob],
+    ["btoa", btoa],
+    ["atob", atob],
 ]);
 
 /** The pinned imports an executed closure may reach, by imported name. */
@@ -120,8 +134,8 @@ export type ExecutedTarget =
 
 /**
  * Execute `target` with `args` and return its plain-data result: a
- * function's return value, or a constant or call's value (no arguments).
- * `label` names the target in refusals.
+ * function's return value (an async one's settled value), or a constant or
+ * call's value (no arguments). `label` names the target in refusals.
  */
 export function executeApplicationFunction(
     context: ExecutedFunctionContext,
@@ -132,7 +146,7 @@ export function executeApplicationFunction(
     const closure = new ExecutedClosure(context, target, label);
     const program = closure.program();
     const realm = vm.createContext(
-        { URL, URLSearchParams },
+        Object.fromEntries(GENERATION_HOST_GLOBALS),
         {
             name: `generation function ${label}`,
             microtaskMode: "afterEvaluate",
@@ -171,6 +185,7 @@ export function executeApplicationFunction(
             );
             result = Reflect.apply(executed, undefined, realmArgs);
         }
+        result = settledResult(realm, result);
     } catch (error: unknown) {
         return context.fail(
             target,
@@ -198,6 +213,35 @@ export function executeApplicationFunction(
     }
     const value: unknown = JSON.parse(text);
     return value;
+}
+
+/**
+ * An async function's result: the value its promise settles to by the
+ * realm's microtask checkpoint, which holds no timer or I/O to wait on. One
+ * still pending there never settles; a rejection is the run's throw.
+ */
+function settledResult(realm: vm.Context, result: unknown): unknown {
+    if (!types.isPromise(result)) return result;
+    const settlement: { settled?: boolean; value?: unknown } = {};
+    const observe: unknown = vm.runInContext(
+        "(promise, settlement) => promise.then((value) => { settlement.settled = true; settlement.value = value; }, (error) => { settlement.settled = false; settlement.value = error; })",
+        realm,
+    );
+    if (typeof observe !== "function") {
+        throw new Error(
+            "A generation function realm cannot observe a promise.",
+        );
+    }
+    Reflect.apply(observe, undefined, [result, settlement]);
+    // The checkpoint after this evaluation drains the realm's microtasks.
+    vm.runInContext("undefined", realm);
+    if (settlement.settled === undefined) {
+        throw new Error(
+            "its promise is still pending after its microtasks ran",
+        );
+    }
+    if (!settlement.settled) throw settlement.value;
+    return settlement.value;
 }
 
 function errorMessage(error: unknown): string {
@@ -301,7 +345,9 @@ class ExecutedClosure {
             const prologue: string[] = [];
             for (const [local, source] of part.imports) {
                 if (source.kind === "pinned") {
-                    pinned[source.name] = pinnedExport(source.name);
+                    pinned[source.name] =
+                        this.context.pinnedStandIn?.(source.name) ??
+                        pinnedExport(source.name);
                     prologue.push(
                         `const ${local} = __bblBindings.pinned[${JSON.stringify(source.name)}];`,
                     );
@@ -601,7 +647,8 @@ return __bblScope(${this.parts.get(targetFile)!.index})[${root}];
         if (
             origin === "dom" &&
             GENERATION_HOST_GLOBALS.has(identifier.text) &&
-            ts.isVariableDeclaration(declaration) &&
+            (ts.isVariableDeclaration(declaration) ||
+                ts.isFunctionDeclaration(declaration)) &&
             declaration.getSourceFile().isDeclarationFile
         )
             return;
@@ -661,7 +708,10 @@ return __bblScope(${this.parts.get(targetFile)!.index})[${root}];
         if (part.imports.has(identifier.text)) return;
         const pinned = this.symbols.babylonImportName(identifier);
         if (pinned !== undefined) {
-            if (!pinnedTags.has(pinned)) {
+            if (
+                !pinnedTags.has(pinned) &&
+                this.context.pinnedStandIn?.(pinned) === undefined
+            ) {
                 this.context.fail(
                     identifier,
                     `${this.label} reaches pinned '${pinned}', which generation does not run; only the ${[...pinnedTags].join(", ")} tag executes with it.`,

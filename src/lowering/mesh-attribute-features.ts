@@ -69,7 +69,15 @@ export function lowerMeshFeatures(context: LoweringContext): string {
             "mesh.skeleton",
             "mesh.morphTargets",
             "mesh._flatNormal",
+            // The installed encoders compose where a draw's key is read:
+            // mesh opacity's bit through `pinned_mesh_feature_extra`
+            // (mesh-opacity.ts), the mirrored opt-in's through the winding.
+            // This word is the attribute and pool half its callers ask for.
             "_meshFeatureExtra",
+            // The loader's primitive bits travel on the render item: its
+            // topology, and the winding mark each family's front face
+            // follows (`render_pipeline_clockwise`).
+            "mesh._primitiveFeatures",
         ].map((name) => [name, absentBinding()] as const),
         [
             "receiveShadows",

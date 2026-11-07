@@ -1,6 +1,7 @@
 import { resolve } from "node:path";
 import { backgroundFactories } from "../pinned-background-factories.js";
 import ts from "typescript";
+import { materialShadowReceiverCpp } from "./material-shadow-receiver.js";
 import { CameraLowerer } from "./camera-lowerer.js";
 import { lowerCameraMatrixCaches } from "./camera-matrix-cache.js";
 import { SceneUboLowerer } from "./scene-ubo-lowerer.js";
@@ -10,6 +11,7 @@ import {
     lowerShaderSystemDependencyConstants,
     lowerShaderSystemMatrixRouting,
     lowerShaderSystemWriter,
+    lowerShaderSystemBlockFinish,
     lowerShaderPacketCameraInitialization,
     shaderSystemLayouts,
 } from "./shader-system-cache.js";
@@ -77,9 +79,14 @@ import {
 import { lowerStandardMeshAlpha } from "./standard-mesh-alpha.js";
 import { lowerRenderBucket } from "./render-bucket.js";
 import {
+    lowerPipelineFrontFaces,
+    renderPipelineClockwiseCpp,
+} from "./pipeline-front-face.js";
+import {
     geometryTaskCameraCpp,
     renderTaskPassCpp,
     passCameraViewportCpp,
+    transparentDrawSkipCpp,
     transparentSortSkipCpp,
 } from "./render-task-pass.js";
 import { nativeDepthCompare } from "./pinned-depth-state.js";
@@ -298,6 +305,8 @@ export class RendererLowerer {
             picking?: boolean;
             /** The scene reaches `enableMirroredMeshes`. */
             mirroredMeshes?: boolean;
+            /** The scene reaches `setMeshOpacity`. */
+            meshOpacity?: boolean;
             /** A mesh parent can be an IWorldMatrixProvider record. */
             worldMatrixProviders?: boolean;
             /** A mesh parent can be a light (`light:hierarchy`). */
@@ -952,11 +961,17 @@ ${
             /** The scene reaches `createTransformNode`. */
             transformNodes?: boolean;
             publicCameraMatrices?: boolean;
+            /** The scene reaches `setMeshOpacity`. */
+            meshOpacity?: boolean;
         },
         systemMatrixEnumerators: string,
         linearToneMapping: number,
         shaderVariantCount: number,
     ): string {
+        const frontFaces = lowerPipelineFrontFaces(
+            this.context,
+            options.mirroredMeshes === true,
+        );
         return `#pragma once
 
 #include <bblite/runtime.hpp>
@@ -979,6 +994,7 @@ ${options.publicCameraMatrices ? new SceneUboLowerer(this.context).cacheHeader()
 namespace bbl::upstream {${options.standardVertexAlpha ? lowerStandardMeshAlpha(this.context, options.standardVertexColors) : ""}
 
 ${renderTaskPassCpp(this.context)}
+${materialShadowReceiverCpp(this.context)}
 
 inline constexpr bool public_camera_matrix_caches = ${options.publicCameraMatrices === true};
 template<class Source, class Engine, class Scene, class Camera, class CameraKey, class WriteFull>
@@ -1016,23 +1032,17 @@ enum class RenderCullMode {
     none,
 };
 
-enum class RenderPipelineKind {
+// The fixed-function arm a draw's pipeline is built at: the family, the
+// blend state, the cull mode and, for the pin's glTF primitive modes, the
+// topology. The winding is the pipeline kind's other axis.
+enum class RenderPipelineArm {
     pbr_opaque_back,
-    pbr_opaque_back_clockwise,
     pbr_opaque_none,
-    pbr_opaque_none_clockwise,
     pbr_transparent_back,
-    pbr_transparent_back_clockwise,
     pbr_transparent_none,
-    pbr_transparent_none_clockwise,
-    // The glTF loader's authored winding baseline keeps imported primitives
-    // from flipping twice. The back-clockwise arms serve the other reached
-    // path: a procedural single-sided PBR mesh crossing the determinant sign
-    // boundary after its renderable was built.
     // The pin's own primitive state for a non-triangle mode: cull none for
-    // every one of them (points and lines have no faces to cull), and the
-    // winding a triangle kind carries is meaningless here, so the blend
-    // state is the only other axis.
+    // every one of them (points and lines have no faces to cull), so the
+    // blend state is the only other axis.
     pbr_opaque_points,
     pbr_opaque_lines,
     pbr_opaque_line_strip,
@@ -1043,16 +1053,6 @@ enum class RenderPipelineKind {
     standard_opaque_none,
     standard_transparent_back,
     standard_transparent_none,
-    // The Standard family's winding arms, which exist only under the
-    // mirrored-mesh opt-in: std-mirrored-support.ts installs a primitive
-    // resolver whose frontFace follows the mesh's world determinant,
-    // because the Standard pipeline has none of its own. A back-culled
-    // mirrored mesh needs one as much as a double-sided one -- it is the
-    // culled case that renders inside-out.
-    standard_opaque_back_clockwise,
-    standard_opaque_none_clockwise,
-    standard_transparent_back_clockwise,
-    standard_transparent_none_clockwise,
     shader,
     shader_a2c,
     node_opaque_back,
@@ -1062,15 +1062,24 @@ enum class RenderPipelineKind {
 };
 
 /**
- * How many kinds the enum above names.
+ * How many arms the enum above names.
  *
  * A backend keys its pipeline cache by variant, kind and a handful of
  * per-pass flags, and the multiplier that separates the variant from the
- * kind has to be at least this. Emitted beside the enum so a kind added
+ * kind has to be at least this. Emitted beside the enum so an arm added
  * here widens every key rather than silently colliding with one.
  */
-inline constexpr std::size_t render_pipeline_kind_count =
-    static_cast<std::size_t>(RenderPipelineKind::node_transparent_none) + 1;
+inline constexpr std::size_t render_pipeline_arm_count =
+    static_cast<std::size_t>(RenderPipelineArm::node_transparent_none) + 1;
+
+/** A draw's pipeline: its fixed-function arm and its front face, two independent axes. */
+struct RenderPipelineKind {
+    RenderPipelineArm arm = RenderPipelineArm::pbr_opaque_back;
+    bool clockwise_front_face = false;
+    friend constexpr auto operator<=>(const RenderPipelineKind&, const RenderPipelineKind&) = default;
+};
+
+${renderPipelineClockwiseCpp(frontFaces)}
 
 enum class RenderStage {
     skybox,
@@ -1099,9 +1108,23 @@ ${options.gpuInstancing ? "    ThinMaterialBindingOwner thin_binding{};\n" : ""}
     // over its triangle-list default.
     MeshTopology topology = MeshTopology::triangles;
     std::uint32_t shader_variant = 0;
-    bool clockwise_front_face = false;
+    // The mesh's winding mark: its geometry is wound against the
+    // procedural convention (the pin's \`_primitiveFeatures\` bit 11). Each
+    // family's pipeline front face follows from it
+    // (\`render_pipeline_clockwise\`).
+    bool reverse_winding = false;
     bool alpha_to_coverage = false;
     bool transmissive = false;
+${
+    options.meshOpacity
+        ? `    // The installed mesh-feature encoders' bits the binding resolved: the
+    // render plan's at its build, an explicit task entry's when the task
+    // resolved it (\`RenderTaskMesh::mesh_feature_extra\`). The bucket and
+    // both PALs' variant keys read them here rather than off the record.
+    std::uint32_t mesh_feature_extra = 0;
+`
+        : ""
+}\
     // The pin's direct bucket: a shader material declaring external
     // textures rebinds them per draw, after the opaque bundle replays.
     bool direct = false;
@@ -1112,8 +1135,7 @@ ${options.gpuInstancing ? "    ThinMaterialBindingOwner thin_binding{};\n" : ""}
 struct RenderDrawCommand {
     std::uint32_t item_index = invalid_handle;
     RenderItem item{};
-    RenderPipelineKind pipeline =
-        RenderPipelineKind::pbr_opaque_back;
+    RenderPipelineKind pipeline{};
     float sort_distance = 0.0f;
 };
 
@@ -1384,7 +1406,7 @@ std::array<float, 16> build_view_matrix(
     const std::array<CameraMatrixScalar, 16>& camera_world);
 std::array<float, 16> build_camera_view_matrix(const CameraRecord& camera);
 ${lowerShaderSystemWriter(this.context)}
-js::F32Array get_camera_view_matrix(const CameraRecord& camera);
+${lowerShaderSystemBlockFinish(this.context)}js::F32Array get_camera_view_matrix(const CameraRecord& camera);
 js::F32Array get_camera_projection_matrix(const CameraRecord& camera, double aspectRatio);
 js::F32Array get_camera_view_projection_matrix(const CameraRecord& camera, double aspectRatio);
 // One mesh's local matrix, from the pin's own composeTrsLocalMatrix: the
@@ -1460,12 +1482,24 @@ bool pick_candidate(const MeshRecord& mesh);
 bool mesh_draws(const MeshRecord& mesh);
 bool render_item_material_draws(const RenderItem& item, const Engine& engine);
 bool render_item_draws_now(const RenderItem& item, const Engine& engine);
-// src/render/mesh-light-selection.ts lightAffectsMeshId: a light applies to the meshes its
+// src/render/mesh-light-selection.ts lightAffectsMesh: a light applies to the meshes its
 // includedOnlyMeshIds names, or to every mesh its excludedMeshIds does
 // not. One definition, because both the Standard slot writer and the pinned
 // per-draw mesh block need the same per-mesh light set.
 bool light_affects_mesh(
     const LightRecord& light,
+    MeshHandle mesh);
+// src/render/mesh-light-selection.ts writeMeshLightSelection's walk: how many
+// of the scene's lights affect a mesh, and the pin's type of the last one --
+// the single light when only one does. The PBR variant key and the group
+// widening's light paths walk it alike.
+struct MeshLightSelection {
+    std::uint32_t count = 0;
+    std::string_view single_type;
+};
+MeshLightSelection mesh_light_selection(
+    const Engine& engine,
+    const Scene& scene,
     MeshHandle mesh);
 PbrUniforms build_pbr_uniforms(
     const Scene& scene,
@@ -1492,6 +1526,8 @@ PbrUniforms build_pbr_uniforms(
             floatingOrigin?: boolean;
             picking?: boolean;
             mirroredMeshes?: boolean;
+            /** The scene reaches `setMeshOpacity`. */
+            meshOpacity?: boolean;
             /** A mesh parent can be an IWorldMatrixProvider record. */
             worldMatrixProviders?: boolean;
             /** A mesh parent can be a light (`light:hierarchy`). */
@@ -1534,6 +1570,7 @@ PbrUniforms build_pbr_uniforms(
 #include <bblite/upstream/pinned_world_transform.hpp>
 #include <bblite/upstream/camera_math.hpp>
 #include <bblite/upstream/render_capabilities.hpp>
+#include <bblite/upstream/light_kinds.hpp>
 // The Standard bucket reads the lowered feature word; the PBR header goes
 // first because the Standard one hoists the shared mirrors only without it.
 #if BBLITE_PBR_VARIANTS > 0
@@ -1543,6 +1580,7 @@ PbrUniforms build_pbr_uniforms(
 #include <bblite/upstream/standard_variants.hpp>
 #endif
 ${options.lightParents ? "#include <bblite/upstream/light_matrix.hpp>\n" : ""}\
+${options.meshOpacity ? "#include <bblite/upstream/mesh_opacity.hpp>\n" : ""}\
 ${options.gpuInstancing ? "#include <bblite/upstream/pinned_mesh_features.hpp>\n#if BBLITE_NODE_VARIANTS > 0\n#include <bblite/upstream/node_variants.hpp>\n#endif\n" : ""}\
 
 #include <algorithm>
@@ -1554,14 +1592,6 @@ ${options.gpuInstancing ? "#include <bblite/upstream/pinned_mesh_features.hpp>\n
 ${options.publicCameraMatrices ? lowerCameraMatrixCaches(this.context, options.orthographicCamera === true) : ""}
 ${options.gpuInstancing ? `namespace bbl {\n${lowerThinInstanceBindingCreation(this.context)}\n}\n` : ""}
 namespace bbl::upstream {
-
-namespace {
-
-float dot(Vec3 left, Vec3 right) {
-    return left.x * right.x + left.y * right.y + left.z * right.z;
-}
-
-} // namespace
 
 // src/camera/camera.ts getViewMatrix: the rotation is the transpose of
 // the world matrix's basis and the translation is that basis applied to
@@ -1619,7 +1649,7 @@ ${lowerRenderBucket(this.context, options)}
 
 namespace {
 
-RenderPipelineKind render_pipeline_kind(const RenderItem& item) {
+RenderPipelineArm render_pipeline_arm(const RenderItem& item) {
     const bool transparent =
         item.bucket == RenderBucket::alpha_blend;
     const bool double_sided =
@@ -1628,82 +1658,66 @@ RenderPipelineKind render_pipeline_kind(const RenderItem& item) {
         case RenderMaterialKind::pbr:
             // buildPrimitiveState resolves the whole fixed-function
             // state from the topology index alone, so for a non-triangle
-            // primitive neither the material's cull mode nor a mirrored
-            // node's winding reaches the pipeline: points and lines have no
-            // faces for either to act on.
+            // primitive the material's cull mode does not reach the
+            // pipeline: points and lines have no faces to cull.
             switch (item.topology) {
                 case MeshTopology::points:
                     return transparent
-                        ? RenderPipelineKind::pbr_transparent_points
-                        : RenderPipelineKind::pbr_opaque_points;
+                        ? RenderPipelineArm::pbr_transparent_points
+                        : RenderPipelineArm::pbr_opaque_points;
                 case MeshTopology::lines:
                     return transparent
-                        ? RenderPipelineKind::pbr_transparent_lines
-                        : RenderPipelineKind::pbr_opaque_lines;
+                        ? RenderPipelineArm::pbr_transparent_lines
+                        : RenderPipelineArm::pbr_opaque_lines;
                 case MeshTopology::line_strip:
                     return transparent
-                        ? RenderPipelineKind::pbr_transparent_line_strip
-                        : RenderPipelineKind::pbr_opaque_line_strip;
+                        ? RenderPipelineArm::pbr_transparent_line_strip
+                        : RenderPipelineArm::pbr_opaque_line_strip;
                 case MeshTopology::triangles:
                     break;
             }
             if (transparent) {
-                if (!double_sided) {
-                    return item.clockwise_front_face
-                        ? RenderPipelineKind::pbr_transparent_back_clockwise
-                        : RenderPipelineKind::pbr_transparent_back;
-                }
-                return item.clockwise_front_face
-                    ? RenderPipelineKind::pbr_transparent_none_clockwise
-                    : RenderPipelineKind::pbr_transparent_none;
+                return double_sided
+                    ? RenderPipelineArm::pbr_transparent_none
+                    : RenderPipelineArm::pbr_transparent_back;
             }
-            if (!double_sided) {
-                return item.clockwise_front_face
-                    ? RenderPipelineKind::pbr_opaque_back_clockwise
-                    : RenderPipelineKind::pbr_opaque_back;
-            }
-            return item.clockwise_front_face
-                ? RenderPipelineKind::pbr_opaque_none_clockwise
-                : RenderPipelineKind::pbr_opaque_none;
+            return double_sided
+                ? RenderPipelineArm::pbr_opaque_none
+                : RenderPipelineArm::pbr_opaque_back;
         case RenderMaterialKind::standard:
             if (transparent) {
-                if (double_sided) {
-                    return item.clockwise_front_face
-                        ? RenderPipelineKind::
-                              standard_transparent_none_clockwise
-                        : RenderPipelineKind::standard_transparent_none;
-                }
-                return item.clockwise_front_face
-                    ? RenderPipelineKind::
-                          standard_transparent_back_clockwise
-                    : RenderPipelineKind::standard_transparent_back;
+                return double_sided
+                    ? RenderPipelineArm::standard_transparent_none
+                    : RenderPipelineArm::standard_transparent_back;
             }
-            if (double_sided) {
-                return item.clockwise_front_face
-                    ? RenderPipelineKind::standard_opaque_none_clockwise
-                    : RenderPipelineKind::standard_opaque_none;
-            }
-            return item.clockwise_front_face
-                ? RenderPipelineKind::standard_opaque_back_clockwise
-                : RenderPipelineKind::standard_opaque_back;
+            return double_sided
+                ? RenderPipelineArm::standard_opaque_none
+                : RenderPipelineArm::standard_opaque_back;
         case RenderMaterialKind::shader:
             return item.alpha_to_coverage
-                ? RenderPipelineKind::shader_a2c
-                : RenderPipelineKind::shader;
+                ? RenderPipelineArm::shader_a2c
+                : RenderPipelineArm::shader;
         // A node graph's blend state is its own. parseNodeMaterialFromSnippet
         // stores the graph-derived alpha-combine mode on the material, so the
         // ordinary bucket axis selects the matching fixed-function arm.
         case RenderMaterialKind::node:
             if (transparent) {
                 return double_sided
-                    ? RenderPipelineKind::node_transparent_none
-                    : RenderPipelineKind::node_transparent_back;
+                    ? RenderPipelineArm::node_transparent_none
+                    : RenderPipelineArm::node_transparent_back;
             }
             return double_sided
-                ? RenderPipelineKind::node_opaque_none
-                : RenderPipelineKind::node_opaque_back;
+                ? RenderPipelineArm::node_opaque_none
+                : RenderPipelineArm::node_opaque_back;
     }
-    return RenderPipelineKind::pbr_opaque_back;
+    return RenderPipelineArm::pbr_opaque_back;
+}
+
+RenderPipelineKind render_pipeline_kind(const RenderItem& item) {
+    return RenderPipelineKind{
+        render_pipeline_arm(item),
+        render_pipeline_clockwise(item.material_kind, item.reverse_winding),
+    };
 }
 
 void append_draw(
@@ -1892,6 +1906,13 @@ ${
     result.opaque.commands.reserve(task.render_meshes.size());
     result.transparent.commands.reserve(task.render_meshes.size());
 ${shaderVariantTable.length || options.gpuInstancing ? `    const auto packet_owners = prepare_render_task_shader_packets(task${options.gpuInstancing ? ", engine" : ""});` : ""}
+${
+    options.meshOpacity
+        ? `    // An entry the task has not resolved yet resolves at this first build.
+    resolve_render_task_mesh_extras(engine, task);
+`
+        : ""
+}\
     for (std::size_t entry_index = 0; entry_index < task.render_meshes.size(); ++entry_index) {
         const RenderTaskMesh& entry = task.render_meshes[entry_index];
         const auto material = render_task_mesh_material(engine, entry);
@@ -1908,7 +1929,18 @@ ${shaderVariantTable.length || options.gpuInstancing ? `    const auto packet_ow
         const std::uint32_t item_index =
             static_cast<std::uint32_t>(
                 std::distance(items.begin(), found));
-        auto overridden = bind_render_item(*found, engine, material);
+${
+    options.meshOpacity
+        ? `        // The entry draws the binding its task resolved; one that follows
+        // its mesh (\`enableRenderTaskMeshRefresh\`, no override) rebinds
+        // with the scene's generation, which a crossing of 1 moves.
+        RenderItem source = *found;
+        source.mesh_feature_extra = entry.follows_material
+            ? pinned_mesh_feature_extra(${recordAt("engine.meshes", "entry.mesh")})
+            : *entry.mesh_feature_extra;
+        auto overridden = bind_render_item(source, engine, material);`
+        : "        auto overridden = bind_render_item(*found, engine, material);"
+}
         overridden.material_override = true;
 ${shaderVariantTable.length || options.gpuInstancing ? `        overridden.shader_packet = packet_owners[entry_index]${options.gpuInstancing ? ".shader_packet" : ""};` : ""}
 ${options.gpuInstancing ? "        overridden.thin_binding = packet_owners[entry_index].thin_binding;" : ""}
@@ -1928,22 +1960,27 @@ ${shaderVariantTable.length || options.gpuInstancing ? "    publish_render_task_
 // looking at its target. Written once because a camera feature that
 // changes it -- an orthographic volume, a different up axis -- has to
 // change it everywhere at once.
-// The basis is read out of the pinned camera world matrix rather than
-// recomputed: src/math/write-look-at-world-mat4-lh-into-buffer.ts writes columns
-// [xAxis, yAxis, zAxis, eye] and src/camera/camera.ts getCameraPosition
-// reads the eye straight back out of column 3, so these are the same
-// float32 values every pinned consumer sees.
+// The eye is read out of the pinned camera world matrix (src/camera/camera.ts
+// getCameraPosition reads column 3), and the frame out of the pinned view
+// matrix: whatever the handedness, its rows are the world directions of
+// the view space every shader sees (+X right, +Y up, +Z forward), so these
+// are the same float32 values every pinned consumer sees.
 CameraBasis camera_basis(const CameraRecord& camera) {
     const std::array<CameraMatrixScalar, 16> world =
         camera_world_matrix(camera);
-    const auto lane = [&](std::size_t cell) {
-        return static_cast<float>(world[cell]);
+    const std::array<float, 16> view = build_view_matrix(world);
+    const auto row = [&](std::size_t index) {
+        return Vec3{view[index], view[4 + index], view[8 + index]};
     };
     return CameraBasis{
-        Vec3{lane(12), lane(13), lane(14)},
-        Vec3{lane(8), lane(9), lane(10)},
-        Vec3{lane(0), lane(1), lane(2)},
-        Vec3{lane(4), lane(5), lane(6)},
+        Vec3{
+            static_cast<float>(world[12]),
+            static_cast<float>(world[13]),
+            static_cast<float>(world[14]),
+        },
+        row(2),
+        row(0),
+        row(1),
     };
 }
 
@@ -1954,9 +1991,7 @@ void sort_transparent_draws(
     auto& commands = transparent.visibility_candidates;
     // sortTransparentBindings' own early return.
     if (!(${transparentSortSkip})) {
-        const CameraBasis basis = camera_basis(*camera);
-        const Vec3& eye = basis.eye;
-        const Vec3& forward = basis.forward;
+        const std::array<float, 16> view = build_camera_view_matrix(*camera);
         for (RenderDrawCommand& command : commands) {
             if (command.item.mesh.value >= engine.meshes.size()) {
                 command.sort_distance = 0.0f;
@@ -1967,13 +2002,11 @@ void sort_transparent_draws(
             // worldMatrix[12..14] (pbr-renderable.ts / standard-renderable.ts),
             // the draw world's translation -- never the bounds center.
             const std::array<float, 16> world = mesh_world_matrix(engine, mesh);
-            const Vec3 center{world[12], world[13], world[14]};
-            const Vec3 delta{
-                center.x - eye.x,
-                center.y - eye.y,
-                center.z - eye.z,
-            };
-            command.sort_distance = dot(delta, forward);
+            // The pinned view-space depth of that center.
+            command.sort_distance = static_cast<float>(
+                static_cast<double>(world[12]) * view[2] +
+                static_cast<double>(world[13]) * view[6] +
+                static_cast<double>(world[14]) * view[10] + view[14]);
         }
         std::stable_sort(
             commands.begin(),
@@ -1988,7 +2021,7 @@ void sort_transparent_draws(
     // port's per-frame answer to it, refreshed whether or not it sorted.
     transparent.commands.clear();
     for (const RenderDrawCommand& command : commands) {
-        if (mesh_draws(${recordAt("engine.meshes", "command.item.mesh")}) && render_item_material_draws(command.item, engine)) {
+        if (${options.meshOpacity ? `!(${transparentDrawSkipCpp(this.context, recordAt("engine.meshes", "command.item.mesh"))})` : `mesh_draws(${recordAt("engine.meshes", "command.item.mesh")})`} && render_item_material_draws(command.item, engine)) {
             transparent.commands.push_back(command);
         }
     }
@@ -2017,16 +2050,17 @@ RenderPlan build_render_plan(const Scene& scene, const Engine& engine) {
         RenderItem item;
         item.mesh = handle;
         item.geometry = mesh.geometry;
-        item.clockwise_front_face =
+        item.reverse_winding =
             mesh.clockwise_front_face;
         item.topology = engine.geometries[mesh.geometry].topology;
+${options.meshOpacity ? "        item.mesh_feature_extra = pinned_mesh_feature_extra(mesh);\n" : ""}\
         RenderItem bound =
             bind_render_item(item, engine, material);
         if (bound.material_kind == RenderMaterialKind::pbr && mesh.primitive_override) {
             const auto& primitive = *mesh.primitive_override;
             bound.topology = primitive.topology;
             if (primitive.cull_none) bound.cull_mode = *primitive.cull_none ? RenderCullMode::none : RenderCullMode::back;
-            if (primitive.clockwise_front_face) bound.clockwise_front_face = *primitive.clockwise_front_face;
+            if (primitive.clockwise_front_face) bound.reverse_winding = *primitive.clockwise_front_face;
         }
         bound.material_guard = guard;
         bound.order = mesh.has_render_order
@@ -2339,7 +2373,7 @@ bool render_item_draws_now(const RenderItem& item, const Engine& engine) {
         !(mesh.thin_instances && mesh.thin_instances->gpu_culling_enabled)) || render_item_material_draws(item, engine);
 }
 
-// src/render/mesh-light-selection.ts lightAffectsMeshId.
+// src/render/mesh-light-selection.ts lightAffectsMesh.
 bool light_affects_mesh(
     const LightRecord& light,
     MeshHandle mesh) {
@@ -2353,6 +2387,21 @@ bool light_affects_mesh(
                light.included_meshes.begin(),
                light.included_meshes.end(),
                mesh) != light.included_meshes.end();
+}
+
+// src/render/mesh-light-selection.ts writeMeshLightSelection's walk.
+MeshLightSelection mesh_light_selection(
+    const Engine& engine,
+    const Scene& scene,
+    MeshHandle mesh) {
+    MeshLightSelection selection;
+    for (const LightHandle handle : scene.lights) {
+        const LightRecord* light = handle_find(engine.lights, handle);
+        if (!light || !light_affects_mesh(*light, mesh)) continue;
+        ++selection.count;
+        selection.single_type = pinned_light_type(light->kind);
+    }
+    return selection;
 }
 
 PbrUniforms build_pbr_uniforms(
@@ -3058,25 +3107,30 @@ ${options.publicCameraMatrices ? lowerShaderPacketCameraInitialization(this.cont
      * `light_affects_mesh` is a representation translation — the pin keys
      * Sets of string mesh ids where the records key index vectors — so it
      * cannot be lowered by the numeric translator, and each arm's fold is
-     * justified against the body asserted here: a native mesh index is
-     * always a present id, so the pin's `!!meshId` conjunct folds to true
-     * and its `!meshId` disjunct folds to false, leaving exactly the two
-     * membership tests the emission carries, in the pinned precedence
-     * (included wins when it is non-empty). The id is the mesh's own
-     * (`assertPinnedLightSlotPacking`).
+     * justified against the body asserted here: the object-identity sets
+     * (`excludedMeshes`, `includedOnlyMeshes`) are written by no lowered
+     * API -- a light write outside the supported members refuses -- so
+     * `isExcluded` folds to false and their arm away; a native mesh index
+     * is always a present id, so the pin's `!!meshId` conjunct folds to
+     * true and its `!meshId` disjunct folds to false, leaving exactly the
+     * two membership tests the emission carries, in the pinned precedence
+     * (included wins when it is non-empty). The id is the mesh's own.
      */
     private assertPinnedAffectsMesh(): void {
         this.context.assertFunctionContract(
             "src/render/mesh-light-selection.ts",
-            "lightAffectsMeshId",
-            `export function lightAffectsMeshId(light: LightBase, meshId: string | undefined): boolean {
-                const included = light.includedOnlyMeshIds;
-                if (included?.size) {
-                    return !!meshId && included.has(meshId);
+            "lightAffectsMesh",
+            `export function lightAffectsMesh(light: LightBase, mesh: Mesh): boolean {
+                const isExcluded = light.excludedMeshes?.has(mesh);
+                const includedMeshes = light.includedOnlyMeshes;
+                if (includedMeshes?.size) {
+                    return includedMeshes.has(mesh) && !isExcluded;
                 }
-                return !meshId || !light.excludedMeshIds?.has(meshId);
+                const meshId = mesh.id;
+                const includedIds = light.includedOnlyMeshIds;
+                return isExcluded ? false : includedIds?.size ? !!meshId && includedIds.has(meshId) : !meshId || !light.excludedMeshIds?.has(meshId);
             }`,
-            "Pinned lightAffectsMeshId membership arms",
+            "Pinned lightAffectsMesh membership arms",
         );
     }
 
@@ -3145,25 +3199,30 @@ ${options.publicCameraMatrices ? lowerShaderPacketCameraInitialization(this.cont
             );
         }
         const stores = this.context.pinnedElementStores(declaration, "v");
-        if (stores.length !== 16) {
-            this.context.contractError(
-                declaration,
-                `Pinned getViewMatrix gained or lost stores (${stores.length} of 16); the emission no longer covers it.`,
-            );
-        }
         const lines = new Map<number, string>();
+        // A right-handed build mirrors Z after the transpose: `v[i] = -v[i]`
+        // negates a cell already stored, in the pin's order.
+        let negations = "";
         for (const store of stores) {
             const index = this.context.numericValue(
                 store.left.argumentExpression,
                 file,
             );
-            if (lines.has(index)) {
-                this.context.contractError(
-                    store.left,
-                    `Pinned getViewMatrix stores v[${index}] twice.`,
-                );
-            }
             const rhs = this.context.unwrapExpression(store.right);
+            if (lines.has(index)) {
+                if (
+                    !ts.isPrefixUnaryExpression(rhs) ||
+                    rhs.operator !== ts.SyntaxKind.MinusToken ||
+                    this.pinnedElementIndex(rhs.operand, "v") !== index
+                ) {
+                    this.context.contractError(
+                        store.left,
+                        `Pinned getViewMatrix stores v[${index}] twice.`,
+                    );
+                }
+                negations += `    view[${index}] = -view[${index}];\n`;
+                continue;
+            }
             if (ts.isNumericLiteral(rhs)) {
                 const value = Number(rhs.text);
                 if (value !== 0 && value !== 1) {
@@ -3265,26 +3324,28 @@ ${options.publicCameraMatrices ? lowerShaderPacketCameraInitialization(this.cont
             }
             body += line;
         }
-        return body;
+        if (lines.size !== 16) {
+            this.context.contractError(
+                declaration,
+                `Pinned getViewMatrix gained or lost stores (${lines.size} of 16); the emission no longer covers it.`,
+            );
+        }
+        return body + negations;
     }
 
     /**
      * Anchors for the emitted draw-list rules: `append_draw`'s transparent
      * predicate is the pinned buildBindings fork, the bucket order sorts are
      * the pinned comparators, and the per-family transparency, order and
-     * transmissive stamps plus the cull/winding forks behind
-     * `render_pipeline_kind` are each paired with the pinned line they
+     * transmissive stamps plus the cull forks behind
+     * `render_pipeline_arm` are each paired with the pinned line they
      * transcribe, so a pin retune fails generation at the rule that moved.
      *
      * The pinned direct bucket (`r._direct`) is the tail of the native
      * opaque list: `order_draw_lists` sorts direct draws after the others,
      * as the pass replays the opaque bundle before drawing them. Both shader
      * renderables set it exactly when the material declares external
-     * textures, asserted below. The generated glTF loader's authored winding
-     * baseline still prevents its single-sided mirrored primitives from
-     * flipping twice. Separate back-clockwise PBR arms are nevertheless
-     * required when the runtime mirrored-mesh watcher observes a procedural
-     * single-sided PBR mesh cross the determinant sign boundary.
+     * textures, asserted below.
      *
      * `order_draw_lists` adopts the pinned buildBindings rule: opaque and
      * direct draws sort by `renderable.order` alone, and because every
@@ -3409,17 +3470,23 @@ ${options.publicCameraMatrices ? lowerShaderPacketCameraInitialization(this.cont
         // renderables are transparent or transmissive, the order constants
         // behind the fixed skybox/opaque/transparent/ground stage sequence
         // (0 and 200 are asserted with the background renderables above in
-        // `lowerShaders`; 100/150/200 live in these rows), and the
-        // cull/winding forks `render_pipeline_kind` enumerates.
+        // `lowerShaders`; 100/150/200 live in these rows), and the cull
+        // forks `render_pipeline_arm` enumerates. The winding is lowered
+        // from each family's own descriptor (`render_pipeline_clockwise`).
+        const drifted: string[] = [];
         for (const [modulePath, marker, label] of [
             [
                 "src/frame-graph/render-task-base.ts",
-                "draws += drawList(pass, task._transparentBindings, eng);",
+                "draws += drawList(pass, task._transparentBindings, eng, true);",
                 "transparent draws execute each frame",
             ],
             [
+                // `_skipColorDraw` is mesh opacity's zero-opacity flag: a
+                // build reaching `setMeshOpacity` lowers the whole predicate
+                // into the transparent refresh (`transparentDrawSkipCpp`),
+                // and in any other build nothing writes the flag.
                 "src/frame-graph/render-task-base.ts",
-                "if (mesh && mesh.visible === false) {",
+                "if (mesh && (mesh.visible === false || (transparent && mesh._skipColorDraw))) {",
                 "draw-time visibility predicate",
             ],
             [
@@ -3453,14 +3520,12 @@ ${options.publicCameraMatrices ? lowerShaderPacketCameraInitialization(this.cont
                 "glTF transmission activation",
             ],
             [
-                // 1.23 renamed `vertexAlphaBlend` to `colorAlphaBlend` and
-                // widened it: a thin-instance fragment declaring RGBA alpha
-                // now blends even without a mesh colour buffer. That arm is
+                // `colorAlphaBlend` reaches the stamp as the word's
+                // `MATERIAL_ALPHA_BLEND`. Its thin-instance RGBA arm is
                 // unreachable here -- `pinned-standard-variants.ts` refuses
-                // `MSH_HAS_INSTANCE_COLOR` outright -- so for every Standard
-                // variant this port composes the predicate is the old one.
+                // `MSH_HAS_INSTANCE_COLOR` outright.
                 "src/material/standard/standard-renderable.ts",
-                "const isTransparent = !shadowOutput && ((features & HAS_OPACITY_TEXTURE) !== 0 || mat.alpha < 1 || colorAlphaBlend);",
+                "const isTransparent = !shadowOutput && ((features & (HAS_OPACITY_TEXTURE | MATERIAL_ALPHA_BLEND)) !== 0 || mat.alpha < 1);",
                 "Standard transparency stamp",
             ],
             [
@@ -3485,17 +3550,17 @@ ${options.publicCameraMatrices ? lowerShaderPacketCameraInitialization(this.cont
             ],
             [
                 "src/material/pbr/pbr-pipeline.ts",
-                'cullMode: hasDoubleSided ? ("none" as GPUCullMode) : "back", ...composed._prim }',
+                'cullMode: hasDoubleSided ? ("none" as GPUCullMode) : "back",',
                 "PBR cull fork",
             ],
             [
                 "src/material/standard/standard-pipeline.ts",
-                'cullMode: features & DOUBLE_SIDED ? "none" : "back", frontFace: "ccw" }',
+                'cullMode: features & DOUBLE_SIDED ? "none" : "back",',
                 "Standard cull fork",
             ],
             [
                 shaderPipelineModule,
-                'cullMode: material.backFaceCulling ? "back" : "none" }',
+                'cullMode: material.backFaceCulling ? "back" : "none"',
                 "shader-material cull fork",
             ],
             [
@@ -3569,17 +3634,16 @@ ${options.publicCameraMatrices ? lowerShaderPacketCameraInitialization(this.cont
                 "strip index format",
             ],
         ] as const) {
-            if (!this.context.store.getSource(modulePath).includes(marker)) {
-                throw new Error(
-                    `Pinned Babylon Lite ${label} changed: ${marker}`,
-                );
-            }
+            if (!this.context.store.getSource(modulePath).includes(marker))
+                drifted.push(`Pinned Babylon Lite ${label} changed: ${marker}`);
         }
+        // Every drifted stamp at once: a bump reads them in one run.
+        if (drifted.length > 0) throw new Error(drifted.join("\n"));
     }
 
     /**
      * Anchors for the light-slot packing contract behind the emitted
-     * `light_affects_mesh` (its `lightAffectsMeshId` fork is anchored by
+     * `light_affects_mesh` (its `lightAffectsMesh` fork is anchored by
      * `assertPinnedAffectsMesh`, here only its call on `mesh.id`), and the
      * two pinned packing loops whose slot arithmetic the PALs walk
      * against it — `writeMeshLightSelection` (per-mesh indices from
@@ -3600,7 +3664,7 @@ ${options.publicCameraMatrices ? lowerShaderPacketCameraInitialization(this.cont
             ["pi >= MAX_LIGHTS", "Pinned light-slot cursor break"],
             ["!light._writeLightUbo", "Pinned light-slot eligibility skip"],
             [
-                "lightAffectsMeshId(light, mesh.id)",
+                "lightAffectsMesh(light, mesh)",
                 "Pinned per-mesh light test on the mesh's own id",
             ],
             ["u32", "Pinned light-index write guard"],

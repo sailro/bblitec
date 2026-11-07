@@ -10,6 +10,7 @@ import {
     lowerShPrescaleCpp,
 } from "../src/lowering/gltf-lowerer.js";
 import { UpstreamSourceStore } from "../src/upstream-source.js";
+import { probeValue, rightHandedProbes } from "./right-handed-process.js";
 import { pinnedMatrixHeader } from "../src/lowering/pinned-matrix.js";
 import { lowerGltfAnimationEvaluator } from "../src/lowering/gltf/animation-evaluator.js";
 
@@ -257,6 +258,19 @@ test("lowers the RH-to-LH root multiply byte-identically to the shipped loader t
     );
 });
 
+test("a right-handed build's identity root leaves a rooted world as it is", () => {
+    assert.ok(!store.rightHanded());
+    const [rightHanded, rooted] = rightHandedProbes([
+        { probe: "rightHanded" },
+        { probe: "gltfRootedWorld" },
+    ]);
+    assert.equal(probeValue(rightHanded), true);
+    assert.equal(
+        probeValue(rooted),
+        "Matrix gltf_rooted_world(const Matrix& world) {\n    return world;\n}",
+    );
+});
+
 test("the emitted loader carries the source matrix helpers", () => {
     const adapter = new GltfLowerer(
         new LoweringContext(store),
@@ -336,16 +350,16 @@ test("a moved RH-to-LH flip axis flows into the matrix adapter", () => {
     );
 });
 
-test("a root that stops flipping exactly one axis refuses", () => {
+test("a root flipping more than one axis refuses", () => {
     assert.throws(
         () =>
             lowerRootedWorldCpp(
                 mutatedFile(
                     parserModule,
                     "F32([-1, 0, 0, 0,  0, 1,",
-                    "F32([1, 0, 0, 0,  0, 1,",
+                    "F32([-1, 0, 0, 0,  0, -1,",
                 ),
             ),
-        /no longer flips exactly one axis/,
+        /no longer flips at most one axis/,
     );
 });

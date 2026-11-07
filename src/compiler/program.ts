@@ -1,15 +1,21 @@
 import { compilerRepositoryRoot } from "../repository-root.js";
-import { dirname, resolve, sep } from "node:path";
+import { dirname, resolve } from "node:path";
 import ts from "typescript";
 import { compilerPackageTypings, isBabylonModule } from "./symbols.js";
 import type { HostPageProgram } from "./types.js";
 import { hostPageServedFile } from "../host-page.js";
 import { sharedPinnedContext } from "../lowering/context.js";
 import {
-    isLibraryTyping,
+    isInstalledPackageFile,
     libraryTypingFile,
 } from "../typescript-library-files.js";
 import { repositoryRelativePath } from "../upstream-source.js";
+import { specifierSourceName } from "./syntax.js";
+import {
+    pinnedProgramExportNames,
+    pinnedProgramSources,
+    type PinnedProgramSources,
+} from "../pinned-program-sources.js";
 
 /**
  * The pinned members the published typings erase.
@@ -157,6 +163,61 @@ export interface CompilerProgram {
     startupFiles?: ts.SourceFile[];
 }
 
+/**
+ * Whether a program's own files import a pinned export that compiles as
+ * program code (`pinned-program-sources.ts`).
+ */
+function importsPinnedProgramSource(program: ts.Program): boolean {
+    return program
+        .getSourceFiles()
+        .some(
+            (file) =>
+                !file.isDeclarationFile &&
+                !isInstalledPackageFile(file.fileName) &&
+                file.statements.some(
+                    (statement) =>
+                        (ts.isImportDeclaration(statement) ||
+                            ts.isExportDeclaration(statement)) &&
+                        statement.moduleSpecifier !== undefined &&
+                        ts.isStringLiteral(statement.moduleSpecifier) &&
+                        isBabylonModule(statement.moduleSpecifier.text) &&
+                        importedNames(statement).some((name) =>
+                            pinnedProgramExportNames().has(name),
+                        ),
+                ),
+        );
+}
+
+/**
+ * The pinned names an import or re-export binds: a namespace's, the members
+ * its file reads off it (`N.name`), and every export a re-exported
+ * namespace may hand on.
+ */
+function importedNames(
+    statement: ts.ImportDeclaration | ts.ExportDeclaration,
+): string[] {
+    const bindings = ts.isImportDeclaration(statement)
+        ? statement.importClause?.namedBindings
+        : statement.exportClause;
+    if (!bindings) return [];
+    if (ts.isNamespaceExport(bindings)) return [...pinnedProgramExportNames()];
+    if (ts.isNamespaceImport(bindings)) {
+        const names: string[] = [];
+        const visit = (node: ts.Node): void => {
+            if (
+                ts.isPropertyAccessExpression(node) &&
+                ts.isIdentifier(node.expression) &&
+                node.expression.text === bindings.name.text
+            )
+                names.push(node.name.text);
+            ts.forEachChild(node, visit);
+        };
+        visit(statement.getSourceFile());
+        return names;
+    }
+    return bindings.elements.map(specifierSourceName);
+}
+
 export function createCompilerProgram(
     source: string,
     fileName: string,
@@ -175,13 +236,18 @@ export function createCompilerProgram(
                 : [[resolve(script.fileName), script.source] as const],
         ),
     );
+    // Set when the program imports a pinned export compiled as program
+    // code (`pinned-program-sources.ts`): its modules are then virtual
+    // files of the program.
+    let pinnedSources: PinnedProgramSources | undefined;
     const virtualSource = (path: string): string | undefined => {
         const absolute = resolve(path);
         return absolute === rootName
             ? source
             : absolute === loaderName
               ? page?.loader?.source
-              : inlineStartup.get(absolute);
+              : (inlineStartup.get(absolute) ??
+                pinnedSources?.module(absolute)?.text);
     };
     const repositoryRoot = compilerRepositoryRoot();
     const { babylon: babylonTypes, webGpu: webGpuTypes } =
@@ -236,15 +302,22 @@ export function createCompilerProgram(
                     ts.ScriptKind.TS,
                 );
             }
+            const babylon = resolve(path) === babylonTypes;
+            const typings = (): string =>
+                defaultHost.readFile(babylonTypes) ?? "";
             const load = () =>
-                resolve(path) === babylonTypes
+                babylon
                     ? // The one place Babylon typings enter the program, and
                       // therefore the one place the members `@internal`
-                      // stripped from them are restored.
+                      // stripped from them are restored, and where the
+                      // exports a program compiles from their sources are
+                      // read from those.
                       ts.createSourceFile(
                           babylonTypes,
                           [
-                              defaultHost.readFile(babylonTypes) ?? "",
+                              pinnedSources
+                                  ? pinnedSources.typings(typings())
+                                  : typings(),
                               pinnedInternalDeclarations(),
                           ].join("\n"),
                           languageVersion,
@@ -257,8 +330,13 @@ export function createCompilerProgram(
                           onError,
                           shouldCreateNewSourceFile,
                       );
-            return isLibraryTyping(path)
-                ? libraryTypingFile(path, load)
+            return isInstalledPackageFile(path)
+                ? libraryTypingFile(
+                      babylon && pinnedSources
+                          ? `${path}?program-sources`
+                          : path,
+                      load,
+                  )
                 : load();
         },
         resolveModuleNameLiterals: (
@@ -268,6 +346,29 @@ export function createCompilerProgram(
             compilerOptions,
         ) =>
             moduleLiterals.map((moduleLiteral) => {
+                const pinned = pinnedSources?.module(containingFile);
+                const target = pinned
+                    ? pinnedSources!.resolve(moduleLiteral.text, pinned)
+                    : pinnedSources &&
+                        resolve(containingFile) === babylonTypes &&
+                        moduleLiteral.text.startsWith("./src/")
+                      ? pinnedSources.pinnedPath(
+                            moduleLiteral.text
+                                .slice("./".length)
+                                .replace(/\.js$/, ".ts"),
+                        )
+                      : undefined;
+                if (target)
+                    return {
+                        resolvedModule: {
+                            resolvedFileName: target,
+                            extension: target.endsWith(".d.ts")
+                                ? ts.Extension.Dts
+                                : ts.Extension.Ts,
+                            isExternalLibraryImport:
+                                resolve(target) === babylonTypes,
+                        },
+                    };
                 // The page's site serves a root-relative specifier, and the
                 // page loader's, as the page's own module script loads it.
                 const moduleName =
@@ -338,23 +439,28 @@ export function createCompilerProgram(
     };
     // Include the pin's WebGPU peer typings explicitly, including for entries
     // outside this checkout. Keep unrelated ambient packages excluded above.
-    const program = ts.createProgram(
-        [
-            rootName,
-            webGpuTypes,
-            ...(loaderName ? [loaderName] : []),
-            ...startupNames,
-        ],
-        options,
-        host,
-    );
+    const roots = [
+        rootName,
+        webGpuTypes,
+        ...(loaderName ? [loaderName] : []),
+        ...startupNames,
+    ];
+    let program = ts.createProgram(roots, options, host);
+    if (importsPinnedProgramSource(program)) {
+        pinnedSources = pinnedProgramSources();
+        program = ts.createProgram(
+            [...roots, ...pinnedSources.files()],
+            options,
+            host,
+            program,
+        );
+    }
     const sourceFile = program.getSourceFile(rootName);
     if (!sourceFile) {
         throw new Error(
             `Unable to create TypeScript program for '${fileName}'.`,
         );
     }
-    const nodeModules = `${sep}node_modules${sep}`;
     // The page itself is read in place of its synthesized loader module and
     // inline scripts; an external classic script is a file of its own.
     const localFiles = program
@@ -364,7 +470,7 @@ export function createCompilerProgram(
         )
         .filter((path) => path !== loaderName && !inlineStartup.has(path))
         .concat(page ? [resolve(page.path)] : [])
-        .filter((path) => !path.includes(nodeModules))
+        .filter((path) => !isInstalledPackageFile(path))
         .map((path) => repositoryRelativePath(repositoryRoot, path))
         .sort();
     const loaderFile = loaderName && program.getSourceFile(loaderName);

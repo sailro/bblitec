@@ -41,6 +41,13 @@ export type ReachedLineMaterial = Omit<LineMaterialOptions, "color"> & {
     color?: readonly [number, number, number, number];
 };
 
+/** A line material's colour: the call's, or the pin's default. */
+export function resolvedLineColor(
+    color: readonly [number, number, number, number] | undefined,
+): readonly [number, number, number, number] {
+    return color ?? lineLowerer().defaultColor();
+}
+
 /** What a registered line variant settled, by the flags that named it. */
 export interface LineMaterialPermutation {
     useVertexColor: boolean;

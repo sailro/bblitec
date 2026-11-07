@@ -265,7 +265,7 @@ if(order!==2)throw new Error("argument calls");`,
 #include <bblite/js_data.hpp>
 #include <cassert>
 namespace bbl {
-${["FrameTaskRecord& task_record(", "TaskHandle append_task(", "TaskHandle create_render_task(", "TaskHandle create_copy_to_texture_task(", "void add_task(Scene&"].map((name) => cppFunction(geometry, name)).join("\n")}
+${["FrameTaskRecord& task_record(", "TaskHandle create_render_task(", "TaskHandle create_copy_to_texture_task(", "void add_task(Scene&"].map((name) => cppFunction(geometry, name)).join("\n")}
 ${["RenderTargetHandle create_render_target(", "RenderTargetHandle swapchain_render_target(", "RenderTextureRef render_target_texture("].map((name) => cppFunction(targets, name)).join("\n")}
 ${lowerRenderTargetDisposal(context, false)}
 ${cppFunction(scene, "Scene create_scene_context(Engine&")}

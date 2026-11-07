@@ -299,7 +299,7 @@ enum class RendererKind { scene, sprites, canvas, effects, frame_graph, text };
 RendererKind renderer_kind(const Engine& engine) {
     if (bbl::has_text_renderers(engine))
         return RendererKind::text;
-    if (!engine.scenes().empty())
+    if (composited_root(engine))
         return RendererKind::scene;
     if (!engine.frame_graph_contexts().empty()) {
         return RendererKind::frame_graph;
@@ -415,7 +415,7 @@ js::Promise<js::PromiseVoid> run_realm_frames(std::shared_ptr<Engine> engine,
             // The pin's startEngine keeps requesting RAF while _renderFn exists, even when
             // _renderFrame sees no registered contexts. Let pending loads/timers register the
             // next context instead of ending the engine or constructing an empty scene driver.
-            while (!engine->device_disposed && !engine->stopped && engine->scenes().empty() &&
+            while (!engine->device_disposed && !engine->stopped && !composited_root(*engine) &&
                    renderer_kind(*engine) == RendererKind::scene) {
                 js::Promise<js::PromiseVoid> next;
                 pal::EventLoop::current().request_animation_frame(
@@ -482,7 +482,7 @@ static pal::Iteration<int> run_engine_iterations(Engine& engine) {
         }
         if (!engine.renderer_restart_requested) {
 #if BBLITE_GPU_RETIREMENT
-            if (engine.scenes().empty())
+            if (!composited_root(engine))
                 flush_frame_gpu_retirements(engine);
 #endif
             // The page unloads once its frames end, however they end.

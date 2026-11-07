@@ -366,19 +366,20 @@ inline void encode_sdl_gpu_compute(SDL_GPUCommandBuffer* command, const ComputeD
         } else {
             const auto& texture = std::get<ComputeTextureResource>(value);
             const auto& native = sdl_compute_resource<SdlComputeTexture>(texture.allocation);
+            // Every backend binds a sampler with the texture of its slot (the
+            // HLSL register too: tint-sdl places each sampler at its first
+            // texture's index), so a texture's row names its sampler and a
+            // sampler's own row binds nothing.
             if (slot.kind == 't') {
                 auto& pair = sampled.at(slot.index);
                 pair.texture = native.texture;
-                if (slot.sampler_group >= 0 && pipeline.format != SDL_GPU_SHADERFORMAT_DXIL) {
+                if (slot.sampler_group >= 0) {
                     const auto sampler = resource(static_cast<std::uint32_t>(slot.sampler_group),
                                                   static_cast<std::uint32_t>(slot.sampler_binding));
                     pair.sampler = sdl_compute_resource<SdlComputeTexture>(
                                        std::get<ComputeTextureResource>(sampler).allocation)
                                        .sampler;
                 }
-            } else if (slot.kind == 's') {
-                if (pipeline.format == SDL_GPU_SHADERFORMAT_DXIL)
-                    sampled.at(slot.index).sampler = native.sampler;
             } else if (slot.kind == 'i')
                 readonly_textures.at(slot.index) = native.texture;
             else if (slot.kind == 'j')

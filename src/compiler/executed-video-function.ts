@@ -371,6 +371,7 @@ export function bakeExecutedVideoFunction(
         version: "2",
         module: moduleIdentity(import.meta.url),
         browser: true,
+        buildConditions: false,
         parameters: {
             module: graph.entry,
             function: shape.name,

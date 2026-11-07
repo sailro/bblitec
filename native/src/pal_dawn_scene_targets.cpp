@@ -251,8 +251,14 @@ void create_frame_graph_textures(DawnState& state, const Engine& engine, std::ui
                                              "wgpuTextureCreateView geometry task sampled color")});
             }
         }
-        task.depth = create_frame_texture(state, WGPUTextureFormat_Depth24PlusStencil8, samples,
-                                          width, height, WGPUTextureUsage_RenderAttachment);
+        // An SSAO task samples the depth through a depth-only view: the
+        // pin's geometry depth is `depth32float`.
+        const bool sampled = geometry_depth_is_sampled(engine, index);
+        task.depth = create_frame_texture(
+            state, sampled ? WGPUTextureFormat_Depth32Float : WGPUTextureFormat_Depth24PlusStencil8,
+            samples, width, height,
+            sampled ? WGPUTextureUsage_RenderAttachment | WGPUTextureUsage_TextureBinding
+                    : WGPUTextureUsage_RenderAttachment);
         task.depth_view = create_dawn_texture_view(task.depth, nullptr,
                                                    "wgpuTextureCreateView geometry task depth");
     }
@@ -545,44 +551,6 @@ WGPUBindGroup blit_group_for(DawnState& state, WGPURenderPipeline pipeline,
 }
 #endif
 
-#if (BBLITE_HAS_DAWN && BBLITE_HAS_PBR_RENDERER) && BBLITE_HAS_TAA
-void retain_temporal_presentation(DawnState& state, WGPUCommandEncoder encoder, WGPUTexture surface,
-                                  std::uint32_t width, std::uint32_t height) {
-    if (!state.temporal_presented) {
-        state.temporal_presented =
-            create_frame_texture(state, state.surface_format, 1u, width, height,
-                                 WGPUTextureUsage_CopyDst | WGPUTextureUsage_TextureBinding);
-        state.temporal_presented_view = create_dawn_texture_view(state.temporal_presented, nullptr);
-        state.temporal_presented_group =
-            blit_group_for(state, blit_pipeline_for(state, state.surface_format, 1u),
-                           state.temporal_presented_view);
-    }
-    WGPUTexelCopyTextureInfo source{};
-    source.texture = surface;
-    WGPUTexelCopyTextureInfo target{};
-    target.texture = state.temporal_presented;
-    const WGPUExtent3D extent{width, height, 1u};
-    wgpuCommandEncoderCopyTextureToTexture(encoder, &source, &target, &extent);
-}
-
-void present_stopped_temporal_frame(DawnState& state, WGPUCommandEncoder encoder,
-                                    WGPUTextureView surface) {
-    WGPURenderPassColorAttachment attachment = WGPU_RENDER_PASS_COLOR_ATTACHMENT_INIT;
-    attachment.view = surface;
-    attachment.loadOp = WGPULoadOp_Clear;
-    attachment.storeOp = WGPUStoreOp_Store;
-    WGPURenderPassDescriptor descriptor = WGPU_RENDER_PASS_DESCRIPTOR_INIT;
-    descriptor.colorAttachmentCount = 1;
-    descriptor.colorAttachments = &attachment;
-    DawnRenderPass pass{wgpuCommandEncoderBeginRenderPass(encoder, &descriptor)};
-    wgpuRenderPassEncoderSetPipeline(pass, blit_pipeline_for(state, state.surface_format, 1u));
-    wgpuRenderPassEncoderSetBindGroup(pass, 2u, state.temporal_presented_group, 0u, nullptr);
-    count_gpu_draw(wgpuRenderPassEncoderDraw, pass, 3u, 1u, 0u, 0u);
-    wgpuRenderPassEncoderEnd(pass);
-    pass.reset();
-}
-#endif
-
 #if (BBLITE_HAS_DAWN && BBLITE_HAS_PBR_RENDERER)
 void save_dawn_texture_file(DawnState& state, WGPUTexture texture, WGPUTextureFormat format,
                             std::uint32_t width, std::uint32_t height, const std::string& path,
@@ -641,11 +609,11 @@ void save_dawn_geometry_id_buffer(DawnState& state, std::uint32_t width, std::ui
     }
     const WGPUTextureFormat color_format = WGPUTextureFormat_RGBA8Unorm;
     auto& pipelines = cluster_ids ? state.cluster_pipelines : state.id_pipelines;
-    for (int sided = 0; sided < 2; ++sided) {
-        if (!pipelines[sided]) {
-            pipelines[sided] = create_diagnostic_pipeline(
+    for (std::size_t culling = 0; culling < diagnostic_pipeline_count; ++culling) {
+        if (!pipelines[culling]) {
+            pipelines[culling] = create_diagnostic_pipeline(
                 state, cluster_ids ? state.diagnostic_cluster_module : state.diagnostic_id_module,
-                sided == 1, 1, &color_format, 1);
+                static_cast<DiagnosticPipeline>(culling), 1, &color_format, 1);
         }
     }
 
@@ -686,8 +654,8 @@ void save_dawn_geometry_id_buffer(DawnState& state, std::uint32_t width, std::ui
     pass_descriptor.colorAttachments = &color_attachment;
     pass_descriptor.depthStencilAttachment = &depth_attachment;
     DawnRenderPass pass{wgpuCommandEncoderBeginRenderPass(encoder, &pass_descriptor)};
+    WGPURenderPipeline bound_pipeline = nullptr;
     for (int sided_mode = 0; sided_mode < 2; ++sided_mode) {
-        wgpuRenderPassEncoderSetPipeline(pass, pipelines[sided_mode]);
         std::uint32_t cluster_id_base = 1;
         for (std::size_t mesh_index = 0;
              mesh_index < state.meshes.size() && mesh_index < render_plan.size(); ++mesh_index) {
@@ -697,9 +665,13 @@ void save_dawn_geometry_id_buffer(DawnState& state, std::uint32_t width, std::ui
             const std::uint32_t current_cluster_base = cluster.id_start;
             const upstream::RenderItem& item = render_plan[mesh_index];
             const MaterialRecord* material = handle_find(engine.materials, item.material);
-            const bool double_sided = item.cull_mode == upstream::RenderCullMode::none;
-            if (double_sided != (sided_mode == 1))
+            const DiagnosticPipeline culling = diagnostic_pipeline(item);
+            if ((culling == DiagnosticPipeline::double_sided) != (sided_mode == 1))
                 continue;
+            if (pipelines[static_cast<std::size_t>(culling)] != bound_pipeline) {
+                bound_pipeline = pipelines[static_cast<std::size_t>(culling)];
+                wgpuRenderPassEncoderSetPipeline(pass, bound_pipeline);
+            }
 
             const std::array<float, 4> alpha_options = diagnostic_alpha_options(item, material);
             WGPUBufferDescriptor uniform_descriptor = WGPU_BUFFER_DESCRIPTOR_INIT;

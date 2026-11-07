@@ -5,16 +5,21 @@ import {
     SCREEN_SPACE_KINDS,
     SCREEN_SPACE_SCALAR_SETTINGS,
     SCREEN_SPACE_TEMPORAL_MODULE,
-    SCREEN_SPACE_TEMPORAL_UNIFORM_FLOATS,
     nativeSettingName,
-    screenSpaceFactsOfKind,
+    screenSpaceFacts,
+    screenSpaceReadsLightDirection,
     type ComposedScreenSpaceTask,
     type ScreenSpaceKindFacts,
-    type ScreenSpaceStageBinding,
+    type ScreenSpaceTextureRef,
 } from "../pinned-screen-space.js";
+import {
+    plannedLayoutEntryCpp,
+    type PlannedLayoutEntry,
+} from "../recording-engine.js";
 import type { ScreenSpaceTaskManifest } from "../compiler/types.js";
 import { doubleLiteral, stringLiteral } from "../cpp-literals.js";
 import { LoweredSource, LoweringContext } from "./context.js";
+import { pinnedErrorCode, pinnedErrorMessageCpp } from "./pinned-error.js";
 
 import {
     PinnedNumericLowerer,
@@ -25,15 +30,19 @@ import { lowerPinnedBody } from "./pinned-body-lowerer.js";
 import {
     lowerMat4InvertCpp,
     lowerObjectComponents,
+    lowerPackMat4IntoF32FastPathCpp,
     lowerPinnedFunction,
+    PINNED_CAMERA_CALLS,
+    PINNED_FLOAT_ARRAY_METHODS,
 } from "./pinned-function-lowerer.js";
 import { recordAt } from "../compiler/record-access.js";
-import { sameSource, sameSyntax, isOneOfSources } from "../compiler/syntax.js";
+import { sameSource, isOneOfSources } from "../compiler/syntax.js";
 
-const CONTACT = screenSpaceFactsOfKind("scalar");
-const GI = screenSpaceFactsOfKind("color");
 const TEMPORAL_MODULE = SCREEN_SPACE_TEMPORAL_MODULE;
-const PACK_MODULE = "src/math/pack-mat4-into-f32.ts";
+const TEMPORAL_OWNER = "createScreenSpaceTemporalOwner";
+
+/** The pass label the shared temporal owner encodes its resolve under. */
+const RESOLVE_LABEL = "resolve";
 
 /**
  * The pinned reset event's members and their native spellings, which the
@@ -50,19 +59,54 @@ const RESET_EVENT_MEMBERS: readonly (readonly [string, string])[] = [
 ];
 
 /**
- * The closure state a factory keeps between frames and the literal each
- * starts from, which the native record's defaults restate: the pin's
- * `let firstFrame = true` is `bool first_frame = true`. Asserted against
- * the factory body so a changed starting value fails generation.
+ * The closure state a factory keeps between frames, the literal each
+ * starts from and the native member holding it: the pin's
+ * `let firstFrame = true` is `bool first_frame = true`, whose default the
+ * native record restates. A member the effects spell differently lists
+ * every spelling; each factory declares exactly one. Asserted against the
+ * factory body so a changed starting value fails generation; a `let`
+ * without an initializer starts at `undefined`.
  */
-const STATE_INITIALIZERS: readonly (readonly [string, string])[] = [
-    ["firstFrame", "true"],
-    ["pendingReallocation", "false"],
-    ["lastEnabled", "undefined"],
-    ["lastResetVersion", "undefined"],
-    ["accumulatedSamples", "1"],
-    ["phaseIndex", "0"],
-    ["prevInvViewProjNull", "false"],
+const STATE_MEMBERS: readonly {
+    spellings: readonly string[];
+    literal: string;
+    binding: PinnedBinding;
+}[] = [
+    {
+        spellings: ["firstFrame"],
+        literal: "true",
+        binding: { cpp: "state.first_frame", type: "bool" },
+    },
+    {
+        spellings: ["pendingReallocation"],
+        literal: "false",
+        binding: { cpp: "state.pending_reallocation", type: "bool" },
+    },
+    {
+        spellings: ["lastEnabled"],
+        literal: "undefined",
+        binding: { cpp: "state.last_enabled", type: "bool" },
+    },
+    {
+        spellings: ["lastResetVersion"],
+        literal: "undefined",
+        binding: { cpp: "state.last_reset_version", type: "scalar" },
+    },
+    {
+        spellings: ["accumulatedSamples"],
+        literal: "1",
+        binding: { cpp: "state.accumulated_samples", type: "scalar" },
+    },
+    {
+        spellings: ["phaseIndex"],
+        literal: "0",
+        binding: { cpp: "state.phase_index", type: "scalar" },
+    },
+    {
+        spellings: ["prevInvViewProjNull", "previousInverseWasSingular"],
+        literal: "false",
+        binding: { cpp: "state.prev_inv_view_proj_null", type: "bool" },
+    },
 ];
 
 /** The generated factory's signature, declared and defined alike. */
@@ -78,13 +122,12 @@ function factorySignature(taskIndex: number): string {
     );
 }
 
-/** One reached task, with the table indices generation assigned its stages. */
+/** One reached task, with the table rows generation assigned it. */
 export interface ScreenSpaceLoweringInput {
     manifest: ScreenSpaceTaskManifest;
     composed: ComposedScreenSpaceTask;
-    /** Rows in the generated `screen_space_shader_infos` table. */
-    producerStage: number;
-    resolveStage: number;
+    /** Its row in the generated `screen_space_plan_infos` table. */
+    plan: number;
     /** Rows in the post-process stage table, shared with every other pass. */
     historyCopyShader: number;
     compositeShader: number | undefined;
@@ -99,13 +142,34 @@ interface CompositeSlot {
     boolean: boolean;
 }
 
+/** One reached effect: its table row and the passes its tasks encode. */
+interface ReachedEffect extends ScreenSpaceKindFacts {
+    intrinsic: string;
+    /** The dedicated pass labels of an enabled frame, the resolve last. */
+    labels: readonly string[];
+    readsLightDirection: boolean;
+}
+
+/**
+ * One uniform block a dedicated pass uploads, read off the pinned bodies:
+ * the typed array the pin fills, the buffer it writes that array through
+ * and the module constant sizing it.
+ */
+interface StageBlock {
+    /** The pass the buffer's label names (`producer`, `blur-horizontal`). */
+    label: string;
+    data: string;
+    buffer: string;
+    floats: number;
+}
+
 /**
  * The screen-space effects, lowered from their own modules.
  *
  * What the pin decides at run time -- the temporal state machine of
- * `execute`, the reset matrix, the accumulation ramp, the two uniform blocks
+ * `execute`, the reset matrix, the accumulation ramp, the uniform blocks
  * and the composite's writer -- is translated from the pinned ASTs into one
- * generated frame function per kind. What the pin decides at creation --
+ * generated frame function per effect. What the pin decides at creation --
  * modules, layouts, formats, pass order, clamped settings -- was obtained by
  * running the factory (`pinned-screen-space.ts`) and is emitted as data.
  * The GPU work between those statements (bind groups, passes, uploads) is
@@ -126,19 +190,76 @@ export class ScreenSpaceLowerer {
             if (task.compositeShader === undefined) continue;
             writers.set(
                 task.compositeShader,
-                this.compositeWriterBody(task.composed.kind, "            "),
+                this.compositeWriterBody(
+                    task.composed.intrinsic,
+                    "            ",
+                ),
             );
         }
         return writers;
     }
 
     public lowerTaskRecords(): LoweredSource {
+        const effects = this.effects();
         return {
-            modulePath: CONTACT.module,
-            symbolName: Object.keys(SCREEN_SPACE_KINDS).join(","),
+            modulePath: effects[0]!.module,
+            symbolName: effects.map((effect) => effect.intrinsic).join(","),
             header: this.header(),
             source: this.source(),
         };
+    }
+
+    private effectCache: ReachedEffect[] | undefined;
+
+    /**
+     * The reached effects in table order. Every task of one effect encodes
+     * the same dedicated passes -- the frame function lowered once per
+     * effect walks them in that order -- which is asserted here.
+     */
+    private effects(): ReachedEffect[] {
+        if (this.effectCache) return this.effectCache;
+        const effects: ReachedEffect[] = [];
+        for (const [intrinsic, facts] of Object.entries(SCREEN_SPACE_KINDS)) {
+            const tasks = this.tasks.filter(
+                (task) => task.composed.intrinsic === intrinsic,
+            );
+            if (tasks.length === 0) continue;
+            const labels = tasks[0]!.composed.passes.map((pass) => pass.label);
+            for (const task of tasks) {
+                const own = task.composed.passes.map((pass) => pass.label);
+                if (own.join(",") !== labels.join(",")) {
+                    throw new Error(
+                        `Two ${intrinsic} tasks encode different passes ` +
+                            `([${labels.join(", ")}] and [${own.join(", ")}]), ` +
+                            "which one lowered frame function cannot walk.",
+                    );
+                }
+            }
+            if (labels.at(-1) !== RESOLVE_LABEL) {
+                throw new Error(
+                    `Pinned ${intrinsic} ends its passes in '${labels.at(-1)}', ` +
+                        "not the temporal resolve.",
+                );
+            }
+            effects.push({
+                ...facts,
+                intrinsic,
+                labels,
+                readsLightDirection: screenSpaceReadsLightDirection(intrinsic),
+            });
+        }
+        this.effectCache = effects;
+        return effects;
+    }
+
+    private effect(intrinsic: string): ReachedEffect {
+        const found = this.effects().find(
+            (effect) => effect.intrinsic === intrinsic,
+        );
+        if (!found) {
+            throw new Error(`No reached task was created by ${intrinsic}.`);
+        }
+        return found;
     }
 
     private header(): string {
@@ -166,7 +287,7 @@ ScreenSpaceScaledSize screen_space_scaled_size(
 
 /**
  * One frame of one task, lowered from the pin's own \`execute\`: samples the
- * live settings, advances the temporal state and fills both uniform blocks.
+ * live settings, advances the temporal state and fills every uniform block.
  * The backend encodes what it decided.
  */
 ScreenSpaceFrameDecision screen_space_frame(
@@ -185,13 +306,17 @@ ${factories}
     }
 
     private source(): string {
+        const effects = this.effects();
         const provenance = this.context.provenance(
-            CONTACT.module,
-            CONTACT.intrinsic,
-            `${GI.module}#${GI.intrinsic}, ` +
-                `${TEMPORAL_MODULE}#createScreenSpaceTemporalOwner`,
+            effects[0]!.module,
+            effects[0]!.intrinsic,
+            [
+                ...effects
+                    .slice(1)
+                    .map((effect) => `${effect.module}#${effect.intrinsic}`),
+                `${TEMPORAL_MODULE}#${TEMPORAL_OWNER}`,
+            ].join(", "),
         );
-        const kinds = new Set(this.tasks.map((task) => task.composed.kind));
         this.recordContract();
         return `// ${provenance}
 #include <bblite/upstream/frame_graph_screen_space.hpp>
@@ -205,6 +330,7 @@ ${factories}
 #include <cmath>
 #include <optional>
 #include <stdexcept>
+#include <string>
 #include <utility>
 
 namespace bbl::upstream {
@@ -215,19 +341,16 @@ namespace {
 
 ${lowerMat4InvertCpp(this.context)}
 
-${this.packMat4()}
+${lowerPackMat4IntoF32FastPathCpp(this.context)}
 
 ${this.clampHelper()}
 
 ${this.temporalHelpers()}
 
 ${this.resetDecision()}
-
-${this.lightDirection()}
-
+${effects.some((effect) => effect.readsLightDirection) ? `\n${this.lightDirection()}\n` : ""}
 ${this.refreshComposite()}
-${kinds.has("scalar") ? this.frameFunction("scalar") : ""}
-${kinds.has("color") ? this.frameFunction("color") : ""}
+${effects.map((effect) => this.frameFunction(effect)).join("\n")}
 } // namespace
 
 ${this.scaledSize()}
@@ -246,12 +369,13 @@ ScreenSpaceFrameDecision screen_space_frame(
     }
     ScreenSpaceTaskOptions& task = record.screen_space;
     ScreenSpaceTemporalState& state = task.state;
-    // The pin's record(): it resizes its raw, stable and history targets
-    // whenever the depth source's scaled extent changed and flags the
-    // reallocation for execute. The backend sized and built those targets;
-    // a changed allocation is that same event.
-    if (inputs.raw_allocation != state.seen_raw_allocation) {
-        state.seen_raw_allocation = inputs.raw_allocation;
+    // The pin's record(): it resizes every target it owns between its
+    // passes whenever the depth source's scaled extent changed, and flags
+    // the reallocation for execute; its temporal owner does the same for
+    // the stable/history pair. The backend sized and built those targets,
+    // all of them in one rebuild, so a changed allocation is that event.
+    if (inputs.intermediate_allocation != state.seen_intermediate_allocation) {
+        state.seen_intermediate_allocation = inputs.intermediate_allocation;
         state.pending_reallocation = true;
     }
     if (
@@ -262,12 +386,11 @@ ScreenSpaceFrameDecision screen_space_frame(
         state.pending_reallocation = true;
     }
     switch (task.kind) {
-${[CONTACT, GI]
-    .filter((facts) => kinds.has(facts.kind))
+${effects
     .map(
-        (facts) =>
-            `        case ScreenSpaceEffectKind::${facts.enumerator}:\n` +
-            `            return ${facts.frameFunction}(engine, record, task, inputs);\n`,
+        (effect) =>
+            `        case ScreenSpaceEffectKind::${effect.enumerator}:\n` +
+            `            return ${effect.frameFunction}(engine, record, task, inputs);\n`,
     )
     .join("")}        default:
             throw std::runtime_error(
@@ -288,136 +411,258 @@ ${this.tasks.map((task) => this.taskFactory(task)).join("\n\n")}
     }
 
     /**
-     * `packMat4IntoF32`'s fast path, which is the only path a screen-space
-     * task reaches: every pack is of one sixteen-element matrix at source
-     * offset zero, so the pin's own `view.set(src, offsetFloats)` is a copy
-     * of sixteen floats. The slab walk behind the guard is asserted present
-     * and not translated.
+     * The uniform blocks one effect's frame uploads, in its pass order:
+     * each dedicated pass's buffer is created under `${name}-<pass>-uniforms`
+     * and written from one typed array through
+     * `queue.writeBuffer(buffer!, 0, data)`. The factory's own passes are
+     * read off its `execute` and closure; the resolve's off the temporal
+     * owner's `resolve`. Each array's `new F32(<constant>)` sizes it.
      */
-    private packMat4(): string {
-        const { declaration } = this.context.functionDeclaration(
-            PACK_MODULE,
-            "packMat4IntoF32",
+    private stageBlocks(effect: ReachedEffect): StageBlock[] {
+        const own = this.blocksOf(
+            effect.module,
+            effect.intrinsic,
+            this.taskMethod(effect.intrinsic, "execute").declaration.body,
         );
-        const guard = this.context.findNodes(
-            declaration,
-            (node): node is ts.IfStatement =>
-                ts.isIfStatement(node) &&
-                sameSource(
-                    node.expression,
-                    "srcOffsetFloats === 0 && src.length === 16",
-                ),
+        const resolve = this.blocksOf(
+            TEMPORAL_MODULE,
+            TEMPORAL_OWNER,
+            this.resolveMethod().declaration.body,
         );
-        if (
-            guard.length !== 1 ||
-            !this.context.hasCall(guard[0]!.thenStatement, "set")
-        ) {
-            this.context.contractError(
-                declaration,
-                "Expected packMat4IntoF32 to copy a sixteen-element matrix " +
-                    "at source offset zero through view.set.",
+        const blocks = [...own, ...resolve];
+        const labels = blocks.map((block) => block.label);
+        if (labels.join(",") !== effect.labels.join(",")) {
+            throw new Error(
+                `Pinned ${effect.intrinsic} uploads blocks for ` +
+                    `[${labels.join(", ")}] where it encodes ` +
+                    `[${effect.labels.join(", ")}].`,
             );
         }
-        return `// ${this.context.provenance(PACK_MODULE, "packMat4IntoF32")}
-// The fast path: one matrix, source offset zero, \`view.set(src, offset)\`.
-void pack_mat4_into_f32(
-    float* view,
-    const std::array<float, 16>& mat,
-    double offset_floats) {
-    std::copy_n(
-        mat.data(),
-        16,
-        view + static_cast<std::size_t>(offset_floats));
-}`;
+        return blocks;
+    }
+
+    private blocksOf(
+        module: string,
+        symbol: string,
+        body: ts.Block,
+    ): StageBlock[] {
+        const { file, declaration } = this.context.functionDeclaration(
+            module,
+            symbol,
+        );
+        // `<buffer> = device.createBuffer({ label: \`${name}-<pass>-uniforms\` })`
+        const buffers = new Map<string, string>();
+        for (const assignment of this.context.findNodes(
+            declaration,
+            ts.isBinaryExpression,
+        )) {
+            if (
+                assignment.operatorToken.kind !== ts.SyntaxKind.EqualsToken ||
+                !ts.isIdentifier(assignment.left)
+            )
+                continue;
+            const call = this.context.unwrapExpression(assignment.right);
+            if (
+                !ts.isCallExpression(call) ||
+                this.context.propertyPath(call.expression)?.at(-1) !==
+                    "createBuffer"
+            )
+                continue;
+            const descriptor = this.context.unwrapExpression(
+                call.arguments[0]!,
+            );
+            if (!ts.isObjectLiteralExpression(descriptor)) {
+                this.context.contractError(call, "Expected a buffer literal.");
+            }
+            const label = this.context.unwrapExpression(
+                this.context.propertyInitializer(descriptor, "label"),
+            );
+            const span = ts.isTemplateExpression(label)
+                ? label.templateSpans[0]
+                : undefined;
+            const suffix = span?.literal.text;
+            if (
+                !ts.isTemplateExpression(label) ||
+                label.head.text !== "" ||
+                label.templateSpans.length !== 1 ||
+                !span ||
+                !sameSource(span.expression, "name") ||
+                !suffix?.startsWith("-") ||
+                !suffix.endsWith("-uniforms")
+            ) {
+                this.context.contractError(
+                    label,
+                    "Expected a uniform buffer labelled `${name}-<pass>-uniforms`.",
+                );
+            }
+            buffers.set(
+                assignment.left.text,
+                suffix.slice(1, -"-uniforms".length),
+            );
+        }
+        const blocks: StageBlock[] = [];
+        for (const call of this.context.findNodes(body, ts.isCallExpression)) {
+            if (
+                this.context.propertyPath(call.expression)?.join(".") !==
+                "engine._device.queue.writeBuffer"
+            )
+                continue;
+            const [target, offset, source] = call.arguments.map((argument) =>
+                this.context.unwrapExpression(argument),
+            );
+            const buffer =
+                target && ts.isIdentifier(target) ? target.text : undefined;
+            const data =
+                source && ts.isIdentifier(source) ? source.text : undefined;
+            const label =
+                buffer === undefined ? undefined : buffers.get(buffer);
+            if (
+                call.arguments.length !== 3 ||
+                !offset ||
+                !sameSource(offset, "0") ||
+                buffer === undefined ||
+                data === undefined ||
+                label === undefined
+            ) {
+                this.context.contractError(
+                    call,
+                    "Expected a whole-block upload of one typed array " +
+                        "through a uniform buffer the closure created.",
+                );
+            }
+            const allocations = this.context.findNodes(
+                declaration,
+                (node): node is ts.VariableDeclaration =>
+                    ts.isVariableDeclaration(node) &&
+                    ts.isIdentifier(node.name) &&
+                    node.name.text === data,
+            );
+            const allocation =
+                allocations.length === 1 && allocations[0]!.initializer
+                    ? this.context.unwrapExpression(allocations[0]!.initializer)
+                    : undefined;
+            const size =
+                allocation &&
+                ts.isNewExpression(allocation) &&
+                sameSource(allocation.expression, "F32") &&
+                allocation.arguments?.length === 1
+                    ? this.context.unwrapExpression(allocation.arguments[0]!)
+                    : undefined;
+            if (!size || !ts.isIdentifier(size)) {
+                this.context.contractError(
+                    allocations[0] ?? call,
+                    `Expected ${data} to be a closure's new F32(<constant>).`,
+                );
+            }
+            blocks.push({
+                label,
+                data,
+                buffer,
+                floats: this.context.pinnedNumber(file, size.text),
+            });
+        }
+        return blocks;
     }
 
     /**
-     * The two uniform blocks' sizes, met at both ends: the pin's own
-     * `SS_*_UNIFORM_FLOATS` constants against the buffers the recording
-     * device saw the factory create, and those byte counts against the
-     * fixed arrays `ScreenSpaceFrameDecision` carries them in -- a block
-     * the pin grows fails generation here and native compilation there,
-     * never a lowered write past the array.
+     * The uniform blocks' sizes, met at both ends: each typed array's
+     * pinned constant against the buffer the recording device saw the
+     * factory create for that pass, and every block against the fixed rows
+     * `ScreenSpaceFrameDecision` carries them in -- a block the pin grows
+     * or a pass it adds fails generation here and native compilation
+     * there, never a lowered write past a row.
      */
     private uniformSizeContract(): string {
-        const floats = (module: string, name: string): number =>
-            this.context.pinnedNumber(module, name);
-        const temporalBytes =
-            4 * floats(TEMPORAL_MODULE, SCREEN_SPACE_TEMPORAL_UNIFORM_FLOATS);
-        let producerBytes: number | undefined;
-        for (const task of this.tasks) {
-            const facts = task.composed.kind === "scalar" ? CONTACT : GI;
-            const expected =
-                4 * floats(facts.module, facts.producerUniformFloats);
-            if (task.composed.producer.uniformBytes !== expected) {
-                throw new Error(
-                    `Pinned ${facts.intrinsic} creates a ${task.composed.producer.uniformBytes}-byte ` +
-                        `producer block where ${facts.producerUniformFloats} sizes ${expected}.`,
-                );
+        let floats = 0;
+        let passes = 0;
+        for (const effect of this.effects()) {
+            const blocks = this.stageBlocks(effect);
+            passes = Math.max(passes, blocks.length);
+            for (const block of blocks) floats = Math.max(floats, block.floats);
+            for (const task of this.tasks) {
+                if (task.composed.intrinsic !== effect.intrinsic) continue;
+                for (const [index, pass] of task.composed.passes.entries()) {
+                    const expected = 4 * blocks[index]!.floats;
+                    if (pass.stage.uniformBytes !== expected) {
+                        throw new Error(
+                            `Pinned ${effect.intrinsic} creates a ` +
+                                `${pass.stage.uniformBytes}-byte '${pass.label}' block ` +
+                                `where ${blocks[index]!.data} holds ${expected} bytes.`,
+                        );
+                    }
+                }
             }
-            if (task.composed.resolve.uniformBytes !== temporalBytes) {
-                throw new Error(
-                    `Pinned ${facts.intrinsic} creates a ${task.composed.resolve.uniformBytes}-byte ` +
-                        `temporal block where ${SCREEN_SPACE_TEMPORAL_UNIFORM_FLOATS} sizes ${temporalBytes}.`,
-                );
-            }
-            if (producerBytes !== undefined && producerBytes !== expected) {
-                throw new Error(
-                    "The two screen-space producers size their blocks differently, " +
-                        "which one decision record cannot carry.",
-                );
-            }
-            producerBytes = expected;
         }
         return (
             `static_assert(\n` +
-            `    sizeof(ScreenSpaceFrameDecision::producer_uniforms) == ${producerBytes ?? 0}u,\n` +
-            `    "The producer block the pin sizes is not the one the decision carries.");\n` +
+            `    screen_space_max_passes >= ${passes}u,\n` +
+            `    "The decision carries fewer blocks than a task's passes upload.");\n` +
             `static_assert(\n` +
-            `    sizeof(ScreenSpaceFrameDecision::temporal_uniforms) == ${temporalBytes}u,\n` +
-            `    "The temporal block the pin sizes is not the one the decision carries.");`
+            `    screen_space_max_block_floats >= ${floats}u,\n` +
+            `    "A block the pin sizes does not fit one row of the decision.");`
         );
     }
 
-    /** The module-scope `CLAMP`, identical in both producer modules. */
+    /**
+     * The module-scope `CLAMP` every effect module declares. One is
+     * lowered; every other reached module's must lower to the same C++
+     * with its parameters bound in the same positions, so sharing one
+     * native helper is the pin's arithmetic for each of them.
+     */
     private clampHelper(): string {
-        const contact = this.context.sourceFile(CONTACT.module);
-        const initializer = this.context.unwrapExpression(
-            this.context.variableInitializer(contact, "CLAMP"),
-        );
-        const twin = this.context.unwrapExpression(
-            this.context.variableInitializer(
-                this.context.sourceFile(GI.module),
-                "CLAMP",
-            ),
-        );
-        if (
-            !ts.isArrowFunction(initializer) ||
-            initializer.parameters.length !== 3 ||
-            ts.isBlock(initializer.body) ||
-            !sameSyntax(initializer, twin)
-        ) {
-            this.context.contractError(
-                initializer,
-                "Expected both screen-space modules to declare the same " +
-                    "three-parameter CLAMP arrow.",
+        const lowered = this.effects().map((effect) => {
+            const file = this.context.sourceFile(effect.module);
+            const initializer = this.context.unwrapExpression(
+                this.context.variableInitializer(file, "CLAMP"),
             );
-        }
-        const names = initializer.parameters.map((parameter) => {
-            if (!ts.isIdentifier(parameter.name)) {
-                return this.context.contractError(parameter, "CLAMP parameter");
+            if (
+                !ts.isArrowFunction(initializer) ||
+                initializer.parameters.length !== 3 ||
+                ts.isBlock(initializer.body)
+            ) {
+                this.context.contractError(
+                    initializer,
+                    "Expected CLAMP to be a three-parameter expression arrow.",
+                );
             }
-            return parameter.name.text;
+            const parameters = initializer.parameters.map((parameter) =>
+                ts.isIdentifier(parameter.name)
+                    ? parameter.name.text
+                    : this.context.contractError(parameter, "CLAMP parameter"),
+            );
+            return { effect, file, initializer, parameters };
         });
-        const lowerer = new PinnedNumericLowerer(contact, {
-            bindings: new Map(
-                names.map((name) => [name, { cpp: name, type: "scalar" }]),
-            ),
-            calls: new Map(),
-        });
-        return `// ${this.context.provenance(CONTACT.module, "CLAMP")}
+        const first = lowered[0]!;
+        const names = first.parameters;
+        const body = ({
+            file,
+            initializer,
+            parameters,
+        }: (typeof lowered)[number]): string => {
+            const lowerer = new PinnedNumericLowerer(file, {
+                bindings: new Map(
+                    parameters.map((parameter, index) => [
+                        parameter,
+                        { cpp: names[index]!, type: "scalar" },
+                    ]),
+                ),
+                calls: new Map(),
+            });
+            return lowerer.expression(initializer.body as ts.Expression);
+        };
+        const expression = body(first);
+        for (const other of lowered.slice(1)) {
+            if (body(other) !== expression) {
+                this.context.contractError(
+                    other.initializer,
+                    `Expected ${other.effect.module}'s CLAMP to clamp as ` +
+                        `${first.effect.module}'s does.`,
+                );
+            }
+        }
+        return `// ${this.context.provenance(first.effect.module, "CLAMP")}
 double screen_space_clamp(double ${names.join(", double ")}) {
-    return ${lowerer.expression(initializer.body)};
+    return ${expression};
 }`;
     }
 
@@ -624,14 +869,10 @@ ${body}`;
      * moved.
      */
     private refreshComposite(): string {
-        const arms = (["scalar", "color"] as const)
-            .filter((kind) =>
-                this.tasks.some((task) => task.composed.kind === kind),
-            )
-            .map((kind) => {
-                const slots = this.compositeSlots(kind);
-                const facts = kind === "scalar" ? CONTACT : GI;
-                return `        case ScreenSpaceEffectKind::${facts.enumerator}:
+        const arms = this.effects()
+            .map((effect) => {
+                const slots = this.compositeSlots(effect.intrinsic);
+                return `        case ScreenSpaceEffectKind::${effect.enumerator}:
             if (pass.params.size() != ${slots.length}u) {
                 throw std::runtime_error(
                     "A screen-space composite's parameters were resized.");
@@ -663,57 +904,46 @@ ${arms}
 }`;
     }
 
-    /** The factory module and its entry point for a temporal kind. */
-    private factoryOf(kind: "scalar" | "color"): {
-        facts: ScreenSpaceKindFacts & { intrinsic: string };
+    /** The factory module and its entry point for an effect. */
+    private factoryOf(intrinsic: string): {
+        facts: ScreenSpaceKindFacts;
         module: string;
-        symbol: string;
         file: ts.SourceFile;
         declaration: ts.FunctionDeclaration;
     } {
-        const facts = kind === "scalar" ? CONTACT : GI;
+        const facts = screenSpaceFacts(intrinsic);
         const { file, declaration } = this.context.functionDeclaration(
             facts.module,
-            facts.intrinsic,
+            intrinsic,
         );
-        return {
-            facts,
-            module: facts.module,
-            symbol: facts.intrinsic,
-            file,
-            declaration,
-        };
+        return { facts, module: facts.module, file, declaration };
     }
 
     /** The composite pass's one `writeUniforms`, from the factory body. */
-    private compositeWriter(kind: "scalar" | "color"): {
+    private compositeWriter(intrinsic: string): {
         file: ts.SourceFile;
         body: ts.Block;
     } {
-        const facts = kind === "scalar" ? CONTACT : GI;
         const { file, declaration } = this.context.propertyFunction(
-            facts.module,
-            facts.intrinsic,
+            screenSpaceFacts(intrinsic).module,
+            intrinsic,
             "writeUniforms",
             { unique: true },
         );
         return { file, body: declaration.body };
     }
 
-    private readonly compositeSlotCache = new Map<
-        "scalar" | "color",
-        CompositeSlot[]
-    >();
+    private readonly compositeSlotCache = new Map<string, CompositeSlot[]>();
 
     /**
      * The task fields the composite writer reads, in reading order. Each
      * becomes one parameter slot: `task.enabled ? 1 : 0` a flag the pin
      * spends through a conditional, `task.tint[0]` one lane of the triple.
      */
-    private compositeSlots(kind: "scalar" | "color"): CompositeSlot[] {
-        const cached = this.compositeSlotCache.get(kind);
+    private compositeSlots(intrinsic: string): CompositeSlot[] {
+        const cached = this.compositeSlotCache.get(intrinsic);
         if (cached) return cached;
-        const { file, body } = this.compositeWriter(kind);
+        const { file, body } = this.compositeWriter(intrinsic);
         const slots: CompositeSlot[] = [];
         const seen = new Set<string>();
         const visit = (node: ts.Node): void => {
@@ -732,7 +962,7 @@ ${arms}
                 "Expected the writer to read the task.",
             );
         }
-        this.compositeSlotCache.set(kind, slots);
+        this.compositeSlotCache.set(intrinsic, slots);
         return slots;
     }
 
@@ -802,15 +1032,12 @@ ${arms}
      * shared `write_post_process_uniforms` switch, whose pass parameter is
      * named `task` like the pin's closure variable.
      */
-    private compositeWriterBody(
-        kind: "scalar" | "color",
-        indent: string,
-    ): string {
-        const { file, body } = this.compositeWriter(kind);
+    private compositeWriterBody(intrinsic: string, indent: string): string {
+        const { file, body } = this.compositeWriter(intrinsic);
         const bindings = new Map<string, PinnedBinding>([
             ["data", { cpp: "data", type: "f32", mutable: true }],
         ]);
-        for (const [slot, read] of this.compositeSlots(kind).entries()) {
+        for (const [slot, read] of this.compositeSlots(intrinsic).entries()) {
             bindings.set(
                 read.read,
                 read.boolean
@@ -870,14 +1097,18 @@ ${arms}
      * The pin's `record`: asserted rather than translated, because every
      * statement in it allocates or resizes GPU targets the backend owns.
      * What the frame function keeps from it is the reallocation flag, set
-     * exactly where the pin sets it -- after resizing the raw target and
-     * when the owner resized the temporal pair.
+     * exactly where the pin sets it -- after resizing the targets it owns
+     * between its passes and when the owner resized the temporal pair --
+     * and the viewport assertion, which an effect that asserts in record()
+     * also asserts first thing in execute(), where the frame function
+     * spells it.
      */
     private recordContract(): void {
-        for (const kind of ["scalar", "color"] as const) {
-            if (!this.tasks.some((task) => task.composed.kind === kind))
-                continue;
-            const { declaration: record } = this.taskMethod(kind, "record");
+        for (const effect of this.effects()) {
+            const { declaration: record } = this.taskMethod(
+                effect.intrinsic,
+                "record",
+            );
             const flagged = this.context.countNodes(
                 record,
                 (node) =>
@@ -890,25 +1121,50 @@ ${arms}
                 this.context.contractError(
                     record,
                     "Expected record() to flag a reallocation after resizing " +
-                        "the raw target and after owner.record resized the " +
+                        "its own targets and after owner.record resized the " +
                         "temporal targets.",
+                );
+            }
+            const { declaration: execute } = this.taskMethod(
+                effect.intrinsic,
+                "execute",
+            );
+            const asserts = (body: ts.Block): boolean => {
+                const first = body.statements[0];
+                return (
+                    first !== undefined &&
+                    ts.isExpressionStatement(first) &&
+                    sameSource(first.expression, "assertFullscreenViewport()")
+                );
+            };
+            const declared = this.viewportDeclaration(effect) !== undefined;
+            if (
+                asserts(record.body) !== declared ||
+                asserts(execute.body) !== declared
+            ) {
+                this.context.contractError(
+                    record,
+                    declared
+                        ? "Expected record() and execute() to assert the " +
+                              "fullscreen viewport first."
+                        : "record() or execute() asserts a viewport the " +
+                              "factory does not declare.",
                 );
             }
         }
     }
 
-    /** The one method of that name a kind's factory builds on its task. */
+    /** The one method of that name an effect's factory builds on its task. */
     private taskMethod(
-        kind: "scalar" | "color",
+        intrinsic: string,
         name: string,
     ): {
         file: ts.SourceFile;
         declaration: ts.FunctionLikeDeclarationBase & { body: ts.Block };
     } {
-        const facts = kind === "scalar" ? CONTACT : GI;
         return this.context.propertyFunction(
-            facts.module,
-            facts.intrinsic,
+            screenSpaceFacts(intrinsic).module,
+            intrinsic,
             name,
             { unique: true },
         );
@@ -921,23 +1177,124 @@ ${arms}
     } {
         return this.context.propertyFunction(
             TEMPORAL_MODULE,
-            "createScreenSpaceTemporalOwner",
+            TEMPORAL_OWNER,
             "resolve",
             { unique: true },
         );
     }
 
     /**
-     * One kind's frame function, lowered from its factory's `execute` with
-     * the temporal owner's `resolve` inlined where the pin calls it.
+     * The factory's own `assertFullscreenViewport`, when it declares one:
+     * ambient occlusion reconstructs positions over the whole depth source,
+     * so it refuses a camera drawing a sub-rectangle at creation, in
+     * record() and in execute().
      */
-    private frameFunction(kind: "scalar" | "color"): string {
-        const { facts, module, symbol } = this.factoryOf(kind);
-        const { file, declaration: execute } = this.taskMethod(kind, "execute");
-        const walker = new FrameWalker(this.context, this, kind, file);
+    private viewportDeclaration(
+        effect: ReachedEffect,
+    ):
+        | { file: ts.SourceFile; declaration: ts.FunctionDeclaration }
+        | undefined {
+        const { file, declaration } = this.factoryOf(effect.intrinsic);
+        const statements: readonly ts.Statement[] =
+            declaration.body?.statements ?? [];
+        const found = statements.filter(
+            (statement): statement is ts.FunctionDeclaration =>
+                ts.isFunctionDeclaration(statement) &&
+                statement.name?.text === "assertFullscreenViewport",
+        );
+        if (found.length > 1) {
+            this.context.contractError(
+                declaration,
+                "Expected at most one assertFullscreenViewport.",
+            );
+        }
+        return found[0] ? { file, declaration: found[0] } : undefined;
+    }
+
+    /** The native spelling of an effect's viewport assertion, if it has one. */
+    private viewportCheckName(effect: ReachedEffect): string | undefined {
+        return this.viewportDeclaration(effect)
+            ? `${effect.enumerator}_assert_fullscreen_viewport`
+            : undefined;
+    }
+
+    /**
+     * The viewport assertion, its two statements asserted and spelled over
+     * the camera record's optional `viewport` (absent on a camera drawing
+     * the whole target, exactly where the pin's is undefined). The message
+     * is the pin's own error, decoded from its table over the task name.
+     */
+    private viewportCheck(effect: ReachedEffect): string | undefined {
+        const found = this.viewportDeclaration(effect);
+        const name = this.viewportCheckName(effect);
+        if (!found || !name) return undefined;
+        const { declaration } = found;
+        const { declaration: factory } = this.factoryOf(effect.intrinsic);
+        const camera = this.context.findNodes(
+            factory,
+            (node): node is ts.VariableDeclaration =>
+                ts.isVariableDeclaration(node) &&
+                ts.isIdentifier(node.name) &&
+                node.name.text === "camera",
+        );
+        if (
+            camera.length !== 1 ||
+            !camera[0]!.initializer ||
+            !sameSource(camera[0]!.initializer, "config.camera")
+        ) {
+            this.context.contractError(
+                factory,
+                "Expected the factory to keep config.camera as camera.",
+            );
+        }
+        const code = pinnedErrorCode(this.context, declaration, 1);
+        this.context.assertStatementShapes(
+            declaration,
+            declaration.body?.statements ?? [],
+            `const viewport = camera.viewport;
+if (viewport && (viewport.x !== 0 || viewport.y !== 0 || viewport.width !== 1 || viewport.height !== 1)) {
+    ThrowLiteError(${code}, name);
+}`,
+            "assertFullscreenViewport",
+        );
+        const message = pinnedErrorMessageCpp(this.context, code, [
+            { cpp: "name" },
+        ]);
+        return `// ${this.context.provenance(effect.module, effect.intrinsic, "assertFullscreenViewport")}
+void ${name}(
+    const CameraRecord& camera,
+    const std::string& name) {
+    const std::optional<NormalizedViewport>& viewport = camera.viewport;
+    if (
+        viewport &&
+        (viewport->x != 0.0 || viewport->y != 0.0 || viewport->width != 1.0 ||
+         viewport->height != 1.0)) {
+        throw std::runtime_error(${message});
+    }
+}`;
+    }
+
+    /**
+     * One effect's frame function, lowered from its factory's `execute`
+     * with the temporal owner's `resolve` inlined where the pin calls it.
+     */
+    private frameFunction(effect: ReachedEffect): string {
+        const { file, declaration: execute } = this.taskMethod(
+            effect.intrinsic,
+            "execute",
+        );
+        const walker = new FrameWalker(
+            this.context,
+            this,
+            effect,
+            this.stageBlocks(effect),
+            this.viewportCheckName(effect),
+            file,
+        );
         const lines = walker.lowerExecute(execute.body.statements);
-        return `// ${this.context.provenance(module, symbol, "execute")}
-ScreenSpaceFrameDecision ${facts.frameFunction}(
+        return `${this.viewportCheck(effect) ?? ""}
+// ${this.context.provenance(effect.module, effect.intrinsic, "execute")}
+ScreenSpaceFrameDecision ${effect.frameFunction}(
     Engine& engine,
     FrameTaskRecord& record,
     ScreenSpaceTaskOptions& task,
@@ -945,16 +1302,20 @@ ScreenSpaceFrameDecision ${facts.frameFunction}(
     ScreenSpaceTemporalState& state = task.state;
     ScreenSpaceFrameDecision decision{};
     const CameraRecord& camera = ${recordAt("engine.cameras", "task.camera")};
-    // The pin reads the camera's stored world matrix for its view, its
+${
+    this.context.hasCall(execute, "getCameraPosition")
+        ? `    // The pin reads the camera's stored world matrix for its view, its
     // view-projection and its position alike; composed once here, the
     // three reads below take the same lanes the separate builders would.
     const std::array<CameraMatrixScalar, 16> camera_world =
         camera_world_matrix(camera);
-${
-    kind === "scalar"
-        ? "    const Vec3d light_direction = screen_space_light_direction(engine, task);\n"
+`
         : ""
-}${lines.join("\n")}
+}${
+            effect.readsLightDirection
+                ? "    const Vec3d light_direction = screen_space_light_direction(engine, task);\n"
+                : ""
+        }${lines.join("\n")}
 }`;
     }
 
@@ -964,13 +1325,11 @@ ${
      * pin creates each owned target at 1x1 and sizes it in `record`;
      * natively the backend sizes them from the depth source by the pin's
      * own rounding rule. Each task's own factory below supplies the
-     * settings and stage indices generation settled for it.
+     * settings and table rows generation settled for it.
      */
     private sharedFactory(): string {
-        for (const kind of ["scalar", "color"] as const) {
-            if (!this.tasks.some((task) => task.composed.kind === kind))
-                continue;
-            const { declaration } = this.factoryOf(kind);
+        for (const effect of this.effects()) {
+            const { declaration } = this.factoryOf(effect.intrinsic);
             for (const shape of [
                 "(source._descriptor.samples ?? 1) !== 1",
                 "(depthSource._descriptor.samples ?? 1) !== 1",
@@ -1004,7 +1363,8 @@ ${
         }
         return `/** What one task's own factory settled beyond its settings. */
 struct ScreenSpaceTaskPlan {
-    TextureFormatClass raw_format{};
+    /** The targets it owns between its passes, by intermediate index. */
+    std::vector<TextureFormatClass> intermediate_formats;
     TextureFormatClass stable_format{};
     PostProcessPassOptions history_copy;
     std::optional<PostProcessPassOptions> composite;
@@ -1045,10 +1405,13 @@ TaskHandle create_screen_space_task(
         throw std::runtime_error(
             options.name + ": targetTexture must differ from sourceTexture.");
     }
-    // The producers bind the depth attachment through a depth-only view.
+    // The dedicated passes bind the depth attachment through a depth-only
+    // view.
     depth.sampled_depth = true;
-    // The raw producer target and the temporal owner's stable/history
-    // pair, sized from the depth source at the pin's own rounding.
+    // The targets the factory owns between its passes and the temporal
+    // owner's stable/history pair, sized from the depth source at the
+    // pin's own rounding. Creating one can grow the record table, so
+    // nothing above is read past here.
     const auto owned = [&](TextureFormatClass format) {
         RenderTargetOptions target;
         target.samples = 1u;
@@ -1062,7 +1425,9 @@ TaskHandle create_screen_space_task(
         target.scale_rounding = ScaleRounding::round;
         return create_render_target(engine, target);
     };
-    options.raw = owned(plan.raw_format);
+    for (const TextureFormatClass format : plan.intermediate_formats) {
+        options.intermediates.push_back(owned(format));
+    }
     options.stable = owned(plan.stable_format);
     options.history = owned(plan.stable_format);
     PostProcessTaskOptions passes;
@@ -1089,31 +1454,29 @@ TaskHandle create_screen_space_task(
     task.kind = FrameTaskKind::screen_space;
     task.post_process = std::move(passes);
     task.screen_space = std::move(options);
-    engine.frame_tasks.push_back(std::move(task));
-    return TaskHandle{
-        static_cast<std::uint32_t>(engine.frame_tasks.size() - 1)};
+    return append_frame_task(engine, std::move(task));
 }`;
     }
 
     /** One task's own factory: the settings the pin clamped at creation. */
     private taskFactory(task: ScreenSpaceLoweringInput): string {
         const { composed, manifest } = task;
-        const kind = composed.kind;
-        const { facts, module, file, declaration } = this.factoryOf(kind);
-        this.assertFactoryState(kind, declaration, file);
+        const effect = this.effect(composed.intrinsic);
+        const { module, file, declaration } = this.factoryOf(effect.intrinsic);
+        this.assertFactoryState(effect, declaration, file);
         // Every key the scene wrote reaches the pin's config, so the set is
         // checked against the config the pin declares: a renamed setting
         // would otherwise take its default silently.
         this.context.assertSuppliedOptions(
             module,
-            facts.configType,
+            effect.configType,
             [
                 "sourceTexture",
                 "camera",
                 ...(manifest.hasDepthTexture ? ["depthTexture"] : []),
                 ...(manifest.hasTarget ? ["targetTexture"] : []),
                 ...(manifest.name !== undefined ? ["name"] : []),
-                ...(kind === "scalar" ? ["lightDirection"] : []),
+                ...(effect.readsLightDirection ? ["lightDirection"] : []),
                 ...Object.keys(manifest.options),
             ],
             "any-optional",
@@ -1165,18 +1528,22 @@ TaskHandle create_screen_space_task(
         if (
             composed.composite &&
             (composed.composite.extraTextures.length !== 1 ||
-                composed.composite.extraTextures[0] !== "stable")
+                composed.composite.extraTextures[0]?.role !== "stable")
         ) {
             throw new Error(
-                `Pinned ${composed.intrinsic} composites over [${composed.composite.extraTextures.join(
-                    ", ",
-                )}], where this port binds the stable target alone.`,
+                `Pinned ${composed.intrinsic} composites over [${composed.composite.extraTextures
+                    .map((texture) => texture.role)
+                    .join(
+                        ", ",
+                    )}], where this port binds the stable target alone.`,
             );
         }
+        const resolve = composed.passes.at(-1)!;
+        const viewport = this.viewportCheckName(effect);
         return `${factorySignature(manifest.taskIndex)} {
     ScreenSpaceTaskOptions options;
     options.name = ${stringLiteral(name)};
-    options.kind = ScreenSpaceEffectKind::${facts.enumerator};
+    options.kind = ScreenSpaceEffectKind::${effect.enumerator};
     options.source = source;
     options.depth = depth;
     options.target = target;
@@ -1185,15 +1552,15 @@ TaskHandle create_screen_space_task(
     options.resolution_scale = ${doubleLiteral(composed.clamped.resolutionScale)};
     options.temporal_samples = ${doubleLiteral(composed.clamped.temporalSamples)};
 ${settings}
-    options.producer_shader = ${task.producerStage}u;
-    options.resolve_shader = ${task.resolveStage}u;
+    options.plan = ${task.plan}u;
     ScreenSpaceTaskPlan plan;
-    plan.raw_format = ${nativeTextureFormat(
-        composed.producer.targetFormat,
-        "the raw producer target",
-    )};
+    plan.intermediate_formats = {${composed.intermediates
+        .map((format, index) =>
+            nativeTextureFormat(format, `intermediate target ${index}`),
+        )
+        .join(", ")}};
     plan.stable_format = ${nativeTextureFormat(
-        composed.resolve.targetFormat,
+        resolve.stage.targetFormat,
         "the stable temporal target",
     )};
     plan.history_copy.shader_index = ${task.historyCopyShader}u;
@@ -1205,10 +1572,14 @@ ${
     composite.shader_index = ${task.compositeShader}u;
     composite.sampling = PostProcessSampling::${composed.composite.sampling};
     composite.clear = ${composed.composite.clear ? "true" : "false"};
-    composite.params.assign(${this.compositeSlots(kind).length}u, 0.0);
+    composite.params.assign(${this.compositeSlots(effect.intrinsic).length}u, 0.0);
 `
         : ""
-}    return create_screen_space_task(engine, std::move(options), std::move(plan));
+}${
+            viewport
+                ? `    upstream::${viewport}(${recordAt("engine.cameras", "camera")}, options.name);\n`
+                : ""
+        }    return create_screen_space_task(engine, std::move(options), std::move(plan));
 }`;
     }
 
@@ -1220,32 +1591,34 @@ ${
      * reference and normalises it every frame.
      */
     private assertFactoryState(
-        kind: "scalar" | "color",
+        effect: ReachedEffect,
         declaration: ts.FunctionDeclaration,
         file: ts.SourceFile,
     ): void {
-        const initializerText = (name: string): string | undefined => {
-            const found = this.context.findNodes(
+        const declared = (name: string): ts.VariableDeclaration[] =>
+            this.context.findNodes(
                 declaration,
                 (node): node is ts.VariableDeclaration =>
                     ts.isVariableDeclaration(node) &&
                     ts.isIdentifier(node.name) &&
                     node.name.text === name,
             );
-            return found.length === 1
-                ? found[0]!.initializer?.getText(file)
-                : undefined;
-        };
-        for (const [name, literal] of STATE_INITIALIZERS) {
-            if (initializerText(name) !== literal) {
+        for (const { spellings, literal } of STATE_MEMBERS) {
+            const found = spellings.flatMap(declared);
+            const initializer =
+                found.length === 1
+                    ? (found[0]!.initializer?.getText(file) ?? "undefined")
+                    : undefined;
+            if (initializer !== literal) {
                 this.context.contractError(
                     declaration,
-                    `Expected the factory to start ${name} at ${literal}, ` +
+                    `Expected the factory to declare one of ` +
+                        `[${spellings.join(", ")}] starting at ${literal}, ` +
                         "which the native temporal state restates.",
                 );
             }
         }
-        if (kind !== "scalar") return;
+        if (!effect.readsLightDirection) return;
         const references = this.context.findNodes(
             declaration,
             (node): node is ts.PropertyAssignment =>
@@ -1307,19 +1680,27 @@ ${
  * frame's inputs natively. The statements that touch the device -- the
  * uploads, the passes, the bind-group identity checks -- are recognised by
  * shape, asserted, and left to the backend, which reads the decision the
- * translated statements filled in.
+ * translated statements filled in: each pass's block in its row of
+ * `decision.stage_uniforms`, in the pin's pass order.
  */
 class FrameWalker {
     private readonly bindings: Map<string, PinnedBinding>;
     private readonly numeric: PinnedNumericLowerer;
     private readonly boolean: PinnedNumericLowerer;
-    private producerPassSeen = false;
-    private producerUploadSeen = false;
+    /** The passes `execute` encoded itself, by label, and their locals. */
+    private readonly encoded: string[] = [];
+    private readonly passVariables = new Set<string>();
+    private readonly uploaded = new Set<string>();
+    /** The locals holding the camera change key and the motion test. */
+    private cameraKey: string | undefined;
+    private cameraMoved: string | undefined;
 
     public constructor(
         private readonly context: LoweringContext,
         private readonly owner: ScreenSpaceLowerer,
-        private readonly kind: "scalar" | "color",
+        private readonly effect: ReachedEffect,
+        private readonly blocks: readonly StageBlock[],
+        private readonly viewportCheck: string | undefined,
         private readonly file: ts.SourceFile,
     ) {
         this.bindings = this.executeBindings();
@@ -1330,30 +1711,20 @@ class FrameWalker {
         });
     }
 
-    /** Whether a pinned expression reads the named binding anywhere. */
-    private reads(expression: ts.Expression, name: string): boolean {
-        return this.context.hasNode(
-            expression,
-            (node) => ts.isIdentifier(node) && node.text === name,
-        );
+    /** The passes the factory encodes itself: every one before the resolve. */
+    private get ownLabels(): readonly string[] {
+        return this.effect.labels.slice(0, -1);
+    }
+
+    /** The row of `decision.stage_uniforms` a pass's block fills. */
+    private static row(index: number): string {
+        return `decision.stage_uniforms[${index}]`;
     }
 
     private scope(bindings: Map<string, PinnedBinding>) {
-        const calls = new Map<string, PinnedCallSpelling>();
+        const calls = new Map<string, PinnedCallSpelling>(PINNED_CAMERA_CALLS);
 
         calls.set("CLAMP", (args) => `screen_space_clamp(${args.join(", ")})`);
-        calls.set(
-            "getEffectiveAspectRatio",
-            (args) => `effective_aspect_ratio(${args.join(", ")})`,
-        );
-        calls.set(
-            "getViewProjectionMatrix",
-            (args) => `build_view_projection(${args.join(", ")})`,
-        );
-        calls.set(
-            "getViewMatrix",
-            (args) => `build_camera_view_matrix(${args.join(", ")})`,
-        );
         calls.set(
             "getCameraPosition",
             () =>
@@ -1376,11 +1747,6 @@ class FrameWalker {
         );
         calls.set("phaseValue", (args) => `phase_value(${args.join(", ")})`);
         calls.set(
-            "packMat4IntoF32",
-            (args) =>
-                `pack_mat4_into_f32(${args[0]}.data(), ${args[1]}, ${args[2]})`,
-        );
-        calls.set(
             "owner.clearIdentity",
             () => "decision.clear_identity = true",
         );
@@ -1391,13 +1757,7 @@ class FrameWalker {
         return {
             bindings,
             calls,
-            methods: new Map([
-                [
-                    "fill",
-                    (receiver: string, args: readonly string[]) =>
-                        `${receiver}.fill(static_cast<float>(${args[0]}))`,
-                ],
-            ]),
+            methods: PINNED_FLOAT_ARRAY_METHODS,
             matrixCalls: new Set(["getViewProjectionMatrix", "getViewMatrix"]),
             recordCalls: new Map([["getCameraPosition", ["x", "y", "z"]]]),
             returnValue: (expression: ts.Expression | undefined) => {
@@ -1428,6 +1788,7 @@ class FrameWalker {
             ["enabled", flag("task.enabled")],
             ["task.enabled", flag("task.enabled")],
             ["camera", scalar("camera")],
+            ["params.camera", scalar("camera")],
             ["params.temporalSamples", scalar("task.temporal_samples")],
             [
                 "depthSource._width",
@@ -1441,23 +1802,8 @@ class FrameWalker {
             ["source._colorTexture", scalar("inputs.color_allocation")],
             ["lastDepthTexture", scalar("state.last_depth_allocation")],
             ["lastColorTexture", scalar("state.last_color_allocation")],
-            ["lastEnabled", flag("state.last_enabled")],
-            ["lastResetVersion", scalar("state.last_reset_version")],
-            ["firstFrame", flag("state.first_frame")],
-            ["pendingReallocation", flag("state.pending_reallocation")],
-            ["prevInvViewProjNull", flag("state.prev_inv_view_proj_null")],
-            ["accumulatedSamples", scalar("state.accumulated_samples")],
-            ["phaseIndex", scalar("state.phase_index")],
             ["width", scalar("static_cast<double>(inputs.effect_width)")],
             ["height", scalar("static_cast<double>(inputs.effect_height)")],
-            [
-                "producerUniformData",
-                {
-                    cpp: "decision.producer_uniforms",
-                    type: "f32",
-                    mutable: true,
-                },
-            ],
             [
                 "invViewProj",
                 {
@@ -1480,13 +1826,23 @@ class FrameWalker {
             ],
             ["draws", scalar("0.0")],
         ]);
+        for (const { spellings, binding } of STATE_MEMBERS) {
+            for (const spelling of spellings) bindings.set(spelling, binding);
+        }
+        for (const [index, block] of this.blocks.slice(0, -1).entries()) {
+            bindings.set(block.data, {
+                cpp: FrameWalker.row(index),
+                type: "f32",
+                mutable: true,
+            });
+        }
         for (const setting of SCREEN_SPACE_SCALAR_SETTINGS) {
             bindings.set(
                 `task.${setting}`,
                 scalar(`task.${nativeSettingName(setting)}`),
             );
         }
-        if (this.kind === "scalar") {
+        if (this.effect.readsLightDirection) {
             bindings.set("task.lightDirection", {
                 cpp: "light_direction",
                 type: "vec3",
@@ -1501,11 +1857,15 @@ class FrameWalker {
         for (const statement of statements) {
             lines.push(...this.lowerStatement(statement, "    "));
         }
-        if (!this.producerPassSeen || !this.producerUploadSeen) {
+        const own = this.ownLabels;
+        if (
+            this.encoded.join(",") !== own.join(",") ||
+            !own.every((label) => this.uploaded.has(label))
+        ) {
             this.context.contractError(
                 this.file,
-                "Expected execute to upload the producer block and encode " +
-                    "the producer pass.",
+                `Expected execute to upload and encode [${own.join(", ")}] ` +
+                    `before the resolve; it encoded [${this.encoded.join(", ")}].`,
             );
         }
         return lines;
@@ -1550,32 +1910,53 @@ class FrameWalker {
                         "mat4_invert(viewProj);",
                 ];
             }
-            if (name === "pass") {
-                // The producer pass, which the backend encodes when the
-                // decision says the effect ran; the resolve and history
-                // copy follow it in the pin's own sequence.
-                this.assertProducerPass(initializer);
-                this.producerPassSeen = true;
-                return [`${indent}decision.run_effect = true;`];
+            if (
+                ts.isCallExpression(initializer) &&
+                sameSource(
+                    initializer.expression,
+                    "engine._currentEncoder.beginRenderPass",
+                )
+            ) {
+                // One of the factory's own passes, which the backend
+                // encodes in this order when the decision says the effect
+                // ran; the resolve and history copy follow them.
+                this.assertOwnPass(initializer);
+                this.passVariables.add(name);
+                return this.encoded.length === 1
+                    ? [`${indent}decision.run_effect = true;`]
+                    : [];
             }
-            if (name === "camKey") {
-                this.context.assertExpressionShape(
-                    initializer,
-                    "_cameraChangeKey(camera)",
-                    "the camera change key",
-                );
+            if (
+                ts.isCallExpression(initializer) &&
+                sameSource(initializer.expression, "_cameraChangeKey")
+            ) {
+                if (
+                    initializer.arguments.length !== 1 ||
+                    !isOneOfSources(initializer.arguments[0], [
+                        "camera",
+                        "params.camera",
+                    ])
+                ) {
+                    this.context.contractError(
+                        initializer,
+                        "Expected the change key of the task camera.",
+                    );
+                }
+                this.cameraKey = name;
                 return [];
             }
-            if (name === "moved") {
-                this.context.assertExpressionShape(
-                    initializer,
-                    "camKey !== lastCameraKey",
-                    "the camera motion test",
-                );
+            if (
+                this.cameraKey !== undefined &&
+                sameSource(initializer, `${this.cameraKey} !== lastCameraKey`)
+            ) {
+                this.cameraMoved = name;
                 return [];
             }
-            if (name === "decision") {
-                return this.lowerDecision(initializer, indent);
+            if (
+                ts.isCallExpression(initializer) &&
+                sameSource(initializer.expression, "decideScreenSpaceReset")
+            ) {
+                return this.lowerDecision(name, initializer, indent);
             }
             if (name === "draws") {
                 return this.lowerResolveCall(initializer, indent);
@@ -1615,55 +1996,118 @@ class FrameWalker {
             const expression = this.context.unwrapExpression(
                 statement.expression,
             );
+            if (
+                this.viewportCheck !== undefined &&
+                sameSource(expression, "assertFullscreenViewport()")
+            ) {
+                return [`${indent}${this.viewportCheck}(camera, task.name);`];
+            }
             const device = this.recogniseDeviceCall(
                 expression,
-                {
-                    buffer: "producerUniformBuffer!",
-                    data: "producerUniformData",
-                },
+                this.blocks.slice(0, -1),
+                this.passVariables,
                 "the fullscreen triangle draw",
             );
-            if (device === "upload") this.producerUploadSeen = true;
             if (device) return [];
             if (
                 ts.isBinaryExpression(expression) &&
                 expression.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
                 sameSource(expression.left, "lastCameraKey")
             ) {
-                return [];
-            }
-            return undefined;
-        }
-        if (ts.isIfStatement(statement)) {
-            if (this.reads(statement.expression, "producerBindGroup")) {
                 if (
-                    !this.context.hasCall(
-                        statement.thenStatement,
-                        "rebuildProducerBindGroup",
-                    )
+                    this.cameraKey === undefined ||
+                    !sameSource(expression.right, this.cameraKey)
                 ) {
                     this.context.contractError(
-                        statement,
-                        "Expected the producer bind-group guard to rebuild it.",
+                        expression,
+                        "Expected lastCameraKey to take this frame's key.",
                     );
                 }
                 return [];
             }
             return undefined;
         }
+        if (ts.isIfStatement(statement) && this.isBindGroupGuard(statement)) {
+            return [];
+        }
         return undefined;
     }
 
-    /** `const decision = decideScreenSpaceReset({...})`, field by field. */
+    /**
+     * `if (<identity changed> || !<group>) { rebuild<...>(); }`: the pin's
+     * bind-group identity test, which a backend answers by building each
+     * pass's group once per frame-graph rebuild. Recognised by its
+     * consequent calling one of the factory's own rebuild functions and its
+     * test reading a group that function assigns.
+     */
+    private isBindGroupGuard(statement: ts.IfStatement): boolean {
+        const then = statement.thenStatement;
+        const only =
+            ts.isBlock(then) && then.statements.length === 1
+                ? then.statements[0]
+                : undefined;
+        const call =
+            only && ts.isExpressionStatement(only)
+                ? this.context.unwrapExpression(only.expression)
+                : undefined;
+        if (
+            statement.elseStatement ||
+            !call ||
+            !ts.isCallExpression(call) ||
+            !ts.isIdentifier(call.expression) ||
+            !call.expression.text.startsWith("rebuild") ||
+            call.arguments.length !== 0
+        ) {
+            return false;
+        }
+        const callee = call.expression.text;
+        const { declaration: factory } = this.context.functionDeclaration(
+            this.effect.module,
+            this.effect.intrinsic,
+        );
+        const rebuild = this.context.findNodes(
+            factory,
+            (node): node is ts.FunctionDeclaration =>
+                ts.isFunctionDeclaration(node) && node.name?.text === callee,
+        );
+        const groups = new Set(
+            rebuild.flatMap((declaration) =>
+                this.context
+                    .findNodes(declaration, ts.isBinaryExpression)
+                    .filter(
+                        (node) =>
+                            node.operatorToken.kind ===
+                                ts.SyntaxKind.EqualsToken &&
+                            ts.isIdentifier(node.left) &&
+                            this.context.hasCall(node.right, "createBindGroup"),
+                    )
+                    .map((node) => (node.left as ts.Identifier).text),
+            ),
+        );
+        if (
+            rebuild.length !== 1 ||
+            groups.size === 0 ||
+            !this.context.hasNode(
+                statement.expression,
+                (node) => ts.isIdentifier(node) && groups.has(node.text),
+            )
+        ) {
+            this.context.contractError(
+                statement,
+                `Expected the guard around ${callee}() to test a bind group ` +
+                    "that function builds.",
+            );
+        }
+        return true;
+    }
+
+    /** `const <reset> = decideScreenSpaceReset({...})`, field by field. */
     private lowerDecision(
-        initializer: ts.Expression,
+        name: string,
+        initializer: ts.CallExpression,
         indent: string,
     ): string[] {
-        if (
-            !ts.isCallExpression(initializer) ||
-            !sameSource(initializer.expression, "decideScreenSpaceReset") ||
-            initializer.arguments.length !== 1
-        ) {
+        if (initializer.arguments.length !== 1) {
             this.context.contractError(
                 initializer,
                 "Expected decideScreenSpaceReset(event).",
@@ -1679,35 +2123,45 @@ class FrameWalker {
         const fields = new Map(RESET_EVENT_MEMBERS);
         const lines = [`${indent}ScreenSpaceResetEvent reset_event{};`];
         for (const property of event.properties) {
-            if (
-                !ts.isPropertyAssignment(property) ||
-                !ts.isIdentifier(property.name)
-            ) {
-                this.context.contractError(
+            // `cameraMoved,` names its local as much as `cameraMoved: moved`.
+            const field =
+                ts.isPropertyAssignment(property) &&
+                ts.isIdentifier(property.name)
+                    ? { name: property.name.text, value: property.initializer }
+                    : ts.isShorthandPropertyAssignment(property)
+                      ? { name: property.name.text, value: property.name }
+                      : undefined;
+            if (!field) {
+                return this.context.contractError(
                     property,
                     "Expected a named event field.",
                 );
             }
-            const native = fields.get(property.name.text);
+            const native = fields.get(field.name);
             if (!native) {
                 this.context.contractError(
                     property,
-                    `The reset event carries '${property.name.text}', which ` +
+                    `The reset event carries '${field.name}', which ` +
                         "this port does not know.",
                 );
             }
-            if (property.name.text === "cameraMoved") {
+            if (field.name === "cameraMoved") {
                 // Never read by the pin's decision (asserted in
                 // resetDecision), so the change key it comes from is not
                 // translated; the field keeps the pin's own default.
-                this.context.assertExpressionShape(
-                    property.initializer,
-                    "moved",
-                    "the camera motion event",
-                );
+                if (
+                    this.cameraMoved === undefined ||
+                    !sameSource(field.value, this.cameraMoved)
+                ) {
+                    this.context.contractError(
+                        property,
+                        "Expected the camera motion event to be this " +
+                            "frame's change-key test.",
+                    );
+                }
                 continue;
             }
-            const value = this.context.unwrapExpression(property.initializer);
+            const value = this.context.unwrapExpression(field.value);
             const lowered =
                 value.kind === ts.SyntaxKind.FalseKeyword
                     ? "false"
@@ -1721,14 +2175,14 @@ class FrameWalker {
         this.numeric.bindPorts(
             [
                 [
-                    "decision.invalidateHistory",
+                    `${name}.invalidateHistory`,
                     {
                         cpp: "reset_decision.invalidate_history",
                         type: "bool",
                     },
                 ],
                 [
-                    "decision.restartPhase",
+                    `${name}.restartPhase`,
                     {
                         cpp: "reset_decision.restart_phase",
                         type: "bool",
@@ -1740,19 +2194,18 @@ class FrameWalker {
         return lines;
     }
 
-    /** The producer pass: raw target cleared, one draw, read by the backend. */
-    private assertProducerPass(initializer: ts.Expression): void {
-        if (
-            !ts.isCallExpression(initializer) ||
-            !sameSource(
-                initializer.expression,
-                "engine._currentEncoder.beginRenderPass",
-            ) ||
-            initializer.arguments.length !== 1
-        ) {
+    /**
+     * One of the factory's own passes: labelled `${name}-<pass>` in the
+     * order composition recorded, one attachment cleared, read by the
+     * backend.
+     */
+    private assertOwnPass(initializer: ts.CallExpression): void {
+        const expected = this.ownLabels[this.encoded.length];
+        if (initializer.arguments.length !== 1 || expected === undefined) {
             this.context.contractError(
                 initializer,
-                "Expected beginRenderPass(descriptor).",
+                "Expected beginRenderPass(descriptor) for a pass composition " +
+                    "recorded.",
             );
         }
         const descriptor = this.context.unwrapExpression(
@@ -1764,6 +2217,11 @@ class FrameWalker {
                 "Expected a pass descriptor literal.",
             );
         }
+        this.context.assertExpressionShape(
+            this.context.propertyInitializer(descriptor, "label"),
+            `\`\${name}-${expected}\``,
+            `the '${expected}' pass label`,
+        );
         const attachments = this.context.unwrapExpression(
             this.context.propertyInitializer(descriptor, "colorAttachments"),
         );
@@ -1785,68 +2243,81 @@ class FrameWalker {
                 "Expected an attachment literal.",
             );
         }
-        this.context.assertExpressionShape(
+        const view = this.context.unwrapExpression(
             this.context.propertyInitializer(attachment, "view"),
-            "raw._colorView!",
-            "the producer target",
         );
+        if (
+            !ts.isPropertyAccessExpression(view) ||
+            view.name.text !== "_colorView" ||
+            !ts.isIdentifier(view.expression)
+        ) {
+            this.context.contractError(
+                view,
+                `Expected the '${expected}' pass to draw into an owned target.`,
+            );
+        }
         this.context.assertExpressionShape(
             this.context.propertyInitializer(attachment, "loadOp"),
             '"clear"',
-            "the producer load op",
+            `the '${expected}' load op`,
         );
+        this.encoded.push(expected);
     }
 
     /**
-     * A statement the backend owns in either body -- the block upload or a
-     * `pass.*` call -- asserted and named, or undefined for anything else.
-     * The producer and the resolve upload through differently named
-     * buffers and draw the same fullscreen triangle.
+     * A statement the backend owns in either body -- a block upload or a
+     * call on one of the passes -- asserted, or undefined for anything
+     * else. Every pass draws the same fullscreen triangle.
      */
     private recogniseDeviceCall(
         expression: ts.Expression,
-        upload: { buffer: string; data: string },
+        blocks: readonly StageBlock[],
+        passes: ReadonlySet<string>,
         drawLabel: string,
     ): "upload" | "pass" | undefined {
         if (!ts.isCallExpression(expression)) return undefined;
         const callee = this.context.propertyPath(expression.expression);
         if (callee?.join(".") === "engine._device.queue.writeBuffer") {
-            this.assertUpload(expression, upload.buffer, upload.data);
+            const [target, offset, source] = expression.arguments;
+            const block = blocks.find(
+                (candidate) =>
+                    expression.arguments.length === 3 &&
+                    this.context.expressionMatchesShape(
+                        target!,
+                        `${candidate.buffer}!`,
+                    ) &&
+                    this.context.expressionMatchesShape(offset!, "0") &&
+                    this.context.expressionMatchesShape(
+                        source!,
+                        candidate.data,
+                    ),
+            );
+            if (!block) {
+                this.context.contractError(
+                    expression,
+                    "Expected the whole-block upload of one of this body's blocks.",
+                );
+            }
+            this.uploaded.add(block.label);
             return "upload";
         }
-        if (callee?.[0] !== "pass" || callee.length < 2) return undefined;
-        if (callee.join(".") === "pass.draw") {
+        if (!callee || callee.length !== 2 || !passes.has(callee[0]!)) {
+            return undefined;
+        }
+        if (callee[1] === "draw") {
             this.context.assertExpressionShape(
                 expression,
-                "pass.draw(3)",
+                `${callee[0]}.draw(3)`,
                 drawLabel,
             );
         }
         return "pass";
     }
 
-    private assertUpload(
-        call: ts.CallExpression,
-        buffer: string,
-        data: string,
-    ): void {
-        const [target, offset, source] = call.arguments;
-        if (
-            call.arguments.length !== 3 ||
-            !this.context.expressionMatchesShape(target!, buffer) ||
-            !this.context.expressionMatchesShape(offset!, "0") ||
-            !this.context.expressionMatchesShape(source!, data)
-        ) {
-            this.context.contractError(
-                call,
-                `Expected the upload of ${data} through ${buffer} at offset 0.`,
-            );
-        }
-    }
-
     /**
-     * `const draws = 1 + owner.resolve({...})`: the temporal owner's own
-     * `resolve`, inlined with the call's inputs bound in the caller's scope.
+     * `const draws = <own passes> + owner.resolve({...})`: the temporal
+     * owner's own `resolve`, inlined with the call's inputs bound in the
+     * caller's scope and its block written into the last row.
      */
     private lowerResolveCall(
         initializer: ts.Expression,
@@ -1855,11 +2326,13 @@ class FrameWalker {
         if (
             !ts.isBinaryExpression(initializer) ||
             initializer.operatorToken.kind !== ts.SyntaxKind.PlusToken ||
-            !sameSource(initializer.left, "1")
+            !ts.isNumericLiteral(initializer.left) ||
+            Number(initializer.left.text) !== this.encoded.length
         ) {
             this.context.contractError(
                 initializer,
-                "Expected 1 + owner.resolve({...}).",
+                `Expected ${this.encoded.length} + owner.resolve({...}), ` +
+                    "counting the passes execute encoded itself.",
             );
         }
         const call = this.context.unwrapExpression(initializer.right);
@@ -1877,12 +2350,13 @@ class FrameWalker {
                 "Expected a resolve inputs literal.",
             );
         }
+        const block = this.blocks.at(-1)!;
         const lines: string[] = [];
         const resolveBindings = new Map<string, PinnedBinding>([
             [
-                "uniformData",
+                block.data,
                 {
-                    cpp: "decision.temporal_uniforms",
+                    cpp: FrameWalker.row(this.blocks.length - 1),
                     type: "f32",
                     mutable: true,
                 },
@@ -1964,7 +2438,7 @@ class FrameWalker {
                 this.context.contractError(method, "resolve returns"),
         });
         for (const statement of method.body.statements) {
-            const recognised = this.recogniseResolve(statement);
+            const recognised = this.recogniseResolve(statement, block);
             if (recognised) continue;
             lines.push(...resolver.statement(statement, indent));
         }
@@ -1972,7 +2446,10 @@ class FrameWalker {
     }
 
     /** The resolve statements the backend owns, asserted and skipped. */
-    private recogniseResolve(statement: ts.Statement): boolean {
+    private recogniseResolve(
+        statement: ts.Statement,
+        block: StageBlock,
+    ): boolean {
         if (ts.isVariableStatement(statement)) {
             const declaration = statement.declarationList.declarations[0];
             if (
@@ -2020,7 +2497,8 @@ class FrameWalker {
             if (
                 this.recogniseDeviceCall(
                     expression,
-                    { buffer: "uniformBuffer!", data: "uniformData" },
+                    [block],
+                    new Set(["pass"]),
                     "the resolve triangle draw",
                 )
             ) {
@@ -2059,7 +2537,13 @@ class FrameWalker {
             return false;
         }
         if (ts.isIfStatement(statement)) {
-            if (this.reads(statement.expression, "bindGroup")) {
+            if (
+                this.context.hasNode(
+                    statement.expression,
+                    (node) =>
+                        ts.isIdentifier(node) && node.text === "bindGroup",
+                )
+            ) {
                 if (
                     !this.context.hasCall(
                         statement.thenStatement,
@@ -2088,7 +2572,7 @@ class FrameWalker {
     }
 }
 
-/** One deployed producer or resolve stage: a composed stage under its stem. */
+/** One deployed dedicated stage: a composed stage under its stem. */
 export interface ScreenSpaceStageRow {
     wgsl: string;
     stem: string;
@@ -2096,46 +2580,59 @@ export interface ScreenSpaceStageRow {
     fragmentEntry: string;
     uniformBytes: number;
     targetFormat: string;
-    bindings: readonly ScreenSpaceStageBinding[];
+    bindings: readonly PlannedLayoutEntry[];
 }
 
-/** The generated `screen_space_shaders.hpp`: the deployed stages' table. */
-export function screenSpaceShadersHeader(
-    provenance: string,
-    stages: readonly ScreenSpaceStageRow[],
-): CppModule {
-    const cpp = new CppDefinitions();
-    const roleName = (role: ScreenSpaceStageBinding["role"]): string => {
-        switch (role) {
+/** One task's frame: its dedicated passes over the stage table. */
+export interface ScreenSpacePlanRow {
+    passes: readonly {
+        /** The pass's row in the stage table. */
+        stage: number;
+        target: ScreenSpaceTextureRef;
+        textures: readonly (ScreenSpaceTextureRef | undefined)[];
+    }[];
+    intermediateCount: number;
+}
+
+/** The native `ScreenSpaceTextureRef` of a composed one, `none` when absent. */
+function textureRefCpp(texture: ScreenSpaceTextureRef | undefined): string {
+    const role = (() => {
+        switch (texture?.role) {
             case "depth":
                 return "depth";
             case "source-color":
                 return "source_color";
-            case "raw":
-                return "raw";
+            case "intermediate":
+                return "intermediate";
             case "history":
                 return "history";
             case "stable":
                 return "stable";
-            default:
+            case undefined:
                 return "none";
         }
-    };
-    const kindName = (kind: ScreenSpaceStageBinding["kind"]): string =>
-        kind === "depth-texture" ? "depth_texture" : kind;
-    const tables = stages
+    })();
+    const index = texture?.role === "intermediate" ? texture.index : 0;
+    return `ScreenSpaceTextureRef{ScreenSpaceTextureRole::${role}, ${index}u}`;
+}
+
+/**
+ * The generated `screen_space_shaders.hpp`: the deployed stages' table and
+ * each task's frame plan over it.
+ */
+export function screenSpaceShadersHeader(
+    provenance: string,
+    stages: readonly ScreenSpaceStageRow[],
+    plans: readonly ScreenSpacePlanRow[],
+): CppModule {
+    const cpp = new CppDefinitions();
+    const bindingTables = stages
         .map(
             (stage, index) =>
-                `inline constexpr std::array<ScreenSpaceStageBinding, ${stage.bindings.length}u>\n` +
+                `inline constexpr std::array<PinnedLayoutEntry, ${stage.bindings.length}u>\n` +
                 `    screen_space_bindings_${index}{{\n` +
                 stage.bindings
-                    .map(
-                        (binding) =>
-                            `    ScreenSpaceStageBinding{${binding.binding}u, ` +
-                            `${stringLiteral(binding.name)}, ` +
-                            `ScreenSpaceBindingKind::${kindName(binding.kind)}, ` +
-                            `ScreenSpaceTextureRole::${roleName(binding.role)}},`,
-                    )
+                    .map((binding) => `    ${plannedLayoutEntryCpp(binding)},`)
                     .join("\n") +
                 `\n}};`,
         )
@@ -2148,61 +2645,118 @@ export function screenSpaceShadersHeader(
                 `${stringLiteral(stage.fragmentEntry)}, ` +
                 `${stage.uniformBytes}u, ` +
                 `${nativeTextureFormat(stage.targetFormat, stage.stem)}, ` +
-                `screen_space_bindings_${index}.data(), ` +
-                `screen_space_bindings_${index}.size()},`,
+                `screen_space_bindings_${index}},`,
+        )
+        .join("\n");
+    const planTables = plans
+        .map((plan, planIndex) => {
+            const textures = plan.passes
+                .map((pass, passIndex) => {
+                    const stage = stages[pass.stage];
+                    if (
+                        !stage ||
+                        stage.bindings.length !== pass.textures.length
+                    ) {
+                        throw new Error(
+                            `Screen-space plan ${planIndex} pass ${passIndex} ` +
+                                "names textures for a stage it does not match.",
+                        );
+                    }
+                    return (
+                        `inline constexpr std::array<ScreenSpaceTextureRef, ${pass.textures.length}u>\n` +
+                        `    screen_space_textures_${planIndex}_${passIndex}{{\n` +
+                        pass.textures
+                            .map((texture) => `    ${textureRefCpp(texture)},`)
+                            .join("\n") +
+                        `\n}};`
+                    );
+                })
+                .join("\n");
+            const passes =
+                `inline constexpr std::array<ScreenSpacePassInfo, ${plan.passes.length}u>\n` +
+                `    screen_space_passes_${planIndex}{{\n` +
+                plan.passes
+                    .map(
+                        (pass, passIndex) =>
+                            `    ScreenSpacePassInfo{${pass.stage}u, ` +
+                            `${textureRefCpp(pass.target)}, ` +
+                            `screen_space_textures_${planIndex}_${passIndex}.data()},`,
+                    )
+                    .join("\n") +
+                `\n}};`;
+            return `${textures}\n${passes}`;
+        })
+        .join("\n");
+    const planRows = plans
+        .map(
+            (plan, index) =>
+                `    ScreenSpacePlanInfo{screen_space_passes_${index}.data(), ` +
+                `screen_space_passes_${index}.size(), ${plan.intermediateCount}u},`,
         )
         .join("\n");
     return cpp.finish(`// ${provenance}
 #pragma once
 
+#include <bblite/pinned_layout.hpp>
 #include <bblite/runtime.hpp>
 
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <span>
 
 namespace bbl::upstream {
 
-enum class ScreenSpaceBindingKind {
-    depth_texture,
-    texture,
-    sampler,
-    uniform,
-};
-
-/** Which frame-graph texture a stage binding reads. */
+/** Which frame-graph texture a pass binds or draws into. */
 enum class ScreenSpaceTextureRole {
     none,
     depth,
     source_color,
-    raw,
+    /** One of the targets the factory owns between its passes. */
+    intermediate,
     history,
     stable,
 };
 
-struct ScreenSpaceStageBinding {
-    /** The pin's own group-0 binding index. */
-    std::uint32_t binding;
-    /** The identifier the pin declared, which the SDL_GPU sidecar names. */
-    const char* name;
-    ScreenSpaceBindingKind kind;
+struct ScreenSpaceTextureRef {
     ScreenSpaceTextureRole role;
+    /** For an intermediate, its index in \`ScreenSpaceTaskOptions::intermediates\`. */
+    std::uint32_t index;
 };
 
-/** One deployed producer or resolve stage. */
+/** One deployed dedicated stage: a producer, a blur, the resolve. */
 struct ScreenSpaceShaderInfo {
-    const char* stem;
-    const char* vertex_entry;
-    const char* fragment_entry;
-    std::uint32_t uniform_bytes;
-    TextureFormatClass target_format;
-    const ScreenSpaceStageBinding* bindings;
-    std::size_t binding_count;
+    const char* stem{};
+    const char* vertex_entry{};
+    const char* fragment_entry{};
+    std::uint32_t uniform_bytes{};
+    TextureFormatClass target_format{};
+    /** The pin's own group-0 layout, each entry under the identifier the SDL_GPU sidecar names. */
+    std::span<const PinnedLayoutEntry> bindings;
 };
 
-${cpp.privateCode(tables)}
+/** One dedicated pass of a task's frame, in the pin's encoding order. */
+struct ScreenSpacePassInfo {
+    /** Its row in \`screen_space_shader_infos\`. */
+    std::uint32_t stage;
+    /** What it clears and draws into: an intermediate or the stable target. */
+    ScreenSpaceTextureRef target;
+    /** What each of the stage's bindings reads, in its binding order. */
+    const ScreenSpaceTextureRef* textures;
+};
+
+/** One task's frame: its dedicated passes, the resolve last. */
+struct ScreenSpacePlanInfo {
+    const ScreenSpacePassInfo* passes;
+    std::size_t pass_count;
+    std::size_t intermediate_count;
+};
+
+${cpp.privateCode(`${bindingTables}\n${planTables}`)}
 
 ${cpp.table("ScreenSpaceShaderInfo", "screen_space_shader_infos", stages.length, rows)}
+
+${cpp.table("ScreenSpacePlanInfo", "screen_space_plan_infos", plans.length, planRows)}
 
 } // namespace bbl::upstream
 `);

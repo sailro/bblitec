@@ -1083,6 +1083,9 @@ export const runtimeProfileConstructionIntrinsics: ReadonlySet<string> =
     new EmissionSet([
         ...meshFactories.keys(),
         "createMeshFromData",
+        // A line system is a data mesh over its line material.
+        "createLineSystem",
+        "createLines",
         "cloneTransformNode",
         "createStandardMaterial",
         "createPbrMaterial",

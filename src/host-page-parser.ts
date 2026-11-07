@@ -125,6 +125,7 @@ function fragmentKey(markup: string): BakeKey {
         version: "1",
         module: moduleIdentity(import.meta.url),
         browser: true,
+        buildConditions: false,
         parameters: {},
         inputs: [Buffer.from(markup, "utf8")],
     };
@@ -220,6 +221,7 @@ export function parseHostPageMarkup(html: string): HostPageDocument {
             version: "1",
             module: moduleIdentity(import.meta.url),
             browser: true,
+            buildConditions: false,
             parameters: {},
             inputs: [Buffer.from(html, "utf8")],
         },

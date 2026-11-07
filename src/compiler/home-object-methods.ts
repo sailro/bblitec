@@ -9,7 +9,11 @@ import {
     isTypeAssertion,
     wrappersAround,
 } from "./syntax.js";
-import { declaredContextualType, unionMembers } from "./type-facts.js";
+import {
+    declaredContextualType,
+    unionMembers,
+    valueKindOf,
+} from "./type-facts.js";
 import type { Value } from "./types.js";
 import { functionUsesDynamicThis } from "./user-functions.js";
 import { staticPropertyKey } from "./symbols.js";
@@ -31,6 +35,8 @@ type HomeObjectMember = HomeObjectMethod | ts.AccessorDeclaration;
 interface ProgramReads {
     /** The first wholesale read of each object type, in program order. */
     wholesaleTypes?: ReadonlyMap<ts.Type, ts.Node>;
+    /** The same, of reads only by number (`o[i]`). */
+    indexTypes?: ReadonlyMap<ts.Type, ts.Node>;
     readonly answers: Map<string, Map<ts.Type | undefined, ts.Node | null>>;
 }
 
@@ -126,12 +132,29 @@ function methodValueRead(
         };
         if (!state.wholesaleTypes) {
             const types = new Map<ts.Type, ts.Node>();
+            const indexTypes = new Map<ts.Type, ts.Node>();
             for (const node of reads.wholesaleReads) {
+                // An index (`o[i]` with a number `i`) reads only members a
+                // number converts to.
+                const index =
+                    ts.isElementAccessExpression(node.parent) &&
+                    node.parent.expression === node &&
+                    valueKindOf(
+                        checker.getTypeAtLocation(
+                            node.parent.argumentExpression,
+                        ),
+                    ) === "number";
                 const type = checker.getTypeAtLocation(node);
-                if (!types.has(type)) types.set(type, node);
+                const into = index ? indexTypes : types;
+                if (!into.has(type)) into.set(type, node);
             }
             state.wholesaleTypes = types;
+            state.indexTypes = indexTypes;
         }
+        const wholesale =
+            String(Number(name)) === name
+                ? [...state.wholesaleTypes, ...state.indexTypes!]
+                : [...state.wholesaleTypes];
         answer =
             reads.namedReads
                 .get(name)
@@ -140,7 +163,7 @@ function methodValueRead(
                         object === undefined ||
                         mayHold(checker.getTypeAtLocation(object)),
                 )?.node ??
-            [...state.wholesaleTypes].find(([type]) => mayHold(type))?.[1] ??
+            wholesale.find(([type]) => mayHold(type))?.[1] ??
             null;
         answers.set(home, answer);
     }

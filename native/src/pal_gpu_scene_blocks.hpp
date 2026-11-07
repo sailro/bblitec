@@ -3,6 +3,7 @@
 // and the geometry task's parameters and velocity history.
 #pragma once
 #include <bblite/features/external_renderables.hpp>
+#include <bblite/features/geometry_velocity.hpp>
 #include <bblite/features/has_billboards.hpp>
 #include <bblite/features/has_pbr_renderer.hpp>
 
@@ -35,6 +36,30 @@ struct PinnedGeometryParams {
     std::array<float, 16> previousViewProjection{};
     std::array<float, 4> cameraNearFar{};
 };
+
+/**
+ * The block `writeParamsUBO` writes each executed frame: last frame's
+ * view-projection and the camera's near/far, beside the previous-depth lane
+ * `enableGeometryVelocity` sets once (`cameraNearFar.z`).
+ */
+inline PinnedGeometryParams
+pinned_geometry_params(const std::array<float, 16>& previous_view_projection,
+                       const CameraRecord& camera,
+                       [[maybe_unused]] const GeometryTaskOptions& task) {
+    return {
+        previous_view_projection,
+        {
+            static_cast<float>(camera.near_plane),
+            static_cast<float>(camera.far_plane),
+#if BBLITE_GEOMETRY_VELOCITY
+            upstream::geometry_velocity_previous_depth_lane(task),
+#else
+            0.0f,
+#endif
+            0.0f,
+        },
+    };
+}
 
 #if BBLITE_PINNED_MATERIALS || BBLITE_HAS_BILLBOARDS
 /**

@@ -149,6 +149,7 @@ import { jsonToValue, type JsonValuePolicy } from "./compiler/json-value.js";
 import { compileAdaptations } from "./compiler/adaptations.js";
 import {
     emitPropertyAssignment,
+    emitUnobservedErrorPropertyWrite,
     emitStructuralPropertyAssignment,
 } from "./compiler/assignments.js";
 import {
@@ -176,6 +177,7 @@ import { browserGeneratedString } from "./compiler/browser-generated-string.js";
 import { compileBrowserTextureFunctionCall } from "./compiler/browser-texture-function.js";
 import { compileExecutedUrlFunctionCall } from "./compiler/executed-url-function.js";
 import { compileExecutedVideoFunctionCall } from "./compiler/executed-video-function.js";
+import { compileExecutedGltfFunctionCall } from "./compiler/executed-gltf-function.js";
 import {
     compileEnginePixelRatioCap,
     compileEnginePrecisionPolicy,
@@ -2631,6 +2633,7 @@ class Compiler implements LoweringServices {
             emitPropertyAssignment(this, expression);
             return;
         }
+        if (emitUnobservedErrorPropertyWrite(this, expression)) return;
         if (this.dataLowerer.emitAssignment(expression)) {
             return;
         }
@@ -5411,16 +5414,18 @@ class Compiler implements LoweringServices {
         declaration: ExecutedTarget,
         args: readonly (ExecutedArgument | undefined)[],
         label: string,
+        pinnedStandIn?: (name: string) => unknown,
     ): unknown {
-        const key = JSON.stringify(
-            args.map((value) =>
+        const key = JSON.stringify([
+            pinnedStandIn !== undefined,
+            ...args.map((value) =>
                 value === undefined
                     ? ["undefined"]
                     : typeof value === "number"
                       ? ["number", Object.is(value, -0) ? "-0" : String(value)]
                       : ["value", value],
             ),
-        );
+        ]);
         let runs = this.generationRuns.get(declaration);
         if (!runs) {
             runs = new Map();
@@ -5441,6 +5446,7 @@ class Compiler implements LoweringServices {
                 },
                 deploymentValue: (expression) =>
                     browserDeploymentValue(this, expression),
+                ...(pinnedStandIn ? { pinnedStandIn } : {}),
                 ...(ts.isVariableDeclaration(declaration) ||
                 ts.isCallExpression(declaration)
                     ? {
@@ -7099,7 +7105,15 @@ class Compiler implements LoweringServices {
         emitBody: () => void,
         options?: { functionBody?: true },
     ): string[] {
-        if (!options?.functionBody || this.options.workers)
+        if (options?.functionBody)
+            return this.captureFunctionBodyLines(emitBody);
+        return this.captureEmittedStatements(emitBody).map(
+            renderNativeEmission,
+        );
+    }
+
+    private captureFunctionBodyLines(emitBody: () => void): string[] {
+        if (this.options.workers)
             return this.captureEmittedStatements(emitBody).map(
                 renderNativeEmission,
             );
@@ -7622,9 +7636,14 @@ class Compiler implements LoweringServices {
         if (deferred)
             this.deferredResourceCaptureDepths.add(deferred.callbackDepth);
         let lines: string[];
+        // An environment borrowed for its scope (`true`, `"call"`) runs
+        // inside it; any other closure outlives the loops around its creation.
+        const outlivesScope = byReference !== true && byReference !== "call";
+        if (outlivesScope) this.statements.enterCallbackBody();
         try {
             lines = this.captureEmittedLines(emitBody, { functionBody: true });
         } finally {
+            if (outlivesScope) this.statements.leaveCallbackBody();
             if (deferred) {
                 this.deferredResourceCaptureDepths.delete(
                     deferred.callbackDepth,
@@ -8741,6 +8760,18 @@ class Compiler implements LoweringServices {
         callee: ts.Identifier,
     ): Value | undefined {
         return compileExecutedVideoFunctionCall(this, call, callee);
+    }
+
+    /**
+     * A function returning `loadGltf(engine, new Blob(...))` over closed data
+     * runs at generation (`executed-gltf-function.ts`); its call loads the
+     * document it built.
+     */
+    public compileExecutedGltfFunctionCall(
+        call: ts.CallExpression,
+        callee: ts.Identifier,
+    ): Value | undefined {
+        return compileExecutedGltfFunctionCall(this, call, callee);
     }
 
     public registerSpriteAtlasAsset(expression: ts.Expression): string {

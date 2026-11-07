@@ -255,6 +255,7 @@ export function bakeCsgMesh(plan: CsgSolidPlan, name: string): BakedCsgMesh {
                 version: "1",
                 module: moduleIdentity(import.meta.url),
                 browser: false,
+                buildConditions: true,
                 parameters: { plan, node: process.version },
                 inputs: [],
             },

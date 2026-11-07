@@ -363,6 +363,7 @@ export async function materializePhysicsDebugGeometry(
             version: "1",
             module: moduleIdentity(import.meta.url),
             browser: false,
+            buildConditions: false,
             parameters: { shape },
             inputs: [wasm, wrapper],
         },

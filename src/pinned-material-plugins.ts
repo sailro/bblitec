@@ -105,12 +105,19 @@ export interface MaterialPluginManifest {
     defines?: Readonly<Record<string, string | number | boolean>>;
     uniforms?: readonly MaterialPluginUniformManifest[];
     varyings?: readonly MaterialPluginVaryingManifest[];
+    /**
+     * The pin's internal `_pbrIblOnly`: the plugin, bindings included, takes
+     * part only in opaque PBR IBL colour passes (`pbr-plugin-passes.ts`).
+     * Only a plugin the pin itself attaches carries it.
+     */
+    pbrIblOnly?: true;
 }
 
 /** The shape the pin's own bridges read a plugin through. */
 interface PinnedPlugin {
     readonly name: string;
     readonly priority?: number;
+    readonly _pbrIblOnly?: boolean;
     getCustomCode(
         shaderType: "vertex" | "fragment",
     ): Readonly<Record<string, string>> | null;
@@ -139,6 +146,7 @@ function pinnedPlugin(manifest: MaterialPluginManifest): PinnedPlugin {
         ...(manifest.priority !== undefined
             ? { priority: manifest.priority }
             : {}),
+        ...(manifest.pbrIblOnly ? { _pbrIblOnly: true } : {}),
         getCustomCode(shaderType) {
             const code =
                 shaderType === "fragment" ? manifest.fragment : manifest.vertex;

@@ -72,6 +72,7 @@ test("replays a stored bake byte-for-byte and misses on any key change", () => {
                 version: "1",
                 module: "test-module",
                 browser: false,
+                buildConditions: false,
                 parameters: { a: 1, b: "two" },
                 inputs: [Uint8Array.from([9, 9])],
             };
@@ -121,6 +122,7 @@ test("is disabled under the test runner and BBLITE_BAKE_CACHE=0", () => {
             version: "1",
             module: "test-module",
             browser: false,
+            buildConditions: false,
             parameters: {},
             inputs: [],
         };

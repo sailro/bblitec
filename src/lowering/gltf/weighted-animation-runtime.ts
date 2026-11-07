@@ -92,7 +92,7 @@ ${lowerPinnedBody(file, declaration.body!.statements, {
             ["localMat", "target.localMat"],
             ["worldMat", "target.worldMat"],
             ["_boneTmp", "target._boneTmp"],
-            ["RH_TO_LH", "target.RH_TO_LH"],
+            ["ROOT_TRANSFORM", "target.ROOT_TRANSFORM"],
             ["scratch.sample", "scratch.sample"],
             ["scratch.reference", "scratch.reference"],
             ["scratch.delta", "scratch.delta"],

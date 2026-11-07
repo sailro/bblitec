@@ -34,6 +34,8 @@ struct LoggingRenderer {
     bbl::pal::FrameClock frame_clock;
 
     bool keep_running() const { return !engine.stopped; }
+    // A stopped engine ends this loop before a frame could freeze.
+    bool freeze() { return false; }
     bbl::pal::FramePreparation prepare() {
         order += "e";
         return bbl::pal::FramePreparation::ready;

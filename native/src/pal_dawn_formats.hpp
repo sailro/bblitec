@@ -55,6 +55,11 @@ inline WGPUTextureFormat depth_texture_format(const RenderTargetRecord& record) 
     throw std::runtime_error("Unrepresented depth texture format.");
 }
 
+/** A front face in this API's enum. */
+inline WGPUFrontFace dawn_front_face(bool clockwise) {
+    return clockwise ? WGPUFrontFace_CW : WGPUFrontFace_CCW;
+}
+
 /**
  * The pin's depth compare in this API's enum.
  *
@@ -155,11 +160,13 @@ inline constexpr DawnNamedTextureFormat dawn_webgpu_formats[] = {
     {"rgba8snorm", WGPUTextureFormat_RGBA8Snorm, true, false},
     {"bgra8unorm", WGPUTextureFormat_BGRA8Unorm, false, true},
     {"bgra8unorm-srgb", WGPUTextureFormat_BGRA8UnormSrgb, false, true},
-    {"r16float", WGPUTextureFormat_R16Float, false, true},
+    {"r8unorm", WGPUTextureFormat_R8Unorm, true, true},
+    {"r16float", WGPUTextureFormat_R16Float, true, true},
     {"rgba16float", WGPUTextureFormat_RGBA16Float, true, true},
-    {"r32float", WGPUTextureFormat_R32Float, true, false},
+    {"r32float", WGPUTextureFormat_R32Float, true, true},
+    {"r32uint", WGPUTextureFormat_R32Uint, true, false},
     {"rg32float", WGPUTextureFormat_RG32Float, true, false},
-    {"rg32uint", WGPUTextureFormat_RG32Uint, true, false},
+    {"rg32uint", WGPUTextureFormat_RG32Uint, true, true},
     {"rgba32float", WGPUTextureFormat_RGBA32Float, true, false},
     {"depth16unorm", WGPUTextureFormat_Depth16Unorm, false, true},
     {"depth24plus", WGPUTextureFormat_Depth24Plus, false, true},

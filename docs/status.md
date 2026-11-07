@@ -206,6 +206,7 @@ include Bullet/Havok solver differences ([contract](fidelity.md#physics-contract
 | 227 | <img src="images/scenes/scene227.png" alt="Scene 227 rendering" width="160"> | 0.001/0.001 | 0.001/0.001 | Shared Scene Surfaces |
 | 228 | <img src="images/scenes/scene228.png" alt="Scene 228 rendering" width="160"> | 0.000/0.001 | 0.000/0.001 | Independent Scene Surfaces |
 | 229 | <img src="images/scenes/scene229.png" alt="Scene 229 rendering" width="160"> | pixel‑perfect | pixel‑perfect | Triangle Without Indices |
+| 230 | <img src="images/scenes/scene230.png" alt="Scene 230 rendering" width="160"> | pixel‑perfect | pixel‑perfect | Bent Normals |
 | 231 | <img src="images/scenes/scene231.png" alt="Scene 231 rendering" width="160"> | 0.000/0.001 | 0.000/0.000 | Standard Material Deform Features |
 | 240 | <img src="images/scenes/scene240.png" alt="Scene 240 rendering" width="160"> | pixel‑perfect | pixel‑perfect | Animated Triangle |
 | 241 | <img src="images/scenes/scene241.png" alt="Scene 241 rendering" width="160"> | 0.000/0.000 | 0.000/0.000 | Animation Pointer UVs |
@@ -266,6 +267,36 @@ include Bullet/Havok solver differences ([contract](fidelity.md#physics-contract
 | 318 | <img src="images/scenes/scene318.png" alt="Scene 318 rendering" width="160"> | pixel‑perfect | pixel‑perfect | Rect Area Light Transforms; parented, rotated, back-facing and mixed lights |
 | 319 | <img src="images/scenes/scene319.png" alt="Scene 319 rendering" width="160"> | 0.000/0.000 | 0.000/0.000 | Textured Rect Area Lights Standard; processed emission image |
 | 320 | <img src="images/scenes/scene320.png" alt="Scene 320 rendering" width="160"> | pixel‑perfect | pixel‑perfect | Textured Rect Area Lights PBR; three processed emission images |
+| 321 | <img src="images/scenes/scene321.png" alt="Scene 321 rendering" width="160"> | pixel‑perfect | pixel‑perfect | Directional Light Sphere (Right-Handed) |
+| 322 | <img src="images/scenes/scene322.png" alt="Scene 322 rendering" width="160"> | pixel‑perfect | pixel‑perfect | Alien Morph and Skeleton (Right-Handed) |
+| 323 | <img src="images/scenes/scene323.png" alt="Scene 323 rendering" width="160"> | pixel‑perfect | pixel‑perfect | PBR Spheres Grid (Right-Handed) |
+| 324 | <img src="images/scenes/scene324.png" alt="Scene 324 rendering" width="160"> | pixel‑perfect | pixel‑perfect | Clearcoat glTF (Right-Handed) |
+| 325 | <img src="images/scenes/scene325.png" alt="Scene 325 rendering" width="160"> | pixel‑perfect | pixel‑perfect | Mesh Builder Gallery (Right-Handed) |
+| 326 | <img src="images/scenes/scene326.png" alt="Scene 326 rendering" width="160"> | pixel‑perfect | pixel‑perfect | Spec-Gloss Shark (Right-Handed) |
+| 327 | <img src="images/scenes/scene327.png" alt="Scene 327 rendering" width="160"> | pixel‑perfect | pixel‑perfect | KTX Compressed Texture (Right-Handed) |
+| 328 | <img src="images/scenes/scene328.png" alt="Scene 328 rendering" width="160"> | 0.000/0.000 | pixel‑perfect | VirtualCity Cameras (Right-Handed) |
+| 329 | <img src="images/scenes/scene329.png" alt="Scene 329 rendering" width="160"> | pixel‑perfect | pixel‑perfect | Negative Scale Spheres (Right-Handed) |
+| 330 | <img src="images/scenes/scene330.png" alt="Scene 330 rendering" width="160"> | pixel‑perfect | pixel‑perfect | Orthographic Camera (Right-Handed) |
+| 331 | <img src="images/scenes/scene331.png" alt="Scene 331 rendering" width="160"> | pixel‑perfect | pixel‑perfect | Mirrored Standard Meshes (Right-Handed) |
+| 332 | <img src="images/scenes/scene332.png" alt="Scene 332 rendering" width="160"> | 0.038/0.038 | 0.038/0.038 | ESM Directional and PCF Spot Shadows (Right-Handed) |
+| 333 | <img src="images/scenes/scene333.png" alt="Scene 333 rendering" width="160"> | 0.000/0.000 | 0.000/0.000 | Cascaded Shadow Torus Knots (Right-Handed) |
+| 334 | <img src="images/scenes/scene334.png" alt="Scene 334 rendering" width="160"> | pixel‑perfect | pixel‑perfect | NME PBR Full (Right-Handed) |
+| 335 | <img src="images/scenes/scene335.png" alt="Scene 335 rendering" width="160"> | pixel‑perfect | pixel‑perfect | NME Flat Colour (Right-Handed) |
+| 336 | <img src="images/scenes/scene336.png" alt="Scene 336 rendering" width="160"> | pixel‑perfect | pixel‑perfect | Shader Flat Color (Right-Handed) |
+| 337 | <img src="images/scenes/scene337.png" alt="Scene 337 rendering" width="160"> | pixel‑perfect | pixel‑perfect | Facing Billboards (Right-Handed) |
+| 338 | <img src="images/scenes/scene338.png" alt="Scene 338 rendering" width="160"> | pixel‑perfect | pixel‑perfect | Billboard Custom Shader (Right-Handed) |
+| 339 | <img src="images/scenes/scene339.png" alt="Scene 339 rendering" width="160"> | pixel‑perfect | pixel‑perfect | Camera And Light Gizmos (Right-Handed) |
+| 340 | <img src="images/scenes/scene340.png" alt="Scene 340 rendering" width="160"> | pixel‑perfect | pixel‑perfect | Geospatial Camera (Right-Handed) |
+| 341 | <img src="images/scenes/scene341.png" alt="Scene 341 rendering" width="160"> | pixel‑perfect | pixel‑perfect | CSG2 Operations (Right-Handed) |
+| 342 | <img src="images/scenes/scene342.png" alt="Scene 342 rendering" width="160"> | pixel‑perfect | pixel‑perfect | Environment Test (Right-Handed) |
+| 343 | <img src="images/scenes/scene343.png" alt="Scene 343 rendering" width="160"> | 0.001/0.001 | pixel‑perfect | Hill Valley (Right-Handed) |
+| 344 | <img src="images/scenes/scene344.png" alt="Scene 344 rendering" width="160"> | pixel‑perfect | pixel‑perfect | Post-Process Chain (Right-Handed) |
+| 345 | <img src="images/scenes/scene345.png" alt="Scene 345 rendering" width="160"> | pixel‑perfect | pixel‑perfect | Physics Raycast Instance Picking (Right-Handed) |
+| 346 | <img src="images/scenes/scene346.png" alt="Scene 346 rendering" width="160"> | 0.000/0.000 | pixel‑perfect | Node Material Geometry Outputs (Right-Handed) |
+| 347 | <img src="images/scenes/scene347.png" alt="Scene 347 rendering" width="160"> | 0.000/0.000 | 0.000/0.000 | Sponza (Right-Handed) |
+| 348 | <img src="images/scenes/scene348.png" alt="Scene 348 rendering" width="160"> | pixel‑perfect | pixel‑perfect | Screen-Space Ambient Occlusion; half-resolution XeGTAO, temporal reset, PBR diffuse IBL |
+| 353 | <img src="images/scenes/scene353.png" alt="Scene 353 rendering" width="160"> | pixel‑perfect | pixel‑perfect | Bent Normals (Right-Handed) |
+| 354 | <img src="images/scenes/scene354.png" alt="Scene 354 rendering" width="160"> | 0.000/0.000 | 0.000/0.000 | Mesh Opacity; Standard/PBR fades, OPAQUE/MASK policies, full shadows at zero, alpha-to-coverage |
 
 ## Upstream application gates
 
@@ -290,11 +321,13 @@ Unchanged pinned applications.
 | Sandblox | <img src="images/scenes/sandblox.png" alt="Sandblox rendering" width="160"> | 0.058/0.060 | 0.058/0.060 | 3D building sandbox; dynamic coloured thin instances; material plugins; property animation; audio; JSON save/load; retained editing UI. UI residual; canvas-only MAD: 0.000/0.000 on both backends. |
 | Voxel Sandbox | <img src="images/scenes/minecraft.png" alt="Voxel Sandbox rendering" width="160"> | $\color{#9a6700}{\textsf{0.669}} / \color{#9a6700}{\textsf{0.669}}$ | $\color{#9a6700}{\textsf{0.669}} / \color{#9a6700}{\textsf{0.669}}$ | Procedural voxel world; generated texture atlas; custom shader materials; audio; save/load; retained HUD and crosshair. UI residual; canvas-only MAD: 0.000/0.000 on both backends. |
 | NPE on Sprite2D | <img src="images/scenes/npe-sprite2d.png" alt="NPE on Sprite2D rendering" width="160"> | pixel‑perfect | pixel‑perfect | Live pure-2D node particles; sprite atlas; pointer-following emitter. |
-| Screen-Space Effects | <img src="images/scenes/screen-space-effects.png" alt="Screen-Space Effects rendering" width="160"> | 0.071/0.087 | 0.071/0.087 | Contact shadows; one-bounce GI; temporal history; retained controls. UI residual; canvas-only: pixel-perfect on both backends. |
+| Screen-Space Effects | <img src="images/scenes/screen-space-effects.png" alt="Screen-Space Effects rendering" width="160"> | 0.082/0.100 | 0.082/0.100 | Ambient occlusion; contact shadows; one-bounce GI; temporal history; retained controls. UI residual; canvas-only: pixel-perfect on both backends. |
 | Mosquito in Amber | <img src="images/scenes/mosquito-amber.png" alt="Mosquito in Amber rendering" width="160"> | 0.000/0.000 | 0.000/0.000 | Transmissive glTF (scene 176) as a demo; studio HDR IBL; retained chrome. |
 | Calculator | <img src="images/scenes/calculator.png" alt="Calculator rendering" width="160"> | 0.020/0.089 | 0.020/0.089 | KHR_interactivity flow graph; GPU picking under the selectability filter; retained chrome. UI residual; canvas-only: pixel-perfect on both backends. |
 | Trogir Streaming | <img src="images/scenes/trogir-streaming.png" alt="Trogir Gaussian splat streaming rendering" width="160"> | 0.303/0.300 | 0.297/0.293 | Gaussian splats streamed at run time (LOD manifest, SOG WebP sources, GPU gather, radix sort, indirect draw); voxel collision; retained HUD. Measured once the stream settles (phase idle). UI residual, with the live frame-rate and first-frame values; canvas-only MAD: 0.000/0.000 on both backends. |
-| MeshLoD Statue (`mesh-lod`) | <img src="images/scenes/mesh-lod.png" alt="MeshLoD statue streaming rendering" width="160"> | $\color{#cf222e}{\textsf{2.964}} / \color{#cf222e}{\textsf{4.809}}$ | $\color{#cf222e}{\textsf{2.964}} / \color{#cf222e}{\textsf{4.810}}$ | Clustered level of detail streamed at run time (`.mlod` range requests through the demo's simulated network, meshopt pages, GPU selection, PBR over the source glTF's materials, IBL); retained HUD with live diagnostics. Measured once the statue's pages stream in. UI residual: the HUD panels lose their accent top border (RmlUi expands an earlier `border` shorthand over var() after a later `border-top`); canvas-only: pixel-perfect on both backends. |
+| MeshLoD Statue (`mesh-lod`) | <img src="images/scenes/mesh-lod.png" alt="MeshLoD statue streaming rendering" width="160"> | $\color{#cf222e}{\textsf{1.106}} / \color{#cf222e}{\textsf{1.783}}$ | $\color{#cf222e}{\textsf{1.107}} / \color{#cf222e}{\textsf{1.785}}$ | Clustered level of detail streamed at run time (`.mlod` range requests through the demo's simulated network, meshopt pages, GPU selection, PBR over the source glTF's materials, IBL); retained HUD with live diagnostics. Measured once the statue's pages stream in. UI residual: the left panel's rows sit up to 3 px higher from its first range slider down; canvas-only: pixel-perfect on both backends. |
+| Navcat Navigation (`navcat`) | <img src="images/scenes/navcat.png" alt="Navcat navigation route over its navmesh" width="160"> | 0.060/0.182 | 0.060/0.182 | Navcat navigation compiled from the pin's sources and the vendored navcat/mathcat TypeScript: versioned navmesh JSON, filtered routes, debug navmesh and search geometry as run-time line systems and data meshes; retained control panel. UI residual; canvas-only: pixel-perfect on both backends. |
+| Ambient Occlusion (`ambient-occlusion`) | <img src="images/scenes/ambient-occlusion.png" alt="Ambient occlusion over a room of boxes, a sphere and two animated beams" width="160"> | $\color{#cf222e}{\textsf{3.703}} / \color{#cf222e}{\textsf{4.905}}$ | $\color{#cf222e}{\textsf{3.710}} / \color{#cf222e}{\textsf{4.914}}$ | XeGTAO at half resolution with temporal reconstruction, object velocity with previous depth (`enableGeometryVelocity`), motion-mask pruning and PBR diffuse IBL occlusion; every quality, normal-input and temporal mode composed for the live controls; a skinned and morphed glTF built in code; GPU task timings; retained controls. UI residual: each label's text sits lower beside its select and checkbox, and the live GPU timings; canvas-only MAD: 0.000/0.000 on both backends. |
 
 ## Project-owned differential gates
 
@@ -322,6 +355,12 @@ Repository fixtures against pinned Babylon Lite.
 | case-split-options | <img src="images/scenes/regression-case-split-options.png" alt="Case split options rendering" width="160"> | pixel‑perfect | pixel‑perfect | Case Split Options |
 | csm-static-cache | <img src="images/scenes/regression-csm-static-cache.png" alt="CSM static cache rendering" width="160"> | 0.000/0.000 | 0.000/0.000 | CSM Static Cache |
 | render-task-transmission | <img src="images/scenes/regression-render-task-transmission.png" alt="Render task transmission rendering" width="160"> | pixel‑perfect | pixel‑perfect | Render Task Transmission |
+| mesh-opacity-runtime | <img src="images/scenes/regression-mesh-opacity-runtime.png" alt="Mesh opacity at run time rendering" width="160"> | pixel‑perfect | pixel‑perfect | Mesh Opacity at Run Time |
+| mesh-opacity-geometry | <img src="images/scenes/regression-mesh-opacity-geometry.png" alt="Mesh opacity in a geometry task rendering" width="160"> | pixel‑perfect | pixel‑perfect | Mesh Opacity in a Geometry Task |
+| geometry-velocity | <img src="images/scenes/regression-geometry-velocity.png" alt="Geometry velocity rendering" width="160"> | 0.000/0.000 | 0.000/0.000 | Geometry Velocity |
+| geometry-velocity-standard | <img src="images/scenes/regression-geometry-velocity-standard.png" alt="Standard geometry velocity rendering" width="160"> | pixel‑perfect | pixel‑perfect | Standard Geometry Velocity |
+| geometry-velocity-preload | <img src="images/scenes/regression-geometry-velocity-preload.png" alt="Geometry velocity preload rendering" width="160"> | pixel‑perfect | pixel‑perfect | Geometry Velocity Preload |
+| mesh-opacity-transmission | <img src="images/scenes/regression-mesh-opacity-transmission.png" alt="Mesh opacity with transmission rendering" width="160"> | 0.000/0.000 | 0.000/0.000 | Mesh Opacity with Transmission |
 | glTF-track-clamp | <img src="images/scenes/regression-track-clamp.png" alt="glTF track clamp rendering" width="160"> | pixel‑perfect | pixel‑perfect | glTF Track Clamp |
 | shader-frame-graph | <img src="images/scenes/audit-shader-frame-graph.png" alt="Shader frame graph rendering" width="160"> | pixel‑perfect | pixel‑perfect | Shader Frame Graph |
 | runtime-sweep | <img src="images/scenes/regression-runtime-sweep.png" alt="Runtime sweep rendering" width="160"> | pixel‑perfect | pixel‑perfect | Runtime Sweep |
@@ -330,9 +369,16 @@ Repository fixtures against pinned Babylon Lite.
 | glTF-sparse | <img src="images/scenes/regression-gltf-sparse.png" alt="glTF sparse accessors rendering" width="160"> | pixel‑perfect | pixel‑perfect | glTF Sparse Accessors |
 | glTF-uv-sets | <img src="images/scenes/regression-gltf-uv-sets.png" alt="glTF UV sets rendering" width="160"> | pixel‑perfect | pixel‑perfect | glTF UV Sets |
 | glTF-topology | <img src="images/scenes/regression-gltf-topology.png" alt="glTF primitive topology rendering" width="160"> | pixel‑perfect | pixel‑perfect | glTF Primitive Topology |
+| glTF-material-winding | <img src="images/scenes/regression-gltf-material-winding.png" alt="glTF material winding rendering" width="160"> | pixel‑perfect | pixel‑perfect | glTF Material Winding |
+| glTF-material-winding-right-handed | <img src="images/scenes/regression-gltf-material-winding-right-handed.png" alt="Right-handed glTF material winding rendering" width="160"> | pixel‑perfect | pixel‑perfect | glTF Material Winding (Right-Handed) |
+| right-handed-shader-winding | <img src="images/scenes/regression-right-handed-shader-winding.png" alt="Right-handed shader winding rendering" width="160"> | pixel‑perfect | pixel‑perfect | Right-Handed Shader Winding |
 | glTF-step-animation | <img src="images/scenes/regression-gltf-step-animation.png" alt="glTF STEP animation rendering" width="160"> | pixel‑perfect | pixel‑perfect | glTF STEP Animation |
 | glTF-node-transform-animation | <img src="images/scenes/regression-gltf-node-transform-animation.png" alt="glTF node transform animation rendering" width="160"> | pixel‑perfect | pixel‑perfect | glTF Node Transform Animation |
 | device-recovery-scenes | <img src="images/scenes/regression-device-recovery-scenes.png" alt="Device recovery scenes rendering" width="160"> | pixel‑perfect | pixel‑perfect | Device Recovery Scenes |
+| overlay-swapchain-tasks | <img src="images/scenes/regression-overlay-swapchain-tasks.png" alt="Overlay over swapchain tasks rendering" width="160"> | pixel‑perfect | pixel‑perfect | Overlay Over Swapchain Tasks |
+| overlay-post-process | <img src="images/scenes/regression-overlay-post-process.png" alt="Overlay over post-process rendering" width="160"> | pixel‑perfect | pixel‑perfect | Overlay Over Post-Process |
+| overlay-post-process-single-sample | <img src="images/scenes/regression-overlay-post-process-single-sample.png" alt="Overlay over post-process at one sample rendering" width="160"> | pixel‑perfect | pixel‑perfect | Overlay Over Post-Process, One Sample |
+| overlay-gpu-timing | <img src="images/scenes/regression-overlay-gpu-timing.png" alt="Overlay under GPU task timing rendering" width="160"> | pixel‑perfect | pixel‑perfect | Overlay Under GPU Task Timing |
 | node-local-attributes | <img src="images/scenes/regression-node-local-attributes.png" alt="Node local attributes rendering" width="160"> | pixel‑perfect | pixel‑perfect | Node Local Attributes |
 | morph-ground | <img src="images/scenes/regression-morph-ground.png" alt="Morph storage ground rendering" width="160"> | pixel‑perfect | pixel‑perfect | Morph Storage Ground |
 | timer-callback-cells | <img src="images/scenes/regression-timer-callback-cells.png" alt="Timer callback cells rendering" width="160"> | pixel‑perfect | pixel‑perfect | Timer Callback Cells |

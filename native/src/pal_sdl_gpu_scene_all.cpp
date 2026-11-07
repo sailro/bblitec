@@ -9,5 +9,6 @@
 #include "pal_sdl_gpu_scene_textures.cpp"
 #include "pal_sdl_gpu_scene_targets.cpp"
 #include "pal_sdl_gpu_scene_post_process.cpp"
+#include "pal_sdl_gpu_scene_ssao.cpp"
 #include "pal_sdl_gpu_scene_picking.cpp"
 #include "pal_sdl_gpu.cpp"

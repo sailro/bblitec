@@ -122,6 +122,7 @@ test("extension rows append in the pinned registration order", () => {
                 sheen: true,
                 iridescence: true,
                 lightmap: true,
+                bentNormal: true,
                 metallicReflectanceMap: true,
                 reflectanceMap: true,
                 specularGlossiness: true,
@@ -138,7 +139,7 @@ test("extension rows append in the pinned registration order", () => {
     );
     assert.ok(
         header.includes(
-            "inline constexpr std::size_t material_texture_mesh_slots = 21;",
+            "inline constexpr std::size_t material_texture_mesh_slots = 22;",
         ),
     );
     rowOrder(header, [
@@ -183,13 +184,17 @@ test("extension rows append in the pinned registration order", () => {
         `    {18, MaterialTextureSource::lightmap, ` +
             `MaterialTextureFallback::white, ` +
             `"lmTexture", "lmSampler"},`,
+        // ...the opt-in bent normal map, a tangent-space normal...
+        `    {19, MaterialTextureSource::bent_normal, ` +
+            `MaterialTextureFallback::flat_normal, ` +
+            `"bentNormalTexture_", "bentNormalSampler_"},`,
         // ...then the Standard bump pair, so no index above moves...
-        `    {19, MaterialTextureSource::standard_bump, ` +
+        `    {20, MaterialTextureSource::standard_bump, ` +
             `MaterialTextureFallback::flat_normal, ` +
             `"", ""},`,
         // ...and the Standard 2D reflection pair after bump, the same
         // append-only contract.
-        `    {20, MaterialTextureSource::standard_reflection, ` +
+        `    {21, MaterialTextureSource::standard_reflection, ` +
             `MaterialTextureFallback::white, ` +
             `"", ""},`,
         // The transmission scene-colour grab joins the scene-owned rows.

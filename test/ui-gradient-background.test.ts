@@ -64,9 +64,9 @@ test("background none is the image layer alone; the colour takes its initial val
     );
     assert.match(
         result.cpp,
-        /--bbl-background-image:none;[^"]*--bbl-background-color:transparent"/,
+        /bbl-background-image:none;[^"]*background-color:transparent"/,
     );
-    assert.doesNotMatch(result.cpp, /--bbl-background-color:\s*none/i);
+    assert.doesNotMatch(result.cpp, /background-color:\s*none/i);
 });
 
 test("a background shorthand resets an earlier background-clip of its rule", () => {
@@ -111,7 +111,7 @@ test("native sized layers preserve gradient coordinates, paint order, content an
     mkdirSync("artifacts/ui-gradient-background", { recursive: true });
     writeFileSync(
         "artifacts/ui-gradient-background/styles.hpp",
-        `constexpr const char* layers = ${JSON.stringify(`--bbl-background-image:${layers};`)};\nconstexpr const char* resized = ${JSON.stringify(`--bbl-background-image:${resized};`)};\n`,
+        `constexpr const char* layers = ${JSON.stringify(`bbl-background-image:${layers};`)};\nconstexpr const char* resized = ${JSON.stringify(`bbl-background-image:${resized};`)};\n`,
     );
     runRmlUiFixture(t, "ui-gradient-background");
 });

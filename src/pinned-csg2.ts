@@ -239,6 +239,7 @@ export function bakeCsg2Meshes(
             // stream transport helpers, and the served recorder module joins it,
             // so changes to any of them cannot reuse old bytes.
             browser: true,
+            buildConditions: true,
             parameters: { request },
             inputs: [
                 Buffer.from(csg2Driver(request)),

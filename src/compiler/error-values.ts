@@ -197,6 +197,7 @@ export function compileErrorConstruction(
         | "unwrap"
         | "fail"
         | "reachJsData"
+        | "registerNativeTemporary"
     >,
     expression: ts.NewExpression | ts.CallExpression,
     name: string,
@@ -251,13 +252,16 @@ export function compileErrorConstruction(
     const cause = compileErrorCause(context, options);
     let cpp = `bbl::js::make_error(${context.cppString(name)}, ${message.cpp}, ${cause}${argument ? "" : ", false"})`;
     if (consumer === "held") {
+        // The construction's own value: the declaration it initializes
+        // takes it rather than copying it.
         const temporary = context.allocateTemporaryCppName("error_value");
         context.emit({
             kind: "declaration",
-            type: "const bbl::js::Error",
+            type: "bbl::js::Error",
             name: temporary,
             initializer: cpp,
         });
+        context.registerNativeTemporary(temporary, { kind: "error" });
         cpp = temporary;
     }
     return errorValue(message, name, context.cppString, {

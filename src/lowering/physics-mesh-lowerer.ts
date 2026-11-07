@@ -12,11 +12,54 @@ import { declaredKey } from "../compiler/syntax.js";
 
 const modulePath = "src/physics/havok.ts";
 
-const contracts = new Map([
-    ["constructor", "this._collectIndices = collectIndices;"],
-    [
-        "addNodeMeshes",
-        `
+/**
+ * The order `MeshAccumulator._addNodeMesh` pushes a triangle's corners
+ * `a, b, c` to Havok, read from the build's folded push: a left-handed
+ * build reverses each triangle and a right-handed one keeps it.
+ */
+export function physicsTriangleCorners(
+    context: LoweringContext,
+): readonly string[] {
+    const { declaration: owner } = context.classDeclaration(
+        modulePath,
+        "MeshAccumulator",
+    );
+    const method = owner.members.find(
+        (member): member is ts.MethodDeclaration =>
+            ts.isMethodDeclaration(member) &&
+            declaredKey(member.name) === "_addNodeMesh",
+    );
+    const pushes = method
+        ? context.findNodes(
+              method,
+              (node): node is ts.CallExpression =>
+                  ts.isCallExpression(node) &&
+                  context.expressionMatchesShape(
+                      node.expression,
+                      "this._indices.push",
+                  ),
+          )
+        : [];
+    const corners = (pushes.length === 1 ? pushes[0]!.arguments : []).map(
+        (argument) => {
+            const corner = context.unwrapExpression(argument);
+            return ts.isIdentifier(corner) ? corner.text : "";
+        },
+    );
+    if ([...corners].sort().join() !== "a,b,c")
+        return context.contractError(
+            method ?? owner,
+            "Expected MeshAccumulator._addNodeMesh to push each triangle's corners a, b and c once.",
+        );
+    return corners;
+}
+
+const accumulatorContracts = (corners: readonly string[]) =>
+    new Map([
+        ["constructor", "this._collectIndices = collectIndices;"],
+        [
+            "addNodeMeshes",
+            `
         const invRoot = invertMat4(root.worldMatrix as Mat4);
         if (!invRoot) { throw new Error("Cannot create physics mesh shape from a singular root transform."); }
         const rootScale = createScalingMat4(root.scaling.x, root.scaling.y, root.scaling.z);
@@ -26,26 +69,26 @@ const contracts = new Map([
         if (this._vertices.length === 0) { throw new Error("Cannot create physics mesh shape without vertex positions."); }
         if (this._collectIndices && this._indices.length === 0) { throw new Error("Cannot create physics mesh shape without triangle indices."); }
     `,
-    ],
-    [
-        "getVertices",
-        `const numObjects = this._vertices.length; const offset = hknp._malloc(numObjects * 4);
+        ],
+        [
+            "getVertices",
+            `const numObjects = this._vertices.length; const offset = hknp._malloc(numObjects * 4);
         new Float32Array(hknp.HEAPU8.buffer, offset, numObjects).set(this._vertices); return { offset, numObjects };`,
-    ],
-    [
-        "getTriangles",
-        `const numObjects = this._indices.length; const offset = hknp._malloc(numObjects * 4);
+        ],
+        [
+            "getTriangles",
+            `const numObjects = this._indices.length; const offset = hknp._malloc(numObjects * 4);
         new Int32Array(hknp.HEAPU8.buffer, offset, numObjects).set(this._indices); return { offset, numObjects };`,
-    ],
-    ["freeBuffer", "hknp._free(buffer.offset);"],
-    [
-        "_addDescendantMeshes",
-        `this._addNodeMesh(node, rootToBody);
+        ],
+        ["freeBuffer", "hknp._free(buffer.offset);"],
+        [
+            "_addDescendantMeshes",
+            `this._addNodeMesh(node, rootToBody);
         for (const child of node.children) { this._addDescendantMeshes(child, rootToBody); }`,
-    ],
-    [
-        "_addNodeMesh",
-        `
+        ],
+        [
+            "_addNodeMesh",
+            `
         if (!isMesh(node)) { return; }
         const positions = node._cpuPositions;
         if (!positions || positions.length === 0) { return; }
@@ -61,11 +104,11 @@ const contracts = new Map([
             const a = indices[i]! + indexOffset;
             const b = indices[i + 1]! + indexOffset;
             const c = indices[i + 2]! + indexOffset;
-            this._indices.push(c, b, a);
+            this._indices.push(${corners.join(", ")});
         }
     `,
-    ],
-]);
+        ],
+    ]);
 
 /** Scene-node and PAL storage projection of the pinned MeshAccumulator. */
 export function lowerPhysicsMesh(context: LoweringContext): {
@@ -76,6 +119,8 @@ export function lowerPhysicsMesh(context: LoweringContext): {
         modulePath,
         "MeshAccumulator",
     );
+    const corners = physicsTriangleCorners(context);
+    const contracts = accumulatorContracts(corners);
     const fields = new Map([
         ["_vertices", "[]"],
         ["_indices", "[]"],
@@ -265,7 +310,7 @@ void append_physics_mesh_geometry(
                         const auto a = source_indices.source_at(i) + index_offset;
                         const auto b = source_indices.source_at(i + 1) + index_offset;
                         const auto c = source_indices.source_at(i + 2) + index_offset;
-                        indices.push_back(c); indices.push_back(b); indices.push_back(a);
+                        ${corners.map((corner) => `indices.push_back(${corner});`).join(" ")}
                     }
                 }
             }

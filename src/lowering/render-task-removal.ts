@@ -156,6 +156,9 @@ export function renderTaskRemovalHeader(context: LoweringContext): string {
         for (const arr of [task._opaqueBindings, task._directBindings, task._transparentBindings]) {
             for (let i = arr.length - 1; i >= 0; i--) {
                 if (arr[i]!.renderable.mesh === mesh) {
+                    if (drawBindingLifecycle) {
+                        drawBindingLifecycle._retire([[arr[i]!]]);
+                    }
                     arr.splice(i, 1);
                     removed = true;
                 }
@@ -214,7 +217,9 @@ export function renderTaskRemovalHeader(context: LoweringContext): string {
                 ];
             // Each backend rebuilds its bucketed draw lists from
             // `render_meshes`; the batch state is the pin's optional
-            // instancing collector, which no native target signature installs.
+            // instancing collector, which no native target signature installs,
+            // and the binding lifecycle `enablePbrSsao` installs retires
+            // texture leases, which a backend's mesh draw states do not hold.
             if (node === bindings) return [];
             if (ts.isVariableStatement(node) && node.parent !== base.body)
                 return [];

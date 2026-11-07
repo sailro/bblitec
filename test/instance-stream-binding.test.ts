@@ -8,6 +8,7 @@ import { pinnedSharedVariantDecls } from "../src/pinned-pbr-variant-cpp.js";
 import { meshFeaturesHeader } from "../src/lowering/mesh-attribute-features.js";
 import { importPinnedModule } from "../src/pinned-shader-composer.js";
 import { pinnedInstanceAttributesCpp } from "../src/lowering/thin-instance-attributes.js";
+import { materialShadowReceiverCpp } from "../src/lowering/material-shadow-receiver.js";
 import { composeNodeMaterial } from "../src/pinned-node-material.js";
 import { isRecord } from "../src/json-fields.js";
 import {
@@ -74,7 +75,7 @@ test("PBR feature keys and both backend stream bindings agree with pinned instan
             new LoweringContext(),
             "Pinned instance feature constants",
         ) +
-            `\nnamespace bbl::upstream {\n${pinnedInstanceAttributesCpp(new LoweringContext())}\nstruct NodeVariantAttribute {std::string_view name; unsigned location;};\nstruct NodeVariantEntry {std::size_t first_attribute; std::size_t attribute_count; bool uses_instance_index;};\nconstexpr std::array<NodeVariantAttribute, ${nodeGraph.attributes.length + 1}> node_variant_attributes{{{"position",0},${nodeGraph.attributes.map(({ name, location }) => `{"${name}",${location}}`).join(",")}}};\nconstexpr NodeVariantEntry node_plain{0,1,false};\nconstexpr NodeVariantEntry node_instanced{1,${nodeGraph.attributes.length},${nodeGraph.usesInstanceIndex}};\n}\n`,
+            `\nnamespace bbl::upstream {\n${pinnedInstanceAttributesCpp(new LoweringContext())}${materialShadowReceiverCpp(new LoweringContext())}\nstruct NodeVariantAttribute {std::string_view name; unsigned location;};\nstruct NodeVariantEntry {std::size_t first_attribute; std::size_t attribute_count; bool uses_instance_index;};\nconstexpr std::array<NodeVariantAttribute, ${nodeGraph.attributes.length + 1}> node_variant_attributes{{{"position",0},${nodeGraph.attributes.map(({ name, location }) => `{"${name}",${location}}`).join(",")}}};\nconstexpr NodeVariantEntry node_plain{0,1,false};\nconstexpr NodeVariantEntry node_instanced{1,${nodeGraph.attributes.length},${nodeGraph.usesInstanceIndex}};\n}\n`,
     );
     writeFileSync(
         join(output, "bindings.hpp"),
@@ -115,7 +116,9 @@ test("PBR feature keys and both backend stream bindings agree with pinned instan
             cppRecord(dawn, "struct VariantVertexAttributes {"),
             cppFunction(dawn, "bool append_variant_attribute("),
             cppFunction(dawn, "std::uint32_t\nfill_variant_vertex_layouts("),
+            // Mesh opacity is compiled out here, where its extra bits are 0.
             `std::size_t features(const Engine& engine) { const Scene scene{}; struct { struct { MeshHandle mesh{0}; } item; } draw;
+            const auto mesh_feature_extra = [](const auto&) { return std::size_t{0}; };
             struct { std::size_t mesh_features = 0; unsigned material_view = 0; } key;
             ${cppFunction(key.slice(start), "if (")} return key.mesh_features; }`,
             cppFunction(sdl, "void bind_composed_mesh_vertex_buffers("),

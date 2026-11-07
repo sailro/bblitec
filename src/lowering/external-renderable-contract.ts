@@ -139,6 +139,12 @@ export function _buildBindings(
             refreshTaskSceneBindGroup(task, task.engine, false);
         }
     } catch (error) {
+        if (drawBindingLifecycle) {
+            drawBindingLifecycle._retire(
+                [generation._opaqueBindings, generation._directBindings, generation._transparentBindings],
+                [task._opaqueBindings, task._directBindings, task._transparentBindings]
+            );
+        }
         generation._batchState?._release(undefined, retainedOnFailure ?? [previousBatchState]);
         throw error;
     }
@@ -148,6 +154,9 @@ export function _buildBindings(
         task._updateContext.targetHeight = rt._height;
     }
     if (publish) {
+        if (drawBindingLifecycle) {
+            drawBindingLifecycle._retire([task._opaqueBindings, task._directBindings, task._transparentBindings], [opaque, direct, transparent]);
+        }
         Object.assign(task, generation);
         previousBatchState?._release(task.engine, [generation._batchState]);
     }
@@ -218,7 +227,7 @@ function executePassBody(task: RenderTaskBase, pass: GPURenderPassEncoder): numb
     pass.executeBundles(opaqueBundles);
     pass.setBindGroup(0, sceneBG);
     draws += drawList(pass, task._directBindings, eng);
-    draws += drawList(pass, task._transparentBindings, eng);
+    draws += drawList(pass, task._transparentBindings, eng, true);
     return draws;
 }
 `,
@@ -238,12 +247,12 @@ function updateBindings(list: readonly DrawBinding[], context: DrawUpdateContext
         "src/frame-graph/render-task-base.ts",
         "drawList",
         `
-export function drawList(enc: GPURenderPassEncoder | GPURenderBundleEncoder, list: readonly DrawBinding[], engine: EngineContext): number {
+export function drawList(enc: GPURenderPassEncoder | GPURenderBundleEncoder, list: readonly DrawBinding[], engine: EngineContext, transparent?: boolean): number {
     let lp: GPURenderPipeline | null = null;
     let draws = 0;
     for (const b of list) {
         const mesh = b.renderable.mesh;
-        if (mesh && mesh.visible === false) {
+        if (mesh && (mesh.visible === false || (transparent && mesh._skipColorDraw))) {
             continue;
         }
         if (b.pipeline !== lp) {

@@ -501,8 +501,10 @@ export class DeclarationLowerer {
         cppName: string,
         type: DataType,
     ): void {
-        const initializer = declaration.initializer!;
-        const value = this.context.compileValue(initializer);
+        const initializer = declaration.initializer ?? declaration.name;
+        const value = declaration.initializer
+            ? this.context.compileValue(declaration.initializer)
+            : undefinedValue();
         if (value.kind === "void" && value.abruptCompletion) {
             this.context.emitDiscardedValue(value);
             return;
@@ -603,16 +605,24 @@ export class DeclarationLowerer {
                 declaration,
                 "Lazy module var bindings require hoisted undefined storage.",
             );
-        if (!ts.isIdentifier(declaration.name) || !declaration.initializer)
+        // `let name;` holds undefined until assigned: its declared type is
+        // its storage.
+        if (
+            !ts.isIdentifier(declaration.name) ||
+            (!declaration.initializer &&
+                variableKind(declaration.parent) === "const")
+        )
             return this.context.fail(
                 declaration,
                 "Lazy module bindings require an identifier and initializer.",
             );
         const symbol = this.context.symbols.valueSymbol(declaration.name);
-        const mapped = this.lexicalBindingType(
-            declaration.name,
-            declaration.initializer,
-        );
+        const mapped = declaration.initializer
+            ? this.lexicalBindingType(declaration.name, declaration.initializer)
+            : this.context.dataTypes.fromStoredTsType(
+                  this.context.checker.getTypeAtLocation(declaration.name),
+                  declaration.name,
+              );
         if (!symbol || !mapped)
             return this.context.fail(
                 declaration,

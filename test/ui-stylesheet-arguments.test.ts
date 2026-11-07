@@ -118,7 +118,7 @@ test("stylesheet text reaches an installer's parameter as each call site's gener
             /ui_add_class_style\([^;]+"alert", "[^"]*width:40px;[^"]*background-color:rgb\(255, 0, 0\)/,
             /ui_add_class_style\([^;]+"alert", "[^"]*width:60px;[^"]*background-color:rgb\(0, 128, 0\)/,
             /ui_add_class_style\([^;]+"calm", "[^"]*width:30px;[^"]*background-color:rgb\(0, 0, 255\)/,
-            /ui_set_attribute\([^;]+"style", "position:absolute;top:40px;width:20px;height:10px;--bbl-background-color:rgb\(255, 255, 0\)/,
+            /ui_set_attribute\([^;]+"style", "position:absolute;top:40px;width:20px;height:10px;background-color:rgb\(255, 255, 0\)/,
         ])
             assert.match(cpp, rule);
     }

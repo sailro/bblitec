@@ -23,6 +23,7 @@ template <FrameAcquirePhase Acquire> struct Renderer {
     FramePreparation preparation = FramePreparation::ready;
     FramePreparation update_result = FramePreparation::ready;
     FramePreparation present_result = FramePreparation::ready;
+    bool holds_image = true;
     std::string fail_at;
     unsigned completed = 0;
     void event(const char* name) {
@@ -37,6 +38,10 @@ template <FrameAcquirePhase Acquire> struct Renderer {
     FramePreparation prepare() {
         event("prepare");
         return preparation;
+    }
+    bool freeze() {
+        event("freeze");
+        return holds_image;
     }
     bool begin_animation_turn() {
         event("turn");
@@ -122,6 +127,19 @@ template <FrameAcquirePhase Acquire> void check() {
     renderer.running = false;
     assert(conduct_frame(renderer, engine) == FrameOutcome::stopped);
     assert(renderer.events == std::vector<std::string>({"gate"}));
+    // A frame that begins with the engine stopped draws nothing; a renderer
+    // holding no image for a pending capture draws the frame once more.
+    engine.stopped = true;
+    Renderer<Acquire> frozen;
+    assert(conduct_frame(frozen, engine) == FrameOutcome::frozen && frozen.completed == 0);
+    assert(frozen.events == std::vector<std::string>({"gate", "prepare", "freeze"}));
+    Renderer<Acquire> redrawn;
+    redrawn.holds_image = false;
+    assert(conduct_frame(redrawn, engine) == FrameOutcome::rendered && redrawn.completed == 1);
+    std::vector<std::string> redrawn_events = expected;
+    redrawn_events.insert(redrawn_events.begin() + 2, "freeze");
+    assert(redrawn.events == redrawn_events);
+    engine.stopped = false;
     for (const auto& stage : expected) {
         Renderer<Acquire> failing;
         failing.fail_at = stage;

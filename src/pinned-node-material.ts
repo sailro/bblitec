@@ -589,7 +589,14 @@ const supportedAttributes = new Set([
     "color",
     "tangent",
 ]);
-const instanceAttributes = pinnedInstanceAttributes(sharedPinnedContext());
+let instanceAttributes: ReturnType<typeof pinnedInstanceAttributes> | undefined;
+
+/** The pin's instance attributes, read on first use: a module never reads the pin as it loads. */
+function nodeInstanceAttributes(): ReturnType<typeof pinnedInstanceAttributes> {
+    return (instanceAttributes ??= pinnedInstanceAttributes(
+        sharedPinnedContext(),
+    ));
+}
 
 function refuse(label: string, what: string): never {
     throw new Error(
@@ -642,7 +649,7 @@ function composedAttributes(
 ): readonly ComposedNodeAttribute[] {
     return declarations.map((attribute, index) => {
         const name = attribute._name;
-        const instance = instanceAttributes.find(
+        const instance = nodeInstanceAttributes().find(
             (row) => row.name === name && row.bufferGroup === "ti-matrix",
         );
         if (instance) {

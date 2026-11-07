@@ -20,7 +20,11 @@ import type { LoweredSource, LoweringContext } from "./context.js";
 import { recordAt } from "../compiler/record-access.js";
 import { lowerEffectWrapperDisposal } from "./effect-wrapper-disposal.js";
 import { lowerEffectTaskDisposal } from "./frame-graph-task-disposal.js";
-import { pinnedErrorCode, pinnedErrorMessageCpp } from "./pinned-error.js";
+import {
+    pinnedErrorCode,
+    pinnedErrorCodeOf,
+    pinnedErrorMessageCpp,
+} from "./pinned-error.js";
 
 const effectModule = "src/effect/effect-renderer.ts";
 const uniformEffectModule = "src/effect/uniform-effect-renderer.ts";
@@ -406,9 +410,7 @@ TaskHandle create_effect_render_task(
     FrameTaskRecord task;
     task.kind = FrameTaskKind::effect;
     task.effect = std::move(options);
-    engine.frame_tasks.push_back(std::move(task));
-    return TaskHandle{
-        static_cast<std::uint32_t>(engine.frame_tasks.size() - 1)};
+    return append_frame_task(engine, std::move(task));
 }
 ${disposal || taskBuild ? lowerEffectWrapperDisposal(this.context, disposal) : ""}${taskDisposal ? lowerEffectTaskDisposal(this.context, taskMethodSlots) : ""}${taskMethodSlots ? lowerEffectTaskMethods(disposal || taskBuild, taskDisposal) : ""}
 } // namespace bbl
@@ -433,7 +435,7 @@ ${disposal || taskBuild ? lowerEffectWrapperDisposal(this.context, disposal) : "
         this.context.assertStatementShapes(
             setter,
             setter.body!.statements,
-            "const internal = wrapper as EffectWrapperInternal; const slot = findTextureSlot(internal, bindingNameOrIndex); if (!slot) { ThrowLiteError(36, String(bindingNameOrIndex)); } slot.texture = texture; internal._bindGroupDirty = true;",
+            `const internal = wrapper as EffectWrapperInternal; const slot = findTextureSlot(internal, bindingNameOrIndex); if (!slot) { ThrowLiteError(${pinnedErrorCodeOf(this.context, 'setEffectTexture: unknown texture binding "${a0}".')}, String(bindingNameOrIndex)); } slot.texture = texture; internal._bindGroupDirty = true;`,
             "setEffectTexture slot lookup",
         );
         const { declaration: find } = this.context.functionDeclaration(

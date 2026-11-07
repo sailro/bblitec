@@ -73,10 +73,29 @@ struct FrameSession {
         if (frame_options.benchmarking())
             report_benchmark(std::move(samples_ms), backend, driver);
     }
-    /** Whether this frame is the requested screenshot. */
+    /** Whether this frame is the requested screenshot, or a stopped engine's final frame. */
     [[nodiscard]] bool screenshot_due() const {
-        return frame >= frame_options.screenshot_frame && !captures.screenshot_saved &&
-               !frame_options.screenshot_path.empty();
+        return captures.screenshot_frame_reached(frame) && captures.screenshot_pending();
+    }
+    /**
+     * A frozen frame (`conduct_frame`): `offscreen` keeps its last frame and
+     * `save_screenshot` hands a waiting screenshot the last frame's image,
+     * answering false when the renderer kept none. A capture still waiting
+     * without its image draws the frame once more.
+     */
+    template <typename SaveScreenshot>
+    bool freeze_frame(OffscreenRun* offscreen, SaveScreenshot save_screenshot) {
+        if (offscreen)
+            offscreen->freeze();
+        if (captures.screenshot_pending() && captures.drains_resolved()) {
+            if (!save_screenshot())
+                return false;
+            captures.screenshot_saved = true;
+        }
+        if (captures.buffers_pending())
+            return false;
+        ++frame;
+        return true;
     }
 };
 
@@ -112,7 +131,7 @@ public:
             const FrameOutcome outcome = conduct_frame(renderer, engine);
             if (outcome == FrameOutcome::stopped)
                 break;
-            co_yield outcome == FrameOutcome::rendered;
+            co_yield frame_drawn(outcome);
         }
         renderer.finish_run();
         co_return true;
@@ -131,6 +150,15 @@ public:
     bool begin_animation_turn() {
         return pal::begin_animation_turn(engine, frame_clock, frame_options.frame_delta_ms)
             .has_value();
+    }
+
+    /**
+     * A frozen frame (`conduct_frame`). These hosts keep no image of their
+     * own, so a capture still waiting draws the frame once more; they hold
+     * no frame-to-frame state, so it is the frame they last drew.
+     */
+    bool freeze() {
+        return freeze_frame(offscreen, [] { return false; });
     }
 
     FramePreparation update() {

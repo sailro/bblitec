@@ -436,18 +436,23 @@ test(
             assert(draws[3].input == Surface::first && draws[3].output == Surface::target && draws[3].first == 54 && draws[3].count == 6);
             bbl::ScreenSpaceFrameDecision decision;
             std::string events;
-            const auto record = [&](bool composite) {
-                bbl::pal::record_screen_space_decision(decision, composite,
+            const auto record = [&](std::size_t passes, bool composite) {
+                bbl::pal::record_screen_space_decision(decision, passes, composite,
                     [&](bool history) { events += history ? 'h' : 'i'; },
-                    [&](bool producer, const float* uniforms) {
-                        assert(uniforms == (producer ? decision.producer_uniforms.data() : decision.temporal_uniforms.data()));
-                        events += producer ? 'p' : 't';
+                    [&](std::size_t pass, const float* uniforms) {
+                        assert(uniforms == decision.stage_uniforms[pass].data());
+                        events += static_cast<char>('0' + pass);
                     }, [&](unsigned child) { events += child ? 'c' : 's'; });
             };
             decision.clear_identity = false; decision.run_effect = false;
-            record(false); assert(events.empty()); record(true); assert(events == "c");
+            record(2, false); assert(events.empty()); record(2, true); assert(events == "c");
             events.clear(); decision.clear_identity = true; decision.run_effect = true;
-            record(true); assert(events == "ihptsc");
+            record(2, true); assert(events == "ih01sc");
+            events.clear(); decision.clear_identity = false;
+            record(4, false); assert(events == "0123s");
+            bool refused = false;
+            try { record(bbl::screen_space_max_passes + 1, false); } catch (const std::runtime_error&) { refused = true; }
+            assert(refused);
         }
     `,
             ["/DBBLITE_HAS_UI=1"],

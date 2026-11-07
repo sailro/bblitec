@@ -109,10 +109,25 @@ int main() try {
         ui_blur(engine, ui_get_element_by_id(engine, "field"));
         check(idle(at(3600)), "a blurred caret needs no update");
 
+        const auto shimmer = ui_create_element(engine, "style");
+        ui_set_style_keyframes(engine, shimmer,
+                               "@keyframes shimmer{from{bbl-background-position:0% 0%}"
+                               "to{bbl-background-position:200% 0%}}");
+        ui_append_child(engine, ui_document_root(engine, UiDocumentPart::Head), shimmer);
         ui_set_attribute(engine, ui_get_element_by_id(engine, "banner"), "style",
-                         "--bbl-text-gradient:#ff0000|#0000ff;--bbl-text-gradient-duration:2s");
+                         "--bbl-text-gradient:#ff0000|#0000ff;--bbl-text-gradient-scale:200%;"
+                         "animation:shimmer 2s linear infinite");
         check(every(at(3600)) && runtime.gradient_text.size() == 2,
-              "animated gradient text needs every update");
+              "gradient text animating its background position needs every update");
+        const auto colors = [&] {
+            std::vector<std::uint32_t> all;
+            for (const auto& text : runtime.gradient_text)
+                all.insert(all.end(), text.rendered_colors.begin(), text.rendered_colors.end());
+            return all;
+        };
+        const auto before = colors();
+        at(4100);
+        check(colors() != before, "the animated background position moves the gradient");
     }
     SDL_DestroyWindow(window);
     SDL_Quit();

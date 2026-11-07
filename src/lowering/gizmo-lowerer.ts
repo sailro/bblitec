@@ -55,6 +55,7 @@ import {
     PinnedNumericLowerer,
     recordLiteralCpp,
 } from "./pinned-numeric-lowerer.js";
+import { lowerPinnedBody } from "./pinned-body-lowerer.js";
 
 import {
     PINNED_DECOMPOSE_ROTATION,
@@ -4894,6 +4895,110 @@ void attach_camera_gizmo_to_camera(
     }
 
     /**
+     * light-gizmo.ts `_syncLightGizmoTransform` over the follow's `world`
+     * (`light.worldMatrix`): the root at the light's world translation,
+     * turned along the world direction of a light whose factory declares
+     * one (hemispheric, spot and directional).
+     */
+    private lightGizmoTransformSync(): string {
+        const { file, declaration } = this.context.functionDeclaration(
+            LIGHT_MODULE,
+            "_syncLightGizmoTransform",
+        );
+        this.context.assertParameterNames(
+            declaration,
+            ["root", "light"],
+            "_syncLightGizmoTransform parameters",
+        );
+        let direction: ts.Identifier | undefined;
+        return lowerPinnedBody(
+            file,
+            declaration.body!.statements,
+            {
+                bindings: new Map<string, PinnedBinding>([
+                    ["light.worldMatrix", { cpp: "world", type: "f32" }],
+                    ["root.position", { cpp: "position", type: "opaque" }],
+                    [
+                        "root.rotationQuaternion",
+                        { cpp: "rotationQuaternion", type: "opaque" },
+                    ],
+                ]),
+                calls: new Map([
+                    [
+                        "directionToQuat",
+                        ([vector]: readonly string[]) =>
+                            `direction_to_quat(${vector})`,
+                    ],
+                ]),
+                fixedTupleCalls: new Map([["directionToQuat", 4]]),
+                methods: new Map([
+                    [
+                        "set",
+                        (receiver: string, args: readonly string[]) =>
+                            receiver === "position"
+                                ? `set_transform_node_position(e, g.root, Vec3d{${args.join(", ")}})`
+                                : `set_transform_node_rotation_quaternion(e, g.root, Vec4{${args.map((value) => `static_cast<float>(${value})`).join(", ")}})`,
+                    ],
+                ]),
+                expression: (expression, lowerer) => {
+                    const node = this.context.unwrapExpression(expression);
+                    // The direction `directionToQuat` takes, a Vec3d.
+                    if (
+                        ts.isObjectLiteralExpression(node) &&
+                        ts.isCallExpression(node.parent) &&
+                        ts.isIdentifier(node.parent.expression) &&
+                        node.parent.expression.text === "directionToQuat"
+                    )
+                        return `Vec3d{${lowerObjectComponents(this.context, lowerer, node, ["x", "y", "z"]).join(", ")}}`;
+                    if (
+                        direction &&
+                        ts.isPropertyAccessExpression(node) &&
+                        ts.isIdentifier(node.expression) &&
+                        node.expression.text === direction.text
+                    )
+                        return `static_cast<double>(light.direction.${node.name.text})`;
+                    return undefined;
+                },
+                // `const dir = (light as ...).direction`: the light record's own.
+                statement: (statement, lowerer) => {
+                    if (!ts.isVariableStatement(statement)) return undefined;
+                    const [local] = statement.declarationList.declarations;
+                    const initializer =
+                        local?.initializer &&
+                        this.context.unwrapExpression(local.initializer);
+                    if (
+                        !local ||
+                        !ts.isIdentifier(local.name) ||
+                        !initializer ||
+                        !ts.isPropertyAccessExpression(initializer) ||
+                        initializer.name.text !== "direction"
+                    )
+                        return undefined;
+                    direction = local.name;
+                    lowerer.bindLocal(local.name, {
+                        cpp: "light.direction",
+                        type: "opaque",
+                        absentCpp:
+                            "light.kind != LightKind::hemispheric && " +
+                            "light.kind != LightKind::spot && " +
+                            "light.kind != LightKind::directional",
+                    });
+                    return [];
+                },
+                returnValue: (expression) => {
+                    if (expression)
+                        this.context.contractError(
+                            expression,
+                            "Expected _syncLightGizmoTransform to return nothing.",
+                        );
+                    return "";
+                },
+            },
+            "        ",
+        );
+    }
+
+    /**
      * `createLightGizmo` and `attachLightGizmoToLight`, emitted only for a
      * scene that builds a light gizmo (`gizmo:light`): the two entry points,
      * and the hemisphere and light-line builders inside the unit's
@@ -4901,6 +5006,13 @@ void attach_camera_gizmo_to_camera(
      */
     private lightGizmoSource(): { helpers: string; source: string } {
         const lightFile = this.context.sourceFile(LIGHT_MODULE);
+        const syncLightTransform = this.lightGizmoTransformSync();
+        this.context.expectShapeCount(
+            this.context.functionDeclaration(LIGHT_MODULE, "createLightGizmo")
+                .declaration,
+            "_syncLightGizmoTransform(root, light)",
+            "Light gizmo follow",
+        );
         const lineDeclaration = this.context.functionDeclaration(
             LIGHT_MODULE,
             "buildLightLines",
@@ -5122,39 +5234,9 @@ void build_light_lines(
         LightGizmoRecord& g = ${recordAt("e.light_gizmos", "handle")};
         if (g.attached_light.value >= e.lights.size()) return;
         const LightRecord& light = ${recordAt("e.lights", "g.attached_light")};
-        // The pin tests \`if (pos)\` and \`if (dir)\` on the light OBJECT,
-        // and which of the two a light carries is decided by the factory
-        // that made it: hemispheric declares only a direction, point only
-        // a position, directional and spot both.
-        const bool has_position =
-            light.kind == LightKind::point ||
-            light.kind == LightKind::spot ||
-            light.kind == LightKind::directional;
-        const bool has_direction =
-            light.kind == LightKind::hemispheric ||
-            light.kind == LightKind::spot ||
-            light.kind == LightKind::directional;
-        if (has_position) {
-            set_transform_node_position(
-                e,
-                g.root,
-                Vec3d{
-                    static_cast<double>(light.position.x),
-                    static_cast<double>(light.position.y),
-                    static_cast<double>(light.position.z)});
-        }
-        if (has_direction) {
-            const std::array<double, 4> q =
-                direction_to_quat(light.direction);
-            set_transform_node_rotation_quaternion(
-                e,
-                g.root,
-                Vec4{
-                    static_cast<float>(q[0]),
-                    static_cast<float>(q[1]),
-                    static_cast<float>(q[2]),
-                    static_cast<float>(q[3])});
-        }
+        // ${this.context.provenance(LIGHT_MODULE, "_syncLightGizmoTransform")}
+        const std::array<float, 16> world = upstream::light_world_matrix(light);
+${syncLightTransform}
         Scene& utility = utility_layer_scene(e, layer);
         const Vec3d root_position =
             ${recordAt("e.transform_nodes", "g.root")}.position;
@@ -5392,6 +5474,29 @@ void attach_light_gizmo_to_light(
             UTILITY_MODULE,
             "createUtilityLayer",
         );
+        this.context.assertParameterNames(
+            utility.declaration,
+            ["mainScene", "options?"],
+            "createUtilityLayer parameters",
+        );
+        this.context.assertExpressionShape(
+            this.context.variableInitializer(utility.declaration, "scene"),
+            "createOverlayScene(mainScene)",
+            "Utility layer scene",
+        );
+        this.context.assertFunctionContract(
+            UTILITY_MODULE,
+            "registerUtilityLayer",
+            `
+export async function registerUtilityLayer(utility: UtilityLayer): Promise<void> {
+    await registerScene(utility.scene);
+    if (isRenderingContextRegistered(utility.scene.surface, utility.scene)) {
+        moveSwapchainOverlaysAfterBase(utility.mainScene);
+    }
+}
+`,
+            "utility-layer.registerUtilityLayer native contract",
+        );
         // The pin's own default light: a hemispheric light pointing up,
         // whose intensity and ground colour are the two literals the
         // factory writes.
@@ -5431,6 +5536,7 @@ void attach_light_gizmo_to_light(
 #include <bblite/upstream/camera_math.hpp>
 #include <bblite/upstream/renderer_plan.hpp>
 #include <bblite/upstream/pinned_matrix.hpp>
+#include <bblite/upstream/pinned_world_transform.hpp>
 
 #include <algorithm>
 #include <array>
@@ -5511,13 +5617,11 @@ ${boundingBox ? boundingBox.helpers : ""}
 
 } // namespace
 
-UtilityLayerHandle create_utility_layer(
-    Engine& engine,
-    Scene& main_scene) {
+UtilityLayerHandle create_utility_layer(Scene& main_scene) {
     auto record = std::make_unique<UtilityLayerRecord>();
-    record->scene = create_scene_context(engine);
+    record->scene = create_overlay_scene(main_scene);
+    Engine& engine = *main_scene.engine;
     record->main_scene = std::make_shared<Scene>(main_scene);
-    record->scene.clear_color = Color4{0.0f, 0.0f, 0.0f, 0.0f};
     record->scene.camera = main_scene.camera;
     UtilityLayerRecord* live = record.get();
     on_before_render(record->scene, [live](double) {
@@ -5541,7 +5645,10 @@ Scene& utility_layer_scene(Engine& engine, UtilityLayerHandle layer) {
 }
 
 void register_utility_layer(Engine& engine, UtilityLayerHandle layer) {
-    register_scene(layer_record(engine, layer).scene);
+    UtilityLayerRecord& record = layer_record(engine, layer);
+    register_scene(record.scene);
+    if (rendering_context_index(engine, *record.scene.identity()))
+        move_swapchain_overlays_after_base(*record.main_scene);
 }
 
 void dispose_utility_layer(Engine& engine, UtilityLayerHandle layer) {

@@ -202,30 +202,22 @@ test("normalizes retained CSS cascade keywords and measures width resets", () =>
     assert.match(declarations, /result = std::string\(\s*trim_css_token/);
     assert.doesNotMatch(declarations, /result = ascii_lower/);
 
-    const gridCascade = projection.slice(
-        projection.indexOf("std::string resolved_style_attribute"),
-        projection.indexOf("bool text_needs_flex_wrapper"),
+    // Display and width are RmlUi's cascade, CSS-wide keywords resolved (patch 0066).
+    const styleSource = cppFunction(
+        projection,
+        "ProjectedUiStyleSource project_ui_style_source(",
     );
-    const styleSource = projection.slice(
-        projection.indexOf("ProjectedUiStyleSource project_ui_style_source"),
-        projection.indexOf("std::string take_grid_children_style"),
-    );
+    assert.doesNotMatch(styleSource, /"display"/);
     assert.match(
-        styleSource,
-        /normalized_css_keyword\([\s\S]{0,100}take_css_declaration\(public_probe, "display"\)/,
+        cppFunction(projection, "bool text_needs_flex_wrapper("),
+        /element\.GetComputedValues\(\)\.display\(\)/,
     );
-    assert.match(gridCascade, /project_ui_style_source\(rule\.style\)/);
-    assert.match(
-        gridCascade,
-        /normalized_css_keyword\(dynamic_display->second\)/,
-    );
-
     const intrinsic = cppFunction(
         projection,
         "bool has_active_authored_width(",
     );
-    assert.match(intrinsic, /cascaded_declaration\(handle, record, "width"\)/);
-    assert.match(intrinsic, /is_concrete_authored_width\(width\)/);
+    assert.match(intrinsic, /GetLocalProperty\(Rml::PropertyId::Width\)/);
+    assert.match(intrinsic, /Rml::Unit::KEYWORD/);
     assert.match(
         cppFunction(projection, "std::string cascaded_declaration("),
         /cascade_declaration\(record, property,[\s\S]*for_each_matching_style_rule\(handle, callback\)/,
@@ -238,13 +230,6 @@ test("normalizes retained CSS cascade keywords and measures width resets", () =>
     );
     assert.match(cascade, /inline_specificity, source_order\)/);
     assert.match(cascade, /inline_specificity, source_order \+ 1\)/);
-    const concreteWidth = projection.slice(
-        projection.indexOf("bool is_concrete_authored_width"),
-        projection.indexOf("UiElementRecord& ui_element"),
-    );
-    for (const reset of ["auto", "initial", "unset"]) {
-        assert.match(concreteWidth, new RegExp(`keyword != "${reset}"`));
-    }
     const setAttribute = projection.slice(
         projection.indexOf("void ui_set_attribute"),
         projection.indexOf("void ui_set_style_property"),

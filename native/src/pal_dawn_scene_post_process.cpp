@@ -8,6 +8,10 @@
 
 #include "pal_dawn_scene.hpp"
 
+#if (BBLITE_HAS_DAWN && BBLITE_HAS_PBR_RENDERER) && BBLITE_HAS_SCREEN_SPACE
+#include "pal_dawn_pinned_program.hpp"
+#endif
+
 namespace bbl::pal {
 inline namespace dawn_scene {
 
@@ -88,62 +92,17 @@ DawnScreenSpaceProgram build_screen_space_program(DawnState& state, std::uint32_
     program.stage = stage;
     // Both stages live in one deployed module under the fragment stem.
     program.module = load_wgsl_module(state, std::string(info.stem) + ".frag");
-    // The pin's own bind group layout, entry for entry: every binding is
-    // fragment-visible, and the kinds are the ones its descriptors name.
-    std::vector<WGPUBindGroupLayoutEntry> layout_entries;
-    for (std::size_t index = 0; index < info.binding_count; ++index) {
-        const upstream::ScreenSpaceStageBinding& binding = info.bindings[index];
-        WGPUBindGroupLayoutEntry entry = WGPU_BIND_GROUP_LAYOUT_ENTRY_INIT;
-        entry.binding = binding.binding;
-        entry.visibility = WGPUShaderStage_Fragment;
-        switch (binding.kind) {
-        case upstream::ScreenSpaceBindingKind::depth_texture:
-            entry.texture.sampleType = WGPUTextureSampleType_Depth;
-            break;
-        case upstream::ScreenSpaceBindingKind::texture:
-            entry.texture.sampleType = WGPUTextureSampleType_Float;
-            break;
-        case upstream::ScreenSpaceBindingKind::sampler:
-            entry.sampler.type = WGPUSamplerBindingType_Filtering;
-            break;
-        case upstream::ScreenSpaceBindingKind::uniform:
-            entry.buffer.type = WGPUBufferBindingType_Uniform;
-            break;
-        }
-        layout_entries.push_back(entry);
-    }
-    WGPUBindGroupLayoutDescriptor layout_descriptor = WGPU_BIND_GROUP_LAYOUT_DESCRIPTOR_INIT;
-    layout_descriptor.entryCount = layout_entries.size();
-    layout_descriptor.entries = layout_entries.data();
-    program.group_layout = require_dawn_resource(
-        wgpuDeviceCreateBindGroupLayout(state.device, &layout_descriptor), "pass pipeline layout");
-    WGPUPipelineLayoutDescriptor pipeline_layout = WGPU_PIPELINE_LAYOUT_DESCRIPTOR_INIT;
-    pipeline_layout.bindGroupLayoutCount = 1;
-    const auto group_layout = program.group_layout.get();
-    pipeline_layout.bindGroupLayouts = &group_layout;
-    program.pipeline_layout = require_dawn_resource(
-        wgpuDeviceCreatePipelineLayout(state.device, &pipeline_layout), "pass pipeline layout");
+    // The pin's own bind group layout, entry for entry, every binding
+    // fragment-visible.
+    program.group_layout = create_dawn_pinned_group_layout(
+        state.device, info.bindings, WGPUShaderStage_Fragment, "screen-space bind group layout");
+    program.pipeline_layout = create_dawn_pinned_pipeline_layout(state.device, program.group_layout,
+                                                                 "screen-space pipeline layout");
     // Single-sample, unblended, a triangle list: `ensureProducerPipeline`.
-    WGPUColorTargetState color_target = WGPU_COLOR_TARGET_STATE_INIT;
-    color_target.format = texture_format(info.target_format);
-    WGPUFragmentState fragment = WGPU_FRAGMENT_STATE_INIT;
-    fragment.module = program.module;
-    fragment.entryPoint = string_view(info.fragment_entry);
-    fragment.targetCount = 1;
-    fragment.targets = &color_target;
-    WGPURenderPipelineDescriptor descriptor = WGPU_RENDER_PIPELINE_DESCRIPTOR_INIT;
-    descriptor.layout = program.pipeline_layout;
-    descriptor.vertex.module = program.module;
-    descriptor.vertex.entryPoint = string_view(info.vertex_entry);
-    descriptor.primitive.topology = WGPUPrimitiveTopology_TriangleList;
-    descriptor.primitive.cullMode = WGPUCullMode_None;
-    descriptor.multisample.count = 1;
-    descriptor.multisample.mask = ~0u;
-    descriptor.fragment = &fragment;
-    program.pipeline = wgpuDeviceCreateRenderPipeline(state.device, &descriptor);
-    if (!program.pipeline) {
-        dawn_error("screen-space pipeline creation failed.");
-    }
+    const WGPUTextureFormat target = texture_format(info.target_format);
+    program.pipeline = create_dawn_fullscreen_pipeline(
+        state.device, program.pipeline_layout, program.module, info.vertex_entry,
+        info.fragment_entry, {}, std::span(&target, 1), "screen-space render pipeline");
     return program;
 }
 
@@ -156,24 +115,12 @@ std::size_t screen_space_program(DawnState& state, std::uint32_t stage) {
 
 WGPUTextureView screen_space_binding_view(DawnState& state, const Engine& engine,
                                           const ScreenSpaceTaskOptions& task,
-                                          upstream::ScreenSpaceTextureRole role) {
+                                          upstream::ScreenSpaceTextureRef texture) {
     const pal::TargetUser user{"Screen-space task", task.name};
-    const auto target = [&](RenderTargetHandle handle) -> const DawnRenderTarget& {
-        return pal::resolve_gpu_target(engine, state.render_targets, handle, user);
-    };
-    switch (role) {
-    case upstream::ScreenSpaceTextureRole::depth:
-        return target(task.depth).depth_sampled_view;
-    case upstream::ScreenSpaceTextureRole::source_color:
-        return target(task.source).sampled_color_view;
-    case upstream::ScreenSpaceTextureRole::raw:
-        return target(task.raw).sampled_color_view;
-    case upstream::ScreenSpaceTextureRole::history:
-        return target(task.history).sampled_color_view;
-    default:
-        dawn_error("A screen-space stage binds a texture role this backend "
-                   "does not serve.");
-    }
+    const DawnRenderTarget& target = pal::resolve_gpu_target(
+        engine, state.render_targets, pal::screen_space_target(task, texture), user);
+    return texture.role == upstream::ScreenSpaceTextureRole::depth ? target.depth_sampled_view
+                                                                   : target.sampled_color_view;
 }
 
 WGPURenderPassEncoder begin_screen_space_pass(WGPUCommandEncoder encoder, WGPUTextureView target) {
@@ -189,10 +136,10 @@ WGPURenderPassEncoder begin_screen_space_pass(WGPUCommandEncoder encoder, WGPUTe
 
 void record_screen_space_stage(DawnState& state, const Engine& engine,
                                const ScreenSpaceTaskOptions& task, DawnScreenSpaceStage& stage,
-                               std::uint32_t stage_index, WGPUCommandEncoder encoder,
-                               WGPUTextureView target, const float* uniforms) {
+                               const upstream::ScreenSpacePassInfo& pass,
+                               WGPUCommandEncoder encoder, const float* uniforms) {
     if (stage.program == npos) {
-        stage.program = screen_space_program(state, stage_index);
+        stage.program = screen_space_program(state, pass.stage);
     }
     const DawnScreenSpaceProgram& program = state.screen_space_programs[stage.program];
     const upstream::ScreenSpaceShaderInfo& info =
@@ -206,23 +153,19 @@ void record_screen_space_stage(DawnState& state, const Engine& engine,
     DawnGpuDevice{state.queue}.write_buffer(stage.uniforms, 0, uniforms, info.uniform_bytes);
     if (!stage.group) {
         std::vector<WGPUBindGroupEntry> entries;
-        for (std::size_t index = 0; index < info.binding_count; ++index) {
-            const upstream::ScreenSpaceStageBinding& binding = info.bindings[index];
+        for (std::size_t index = 0; index < info.bindings.size(); ++index) {
+            const PinnedLayoutEntry& binding = info.bindings[index];
             WGPUBindGroupEntry entry = WGPU_BIND_GROUP_ENTRY_INIT;
             entry.binding = binding.binding;
-            switch (binding.kind) {
-            case upstream::ScreenSpaceBindingKind::depth_texture:
-            case upstream::ScreenSpaceBindingKind::texture:
-                entry.textureView = screen_space_binding_view(state, engine, task, binding.role);
-                break;
-            case upstream::ScreenSpaceBindingKind::sampler:
+            if (!binding.sample_type.empty()) {
+                entry.textureView =
+                    screen_space_binding_view(state, engine, task, pass.textures[index]);
+            } else if (!binding.sampler_type.empty()) {
                 // The pin's one bilinear sampler wherever it samples.
                 entry.sampler = state.post_process_bilinear_sampler;
-                break;
-            case upstream::ScreenSpaceBindingKind::uniform:
+            } else {
                 entry.buffer = stage.uniforms;
                 entry.size = info.uniform_bytes;
-                break;
             }
             entries.push_back(entry);
         }
@@ -232,12 +175,15 @@ void record_screen_space_stage(DawnState& state, const Engine& engine,
         group_descriptor.entries = entries.data();
         stage.group = wgpuDeviceCreateBindGroup(state.device, &group_descriptor);
     }
-    DawnRenderPass pass{begin_screen_space_pass(encoder, target)};
-    wgpuRenderPassEncoderSetPipeline(pass, program.pipeline);
-    wgpuRenderPassEncoderSetBindGroup(pass, 0, stage.group, 0, nullptr);
-    count_gpu_draw(wgpuRenderPassEncoderDraw, pass, 3, 1, 0, 0);
-    wgpuRenderPassEncoderEnd(pass);
-    pass.reset();
+    const DawnRenderTarget& target = pal::resolve_gpu_target(
+        engine, state.render_targets, pal::screen_space_target(task, pass.target),
+        pal::TargetUser{"Screen-space task", task.name});
+    DawnRenderPass encoded{begin_screen_space_pass(encoder, target.color_view)};
+    wgpuRenderPassEncoderSetPipeline(encoded, program.pipeline);
+    wgpuRenderPassEncoderSetBindGroup(encoded, 0, stage.group, 0, nullptr);
+    count_gpu_draw(wgpuRenderPassEncoderDraw, encoded, 3, 1, 0, 0);
+    wgpuRenderPassEncoderEnd(encoded);
+    encoded.reset();
 }
 
 void clear_screen_space_target(WGPUCommandEncoder encoder, WGPUTextureView view) {

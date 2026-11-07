@@ -83,6 +83,10 @@ import {
     importPinnedModule,
 } from "./pinned-shader-composer.js";
 import {
+    pinnedGeometryVelocityScope,
+    type GeometryVelocityState,
+} from "./pinned-geometry-velocity.js";
+import {
     type MaterialPluginManifest,
     type MaterialPluginSamplerManifest,
     pinnedPluginPresenceBit,
@@ -194,6 +198,13 @@ export interface PinnedStandardComposeOptions {
     geometry?: {
         attachments: readonly string[];
         emitColor: boolean;
+        /**
+         * The velocity module state a LINEAR_VELOCITY view composes under:
+         * `enableGeometryVelocity`'s output and deformation feature, or the
+         * deformation feature a task preload loads
+         * (`pinned-geometry-velocity.ts`). Absent, neither is installed.
+         */
+        velocity?: GeometryVelocityState;
     };
     /**
      * The scene's shadow-casting lights, in `scene.lights` order — the
@@ -388,14 +399,35 @@ async function pinnedStandardRenderableFeatures(
     material: PinnedStandardMaterialInput,
     meshFeatures: number,
     skeleton = false,
+    // A caster view's pass bits, which ride the view's own word.
+    passFeatures = 0,
 ): Promise<number> {
     const features = await pinnedStandardMaterialFeatures(material);
     let word = features;
     for (const ext of await standardExtensions(skeleton)) {
         word |=
-            ext._meshFeatures?.(meshFeatures, pinnedOptInSlots(material)) ?? 0;
+            ext._meshFeatures?.(
+                meshFeatures,
+                standardHookMaterial(material, features | passFeatures),
+            ) ?? 0;
     }
     return word;
+}
+
+/**
+ * The material a hook receives, as `rebuildSingle` hands it: the opt-in
+ * slots, and the `_renderFeatures` word the drawn material carries -- a
+ * caster view's own, pass bit included, which mesh opacity's
+ * `_meshFeatures` tests.
+ */
+function standardHookMaterial(
+    material: PinnedStandardMaterialInput,
+    renderFeatures: number,
+): Record<string, unknown> {
+    return {
+        ...pinnedOptInSlots(material),
+        _renderFeatures: { features: renderFeatures },
+    };
 }
 
 /**
@@ -615,7 +647,10 @@ export async function composePinnedStandardVariant(
         // transform reads `material._hasUvTx` from it. Passing what the pin
         // passes keeps a hook that reads it from seeing `undefined`.
         features |=
-            ext._meshFeatures?.(meshFeatures, pinnedOptInSlots(material)) ?? 0;
+            ext._meshFeatures?.(
+                meshFeatures,
+                standardHookMaterial(material, features | passFeatures),
+            ) ?? 0;
         if (features & ext._feature) {
             const fragment = ext._frag(
                 features,
@@ -716,29 +751,20 @@ export async function composePinnedStandardVariant(
             (features & ~flags.MATERIAL_ALPHA_BLEND) |
             flags.GEOMETRY_OUTPUT |
             passFeatures;
-        // The composer's skeletal velocity arm (`hasSkeletonVelocity`)
-        // samples the previous frame's bone texture, which the pin's
-        // renderable keeps beside its previous world; neither backend keeps
-        // one.
-        if (
-            options.geometry.attachments.includes("LINEAR_VELOCITY") &&
-            (viewFeatures & flags.HAS_SKELETON) !== 0
-        ) {
-            refuseGeneration(
-                "renderer:geometry-output",
-                "A skinned Standard mesh in a LINEAR_VELOCITY geometry task " +
-                    "reads the previous frame's bone texture, which no " +
-                    "backend keeps.",
-            );
-        }
-        const composed = geometry.composeStandardGeometryShader(
-            viewFeatures,
-            meshFeatures,
-            fragments,
-            attachments,
-            "",
-            options.geometry.emitColor,
-            composedSceneShader,
+        const { emitColor } = options.geometry;
+        const velocity = options.geometry.velocity
+            ? await pinnedGeometryVelocityScope(options.geometry.velocity)
+            : <T>(compose: () => T): T => compose();
+        const composed = velocity(() =>
+            geometry.composeStandardGeometryShader(
+                viewFeatures,
+                meshFeatures,
+                fragments,
+                attachments,
+                "",
+                emitColor,
+                composedSceneShader,
+            ),
         );
         return {
             fragmentKey: composed._fragmentKey,
@@ -1548,6 +1574,12 @@ export interface StandardSceneCompositionInput {
     thinInstanceColors: boolean;
     /** Morph storage/deformation reached for scene meshes. */
     morphTargets: boolean;
+    /**
+     * `setMeshOpacity` reached: its encoder's mesh-feature bit
+     * (`meshOpacityFeatureBit`) and the scene mesh values a call reaches;
+     * without them, a target is unknown and every value can carry it.
+     */
+    meshOpacity?: { bit: number; values?: readonly number[] };
     /** Whether the scene creates Standard materials from scene code. */
     sceneMaterials: boolean;
     /** Distinct mesh-feature values of the scene-code meshes. */
@@ -1562,7 +1594,13 @@ export interface StandardSceneCompositionInput {
         index: number;
         attachments: readonly string[];
         emitColor: boolean;
+        velocity?: boolean;
     }[];
+    /**
+     * `renderer:geometry-velocity` reached: the program carries the native
+     * deformation velocity state, from the enabler or a task preload.
+     */
+    deformationVelocity?: boolean;
 }
 
 export interface StandardSceneComposition {
@@ -1771,11 +1809,13 @@ export async function composeSceneStandardVariants(
         MSH_HAS_INSTANCE_COLOR: number;
         MSH_HAS_VERTEX_COLOR: number;
         MSH_RECEIVE_SHADOWS: number;
+        MSH_VAT: number;
     }>("material/mesh-features.js");
     const flags = await importPinnedModule<{
         NO_COLOR_OUTPUT: number;
         ESM_SHADOW_OUTPUT: number;
         MATERIAL_ALPHA_BLEND: number;
+        HAS_SKELETON: number;
     }>("material/standard/standard-flags.js");
     const decideAlpha = await pinnedStandardMeshAlpha();
     // The material feature values reachable, derivation by the pin itself.
@@ -1840,7 +1880,14 @@ export async function composeSceneStandardVariants(
     // The mesh half: `.babylon` renderables carry no composition-relevant
     // bits (zero rows), scene meshes their own recorded sets, plus the
     // runtime-attachable pool and deformation arms.
-    const expandMeshValues = (initial: readonly number[]): number[] => {
+    // The opacity arm decorates the reached values' own expansions, or every
+    // value.
+    const expandMeshValues = (
+        initial: readonly number[],
+        opacity:
+            | StandardSceneCompositionInput["meshOpacity"]
+            | null = input.meshOpacity,
+    ): number[] => {
         const values: number[] = [];
         const add = (bits: number): void => {
             if (!values.includes(bits)) values.push(bits);
@@ -1864,6 +1911,14 @@ export async function composeSceneStandardVariants(
         if (input.morphTargets) {
             for (const bits of [...values]) {
                 add(bits | meshBits.MSH_HAS_MORPH_TARGETS);
+            }
+        }
+        if (opacity) {
+            const reached =
+                opacity.values &&
+                new Set(expandMeshValues(opacity.values, null));
+            for (const bits of [...values]) {
+                if (!reached || reached.has(bits)) add(bits | opacity.bit);
             }
         }
         return values;
@@ -1931,6 +1986,36 @@ export async function composeSceneStandardVariants(
             ...(geometryTask !== undefined ? { geometryTask } : {}),
             variant: index,
         });
+    };
+    // The module state a LINEAR_VELOCITY view composes under:
+    // `enableGeometryVelocity`'s once any task reaches it, whichever task
+    // the view draws into; otherwise, over a skinned or morphed mesh, the
+    // deformation feature a task preload loads, which every view this port
+    // can draw composes from -- the pin refuses one built before any preload
+    // loaded it, at run time (`geometry_velocity.hpp`).
+    const enabler = input.geometryTasks.some((each) => each.velocity);
+    const velocityState = (
+        attachments: readonly string[],
+        meshFeatures: number,
+        features: number,
+    ): GeometryVelocityState | undefined => {
+        if (!attachments.includes("LINEAR_VELOCITY")) return undefined;
+        if (enabler) return "enabler";
+        const deformed =
+            (meshFeatures &
+                (meshBits.MSH_HAS_THIN_INSTANCES | meshBits.MSH_VAT)) ===
+                0 &&
+            ((features & flags.HAS_SKELETON) !== 0 ||
+                (meshFeatures & meshBits.MSH_HAS_MORPH_TARGETS) !== 0);
+        if (!deformed) return undefined;
+        if (!input.deformationVelocity)
+            refuseGeneration(
+                "renderer:geometry-velocity",
+                "A skinned or morphed Standard mesh in a LINEAR_VELOCITY " +
+                    "geometry task needs the deformation velocity state its " +
+                    "task preload loads, which this program did not reach.",
+            );
+        return "preload";
     };
     // Each area lighting a scene can draw under composes its own words: the
     // scene context's `_materialFeatures` ride every renderable's word, and
@@ -2010,10 +2095,18 @@ export async function composeSceneStandardVariants(
                 ];
                 for (const view of casterViews) {
                     if (!view.reached || !input.sceneMaterials) continue;
+                    // The view's own word reaches the mesh-phase hooks.
+                    const viewFeatures =
+                        (await pinnedStandardRenderableFeatures(
+                            material,
+                            meshFeatures,
+                            input.skeleton,
+                            view.set,
+                        )) | sceneMaterialFeatures;
                     await add(
                         material,
                         meshFeatures & ~meshBits.MSH_RECEIVE_SHADOWS,
-                        (features & ~view.clear) | view.set,
+                        (viewFeatures & ~view.clear) | view.set,
                         {
                             ...baseOptions,
                             fog: false,
@@ -2022,28 +2115,29 @@ export async function composeSceneStandardVariants(
                     );
                 }
                 for (const task of input.geometryTasks) {
-                    const geometryOptions = {
-                        ...baseOptions,
-                        geometry: {
-                            attachments: task.attachments,
-                            emitColor: task.emitColor,
-                        },
-                    };
-                    await add(
-                        material,
-                        meshFeatures,
-                        features,
-                        geometryOptions,
-                        task.index,
-                    );
-                    if (alphaReachable) {
+                    for (const [selectorFeatures, vertexAlpha] of [
+                        [features, false],
+                        ...(alphaReachable
+                            ? ([[alphaFeatures, true]] as const)
+                            : []),
+                    ] as const) {
+                        const velocity = velocityState(
+                            task.attachments,
+                            meshFeatures,
+                            selectorFeatures,
+                        );
                         await add(
                             material,
                             meshFeatures,
-                            alphaFeatures,
+                            selectorFeatures,
                             {
-                                ...geometryOptions,
-                                vertexAlpha: true,
+                                ...baseOptions,
+                                ...(vertexAlpha ? { vertexAlpha } : {}),
+                                geometry: {
+                                    attachments: task.attachments,
+                                    emitColor: task.emitColor,
+                                    ...(velocity ? { velocity } : {}),
+                                },
                             },
                             task.index,
                         );

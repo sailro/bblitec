@@ -553,7 +553,7 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
     "light:included-meshes": {
         provenance:
             "src/light/types.ts LightBase.includedOnlyMeshIds, read by " +
-            "src/render/mesh-light-selection.ts lightAffectsMeshId; the id it joins on is " +
+            "src/render/mesh-light-selection.ts lightAffectsMesh; the id it joins on is " +
             "src/mesh/mesh.ts Mesh.id",
         consumers: ["features.cmake", "variant table"],
     },
@@ -745,6 +745,15 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
         // stamp, not through this name.
         consumers: INVENTORY,
     },
+    "material:pbr-alpha-cutoff": {
+        provenance:
+            "src/material/pbr/set-alpha-cutoff.ts (the stamp the alpha-test " +
+            "extension's detect turns into PBR_HAS_ALPHA_TEST; the cutoff " +
+            "itself is a UBO lane)",
+        // The arm rides the composed variant through the material's own
+        // stamp; the name selects the lowered setter in the PBR factory.
+        consumers: ["generation gate"],
+    },
     "material:iridescence": {
         provenance: "src/material/pbr/set-iridescence.ts",
         // The arm is read off the composed variants, never from this name.
@@ -757,6 +766,15 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
             "core scans for no lightmapTexture at all)",
         // The arm is read off the composed variants, never from this name.
         consumers: INVENTORY,
+    },
+    "material:bent-normal": {
+        provenance:
+            "src/material/pbr/fragments/bent-normal-fragment.ts " +
+            "enableBentNormals (installs the bent-normal hooks on the IBL " +
+            "extension)",
+        // The arm and its texture slot are read off the composed variants;
+        // composition refuses a bent normal texture written without it.
+        consumers: ["generation gate"],
     },
     "material:local-cubemap": {
         provenance:
@@ -990,6 +1008,10 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
         provenance: "src/mesh/mesh.ts retained CPU geometry + worldMatrix",
         consumers: CMAKE,
     },
+    "mesh:opacity": {
+        provenance: "src/mesh/opacity/mesh-opacity.ts",
+        consumers: ["features.cmake", "feature macros"],
+    },
     "mesh:visible": {
         provenance: "src/scene/scene-node.ts",
         consumers: CMAKE,
@@ -1082,9 +1104,13 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
         provenance: "src/scene/scene-node.ts + src/scene/transform-node.ts",
         consumers: CMAKE,
     },
-    // The display-gizmo family. The layer is what both backends read as a
-    // swapchain overlay -- a second registered scene -- and each gizmo
-    // adds its own generated builder over it.
+    // Overlay scenes and the registration that keeps each after its base.
+    "scene:overlay": {
+        provenance: "src/scene/overlay-scene.ts",
+        consumers: CMAKE,
+    },
+    // The display-gizmo family. The layer is an overlay scene of its main
+    // scene, and each gizmo adds its own generated builder over it.
     "gizmo:utility-layer": {
         provenance: "src/gizmo/utility-layer.ts",
         consumers: CMAKE,
@@ -1713,8 +1739,20 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
     },
     "renderer:screen-space": {
         provenance:
-            "src/post-process/screen-space-contact-shadows.ts and " +
-            "src/post-process/screen-space-global-illumination.ts",
+            "src/post-process/screen-space-contact-shadows.ts, " +
+            "src/post-process/screen-space-global-illumination.ts and " +
+            "src/post-process/screen-space-ambient-occlusion.ts",
+        consumers: CMAKE,
+    },
+    "renderer:ssao": {
+        provenance: "src/post-process/ssao.ts and src/post-process/ssao/*.ts",
+        consumers: CMAKE,
+    },
+    "renderer:geometry-velocity": {
+        provenance:
+            "src/frame-graph/enable-geometry-velocity.ts, " +
+            "src/material/pbr/pbr-geometry-velocity.ts and " +
+            "src/material/geometry-deformation-velocity.ts",
         consumers: CMAKE,
     },
     "flow-graph:interactivity": {
@@ -1989,6 +2027,12 @@ function assetJoinReason(name: string, joinedBy: string): string {
         return (
             " makes a material transmissive (KHR_materials_transmission), " +
             "whose setPbrTransmission scene hook enables scene transmission"
+        );
+    }
+    if (name === "renderer:geometry-velocity") {
+        return (
+            " over Standard materials and a skinned or morphed mesh loads the " +
+            "deformation velocity feature (preloadGeometryDeformationVelocity)"
         );
     }
     if (name === "loader:splat") {
@@ -2490,6 +2534,28 @@ function capabilityRows(
             ],
             "no composed material binds a lightmap",
             "src/material/pbr/enable-pbr-lightmap.ts and src/material/standard/set-std-lightmap.ts register their lightmap fragments",
+            [
+                "render_capabilities.hpp",
+                "material_texture_slots.hpp",
+                "variant table",
+            ],
+        ),
+        checkedRow(
+            "BBLITE_MATERIAL_BENT_NORMAL",
+            "capability",
+            composed.bentNormal,
+            [
+                [
+                    has("material:bent-normal") && composed.bentNormal,
+                    "scene source reached material:bent-normal and a " +
+                        "composed variant binds bentNormalTexture_",
+                ],
+            ],
+            "no composed PBR variant binds bentNormalTexture_",
+            "src/material/pbr/fragments/bent-normal-fragment.ts: " +
+                "enableBentNormals installs the IBL extension's bent-normal " +
+                "hooks, whose detect selects the arm for a lit material " +
+                "with bentNormalTexture and an occlusion texture",
             [
                 "render_capabilities.hpp",
                 "material_texture_slots.hpp",

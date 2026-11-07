@@ -9,8 +9,17 @@
 namespace bbl::pal {
 
 enum class FramePreparation { ready, stop, restart, skip };
-enum class FrameOutcome { stopped, skipped, rendered, restart };
+/** `frozen`: the engine is stopped, so the frame drew nothing and its canvas keeps the last one. */
+enum class FrameOutcome { stopped, skipped, rendered, restart, frozen };
 enum class FrameAcquirePhase { before_update, before_uploads, before_encoding };
+
+/**
+ * Whether a frame completes its animation frame: a frozen one does as a
+ * drawn one would, since the canvas's last frame stands for it.
+ */
+constexpr bool frame_drawn(FrameOutcome outcome) {
+    return outcome == FrameOutcome::rendered || outcome == FrameOutcome::frozen;
+}
 
 constexpr std::optional<FrameOutcome> frame_interruption(FramePreparation preparation) {
     switch (preparation) {
@@ -87,6 +96,14 @@ template <typename Renderer> FrameOutcome conduct_frame(Renderer& renderer, Engi
         return FrameOutcome::stopped;
     if (const auto outcome = frame_interruption(renderer.prepare()))
         return *outcome;
+    // `stopEngine` cancels the pin's animation frame: no later frame renders
+    // and the canvas keeps what it last drew, so nothing a frame would run --
+    // callbacks, tasks, temporal history -- advances again. A frame that
+    // begins stopped draws nothing; `freeze` hands the captures still
+    // waiting their frozen image. A renderer holding no image of its own
+    // answers false and draws the frame once more for them.
+    if (engine.stopped && renderer.freeze())
+        return FrameOutcome::frozen;
     if constexpr (Renderer::acquire_phase == FrameAcquirePhase::before_update)
         if (!renderer.acquire())
             return FrameOutcome::skipped;

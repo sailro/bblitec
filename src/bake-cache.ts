@@ -21,7 +21,8 @@
  *     (`moduleIdentity`), so a forgotten bump still misses rather than
  *     replaying bytes an edited packager would no longer produce;
  *   - the upstream pin (package, version, source commit) — the executed
- *     code is the pin's;
+ *     code is the pin's — and, for a bake whose pinned code resolves its
+ *     `#` imports, the build conditions they resolve under;
  *   - for the Chromium bakes, the resolved browser executable's
  *     path/size/mtime — the baked bytes depend on the Chrome that ran
  *     them, and a cache that survived a browser update would replay
@@ -52,7 +53,12 @@ import { createRequire } from "node:module";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import ts from "typescript";
-import { moduleSpecifiers } from "./typescript-module-specifiers.js";
+import { pinnedBuildConditions } from "./compiler-node-flags.js";
+import {
+    isRelativeSpecifier,
+    moduleSpecifiers,
+    sideEffectImportSpecifier,
+} from "./typescript-module-specifiers.js";
 
 const cacheRoot = join("artifacts", "bake-cache");
 const moduleIdentities = new Map<string, string>();
@@ -110,6 +116,12 @@ function pinIdentity(): string {
     return cachedPinIdentity;
 }
 
+/** The build conditions component of a key whose bake reads them. */
+function conditionsIdentity(): string {
+    const conditions = pinnedBuildConditions();
+    return conditions.length > 0 ? `+${conditions.join(",")}` : "";
+}
+
 /**
  * The resolved browser's identity for the Chromium bakes: its path plus
  * the executable's size and mtime — a Chrome update moves both, and the
@@ -149,6 +161,10 @@ export interface BakeKey {
     /** Whether the bake runs in headless Chromium; the browser identity
      *  then joins the key. */
     browser: boolean;
+    /** Whether the bytes depend on the build conditions: the bake runs
+     *  pinned modules, which resolve their `#` imports under them, or reads
+     *  pinned sources folded under them. The conditions then join the key. */
+    buildConditions: boolean;
     /** JSON-serializable parameters; key order is canonicalized. */
     parameters: Record<string, unknown>;
     /** The input payloads, hashed into the key in order. */
@@ -181,7 +197,7 @@ export function bakeIdentity(key: BakeKey): string | undefined {
         `kind:${key.kind}`,
         `version:${key.version}`,
         `module:${key.module}`,
-        `pin:${pinIdentity()}`,
+        `pin:${pinIdentity()}${key.buildConditions ? conditionsIdentity() : ""}`,
         `browser:${browser}`,
         `parameters:${canonicalJson(key.parameters)}`,
         ...key.inputs.map((input, index) => `input${index}:${sha256(input)}`),
@@ -351,7 +367,7 @@ export function repositoryModuleClosure(
         );
         const entry = entries.includes(path);
         for (const specifier of moduleSpecifiers(sourceFile)) {
-            if (!specifier.text.startsWith(".")) continue;
+            if (!isRelativeSpecifier(specifier.text)) continue;
             if (entry && standIns.has(specifier.text)) continue;
             queue.push(resolve(dirname(file), specifier.text));
         }
@@ -374,6 +390,26 @@ export function moduleClosureBytes(
         Buffer.from(`${path}\n`, "utf8"),
         source,
     ]);
+}
+
+/**
+ * The module an entry evaluates: itself, or -- when its one statement is a
+ * side-effect import of a sibling module (`import "./scene2";`) -- that
+ * module, which module evaluation runs in its place. The compiler's entry
+ * is the module that holds the program's startup (its statements or
+ * `main`), which such an entry leaves to the module it imports.
+ */
+export function evaluatedEntryPath(path: string): string {
+    const specifier = sideEffectImportSpecifier(readFileSync(path, "utf8"));
+    if (specifier === undefined || !isRelativeSpecifier(specifier)) return path;
+    const imported = resolveRepositoryModuleFile(
+        resolve(dirname(path), specifier),
+    );
+    if (!imported)
+        throw new Error(
+            `${path} imports '${specifier}', which resolves to no module.`,
+        );
+    return evaluatedEntryPath(imported);
 }
 
 /** Resolve a specifier target the way the suite server serves it: the

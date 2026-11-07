@@ -18,3 +18,12 @@ export function pinnedError(
         context.functionDeclaration(owner.module, owner.name).declaration;
     return `#${pinnedErrorCodeOf(context, message, declaration)}`;
 }
+
+/** A native fixture's `pinned_errors` namespace: one string per named pinned error. */
+export function pinnedErrorsCpp(errors: Record<string, string>): string {
+    const entries = Object.entries(errors).map(
+        ([name, message]) =>
+            `inline const std::string ${name} = ${JSON.stringify(message)};`,
+    );
+    return `namespace pinned_errors {\n${entries.join("\n")}\n}\n`;
+}

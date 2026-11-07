@@ -94,7 +94,7 @@ test("keeps imported authored winding separate from live parent reflection", () 
 
     assert.match(
         loader,
-        /const bool mirrored_world =\s*upstream::pinned_mat4_determinant3\(mesh_world\) < 0\.0;[\s\S]*record\.authored_clockwise_front_face =\s*clockwise_front_face != mirrored_world;\s*record\.clockwise_front_face =\s*clockwise_front_face;/,
+        /const bool mirrored_world =\s*upstream::pinned_mat4_determinant3\(mesh_world\) < 0\.0;[\s\S]*record\.authored_clockwise_front_face =\s*source_clockwise != mirrored_world;\s*record\.clockwise_front_face = source_clockwise;/,
     );
     assert.match(
         loader,

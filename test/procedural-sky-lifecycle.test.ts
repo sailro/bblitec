@@ -11,6 +11,7 @@ import {
     optionalNativeFixtureTools,
     runGeneratedProgram,
 } from "./native-fixture.js";
+import { pinnedError, pinnedErrorsCpp } from "./pinned-errors.js";
 
 test("source sky lifecycle preserves publication, revision cancellation, resource ownership and failure cleanup", (t) => {
     const tools = optionalNativeFixtureTools(false);
@@ -39,6 +40,17 @@ test("source sky lifecycle preserves publication, revision cancellation, resourc
             ).source,
             lowerProceduralSkyUpdate(context).source,
             lowerComputeTextureMipmaps(context).source,
+            pinnedErrorsCpp({
+                sky_disposed: pinnedError(
+                    "Procedural sky environment has been disposed.",
+                ),
+                sky_loading: pinnedError(
+                    "A procedural sky environment is already loading for this scene.",
+                ),
+                sky_cancelled: pinnedError(
+                    "Procedural sky environment initialization was cancelled: the scene was disposed, registered, or acquired another environment.",
+                ),
+            }),
             readFileSync(
                 resolve("test/fixtures/procedural-sky-lifecycle-check.cpp"),
                 "utf8",

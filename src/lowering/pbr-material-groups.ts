@@ -6,8 +6,10 @@ import {
 } from "./pinned-body-lowerer.js";
 import {
     collectionBinding,
+    memberElement,
     PinnedNumericLowerer,
     type PinnedBinding,
+    type PinnedRecordShape,
 } from "./pinned-numeric-lowerer.js";
 import { lowerRebuildTransaction } from "./pbr-transmission-transaction.js";
 
@@ -17,9 +19,14 @@ import {
 } from "./material-publication.js";
 import { recordAt } from "../compiler/record-access.js";
 import { finalReturn } from "../compiler/loop-control.js";
-import { conditionalExpression } from "../compiler/syntax.js";
+import {
+    conditionalExpression,
+    sameSource,
+    selectionArms,
+} from "../compiler/syntax.js";
 import { lowerPinnedFunction } from "./pinned-function-lowerer.js";
 import { meshTangentFeatureCall } from "./mesh-attribute-features.js";
+import { pbrPassFeatures2Cpp } from "./render-bucket.js";
 
 const sceneModule = "src/scene/scene-core.ts";
 
@@ -31,26 +38,15 @@ const recoveryModule = "src/engine/recovery-rebuild.ts";
 const lazyCapsCall = (args: readonly string[]): string =>
     `pbr_lazy_caps(scene, ${args[0]})`;
 
-/** `lazyCapsWidening(caps)`, lowered below as `pbr_lazy_caps_widening`. */
-const lazyCapsWideningCall = (args: readonly string[]): string =>
-    `pbr_lazy_caps_widening(${args[0]})`;
-
 /**
- * A group's published widening (`group._w`, null when nothing can be
- * missing) and a build result's (`result._w`, undefined for a builder that
- * publishes none), as the group build, its rebuild and device recovery
- * read and store them.
+ * A group's published widening (`group._w`, unset before its first build)
+ * and a build result's (`result._w`, undefined for a builder that publishes
+ * none), as the group build, its rebuild and device recovery read and store
+ * them.
  */
 const groupWideningSlot: PinnedBinding = {
     cpp: "group->widening",
     type: "opaque",
-};
-const groupWidening: PinnedBinding = {
-    ...groupWideningSlot,
-    optional: {
-        present: "group->widening.has_value()",
-        members: new Map([["_c", { cpp: "*group->widening" }]]),
-    },
 };
 const wideningPublication: ReadonlyMap<string, PinnedBinding> = new Map<
     string,
@@ -190,7 +186,7 @@ export function lowerPbrMaterialGroups(
         );
         // Source output identities publish after native material construction.
         return [
-            `${indent}if (build < 4) scene.deferred_builders.emplace_back([owner = std::weak_ptr<SceneState>(scene.state), group, build] {`,
+            `${indent}scene.deferred_builders.emplace_back([owner = std::weak_ptr<SceneState>(scene.state), group, build] {`,
             `${indent}    const auto state = owner.lock();`,
             `${indent}    if (!state || state->disposed) return;`,
             `${indent}    auto scene = Scene::from_state(state);`,
@@ -549,10 +545,16 @@ function lowerPbrGroupBuild(
         context.assertStatementShapes(declaration.body!, [next], shape, label);
         return next;
     };
+    const livePredicate = declared("livePredicate");
+    context.assertExpressionShape(
+        livePredicate.declarationList.declarations[0]!.initializer!,
+        "group.r ? (group._w as LazyCapsWidening | null | undefined) : undefined",
+        "PBR live closure predicate",
+    );
     const live = declared("liveCaps");
     const install = following(
         live,
-        "group._w = lazyCapsWidening(liveCaps);",
+        "group._w = lazyCapsWidening(scene, liveCaps, livePredicate?._p ?? { _s: singleLightTypes, _m: needsMultiLightPath }, hasSomeShadows);",
         "PBR live closure widening",
     );
     // Recounted after this build's extensions register; the native
@@ -577,7 +579,7 @@ function lowerPbrGroupBuild(
     const widening = context.propertyInitializer(result.expression, "_w");
     context.assertExpressionShape(
         widening,
-        "lazyCapsWidening(loadCaps)",
+        "lazyCapsWidening(scene, loadCaps, { _s: singleLightTypes.slice(), _m: needsMultiLightPath }, hasSomeShadows)",
         "PBR build result widening",
     );
     const single = context.variableInitializer(declaration, "rebuildSingle");
@@ -586,31 +588,80 @@ function lowerPbrGroupBuild(
             single,
             "Expected the PBR single-mesh builder closure.",
         );
+    // The light WGSL a widening's closure loaded: the live closure's own,
+    // or the builder's scan (`scanLightPaths`) -- one value natively, where
+    // no load awaits between the scan and its rescan.
     const lowerer: PinnedNumericLowerer = new PinnedNumericLowerer(file, {
         bindings: new Map<string, PinnedBinding>([
             ["meshes", collectionBinding("meshes")],
             ["group.r", { cpp: "group->rebuild_ready", type: "bool" }],
-            ["group._w", groupWidening],
+            ["group._w", groupWideningSlot],
+            ["hasSomeShadows", { cpp: "has_some_shadows", type: "bool" }],
+            [
+                "singleLightTypes",
+                { cpp: "scan_paths.single", type: "string-list" },
+            ],
+            ["needsMultiLightPath", { cpp: "scan_paths.multi", type: "bool" }],
         ]),
-        calls: new Map([
-            ["_lazyPbrCaps", lazyCapsCall],
-            ["lazyCapsWidening", lazyCapsWideningCall],
-        ]),
+        calls: new Map([["_lazyPbrCaps", lazyCapsCall]]),
+        recordTypes: new Map([["LoadedLightPaths", loadedLightPaths]]),
+        expression: (node, numeric) => {
+            if (
+                !ts.isCallExpression(node) ||
+                !sameSource(node.expression, "lazyCapsWidening")
+            )
+                return undefined;
+            const [scene, caps, loaded, shadows] = node.arguments;
+            if (
+                !scene ||
+                !caps ||
+                !loaded ||
+                !shadows ||
+                !sameSource(scene, "scene")
+            )
+                return context.contractError(
+                    node,
+                    "Expected lazyCapsWidening(scene, caps, paths, hasShadows).",
+                );
+            return `PbrLazyWidening{${numeric.expression(caps)}, ${numeric.expression(loaded)}, ${numeric.expression(shadows)}}`;
+        },
         // The group the pin looks up by the first material's build group
         // is the scene's one PBR group.
-        statement: (statement, _lowerer, indent) =>
-            statement === group
-                ? [
-                      `${indent}const auto* first_material = pbr_mesh_material(scene, meshes.at(0));`,
-                      `${indent}const auto group = first_material && first_material->source_pbr_group_builder ? scene.state->pbr_material_group : nullptr;`,
-                      `${indent}if (!group) throw std::runtime_error("PBR builder has no material group");`,
-                  ]
-                : undefined,
+        statement: (statement, numeric, indent) => {
+            if (statement === group)
+                return [
+                    `${indent}const auto* first_material = pbr_mesh_material(scene, meshes.at(0));`,
+                    `${indent}const auto group = first_material && first_material->source_pbr_group_builder ? scene.state->pbr_material_group : nullptr;`,
+                    `${indent}if (!group) throw std::runtime_error("PBR builder has no material group");`,
+                ];
+            if (statement === livePredicate) {
+                numeric.bindLocal(
+                    livePredicate.declarationList.declarations[0]!
+                        .name as ts.Identifier,
+                    {
+                        cpp: "live_predicate",
+                        type: "opaque",
+                        optional: {
+                            present: "live_predicate.has_value()",
+                            members: new Map([
+                                ["_c", { cpp: "live_predicate->caps" }],
+                                ["_p", { cpp: "live_predicate->paths" }],
+                            ]),
+                        },
+                    },
+                );
+                return [
+                    `${indent}const std::optional<PbrLazyWidening> live_predicate = group->rebuild_ready ? group->widening : std::nullopt;`,
+                ];
+            }
+            return undefined;
+        },
     });
     const body = lowerPinnedStatements(lowerer, [
         declared("lazyCaps"),
         projectedScan,
         group,
+        livePredicate,
         live,
         install,
         load,
@@ -618,6 +669,8 @@ function lowerPbrGroupBuild(
     ]);
     return `// ${context.provenance(module, "buildPbrRenderables")}
 PbrLazyWidening pbr_group_build_widening(Scene& scene, const std::vector<MeshHandle>& meshes) {
+    const bool has_some_shadows = upstream::pinned_scene_has_shadows(*scene.engine, scene);
+    const PbrLightPaths scan_paths = pbr_scan_light_paths(scene, meshes, has_some_shadows);
 ${body}
     return ${lowerer.expression(widening)};
 }
@@ -775,54 +828,29 @@ function lowerPbrLazyCaps(
                   ),
     });
     const widening = context.functionDeclaration(module, "lazyCapsWidening");
-    context.assertFunctionBodyShape(
-        widening.declaration,
-        `{
-            return caps === ALL_LAZY_CAPS ? null : Object.assign((mesh: Mesh) => _lazyPbrCaps(mesh) & ~caps, { _c: caps });
-        }`,
-        "PBR lazy-capability widening predicate",
-    );
-    // The published widening is its capability mask: null, or the
-    // predicate's `_c`.
-    const wideningCpp = lowerPinnedFunction(
-        context,
-        module,
-        "lazyCapsWidening",
-        [{ pinned: "caps", kind: "number", cpp: "caps" }],
-        {
-            cppName: "pbr_lazy_caps_widening",
-            returns: {
-                type: "PbrLazyWidening",
-                // The asserted body fixes the arms: null, or the predicate
-                // whose `_c` is the mask.
-                value: (lowerer, expression) => {
-                    const choice = expression
-                        ? conditionalExpression(expression)
-                        : undefined;
-                    const [mask, ...others] = context.findNodes(
-                        widening.declaration,
-                        (node): node is ts.PropertyAssignment =>
-                            ts.isPropertyAssignment(node) &&
-                            context.propertyName(node.name) === "_c",
-                    );
-                    if (!choice || !mask || others.length)
-                        return context.contractError(
-                            widening.declaration,
-                            "Expected the widening's null-or-predicate choice.",
-                        );
-                    return `${lowerer.expression(choice.condition)} ? PbrLazyWidening{} : PbrLazyWidening{${lowerer.expression(mask.initializer)}}`;
-                },
-            },
-        },
-    );
-    const [predicate] = context.findNodes(
-        widening.declaration,
-        ts.isArrowFunction,
-    );
-    if (!predicate || ts.isBlock(predicate.body))
+    const neededBody = lowerNeededLightPath(context, module);
+    const scanBody = lowerScanLightPaths(context, module);
+    const wideningReturn = finalReturn(widening.declaration.body);
+    // The closure is the native record: its `_c` and `_p` are
+    // `PbrLazyWidening`'s caps and paths, beside the predicate it applies.
+    if (wideningReturn)
+        context.assertStatementShapes(
+            widening.declaration.body!,
+            [wideningReturn],
+            "return Object.assign((mesh: Mesh) => (caps === ALL_LAZY_CAPS ? 0 : _lazyPbrCaps(mesh) & ~caps) || missesLightPath(mesh), { _c: caps, _p: paths });",
+            "PBR lazy-capability widening predicate",
+        );
+    const assigned =
+        wideningReturn?.expression &&
+        ts.isCallExpression(wideningReturn.expression)
+            ? wideningReturn.expression.arguments[0]
+            : undefined;
+    const predicate =
+        assigned && ts.isArrowFunction(assigned) ? assigned.body : undefined;
+    if (!predicate || !ts.isBinaryExpression(predicate))
         return context.contractError(
             widening.declaration,
-            "Expected the widening predicate's expression body.",
+            "Expected the widening predicate's capability-or-light test.",
         );
     const applies = new PinnedNumericLowerer(widening.file, {
         bindings: new Map(),
@@ -831,11 +859,12 @@ function lowerPbrLazyCaps(
     applies.bindPorts(
         [
             ["mesh", { cpp: "mesh", type: "opaque" }],
-            ["caps", { cpp: "*widening", type: "scalar" }],
+            ["caps", { cpp: "widening->caps", type: "scalar" }],
         ],
-        predicate.body,
+        predicate.left,
     );
-    const appliedCpp = applies.expression(predicate.body);
+    const capsMissCpp = applies.expression(predicate.left);
+    const missesBody = lowerMissesLightPath(context, widening.declaration);
     return `${needs}
 ${
     pbrMaterials
@@ -852,12 +881,283 @@ bool pbr_mesh_has_tangents(const Scene& scene, MeshHandle mesh) {
 double pbr_lazy_caps(const Scene& scene, MeshHandle mesh) {
 ${read}
 }
-${wideningCpp}
+// ${context.provenance(module, "_neededLightPath")}: no material or no light
+// needs none (nullopt), the multi-light loop an empty type, else that
+// single-light block.
+std::optional<std::string_view> pbr_needed_light_path(const Scene& scene, MeshHandle mesh, bool has_shadows) {
+${neededBody}
+}
+// ${context.provenance(module, "buildPbrRenderables")}'s scanLightPaths.
+PbrLightPaths pbr_scan_light_paths(const Scene& scene, const std::vector<MeshHandle>& meshes, bool has_some_shadows) {
+    PbrLightPaths paths;
+    // Its other outputs gate WGSL loads composition settled.
+    [[maybe_unused]] bool has_any_affected_light = false;
+    [[maybe_unused]] bool needs_single_light_path = false;
+${scanBody}
+    return paths;
+}
+// ${context.provenance(module, "lazyCapsWidening", "missesLightPath")}
+bool pbr_misses_light_path(const Scene& scene, MeshHandle mesh, const PbrLazyWidening& widening) {
+${missesBody}
+}
 // The published predicate, applied: \`group._w?.(mesh)\` is truthy.
-bool pbr_lazy_widening_applies(const Scene& scene, MeshHandle mesh, const PbrLazyWidening& widening) {
-    return widening && ${appliedCpp} != 0.0;
+bool pbr_lazy_widening_applies(const Scene& scene, MeshHandle mesh, const std::optional<PbrLazyWidening>& widening) {
+    return widening && (${capsMissCpp} != 0.0 || pbr_misses_light_path(scene, mesh, *widening));
 }
 `;
+}
+
+/** `LoadedLightPaths`, the closure's loaded light WGSL, as `PbrLightPaths`. */
+const loadedLightPaths: PinnedRecordShape = {
+    cpp: "PbrLightPaths",
+    members: [
+        {
+            name: "_s",
+            read: (owner) =>
+                new Map([
+                    ["", { cpp: `${owner}.single`, type: "string-list" }],
+                ]),
+            store: (value) => value,
+        },
+        {
+            name: "_m",
+            read: (owner) =>
+                new Map([["", { cpp: `${owner}.multi`, type: "bool" }]]),
+            store: (value) => value,
+        },
+    ],
+};
+
+/** `buildPbrRenderables`' scanLightPaths, filling the paths it loads. */
+function lowerScanLightPaths(context: LoweringContext, module: string): string {
+    const { file, declaration } = context.functionDeclaration(
+        module,
+        "buildPbrRenderables",
+    );
+    const scan = context.variableInitializer(declaration, "scanLightPaths");
+    if (!ts.isArrowFunction(scan) || !ts.isBlock(scan.body))
+        return context.contractError(scan, "Expected the light path scan.");
+    return lowerPinnedBody(file, scan.body.statements, {
+        bindings: new Map<string, PinnedBinding>([
+            [
+                "meshes",
+                collectionBinding(
+                    "meshes",
+                    memberElement(
+                        new Map([
+                            [
+                                "mesh.receiveShadows",
+                                {
+                                    cpp: `${recordAt("scene.engine->meshes", "mesh")}.receives_shadows`,
+                                    type: "bool",
+                                },
+                            ],
+                        ]),
+                    ),
+                ),
+            ],
+            ["scene.lights", { cpp: "scene.lights", type: "opaque" }],
+            ["singleLightTypes", { cpp: "paths.single", type: "string-list" }],
+            ["needsMultiLightPath", { cpp: "paths.multi", type: "bool" }],
+            [
+                "hasAnyAffectedLight",
+                { cpp: "has_any_affected_light", type: "bool" },
+            ],
+            [
+                "needsSingleLightPath",
+                { cpp: "needs_single_light_path", type: "bool" },
+            ],
+            ["hasSomeShadows", { cpp: "has_some_shadows", type: "bool" }],
+        ]),
+        calls: new Map([
+            [
+                "getPackedSingleLightType",
+                () => "std::string(lights.single_type)",
+            ],
+        ]),
+        statement(statement, lowerer, indent) {
+            const variable = ts.isVariableStatement(statement)
+                ? statement.declarationList.declarations[0]
+                : undefined;
+            return variable &&
+                ts.isIdentifier(variable.name) &&
+                variable.name.text === "lr"
+                ? lightSelectionStatement(lowerer, variable.name, indent)
+                : undefined;
+        },
+    });
+}
+
+/**
+ * The pin's light-selection encoding: positive one past the single light's
+ * index, else minus the count. The native selection names that light by its
+ * type, which is all `getPackedSingleLightType` reads off the index.
+ */
+function lightSelectionStatement(
+    lowerer: PinnedNumericLowerer,
+    name: ts.Identifier,
+    indent: string,
+): readonly string[] {
+    lowerer.bindLocal(name, { cpp: "lr", type: "scalar" });
+    return [
+        `${indent}const auto lights = upstream::mesh_light_selection(*scene.engine, scene, mesh);`,
+        `${indent}const double lr = lights.count == 1 ? 1.0 : -static_cast<double>(lights.count);`,
+    ];
+}
+
+/** `_neededLightPath`, its null, `true` and type answers as an optional type. */
+function lowerNeededLightPath(
+    context: LoweringContext,
+    module: string,
+): string {
+    const { file, declaration } = context.functionDeclaration(
+        module,
+        "_neededLightPath",
+    );
+    const answer = (
+        expression: ts.Expression,
+        lowerer: PinnedNumericLowerer,
+    ): string => {
+        const node = context.unwrapExpression(expression);
+        if (node.kind === ts.SyntaxKind.NullKeyword) return "std::nullopt";
+        if (node.kind === ts.SyntaxKind.TrueKeyword)
+            return "std::string_view{}";
+        const selection = conditionalExpression(node);
+        if (selection) {
+            const [whenTrue, whenFalse] = selectionArms(selection);
+            return `${lowerer.expression(selection.condition)} ? std::optional<std::string_view>{${answer(whenTrue, lowerer)}} : std::optional<std::string_view>{${answer(whenFalse, lowerer)}}`;
+        }
+        return lowerer.expression(node);
+    };
+    return lowerPinnedBody(file, declaration.body!.statements, {
+        bindings: new Map<string, PinnedBinding>([
+            ["scene", { cpp: "scene", type: "opaque" }],
+            ["scene.lights", { cpp: "scene.lights", type: "opaque" }],
+            ["mesh", { cpp: "mesh", type: "opaque" }],
+            ["hasShadows", { cpp: "has_shadows", type: "bool" }],
+            [
+                "mesh.receiveShadows",
+                {
+                    cpp: `${recordAt("scene.engine->meshes", "mesh")}.receives_shadows`,
+                    type: "bool",
+                },
+            ],
+            ...["PBR2_NO_COLOR_OUTPUT", "PBR2_ESM_SHADOW_OUTPUT"].map(
+                (name): [string, PinnedBinding] => [
+                    name,
+                    {
+                        cpp: `${context.pinnedNumber(file, name)}u`,
+                        type: "scalar",
+                    },
+                ],
+            ),
+        ]),
+        calls: new Map([
+            ["getPackedSingleLightType", () => "lights.single_type"],
+        ]),
+        statement(statement, lowerer, indent) {
+            const variable = ts.isVariableStatement(statement)
+                ? statement.declarationList.declarations[0]
+                : undefined;
+            if (!variable || !ts.isIdentifier(variable.name)) return undefined;
+            if (variable.name.text === "mat") {
+                lowerer.bindLocal(variable.name, {
+                    cpp: "mat",
+                    type: "opaque",
+                    absentCpp: "!mat",
+                });
+                return [
+                    `${indent}const auto* mat = pbr_mesh_material(scene, mesh);`,
+                ];
+            }
+            // The record's pass bits are its `features2` past composition.
+            if (variable.name.text === "features2") {
+                lowerer.bindLocal(variable.name, {
+                    cpp: "features2",
+                    type: "scalar",
+                });
+                return [
+                    `${indent}const double features2 = ${pbrPassFeatures2Cpp(context, "(*mat)")};`,
+                ];
+            }
+            if (variable.name.text === "lr")
+                return lightSelectionStatement(lowerer, variable.name, indent);
+            return undefined;
+        },
+        returnValue: (expression, lowerer) =>
+            expression
+                ? answer(expression, lowerer)
+                : context.contractError(
+                      declaration,
+                      "Expected the needed light path.",
+                  ),
+    });
+}
+
+/**
+ * The widening's `missesLightPath`, over the needed path's optional type:
+ * `null` is no value and `true` the empty type.
+ */
+function lowerMissesLightPath(
+    context: LoweringContext,
+    widening: ts.FunctionDeclaration,
+): string {
+    const misses = context.variableInitializer(widening, "missesLightPath");
+    if (!ts.isArrowFunction(misses) || !ts.isBlock(misses.body))
+        return context.contractError(
+            widening,
+            "Expected the widening's missesLightPath closure.",
+        );
+    return lowerPinnedBody(widening.getSourceFile(), misses.body.statements, {
+        bindings: new Map<string, PinnedBinding>([
+            ["paths._m", { cpp: "widening.paths.multi", type: "bool" }],
+            ["paths._s", { cpp: "widening.paths.single", type: "string-list" }],
+        ]),
+        calls: new Map(),
+        // `true` is the multi-light loop, natively the empty type.
+        expression(node) {
+            return ts.isBinaryExpression(node) &&
+                node.operatorToken.kind ===
+                    ts.SyntaxKind.EqualsEqualsEqualsToken &&
+                ts.isIdentifier(node.left) &&
+                node.left.text === "needed" &&
+                node.right.kind === ts.SyntaxKind.TrueKeyword
+                ? "needed->empty()"
+                : undefined;
+        },
+        statement(statement, lowerer, indent) {
+            const variable = ts.isVariableStatement(statement)
+                ? statement.declarationList.declarations[0]
+                : undefined;
+            if (
+                !variable ||
+                !ts.isIdentifier(variable.name) ||
+                variable.name.text !== "needed" ||
+                !variable.initializer ||
+                !context.expressionMatchesShape(
+                    variable.initializer,
+                    "_neededLightPath(scene, mesh, hasShadows)",
+                )
+            )
+                return undefined;
+            lowerer.bindLocal(variable.name, {
+                cpp: "(*needed)",
+                type: "string",
+                absentCpp: "!needed.has_value()",
+                absentValue: "null",
+            });
+            return [
+                `${indent}const std::optional<std::string_view> needed = pbr_needed_light_path(scene, mesh, widening.has_shadows);`,
+            ];
+        },
+        returnValue: (expression, lowerer) =>
+            expression
+                ? lowerer.expression(expression)
+                : context.contractError(
+                      misses,
+                      "Expected the missed light path.",
+                  ),
+    });
 }
 
 function lowerPbrGroupUpdates(context: LoweringContext): string {

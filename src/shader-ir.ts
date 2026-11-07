@@ -2071,9 +2071,7 @@ export function parseWgslComputeModule(source: string): ShaderComputeModule {
             );
         }
     }
-    const workgroupSize = entry?.attributes.find(
-        ({ name }) => name === "workgroup_size",
-    );
+    const workgroupSize = entry ? wgslWorkgroupSize(entry) : undefined;
     if (
         !entry ||
         !workgroupSize ||
@@ -2089,19 +2087,30 @@ export function parseWgslComputeModule(source: string): ShaderComputeModule {
         overrides,
         name: entry.name,
         parameters: entry.parameters.map(shaderParameter),
-        workgroupSize: workgroupSize.arguments.map((argument) => {
-            const value =
-                argument.kind === "number"
-                    ? integerLiteral(argument.value)
-                    : undefined;
-            if (value === undefined)
-                throw new Error(
-                    "WGSL workgroup size must be integer literals.",
-                );
-            return value;
-        }),
+        workgroupSize,
         statements: entry.statements,
     };
+}
+
+/**
+ * A compute entry point's `@workgroup_size`, as its integer literals;
+ * undefined without the attribute. A size spelled otherwise refuses.
+ */
+export function wgslWorkgroupSize(
+    entry: WgslFunctionDeclaration,
+): number[] | undefined {
+    const attribute = entry.attributes.find(
+        ({ name }) => name === "workgroup_size",
+    );
+    return attribute?.arguments.map((argument) => {
+        const value =
+            argument.kind === "number"
+                ? integerLiteral(argument.value)
+                : undefined;
+        if (value === undefined)
+            throw new Error("WGSL workgroup size must be integer literals.");
+        return value;
+    });
 }
 
 /** Bottom-up expression rewrite, shared by typed shader specializations. */

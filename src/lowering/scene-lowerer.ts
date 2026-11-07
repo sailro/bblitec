@@ -1,6 +1,10 @@
 import { lowerSceneBeforeRenderDispatch } from "./camera-control-attachment.js";
 import { lowerHierarchyInstanceOperations } from "./hierarchy-instance-lowerer.js";
 import { renderingContextKind } from "./rendering-context-kind.js";
+import {
+    assertOverlayComposition,
+    lowerOverlayScenes,
+} from "./overlay-scene-lowerer.js";
 import ts from "typescript";
 import { assetRootTransformSource } from "./asset-root-transform.js";
 import { LoweredSource, LoweringContext } from "./context.js";
@@ -139,6 +143,8 @@ interface SceneCoreOptions {
     meshGpuDisposal?: boolean;
     /** The scene reaches `buildFrameGraphTask`. */
     taskBuild?: boolean;
+    /** The scene reaches `createSsaoTask`. */
+    ssaoTasks?: boolean;
     /** The scene reaches `createEffectRenderTask`. */
     effectTasks?: boolean;
     /** A task may be added to a registered scene. */
@@ -151,6 +157,15 @@ interface SceneCoreOptions {
     deformedPosition?: boolean;
     /** A CSM generator keeps a static cache target (`enableCsmStaticCache`). */
     csmStaticCache?: boolean;
+    /** The program builds an overlay scene (`scene:overlay`). */
+    overlayScenes?: boolean;
+    /** `setMeshOpacity`: its material validator joins the material setter. */
+    meshOpacity?: boolean;
+    /**
+     * Registration runs each geometry task's preload, whose deformation
+     * feature picks the Standard velocity arms (`geometry_velocity.hpp`).
+     */
+    geometryTaskPreload?: boolean;
 }
 
 export class SceneLowerer {
@@ -823,6 +838,7 @@ export class SceneLowerer {
         // and register_scene is the first point that runs after every bake.
         const vatSeek = this.vatSeek(options);
         const managerSeek = this.managerSeek(options);
+        assertOverlayComposition(this.context);
         return {
             modulePath,
             symbolName: `${createName},${addName},cloneTransformNode,removeFromScene,${beforeName},${disposeName},${registerName}${options.fog ? `,${fogName}` : ""}${options.clipPlane ? `,${clipPlaneName}` : ""}`,
@@ -837,20 +853,24 @@ ${options.geometryAccess ? "#include <bblite/mesh_cpu_streams.hpp>" : ""}
 #include <bblite/features/has_shadows.hpp>
 #include <bblite/features/has_sprites.hpp>
 ${options.text ? "#include <bblite/upstream_text_records.hpp>" : ""}
+${options.taskBuild && options.ssaoTasks ? "#include <bblite/upstream/frame_graph_ssao.hpp>" : ""}
 #include <bblite/upstream/pinned_matrix.hpp>
 #include <bblite/upstream/render_task_removal.hpp>
 ${options.pbrSceneHooks ? "#include <bblite/upstream/pinned_mesh_features.hpp>" : ""}
-${options.visibility ? "#include <bblite/upstream/subtree_visibility.hpp>" : ""}
+${options.visibility ? "#include <bblite/upstream/subtree_visibility.hpp>" : ""}${options.geometryTaskPreload ? "\n#include <bblite/upstream/geometry_velocity.hpp>" : ""}
 #include <bblite/upstream/thin_instance_sync.hpp>
 #include <bblite/upstream/pinned_world_transform.hpp>
 #include <bblite/js_data.hpp>
 ${options.nodeMaterials ? "#include <bblite/node_material.hpp>" : ""}
 ${
-    options.mirroredMeshes || options.geometryAccess || options.parenting
+    options.mirroredMeshes ||
+    options.geometryAccess ||
+    options.parenting ||
+    options.pbrSceneHooks
         ? `// The mirrored-mesh watcher this scene installs calls the render
 // plan's own determinant pass; a scene that never opts in includes
 // neither. Geometry access and setParent also read the plan's emitted
-// world matrix.
+// world matrix, and the PBR group widening its mesh light walk.
 #include <bblite/upstream/renderer_plan.hpp>`
         : ""
 }
@@ -893,8 +913,8 @@ std::uint32_t scene_material_families(const Scene& scene) {
 
 } // namespace
 
-${lowerMeshMaterialSetter(this.context)}
-${this.sceneCreationSource(callbackDelta, value, clear, options)}${options.pbrSceneHooks ? lowerPbrMaterialGroups(this.context, options.gltfSceneHooks ?? options.pbrSceneHooks, options.thinBindings, options.pbrMaterials) : ""}${this.meshMembershipSource(options)}${this.assetCloneSource(cloneSuffix, nodeHierarchy)}${this.assetRootSource(nodeHierarchy, options.lightChildren === true)}${this.assetMembershipSource(options)}${this.eventRegistrationSource()}${this.sceneLifecycleSource(managerSeek, vatSeek, options)}void enable_scene_transmission(Scene& scene) {
+${lowerMeshMaterialSetter(this.context, options.meshOpacity === true)}
+${this.sceneCreationSource(callbackDelta, value, clear, options)}${options.pbrSceneHooks ? lowerPbrMaterialGroups(this.context, options.gltfSceneHooks ?? options.pbrSceneHooks, options.thinBindings, options.pbrMaterials) : ""}${this.meshMembershipSource(options)}${this.assetCloneSource(cloneSuffix, nodeHierarchy)}${this.assetRootSource(nodeHierarchy, options.lightChildren === true)}${this.assetMembershipSource(options)}${this.eventRegistrationSource()}${this.sceneLifecycleSource(managerSeek, vatSeek, options)}${options.overlayScenes ? lowerOverlayScenes(this.context) : ""}void enable_scene_transmission(Scene& scene) {
     require_scene_engine(scene);
     scene.transmission_enabled = true;
 }
@@ -1915,7 +1935,7 @@ std::vector<std::uint32_t> mesh_cpu_indices(
     const Engine& engine,
     MeshHandle mesh) {
     const auto& record = ${recordAt("engine.meshes", "mesh")};
-    return MeshCpuStreamsView(record, record.cpu_streams ? nullptr : &engine.geometries.at(record.geometry)).indices.copy_raw();
+    return MeshCpuStreamsView(record, record.cpu_streams ? nullptr : &engine.geometries.at(record.geometry)).indices.copy();
 }
 
 js::Array<double> asset_root_world_matrix_array(Engine& engine, AssetHandle asset) {
@@ -2444,15 +2464,11 @@ MeshHandle clone_mesh_node(Engine& engine, MeshHandle mesh) {
             "and no reached scene clones a parented mesh.");
     }
     MeshRecord record = ${recordAt("engine.meshes", "mesh")};
-    if (record.parent_world) {
-        // The pin's clone starts a fresh world state with no parent: it
-        // keeps the imported mesh's local lanes and its own TRS but leaves
-        // the node hierarchy, root mirror included.
-        record.parent_world.reset();
-        record.detached_imported_mesh = true;
-        record.clockwise_front_face = false;
-        record.authored_clockwise_front_face = false;
-    }
+    // The pin's clone starts a fresh world state with no parent: it keeps
+    // the imported mesh's local lanes, its own TRS and its spread fields
+    // (the winding mark, the authored sign) but leaves the node hierarchy,
+    // root mirror included.
+    record.parent_world.reset();
     if (record.geometry < engine.geometries.size()) {
         ++engine.geometries[record.geometry].owners;
     }
@@ -2770,6 +2786,7 @@ void add_live_task(Scene& scene, TaskHandle task, bool at_start) {
                 entry.shader_packet = std::make_shared<std::shared_ptr<ShaderPacketSystemState>>();
 ${options.thinBindings ? "            entry.thin_binding = create_thin_material_binding(*scene.engine, entry.mesh, material);" : ""}
         }
+${options.meshOpacity ? "        resolve_render_task_mesh_extras(*scene.engine, task);\n" : ""}\
         task.shader_packet_scene_version = static_cast<double>(task_scene.state->renderable_version);
         task.record_state = FrameTaskRecordState::recorded;`;
     }
@@ -2874,6 +2891,19 @@ ${options.pbrSceneHooks ? "    finish_pbr_scene_build(scene);\n" : ""}\
     }
     scene.material_family_mask = scene_material_families(scene);
 ${
+    options.geometryTaskPreload
+        ? `    // Each geometry task's \`_preload\`, which registration awaits before it
+    // builds the frame graph.
+    for (const auto task_handle : scene.frame_passes()) {
+        auto& task = ${recordAt("scene.engine->frame_tasks", "task_handle")};
+        if (task.kind == FrameTaskKind::geometry)
+            task.geometry_preloaded_families =
+                upstream::preload_geometry_task(*scene.engine, scene, task.geometry);
+    }
+`
+        : ""
+}\
+${
     options.liveTaskAdd
         ? `    // \`ctx._frameGraph.build()\` records every task, including those
     // added while the scene was registered before.
@@ -2910,6 +2940,7 @@ ${
 }\
     scene.engine->rendering_contexts.push_back(${renderingContextKind(this.context, "src/scene/scene-core.ts")},
         std::make_shared<Scene>(scene));
+${options.overlayScenes ? "    move_swapchain_overlays_after_base(scene);\n" : ""}\
 }
 
 void unregister_scene(Scene& scene) {
@@ -3034,7 +3065,7 @@ ${
 
 ${
     options.taskBuild
-        ? `${lowerFrameGraphTaskBuild(this.context, this.renderTaskRecordSource(options), options.effectTasks ?? false, options.taskMethodSlots ?? false)}
+        ? `${lowerFrameGraphTaskBuild(this.context, this.renderTaskRecordSource(options), { effect: options.effectTasks, ssao: options.ssaoTasks }, options.taskMethodSlots ?? false)}
 `
         : ""
 }${options.liveTaskAdd ? this.liveTaskAddSource() : ""}${

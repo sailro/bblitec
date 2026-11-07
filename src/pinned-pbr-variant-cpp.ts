@@ -42,7 +42,6 @@ import {
 } from "./wgsl-layout.js";
 import { pinnedLightModeCpp } from "./pinned-light-mode.js";
 import { pinnedSceneLayoutCpp } from "./pinned-scene-layout.js";
-import { materialShadowReceiverCpp } from "./lowering/material-shadow-receiver.js";
 import { pbrAlphaBlendFeatures } from "./lowering/render-bucket.js";
 import type { LoweringContext } from "./lowering/context.js";
 import {
@@ -242,6 +241,17 @@ const extensionWriters: ReadonlyArray<
         baseField: "lmLvl",
         propertySources: {
             lightmapLevel: "material.lightmap_level",
+        },
+    },
+    {
+        // The writer `enableBentNormals` installs on the IBL extension: the
+        // strength in `.x`, which the fragment saturates.
+        modulePath: "src/material/pbr/fragments/bent-normal-fragment.ts",
+        symbolName: "enableBentNormals#writeUbo",
+        sourceLocal: "",
+        baseField: "bentNormalParams",
+        propertySources: {
+            bentNormalStrength: "material.bent_normal_strength",
         },
     },
     {
@@ -1174,6 +1184,40 @@ export function mirroredStructFromWgsl(
 }
 
 /**
+ * The composed fragment whose mesh block the shared mirror declares: the
+ * first widest `MeshUniforms` across every family's variants. Every other
+ * declaration must be a prefix of it, member for member, so each variant
+ * reads its own block at the mirror's offsets.
+ */
+export function widestMeshUniformsFragment(
+    fragmentWgsls: readonly string[],
+): string {
+    const declared = fragmentWgsls.flatMap((wgsl) => {
+        const members = reflectWgslStruct(wgsl, "MeshUniforms")?.members;
+        return members ? [{ wgsl, members }] : [];
+    });
+    let widest = declared[0];
+    for (const each of declared) {
+        if (widest && each.members.length > widest.members.length)
+            widest = each;
+    }
+    if (!widest) {
+        throw new Error("No composed variant declares struct MeshUniforms.");
+    }
+    for (const { members } of declared) {
+        if (
+            !sameWgslMembers(members, widest.members.slice(0, members.length))
+        ) {
+            throw new Error(
+                "A composed MeshUniforms is not a prefix of the widest " +
+                    "declaration; one mirror cannot serve both.",
+            );
+        }
+    }
+    return widest.wgsl;
+}
+
+/**
  * The pin's own mesh block, from a composed fragment.
  *
  * The widest declaration wins: the velocity geometry arm appends
@@ -1504,7 +1548,6 @@ struct PinnedShadowBinding {
 };
 
 ${pinnedLightModeCpp()}${rectAreaLightings ? `\n${rectAreaLightingKeyCpp()}\n` : ""}
-${materialShadowReceiverCpp(context)}
 ${pinnedSceneLayoutCpp()}
 } // namespace bbl::upstream
 `;
@@ -1516,6 +1559,8 @@ export interface PbrMaterialStateRow {
     blend: boolean;
     pluginSignature: number;
     baseColorFactorWritten: boolean;
+    /** Whether the record holds a bent normal texture, keyed under `enableBentNormals`. */
+    bentNormalTexture?: boolean;
     row: number;
 }
 
@@ -1549,6 +1594,9 @@ export function pinnedPbrVariantsHeader(
     // lighting always had.
     rectAreaLightings?: readonly RectAreaLightingMode[],
     materialStateRows: readonly PbrMaterialStateRow[] = [],
+    // The fragment declaring the shared mesh mirror
+    // (`widestMeshUniformsFragment` over every composed family).
+    meshFragmentWgsl: string = variants[0]!.fragmentWgsl,
 ): CppModule {
     const cpp = new CppDefinitions();
     const blocks: string[] = [];
@@ -2043,7 +2091,7 @@ ${sceneUniformsStruct(sceneUniformsWgsl, pinnedSceneUboBytes)}
 
 ${lightUniformsBlock(context, pinnedMaxLights, lightKinds)}
 
-${meshUniformsBlock(variants[0]!.fragmentWgsl, meshLightIndexWordOffset)}
+${meshUniformsBlock(meshFragmentWgsl, meshLightIndexWordOffset)}
 
 ${cpp.privateCode(blocks.join("\n\n"))}
 
@@ -2177,17 +2225,19 @@ ${cpp.table("std::uint32_t", "pbr_scene_material_indices", scenePbrMaterialIndic
  * The composed row a material takes in each run-time state its program can
  * reach before drawing it: the pin composes lazily from the material's props,
  * so a source row's own state names that row, and a state the program writes
- * (\`alphaBlend\`, \`alpha\`, \`baseColorFactor\`, \`plugins\`) the row
- * composed for it.
+ * (\`alphaBlend\`, \`alpha\`, \`baseColorFactor\`, \`bentNormalTexture\`,
+ * \`plugins\`) the row composed for it.
  */
 struct PbrMaterialStateRow {
-    std::uint32_t source_row;
-    bool blend;
-    std::uint8_t plugin_signature;
-    bool base_color_factor_written;
-    std::uint32_t row;
+    std::uint32_t source_row = 0;
+    bool blend = false;
+    std::uint8_t plugin_signature = 0;
+    bool base_color_factor_written = false;
+    /** The record holds a bent normal texture; unkeyed without \`enableBentNormals\`. */
+    std::optional<bool> bent_normal_texture;
+    std::uint32_t row = 0;
 };
-${cpp.table("PbrMaterialStateRow", "pbr_material_state_rows", materialStateRows.length, materialStateRows.map((state) => `    {${state.sourceRow}u, ${state.blend}, ${state.pluginSignature}u, ${state.baseColorFactorWritten}, ${state.row}u},`).join("\n"))}
+${cpp.table("PbrMaterialStateRow", "pbr_material_state_rows", materialStateRows.length, materialStateRows.map((state) => `    {${state.sourceRow}u, ${state.blend}, ${state.pluginSignature}u, ${state.baseColorFactorWritten}, ${state.bentNormalTexture ?? "std::nullopt"}, ${state.row}u},`).join("\n"))}
 
 ${pbrMaterialBlendsCpp(context)}
 
@@ -2302,6 +2352,8 @@ export interface MaterialTextureSlotFeatures {
     iridescence: boolean;
     /** A composed variant binds the opt-in lightmap pair (`lmTexture`). */
     lightmap: boolean;
+    /** A composed variant binds the IBL bent-normal pair (`bentNormalTexture_`). */
+    bentNormal?: boolean;
     metallicReflectanceMap: boolean;
     reflectanceMap: boolean;
     anisotropyMap?: boolean;
@@ -2537,6 +2589,16 @@ function materialTextureSlotRows(features: MaterialTextureSlotFeatures): {
             samplerName: "lmSampler",
         });
     }
+    if (features.bentNormal) {
+        // A tangent-space normal map; only a variant composed for a material
+        // holding the texture binds the pair.
+        mesh.push({
+            source: "bent_normal",
+            fallback: "flat_normal",
+            textureName: "bentNormalTexture_",
+            samplerName: "bentNormalSampler_",
+        });
+    }
     if (features.standardBump) {
         mesh.push({
             source: "standard_bump",
@@ -2675,6 +2737,15 @@ function materialTextureSlotRows(features: MaterialTextureSlotFeatures): {
  * binding this table does not know fails at generation, named, rather than
  * in both PALs at draw time.
  */
+/**
+ * `bindPbrGeometryVelocity`'s previous palette: a velocity renderable's own
+ * texture, which each backend's geometry velocity binder serves rather than
+ * a material slot (`pal_gpu_velocity.hpp`).
+ */
+const GEOMETRY_VELOCITY_TEXTURES: ReadonlySet<string> = new Set([
+    "previousBoneSampler",
+]);
+
 export function materialTextureSlotsHeader(
     features: MaterialTextureSlotFeatures,
     variants: readonly {
@@ -2712,7 +2783,11 @@ export function materialTextureSlotsHeader(
             ) {
                 continue;
             }
-            if (!served.has(binding.name) && !pluginBindings.has(binding.name))
+            if (
+                !served.has(binding.name) &&
+                !pluginBindings.has(binding.name) &&
+                !GEOMETRY_VELOCITY_TEXTURES.has(binding.name)
+            )
                 unserved.add(binding.name);
         }
     }
@@ -2791,6 +2866,8 @@ enum class MaterialTextureSource {
     iridescence_thickness,
     /** The opt-in baked lightmap (PBR only). */
     lightmap,
+    /** The IBL extension's bent normal map (PBR only, \`enableBentNormals\`). */
+    bent_normal,
     metallic_reflectance,
     reflectance,
     anisotropy,

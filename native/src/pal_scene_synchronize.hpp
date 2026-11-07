@@ -208,9 +208,8 @@ prepare_scene_textures(const Engine& engine, std::vector<const upstream::RenderP
 
 /**
  * Setup's mesh rows, in the order both scene backends run: the plans of the
- * overlay layers (every registered scene after the first, the pin's
- * `configureSwapchainOverlayScene` trigger; each owns a plan because a draw
- * command indexes one), then the new material images every plan binds
+ * layers (every composited scene after the root; each owns a plan because a
+ * draw command indexes one), then the new material images every plan binds
  * (`prepare_scene_textures`), then `upload(item)` for the root plan's rows and
  * each layer's, between startup-budget yields. A layer's topology version is
  * the one its plan was built from.
@@ -410,14 +409,17 @@ inline bool rebuild_render_plan_meshes(const Scene& scene, const Engine& engine,
     return changed;
 }
 
-/** Rebuild an existing overlay's rows before uploads/encoding, using backend-owned leases. */
+/**
+ * Rebuild an existing overlay's rows before uploads/encoding, using backend-owned leases.
+ * `scenes` is the run's composited set: the root, then each layer's scene.
+ */
 template <typename GpuMesh, typename ReleaseMesh, typename UploadItem>
-inline bool refresh_overlay_render_plans(Engine& engine, std::vector<upstream::RenderPlan>& plans,
-                                         std::vector<std::vector<GpuMesh>>& meshes,
-                                         std::vector<std::uint64_t>& versions,
-                                         bool draw_lists_changed, ReleaseMesh&& release_mesh,
-                                         UploadItem&& upload_item) {
-    const auto scenes = engine.scenes();
+inline bool
+refresh_overlay_render_plans(Engine& engine, const std::vector<std::shared_ptr<Scene>>& scenes,
+                             std::vector<upstream::RenderPlan>& plans,
+                             std::vector<std::vector<GpuMesh>>& meshes,
+                             std::vector<std::uint64_t>& versions, bool draw_lists_changed,
+                             ReleaseMesh&& release_mesh, UploadItem&& upload_item) {
     if (plans.size() != meshes.size() || plans.size() != versions.size() ||
         plans.size() + 1 != scenes.size()) {
         throw std::runtime_error("Overlay registration changed after renderer initialization.");
@@ -510,7 +512,8 @@ void update_scene_text(TextState& text, const Scene& scene, long frame,
 /** The run state one scene frame synchronizes, by reference. */
 template <class Mesh> struct SceneSyncState {
     Engine& engine;
-    Scene& scene;
+    /** The run's composited scenes: its root, then each overlay plan's scene. */
+    const std::vector<std::shared_ptr<Scene>>& scenes;
     long frame;
     double delta_ms;
     /** The surface the frame presents to. */
@@ -558,7 +561,7 @@ struct SceneSyncOutcome {
 template <class Mesh, class Backend>
 SceneSyncOutcome synchronize_scene(SceneSyncState<Mesh>& sync, Backend& backend) {
     Engine& engine = sync.engine;
-    Scene& scene = sync.scene;
+    Scene& scene = *sync.scenes.front();
     SceneSyncOutcome outcome;
     trace_dynamic_frame(engine, sync.delta_ms, sync.frame);
     // The renderables' own clocks -- the sprite renderer's hooks, the sprite
@@ -571,8 +574,8 @@ SceneSyncOutcome synchronize_scene(SceneSyncState<Mesh>& sync, Backend& backend)
     const auto upload = [&](const upstream::RenderItem& item) { return backend.upload_mesh(item); };
     const bool draw_lists_moved = engine.draw_list_epoch != sync.synced_draw_list_epoch;
     outcome.topology_updated = refresh_overlay_render_plans(
-        engine, sync.overlay_plans, sync.overlay_meshes, sync.overlay_topology_versions,
-        draw_lists_moved, release, upload);
+        engine, sync.scenes, sync.overlay_plans, sync.overlay_meshes,
+        sync.overlay_topology_versions, draw_lists_moved, release, upload);
     if (outcome.topology_updated)
         backend.prune_shared_resources();
     if (scene.render_topology_version != sync.synced_render_topology_version) {
@@ -617,8 +620,7 @@ SceneSyncOutcome synchronize_scene(SceneSyncState<Mesh>& sync, Backend& backend)
     // retired, whose slot a new mesh may already hold.
     auto& rows = backend.mesh_rows();
     sync_plan_mesh_rows(scene, engine, sync.render_plan, sync.meshes, rows);
-    const auto scenes = engine.scenes();
-    auto overlay = std::next(scenes.begin());
+    auto overlay = std::next(sync.scenes.begin());
     for (std::size_t layer = 0;
          layer < sync.overlay_plans.size() && layer < sync.overlay_meshes.size();
          ++layer, ++overlay) {

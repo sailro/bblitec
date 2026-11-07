@@ -119,10 +119,7 @@ export function lowerMaterialPublication(
                     )
                 ) {
                     context.assertAccessedOnlyIn("_renderableGen", [
-                        [
-                            "src/material/material-rebuild.ts",
-                            "rebuildMaterialRenderables",
-                        ],
+                        ["src/material/material-rebuild.ts", "rebuildEach"],
                         [source, "processMaterialSwaps"],
                         ["src/scene/scene-rebuild.ts", "rebuildSceneGroups"],
                         [

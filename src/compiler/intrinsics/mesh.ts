@@ -131,6 +131,7 @@ export interface MeshIntrinsicContext
             | "symbols"
             | "handleCollections"
             | "heldTypedArrayValue"
+            | "useNativeValue"
             | "fail"
         > {}
 
@@ -943,6 +944,57 @@ function compileSetMeshVisible(
             `bbl::${sceneNode ? "set_scene_node_visible" : "set_mesh_visible"}(` +
             `${context.requireEngine(node, call)}, ${node.cpp}, ` +
             `${context.conditions.compileCondition(argumentAt(call, 1))})`,
+    };
+}
+
+/**
+ * src/mesh/opacity/mesh-opacity.ts `setMeshOpacity`: the per-mesh opacity
+ * and its zero-opacity draw skip, lowered whole (`lowering/mesh-opacity.ts`)
+ * -- the clamp, the material check, the crossing-1 rebuild and the throws.
+ * The pin's `assertMesh` refuses any other target, a MeshLoD instance the
+ * one it names.
+ */
+function compileMeshOpacityTarget(
+    context: MeshIntrinsicContext,
+    call: ts.CallExpression,
+    api: "setMeshOpacity" | "getMeshOpacity",
+): Value {
+    const mesh = context.compileValue(argumentAt(call, 0));
+    if (mesh.kind !== "mesh")
+        context.fail(
+            argumentAt(call, 0),
+            `${api}: the target is not a Lite Mesh (for example a MeshLoD instance); per-mesh opacity is not supported on MeshLoD in this release.`,
+        );
+    context.reachFeature("mesh:opacity", call);
+    return mesh;
+}
+
+function compileSetMeshOpacity(
+    context: MeshIntrinsicContext,
+    call: ts.CallExpression,
+): Value | undefined {
+    context.expectArgumentCount(call, 2, 2);
+    const mesh = compileMeshOpacityTarget(context, call, "setMeshOpacity");
+    // Composition decorates only the meshes a call can reach.
+    context.sceneManifest.recordMeshOpacityTarget(
+        mesh.sceneMeshIndex ?? mesh.sceneMeshProfileIndex,
+    );
+    const opacity = context.compileNumber(argumentAt(call, 1), "double");
+    return {
+        kind: "void",
+        cpp: `bbl::set_mesh_opacity(${context.requireEngine(mesh, call)}, ${mesh.cpp}, ${opacity})`,
+    };
+}
+
+function compileGetMeshOpacity(
+    context: MeshIntrinsicContext,
+    call: ts.CallExpression,
+): Value | undefined {
+    context.expectArgumentCount(call, 1, 1);
+    const mesh = compileMeshOpacityTarget(context, call, "getMeshOpacity");
+    return {
+        kind: "number",
+        cpp: `bbl::get_mesh_opacity(${context.requireEngine(mesh, call)}, ${mesh.cpp})`,
     };
 }
 
@@ -2796,13 +2848,16 @@ function compileSetMorphTargetWeights(
             "Morph targets and engine must belong to the same engine.",
         );
     }
-    const mesh = morph.morphTarget?.meshCpp;
+    const mesh = morph.morphTarget?.mesh;
     if (!mesh) {
         context.fail(
             argumentAt(call, 1),
             "Morph targets must be attached to a mesh before their weights are updated.",
         );
     }
+    // The update names the mesh's binding, which a callback reaching the
+    // morph targets alone must capture.
+    context.useNativeValue(mesh);
     const weights = context.compileTypedArrayArgument(
         argumentAt(call, 2),
         "f32array",
@@ -2812,7 +2867,7 @@ function compileSetMorphTargetWeights(
         kind: "void",
         cpp:
             `bbl::set_morph_target_weights(${engine.cpp}, ` +
-            `${mesh}, ${weights})`,
+            `${mesh.cpp}, ${weights})`,
     };
 }
 
@@ -3451,6 +3506,8 @@ const meshIntrinsicHandlers = new EmissionMap<
     ["dotVec3", compileDotVec3],
     ["setMeshVisible", compileSetMeshVisible],
     ["setSubtreeVisible", compileSetMeshVisible],
+    ["setMeshOpacity", compileSetMeshOpacity],
+    ["getMeshOpacity", compileGetMeshOpacity],
     ["invertMat4", compileMat4Invert],
     ["composeMat4", compileMat4Compose],
     ["normalizeVec3TupleOrUp", compileNormalizeVec3],

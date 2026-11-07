@@ -25,7 +25,7 @@ test("binds a created PBR material's loaded normal texture and its scale", () =>
     assert.equal(result.manifest.scenePbrMaterials[0]?.hasNormalTexture, true);
     assert.match(
         result.cpp,
-        /bbl::set_material_normal_file\(v_engine, v_bblite_material_\d+, v_normal, static_cast<float>\(v_scale\)\);/,
+        /bbl::set_pbr_texture\(v_engine, (v_bblite_material_\d+), bbl::MaterialTextureSlot::normal, v_normal\);\s*bbl::handle_at\(v_engine\.materials, \1\)\.normal_texture_scale = static_cast<float>\(v_scale\);/,
     );
 
     // Without a normal texture the scale composes nothing and is dropped
@@ -35,17 +35,19 @@ test("binds a created PBR material's loaded normal texture and its scale", () =>
         plain.manifest.scenePbrMaterials[0]?.hasNormalTexture,
         undefined,
     );
-    assert.doesNotMatch(plain.cpp, /set_material_normal_file|normal_texture/);
+    assert.doesNotMatch(
+        plain.cpp,
+        /MaterialTextureSlot::normal|normal_texture_scale/,
+    );
 });
 
-test("refuses a created PBR normal texture that is not a loaded image", () => {
-    assert.throws(
-        () =>
-            compileSource(
-                pbrScene(
-                    "normalTexture: createSolidTexture2D(engine, 0.5, 0.5, 1)",
-                ),
-            ),
-        /normalTexture must come from loadTexture2D/,
+test("binds a created PBR normal texture of any 2D storage, as the pin does", () => {
+    const result = compileSource(
+        pbrScene("normalTexture: createSolidTexture2D(engine, 0.5, 0.5, 1)"),
+    );
+    assert.equal(result.manifest.scenePbrMaterials[0]?.hasNormalTexture, true);
+    assert.match(
+        result.cpp,
+        /bbl::set_pbr_texture\(v_engine, v_bblite_material_\d+, bbl::MaterialTextureSlot::normal, bbl::solid_texture_file\(bbl::create_solid_texture\(/,
     );
 });

@@ -42,7 +42,6 @@ test("a method outside the producer's contract refuses naming both", () => {
 test("compute recording preserves uploads and per-dispatch bindings when scratch textures are reused", () => {
     const { device, encoder, recorder } = createRecordingDevice({
         producer: "compute-transfers",
-        textureOperations: "recording",
         device: [
             "createTexture",
             "createShaderModule",
@@ -186,7 +185,6 @@ test("compute recording preserves uploads and per-dispatch bindings when scratch
 test("compute passes refuse uncontracted calls, foreign resources and missing pipelines", () => {
     const { device, encoder, recorder } = createRecordingDevice({
         producer: "compute-refusals",
-        textureOperations: "recording",
         device: ["createComputePipeline", "createBindGroup"],
         encoder: ["beginComputePass"],
         computePass: ["setPipeline", "setBindGroup", "dispatchWorkgroups"],
@@ -239,7 +237,7 @@ test("submitted texture recording follows queue order and rejects command-buffer
         device: ["createTexture", "createCommandEncoder"],
         queue: ["writeTexture", "submit"],
         encoder: ["copyTextureToTexture", "finish"],
-        textureOperations: "submitted",
+        order: "submitted",
     });
     const textures = Array.from({ length: 3 }, () =>
         device.createTexture({ size: [1, 1], format: "rgba8unorm", usage: 3 }),
@@ -400,7 +398,13 @@ test("textures carry their descriptor in both extent spellings and their uploads
         { width: 64, height: 64 },
     );
     assert.deepEqual(recorder.textures, [cube, flat]);
-    assert.equal(recorder.textureOperations.length, 0);
+    // The one command log holds both uploads, in call order.
+    assert.deepEqual(
+        recorder.commands.map((command) =>
+            command.kind === "upload" ? command.texture : undefined,
+        ),
+        [flat, cube],
+    );
     assert.equal(flat.uploads.length, 1);
     const upload = flat.uploads[0]!;
     assert.equal(upload.kind, "write");
@@ -671,4 +675,86 @@ test("the encoder records texture copies, render passes and submits", () => {
     ).queue;
     queue.submit([commands.finish(), commands.finish()]);
     assert.equal(recorder.submitted, 2);
+});
+
+test("the pass log interleaves compute and render passes, and render pipelines answer their explicit groups", () => {
+    const { device, encoder, recorder } = createRecordingDevice({
+        producer: "interleaved",
+        device: [
+            "createTexture",
+            "createShaderModule",
+            "createBindGroupLayout",
+            "createPipelineLayout",
+            "createComputePipeline",
+            "createRenderPipeline",
+            "createBindGroup",
+            "createCommandEncoder",
+        ],
+        encoder: ["beginComputePass", "beginRenderPass"],
+        computePass: ["setPipeline", "dispatchWorkgroups", "end"],
+        renderPass: ["setPipeline", "draw", "end"],
+    });
+    const group = device.createBindGroupLayout({ entries: [] });
+    const layout = device.createPipelineLayout({ bindGroupLayouts: [group] });
+    const render = device.createRenderPipeline({ layout });
+    const renderPipeline = render as unknown as {
+        getBindGroupLayout(index: number): unknown;
+    };
+    assert.equal(renderPipeline.getBindGroupLayout(0), group);
+    assert.throws(
+        () => renderPipeline.getBindGroupLayout(1),
+        /getBindGroupLayout\(1\) of a render pipeline without that explicit group/,
+    );
+    // The accessor is no descriptor member a producer reads back.
+    assert.equal(Object.keys(render).includes("getBindGroupLayout"), false);
+    const shader = device.createShaderModule({ code: "compute" });
+    const compute = device.createComputePipeline({
+        layout: "auto",
+        compute: { module: shader, entryPoint: "main" },
+    });
+    const target = device.createTexture({
+        size: [4, 4],
+        format: "rgba8unorm",
+        usage: 16,
+    });
+    const commands = encoder as {
+        beginComputePass(descriptor: { label: string }): {
+            setPipeline(pipeline: unknown): void;
+            dispatchWorkgroups(x: number, y: number): void;
+            end(): void;
+        };
+        beginRenderPass(descriptor: {
+            label: string;
+            colorAttachments: { view: unknown; loadOp: string }[];
+        }): {
+            setPipeline(pipeline: unknown): void;
+            draw(count: number): void;
+            end(): void;
+        };
+    };
+    const first = commands.beginComputePass({ label: "first" });
+    first.setPipeline(compute);
+    first.dispatchWorkgroups(2, 3);
+    first.end();
+    const drawn = commands.beginRenderPass({
+        label: "drawn",
+        colorAttachments: [{ view: target.createView(), loadOp: "clear" }],
+    });
+    drawn.setPipeline(render);
+    drawn.draw(3);
+    drawn.end();
+    const last = commands.beginComputePass({ label: "last" });
+    last.setPipeline(compute);
+    last.dispatchWorkgroups(1, 1);
+    last.end();
+    assert.deepEqual(
+        recorder.passes.map((pass) =>
+            pass.kind === "compute"
+                ? `compute:${pass.label}:${pass.dispatches.map((dispatch) => dispatch.workgroups.join("x")).join()}`
+                : pass.kind === "render"
+                  ? `render:${pass.pass.descriptor.label}`
+                  : `clear:${pass.buffer.label}`,
+        ),
+        ["compute:first:2x3", "render:drawn", "compute:last:1x1"],
+    );
 });

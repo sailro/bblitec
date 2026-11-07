@@ -2,6 +2,7 @@ import type { PinnedCallSpelling } from "./pinned-numeric-lowerer.js";
 import ts from "typescript";
 import type { LoweringContext } from "./context.js";
 import {
+    lowerInvertMat4ToRefOrIdentityCpp,
     lowerPinnedFunction,
     type PinnedFunctionParameter,
 } from "./pinned-function-lowerer.js";
@@ -572,32 +573,7 @@ function lowerCsmMatrixHelpers(context: LoweringContext): string {
                 returns: "void",
             },
         ),
-        lowerPinnedFunction(
-            context,
-            "src/math/invert-mat4-to-ref-or-identity.ts",
-            "invertMat4ToRefOrIdentity",
-            [
-                {
-                    pinned: "input",
-                    kind: "mat4Const",
-                    cpp: "input",
-                    cppType: "Matrix",
-                },
-                {
-                    pinned: "result",
-                    kind: "mat4",
-                    annotation: "Mat4",
-                    cpp: "result",
-                },
-            ],
-            {
-                cppName: "mat4_invert_to_ref_or_identity",
-                inline: true,
-                templateParameters: ["typename Matrix"],
-                calls: numericScope().calls,
-                returns: "void",
-            },
-        ),
+        lowerInvertMat4ToRefOrIdentityCpp(context, numericScope().calls),
         lowerPinnedFunction(
             context,
             modulePath,

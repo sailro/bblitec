@@ -163,8 +163,7 @@ int main() {
         [](WorkerRealm& realm) {
             auto& engine = window_document_engine();
             const auto sheet = ui_create_element(engine, "style");
-            ui_set_text(engine, sheet,
-                        "@keyframes fade { from { opacity: 0; } to { opacity: 1; } }");
+            ui_set_style_keyframes(engine, sheet, "@keyframes fade{from{opacity:0}to{opacity:1}}");
             ui_append_child(engine, ui_document_root(engine, UiDocumentPart::Head), sheet);
             const auto box = append("div", "width:40px;height:40px;background-color:red;");
             on_frame = [box](double timestamp) {

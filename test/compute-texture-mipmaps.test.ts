@@ -11,6 +11,7 @@ import {
     optionalNativeFixtureTools,
     runNativeFixtureCompiler,
 } from "./native-fixture.js";
+import { pinnedError, pinnedErrorsCpp } from "./pinned-errors.js";
 
 test("compute texture mip tasks retain source arrays and graph ownership", () => {
     const result = compileSource(`
@@ -43,6 +44,17 @@ test("source mip task validates, prepares once, records ordered levels, and reta
         [
             lowerComputeTextureMipmaps(context).source,
             lowerComputeFrameGraph(context).source,
+            pinnedErrorsCpp({
+                mip_empty: pinnedError(
+                    "Compute storage texture mipmap task requires at least one resource.",
+                ),
+                mip_resources: pinnedError(
+                    "Compute storage texture mipmap task requires same-engine sampled 2D filterable-float resources created with mipMaps: true; rgba8snorm also requires texture-formats-tier1.",
+                ),
+                mip_disposed: pinnedError(
+                    'Compute storage texture mipmap task "${a0}" contains a disposed resource.',
+                ),
+            }),
             readFileSync(
                 resolve("test/fixtures/compute-texture-mipmaps-check.cpp"),
                 "utf8",

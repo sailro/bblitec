@@ -26,8 +26,15 @@ import { featurelessPbrMaterialFeatures } from "./variant-headers.js";
 import { importPinnedModule } from "../src/pinned-shader-composer.js";
 import { sceneContextSource } from "./pinned-scene.js";
 import { pinnedDeclaration, pinnedModuleSource } from "./pinned-source.js";
+import { finalReturn } from "../src/compiler/loop-control.js";
 
 const sceneModule = "src/scene/scene-core.ts";
+/** The scenes the fixtures build hold no light and no shadow generator. */
+const noSceneLights = `namespace upstream {
+struct MeshLightSelection { std::uint32_t count = 0; std::string_view single_type; };
+MeshLightSelection mesh_light_selection(const Engine&, const Scene&, MeshHandle) { return {}; }
+bool pinned_scene_has_shadows(const Engine&, const Scene&) { return false; }
+}`;
 const pbrModule = "src/material/pbr/pbr-renderable.ts";
 
 test(
@@ -343,15 +350,41 @@ function sourceOracle(
         ),
         pbr.getSourceFile(),
     );
+    // The light-path scan the widening closes over, from the shadow-light
+    // walk through its first `scanLightPaths()`.
+    const statements = pbr.body!.statements;
+    const scanCall = statements.find(
+        (node) =>
+            ts.isExpressionStatement(node) &&
+            node.getText() === "scanLightPaths();",
+    );
+    assert.ok(scanCall);
+    const lightPaths = statements
+        .slice(
+            statements.indexOf(declared("shadowLights")),
+            statements.indexOf(scanCall) + 1,
+        )
+        .map((node) => node.getText());
     const widening = [
+        ...lightPaths,
         declared("lazyCaps").getText(),
         capsScan,
         declared("group").getText(),
+        declared("livePredicate").getText(),
         declared("liveCaps").getText(),
         following(declared("liveCaps")).getText(),
         declared("loadCaps").getText(),
         following(declared("loadCaps")).getText(),
+        scanCall.getText(),
     ].join("\n");
+    const result = finalReturn(pbr.body);
+    assert.ok(
+        result?.expression && ts.isObjectLiteralExpression(result.expression),
+    );
+    const builtWidening = context
+        .propertyInitializer(result.expression, "_w")
+        .getText();
+    const lights = "src/render/mesh-light-selection.ts";
     const rebuildSource = pinnedModuleSource(
         context,
         "src/scene/scene-rebuild.ts",
@@ -361,6 +394,16 @@ function sourceOracle(
         `
         const require = () => ({A, C, X, rebuildScenePbrPipelines});
         const ALL_LAZY_CAPS = ${context.pinnedNumber(pbrModule, "ALL_LAZY_CAPS")};
+        const PBR2_NO_COLOR_OUTPUT = ${context.pinnedNumber(pbrModule, "PBR2_NO_COLOR_OUTPUT")};
+        const PBR2_ESM_SHADOW_OUTPUT = ${context.pinnedNumber(pbrModule, "PBR2_ESM_SHADOW_OUTPUT")};
+        const U32 = Uint32Array;
+        const MAX_LIGHTS = ${context.variableInitializer(context.sourceFile("src/light/types.ts"), "MAX_LIGHTS").getText()};
+        const MSH_LIGHT_INDEX_WORD_OFFSET = ${context.pinnedNumber(lights, "MSH_LIGHT_INDEX_WORD_OFFSET")};
+        ${declaration(lights, "lightAffectsMesh")}
+        ${declaration(lights, "writeMeshLightSelection")}
+        const getPackedSingleLightType = () => { throw new Error("The scenarios add no lights."); };
+        const _computePbrMaterialFeatures = () => { throw new Error("Every scenario material carries its features."); };
+        ${declaration(pbrModule, "_neededLightPath")}
         ${declaration(pbrModule, "lazyCapsWidening")}
         const _lateCleanup = undefined;
         const retireGpuResources = (_engine, callback) => callback();
@@ -391,7 +434,7 @@ function sourceOracle(
             const builder = Object.assign(async (scene, meshes) => {
                 ${widening}
                 events.push(meshes.map(mesh => mesh.id));
-                return {renderables: [], rebuildSingle: (_scene, mesh) => ({mesh, order: 0}), _w: lazyCapsWidening(loadCaps)};
+                return {renderables: [], rebuildSingle: (_scene, mesh) => ({mesh, order: 0}), _w: ${builtWidening}};
             }, {_materialFamily: "pbr", key: 1});
             // Featureless materials: the composition table the native side
             // reads holds 0 for both, so only the gamma capability differs.
@@ -483,6 +526,7 @@ ${meshFeaturesNamespace(contexts[0]!)}
 namespace bbl {
 std::vector<std::vector<std::uint32_t>> group_events;
 ${featurelessPbrMaterialFeatures}
+${noSceneLights}
 void enable_scene_transmission(Scene& scene) {scene.transmission_enabled = true;}
 ${lowerPbrTransmissionTransaction(contexts[0]!)}
 std::optional<PbrLazyWidening> run_pbr_rebuild_transaction(Scene& scene, const std::vector<MeshHandle>& meshes,
@@ -605,6 +649,7 @@ test("standalone shader and PBR groups link their source rebuild transaction wit
 ${meshFeaturesNamespace(new LoweringContext())}
 namespace bbl {
 ${featurelessPbrMaterialFeatures}
+${noSceneLights}
 void (*fixture_rebuild)(Scene&, bool, bool) = nullptr;
 void rebuild_scene_renderables(Scene& scene) { fixture_rebuild(scene, false, true); }
 ${source}
@@ -636,7 +681,8 @@ void check(bool include_pbr) {
     assert(!scene.state->pbr_transmission_transaction);
     if (include_pbr) {
         // The rebuilt group publishes the capabilities its gamma material loaded.
-        assert(scene.state->pbr_material_group->widening == PbrLazyWidening{pbr_lazy_caps(scene, MeshHandle{1})});
+        const auto& widening = scene.state->pbr_material_group->widening;
+        assert(widening && widening->caps == pbr_lazy_caps(scene, MeshHandle{1}));
         assert(scene.state->pbr_material_group->outputs.at(0)->material.value == 2);
     }
     const auto cancelled = run_pbr_rebuild_transaction(scene, {}, [](Scene& target, const std::vector<MeshHandle>&) {

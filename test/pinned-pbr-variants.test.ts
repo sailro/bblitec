@@ -226,3 +226,79 @@ test("composes Scene 19's fragment exactly as the browser compiled it", async ()
     assert.equal(variant.fragmentKey, "ibl|clearcoat");
     assert.equal(normalize(variant.fragmentWgsl), normalize(captured));
 });
+
+test("composes the pin's bent-normal IBL arm for a material holding the texture", async () => {
+    const { PBR_HAS_ENV } = await importPinnedModule<{ PBR_HAS_ENV: number }>(
+        "material/pbr/pbr-flag-bits.js",
+    );
+    const { pinnedMeshFeaturesFromPrimitive } =
+        await import("../src/pinned-mesh-features.js");
+    const tangents = await pinnedMeshFeaturesFromPrimitive({
+        attributes: { POSITION: 0, NORMAL: 0, TANGENT: 0, TEXCOORD_0: 0 },
+    });
+    const occluded = {
+        normalTexture: {},
+        ormTexture: {},
+        occlusionStrength: 1,
+    };
+    const compose = (
+        material: Record<string, unknown>,
+        meshFeatures = tangents,
+        sceneFeatures = PBR_HAS_ENV,
+    ) => composePinnedPbrVariant(material, { meshFeatures, sceneFeatures });
+
+    // Without the texture the installed hooks compose the IBL arm unchanged.
+    const plain = await compose(occluded);
+    assert.doesNotMatch(plain.fragmentWgsl, /bentNormal/);
+    assert.match(
+        plain.fragmentWgsl,
+        /let colorSpecularEnvReflectance=specularEnvironmentReflectance\*seo\*eho;/,
+    );
+
+    // With it, the pin's patch drops `seo` and scales the radiance by the
+    // spherical-Gaussian cone term; the vertex TBN frames the sample.
+    const bent = await compose({ ...occluded, bentNormalTexture: {} });
+    assert.equal(bent.fragmentKey, "ibl");
+    assert.match(
+        bent.fragmentWgsl,
+        /let colorSpecularEnvReflectance=specularEnvironmentReflectance\*eho;/,
+    );
+    assert.match(
+        bent.fragmentWgsl,
+        /mix\(1\.0,environmentBentNormalOcclusion\(bentNormalW,R_raw,N,NdotVUnclamped,occlusion,alphaG\),bentNormalStrength\)/,
+    );
+    assert.match(bent.fragmentWgsl, /let bnTBN=TBN;/);
+    assert.match(bent.fragmentWgsl, /var bentNormalTexture_:texture_2d<f32>/);
+    assert.equal(
+        bent.meshBindingLayout.length,
+        plain.meshBindingLayout.length + 2,
+    );
+    const offsets = (bent.materialUboSpec as { _offsets: Map<string, number> })
+        ._offsets;
+    assert.ok(offsets.has("bentNormalParams"));
+
+    // A mesh without tangents takes the left-handed cotangent frame.
+    const cotangent = await compose(
+        { ...occluded, bentNormalTexture: {} },
+        await pinnedMeshFeaturesFromPrimitive({
+            attributes: { POSITION: 0, NORMAL: 0, TEXCOORD_0: 0 },
+        }),
+    );
+    assert.match(
+        cotangent.fragmentWgsl,
+        /let bnT=bnDp2p\*bnDuv1\.x\+bnDp1p\*bnDuv2\.x;/,
+    );
+
+    // The pin's gate: an occlusion texture with a positive strength, and an
+    // environment for the IBL arm to patch.
+    const unoccluded = { ...occluded, occlusionStrength: 0 };
+    assert.equal(
+        (await compose({ ...unoccluded, bentNormalTexture: {} })).fragmentWgsl,
+        (await compose(unoccluded)).fragmentWgsl,
+    );
+    assert.doesNotMatch(
+        (await compose({ ...occluded, bentNormalTexture: {} }, tangents, 0))
+            .fragmentWgsl,
+        /bentNormal/,
+    );
+});

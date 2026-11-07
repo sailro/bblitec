@@ -1560,3 +1560,107 @@ test("builds an annotated object literal as the struct its type names", () => {
         /Node literal without 'weight'|mass/,
     );
 });
+
+/** Lowers the statements of `source` that run, past its type declarations. */
+function lowerStatements(
+    source: string,
+    scope: Partial<PinnedNumericScope> & Pick<PinnedNumericScope, "bindings">,
+): string {
+    const file = ts.createSourceFile(
+        "pinned.ts",
+        source,
+        ts.ScriptTarget.Latest,
+        true,
+    );
+    const lowerer = new PinnedNumericLowerer(file, {
+        calls: new Map(),
+        ...scope,
+    });
+    const statements = file.statements.filter(
+        (statement) =>
+            !ts.isInterfaceDeclaration(statement) &&
+            !ts.isFunctionDeclaration(statement),
+    );
+    return lowerer.statements(statements, "").join("\n");
+}
+
+test("a string list tests membership, appends and copies as JavaScript's array does", () => {
+    const cpp = lowerStatements(
+        `declare function use(types: string[]): void;
+        if (!types.includes(type)) {
+            types.push(type);
+        }
+        use(types.slice());`,
+        {
+            bindings: new Map<string, PinnedBinding>([
+                ["types", { cpp: "paths.single", type: "string-list" }],
+                ["type", { cpp: "kind", type: "string" }],
+            ]),
+            calls: new Map([["use", (args) => `use(${args[0]})`]]),
+        },
+    );
+    assert.match(
+        cpp,
+        /if \(!\(std::find\(paths\.single\.begin\(\), paths\.single\.end\(\), kind\) != paths\.single\.end\(\)\)\) \{\n\s+paths\.single\.push_back\(kind\);/,
+    );
+    assert.match(cpp, /use\(std::vector<std::string>\(paths\.single\)\);/);
+    assert.throws(
+        () =>
+            lowerStatements("types.pop();", {
+                bindings: new Map<string, PinnedBinding>([
+                    ["types", { cpp: "paths.single", type: "string-list" }],
+                ]),
+            }),
+        /string list 'pop'/,
+    );
+});
+
+test("a logical assignment writes a bound boolean output through", () => {
+    const cpp = lowerStatements("multi ||= receives && shadows;", {
+        bindings: new Map<string, PinnedBinding>([
+            ["multi", { cpp: "paths.multi", type: "bool" }],
+            ["receives", { cpp: "receives", type: "bool" }],
+            ["shadows", { cpp: "has_shadows", type: "bool" }],
+        ]),
+    });
+    assert.match(cpp, /paths\.multi = paths\.multi \|\| \(/);
+});
+
+test("an unannotated object literal takes the record its contextual type names", () => {
+    const paths: PinnedRecordShape = {
+        cpp: "PbrLightPaths",
+        members: [
+            {
+                name: "_s",
+                read: (owner) =>
+                    new Map([
+                        ["", { cpp: `${owner}.single`, type: "string-list" }],
+                    ]),
+                store: (value) => value,
+            },
+            {
+                name: "_m",
+                read: (owner) =>
+                    new Map([["", { cpp: `${owner}.multi`, type: "bool" }]]),
+                store: (value) => value,
+            },
+        ],
+    };
+    const cpp = lowerStatements(
+        `interface Paths { _s: string[]; _m: boolean }
+        declare function use(paths: Paths): void;
+        use({ _s: types.slice(), _m: multi });`,
+        {
+            bindings: new Map<string, PinnedBinding>([
+                ["types", { cpp: "scan.single", type: "string-list" }],
+                ["multi", { cpp: "scan.multi", type: "bool" }],
+            ]),
+            calls: new Map([["use", (args) => `use(${args[0]})`]]),
+            recordTypes: new Map([["Paths", paths]]),
+        },
+    );
+    assert.match(
+        cpp,
+        /use\(PbrLightPaths\{std::vector<std::string>\(scan\.single\), scan\.multi\}\);/,
+    );
+});

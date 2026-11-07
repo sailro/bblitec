@@ -214,6 +214,24 @@ const recordFieldAssignments: readonly RecordFieldAssignment[] = [
         field: "direct_intensity",
         value: "number",
     },
+    // `_writeMaterialData`'s `metallicFactor ?? 1` and `roughnessFactor ?? 1`:
+    // uniform-only factors, read from the record each upload.
+    {
+        kind: "material",
+        materialFamily: "pbr",
+        property: "metallicFactor",
+        collection: "materials",
+        field: "metallic_factor",
+        value: "number",
+    },
+    {
+        kind: "material",
+        materialFamily: "pbr",
+        property: "roughnessFactor",
+        collection: "materials",
+        field: "roughness_factor",
+        value: "number",
+    },
     {
         // The pin's `uvScale: [number, number]`, which
         // `writeStandardUvTransformData` reads into the material's own UV
@@ -311,6 +329,17 @@ const recordFieldAssignments: readonly RecordFieldAssignment[] = [
         field: "use_physical_light_falloff",
         value: "boolean",
         simpleOnly: true,
+    },
+    {
+        // bent-normal-fragment.ts: its writer reads `bentNormalStrength ?? 1`
+        // into `bentNormalParams.x` and the fragment saturates it; the
+        // value composes nothing.
+        kind: "material",
+        materialFamily: "pbr",
+        property: "bentNormalStrength",
+        collection: "materials",
+        field: "bent_normal_strength",
+        value: "number",
     },
     {
         // src/camera/orthographic.ts: the bounds stay live, and its setter
@@ -624,6 +653,11 @@ export interface AssignmentContext
             | "callbacks"
             | "compileNumber"
             | "compileBoolean"
+            | "conditions"
+            | "increaseIndent"
+            | "decreaseIndent"
+            | "enterRuntimeControlFlow"
+            | "leaveRuntimeControlFlow"
             | "compileColor3"
             | "captureNativeExpression"
             | "compileColor4"
@@ -945,7 +979,7 @@ function emitScreenSpaceSettingAssignment(
     if (setting === "enabled") {
         context.emit({
             kind: "expression",
-            code: `${record}.enabled = ${context.compileBoolean(expression.right)};`,
+            code: `${record}.enabled = ${context.conditions.compileCondition(expression.right)};`,
         });
         return true;
     }
@@ -963,6 +997,164 @@ function emitScreenSpaceSettingAssignment(
             "double",
         )};`,
     });
+    return true;
+}
+
+/**
+ * Writes an SSAO task's live settings, or a record's it publishes
+ * (`SSAO_RECORD_FIELDS`). The pin samples each inside `execute`, so a write
+ * is the record field the generated frame function reads; a write of a
+ * setting that selects programs (quality, normal input, temporal
+ * reconstruction, pruning) makes composition build every value's mode.
+ */
+function emitSsaoSettingAssignment(
+    context: AssignmentContext,
+    expression: ts.BinaryExpression,
+    setting: string,
+    left: ts.Expression,
+    owner: Value,
+): boolean {
+    const manifest = owner.ssaoTask;
+    const record = ssaoRecordOf(owner);
+    if (!manifest || !record) return false;
+    const engine = context.requireEngine(owner, expression);
+    requireSimpleAssignment(context, expression, "SSAO setting");
+    const refuse = (why: string): never =>
+        context.fail(
+            left,
+            `SSAO ${record} '${setting}' write is not lowered: ${why}.`,
+        );
+    const native = ssaoRecordCpp(record, engine, owner.cpp);
+    if (record === "task" && setting === "normalTexture") {
+        const normal = context.symbols.isNullishLiteral(
+            context.unwrap(expression.right),
+        )
+            ? undefined
+            : compileNormalInput(
+                  context,
+                  expression.right,
+                  "SSAO task normalTexture",
+              );
+        if (normal) {
+            const known = context.sceneManifest.ssaoNormalAttachment(manifest);
+            if (known !== undefined && known !== normal.attachment) {
+                return refuse(
+                    `the task's normal input is its ${known} attachment, and one plan composes one normal format`,
+                );
+            }
+            context.sceneManifest.recordSsaoNormalAttachment(
+                normal.attachment,
+                manifest,
+            );
+        }
+        context.sceneManifest.recordSsaoLiveSetting("normal", manifest);
+        context.emit({
+            kind: "expression",
+            code: `${native}.normal = ${normal ? normal.cpp : "std::nullopt"};`,
+        });
+        return true;
+    }
+    const field = SSAO_RECORD_FIELDS[record][setting];
+    if (!field) {
+        return refuse(
+            `the ${record === "task" ? "task" : "record"} publishes no such setting`,
+        );
+    }
+    if (field.derived) return refuse("the pin derives it");
+    if (field.live)
+        context.sceneManifest.recordSsaoLiveSetting(field.live, manifest);
+    const value =
+        field.kind === "boolean"
+            ? context.conditions.compileCondition(expression.right)
+            : field.kind === "number"
+              ? context.compileNumber(expression.right, "double")
+              : context.dataLowerer.compileForSink(expression.right, {
+                    kind: "string",
+                });
+    context.emit({
+        kind: "expression",
+        code: `${native}.${field.native} = ${value};`,
+    });
+    return true;
+}
+
+/**
+ * A member write by name, for the owners whose writer takes the member as a
+ * name rather than its property access: an SSAO task and its records.
+ */
+function emitNamedMemberAssignment(
+    context: AssignmentContext,
+    expression: ts.BinaryExpression,
+    member: string,
+    left: ts.Expression,
+    owner: Value,
+): boolean {
+    return emitSsaoSettingAssignment(context, expression, member, left, owner);
+}
+
+/**
+ * `owner[key] = value`: the write the member's name makes, for a key
+ * generation knows, or for each name of the key's string-literal type
+ * (`for (const name of ["radius", "intensity"] as const)`), selected by the
+ * key at run time. The key evaluates once, before the value.
+ */
+function emitComputedKeyAssignment(
+    context: AssignmentContext,
+    expression: ts.BinaryExpression,
+): boolean {
+    const left = context.unwrap(expression.left);
+    if (
+        !ts.isElementAccessExpression(left) ||
+        !ts.isIdentifier(left.expression)
+    )
+        return false;
+    const owner = context.bindings.lookupOptional(left.expression);
+    if (!owner || ssaoRecordOf(owner) === undefined) return false;
+    const known = context.compileValue(left.argumentExpression).staticString;
+    if (known !== undefined)
+        return emitNamedMemberAssignment(
+            context,
+            expression,
+            known,
+            left,
+            owner,
+        );
+    const type = context.checker.getTypeAtLocation(left.argumentExpression);
+    const names = unionMembers(type).map((member) =>
+        member.isStringLiteral() ? member.value : undefined,
+    );
+    if (names.length === 0 || names.some((name) => name === undefined)) {
+        return context.fail(
+            left.argumentExpression,
+            "A member written by a computed key needs a key of string-literal type.",
+        );
+    }
+    const key = context.allocateTemporaryCppName("member_key");
+    context.emit({
+        kind: "declaration",
+        type: "const std::string",
+        name: key,
+        initializer: context.dataLowerer.compileForSink(
+            left.argumentExpression,
+            { kind: "string" },
+        ),
+    });
+    context.enterRuntimeControlFlow();
+    try {
+        // The names are distinct, so at most one arm runs.
+        for (const name of names) {
+            context.emit({
+                kind: "open",
+                code: `if (${key} == ${context.cppString(name!)}) {`,
+            });
+            context.increaseIndent();
+            emitNamedMemberAssignment(context, expression, name!, left, owner);
+            context.decreaseIndent();
+            context.emit({ kind: "close", code: "}" });
+        }
+    } finally {
+        context.leaveRuntimeControlFlow();
+    }
     return true;
 }
 
@@ -1223,6 +1415,44 @@ function emitBridgeOriginWrite(
     return true;
 }
 
+/**
+ * `error.code = value` on a represented Error, for a property no reached
+ * source can read back (`propertyNeverRead`): nothing needs its
+ * storage, so the write is its value's evaluation.
+ */
+export function emitUnobservedErrorPropertyWrite(
+    context: AssignmentContext,
+    expression: ts.BinaryExpression,
+): boolean {
+    const left = context.unwrap(expression.left);
+    if (
+        expression.operatorToken.kind !== ts.SyntaxKind.EqualsToken ||
+        !ts.isPropertyAccessExpression(left) ||
+        // The receiver evaluates first; this write reads it for nothing.
+        expressionHasEffects(left.expression) ||
+        // `toString`, a host report and the console read the represented
+        // fields without naming them.
+        ERROR_CLASS_FIELDS.some(
+            (field) => field.sourceName === left.name.text,
+        ) ||
+        !propertyNeverRead(context.program, context.checker, left.name.text)
+    )
+        return false;
+    // Only an Error owner answers the probe: any other receiver's
+    // evaluation is left to the write that owns it.
+    const isError = (owner: Value | undefined): owner is Value =>
+        !!owner?.nativeError || owner?.dataType?.kind === "error";
+    const owner = unlessRefused(() =>
+        context.probeEmission(
+            () => context.compileValue(left.expression),
+            isError,
+        ),
+    );
+    if (!isError(owner)) return false;
+    context.emitDiscardedValue(context.compileValue(expression.right));
+    return true;
+}
+
 export function emitPropertyAssignment(
     context: AssignmentContext,
     expression: ts.BinaryExpression,
@@ -1283,6 +1513,7 @@ export function emitPropertyAssignment(
         // A retained element's member by a static key (`el.dataset["k"]`)
         // is the UI owner's, as its property spelling is.
         if (context.emitUiPropertyAssignment(expression)) return;
+        if (emitComputedKeyAssignment(context, expression)) return;
         context.fail(
             expression.left,
             "Only property assignments are supported.",
@@ -1625,6 +1856,18 @@ export function emitPropertyAssignment(
         emitScreenSpaceSettingAssignment(
             context,
             expression,
+            left,
+            context.bindings.lookup(left.expression),
+        )
+    ) {
+        return;
+    }
+    if (
+        ts.isIdentifier(left.expression) &&
+        emitNamedMemberAssignment(
+            context,
+            expression,
+            left.name.text,
             left,
             context.bindings.lookup(left.expression),
         )
@@ -2529,6 +2772,8 @@ import {
 import { emitFrozenParticleSheetAssignment } from "./particle-sheet.js";
 import { staticNumberValue } from "./option-helpers.js";
 import { staticTableEntry, type TableOption } from "./table-options.js";
+import { propertyNeverRead } from "./unread-properties.js";
+import { unlessRefused } from "./compile-error.js";
 
 /**
  * A mesh's primitive state fields: the topology's native name, and the
@@ -2571,6 +2816,8 @@ import { ApplicationRealmRequired } from "./worker-modules.js";
 import { stringLiteral } from "../cpp-literals.js";
 import { PINNED_ASSIGNMENT_OPERATORS } from "../lowering/pinned-operators.js";
 import { unwrappedIdentifier } from "./syntax.js";
+import { unionMembers } from "./type-facts.js";
+import { ERROR_CLASS_FIELDS } from "./error-values.js";
 import { isGlobalUndefined, libraryName } from "./symbols.js";
 import {
     emitDeterministicRandomInstall,
@@ -2579,6 +2826,12 @@ import {
 import { noteCameraRecordWrite } from "./intrinsics/camera.js";
 import { absentReceiverMessage, cameraRecordField } from "./properties.js";
 import { compileRenderTextureValue } from "./intrinsics/engine-options.js";
+import {
+    compileNormalInput,
+    SSAO_RECORD_FIELDS,
+    ssaoRecordCpp,
+    ssaoRecordOf,
+} from "./intrinsics/ssao-options.js";
 import { postProcessEffect } from "../post-process-effects.js";
 import {
     SCREEN_SPACE_SCALAR_SETTINGS,
@@ -2596,7 +2849,12 @@ import {
     sceneNodeTransformDescriptor,
 } from "../scene-node-transform-descriptor.js";
 import { lightKindFacts } from "./types.js";
-import type { Feature, LightKind, Value } from "./types.js";
+import type { AssetMeshWalk, Feature, LightKind, Value } from "./types.js";
+import {
+    setPbrTextureCpp,
+    storedTextureCpp,
+    type PbrTextureSlot,
+} from "./pbr-texture-slots.js";
 import {
     absenceOfNull,
     staticKeyOf,
@@ -4191,7 +4449,7 @@ function emitMorphTargetsAssignment(
         if (!morph.morphTarget) {
             context.fail(expression.right, "Morph target data is incomplete.");
         }
-        if (morph.morphTarget.meshCpp) {
+        if (morph.morphTarget.mesh) {
             context.fail(
                 expression.right,
                 "Direct morph target data can be attached to one mesh.",
@@ -4212,7 +4470,7 @@ function emitMorphTargetsAssignment(
                 `${morph.morphTarget.vertexCountCpp}, ` +
                 `${morph.morphTarget.weightCpp});`,
         });
-        writable(morph.morphTarget).meshCpp = target.cpp;
+        writable(morph.morphTarget).mesh = target;
         context.reachFeature("mesh:morph-targets", expression);
         return true;
     }
@@ -4271,58 +4529,114 @@ function emitPbrAlphaBlendAssignment(
 }
 
 /**
- * `pbr.baseColorTexture = texture` before scene registration. Every PBR
- * variant binds the base-color slot (an absent texture binds the factor's
- * fallback texel), so the swap composes nothing; registration binds the
- * record's slot.
+ * The PBR texture props an assignment writes (`createPbrMaterial`'s), by the
+ * native slot each fills, and when the write is admitted: before scene
+ * registration, also definitely, or live.
  */
-function emitBaseColorTextureAssignment(
+const PBR_TEXTURE_SLOT_PROPS: ReadonlyMap<
+    string,
+    { slot: PbrTextureSlot; setup: "registration" | "definite" | "live" }
+> = new Map([
+    // Every PBR variant binds the base-color slot (an absent texture binds
+    // the factor's fallback texel), so the swap composes nothing.
+    ["baseColorTexture", { slot: "base_color", setup: "registration" }],
+    // The pinned PBR fragment always samples its ORM texture.
+    ["ormTexture", { slot: "orm", setup: "definite" }],
+    // Rebound live: a loaded material's composed variant carries the slot.
+    ["occlusionTexture", { slot: "occlusion", setup: "live" }],
+    // Composition input: the IBL extension's `detect` reads its presence
+    // when the material is first built (bent-normal-fragment.ts).
+    ["bentNormalTexture", { slot: "bent_normal", setup: "registration" }],
+]);
+
+/**
+ * Whether `expression`'s statement runs for every renderable `walk` visits:
+ * directly in the body of a walk that definitely runs, which holds no
+ * statement that skips an element.
+ */
+function runsForEveryRenderable(
+    expression: ts.Expression,
+    walk: AssetMeshWalk,
+): boolean {
+    const body = walk.definiteBody;
+    if (!body) return false;
+    const statements = ts.isBlock(body) ? body.statements : [body];
+    const skips = (node: ts.Node): boolean =>
+        ts.isContinueStatement(node) ||
+        ts.isReturnStatement(node) ||
+        ts.isThrowStatement(node) ||
+        (!ts.isFunctionLike(node) &&
+            ts.forEachChild(node, (child) => skips(child) || undefined) ===
+                true);
+    return (
+        ts.isExpressionStatement(expression.parent) &&
+        statements.includes(expression.parent) &&
+        !skips(body)
+    );
+}
+
+/**
+ * `pbr.<texture prop> = texture`: the record's slot takes the texture,
+ * whatever its storage. A bent normal texture's presence is composition
+ * input, so its write reaches composition as a state of the materials it
+ * can reach.
+ */
+function emitPbrTextureSlotAssignment(
     context: AssignmentContext,
     state: TargetPropertyAssignment,
 ): boolean {
     const { expression, left, target, property } = state;
-    if (target.kind !== "material" || property !== "baseColorTexture")
-        return false;
-    requireSimpleAssignment(context, expression, "PBR baseColorTexture");
+    const prop = PBR_TEXTURE_SLOT_PROPS.get(property);
+    if (target.kind !== "material" || !prop) return false;
+    requireSimpleAssignment(context, expression, `PBR ${property}`);
     if (
-        context.hasRegisteredScene() ||
-        context.engineLifecycle.engineHasStarted()
+        prop.setup !== "live" &&
+        (context.hasRegisteredScene() ||
+            context.engineLifecycle.engineHasStarted() ||
+            (prop.setup === "definite" &&
+                context.isRuntimeResourceConstruction()))
     ) {
         context.fail(
             expression,
-            "PBR baseColorTexture replacement requires static setup before scene registration; live texture rebinding is not represented.",
+            `PBR ${property} requires static setup before scene registration: the pin binds it when the material is first built.`,
         );
     }
     if (materialFamily(context, target, left.expression) !== "pbr")
-        context.fail(left, "baseColorTexture requires a known PBR material.");
+        context.fail(left, `${property} requires a known PBR material.`);
+    if (prop.slot === "occlusion" && !target.assetPbrMaterial) {
+        context.fail(
+            left,
+            "Replacing occlusionTexture is lowered for a PBR material read from a loaded asset, whose composed variant already carries that slot.",
+        );
+    }
+    // The setter is the PBR factory's own (createPbrMaterial's texture props).
+    context.reachFeature("material:pbr", expression);
     const texture = context.compileValue(expression.right);
     context.expectKind(texture, "texture", expression.right);
     context.expectSameEngine(target, texture, expression);
-    // The setter is the PBR factory's own (createPbrMaterial's texture props).
-    context.reachFeature("material:pbr", expression);
-    // A texture stored as data is the `StoredTexture` variant; a pixels
-    // texture there throws rather than binding a slot this setter cannot fill.
-    const stored =
-        texture.dataType?.kind === "handle" &&
-        texture.dataType.handle === "texture" &&
-        texture.textureStorage === undefined &&
-        !texture.textureFile;
-    const file =
-        texture.textureStorage === "solid"
-            ? `bbl::solid_texture_file(${texture.cpp})`
-            : texture.textureFile || texture.textureStorage === "file"
-              ? texture.cpp
-              : stored
-                ? `std::get<bbl::FileTexture>(${texture.cpp})`
-                : context.fail(
-                      expression.right,
-                      `PBR baseColorTexture replacement takes a loaded or solid texture; received ${texture.textureStorage ?? "an unknown"} storage.`,
-                  );
+    const stored = storedTextureCpp(
+        context,
+        texture,
+        expression.right,
+        property,
+    );
+    if (prop.slot === "bent_normal") {
+        // A write every material of its target definitely takes before its
+        // first build composes that state alone.
+        const definite =
+            target.scenePbrMaterialIndex !== undefined
+                ? !context.isInRuntimeControlFlow() && !target.runtimeIteration
+                : target.assetWholeMeshList !== undefined &&
+                  runsForEveryRenderable(expression, target.assetWholeMeshList);
+        context.sceneManifest.recordPbrStateWrite(target, {
+            bentNormalTexture: definite ? "definite" : true,
+        });
+    }
     const engine = context.requireEngine(target, expression);
     if (isPbrMaterialValue(target)) {
         context.emit({
             kind: "expression",
-            code: `bbl::set_material_base_color_file(${engine}, ${target.cpp}, ${file});`,
+            code: setPbrTextureCpp(engine, target.cpp, prop.slot, stored),
         });
         return true;
     }
@@ -4336,80 +4650,9 @@ function emitBaseColorTextureAssignment(
     });
     context.emit({
         kind: "expression",
-        code: `if (!${recordAt(`${engine}.materials`, material)}.standard_material) bbl::set_material_base_color_file(${engine}, ${material}, ${file});`,
+        code: `if (!${recordAt(`${engine}.materials`, material)}.standard_material) ${setPbrTextureCpp(engine, material, prop.slot, stored)}`,
     });
     return true;
-}
-
-function emitOrmTextureAssignment(
-    context: AssignmentContext,
-    state: TargetPropertyAssignment,
-): boolean {
-    const { expression, left, target, property } = state;
-    if (target.kind === "material" && property === "ormTexture") {
-        requireSimpleAssignment(context, expression, "PBR ormTexture");
-        if (
-            context.hasRegisteredScene() ||
-            context.engineLifecycle.engineHasStarted() ||
-            context.isRuntimeResourceConstruction()
-        ) {
-            context.fail(
-                expression,
-                "PBR ormTexture replacement requires static setup before scene registration; live texture rebinding is not represented.",
-            );
-        }
-        if (!isPbrMaterialValue(target)) {
-            context.fail(left, "ormTexture requires a known PBR material.");
-        }
-        const texture = context.compileValue(expression.right);
-        context.expectKind(texture, "texture", expression.right);
-        context.expectSameEngine(target, texture, expression);
-        if (texture.textureStorage !== "solid")
-            context.fail(
-                expression.right,
-                "PBR ormTexture replacement currently requires a solid texture.",
-            );
-        context.emit({
-            kind: "expression",
-            code: `bbl::set_material_orm_file(${context.requireEngine(target, expression)}, ${target.cpp}, bbl::solid_texture_file(${texture.cpp}));`,
-        });
-        return true;
-    }
-    return false;
-}
-
-function emitOcclusionTextureAssignment(
-    context: AssignmentContext,
-    state: TargetPropertyAssignment,
-): boolean {
-    const { expression, left, target, property } = state;
-    if (target.kind === "material" && property === "occlusionTexture") {
-        requireSimpleAssignment(context, expression, "PBR occlusionTexture");
-        if (!target.assetPbrMaterial) {
-            context.fail(
-                left,
-                "Replacing occlusionTexture is lowered for a PBR material read from a loaded asset, whose composed variant already carries that slot.",
-            );
-        }
-        const texture = context.compileValue(expression.right);
-        context.expectKind(texture, "texture", expression.right);
-        if (texture.textureStorage !== "solid") {
-            context.fail(
-                expression.right,
-                "Reached PBR occlusionTexture replacement uses createSolidTexture2D.",
-            );
-        }
-        context.expectSameEngine(target, texture, expression);
-        context.emit({
-            kind: "expression",
-            code:
-                `bbl::set_pbr_occlusion_solid_texture(` +
-                `${context.requireEngine(target, expression)}, ` +
-                `${target.cpp}, ${texture.cpp});`,
-        });
-        return true;
-    }
-    return false;
 }
 
 function emitDiffuseTextureAssignment(
@@ -4763,10 +5006,10 @@ const targetPropertyHandlers2 = new EmissionMap<
     string,
     (context: AssignmentContext, state: TargetPropertyAssignment) => boolean
 >([
-    ["ormTexture", emitOrmTextureAssignment],
+    ...[...PBR_TEXTURE_SLOT_PROPS.keys()].map(
+        (property) => [property, emitPbrTextureSlotAssignment] as const,
+    ),
     ["alphaBlend", emitPbrAlphaBlendAssignment],
-    ["baseColorTexture", emitBaseColorTextureAssignment],
-    ["occlusionTexture", emitOcclusionTextureAssignment],
     ["diffuseTexture", emitDiffuseTextureAssignment],
     ["parent", emitParentAssignment],
 ]);

@@ -818,14 +818,16 @@ export class LoweringContext {
     }
 
     /**
-     * A function-like the pin assigns to a property of an object literal built
-     * inside a named function.
+     * A function-like the pin assigns to a property inside a named function:
+     * a member of an object literal built there, or a property assignment.
      *
      * The light factories are shaped that way: `createPointLight` hands a
      * factory an object carrying `_writeLightUbo: (data, offset) => { ... }`, so
      * the writer is neither top-level nor a member of a module-level literal.
-     * Searches the whole declaration, because which object literal holds it is
-     * the pin's business rather than a contract worth pinning.
+     * `enableBentNormals` installs `ext.writeUbo = (data, mat, offsets) => { ... }`
+     * on an existing extension. Searches the whole declaration, because which
+     * object holds it is the pin's business rather than a contract worth
+     * pinning.
      */
     public propertyFunction(
         modulePath: string,
@@ -847,18 +849,32 @@ export class LoweringContext {
             [];
         const visit = (node: ts.Node): void => {
             if (found.length > 0 && !options.unique) return;
+            const assigned =
+                ts.isBinaryExpression(node) &&
+                node.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
+                ts.isPropertyAccessExpression(node.left) &&
+                node.left.name.text === propertyName
+                    ? this.unwrapExpression(node.right)
+                    : undefined;
             if (
-                (ts.isPropertyAssignment(node) ||
+                assigned ||
+                ((ts.isPropertyAssignment(node) ||
                     ts.isMethodDeclaration(node)) &&
-                node.name &&
-                ts.isIdentifier(node.name) &&
-                node.name.text === propertyName
+                    node.name &&
+                    ts.isIdentifier(node.name) &&
+                    node.name.text === propertyName)
             ) {
+                const initializer =
+                    assigned ??
+                    (ts.isPropertyAssignment(node)
+                        ? node.initializer
+                        : undefined);
                 const candidate = ts.isMethodDeclaration(node)
                     ? node
-                    : ts.isFunctionExpression(node.initializer) ||
-                        ts.isArrowFunction(node.initializer)
-                      ? node.initializer
+                    : initializer &&
+                        (ts.isFunctionExpression(initializer) ||
+                            ts.isArrowFunction(initializer))
+                      ? initializer
                       : undefined;
                 if (candidate?.body && ts.isBlock(candidate.body)) {
                     found.push(
@@ -881,6 +897,33 @@ export class LoweringContext {
             );
         }
         return { file, declaration: found[0]! };
+    }
+
+    /**
+     * The method an object literal's last writer of `name` is
+     * ({@link lastWriter}; a spread is the caller's contract), with a body.
+     */
+    public objectMethod(
+        object: ts.ObjectLiteralExpression,
+        name: string,
+    ): ts.MethodDeclaration & { body: ts.Block } {
+        const writer = lastWriter(
+            objectLiteralMembers(object),
+            name,
+            () => false,
+        );
+        const method =
+            writer !== "unknown" &&
+            writer?.kind === "method" &&
+            ts.isMethodDeclaration(writer.node)
+                ? writer.node
+                : undefined;
+        if (!method?.body)
+            return this.contractError(
+                object,
+                `Expected a '${name}' method with a body.`,
+            );
+        return method as ts.MethodDeclaration & { body: ts.Block };
     }
 
     public objectInitializer(
@@ -1098,6 +1141,48 @@ export class LoweringContext {
         variableName: string,
     ): ts.Expression {
         return variableInitializer(scope, variableName);
+    }
+
+    /**
+     * The one declaration of `name` a scope holds, with its initializer and
+     * the statement declaring it: anywhere under a node, or among a statement
+     * list's own statements (a body's top level). None, or a second one, is
+     * a contract failure.
+     */
+    public declaredVariable(
+        scope: ts.Node | readonly ts.Statement[],
+        name: string,
+    ): {
+        initializer: ts.Expression;
+        statement: ts.VariableStatement | undefined;
+    } {
+        const named = (node: ts.Node): node is ts.VariableDeclaration =>
+            ts.isVariableDeclaration(node) &&
+            ts.isIdentifier(node.name) &&
+            node.name.text === name;
+        const found = isNodeList(scope)
+            ? scope.flatMap((statement) =>
+                  ts.isVariableStatement(statement)
+                      ? statement.declarationList.declarations.filter(named)
+                      : [],
+              )
+            : findNodes(scope, named);
+        const declaration = found[0];
+        if (found.length !== 1 || !declaration?.initializer) {
+            return this.contractError(
+                isNodeList(scope) ? scope[0]! : scope,
+                `Expected one '${name}' declaration with an initializer.`,
+            );
+        }
+        const list = declaration.parent;
+        return {
+            initializer: declaration.initializer,
+            statement:
+                ts.isVariableDeclarationList(list) &&
+                ts.isVariableStatement(list.parent)
+                    ? list.parent
+                    : undefined,
+        };
     }
 
     /** The expression a pinned function's `index`th return statement returns. */

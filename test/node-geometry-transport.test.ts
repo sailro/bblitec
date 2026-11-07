@@ -249,6 +249,13 @@ test(
         const context = new LoweringContext();
         const render = new RendererLowerer(context).lowerRenderPlan({}).source;
         const loader = new GltfLowerer(context).lowerLoaderAdapter().source;
+        // The loader keeps the file's indices and marks a mirrored
+        // primitive; each family's pipeline winds the mark.
+        assert.doesNotMatch(loader, /std::swap\(geometry\.indices/);
+        assert.match(
+            loader,
+            /record\.clockwise_front_face = source_clockwise;/,
+        );
         const pal = sharedGpuSource();
         const dawn = sceneBackendSource("dawn");
         const output = resolve("artifacts/node-geometry-transport-check");
@@ -308,7 +315,6 @@ ${[
 template <typename Block>
 ${cppFunction(pal, "inline void pinned_mesh_light_selection(")}
 ${cppFunction(pal, "upstream::NodeMeshUniforms node_mesh_block(")}
-${cppFunction(pal, "std::span<const std::uint32_t> node_source_indices(")}
 ${cppFunction(dawn, "struct NodeMeshBlockCache")} ;
 ${cppFunction(dawn, "const upstream::NodeMeshUniforms& node_mesh_block_for(")}
 }
@@ -334,18 +340,6 @@ int main() {
             ? static_cast<const void*>(&vertex.position) : &vertex.normal;
         assert(input.mapped && input.stream == VertexInputStream::vertex);
         assert(std::memcmp(reinterpret_cast<const std::uint8_t*>(&packed[0]) + input.offset, expected, 12) == 0);
-    }
-    for (const bool source_clockwise : {false, true}) for (const bool clockwise_front_face : {false, true}) {
-        const std::vector<std::uint32_t> original{0, 1, 2, 0, 2, 3};
-        geometry.indices = original; geometry.source_indices_reversed = false;
-        ${cppFunction(loader, "if (\n                geometry.topology == MeshTopology::triangles &&\n                source_clockwise")}
-        const auto adapted = geometry.indices;
-        assert(geometry.source_indices_reversed == (source_clockwise && !clockwise_front_face));
-        std::vector<std::uint32_t> scratch;
-        const auto source = node_source_indices(geometry, scratch);
-        assert(std::equal(source.begin(), source.end(), original.begin(), original.end()));
-        assert(geometry.indices == adapted);
-        assert(geometry.source_indices_reversed || (source.data() == geometry.indices.data() && scratch.empty()));
     }
     ${checks.join("\n")}
     // A factory mesh under a mesh parent: the block is the pin's parent walk.

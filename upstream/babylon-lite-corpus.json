@@ -1,8 +1,8 @@
 {
   "package": "@babylonjs/lite",
-  "version": "1.37.2",
+  "version": "1.38.2",
   "repository": "https://github.com/BabylonJS/Babylon-Lite.git",
-  "sourceVersion": "a05fc292912d3475ec600cea57c76fce2ee9f7f4",
+  "sourceVersion": "bc317f91a55b2af616abf487812ac6d4888151f7",
   "scenes": [
     {
       "id": "scene1",
@@ -477,6 +477,12 @@
       "upstreamPath": "lab/lite/src/lite/scene229.ts",
       "source": "corpus/babylon-lite/lab/lite/src/lite/scene229.ts",
       "sha256": "ebb272d662c92db538f2ae3ad4a6a35b026cf2e471b5b9dddaa878f00aaedeb6"
+    },
+    {
+      "id": "scene230",
+      "upstreamPath": "lab/lite/src/lite/scene230.ts",
+      "source": "corpus/babylon-lite/lab/lite/src/lite/scene230.ts",
+      "sha256": "6efc2a79befe586db76b5eb3f479118333e93a89bff74530bc028bb11f1f5b48"
     },
     {
       "id": "scene240",
@@ -1292,13 +1298,13 @@
       "id": "scene224",
       "upstreamPath": "lab/lite/src/lite/scene224.ts",
       "source": "corpus/babylon-lite/lab/lite/src/lite/scene224.ts",
-      "sha256": "6b5f16e724cc1db47061e4da09ffcd3104d3af039515934c3f5d921b1bbba8fe"
+      "sha256": "1d326fb237dcc0de76a81ac13a021668e7efcd3539ebed7a70ff3576ff961fbd"
     },
     {
       "id": "scene222",
       "upstreamPath": "lab/lite/src/lite/scene222.ts",
       "source": "corpus/babylon-lite/lab/lite/src/lite/scene222.ts",
-      "sha256": "08d0ff4209ff263586a05e3fefbfece62d2c8daf24b80a85527e9ce82fa1460b"
+      "sha256": "8c5960082f755570a571c7403b693b6041039b99babc35748e5c37d6c103da85"
     },
     {
       "id": "scene86",
@@ -1316,13 +1322,13 @@
       "id": "scene221",
       "upstreamPath": "lab/lite/src/lite/scene221.ts",
       "source": "corpus/babylon-lite/lab/lite/src/lite/scene221.ts",
-      "sha256": "b0633d0fd0f56ba3d92fcb1e6ee08c55b19d3619cd2bc6d6338f355907476a18"
+      "sha256": "9e858a700bd2b609884a27564038ed829aa637ca33f982c693043961f56b546a"
     },
     {
       "id": "scene223",
       "upstreamPath": "lab/lite/src/lite/scene223.ts",
       "source": "corpus/babylon-lite/lab/lite/src/lite/scene223.ts",
-      "sha256": "bcee1f2fde33e38c81eff300940ee0646c06880dc6ff48a10289474f580a6617"
+      "sha256": "c4261526f2057ece1281b86c5fd083986c0bce56cc9316844dbf4fbae2c9fafd"
     },
     {
       "id": "scene305",
@@ -1334,7 +1340,7 @@
       "id": "scene73",
       "upstreamPath": "lab/lite/src/lite/scene73.ts",
       "source": "corpus/babylon-lite/lab/lite/src/lite/scene73.ts",
-      "sha256": "cd697444db8da41e9353be82f9dafdcfd7f494ad22e8847bfb05f3b6fdd91c3c"
+      "sha256": "459de40173b1ccaf4d620f5e8766b56b2b8288c93fdced4e9a5572edc450727a"
     },
     {
       "id": "scene187",
@@ -1406,7 +1412,7 @@
       "id": "scene49",
       "upstreamPath": "lab/lite/src/lite/scene49.ts",
       "source": "corpus/babylon-lite/lab/lite/src/lite/scene49.ts",
-      "sha256": "9fa4455f128d8c7a1a0710567e64c424e12d1890475d660b23b1a94839fb584d"
+      "sha256": "2cee0325e5dd9cf1ece776eba23bded322a304c1f04c482405a18a1a581d7a9e"
     },
     {
       "id": "scene122",
@@ -1545,6 +1551,214 @@
       "upstreamPath": "lab/lite/src/lite/scene320.ts",
       "source": "corpus/babylon-lite/lab/lite/src/lite/scene320.ts",
       "sha256": "07b9de654248d11b7196193018660329220abd1b48bab69b51480f6819bed2ac"
+    },
+    {
+      "id": "scene321",
+      "upstreamPath": "lab/lite/src/lite/scene321.ts",
+      "source": "corpus/babylon-lite/lab/lite/src/lite/scene321.ts",
+      "sha256": "81310ac68cf8ba440c030dea521f5b13358b87bad63d079bf57b85bad85d1eb8",
+      "rightHanded": true
+    },
+    {
+      "id": "scene322",
+      "upstreamPath": "lab/lite/src/lite/scene322.ts",
+      "source": "corpus/babylon-lite/lab/lite/src/lite/scene322.ts",
+      "sha256": "b5ca9717e6712f08fc50f4c8578f068140aea54d77dd770c1df8fa911cce6d07",
+      "rightHanded": true
+    },
+    {
+      "id": "scene323",
+      "upstreamPath": "lab/lite/src/lite/scene323.ts",
+      "source": "corpus/babylon-lite/lab/lite/src/lite/scene323.ts",
+      "sha256": "3497ec6a971ec6847cd58947ced8eb1fa143941d3ba737e1fe03326473243795",
+      "rightHanded": true
+    },
+    {
+      "id": "scene324",
+      "upstreamPath": "lab/lite/src/lite/scene324.ts",
+      "source": "corpus/babylon-lite/lab/lite/src/lite/scene324.ts",
+      "sha256": "25565991c96bdc932518c08deb60d05d6f2973d949d3d70535fc042d6687a636",
+      "rightHanded": true
+    },
+    {
+      "id": "scene325",
+      "upstreamPath": "lab/lite/src/lite/scene325.ts",
+      "source": "corpus/babylon-lite/lab/lite/src/lite/scene325.ts",
+      "sha256": "63e0e9f22f13697f1e1b53fecd6e26996c126bd0350b1b7e42538438717742bd",
+      "rightHanded": true
+    },
+    {
+      "id": "scene326",
+      "upstreamPath": "lab/lite/src/lite/scene326.ts",
+      "source": "corpus/babylon-lite/lab/lite/src/lite/scene326.ts",
+      "sha256": "0ae2ffa72ed072a07a6f05e57713f2164a37940754cc7323573327c1eaf57b13",
+      "rightHanded": true
+    },
+    {
+      "id": "scene327",
+      "upstreamPath": "lab/lite/src/lite/scene327.ts",
+      "source": "corpus/babylon-lite/lab/lite/src/lite/scene327.ts",
+      "sha256": "ec3ad4cb480bc2e8a56bbb45e0c2953cc70433e9f9b569f4ca682b8878fddfcd",
+      "rightHanded": true
+    },
+    {
+      "id": "scene328",
+      "upstreamPath": "lab/lite/src/lite/scene328.ts",
+      "source": "corpus/babylon-lite/lab/lite/src/lite/scene328.ts",
+      "sha256": "360320c76a45e0f5eaeb10605043ac6401ac88ab1b463fb25b8897cce1f7beb5",
+      "rightHanded": true
+    },
+    {
+      "id": "scene329",
+      "upstreamPath": "lab/lite/src/lite/scene329.ts",
+      "source": "corpus/babylon-lite/lab/lite/src/lite/scene329.ts",
+      "sha256": "9689195e97a2efefd045e7cdd8695679bb9ee4530d1001bb98785c1c64ef3710",
+      "rightHanded": true
+    },
+    {
+      "id": "scene330",
+      "upstreamPath": "lab/lite/src/lite/scene330.ts",
+      "source": "corpus/babylon-lite/lab/lite/src/lite/scene330.ts",
+      "sha256": "0a1171ccd29192998d6936f90e830ad21fb45676c6392c87384910cfcf8afe90",
+      "rightHanded": true
+    },
+    {
+      "id": "scene331",
+      "upstreamPath": "lab/lite/src/lite/scene331.ts",
+      "source": "corpus/babylon-lite/lab/lite/src/lite/scene331.ts",
+      "sha256": "7611d35f13e038b48fc7a8f79ec4a1fec26b8752a479c129dbf38635103ecf65",
+      "rightHanded": true
+    },
+    {
+      "id": "scene332",
+      "upstreamPath": "lab/lite/src/lite/scene332.ts",
+      "source": "corpus/babylon-lite/lab/lite/src/lite/scene332.ts",
+      "sha256": "a657c114be7f4e9b88229d5ac6969d1c62c85981d6f2cf00dbbd77f60ffdd836",
+      "rightHanded": true
+    },
+    {
+      "id": "scene333",
+      "upstreamPath": "lab/lite/src/lite/scene333.ts",
+      "source": "corpus/babylon-lite/lab/lite/src/lite/scene333.ts",
+      "sha256": "0d1327e88d2ca6f8e90901e3fe977bf392e1f09444bcb7a0d301d314a3f17aac",
+      "rightHanded": true
+    },
+    {
+      "id": "scene334",
+      "upstreamPath": "lab/lite/src/lite/scene334.ts",
+      "source": "corpus/babylon-lite/lab/lite/src/lite/scene334.ts",
+      "sha256": "469e419a2d36e773315b855fb75e9d33a2824ad7536387b4b3c249bfd7b28fde",
+      "rightHanded": true
+    },
+    {
+      "id": "scene335",
+      "upstreamPath": "lab/lite/src/lite/scene335.ts",
+      "source": "corpus/babylon-lite/lab/lite/src/lite/scene335.ts",
+      "sha256": "6be71cdf2b79e42f7f73364aadb6f160dac91252210eef8292c90675cdfcbbdf",
+      "rightHanded": true
+    },
+    {
+      "id": "scene336",
+      "upstreamPath": "lab/lite/src/lite/scene336.ts",
+      "source": "corpus/babylon-lite/lab/lite/src/lite/scene336.ts",
+      "sha256": "83baed56ab046c36b70339fc178ddfd5076d7aaf9c5437bfb002b064d785e714",
+      "rightHanded": true
+    },
+    {
+      "id": "scene337",
+      "upstreamPath": "lab/lite/src/lite/scene337.ts",
+      "source": "corpus/babylon-lite/lab/lite/src/lite/scene337.ts",
+      "sha256": "6685dec99a8dbee0f2f3594aeb204de2f617fea146e064d55c9393ae97d4f9d7",
+      "rightHanded": true
+    },
+    {
+      "id": "scene338",
+      "upstreamPath": "lab/lite/src/lite/scene338.ts",
+      "source": "corpus/babylon-lite/lab/lite/src/lite/scene338.ts",
+      "sha256": "23eac4413721147b8bf159567c322b9701c0b15d549e89cd21a630fa0c018ab9",
+      "rightHanded": true
+    },
+    {
+      "id": "scene339",
+      "upstreamPath": "lab/lite/src/lite/scene339.ts",
+      "source": "corpus/babylon-lite/lab/lite/src/lite/scene339.ts",
+      "sha256": "5a61c7d6eecf1608ba953751ab2e34453b741186dfb75fbc46ecc4d4dd396ada",
+      "rightHanded": true
+    },
+    {
+      "id": "scene340",
+      "upstreamPath": "lab/lite/src/lite/scene340.ts",
+      "source": "corpus/babylon-lite/lab/lite/src/lite/scene340.ts",
+      "sha256": "69321399371d3e07ff32fb83e226466eb1d604c08eb035a37b51f50b31e50051",
+      "rightHanded": true
+    },
+    {
+      "id": "scene341",
+      "upstreamPath": "lab/lite/src/lite/scene341.ts",
+      "source": "corpus/babylon-lite/lab/lite/src/lite/scene341.ts",
+      "sha256": "8a8c412e2f3542596a87c14e81cd6d44171ea488f964bd2d864f2de74efb07cc",
+      "rightHanded": true
+    },
+    {
+      "id": "scene342",
+      "upstreamPath": "lab/lite/src/lite/scene342.ts",
+      "source": "corpus/babylon-lite/lab/lite/src/lite/scene342.ts",
+      "sha256": "75d86c9eb8180edc1f350a2637bfb73045178b264a3206ac6669b21fce77d79b",
+      "rightHanded": true
+    },
+    {
+      "id": "scene343",
+      "upstreamPath": "lab/lite/src/lite/scene343.ts",
+      "source": "corpus/babylon-lite/lab/lite/src/lite/scene343.ts",
+      "sha256": "7e9f8f84681deec561bcbf8fde2b5cfc62a73a9cb0e8e14180d39f2010d9a114",
+      "rightHanded": true
+    },
+    {
+      "id": "scene344",
+      "upstreamPath": "lab/lite/src/lite/scene344.ts",
+      "source": "corpus/babylon-lite/lab/lite/src/lite/scene344.ts",
+      "sha256": "dd4d694ad57681c2625dbe9055fe3af950bd16a0f64c0f8efb2c076d9f520047",
+      "rightHanded": true
+    },
+    {
+      "id": "scene345",
+      "upstreamPath": "lab/lite/src/lite/scene345.ts",
+      "source": "corpus/babylon-lite/lab/lite/src/lite/scene345.ts",
+      "sha256": "367e14b9d3c4c59cd98e13ac40978be1a6d55f216a0e509b9b32a6b1b2d4c649",
+      "rightHanded": true
+    },
+    {
+      "id": "scene346",
+      "upstreamPath": "lab/lite/src/lite/scene346.ts",
+      "source": "corpus/babylon-lite/lab/lite/src/lite/scene346.ts",
+      "sha256": "2fa2a35794c768181eba65bbbabd8da5e8ab8e020ca2a09c6f641694b3c2ea6c",
+      "rightHanded": true
+    },
+    {
+      "id": "scene347",
+      "upstreamPath": "lab/lite/src/lite/scene347.ts",
+      "source": "corpus/babylon-lite/lab/lite/src/lite/scene347.ts",
+      "sha256": "06a2c10020da64886b4c3de3f9ac2822b44d42efcaf01a28f5b358d18d8240aa",
+      "rightHanded": true
+    },
+    {
+      "id": "scene348",
+      "upstreamPath": "lab/lite/src/lite/scene348.ts",
+      "source": "corpus/babylon-lite/lab/lite/src/lite/scene348.ts",
+      "sha256": "9f8ff38cfc2a893bb86c6e5b6e8441edee3f002d188b40bc568dde66e1319df9"
+    },
+    {
+      "id": "scene353",
+      "upstreamPath": "lab/lite/src/lite/scene353.ts",
+      "source": "corpus/babylon-lite/lab/lite/src/lite/scene353.ts",
+      "sha256": "4013cec78c9cff72f8ee358e2eed5b6778c95e84d9a55cec15697d46e786165b",
+      "rightHanded": true
+    },
+    {
+      "id": "scene354",
+      "upstreamPath": "lab/lite/src/lite/scene354.ts",
+      "source": "corpus/babylon-lite/lab/lite/src/lite/scene354.ts",
+      "sha256": "8f7064647083f11d87c045739122cc7cbc74069c0bceca91e87828e9cc641021"
     }
   ],
   "modules": [
@@ -1867,6 +2081,16 @@
       "upstreamPath": "lab/lite/src/shared/scene306-external-video.ts",
       "source": "corpus/babylon-lite/lab/lite/src/shared/scene306-external-video.ts",
       "sha256": "7b0f7daee18c4ae47f13c3a1a252c0821bc28c1cac725a1026f12436baf01df1"
+    },
+    {
+      "upstreamPath": "lab/lite/src/shared/kitchen-asset.ts",
+      "source": "corpus/babylon-lite/lab/lite/src/shared/kitchen-asset.ts",
+      "sha256": "3b711a12d939eb0717b1067078cd2897c55fa78ce529851c5337c6fc5452686c"
+    },
+    {
+      "upstreamPath": "lab/lite/src/shared/scene354-opacity.ts",
+      "source": "corpus/babylon-lite/lab/lite/src/shared/scene354-opacity.ts",
+      "sha256": "f107eb2dc37f721ee66cb5635becab2286ad006dc7e961fe47f5c2db0872d2d9"
     }
   ],
   "staged": [
@@ -1896,6 +2120,13 @@
       "upstreamPath": "scripts/fetch-flight-helmet.ts",
       "source": "corpus/babylon-lite/scripts/fetch-flight-helmet.ts",
       "sha256": "f21154725f9bace24d2ba4f8d423fca8d129ac4bcd678a2855161c1e184a7d59"
+    }
+  ],
+  "packageSources": [
+    {
+      "upstreamPath": "packages/babylon-lite/src/navigation/navcat-types.ts",
+      "source": "corpus/babylon-lite/packages/babylon-lite/src/navigation/navcat-types.ts",
+      "sha256": "c6eb27c30ea5fc59e764582dc204925fe02c5413d86a881666af70680337db2e"
     }
   ],
   "applications": [
@@ -3263,7 +3494,7 @@
         {
           "upstreamPath": "lab/lite/src/demos/antigravity-racer/editor.ts",
           "source": "corpus/babylon-lite/lab/lite/src/demos/antigravity-racer/editor.ts",
-          "sha256": "52ac31827ffe91c767100b2575a035bf125766e90cb630ec551ef93ed46643bb"
+          "sha256": "f64ddffb80f7c9f5ac8215f17dc4ede1b386d6aebb2af32f95e2b06c9cc79446"
         },
         {
           "upstreamPath": "lab/lite/src/demos/antigravity-racer/environment.ts",
@@ -3737,7 +3968,7 @@
         "sha256": "6669eefcaee453bbabe617fda3a2207cb819bc0e6785aadac673fef81c58ba6d",
         "provenance": {
           "source": "reference/ocean/provenance.json",
-          "sha256": "8abb4cf94b350376929cc7ddc71b519bd9ab633a50fca8686589d29e36cffb90"
+          "sha256": "e072711e131e9fadca6f73ea4e7c986ff0a5ab304c96dfea5150e38287e0243d"
         }
       },
       "files": [
@@ -4462,18 +4693,18 @@
       "entry": "corpus/babylon-lite/lab/lite/src/demos/screen-space-effects.ts",
       "reference": {
         "source": "reference/screen-space-effects/babylon-lite-golden.png",
-        "sha256": "3082288ee3cc7c5d5338224288f3e4981f4d2492a46a76b33cdefa22caaf3b55"
+        "sha256": "73b76b0296d25fa5addba2f927a5058c13d6dd1e9faebbe93f9f432d325db46c"
       },
       "files": [
         {
           "upstreamPath": "lab/lite/demo-screen-space-effects.html",
           "source": "corpus/babylon-lite/lab/lite/demo-screen-space-effects.html",
-          "sha256": "3011fb89ba35bca18d536ff666021d6551051e7d6aeb88cff358475a775b5483"
+          "sha256": "11e0452fc168f6b2f3e041fdcb62e28af7653e20fb0f13f93b51d6ca343af8ef"
         },
         {
           "upstreamPath": "lab/lite/src/demos/screen-space-effects.ts",
           "source": "corpus/babylon-lite/lab/lite/src/demos/screen-space-effects.ts",
-          "sha256": "8c5f8f63a795ef92286b9aa852dfe80acbc52c8ba4d75ca848deeb4146322ed8"
+          "sha256": "18861a6f51c71d111e8ef9358c26b209bc08207410b21e040a599ee6c39885b8"
         },
         {
           "upstreamPath": "lab/lite/src/demos/demo-asset-url.ts",
@@ -4638,7 +4869,7 @@
         "sha256": "0ff7af399b66ece8cf728f810d7643ac0f03a9fae1b54d01c7eead70d5b464b2",
         "provenance": {
           "source": "reference/playroom/provenance.json",
-          "sha256": "21186b046fd36d2018187fe71f20001ad851a2e127f1d3801e6cae6dc04e9927"
+          "sha256": "343aae103a30969555cd26fa145b35655d2f6a5ab8a5f2a0cd0b918e4bdc7235"
         }
       },
       "files": [
@@ -5290,6 +5521,66 @@
           "upstreamPath": "lab/public/mesh-lod/harvard-yenching_institute_statue.mesh002.prim000.mlod",
           "source": "corpus/babylon-lite/lab/lite/src/demos/mesh-lod/harvard-yenching_institute_statue.mesh002.prim000.mlod",
           "sha256": "260ba32d3eb082d6ed527f96dc5d48daec3ef4381a8022983acef69510e12ca6"
+        }
+      ]
+    },
+    {
+      "id": "navcat",
+      "entry": "corpus/babylon-lite/lab/lite/src/demos/navcat.ts",
+      "reference": {
+        "source": "reference/navcat/babylon-lite-golden.png",
+        "sha256": "245e52c6fd36d8ef2b859db4dbd46d1c3a081c97d230fd5df521aa50d27e0752"
+      },
+      "files": [
+        {
+          "upstreamPath": "lab/lite/demo-navcat.html",
+          "source": "corpus/babylon-lite/lab/lite/demo-navcat.html",
+          "sha256": "be37d2b7acdc0e0a0d8cab29db460ef9092e01db8af1b2f24d8920c9c3d1faa3"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/navcat.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/navcat.ts",
+          "sha256": "17a7f498404ca4bcbd00146519e50ce30917bb62ce2a69145c78726784ac095d"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/demo-asset-url.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/demo-asset-url.ts",
+          "sha256": "510bcb4713fbcec8f2eafefd04bba909197063f7a257c1e910bb35d1409e8c06"
+        },
+        {
+          "upstreamPath": "lab/public/navcat/demo-navmesh.json",
+          "source": "corpus/babylon-lite/lab/public/navcat/demo-navmesh.json",
+          "sha256": "63ace463f25498484aef3e6a58e5245ec6f1a936cd670ac59af1eff4562df08b"
+        }
+      ]
+    },
+    {
+      "id": "ambient-occlusion",
+      "entry": "corpus/babylon-lite/lab/lite/src/demos/ambient-occlusion.ts",
+      "reference": {
+        "source": "reference/ambient-occlusion/babylon-lite-golden.png",
+        "sha256": "bcf3a0c73822d7e4b8b468e5ad4a440dda4f17abf2ffce9fc3d13fc75a9d1229"
+      },
+      "files": [
+        {
+          "upstreamPath": "lab/lite/demo-ambient-occlusion.html",
+          "source": "corpus/babylon-lite/lab/lite/demo-ambient-occlusion.html",
+          "sha256": "ec7c6c31f844d79ffee28f3e8b4153de3f0632c9f891cf35169f5ec8ca2cb93c"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/ambient-occlusion.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/ambient-occlusion.ts",
+          "sha256": "34095cdfab6d7603b31a51a51db2e8b37266fbbe32a2c7d6553d74103045b32e"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/ambient-occlusion-deformation.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/ambient-occlusion-deformation.ts",
+          "sha256": "a079d9e897dfc7d325ff39420a214efe83143c73bf22a8bb3227995f50feeb58"
+        },
+        {
+          "upstreamPath": "lab/public/brdf-lut.png",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/brdf-lut.png",
+          "sha256": "f10818901fccd58cd708fef7979daa3a37294b0bca53f450dc37e1589419813d"
         }
       ]
     }

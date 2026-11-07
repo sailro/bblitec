@@ -13,6 +13,7 @@
 #include <bblite/features/has_sprite_renderer.hpp>
 #include <bblite/features/mesh_attribute_update.hpp>
 #include <bblite/features/mesh_geometry_update.hpp>
+#include <bblite/features/mesh_opacity.hpp>
 #include <bblite/features/render_task_transmission.hpp>
 #include <bblite/features/shadows_csm.hpp>
 
@@ -84,8 +85,8 @@ SDL_GPUGraphicsPipeline* secondary_pipeline_for(const SecondaryPipelines& pipeli
     case upstream::RenderMaterialKind::shader: {
         const std::vector<SDL_GPUGraphicsPipeline*>* variants =
             pipeline_kind_wants_a2c(kind) ? pipelines.shader_a2c : pipelines.shader;
-        return variants && shader_variant < variants->size() ? (*variants)[shader_variant]
-                                                             : nullptr;
+        const std::size_t slot = shader_pipeline_slot(shader_variant, kind.clockwise_front_face);
+        return variants && slot < variants->size() ? (*variants)[slot] : nullptr;
     }
     case upstream::RenderMaterialKind::node:
         // Node draws bind their own compiled graphs; a node kind here
@@ -139,6 +140,10 @@ GpuMeshSlotMembers mesh_slot_members(upstream::MaterialTextureSource source) {
 #if BBLITE_MATERIAL_LIGHTMAP
     case Source::lightmap:
         return {&GpuMesh::lightmap, &GpuMesh::lightmap_sampler};
+#endif
+#if BBLITE_MATERIAL_BENT_NORMAL
+    case Source::bent_normal:
+        return {&GpuMesh::bent_normal, &GpuMesh::bent_normal_sampler};
 #endif
 #if BBLITE_MATERIAL_METALLIC_REFLECTANCE_MAP
     case Source::metallic_reflectance:
@@ -378,6 +383,10 @@ void release_gpu_mesh_resources([[maybe_unused]] GpuState* state, GpuMeshResourc
         state->kept_buffers.release(state->device, mesh.morph_weights);
     }
 #endif
+#if BBLITE_MESH_OPACITY
+    for (GpuMesh::MeshOpacityStorage& binding : mesh.mesh_opacity)
+        state->kept_buffers.release(state->device, binding.buffer);
+#endif
     if (mesh.shared_composed_textures) {
         release_shared_user(mesh.shared_composed_textures,
                             "Composed material texture reference count underflow.");
@@ -536,17 +545,7 @@ GpuMesh upload_sdl_gpu_scene_mesh(GpuState& state, Engine& engine, const upstrea
                                   GpuBufferUploadBatch* buffer_uploads) {
     const ModelGeometry& geometry = engine.geometries[item.geometry];
     const MeshRecord& mesh_record = handle_at(engine.meshes, item.mesh);
-    const bool use_source_indices = mesh_record.detached_imported_mesh
-#if BBLITE_NODE_GEOMETRY_VARIANTS > 0
-                                    || item.material_kind == upstream::RenderMaterialKind::node
-#endif
-        ;
-    std::vector<std::uint32_t> source_indices;
-    if (use_source_indices && geometry.source_indices_reversed) {
-        node_source_indices(geometry, source_indices);
-    }
-    const auto& upload_indices =
-        source_indices.empty() ? mesh_gpu_indices(geometry) : source_indices;
+    const auto& upload_indices = mesh_gpu_indices(geometry);
     const bool shader_material = item.material_kind == upstream::RenderMaterialKind::shader;
     const std::vector<GpuVertex> vertices = mesh_gpu_vertices(geometry, mesh_record);
     const auto upload_mesh_buffer = [&, buffer_uploads](SDL_GPUBufferUsageFlags usage,

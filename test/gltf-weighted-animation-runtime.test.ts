@@ -425,7 +425,7 @@ struct Mask { std::vector<std::string> names; double mode = 0; bool disabled = f
 struct Target { bool active = false, has_bone_overrides = false; double bone_override_count = 0;
     std::vector<Node> nodes; std::vector<Skeleton> skeletons;
     std::vector<float> currentTRS, localMat, worldMat, tWeight, rWeight, sWeight, _boneTmp = std::vector<float>(16);
-    std::vector<float> RH_TO_LH{-1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1};
+    std::vector<float> ROOT_TRANSFORM{-1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1};
     std::optional<std::vector<float>> baseRot; std::vector<double> topo_order{0,1,2}; };
 struct Scratch { std::vector<float> sample = std::vector<float>(16), reference = std::vector<float>(16), delta = std::vector<float>(16); };
 struct Clip { std::vector<Channel> channels; std::vector<Sampler> samplers; };

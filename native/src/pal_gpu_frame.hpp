@@ -302,22 +302,41 @@ public:
                 !options_->cluster_buffer_path.empty() || !options_->render_capture_path.empty());
     }
 
-    [[nodiscard]] bool pending() const {
-        return (!options_->screenshot_path.empty() && !screenshot_saved) ||
-               (!options_->id_buffer_path.empty() && !id_buffer_saved) ||
+    [[nodiscard]] bool screenshot_pending() const {
+        return !options_->screenshot_path.empty() && !screenshot_saved;
+    }
+
+    /** Whether a capture other than the screenshot is still waiting. */
+    [[nodiscard]] bool buffers_pending() const {
+        return (!options_->id_buffer_path.empty() && !id_buffer_saved) ||
                (!options_->cluster_buffer_path.empty() && !cluster_buffer_saved) ||
                (!options_->render_capture_path.empty() && !render_capture_saved);
+    }
+
+    [[nodiscard]] bool pending() const { return screenshot_pending() || buffers_pending(); }
+
+    /** Whether `frame` is the requested screenshot's, or a stopped engine's last (`conduct_frame`). */
+    [[nodiscard]] bool screenshot_frame_reached(long frame) const {
+        return frame >= options_->screenshot_frame || engine_stopped();
+    }
+
+    /**
+     * Whether the scene loops capture `frame`: its screenshot frame is
+     * reached, no topology update defers it, and the drains resolved.
+     */
+    [[nodiscard]] bool frame_capture_ready(long frame, bool topology_updated) const {
+        return screenshot_frame_reached(frame) && !topology_updated && drains_resolved();
     }
 
     /**
      * Whether the engine's own `stopEngine` has ended the run.
      *
      * The pin cancels its animation frame and clears `_renderFn`, so no
-     * further frame submits and the canvas keeps what it last drew. Here
-     * the loop keeps presenting that unchanged frame only while a capture
-     * is still pending, so a screenshot lands on the frozen frame exactly
-     * as the browser harness takes one off the frozen canvas -- and stops
-     * the moment nothing is waiting for it.
+     * further frame submits and the canvas keeps what it last drew. Here a
+     * frame that begins stopped draws nothing (`conduct_frame`) and hands a
+     * capture still pending the frozen image, exactly as the browser harness
+     * takes one off the frozen canvas; the loop stops the moment nothing is
+     * waiting for it.
      *
      * It lives here rather than at each call site for the reason this
      * class exists at all: there are six frame loops, and a rule spelled
@@ -355,9 +374,7 @@ public:
         // A measured run ends the moment a stopped engine has nothing
         // left to capture. An INTERACTIVE one does not: the browser's
         // `stopEngine` freezes the canvas and leaves the page up, so the
-        // window stays, input keeps working and the frozen scene can
-        // still be orbited -- which is the manual check every integration
-        // owes before it is called done.
+        // window stays and keeps its events while showing the frozen frame.
         if (engine_stopped() && requested() && !pending()) {
             return false;
         }

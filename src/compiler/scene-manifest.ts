@@ -25,6 +25,7 @@ import {
     sourceInstanceLanes,
 } from "./shader-material.js";
 import { lowerWgslShaderProgram } from "../shader-ir.js";
+import { SSAO_LIVE_SETTINGS } from "./types.js";
 import type {
     ClusteredContainerState,
     CompileManifest,
@@ -34,6 +35,7 @@ import type {
     CompiledShaderProgram,
     EffectManifest,
     GeometryOutputTaskManifest,
+    GeometryTextureTypeName,
     LightKind,
     PostProcessCompositeManifest,
     PostProcessTaskManifest,
@@ -49,6 +51,8 @@ import type {
     ScenePbrSubsurfaceManifest,
     ScreenSpaceTaskManifest,
     ShadowCasterMeshManifest,
+    SsaoLiveSetting,
+    SsaoTaskManifest,
     ShadowGeneratorManifest,
     SplatFragmentManifest,
     SpriteCustomShaderManifest,
@@ -80,6 +84,16 @@ export interface ResourceConstructionState {
      */
     readonly gltfContainers: number;
     readonly lightIdentities: readonly NonNullable<Value["lightIdentity"]>[];
+}
+
+/** What the program reached of one SSAO task after its creation. */
+interface SsaoTaskReach {
+    halfResolution: boolean;
+    motionPruning: boolean;
+    /** The program-selecting settings it writes, in first-write order. */
+    live: readonly SsaoLiveSetting[];
+    /** A later `normalTexture` write's attachment, for a task created without one. */
+    normalAttachment?: GeometryTextureTypeName;
 }
 
 /** How many composition records existed when a caller started to watch. */
@@ -127,6 +141,8 @@ export class SceneManifestRecorder {
         });
     public readonly geometryOutputTasks: GeometryOutputTaskManifest[] =
         emissionArray([]);
+    /** `enableGeometryVelocity`'s previous-depth contract, by task shader index. */
+    private readonly geometryVelocity = new EmissionMap<number, boolean>();
     private readonly copyTasks: string[] = emissionArray([]);
     /** The pinned audio functions the program calls (`upstream_static_sound.hpp`). */
     private readonly audioLibraryRoots = new EmissionSet<string>();
@@ -138,6 +154,9 @@ export class SceneManifestRecorder {
     public readonly screenSpaceTasks: ScreenSpaceTaskManifest[] = emissionArray(
         [],
     );
+    public readonly ssaoTasks: SsaoTaskManifest[] = emissionArray([]);
+    /** What the program reached of each SSAO task after its creation, by task index. */
+    private readonly ssaoReach = new EmissionMap<number, SsaoTaskReach>();
     /** The clustered container this scene added, if it added one. */
     @journaled private accessor clusteredContainer:
         ClusteredContainerState | undefined;
@@ -161,13 +180,15 @@ export class SceneManifestRecorder {
     > = emissionArray([]);
     private readonly shadowReceiverMeshes = new EmissionSet<number>();
     @journaled private accessor dynamicShadowReceivers = false;
+    private readonly meshOpacityMeshes = new EmissionSet<number>();
+    @journaled private accessor dynamicMeshOpacity = false;
     /**
      * `mesh.id`, by the handle spelling the write named, and the meshes each
      * id names.
      *
      * `Mesh.id` is not `SceneNode.name`: the pin declares it separately as
      * the unique id a source file carries, and `src/render/mesh-light-selection.ts`
-     * `lightAffectsMeshId` is its only admitted reader. So the string is a join key rather
+     * `lightAffectsMesh` is its only admitted reader. So the string is a join key rather
      * than record state, and the join folds here exactly as the `.babylon`
      * loader folds its own `meshes_by_id` — an id names a LIST,
      * because nothing upstream enforces uniqueness.
@@ -297,7 +318,14 @@ export class SceneManifestRecorder {
             ...(this.selectedToneMapping
                 ? { toneMapping: this.selectedToneMapping }
                 : {}),
-            geometryOutputTasks: this.geometryOutputTasks,
+            geometryOutputTasks: this.geometryOutputTasks.map((task) => {
+                const previousDepth = this.geometryVelocity.get(
+                    task.shaderIndex,
+                );
+                return previousDepth === undefined
+                    ? task
+                    : { ...task, velocity: { previousDepth } };
+            }),
             ...(this.copyTasks.length > 0 ? { copyTasks: this.copyTasks } : {}),
             ...(this.audioLibraryRoots.size > 0
                 ? { audioLibraryRoots: [...this.audioLibraryRoots] }
@@ -305,6 +333,21 @@ export class SceneManifestRecorder {
             postProcessTasks: this.postProcessTasks,
             postProcessComposites: this.postProcessComposites,
             screenSpaceTasks: this.screenSpaceTasks,
+            ssaoTasks: this.ssaoTasks.map((task) => {
+                const reach = this.ssaoTaskReach(task);
+                const normalAttachment = this.ssaoNormalAttachment(task);
+                return {
+                    ...task,
+                    ...(normalAttachment !== undefined
+                        ? { normalAttachment }
+                        : {}),
+                    halfResolution: reach.halfResolution,
+                    motionPruning: reach.motionPruning,
+                    live: SSAO_LIVE_SETTINGS.filter((setting) =>
+                        reach.live.includes(setting),
+                    ),
+                };
+            }),
             adaptations,
             scenePbrMaterials: this.scenePbrMaterials.map(
                 (material, index) => ({
@@ -398,6 +441,10 @@ export class SceneManifestRecorder {
                 (left, right) => left - right,
             ),
             dynamicShadowReceivers: this.dynamicShadowReceivers,
+            meshOpacityMeshes: [...this.meshOpacityMeshes].sort(
+                (left, right) => left - right,
+            ),
+            dynamicMeshOpacity: this.dynamicMeshOpacity,
             splatFragments: this.sceneSplatFragments ?? [],
             spriteCustomShaders: this.sceneSpriteCustomShaders,
             effects: this.effects,
@@ -697,6 +744,9 @@ export class SceneManifestRecorder {
                 if (this.shadowReceiverMeshes.has(source)) {
                     this.shadowReceiverMeshes.add(index);
                 }
+                if (this.meshOpacityMeshes.has(source)) {
+                    this.meshOpacityMeshes.add(index);
+                }
             }
             for (const loadCount of materials) {
                 this.sceneMaterialGltfAssetsBefore.push(loadCount);
@@ -827,6 +877,13 @@ export class SceneManifestRecorder {
         this.sceneMaterials.recordScenePbrGammaAlbedo(index);
     }
 
+    public recordScenePbrAlphaCutoff(
+        index: number | undefined,
+        cutoff: number,
+    ): Readonly<ScenePbrMaterialManifest> {
+        return this.sceneMaterials.recordScenePbrAlphaCutoff(index, cutoff);
+    }
+
     public recordScenePbrShadowOnly(
         index: number | undefined,
         options: NonNullable<ScenePbrMaterialManifest["shadowOnly"]>,
@@ -858,7 +915,13 @@ export class SceneManifestRecorder {
                 : material.assetWholeMeshList
                   ? {
                         kind: "asset",
-                        output: material.assetWholeMeshList.output,
+                        output: material.assetWholeMeshList.asset.output,
+                        ...(material.assetWholeMeshList.container !== undefined
+                            ? {
+                                  container:
+                                      material.assetWholeMeshList.container,
+                              }
+                            : {}),
                     }
                   : { kind: "assets" },
             write,
@@ -1378,10 +1441,19 @@ export class SceneManifestRecorder {
     }
 
     /**
+     * A `setMeshOpacity` target, by scene-mesh index; a handle with none can
+     * be any mesh.
+     */
+    public recordMeshOpacityTarget(sceneMeshIndex: number | undefined): void {
+        if (sceneMeshIndex === undefined) this.dynamicMeshOpacity = true;
+        else this.meshOpacityMeshes.add(sceneMeshIndex);
+    }
+
+    /**
      * `mesh.id = "..."`, by the handle spelling the write named.
      *
      * Nothing is emitted: the pin's only admitted reader of `Mesh.id` is
-     * `lightAffectsMeshId`, whose join `resolveSceneMeshIds` folds, so the string
+     * `lightAffectsMesh`, whose join `resolveSceneMeshIds` folds, so the string
      * has no run-time reader to store it for. A write that would make an
      * ALREADY-emitted include set stale refuses instead, because the fold
      * cannot revisit a statement it has written.
@@ -1674,6 +1746,25 @@ export class SceneManifestRecorder {
         this.geometryOutputTasks.push(manifest);
     }
 
+    /**
+     * `enableGeometryVelocity(task, options)`: the contract its first call
+     * installs, which a later call must restate (the pin's `WeakMap`).
+     */
+    public recordGeometryVelocity(
+        manifest: GeometryOutputTaskManifest,
+        previousDepth: boolean,
+        site: ts.Node,
+    ): void {
+        const enabled = this.geometryVelocity.get(manifest.shaderIndex);
+        if (enabled !== undefined && enabled !== previousDepth) {
+            this.context.fail(
+                site,
+                "Geometry velocity was already enabled with a different previous-depth contract.",
+            );
+        }
+        this.geometryVelocity.set(manifest.shaderIndex, previousDepth);
+    }
+
     public recordCopyTask(name: string): void {
         this.copyTasks.push(name);
     }
@@ -1714,5 +1805,71 @@ export class SceneManifestRecorder {
 
     public recordScreenSpaceTask(manifest: ScreenSpaceTaskManifest): void {
         this.screenSpaceTasks.push(manifest);
+    }
+
+    public recordSsaoTask(manifest: SsaoTaskManifest): void {
+        this.ssaoTasks.push(manifest);
+    }
+
+    private ssaoTaskReach(manifest: SsaoTaskManifest): SsaoTaskReach {
+        return (
+            this.ssaoReach.get(manifest.taskIndex) ?? {
+                halfResolution: false,
+                motionPruning: false,
+                live: [],
+            }
+        );
+    }
+
+    /** One fact of what the program reached of a task, as a new record. */
+    private reachSsaoTask(
+        manifest: SsaoTaskManifest,
+        update: Partial<SsaoTaskReach>,
+    ): void {
+        this.ssaoReach.set(manifest.taskIndex, {
+            ...this.ssaoTaskReach(manifest),
+            ...update,
+        });
+    }
+
+    /** An SSAO enabler the program reached for one task. */
+    public recordSsaoEnabler(
+        enabler: "half-resolution" | "motion-pruning",
+        manifest: SsaoTaskManifest,
+    ): void {
+        this.reachSsaoTask(
+            manifest,
+            enabler === "half-resolution"
+                ? { halfResolution: true }
+                : { motionPruning: true },
+        );
+    }
+
+    /** A program-selecting SSAO setting the program writes after creation. */
+    public recordSsaoLiveSetting(
+        setting: SsaoLiveSetting,
+        manifest: SsaoTaskManifest,
+    ): void {
+        const { live } = this.ssaoTaskReach(manifest);
+        if (!live.includes(setting))
+            this.reachSsaoTask(manifest, { live: [...live, setting] });
+    }
+
+    /** The geometry attachment a later `normalTexture` write supplies. */
+    public recordSsaoNormalAttachment(
+        attachment: GeometryTextureTypeName,
+        manifest: SsaoTaskManifest,
+    ): void {
+        this.reachSsaoTask(manifest, { normalAttachment: attachment });
+    }
+
+    /** The task's normal input attachment: its creation's, else a later write's. */
+    public ssaoNormalAttachment(
+        manifest: SsaoTaskManifest,
+    ): GeometryTextureTypeName | undefined {
+        return (
+            manifest.normalAttachment ??
+            this.ssaoTaskReach(manifest).normalAttachment
+        );
     }
 }

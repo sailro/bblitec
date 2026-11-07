@@ -176,11 +176,11 @@ test("enum-indexed constant palettes preserve strings through nested stylesheet 
     `);
     assert.match(
         result.cpp,
-        /ui_add_class_style[^\n]*"water"[^\n]*--bbl-background-color:#123456;color:white/,
+        /ui_add_class_style[^\n]*"water"[^\n]*background-color:#123456;color:white/,
     );
     assert.match(
         result.cpp,
-        /ui_add_class_style[^\n]*"beach"[^\n]*--bbl-background-color:#fedcba;color:black/,
+        /ui_add_class_style[^\n]*"beach"[^\n]*background-color:#fedcba;color:black/,
     );
 });
 

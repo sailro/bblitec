@@ -5,7 +5,7 @@ import {
     unwrapExpression,
 } from "./syntax.js";
 import { staticAccessKey, libraryStaticMember } from "./symbols.js";
-import { unionMembers } from "./type-facts.js";
+import { unionMembers, valueKindOf } from "./type-facts.js";
 import type { PatternRead } from "./syntax.js";
 import { unlessRefused } from "./compile-error.js";
 import type { LoweringServices } from "./lowering-services.js";
@@ -20,6 +20,7 @@ const reflectiveObjectMethods = new Set([
 ]);
 
 const cache = new WeakMap<ts.Program, Map<string, boolean>>();
+const readCache = new WeakMap<ts.Program, Map<string, boolean>>();
 
 /**
  * Whether no reached source can observe a property named `name`: nothing
@@ -34,13 +35,36 @@ export function propertyNeverObserved(
     checker: ts.TypeChecker,
     name: string,
 ): boolean {
-    let names = cache.get(program);
+    return unobserved(program, checker, name, cache, false);
+}
+
+/**
+ * {@link propertyNeverObserved}, where a plain write (`owner.name = value`)
+ * is not an observation: no reached source reads the value back.
+ */
+export function propertyNeverRead(
+    program: ts.Program,
+    checker: ts.TypeChecker,
+    name: string,
+): boolean {
+    return unobserved(program, checker, name, readCache, true);
+}
+
+function unobserved(
+    program: ts.Program,
+    checker: ts.TypeChecker,
+    name: string,
+    caches: WeakMap<ts.Program, Map<string, boolean>>,
+    writesUnread: boolean,
+): boolean {
+    let names = caches.get(program);
     if (!names) {
         names = new Map();
-        cache.set(program, names);
+        caches.set(program, names);
     }
     const known = names.get(name);
     if (known !== undefined) return known;
+    const numericName = String(Number(name)) === name;
     const carries = (expression: ts.Expression): boolean => {
         const type = checker.getTypeAtLocation(expression);
         const parts = unionMembers(type);
@@ -75,12 +99,32 @@ export function propertyNeverObserved(
         );
     };
     const observes = (node: ts.Node): boolean => {
-        if (ts.isPropertyAccessExpression(node) && node.name.text === name)
+        if (
+            ts.isPropertyAccessExpression(node) &&
+            node.name.text === name &&
+            !(
+                writesUnread &&
+                ts.isBinaryExpression(node.parent) &&
+                node.parent.left === node &&
+                node.parent.operatorToken.kind === ts.SyntaxKind.EqualsToken
+            )
+        )
             return true;
         if (ts.isElementAccessExpression(node)) {
-            // A key only the run time knows may be this one.
+            // A key only the run time knows may be this one, unless it is a
+            // number and no number converts to this name.
             const key = staticAccessKey(checker, node);
-            if ((key === undefined || key === name) && carries(node.expression))
+            if (
+                (key === undefined || key === name) &&
+                !(
+                    key === undefined &&
+                    !numericName &&
+                    valueKindOf(
+                        checker.getTypeAtLocation(node.argumentExpression),
+                    ) === "number"
+                ) &&
+                carries(node.expression)
+            )
                 return true;
         }
         if (ts.isObjectBindingPattern(node) && readsName(patternSlots(node)))
