@@ -73,7 +73,7 @@ test("PBR helper texture returns retain their stored payload before material con
     ]);
     assert.deepEqual(creationWrites, [1, 2, 4]);
     const compiled = compileSource(source);
-    assert.equal(compiled.cpp.match(/std::get<bbl::FileTexture>/g)?.length, 4);
+    assert.equal(compiled.cpp.match(/bbl::set_pbr_texture\(/g)?.length, 4);
     const tools = optionalNativeFixtureTools(false);
     if (!tools) {
         t.skip("A native compiler is required.");
@@ -96,10 +96,9 @@ test("PBR helper texture returns retain their stored payload before material con
         ),
         cppFunction(texture, "SolidTexture create_solid_texture("),
         cppFunction(texture, "FileTexture solid_texture_file("),
-        cppFunction(material, "void set_material_base_color_file("),
-        cppFunction(material, "void set_material_orm_file(").replace(
-            "void set_material_orm_file(",
-            "void apply_material_orm_file(",
+        cppFunction(material, "void set_pbr_texture(").replace(
+            "void set_pbr_texture(",
+            "void apply_pbr_texture(",
         ),
     ].join("\n");
     writeFileSync(
@@ -111,8 +110,9 @@ test("PBR helper texture returns retain their stored payload before material con
 unsigned attachments=0;
 namespace bbl {
 ${functions}
-void set_material_orm_file(Engine& engine,MaterialHandle material,FileTexture texture){
-    apply_material_orm_file(engine,material,std::move(texture));
+void set_pbr_texture(Engine& engine,MaterialHandle material,MaterialTextureSlot slot,StoredTexture texture){
+    apply_pbr_texture(engine,material,slot,std::move(texture));
+    if(slot!=MaterialTextureSlot::orm)return;
     const auto& record=engine.materials.at(material.value);
     const std::array<std::array<std::uint8_t,4>,3> expected{{{255,64,0,255},{255,191,128,255},{255,255,0,255}}};
     const auto& bytes=expected.at(attachments++);

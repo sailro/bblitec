@@ -141,14 +141,14 @@ test("records a bent normal texture as a state its material can reach", () => {
             alphaBlend: [],
             alphaBelowOne: [],
             baseColorFactor: false,
-            bentNormalTexture: true,
+            bentNormalTexture: "definite",
             pluginSignatures: [],
             pluginAppends: [],
         },
     ]);
     assert.match(
         result.cpp,
-        /bbl::set_pbr_bent_normal_texture\(v_engine, v_material, v_bent\);/,
+        /bbl::set_pbr_texture\(v_engine, v_material, bbl::MaterialTextureSlot::bent_normal, v_bent\);/,
     );
     assert.match(result.cpp, /\.bent_normal_strength = 0\.25f;/);
 });

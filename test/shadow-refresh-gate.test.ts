@@ -336,7 +336,7 @@ test("preserves requested depth-only fragments in custom shadow pipelines", () =
     );
     assert.match(
         sdl,
-        /if \(render_features\.shader_shadow_variants\[variant\]\) \{[\s\S]{0,700}shadow_pipeline_info\.fragment_shader =\s*info\.depth_only_fragment \? variant_fragment_shader\s*:\s*state\.depth_only_fragment_shader\.get\(\);[\s\S]{0,700}pass_depth_compare\(true\)[\s\S]{0,700}SDL_GPU_TEXTUREFORMAT_D32_FLOAT[\s\S]{0,700}shader_shadow_pipelines\[variant\]/,
+        /if \(render_features\.shader_shadow_variants\[variant\]\) \{[\s\S]{0,700}shadow_pipeline_info\.fragment_shader =\s*info\.depth_only_fragment \? variant_fragment_shader\s*:\s*state\.depth_only_fragment_shader\.get\(\);[\s\S]{0,700}pass_depth_compare\(true\)[\s\S]{0,700}SDL_GPU_TEXTUREFORMAT_D32_FLOAT[\s\S]{0,700}shader_shadow_pipelines\[slot\]/,
     );
     assert.match(
         sdl,
@@ -344,7 +344,7 @@ test("preserves requested depth-only fragments in custom shadow pipelines", () =
     );
     assert.match(
         sdl,
-        /shadow_pipeline_info[\s\S]{0,1800}if \(!variant_fragment_shader\)\s+continue;\s*state\.shader_pipelines\[variant\]/,
+        /shadow_pipeline_info[\s\S]{0,1800}if \(!variant_fragment_shader\)\s+continue;\s*state\.shader_pipelines\[slot\]/,
     );
     assert.match(
         sdl,

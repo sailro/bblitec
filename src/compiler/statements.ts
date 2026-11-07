@@ -499,16 +499,20 @@ export class StatementLowerer {
     private readonly neverTerminators = new EmissionWeakSet<ts.Statement>();
     /** The constructs jumps can bind, innermost last. */
     private readonly jumpTargets = emissionArray<JumpTarget>([]);
-    /** Where each native function body's own jump targets begin. */
-    private readonly functionTargetBases = emissionArray<number>([]);
+    /** Where each callback body's own jump targets begin. */
+    private readonly callbackTargetBases = emissionArray<number>([]);
 
-    /** A native function body starts: its loops are its own. */
-    public enterFunctionBody(): void {
-        this.functionTargetBases.push(this.jumpTargets.length);
+    /**
+     * A closure that outlives its creating scope (a callback) starts: the
+     * loops around its creation do not run its statements. A body borrowed
+     * for its scope (a helper a loop calls) keeps the call site's loops.
+     */
+    public enterCallbackBody(): void {
+        this.callbackTargetBases.push(this.jumpTargets.length);
     }
 
-    public leaveFunctionBody(): void {
-        this.functionTargetBases.pop();
+    public leaveCallbackBody(): void {
+        this.callbackTargetBases.pop();
     }
     /** Runtime branches being emitted: an exit below one is not settled. */
     @journaled private accessor runtimeBranchDepth = 0;
@@ -1872,7 +1876,7 @@ export class StatementLowerer {
         // a callback does not run the callback's statements.
         if (
             this.jumpTargets
-                .slice(this.functionTargetBases.at(-1) ?? 0)
+                .slice(this.callbackTargetBases.at(-1) ?? 0)
                 .some(({ iteration }) => iteration)
         ) {
             if (

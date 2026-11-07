@@ -16,6 +16,7 @@ import {
     sceneBackendSource,
     sharedGpuSource,
 } from "./native-fixture.js";
+import { lowerShaderSystemBlockFinish } from "../src/lowering/shader-system-cache.js";
 
 test("geometry stays local: shader draws share one world record and a mesh uploads its geometry's own lanes", (t) => {
     const tools = optionalNativeFixtureTools(false);
@@ -47,6 +48,7 @@ test("geometry stays local: shader draws share one world record and a mesh uploa
         ${cppRecord(plan.header, "enum class ShaderSystemMatrix")}
         ${cppRecord(plan.header, "struct ShaderSystemUniform")}
         ${cppRecord(plan.header, "struct ShaderVariantStageBlock")}
+        ${lowerShaderSystemBlockFinish(context)}
         ${[
             "std::array<float, 16> mesh_local_matrix(",
             "std::array<float, 16> transform_node_world(",

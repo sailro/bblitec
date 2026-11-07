@@ -9,6 +9,7 @@ import {
     optionalNativeFixtureTools,
     runGeneratedProgram,
 } from "./native-fixture.js";
+import { pinnedError } from "./pinned-errors.js";
 
 interface PinVatHandle {
     play(name: string): void;
@@ -499,9 +500,31 @@ test("createVatBakeResults validates prepared payloads in the pin's order and ke
         }
     };
     const expected = cases.map(([prepared]) => answer(prepared)).join("|");
-    assert.match(
+    const positive = pinnedError(
+        "VAT prepared payload: ${a0} must be a positive integer.",
+    );
+    const dataLength = pinnedError(
+        "VAT prepared payload: data length must equal boneCount * frameCount * 16.",
+    );
+    const clip = pinnedError('VAT prepared payload: clip "${a0}" is invalid.');
+    assert.equal(
         expected,
-        /^2x3 walk:0,2,30 1=9\|#933\|#933\|#937\|#939\|#939\|#939\|#935\|#936\|#933$/,
+        [
+            "2x3 walk:0,2,30 1=9",
+            positive,
+            positive,
+            dataLength,
+            clip,
+            clip,
+            clip,
+            pinnedError(
+                'VAT prepared payload: ${a0} contains invalid bone index "${a1}".',
+            ),
+            pinnedError(
+                "VAT prepared payload: ${a0}[${a1}] has an invalid length.",
+            ),
+            positive,
+        ].join("|"),
     );
 
     const feed = cases.map(

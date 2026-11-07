@@ -15,6 +15,7 @@ import {
     optionalNativeFixtureTools,
     runGeneratedProgram,
 } from "./native-fixture.js";
+import { pinnedError } from "./pinned-errors.js";
 
 const NAVMESH = "corpus/babylon-lite/lab/public/navcat/demo-navmesh.json";
 
@@ -172,7 +173,7 @@ void (async () => {
     } catch (error) {
         message = error instanceof Error ? error.message : "not an Error";
     }
-    if (message !== "#666") throw new Error("disposed manager query threw '" + message + "'");
+    if (message !== ${JSON.stringify(pinnedError("Navcat manager is disposed"))}) throw new Error("disposed manager query threw '" + message + "'");
     globalThis.close();
 })();
 `,

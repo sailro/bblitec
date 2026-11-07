@@ -7105,15 +7105,8 @@ class Compiler implements LoweringServices {
         emitBody: () => void,
         options?: { functionBody?: true },
     ): string[] {
-        if (options?.functionBody) {
-            // A function body's loops are its own.
-            this.statements.enterFunctionBody();
-            try {
-                return this.captureFunctionBodyLines(emitBody);
-            } finally {
-                this.statements.leaveFunctionBody();
-            }
-        }
+        if (options?.functionBody)
+            return this.captureFunctionBodyLines(emitBody);
         return this.captureEmittedStatements(emitBody).map(
             renderNativeEmission,
         );
@@ -7643,9 +7636,14 @@ class Compiler implements LoweringServices {
         if (deferred)
             this.deferredResourceCaptureDepths.add(deferred.callbackDepth);
         let lines: string[];
+        // An environment borrowed for its scope (`true`, `"call"`) runs
+        // inside it; any other closure outlives the loops around its creation.
+        const outlivesScope = byReference !== true && byReference !== "call";
+        if (outlivesScope) this.statements.enterCallbackBody();
         try {
             lines = this.captureEmittedLines(emitBody, { functionBody: true });
         } finally {
+            if (outlivesScope) this.statements.leaveCallbackBody();
             if (deferred) {
                 this.deferredResourceCaptureDepths.delete(
                     deferred.callbackDepth,

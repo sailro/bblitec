@@ -17,26 +17,21 @@ async function main(){
 }
 void main();`);
     assert.match(result.cpp, /co_await bbl::pal::load_realm_file_texture\(/);
-    const payloads = [
+    // One settled texture value reaches every slot through the one setter.
+    const slots = [
         ...result.cpp.matchAll(
-            /const auto (\w+) = std::get<bbl::FileTexture>\(([^;]+)\);/g,
+            /bbl::set_pbr_texture\([^,]+, \w+, bbl::MaterialTextureSlot::(\w+), (\w+)\);/g,
         ),
     ];
-    assert.equal(payloads.length, 3);
-    assert.equal(new Set(payloads.map((entry) => entry[2])).size, 1);
-    for (const [index, slot] of ["base_color", "orm", "normal"].entries())
-        assert.match(
-            result.cpp,
-            new RegExp(
-                `bbl::set_material_${slot}_file\\([^;]+, ${payloads[index]![1]}(?:, [^;]+)?\\);`,
-            ),
-        );
+    assert.deepEqual(
+        slots.map((entry) => entry[1]),
+        ["base_color", "orm", "normal"],
+    );
+    assert.equal(new Set(slots.map((entry) => entry[2])).size, 1);
 });
 
-test("PBR still refuses stored pixel textures without file producer evidence", () => {
-    assert.throws(
-        () =>
-            compileSource(`${imports}
+test("PBR binds a stored pixel texture a helper returns", () => {
+    const result = compileSource(`${imports}
 async function main(){
     ${setup}
     function texture():Texture2D {
@@ -44,7 +39,9 @@ async function main(){
     }
     createPbrMaterial({baseColorTexture:texture()});
 }
-void main();`),
-        /PBR Texture2D storage requires a known solid or file texture producer/,
+void main();`);
+    assert.match(
+        result.cpp,
+        /bbl::set_pbr_texture\([^,]+, \w+, bbl::MaterialTextureSlot::base_color, \w+\);/,
     );
 });
