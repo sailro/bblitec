@@ -359,6 +359,53 @@ int main() {
         update();
         measured(zero_basis_row, 100, "an inflexible zero basis contributes its minimum");
         measured(zero_basis, 100, "an inflexible zero basis keeps its minimum");
+
+        // Chromium 156: actual first-line baselines align mixed fonts and
+        // can enlarge the flex line beyond either item's own height.
+        struct BaselineCase {
+            const char* row;
+            const char* first;
+            const char* second;
+            const char* text;
+            float height, first_y, second_y;
+        };
+        const BaselineCase baseline_cases[]{
+            {"", "", "", "2.0 px", 17.390625f, 0, 2},
+            {"", "", "white-space:pre;", "2.0 px\nnext", 32.78125f, 0, 2},
+            {"", "margin:3px 0 2px;padding:2px 0 4px;", "margin:1px 0 5px;", "2.0 px", 27.796875f,
+             3, 7},
+            {"flex-wrap:wrap-reverse;", "", "", "2.0 px", 17.390625f, 0, 2},
+        };
+        for (const auto& sample : baseline_cases) {
+            const auto baseline_row = make(
+                (std::string(
+                     "position:absolute;left:0;top:0;width:300px;display:flex;"
+                     "align-items:baseline;font-size:12px;line-height:1.4;font-family:Segoe UI;") +
+                 sample.row)
+                    .c_str());
+            const auto first = make(sample.first);
+            const auto second =
+                make((std::string("font-size:11px;line-height:1.4;font-family:Consolas;") +
+                      sample.second)
+                         .c_str());
+            ui_set_text(engine, first, "Screen-space error");
+            ui_set_text(engine, second, sample.text);
+            ui_append_child(engine, baseline_row, first);
+            ui_append_child(engine, baseline_row, second);
+            ui_append_to_root(engine, baseline_row);
+            update();
+            const auto height = element(baseline_row)->GetBox().GetSize().y;
+            const auto first_y = element(first)->GetAbsoluteOffset(Rml::BoxArea::Border).y;
+            const auto second_y = element(second)->GetAbsoluteOffset(Rml::BoxArea::Border).y;
+            if (std::abs(height - sample.height) > .03f ||
+                std::abs(first_y - sample.first_y) > .03f ||
+                std::abs(second_y - sample.second_y) > .03f) {
+                std::fprintf(stderr, "flex baseline: height %.3f, offsets %.3f %.3f\n", height,
+                             first_y, second_y);
+                throw std::runtime_error("flex first-line baseline differs from Chromium");
+            }
+            ui_remove(engine, baseline_row);
+        }
     }
     SDL_DestroyWindow(window);
     SDL_Quit();

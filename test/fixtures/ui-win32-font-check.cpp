@@ -11,13 +11,23 @@ struct Recorder final : Rml::RenderInterface {
         std::vector<Rml::byte> bytes;
     };
     std::map<Rml::TextureHandle, Texture> textures;
+    std::map<Rml::CompiledGeometryHandle, std::vector<Rml::Vertex>> geometry;
+    std::vector<Rml::Vertex> drawn;
     std::size_t next = 1;
-    Rml::CompiledGeometryHandle CompileGeometry(Rml::Span<const Rml::Vertex>,
+    Rml::CompiledGeometryHandle CompileGeometry(Rml::Span<const Rml::Vertex> vertices,
                                                 Rml::Span<const int>) override {
-        return next++;
+        const auto handle = next++;
+        geometry.emplace(handle, std::vector<Rml::Vertex>(vertices.begin(), vertices.end()));
+        return handle;
     }
-    void RenderGeometry(Rml::CompiledGeometryHandle, Rml::Vector2f, Rml::TextureHandle) override {}
-    void ReleaseGeometry(Rml::CompiledGeometryHandle) override {}
+    void RenderGeometry(Rml::CompiledGeometryHandle handle, Rml::Vector2f translation,
+                        Rml::TextureHandle) override {
+        for (auto vertex : geometry.at(handle)) {
+            vertex.position += translation;
+            drawn.push_back(vertex);
+        }
+    }
+    void ReleaseGeometry(Rml::CompiledGeometryHandle handle) override { geometry.erase(handle); }
     Rml::TextureHandle LoadTexture(Rml::Vector2i&, const Rml::String&) override { return 0; }
     Rml::TextureHandle GenerateTexture(Rml::Span<const Rml::byte> bytes,
                                        Rml::Vector2i size) override {
@@ -205,6 +215,72 @@ int main() {
         engine.GenerateString(layout->GetRenderManager(), consolas, 0, "B", {10, 38.2f},
                               Rml::Colourb{230, 237, 243}.ToPremultiplied(), 1, context, meshes);
         assert(meshes.size() > retained); // Adding a line must preserve earlier line meshes.
+    }
+    {
+        auto* document = layout->CreateDocument();
+        document->SetAttribute("style", "font-family:segoe ui;font-size:13px;line-height:17px;");
+        document->SetInnerRML("<div id='positioned' style='position:absolute;'>A</div>");
+        document->Show();
+        auto* positioned = document->GetElementById("positioned");
+        auto* text = rmlui_dynamic_cast<Rml::ElementText*>(positioned->GetChild(0));
+        assert(text);
+        // Rasterization uses the final subpixel origin, including ancestor
+        // movement. Rounding only the geometry's translation selects the
+        // wrong glyph coverage and can shift it by a pixel.
+        for (const auto position : {Rml::Vector2f{10.25f, 20.25f},
+                                    {10.75f, 20.75f},
+                                    {-0.25f, 20.25f},
+                                    {11.75f, 21.75f}}) {
+            positioned->SetProperty("left", std::to_string(position.x) + "px");
+            positioned->SetProperty("top", std::to_string(position.y) + "px");
+            layout->Update();
+            recorder.drawn.clear();
+            layout->Render();
+            const auto origin = text->GetAbsoluteOffset() + text->GetLines().at(0).position;
+            Rml::TexturedMeshList expected;
+            engine.GenerateString(layout->GetRenderManager(), text->GetFontFaceHandle(), 0, "A",
+                                  origin, text->GetComputedValues().color().ToPremultiplied(), 1,
+                                  context, expected);
+            assert(expected.size() == 1 && recorder.drawn.size() == 4);
+            for (std::size_t index = 0; index < recorder.drawn.size(); ++index) {
+                const auto actual = recorder.drawn[index].position;
+                const auto wanted = expected[0].mesh.vertices[index].position;
+                if (actual != wanted) {
+                    std::cerr << "fractional text: " << actual.x << ',' << actual.y
+                              << " != " << wanted.x << ',' << wanted.y << '\n';
+                    throw std::runtime_error("Text raster phase excludes its absolute position");
+                }
+            }
+        }
+        for (const char* effect : {"shadow(2px 3px #000)", "glow(0px 4px 1px 2px #123456)"}) {
+            assert(text->SetProperty("font-effect", effect));
+            layout->Update();
+            const auto* property = text->GetProperty(Rml::PropertyId::FontEffect);
+            assert(property);
+            const auto list = property->Get<Rml::FontEffectsPtr>();
+            assert(list && list->list.size() == 1);
+            const auto face = text->GetFontFaceHandle();
+            const auto effects = engine.PrepareFontEffects(face, list->list);
+            Rml::TexturedMeshList plain, decorated;
+            const auto color = Rml::Colourb{230, 237, 243}.ToPremultiplied();
+            const auto width = engine.GenerateString(layout->GetRenderManager(), face, 0, "AV",
+                                                     {10.25f, 30.75f}, color, 1, context, plain);
+            engine.take_cpu_sample();
+            const auto decorated_width =
+                engine.GenerateString(layout->GetRenderManager(), face, effects, "AV",
+                                      {10.25f, 30.75f}, color, 1, context, decorated);
+            assert(engine.take_cpu_sample().generate_fallback == 0);
+            assert(width == decorated_width && decorated.size() > plain.size());
+            if (!list->list.front()->HasUniqueTexture())
+                assert(decorated.front().texture == plain.front().texture);
+            // Applying a shadow must leave the foreground glyphs, shaping,
+            // quarter-pixel coverage and advance unchanged.
+            for (std::size_t index = 0; index < plain.size(); ++index) {
+                const auto& front = decorated[decorated.size() - plain.size() + index];
+                assert(front.texture == plain[index].texture);
+                assert(front.mesh == plain[index].mesh);
+            }
+        }
     }
     Rml::RemoveContext("font-coverage");
     Rml::ReleaseFontResources();

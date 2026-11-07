@@ -76,6 +76,8 @@ int main() try {
         option(intrinsic, "High detail \xC2\xB7 4M splats");
         const auto wide = add("select", "display:block;width:300px;");
         option(wide, "Lower memory");
+        const auto kerned = add("select", "display:block;padding:5px;border:1px solid black;");
+        option(kerned, "Half (1/4 AO pixels)");
         const auto details = add("details", "font:12px 'Segoe UI';");
         const auto summary = ui_create_element(engine, "summary");
         ui_set_text(engine, summary, "Camera pose");
@@ -96,6 +98,28 @@ int main() try {
         const auto canvas = grid_child("canvas", "grid-column:2 / 4;");
         ui_canvas_set_width(engine, canvas, 20);
         ui_canvas_set_height(engine, canvas, 10);
+
+        // Chromium 156: an inline menulist exports its centered text baseline,
+        // not the bottom margin edge of an image-like replaced element.
+        std::array<UiElementHandle, 4> inline_selects{}, labels{};
+        const std::array<const char*, 4> select_styles{
+            "",
+            "padding:5px;border:1px solid black;",
+            "padding:5px;border:1px solid black;height:60px;margin:3px 0 7px;",
+            "font-size:20px;line-height:40px;font-family:Segoe UI;padding:3px 0 7px;border:1px solid black;",
+        };
+        for (std::size_t index = 0; index < select_styles.size(); ++index) {
+            const auto row = add("div", "display:flex;align-items:center;font:13px system-ui;");
+            const auto label = ui_create_element(engine, "label");
+            ui_set_text(engine, label, "Text");
+            ui_append_child(engine, row, label);
+            const auto select = ui_create_element(engine, "select");
+            ui_set_attribute(engine, select, "style", select_styles[index]);
+            option(select, "High");
+            ui_append_child(engine, label, select);
+            inline_selects[index] = select;
+            labels[index] = label;
+        }
 
         UiRmlRuntime runtime(engine, window, 640, 480);
         update_ui_rml_runtime(runtime, 640, 480);
@@ -139,6 +163,28 @@ int main() try {
                 "a select stretches across its grid area");
         require(element(canvas)->GetBox().GetSize(Rml::BoxArea::Border).x == 20.f,
                 "replaced content starts in its grid area");
+        const std::array<float, 4> baselines{5.f, 10.f, 32.5f, 14.f};
+        const std::array<float, 4> heights{19.f, 29.f, 70.f, 41.f};
+        for (std::size_t index = 0; index < inline_selects.size(); ++index) {
+            const float baseline = element(inline_selects[index])->GetBaseline();
+            const float height = element(labels[index])->GetBox().GetSize().y;
+            if (std::abs(baseline - baselines[index]) > .01f ||
+                std::abs(height - heights[index]) > .01f) {
+                std::fprintf(stderr, "inline select %zu: baseline %.3f, label height %.3f\n", index,
+                             baseline, height);
+                throw std::runtime_error("inline menulist baseline differs from Chromium");
+            }
+        }
+        // Chromium's menulist font-kerning:auto is unkerned; an authored
+        // normal value opts in and can change the intrinsic width.
+        for (const auto& [kerning, width] :
+             {std::pair{"auto", 148.f}, {"normal", 147.f}, {"none", 148.f}, {"auto", 148.f}}) {
+            ui_set_style_property(engine, kerned, "font-kerning", kerning);
+            update_ui_rml_runtime(runtime, 640, 480);
+            static_cast<void>(record_ui_rml_frame(runtime, 640, 480));
+            require(element(kerned)->GetBox().GetSize(Rml::BoxArea::Border).x == width,
+                    "menulist automatic kerning and intrinsic width");
+        }
     }
     SDL_DestroyWindow(window);
     SDL_Quit();

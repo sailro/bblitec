@@ -4,6 +4,7 @@
 // BSD-3-Clause notice: native/notices/Skia.txt.
 #if defined(_WIN32)
 #include "pal_win32_text.hpp"
+#include "pal_ui_font_effect.hpp"
 #include <RmlUi/Core/CallbackTexture.h>
 #include <RmlUi/Core/FontEngineInterface.h>
 #include <RmlUi/Core/FontFaceCache.h>
@@ -105,6 +106,7 @@ private:
     };
     struct Glyph {
         Rml::Vector2f origin, dimensions;
+        std::vector<Rml::byte> coverage;
         std::unique_ptr<Rml::CallbackTextureSource> texture;
     };
     using ShapeKey = std::tuple<std::string, std::string, Rml::Style::Direction,
@@ -125,6 +127,8 @@ private:
         Rml::FontMetrics metrics{};
         DWRITE_RENDERING_MODE rendering = DWRITE_RENDERING_MODE_NATURAL_SYMMETRIC;
         std::map<std::tuple<UINT16, int, unsigned>, Glyph> glyphs;
+        std::map<Rml::FontEffectsHandle, Rml::FontEffectList> effects;
+        std::map<std::pair<Glyph*, std::size_t>, UiFontEffectRaster> effect_rasters;
         std::map<ShapeKey, CachedRun, std::less<>> shapes;
         std::size_t shape_bytes = 0;
         std::uint64_t shape_clock = 0;
@@ -315,6 +319,7 @@ private:
         const int width = rect.right - rect.left, height = rect.bottom - rect.top;
         Glyph value{{static_cast<float>(rect.left), static_cast<float>(rect.top)},
                     {static_cast<float>(width), static_cast<float>(height)},
+                    {},
                     {}};
         if (width && height) {
             std::vector<std::uint8_t> mask(static_cast<std::size_t>(width) * height * 3);
@@ -323,10 +328,12 @@ private:
                   "glyph coverage");
             const auto& table = coverage_table(green);
             std::vector<Rml::byte> pixels(static_cast<std::size_t>(width) * height * 4);
+            value.coverage.resize(static_cast<std::size_t>(width) * height);
             for (std::size_t p = 0; p < mask.size() / 3; ++p) {
                 const auto alpha =
                     table[(static_cast<unsigned>(mask[p * 3]) + mask[p * 3 + 1] + mask[p * 3 + 2]) /
                           3];
+                value.coverage[p] = alpha;
                 for (unsigned c = 0; c < 4; ++c)
                     pixels[p * 4 + c] = alpha;
             }
@@ -613,8 +620,10 @@ public:
     }
     Rml::FontEffectsHandle PrepareFontEffects(Rml::FontFaceHandle handle,
                                               const Rml::FontEffectList& effects) override {
-        return fallback.PrepareFontEffects(static_cast<Face*>(handle.get())->fallback_handle,
-                                           effects);
+        auto& face = *static_cast<Face*>(handle.get());
+        const auto result = fallback.PrepareFontEffects(face.fallback_handle, effects);
+        face.effects.insert_or_assign(result, effects);
+        return result;
     }
     const Rml::FontMetrics& GetFontMetrics(Rml::FontFaceHandle handle) override {
         return static_cast<Face*>(handle.get())->metrics;
@@ -670,7 +679,7 @@ public:
                 meshes.push_back(std::move(mesh));
             return width;
         };
-        if (!face.source || effects)
+        if (!face.source)
             return generate_fallback(text, position);
         ShapedRun scratch;
         const auto* run = shaped_run(face, text, context, scratch);
@@ -686,31 +695,59 @@ public:
             }
             return width;
         }
-        std::map<Glyph*, std::size_t> groups;
-        for (std::size_t i = 0; i < run->glyphs.size(); ++i) {
-            const float x = position.x + run->positions[i].x;
-            const int packed = static_cast<int>(std::floor(x * 4 + .5f)),
-                      whole = static_cast<int>(std::floor(packed / 4.f)),
-                      quarter = packed - whole * 4;
-            auto& raster =
-                glyph(face, run->glyphs[i], quarter,
-                      color.alpha ? static_cast<unsigned>(color.green) * 255 / color.alpha : 0);
-            if (!raster.texture)
-                continue;
-            auto group = groups.find(&raster);
-            if (group == groups.end()) {
-                const auto index = meshes.size();
-                meshes.emplace_back();
-                meshes.back().texture = raster.texture->GetTexture(manager);
-                group = groups.emplace(&raster, index).first;
+        const auto draw_layer = [&](const Rml::FontEffect* effect) {
+            std::map<Glyph*, std::size_t> groups;
+            for (std::size_t i = 0; i < run->glyphs.size(); ++i) {
+                const float x = position.x + run->positions[i].x;
+                const int packed = static_cast<int>(std::floor(x * 4 + .5f)),
+                          whole = static_cast<int>(std::floor(packed / 4.f)),
+                          quarter = packed - whole * 4;
+                auto& raster =
+                    glyph(face, run->glyphs[i], quarter,
+                          color.alpha ? static_cast<unsigned>(color.green) * 255 / color.alpha : 0);
+                if (!raster.texture)
+                    continue;
+                const auto origin = Rml::Vector2f(static_cast<float>(whole),
+                                                  std::round(position.y + run->positions[i].y)) +
+                                    raster.origin;
+                if (effect) {
+                    const auto key = std::pair{&raster, effect->GetFingerprint()};
+                    auto found = face.effect_rasters.find(key);
+                    if (found == face.effect_rasters.end()) {
+                        Rml::FontGlyph glyph;
+                        glyph.bitmap_data = raster.coverage.data();
+                        glyph.bitmap_dimensions = Rml::Vector2i(raster.dimensions);
+                        glyph.bearing = {static_cast<int>(raster.origin.x),
+                                         -static_cast<int>(raster.origin.y)};
+                        auto value = ui_font_effect_raster(glyph, *effect);
+                        if (!value)
+                            continue;
+                        found = face.effect_rasters.emplace(key, std::move(*value)).first;
+                    }
+                    ui_font_effect_mesh(manager, found->second, *raster.texture, origin, *effect,
+                                        opacity, meshes);
+                    continue;
+                }
+                auto group = groups.find(&raster);
+                if (group == groups.end()) {
+                    const auto index = meshes.size();
+                    meshes.emplace_back();
+                    meshes.back().texture = raster.texture->GetTexture(manager);
+                    group = groups.emplace(&raster, index).first;
+                }
+                Rml::MeshUtilities::GenerateQuad(meshes[group->second].mesh, origin,
+                                                 raster.dimensions, color, {0, 0}, {1, 1});
             }
-            Rml::MeshUtilities::GenerateQuad(
-                meshes[group->second].mesh,
-                Rml::Vector2f(static_cast<float>(whole),
-                              std::round(position.y + run->positions[i].y)) +
-                    raster.origin,
-                raster.dimensions, color, {0, 0}, {1, 1});
-        }
+        };
+        const auto draw_effects = [&](Rml::FontEffect::Layer layer) {
+            if (effects)
+                for (const auto& effect : face.effects.at(effects))
+                    if (effect->GetLayer() == layer)
+                        draw_layer(effect.get());
+        };
+        draw_effects(Rml::FontEffect::Layer::Back);
+        draw_layer(nullptr);
+        draw_effects(Rml::FontEffect::Layer::Front);
         return std::max(run->width, 0.f);
     }
     int GetVersion(Rml::FontFaceHandle handle) override {
@@ -718,6 +755,8 @@ public:
     }
     void ReleaseFontResources() override {
         faces.Clear([](Face& face) {
+            face.effect_rasters.clear();
+            face.effects.clear();
             face.glyphs.clear();
             face.shapes.clear();
             face.shape_bytes = 0;

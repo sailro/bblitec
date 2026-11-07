@@ -506,6 +506,20 @@
       "variants": ["all"]
     },
     {
+      "library": "rmlui",
+      "file": "native/patches/rmlui/0067-text-raster-origin.patch",
+      "purpose": "text rasterization includes its absolute subpixel origin and refreshes glyph geometry when that origin changes",
+      "upstream": { "state": "unsubmitted" },
+      "variants": ["all"]
+    },
+    {
+      "library": "rmlui",
+      "file": "native/patches/rmlui/0068-flex-first-baseline.patch",
+      "purpose": "row flex items align their first-line baselines and include the baseline group's ascent and descent in line sizing",
+      "upstream": { "state": "unsubmitted" },
+      "variants": ["all"]
+    },
+    {
       "library": "dawn",
       "file": "native/patches/dawn/0001-android-surface-loss.patch",
       "purpose": "Report Android Vulkan surface loss at the next acquisition without losing the device",
