@@ -750,13 +750,13 @@ struct SsaoModeKeyInfo {
 
 /** One working mode: its textures, its output and the passes of both history parities. */
 struct SsaoModeInfo {
-    bool half;
+    bool half{};
     SsaoModeKeyInfo key;
     /** The task-level textures and buffers the mode uses. */
     std::span<const std::uint32_t> textures;
     std::span<const std::uint32_t> buffers;
     /** The task-level texture published as \`outputTexture\`. */
-    std::uint32_t output;
+    std::uint32_t output{};
     std::span<const SsaoViewInfo> views;
     std::array<std::span<const SsaoPassInfo>, 2> frames;
     /** The frame a disabled task encodes: its output cleared to the AO identity. */

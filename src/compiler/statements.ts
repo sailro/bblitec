@@ -149,6 +149,7 @@ interface StatementLoweringContext extends Pick<
     | "reachThrow"
     | "reachFeature"
     | "reachJsData"
+    | "registerNativeTemporary"
     | "reachJson"
     | "propertyName"
     | "cppString"

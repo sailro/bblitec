@@ -2726,11 +2726,11 @@ struct ScreenSpaceTextureRef {
 
 /** One deployed dedicated stage: a producer, a blur, the resolve. */
 struct ScreenSpaceShaderInfo {
-    const char* stem;
-    const char* vertex_entry;
-    const char* fragment_entry;
-    std::uint32_t uniform_bytes;
-    TextureFormatClass target_format;
+    const char* stem{};
+    const char* vertex_entry{};
+    const char* fragment_entry{};
+    std::uint32_t uniform_bytes{};
+    TextureFormatClass target_format{};
     /** The pin's own group-0 layout, each entry under the identifier the SDL_GPU sidecar names. */
     std::span<const PinnedLayoutEntry> bindings;
 };
