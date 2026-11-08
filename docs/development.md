@@ -5,6 +5,9 @@
 Requires Node.js 22.13+, CMake 3.24+, Ninja, C++20, vcpkg, PowerShell, a GPU and WebGPU-capable Chromium.
 Windows: clang-cl for development and tests; MSVC only for release builds. Linux/macOS: Clang.
 
+These are build prerequisites. Runtime platform limits live in [features](features.md#platforms), GPU requirements in
+[backends](backends.md), and outstanding runtime qualification in [TODO](../TODO.md#qualification).
+
 ```powershell
 npm ci
 npm run dev:setup
@@ -23,7 +26,7 @@ npm run scene -- parity scene1
 ### Linux prerequisites
 
 Install [PowerShell 7](https://learn.microsoft.com/powershell/scripting/install/install-ubuntu), Node.js and Chromium.
-Ubuntu 24.04:
+Package-install example for Ubuntu 24.04 (not a minimum supported Ubuntu version):
 
 ```sh
 sudo apt-get install build-essential clang cmake ninja-build git curl zip unzip \
@@ -48,10 +51,15 @@ Needs a graphical session with GPU access; `SDL_VIDEODRIVER=x11|wayland` selects
 ### macOS prerequisites
 
 Command Line Tools, Clang 18+, CMake, Ninja, Node.js, PowerShell, Git, pkg-config, vcpkg; same exports as Linux plus
-`CC`/`CXX` pointing at LLVM. Set `MACOSX_DEPLOYMENT_TARGET` before building dependencies and use fresh caches when it
-changes (ARM needs 11+). LLVM libc++ must keep Apple availability annotations: remove
+`CC`/`CXX` pointing at LLVM. Set `MACOSX_DEPLOYMENT_TARGET` before building dependencies (ARM needs 11+).
+LLVM libc++ must keep Apple availability annotations: remove
 `_LIBCPP_HAS_NO_VENDOR_AVAILABILITY_ANNOTATIONS` from `include/c++/v1/__config_site` if defined. Apple Silicon runtime
 validation needs an Apple Silicon host.
+
+`DEVELOPER_DIR` selects Xcode without changing the global developer directory. Desktop scene and dependency builds use
+`SDKROOT` (an absolute SDK directory or SDK name resolved by `xcrun`), or `xcrun --sdk macosx --show-sdk-path` when unset,
+for both `CMAKE_OSX_SYSROOT` and `CMAKE_SYSROOT`. Invalid SDK selections fail; iOS builds select their requested SDK independently.
+Use fresh dependency and native build directories after changing the compiler, SDK or deployment target.
 
 ### Android
 
@@ -85,7 +93,7 @@ emulator -avd bblite-api35 -gpu host -no-snapshot
 
 ### iOS
 
-macOS, full Xcode, Clang 18+; `DEVELOPER_DIR` selects Xcode.
+macOS, full Xcode, Clang 18+; [toolchain selection](#macos-prerequisites).
 
 ```sh
 npm run ios -- -Scene scene2 -Device <simulator-udid> -Smoke

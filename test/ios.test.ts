@@ -433,8 +433,11 @@ foreach ($file in @('tools/ios.ps1', 'tools/bblite-tools.psm1', 'tools/build-daw
     [void][Management.Automation.Language.Parser]::ParseFile((Join-Path '${process.cwd().replaceAll("'", "''")}' $file), [ref]$tokens, [ref]$errors)
     if ($errors.Count) { throw ($errors | Out-String) }
 }
-function Get-PosixCompilerArguments { return @('-DCMAKE_CXX_COMPILER=chosen-clang') }
-function xcrun { $global:LASTEXITCODE = 0; return '${sdkPath.replaceAll("'", "''")}' }
+function Get-PosixCompilerArguments([string]$AppleSdk) {
+    if ($AppleSdk -ne 'iphonesimulator') { throw 'Wrong Apple SDK requested' }
+    return @('-DCMAKE_CXX_COMPILER=chosen-clang',
+        '-DCMAKE_OSX_SYSROOT=${sdkPath.replaceAll("'", "''")}', '-DCMAKE_SYSROOT=${sdkPath.replaceAll("'", "''")}')
+}
 ${helper}
 $macHost = $true
 $arguments = @(Get-IosCompilerArguments iphonesimulator x86_64)

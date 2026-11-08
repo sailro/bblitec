@@ -72,6 +72,42 @@ export function environmentValue(
     return key === undefined ? undefined : environment[key];
 }
 
+/** Match the Apple SDK used for headers and linking, including external LLVM's linker. */
+export function macOsSdkArguments(
+    options: ToolDiscoveryOptions = {},
+): string[] {
+    if ((options.platform ?? process.platform) !== "darwin") return [];
+    const environment = options.environment ?? process.env;
+    let sdk = environment.SDKROOT;
+    const hint =
+        "Set DEVELOPER_DIR to Xcode.app/Contents/Developer or SDKROOT to a macOS SDK name or absolute directory.";
+    if (!sdk || !isAbsolute(sdk)) {
+        const result = spawnSync(
+            "xcrun",
+            ["--sdk", sdk || "macosx", "--show-sdk-path"],
+            {
+                cwd: options.cwd,
+                env: environment,
+                encoding: "utf8",
+                windowsHide: true,
+            },
+        );
+        if (result.status !== 0) {
+            throw new Error(
+                `macOS SDK discovery failed: ${result.error?.message ?? result.stderr.trim()}. ${hint}`,
+            );
+        }
+        sdk = result.stdout.trim();
+    }
+    if (
+        !isAbsolute(sdk) ||
+        !statSync(sdk, { throwIfNoEntry: false })?.isDirectory()
+    ) {
+        throw new Error(`macOS SDK is unavailable at '${sdk}'. ${hint}`);
+    }
+    return [`-DCMAKE_OSX_SYSROOT=${sdk}`, `-DCMAKE_SYSROOT=${sdk}`];
+}
+
 function executableNames(command: string, platform: NodeJS.Platform): string[] {
     if (platform !== "win32" || /\.[A-Za-z0-9]+$/.test(command)) {
         return [command];

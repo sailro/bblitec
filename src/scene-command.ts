@@ -166,6 +166,7 @@ import {
     dependencyPatchRecords,
     discoverDevelopmentTools,
     discoverWindowsBuildTools,
+    macOsSdkArguments,
     type DependencyPatchRecord,
     type DevelopmentTools,
     type WindowsBuildTools,
@@ -1017,6 +1018,7 @@ async function withBuildOptions(
 interface SharedBuildSetup {
     cmake: string;
     environment: NodeJS.ProcessEnv;
+    sdkArguments: string[];
     generator: string;
     windows: WindowsBuildTools | undefined;
     backend: CompiledBackend;
@@ -1111,6 +1113,7 @@ function buildSetup(): SharedBuildSetup {
     sharedBuildSetup = {
         cmake: tools.cmake,
         environment,
+        sdkArguments: macOsSdkArguments({ environment }),
         generator,
         windows,
         backend,
@@ -1509,8 +1512,16 @@ async function runSceneBuild(
     jobsPerScene: number | undefined,
     captureOutput: boolean,
 ): Promise<void> {
-    const { cmake, environment, generator, windows, backend, tools, vcpkg } =
-        buildSetup();
+    const {
+        cmake,
+        environment,
+        sdkArguments,
+        generator,
+        windows,
+        backend,
+        tools,
+        vcpkg,
+    } = buildSetup();
     scene = {
         ...scene,
         buildDirectory: compiledBuildDirectory(scene.buildDirectory),
@@ -1525,6 +1536,7 @@ async function runSceneBuild(
         `-DBBLITE_GENERATED_DIR=${resolve(scene.output)}`,
         "-G",
         generator,
+        ...sdkArguments,
     ];
     configureArguments.push(
         `-DBBLITE_BACKEND=${backend}`,

@@ -4,10 +4,11 @@ import {
     mkdtempSync,
     readFileSync,
     rmSync,
+    statSync,
     writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { dirname, isAbsolute, join, resolve } from "node:path";
 import test from "node:test";
 
 import {
@@ -15,6 +16,7 @@ import {
     discoverClangTool,
     discoverDevelopmentTools,
     discoverWindowsBuildTools,
+    macOsSdkArguments,
 } from "../src/development-tools.js";
 import { runPatchIdentity } from "../src/patch-inventory.js";
 import {
@@ -29,6 +31,83 @@ function touch(path: string): void {
     mkdirSync(dirname(path), { recursive: true });
     writeFileSync(path, "");
 }
+
+test("macOS SDK overrides align header and linker roots and reject invalid paths", (t) => {
+    const root = mkdtempSync(join(tmpdir(), "bblitec-macos-sdk-"));
+    t.after(() => rmSync(root, { recursive: true, force: true }));
+    const sdk = join(root, "SDK with spaces");
+    mkdirSync(sdk);
+    const options = {
+        cwd: root,
+        platform: "darwin" as const,
+        environment: { PATH: "", SDKROOT: sdk },
+    };
+    assert.deepEqual(macOsSdkArguments(options), [
+        `-DCMAKE_OSX_SYSROOT=${sdk}`,
+        `-DCMAKE_SYSROOT=${sdk}`,
+    ]);
+    const file = join(root, "not-a-directory");
+    touch(file);
+    for (const invalid of [join(root, "missing"), file]) {
+        assert.throws(
+            () =>
+                macOsSdkArguments({
+                    ...options,
+                    environment: { PATH: "", SDKROOT: invalid },
+                }),
+            /macOS SDK is unavailable.*SDKROOT/,
+        );
+    }
+    for (const SDKROOT of ["", "macosx", "unavailable.sdk"]) {
+        assert.throws(
+            () =>
+                macOsSdkArguments({
+                    ...options,
+                    environment: { PATH: "", SDKROOT },
+                }),
+            /macOS SDK discovery failed.*DEVELOPER_DIR/,
+        );
+    }
+    for (const platform of ["linux", "win32"] as const) {
+        assert.deepEqual(
+            macOsSdkArguments({
+                ...options,
+                platform,
+                environment: { PATH: "", SDKROOT: "unavailable" },
+            }),
+            [],
+        );
+    }
+});
+
+test(
+    "macOS SDK discovery uses the selected developer directory",
+    { skip: process.platform !== "darwin" },
+    () => {
+        for (const SDKROOT of ["", "macosx"]) {
+            const arguments_ = macOsSdkArguments({
+                environment: { ...process.env, SDKROOT },
+            });
+            assert.equal(arguments_.length, 2);
+            const osxRoot = arguments_[0];
+            assert.ok(osxRoot && osxRoot.startsWith("-DCMAKE_OSX_SYSROOT="));
+            const sdk = osxRoot.slice("-DCMAKE_OSX_SYSROOT=".length);
+            assert.ok(isAbsolute(sdk) && statSync(sdk).isDirectory());
+            assert.equal(arguments_[1], `-DCMAKE_SYSROOT=${sdk}`);
+        }
+        assert.throws(
+            () =>
+                macOsSdkArguments({
+                    environment: {
+                        ...process.env,
+                        SDKROOT: "",
+                        DEVELOPER_DIR: join(tmpdir(), "missing-bblite-Xcode"),
+                    },
+                }),
+            /macOS SDK discovery failed/,
+        );
+    },
+);
 
 test("quality tools honor explicit paths, versioned LLVM, and Visual Studio discovery", (t) => {
     const root = mkdtempSync(join(tmpdir(), "bblitec-quality-tools-"));
