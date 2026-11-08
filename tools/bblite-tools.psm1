@@ -355,7 +355,10 @@ function Read-CMakeCache([string]$Path, [switch]$WithTypes) {
 }
 
 # Match Unix scene builds; explicit CC/CXX select a compatible host toolchain.
-function Get-PosixCompilerArguments([ValidateSet('', 'x86_64', 'arm64')][string]$MacArchitecture = '') {
+function Get-PosixCompilerArguments(
+    [ValidateSet('', 'x86_64', 'arm64')][string]$MacArchitecture = '',
+    [ValidateSet('macosx', 'iphoneos', 'iphonesimulator')][string]$AppleSdk = 'macosx'
+) {
     if ($MacArchitecture -and -not $IsMacOS) { throw '-MacArchitecture requires macOS.' }
     if (-not $IsLinux -and -not $IsMacOS) { return @() }
     $ccName = if ($env:CC) { $env:CC } else { "clang" }
@@ -366,6 +369,20 @@ function Get-PosixCompilerArguments([ValidateSet('', 'x86_64', 'arm64')][string]
     if ($IsMacOS) {
         $arguments += @("-DCMAKE_OBJC_COMPILER=$($ccTool.Source)", "-DCMAKE_OBJCXX_COMPILER=$($cxxTool.Source)")
         if ($MacArchitecture) { $arguments += "-DCMAKE_OSX_ARCHITECTURES=$MacArchitecture" }
+        $sdkPath = if ($AppleSdk -eq 'macosx') { $env:SDKROOT } else { $null }
+        if (-not $sdkPath -or -not [IO.Path]::IsPathFullyQualified($sdkPath)) {
+            $selection = if ($sdkPath) { $sdkPath } else { $AppleSdk }
+            $sdkPath = & xcrun --sdk $selection --show-sdk-path
+            if ($LASTEXITCODE -ne 0) {
+                throw "Xcode SDK $selection is unavailable. Set DEVELOPER_DIR to Xcode.app/Contents/Developer."
+            }
+        }
+        if (-not $sdkPath -or -not [IO.Path]::IsPathFullyQualified($sdkPath) -or
+            -not (Test-Path -LiteralPath $sdkPath -PathType Container)) {
+            throw "Xcode SDK $AppleSdk is unavailable at '$sdkPath'. Set DEVELOPER_DIR or SDKROOT to a macOS SDK name or absolute directory."
+        }
+        # Match Unix scene builds: external LLVM may otherwise link against its built-in SDK.
+        $arguments += @("-DCMAKE_OSX_SYSROOT=$sdkPath", "-DCMAKE_SYSROOT=$sdkPath")
     }
     return $arguments
 }
@@ -389,13 +406,9 @@ function Get-IosCompilerArguments(
 ) {
     if (-not $IsMacOS) { throw 'iOS builds require macOS and a full Xcode installation.' }
     if ($Sdk -eq 'iphoneos' -and $Architecture -ne 'arm64') { throw 'iOS devices require arm64.' }
-    $sdkPath = & xcrun --sdk $Sdk --show-sdk-path
-    if ($LASTEXITCODE -ne 0 -or -not (Test-Path $sdkPath)) {
-        throw "Xcode SDK $Sdk is unavailable. Set DEVELOPER_DIR to Xcode.app/Contents/Developer."
-    }
-    return @(Get-PosixCompilerArguments) + @(
+    return @(Get-PosixCompilerArguments -AppleSdk $Sdk) + @(
         '-G', 'Ninja', '-DCMAKE_SYSTEM_NAME=iOS',
-        "-DCMAKE_OSX_SYSROOT=$sdkPath", "-DCMAKE_SYSROOT=$sdkPath", "-DCMAKE_OSX_ARCHITECTURES=$Architecture",
+        "-DCMAKE_OSX_ARCHITECTURES=$Architecture",
         '-DCMAKE_OSX_DEPLOYMENT_TARGET=16.0',
         '-DCMAKE_XCODE_ATTRIBUTE_CODE_SIGNING_ALLOWED=NO'
     )
