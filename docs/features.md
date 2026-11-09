@@ -48,6 +48,8 @@ Rules:
 - Generation-known positions fold through `const` literals, settled conditionals, spreads, parameterless literal-returning
   functions, closed `const` function literals, direct literal-returning helpers with known readonly scalar arguments,
   module `const`s run at generation, and an inlined call's argument for a parameter its body never rebinds.
+  Required text also reads a field of the record a module helper call returns, in place or through a local `const`
+  nothing writes through whose call arguments read the same later.
   A fold reaching the host, clock, `Math.random`
   or locale refuses; written constants require the
   initialization snapshot proof below.

@@ -297,7 +297,7 @@ function dependedSelectors(
 }
 
 /** A function declared at a module's top level, directly or through an import. */
-function moduleLevelCallee(
+export function moduleLevelCallee(
     checker: ts.TypeChecker,
     callee: ts.Expression,
 ): boolean {

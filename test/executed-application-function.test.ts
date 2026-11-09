@@ -2,7 +2,12 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { compileSource } from "../src/compiler.js";
+import {
+    optionalNativeFixtureTools,
+    runGeneratedProgram,
+} from "./native-fixture.js";
 import { POSITION_VERTEX_WGSL } from "./program-snippets.js";
+import { compileShaderMaterialFixture } from "./shader-material-fixture.js";
 
 function refusal(source: string, fileName: string): string {
     try {
@@ -88,6 +93,146 @@ test("refuses a shader builder that reaches the host", () => {
             "test/executed-builder-host-entry.ts",
         ),
         /Builder 'hostSource' reads 'performance'/,
+    );
+});
+
+/**
+ * A factory reading its stages from the record a helper returns for an
+ * option's presence: `hold` runs between the option's test and the material,
+ * `vertex` and `fragment` spell the two sources, `member` adds to the record.
+ */
+const stageFactory = (stages: {
+    hold: string;
+    vertex: string;
+    fragment: string;
+    member?: string;
+    check?: string;
+}): string => `
+    const VERTEX = \`${POSITION_VERTEX_WGSL}\`;
+    const LIT = \`@fragment fn mainFragment() -> @location(0) vec4<f32> { return vec4<f32>(shaderUniforms.uGain); }\`;
+    const FLAT = \`@fragment fn mainFragment() -> @location(0) vec4<f32> { return vec4<f32>(0.25); }\`;
+
+    function stageSources(lit: boolean) {
+        return { vertex: VERTEX, fragment: lit ? \`// lit\\n\${LIT}\` : \`// flat\\n\${FLAT}\`${stages.member ?? ""} };
+    }
+
+    function surface(gain?: { amount: number }): ShaderMaterial {
+        const lit = gain !== undefined;
+        ${stages.hold}
+        const material = createShaderMaterial({
+            vertexSource: ${stages.vertex},
+            fragmentSource: ${stages.fragment},
+            attributes: ["position"],
+            uniforms: ["worldViewProjection", ...(lit ? [{ name: "uGain", type: "f32" as const, defaultValue: 0.5 }] : [])],
+        });
+        ${stages.check ?? ""}
+        return material;
+    }
+`;
+
+const stageScene = (stages: Parameters<typeof stageFactory>[0]): string => `
+    import { createBox, createEngine, createShaderMaterial, wgsl, type EngineContext, type ShaderMaterial } from "@babylonjs/lite";
+    ${stageFactory(stages)}
+    async function main() {
+        const engine = await createEngine({});
+        const lit = createBox(engine);
+        lit.material = surface({ amount: 0.5 });
+        const flat = createBox(engine);
+        flat.material = surface();
+    }
+`;
+
+const stageFragments = (stages: Parameters<typeof stageFactory>[0]) =>
+    compileSource(stageScene(stages)).manifest.customShaderPrograms.map(
+        (program) => program.fragmentSource,
+    );
+
+const heldStages = {
+    hold: "const sources = stageSources(lit);",
+    vertex: "wgsl`${sources.vertex}`",
+    fragment: "wgsl`${sources.fragment}`",
+};
+
+test("reads a stage from the record a helper call returns", () => {
+    for (const stages of [
+        heldStages,
+        // Read where the call is.
+        {
+            hold: "",
+            vertex: "stageSources(lit).vertex",
+            fragment: "wgsl`${stageSources(lit).fragment}`",
+        },
+        // A member the generation realm does not carry leaves the literal.
+        {
+            ...heldStages,
+            member: ", box: (engine: EngineContext) => createBox(engine)",
+        },
+    ]) {
+        const [lit, flat] = stageFragments(stages);
+        assert.match(lit ?? "", /^\/\/ lit\n@fragment/);
+        assert.match(flat ?? "", /^\/\/ flat\n@fragment/);
+    }
+});
+
+test("reads the arm a settled conditional selects as a stage", () => {
+    const [lit, flat] = stageFragments({
+        ...heldStages,
+        fragment: "lit ? sources.fragment : FLAT",
+    });
+    assert.match(lit ?? "", /^\/\/ lit\n@fragment/);
+    assert.match(flat ?? "", /^@fragment fn mainFragment.*0\.25/);
+});
+
+test("refuses a helper's record a later read would not see as declared", () => {
+    for (const hold of [
+        // Written through after the call.
+        "const sources = stageSources(lit); sources.fragment = FLAT;",
+        // An argument rebound after the call.
+        "let mode = lit; const sources = stageSources(mode); mode = !mode;",
+    ])
+        assert.match(
+            refusal(
+                stageScene({ ...heldStages, hold }),
+                "test/executed-stage-entry.ts",
+            ),
+            /Expected a string literal|without a static string/,
+        );
+});
+
+test("selects a helper-built stage per outcome of a run-time option", (t) => {
+    const native = optionalNativeFixtureTools(false);
+    if (!native) {
+        t.skip("Native compiler required.");
+        return;
+    }
+    // Each outcome's material declares what its own stage reads.
+    const { compiled, cpp } = compileShaderMaterialFixture(`
+    import { createEngine, createShaderMaterial, getShaderUniform, wgsl, type ShaderMaterial } from "babylon-lite";
+    ${stageFactory({
+        ...heldStages,
+        check: `let declared = 0;
+        for (const name of ["uGain"]) {
+            try { if (getShaderUniform(material, name) === 0.5) declared++; } catch (error) { declared--; }
+        }
+        if (declared !== (lit ? 1 : -1)) throw new Error("stage variant");`,
+    })}
+    async function main() {
+        await createEngine({});
+        const rows = JSON.parse('[{"gain":0.5},{"gain":null}]') as { gain: number | null }[];
+        let built = 0;
+        for (const row of rows) {
+            const gain = row.gain === null ? undefined : { amount: row.gain };
+            if (surface(gain)) built++;
+        }
+        if (built !== 2) throw new Error("rows");
+    }
+    main();`);
+    assert.equal(compiled.manifest.customShaderPrograms.length, 2);
+    runGeneratedProgram(
+        native,
+        "executed-application-function/stage-outcomes",
+        `${cpp}\n#define main generated_main\n${compiled.cpp}\n#undef main\nint main(){assert(generated_main()==0);}`,
+        { expectedOutput: "" },
     );
 });
 

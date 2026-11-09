@@ -100,6 +100,7 @@ import {
     storageDemandPlanningEnabled,
     StorageDemandPlanner,
 } from "./compiler/storage-demand-planner.js";
+import { moduleLevelCallee } from "./compiler/runtime-case-split.js";
 import { StorageDemand } from "./compiler/storage-demand.js";
 import { ReplayStorage } from "./compiler/replay-storage.js";
 import {
@@ -5034,7 +5035,7 @@ class Compiler implements LoweringServices {
             ts.isPropertyAccessExpression(expression) ||
             ts.isElementAccessExpression(expression)
         )
-            return this.moduleConstantText(expression);
+            return this.executedConstantText(expression);
         return ts.isCallExpression(expression)
             ? this.runGenerationBuilder(expression)
             : undefined;
@@ -5079,10 +5080,15 @@ class Compiler implements LoweringServices {
     }
 
     /**
-     * Required text from an unwritten module constant or its plain-data
-     * fields, evaluated by the same generation executor as its initializer.
+     * Required text from plain data generation knows, or from its fields:
+     * an unwritten module constant, evaluated by the same generation
+     * executor as its initializer, or the record a helper call returns,
+     * read in place or through the local `const` holding it
+     * (`settledCallInitializer`).
      */
-    private moduleConstantText(expression: ts.Expression): string | undefined {
+    private executedConstantText(
+        expression: ts.Expression,
+    ): string | undefined {
         const keys: string[] = [];
         let root = this.unwrap(expression);
         while (
@@ -5105,8 +5111,31 @@ class Compiler implements LoweringServices {
         const constant = ts.isIdentifier(root)
             ? this.moduleConstantDeclaration(root)
             : undefined;
-        if (!constant) return undefined;
-        let value: unknown = this.runModuleConstant(constant.declaration);
+        // A held result re-reads the call its declaration still evaluates;
+        // a call read in place is folded away, so it may write nothing.
+        const held =
+            !constant && ts.isIdentifier(root)
+                ? this.settledCallInitializer(root)
+                : undefined;
+        const call =
+            held ??
+            (ts.isCallExpression(root) && !root.questionDotToken
+                ? root
+                : undefined);
+        if (!constant && !call) return undefined;
+        const returned =
+            call &&
+            (held ||
+                !(
+                    this.evaluationOrder.writesStorage(call) ||
+                    this.evaluationOrder.hasModuleEffects(call)
+                ))
+                ? this.returnedLiteralText(call, keys)
+                : undefined;
+        if (returned !== undefined) return returned;
+        let value: unknown = constant
+            ? this.runModuleConstant(constant.declaration)
+            : this.executedCall(call!);
         for (const key of keys) {
             if (value === null || typeof value !== "object") return undefined;
             value = Object.getOwnPropertyDescriptor(value, key)?.value;
@@ -5114,6 +5143,34 @@ class Compiler implements LoweringServices {
         return typeof value === "string" || typeof value === "number"
             ? String(value)
             : undefined;
+    }
+
+    /**
+     * The text at `keys` of the record literal a helper call returns
+     * directly (`StaticEvaluator.resolveStaticLiteral`): each key a property
+     * of a literal, the last one's value folding as required text.
+     */
+    private returnedLiteralText(
+        call: ts.CallExpression,
+        keys: readonly string[],
+    ): string | undefined {
+        return unlessRefused(() =>
+            this.probeEmission(
+                () => {
+                    let literal = this.evaluator.resolveStaticLiteral(call);
+                    if (literal === this.unwrap(call)) return undefined;
+                    for (const key of keys) {
+                        const member = ts.isObjectLiteralExpression(literal)
+                            ? this.objectProperty(literal, key)
+                            : undefined;
+                        if (!member) return undefined;
+                        literal = this.evaluator.resolveStaticLiteral(member);
+                    }
+                    return this.evaluator.compileStringLiteral(literal);
+                },
+                () => false,
+            ),
+        );
     }
 
     /**
@@ -5572,6 +5629,26 @@ class Compiler implements LoweringServices {
     public executedInitializerElements(
         identifier: ts.Identifier,
     ): readonly Value[] | undefined {
+        const initializer = this.constCallInitializer(identifier);
+        const executed = initializer && this.executedCall(initializer.call);
+        return Array.isArray(executed)
+            ? executed.map((element: unknown) =>
+                  jsonToValue(
+                      this,
+                      executedConstantJsonPolicy,
+                      element,
+                      identifier,
+                  ),
+              )
+            : undefined;
+    }
+
+    /** The call a `const` binding's initializer is, with its declaration. */
+    private constCallInitializer(
+        identifier: ts.Identifier,
+    ):
+        | { declaration: ts.VariableDeclaration; call: ts.CallExpression }
+        | undefined {
         const declaration =
             this.symbols.valueSymbol(identifier)?.valueDeclaration;
         if (
@@ -5582,23 +5659,38 @@ class Compiler implements LoweringServices {
         )
             return undefined;
         const call = this.unwrap(declaration.initializer);
-        if (!ts.isCallExpression(call) || call.questionDotToken)
-            return undefined;
-        const executed = unlessRefused(() =>
+        return ts.isCallExpression(call) && !call.questionDotToken
+            ? { declaration, call }
+            : undefined;
+    }
+
+    /** What a closed-helper call returns when generation runs it, if it can. */
+    private executedCall(call: ts.CallExpression): unknown {
+        return unlessRefused(() =>
             this.probeEmission(
                 () => this.runGenerationCall(call)?.value,
                 () => false,
             ),
         );
-        return Array.isArray(executed)
-            ? executed.map((element: unknown) =>
-                  jsonToValue(
-                      this,
-                      executedConstantJsonPolicy,
-                      element,
-                      identifier,
-                  ),
-              )
+    }
+
+    /**
+     * The helper call a local `const` holds the result of
+     * (`const sources = stageSources(lit)`), when evaluating it at a later
+     * read gives what the declaration held: nothing writes through the
+     * binding, the helper is a module's own and its arguments re-read alike.
+     */
+    private settledCallInitializer(
+        identifier: ts.Identifier,
+    ): ts.CallExpression | undefined {
+        const initializer = this.constCallInitializer(identifier);
+        return initializer &&
+            moduleLevelCallee(this.checker, initializer.call.expression) &&
+            !this.evaluator.isWrittenThrough(initializer.declaration) &&
+            initializer.call.arguments.every((argument) =>
+                this.rereadsAlike(argument),
+            )
+            ? initializer.call
             : undefined;
     }
 
@@ -5731,9 +5823,8 @@ class Compiler implements LoweringServices {
      * A local `const` whose values generation does not all fold: its
      * initializer, re-read where a static descriptor list needs syntax.
      * Only when the re-read sees what the declaration saw: nothing writes
-     * through the binding, a call in it returns a literal, and its names are
-     * functions, consts nothing writes through, or parameter members their
-     * function only reads.
+     * through the binding and its initializer re-reads alike
+     * (`rereadsAlike`).
      */
     private stableLocalInitializer(
         identifier: ts.Identifier,
@@ -5749,14 +5840,36 @@ class Compiler implements LoweringServices {
             return undefined;
         const known = this.stableInitializers.get(declaration);
         if (known !== undefined) return known || undefined;
-        const constant = (named: ts.VariableDeclaration): boolean =>
-            variableKind(named) === "const" &&
-            !this.evaluator.isWrittenThrough(named);
+        const initializer =
+            this.unwrittenConst(declaration) &&
+            this.rereadsAlike(declaration.initializer)
+                ? declaration.initializer
+                : undefined;
+        this.stableInitializers.set(declaration, initializer ?? false);
+        return initializer;
+    }
+
+    /** A `const` binding nothing writes through. */
+    private unwrittenConst(declaration: ts.VariableDeclaration): boolean {
+        return (
+            variableKind(declaration) === "const" &&
+            !this.evaluator.isWrittenThrough(declaration)
+        );
+    }
+
+    /**
+     * Whether a later re-read of an expression sees what its first
+     * evaluation saw: a call in it returns a literal, and its names are
+     * functions, consts nothing writes through, or parameter members their
+     * function only reads.
+     */
+    private rereadsAlike(expression: ts.Expression): boolean {
         const stableName = (name: ts.Identifier): boolean => {
             const named = this.symbols.valueSymbol(name)?.valueDeclaration;
             if (!named) return false;
             if (ts.isFunctionDeclaration(named)) return true;
-            if (ts.isVariableDeclaration(named)) return constant(named);
+            if (ts.isVariableDeclaration(named))
+                return this.unwrittenConst(named);
             if (
                 !ts.isParameter(named) ||
                 !ts.isIdentifier(named.name) ||
@@ -5806,12 +5919,7 @@ class Compiler implements LoweringServices {
                 return !isValueReference(node) || stableName(node);
             return !ts.forEachChild(node, (child) => !stable(child));
         };
-        const initializer =
-            constant(declaration) && stable(declaration.initializer)
-                ? declaration.initializer
-                : undefined;
-        this.stableInitializers.set(declaration, initializer ?? false);
-        return initializer;
+        return stable(expression);
     }
 
     /** The fold over required literals, which may read closed helpers. */

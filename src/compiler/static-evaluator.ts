@@ -110,6 +110,7 @@ import {
     isAnyTyped,
     isNullable,
     stringPlusOperands,
+    typeCanCarryReference,
     valueKindOf,
 } from "./type-facts.js";
 import { conditionComparison } from "./comparisons.js";
@@ -1565,6 +1566,14 @@ export class StaticEvaluator {
         }
         const folded = this.generationText(unwrapped);
         if (folded !== undefined) return folded;
+        if (ts.isConditionalExpression(unwrapped)) {
+            // A settled conditional is the arm it selects.
+            const arm = selectedStaticExpression(
+                this.selection(false),
+                unwrapped,
+            );
+            if (arm) return this.compileStringLiteral(arm);
+        }
         this.fail(
             unwrapped,
             "Expected a string literal.",
@@ -1781,6 +1790,13 @@ export class StaticEvaluator {
 
     private scanWritesThrough(declaration: ts.VariableDeclaration): boolean {
         if (!ts.isIdentifier(declaration.name)) return true;
+        // A scalar is copied wherever it goes: it holds no object to write.
+        if (
+            !typeCanCarryReference(
+                this.checker.getTypeAtLocation(declaration.name),
+            )
+        )
+            return false;
         // A name holding the object or a member of it: the binding, an
         // alias, a destructured or iterated leaf, a literal holding one.
         const holds = (
