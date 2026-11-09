@@ -3799,9 +3799,11 @@ class Compiler implements LoweringServices {
     }
 
     /**
-     * The number a named record's field holds, when its binding still holds
-     * the record it was declared with and no write in the program (through
-     * this type or any view of it) can have replaced the field.
+     * The number a named record's field holds: its initializer's, when the
+     * name is a static literal and that initializer re-reads alike; else the
+     * bound number, when its binding still holds the record it was declared
+     * with and no write in the program (through this type or any view of
+     * it) can have replaced the field.
      */
     public staticProperty(
         access: ts.PropertyAccessExpression,
@@ -3809,6 +3811,14 @@ class Compiler implements LoweringServices {
         // Resolving anything but a name may inline, and so emit, its calls.
         if (!ts.isIdentifier(access.expression)) return undefined;
         const target = this.resolveStaticExpression(access.expression);
+        if (ts.isObjectLiteralExpression(target)) {
+            const field = unlessRefused(() =>
+                this.objectProperty(target, access.name.text),
+            );
+            return field && this.rereadsAlike(field)
+                ? staticNumberValue(this, field)
+                : undefined;
+        }
         if (!ts.isIdentifier(target)) return undefined;
         const owner = this.bindings.lookupOptional(target);
         // Another closure may replace a shared cell's whole record.
