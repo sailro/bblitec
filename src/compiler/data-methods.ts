@@ -100,6 +100,7 @@ import {
     arrayElementType,
     declaredContextualType,
     isTypeReference,
+    presentMembers,
     slotHoldsOnlyNull,
     valueKindOf,
     callSignatures,
@@ -1251,9 +1252,14 @@ export function compileDataMethodCall(
     // snapshot and result-flattening mechanism used by property/DOM accesses.
     // An element read carries its presence beside a default
     // (`list[0]?.trim()`): the `?.` tests it, as JavaScript tests undefined.
+    // A parsed document is absent as null or undefined, which its own `?.`
+    // tests, or with the chain link before it.
     if (
         ts.isOptionalChain(callee.access) &&
         (owner.dataType?.kind === "optional" ||
+            (isJsonValue(owner) &&
+                (callee.access.questionDotToken !== undefined ||
+                    presenceFlagCpp(owner) !== undefined)) ||
             (callee.access.questionDotToken &&
                 ts.isElementAccessExpression(
                     lowerer.context.unwrap(callee.expression),
@@ -1373,8 +1379,15 @@ function compileKnownDataMethod(
         if (held) return held;
     }
     if (isJsonValue(narrowedOwner)) {
-        const declared = lowerer.dataTypeAt(callee.expression);
-        if (declared?.kind === "string" || declared?.kind === "enum") {
+        // The call reads the receiver it narrowed: a document the source
+        // types as a string, nullable or not, is that string here.
+        const present = presentMembers(
+            lowerer.context.checker.getTypeAtLocation(callee.expression),
+        );
+        if (
+            present.length > 0 &&
+            present.every((member) => valueKindOf(member) === "string")
+        ) {
             narrowedOwner = lowerer.leafValue(
                 `${narrowedOwner.cpp}.string_value()`,
                 { kind: "string" },

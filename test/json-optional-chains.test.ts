@@ -50,3 +50,50 @@ test("document optional chains preserve lazy keys, continuations and typed lengt
     }
     runGeneratedProgram(native, "json-optional-chains/semantics", result.cpp);
 });
+
+test("an optional method call on a document member is undefined when the member is absent", (t) => {
+    const source = `
+        type Lang = 'en' | 'fr';
+        interface Doc { items?: number[]; label?: string | null; nested?: { tags?: string[] }; names?: Partial<Record<Lang, string>>; }
+        const empty = JSON.parse('{"label":null}') as Doc;
+        const full = JSON.parse('{"items":[1,2],"label":" a ","nested":{"tags":["x","y"]},"names":{"fr":" b "}}') as Doc;
+        function named(doc: { names?: Partial<Record<Lang, string>> }, lang: Lang): string {
+            return doc.names?.[lang]?.trim() || 'unnamed';
+        }
+        function describe(doc: Doc): string {
+            const doubled = doc.items?.map((value) => value * 2);
+            const label = doc.label?.trim();
+            const tags = doc.nested?.tags?.join('+');
+            const count = doc.nested?.tags.slice(1).length;
+            return [
+                doubled === undefined ? 'none' : doubled.join(','),
+                label === undefined ? 'none' : label,
+                tags === undefined ? 'none' : tags,
+                count === undefined ? 'none' : String(count),
+                named(doc, 'en'),
+                named(doc, 'fr'),
+            ].join('|');
+        }
+        const text = describe(empty) + ' ' + describe(full);
+        if (text !== 'none|none|none|none|unnamed|unnamed 2,4|a|x+y|1|unnamed|b') throw new Error(text);
+    `;
+    runInNewContext(
+        ts.transpileModule(source, {
+            compilerOptions: {
+                target: ts.ScriptTarget.ES2022,
+                module: ts.ModuleKind.None,
+            },
+        }).outputText,
+    );
+    const result = compileSource(source);
+    const native = optionalNativeFixtureTools(false);
+    if (!native) {
+        t.skip("Native fixture compiler unavailable.");
+        return;
+    }
+    runGeneratedProgram(
+        native,
+        "json-optional-chains/method-calls",
+        result.cpp,
+    );
+});

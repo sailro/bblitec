@@ -3286,7 +3286,18 @@ export class DataLowerer {
                 access.expression,
             );
             const notNullish = `(!(${selected.cpp}).is_null() && !(${selected.cpp}).is_undefined())`;
-            present = access.questionDotToken
+            // A member call's `?.` sits on its callee (`owner?.method()`).
+            const link =
+                ts.isCallExpression(access) && !access.questionDotToken
+                    ? this.context.unwrap(access.expression)
+                    : access;
+            present = (
+                ts.isPropertyAccessExpression(link) ||
+                ts.isElementAccessExpression(link) ||
+                ts.isCallExpression(link)
+                    ? link.questionDotToken
+                    : undefined
+            )
                 ? ownerFound
                     ? `(${ownerFound} && ${notNullish})`
                     : notNullish
