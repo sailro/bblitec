@@ -6769,15 +6769,40 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                     "Dynamic struct access requires at least one key.",
                 );
             }
-            const fields = members.map((member) =>
-                this.context.dataTypes.structField(
+            // A key the struct's records provably lack reads undefined
+            // (`absentRecordProperty`); a write needs its field.
+            const keyed = members.map((member) =>
+                mode === "read" &&
+                this.context.dataTypes.absentRecordProperty(
                     dataType.name,
                     member,
                     access,
-                    "accessors",
-                ),
+                )
+                    ? undefined
+                    : this.context.dataTypes.structField(
+                          dataType.name,
+                          member,
+                          access,
+                          "accessors",
+                      ),
             );
+            const fields = keyed.filter((field) => field !== undefined);
+            if (fields.length === 0) {
+                this.context.emitDiscardedValue(
+                    this.context.compileValue(access.argumentExpression),
+                );
+                return undefinedValue();
+            }
             const commonType = fields[0]!.type;
+            if (
+                fields.length !== keyed.length &&
+                fields.some((field) => field.accessor)
+            ) {
+                this.context.fail(
+                    access,
+                    "A dynamic key over accessor fields requires a field for each of its keys.",
+                );
+            }
             if (mode === "write" && owner.recordProperties)
                 for (const field of fields)
                     delete writable(owner.recordProperties)[field.sourceName];
@@ -6812,10 +6837,22 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 );
             const keyTemporary =
                 this.context.allocateTemporaryCppName("property_key");
+            // The read is undefined under a key no field stores, so it
+            // answers a nullable value in place of the selected field.
+            const selectedType =
+                fields.length === keyed.length
+                    ? commonType
+                    : this.context.dataTypes.nullableType(commonType, true);
             // An accessor slot answers its getter's value.
-            const read = (field: DataStructField): string =>
-                `${owner.cpp}${arrow}${field.name}${field.accessor ? ".get()" : ""}`;
-            let selected = read(fields.at(-1)!);
+            const read = (field: DataStructField | undefined): string => {
+                if (!field)
+                    return this.context.dataTypes.absentValue(selectedType);
+                const stored = `${owner.cpp}${arrow}${field.name}${field.accessor ? ".get()" : ""}`;
+                return selectedType === commonType
+                    ? stored
+                    : this.context.dataTypes.presentValue(selectedType, stored);
+            };
+            let selected = read(keyed.at(-1));
             for (let index = members.length - 2; index >= 0; --index) {
                 const member = members[index]!;
                 const memberCpp = this.context.dataTypes.enumMemberCpp(
@@ -6825,13 +6862,13 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 );
                 selected =
                     `(${keyTemporary} == ${memberCpp} ? ` +
-                    `${read(fields[index]!)} : ${selected})`;
+                    `${read(keyed[index])} : ${selected})`;
             }
             return {
                 ...this.leafValue(
                     `([&](const auto ${keyTemporary}) -> decltype(auto) { ` +
                         `return (${selected}); })(${key})`,
-                    commonType,
+                    selectedType,
                 ),
                 ...(fields.some((field) => field.uncheckedProperty)
                     ? { preserveUncheckedLookup: true as const }

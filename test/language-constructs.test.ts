@@ -3555,6 +3555,25 @@ test("a run-time key selecting fields of different types refuses", () => {
 });
 
 check(
+    "run-time-key-over-a-record-lacking-some-of-its-keys",
+    `
+    type Lang = "en" | "fr" | "de";
+    type Names = Partial<Record<Lang, string>>;
+    function nameFor(entry: { name: string; names?: Names }, lang: Lang): string {
+        return entry.names?.[lang] ?? entry.name;
+    }
+    const stone = { name: "Stone", names: { fr: "Pierre" } };
+    const bare = { name: "Bare", names: {} };
+    const counts = { en: 1, de: 3 };
+    const countFor = (table: Partial<Record<Lang, number>>, lang: Lang): number => table[lang] ?? 0;
+    const langs: Lang[] = ["en", "fr", "de"];
+    const out: string[] = [];
+    for (const lang of langs) out.push(nameFor(stone, lang), nameFor(bare, lang), String(countFor(counts, lang)));
+    if (out.join("|") !== "Stone|Bare|1|Pierre|Bare|0|Stone|Bare|3") throw new Error(out.join("|"));
+`,
+);
+
+check(
     "object-destructuring-assignments-and-keyed-absence",
     `
     interface Auto { dawn?: string; dusk?: string; stops?: readonly { dawn?: string }[]; }
