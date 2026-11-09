@@ -251,14 +251,20 @@ template <typename Driver> void exercise(int index) {
     assert(SDL_PushEvent(&wheel));
     assert(driver.prepare() == FramePreparation::ready);
     assert((wheels == std::vector<double>{-100, 100}));
-    // Each driver executes its replay dispatch after draining live packets.
-    replay_source = "WheelUp,WheelDown";
+    // Each driver queues its tape entry after draining live packets: the next drain delivers it.
+    replay_source = "UiWheelUp,UiWheelDown";
     state.input_replay = PlatformInputReplay{};
+    state.frame_options.test_pass = true;
     ++state.frame;
     assert(driver.prepare() == FramePreparation::ready);
+    assert(wheels.size() == 2);
+    ++state.frame;
+    assert(driver.prepare() == FramePreparation::ready);
+    assert((wheels == std::vector<double>{-100, 100, -100}));
     ++state.frame;
     assert(driver.prepare() == FramePreparation::ready);
     assert((wheels == std::vector<double>{-100, 100, -100, 100}));
+    state.frame_options.test_pass = false;
     // Replayed mouse packets survive touch-emulation filtering on every driver.
     replay_source = "UiClick@20:30";
     state.input_replay = PlatformInputReplay{};
@@ -307,14 +313,47 @@ template <typename Driver> void exercise(int index) {
     assert(!engine.pointer_locked && !engine.pointer_lock_requested && !relative_mouse &&
            cursor_visible);
     lock();
-    replay_source = "Escape";
+    // A replayed key code takes a pressed key's path through a deterministic pass: the engine's
+    // callbacks, retained UI and the camera controls.
+    replay_source = "Escape,+MouseRight,MouseMoveRight,-MouseRight";
     state.input_replay = PlatformInputReplay{};
     engine.input_replay_next_frame = 0;
+    state.frame_options.test_pass = true;
+    calls.clear();
     ++state.frame;
     assert(driver.prepare() == FramePreparation::ready);
+    assert(engine.pointer_locked && calls.empty());
+    ++state.frame;
+    assert(driver.prepare() == FramePreparation::ready);
+    assert(calls == expected && keys.back() == "Escape:Escape");
     assert(!engine.pointer_locked && !engine.pointer_lock_requested && !relative_mouse &&
            cursor_visible);
     assert(lock_changes == 4);
+    // A plain button presses at the canvas center without a motion packet; the relative motion
+    // reports the button the tape holds.
+    std::vector<std::string> pointers;
+    engine.mouse_down_callbacks.add(2, [&](const PlatformMouseEvent& event) {
+        assert(std::abs(event.client_x - engine.canvas_client_width / 2) < 0.001 &&
+               std::abs(event.client_y - engine.canvas_client_height / 2) < 0.001);
+        pointers.push_back("down " + std::to_string(static_cast<int>(event.button)));
+    });
+    engine.mouse_up_callbacks.add(2, [&](const PlatformMouseEvent& event) {
+        pointers.push_back("up " + std::to_string(static_cast<int>(event.button)));
+    });
+    engine.mouse_move_callbacks.remove(1);
+    engine.mouse_move_callbacks.add(2, [&](const PlatformMouseEvent& event) {
+        assert(event.buttons == 2 && event.movement_x == 100 && event.movement_y == 0);
+        pointers.emplace_back("move");
+    });
+    for (int entry = 0; entry < 3; ++entry) {
+        ++state.frame;
+        assert(driver.prepare() == FramePreparation::ready);
+    }
+    assert((pointers == std::vector<std::string>{"down 2", "move", "up 2"}));
+    engine.mouse_down_callbacks.remove(2);
+    engine.mouse_up_callbacks.remove(2);
+    engine.mouse_move_callbacks.remove(2);
+    state.frame_options.test_pass = false;
     replay_source.clear();
     state.input_replay = PlatformInputReplay{};
     // Quake requests lock on right-down and releases on right-up, while

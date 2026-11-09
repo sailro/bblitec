@@ -1,5 +1,22 @@
 {
-  "notes": "Shift, rotate and hard-drop pieces continuously, so rows fill, clear and the board's meshes turn over.",
+  "notes": "Shift, rotate and hard-drop pieces across the board so rows fill and clear, then restart: the board's meshes turn over for the whole run.",
   "lead": ["-*10"],
-  "cycle": ["ArrowLeft", "-*8", "ArrowUp", "-*8", "ArrowRight", "-*8", "Space", "-*30", "ArrowDown", "-*10"]
+  "cycle": [
+    "ArrowLeft*4", "-*4", "Space", "-*20",
+    "ArrowLeft*2", "-*4", "ArrowUp", "-*4", "Space", "-*20",
+    "ArrowUp", "-*4", "Space", "-*20",
+    "ArrowRight*2", "-*4", "ArrowUp", "-*4", "Space", "-*20",
+    "ArrowRight*4", "-*4", "ArrowDown", "-*4", "Space", "-*20",
+    "ArrowLeft*4", "-*4", "Space", "-*20",
+    "ArrowLeft*2", "-*4", "ArrowUp", "-*4", "Space", "-*20",
+    "ArrowUp", "-*4", "Space", "-*20",
+    "ArrowRight*2", "-*4", "ArrowUp", "-*4", "Space", "-*20",
+    "ArrowRight*4", "-*4", "ArrowDown", "-*4", "Space", "-*20",
+    "ArrowLeft*4", "-*4", "Space", "-*20",
+    "ArrowLeft*2", "-*4", "ArrowUp", "-*4", "Space", "-*20",
+    "ArrowUp", "-*4", "Space", "-*20",
+    "ArrowRight*2", "-*4", "ArrowUp", "-*4", "Space", "-*20",
+    "ArrowRight*4", "-*4", "ArrowDown", "-*4", "Space", "-*20",
+    "KeyR", "-*10"
+  ]
 }
