@@ -7883,7 +7883,12 @@ export class ExpressionLowerer {
             const awaited = unwrapExpression(callee.expression);
             const receiverValue = ts.isIdentifier(receiver)
                 ? (this.context.bindings.lookupOptional(receiver) ??
-                  this.compileModuleNamespace(receiver))
+                  this.compileModuleNamespace(receiver) ??
+                  // A module constant without storage is its initializer,
+                  // as a member read of it is.
+                  (this.context.resolveStaticExpression(receiver) !== receiver
+                      ? this.compileValue(receiver)
+                      : undefined))
                 : receiver.kind === ts.SyntaxKind.ThisKeyword
                   ? this.context.activeThis()
                   : voidReceiver(
