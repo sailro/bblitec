@@ -3574,6 +3574,42 @@ check(
 );
 
 check(
+    "absent-properties-of-records-whose-type-does-not-require-them",
+    `
+    type Outcome = { changed: true; id: number } | { changed: false; reason: "dimensions" | "lift" };
+    const describe = (result: Outcome): string =>
+        result.changed ? "made " + result.id : "refused " + (result.reason === "lift" ? "by lift" : result.reason);
+    const made: Outcome = { changed: true, id: 7 };
+    const refused: Outcome = { changed: false, reason: "lift" };
+    function plain(value: any): any { return value !== null && typeof value === "object" ? value : {}; }
+    function variants(raw: any, fallback: string[]): string[] {
+        const fish = plain(plain(raw).fish);
+        return fish.variants === undefined ? fallback : fish.variants;
+    }
+    const text = [
+        describe(made),
+        describe(refused),
+        variants({}, ["perch"]).join("+"),
+        variants({ fish: { variants: ["carp", "pike"] } }, ["perch"]).join("+"),
+        variants(null, ["perch"]).join("+"),
+    ].join("|");
+    if (text !== "made 7|refused by lift|perch|carp+pike|perch") throw new Error(text);
+`,
+);
+
+test("a compile-time record lacking a property its type requires refuses the read", () => {
+    assert.throws(
+        () =>
+            compileSource(`
+            interface Row { source: string; count: number; }
+            const row = { count: 1 } as Row;
+            if (row.source !== undefined) throw new Error("source");
+            `),
+        /Static record has no property 'source'/,
+    );
+});
+
+check(
     "object-destructuring-assignments-and-keyed-absence",
     `
     interface Auto { dawn?: string; dusk?: string; stops?: readonly { dawn?: string }[]; }

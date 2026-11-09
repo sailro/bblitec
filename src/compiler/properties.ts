@@ -3787,7 +3787,7 @@ export class PropertyAccessLowerer {
                 const declaredTsType =
                     this.context.checker.getTypeAtLocation(expression);
                 const declaredMembers = unionMembers(declaredTsType);
-                const optionalProperty = this.context.checker
+                const declaredProperty = this.context.checker
                     .getNonNullableType(
                         this.context.checker.getTypeAtLocation(
                             expression.expression,
@@ -3796,9 +3796,15 @@ export class PropertyAccessLowerer {
                     .getProperty(property);
                 if (
                     declared?.kind === "optional" ||
-                    (optionalProperty !== undefined &&
-                        (optionalProperty.flags & ts.SymbolFlags.Optional) !==
-                            0) ||
+                    (declaredProperty !== undefined
+                        ? (declaredProperty.flags & ts.SymbolFlags.Optional) !==
+                          0
+                        : // The owner's type requires no such property: an
+                          // untyped value, or a union one of whose arms lacks
+                          // it. A class instance keeps its class's members,
+                          // and every object Object.prototype's.
+                          !owner.classDeclaration &&
+                          !(property in Object.prototype)) ||
                     (declared?.kind === "function" &&
                         declaredMembers.some((member) =>
                             holdsOnly(member, ["null", "undefined"]),
