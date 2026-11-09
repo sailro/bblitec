@@ -295,8 +295,6 @@ export class StorageDemandPlanner {
     private lowering?: ts.Statement;
     /** @unjournaled What ended the plan's work: undefined while it runs or once it returned. */
     private stop: unknown;
-    /** @unjournaled The statements the plan lowered: its cost, in a survey's measure. */
-    private lowered = 0;
 
     /**
      * @unjournaled The replays besides storage (`replayable`) a survey's
@@ -316,11 +314,6 @@ export class StorageDemandPlanner {
         private readonly replayable?: (error: unknown) => error is Error,
     ) {
         this.collected = new ReplayStorage(checker);
-    }
-
-    /** The statements the plan lowered. */
-    public get statements(): number {
-        return this.lowered;
     }
 
     /** Whether lowering goes on past a demand that allows it (`demandOrPlan`). */
@@ -380,7 +373,6 @@ export class StorageDemandPlanner {
         lower: () => void,
     ): void {
         this.lowering = statement;
-        this.lowered++;
         if (this.demands.length >= 256)
             throw new PlanningStop("the 256 demands one plan collects");
         // Under a generic instantiation a statement reads the types the

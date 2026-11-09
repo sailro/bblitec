@@ -819,12 +819,15 @@ function lowerSourceApplication(
         // are always strict: a discarded plan runs between them, as far as
         // it can, after each restart while plans pay -- each demand a plan
         // adds saves a strict attempt as long as the last one. Costs are
-        // statement lowerings, so the schedule is the program's alone. After
-        // a plan that lowered more statements than the attempts it saved,
-        // strict attempts lower as many before the next one, twice as many
-        // after each further such plan: a survey whose plans stop paying
-        // spends ever less of its time planning, and the next plan that
-        // pays plans after every restart again.
+        // the time each took: a plan lowers a statement several times
+        // slower than a strict attempt does, so a count of statements
+        // would let plans run that cost more than the attempts they save.
+        // After a plan that took longer than the attempts it saved, strict
+        // attempts run as long before the next one, twice as long after
+        // each further such plan: a survey whose plans stop paying spends
+        // ever less of its time planning, and the next plan that pays
+        // plans after every restart again. The schedule follows the clock,
+        // so two surveys of one program may plan after different restarts.
         let planning = false;
         let owed = 0;
         let unpaid = 0;
@@ -856,12 +859,12 @@ function lowerSourceApplication(
                     planning = true;
                     continue;
                 }
-                const strict = survey.statementsLowered(
+                const strict = survey.attemptMilliseconds(
                     input.sourceFile.fileName,
                 );
                 owed -= strict;
                 if (owed > 0) continue;
-                const planned = performance.now();
+                const began = performance.now();
                 const planner = new StorageDemandPlanner(
                     input.checker,
                     true,
@@ -874,14 +877,10 @@ function lowerSourceApplication(
                 }
                 for (const replay of planner.replays) acceptReplay(replay);
                 const added = addPlanned(planner);
-                survey.planned(
-                    added,
-                    performance.now() - planned,
-                    planner.ended(),
-                );
-                unpaid = added * strict > planner.statements ? 0 : unpaid + 1;
-                owed =
-                    unpaid === 0 ? 0 : planner.statements * 2 ** (unpaid - 1);
+                const planned = performance.now() - began;
+                survey.planned(added, planned, planner.ended());
+                unpaid = added * strict > planned ? 0 : unpaid + 1;
+                owed = unpaid === 0 ? 0 : planned * 2 ** (unpaid - 1);
             }
         }
     };
