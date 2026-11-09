@@ -1,4 +1,6 @@
+import { dirname } from "node:path";
 import ts from "typescript";
+import { sourcePath } from "./source-units.js";
 import type { LoweringServices } from "./lowering-services.js";
 import type { Value } from "./types.js";
 import type { DataType } from "./data-types/model.js";
@@ -139,7 +141,7 @@ export class ModuleNamespaces {
             context.reachJsData();
             emitSharedCell(context, cpp, {
                 type: "bbl::js::ModuleActivation",
-                initializer: context.cppString(file.fileName),
+                initializer: context.cppString(this.key(file.fileName)),
             });
             context.registerNativeBinding(cpp);
         }
@@ -253,13 +255,21 @@ export class ModuleNamespaces {
         }
     }
 
+    /**
+     * A module's identity in generated code: its path from the entry's
+     * directory, the same wherever the program is checked out.
+     */
+    private key(module: string): string {
+        return sourcePath(dirname(this.context.sourceFile.fileName), module);
+    }
+
     public value(type: DataType<"module-namespace">, cpp?: string): Value {
         this.context.reachJsData();
         return {
             kind: "data",
             cpp:
                 cpp ??
-                `bbl::js::ModuleNamespace{${this.context.cppString(type.module)}}`,
+                `bbl::js::ModuleNamespace{${this.context.cppString(this.key(type.module))}}`,
             dataType: type,
             moduleNamespace: true,
             truthinessCpp: "true",
