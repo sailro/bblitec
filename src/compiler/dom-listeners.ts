@@ -2,7 +2,12 @@ import ts from "typescript";
 import { absenceOf, isAbsentValue } from "./values/model.js";
 import type { LoweringServices } from "./lowering-services.js";
 import { valueForKind, type Value } from "./types.js";
-import { domTargetIdentity, elementInterfaceTag } from "./dom-targets.js";
+import {
+    domTargetIdentity,
+    elementInterfaceTag,
+    holdsDomTarget,
+} from "./dom-targets.js";
+import { presentDataType } from "./data-types/operations.js";
 import { ApplicationRealmRequired } from "./worker-modules.js";
 import { documentEngine } from "./window-events.js";
 import {
@@ -626,22 +631,20 @@ export function emitDomEventListener(
                     context.compileValue(callee.expression),
                     callee.expression,
                 );
-                return candidate.domEventTargetCpp ||
-                    candidate.kind === "ui-element" ||
-                    candidate.dataType?.kind === "event-target"
+                return candidate.domEventTargetCpp || holdsDomTarget(candidate)
                     ? candidate
                     : undefined;
             });
-            if (value?.domEventTargetCpp || value?.kind === "ui-element") {
-                // An element, Window, Document or canvas bound to a name
-                // typed `EventTarget` is the target it names.
+            if (presentDataType(value?.dataType)?.kind === "event-target") {
+                storedTarget = value;
+            } else if (value) {
+                // An element, Window, Document or canvas held under any
+                // name or member is the target it names.
                 ({ target, engine } = domTargetIdentity(
                     context,
                     value,
                     callee.expression,
                 ));
-            } else if (value?.dataType?.kind === "event-target") {
-                storedTarget = value;
             }
         }
     }
