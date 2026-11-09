@@ -91,6 +91,19 @@ const RECORD_STORAGE_FLAGS = [
     "bareCallable",
 ] as const;
 
+/** What a record demand asks for, for reports: its flags, joins and accessors. */
+export function describeRecordDemand(
+    demand: NativeRecordStorageDemand,
+): string {
+    const asked: string[] = RECORD_STORAGE_FLAGS.filter((flag) => demand[flag]);
+    if (demand.dictionary) asked.push(`dictionary of ${demand.dictionary}`);
+    if (demand.native) asked.push("native");
+    if (demand.joins?.length) asked.push(`${demand.joins.length} join(s)`);
+    if (demand.accessors?.length)
+        asked.push(`${demand.accessors.length} accessor(s)`);
+    return asked.join(", ") || "shared";
+}
+
 /**
  * Replays strengthen ownership and accumulate the joins and accessors
  * lowering met: `previous` merged with `next`, or undefined when `next`

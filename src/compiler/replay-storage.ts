@@ -12,6 +12,7 @@ import {
     type GenericFunctionDemand,
 } from "./generic-function-storage.js";
 import {
+    describeRecordDemand,
     mergeNativeRecordStorage,
     type NativeRecordStorageDemand,
 } from "./native-record-storage.js";
@@ -88,6 +89,23 @@ export function storageRequestSite(
         default:
             return request.declaration;
     }
+}
+
+/** What storage requests ask for, for reports: each kind once, a record's with what it demands. */
+export function describeStorageRequests(
+    requests: readonly StorageRequest[],
+): string {
+    const counts = new Map<string, number>();
+    for (const request of requests) {
+        const asked =
+            request.kind === "record"
+                ? `record (${describeRecordDemand(request.demand)})`
+                : request.kind;
+        counts.set(asked, (counts.get(asked) ?? 0) + 1);
+    }
+    return [...counts]
+        .map(([asked, count]) => (count > 1 ? `${asked} x${count}` : asked))
+        .join("; ");
 }
 
 /**
