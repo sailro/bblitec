@@ -965,6 +965,14 @@ export function isUiElementHandleType(symbol: ts.Symbol): boolean {
     );
 }
 
+/** Whether a compiled value is a data struct. */
+export function isDataStruct(value: {
+    kind: string;
+    dataType?: DataType;
+}): boolean {
+    return value.kind === "data" && value.dataType?.kind === "struct";
+}
+
 /**
  * Whether a compiled value is a plain-data numeric tuple of `arity`.
  *

@@ -302,6 +302,28 @@ test("an object colour is admitted only where the position's type is an object",
     );
 });
 
+test("a colour sink reads the channels of a record the program writes", () => {
+    const program = (
+        sink: string,
+    ): string => `import {createEngine,createHemisphericLight,createSceneContext} from "@babylonjs/lite";
+        const tint={r:.1,g:.2,b:.3,a:1};
+        function fade(color:{r:number;g:number;b:number;a:number},alpha:number):void{color.a=alpha;}
+        async function main(){const engine=await createEngine({});const scene=createSceneContext(engine);
+        fade(tint,.5);${sink}}`;
+    assert.match(
+        compileSource(program("scene.clearColor=tint;")).cpp,
+        /v_scene\.clear_color = bbl::Color4\{static_cast<float>\(v_tint->r\), static_cast<float>\(v_tint->g\), static_cast<float>\(v_tint->b\), static_cast<float>\(v_tint->a\)\};/,
+    );
+    // The pin types a light's colours as number tuples.
+    assert.throws(
+        () =>
+            compileSource(
+                program("createHemisphericLight().groundColor=tint;"),
+            ),
+        /This colour is the pin's \[r, g, b\] number tuple; a \{ r, g, b \} object is not the pinned API/,
+    );
+});
+
 test("material-color transport refuses unsupported widths and later material-group snapshots", () => {
     const prefix = `import {createEngine,createPbrMaterial,createStandardMaterial,createSceneContext,createBox,addToScene,registerScene,onBeforeRender,rebuildSceneRenderables} from "@babylonjs/lite";
         async function main(){const engine=await createEngine({});const scene=createSceneContext(engine);const p=createStandardMaterial();

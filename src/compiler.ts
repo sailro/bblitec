@@ -1319,6 +1319,7 @@ class Compiler implements LoweringServices {
                     dataType,
                     node,
                 ),
+            (value, name, node) => this.structNumber(value, name, node),
         );
     }
 
@@ -3858,14 +3859,11 @@ class Compiler implements LoweringServices {
             ts.isElementAccessExpression(unwrapped) ||
             ts.isPropertyAccessExpression(unwrapped)
         ) {
-            const value = this.compileValue(unwrapped);
-            if (
-                (value.kind === "data" && value.dataType?.kind === "struct") ||
-                value.kind === "record"
-            ) {
-                return this.vec3FromRecord(value, unwrapped, precision);
-            }
-            return this.evaluator.compileVec3(expression, precision, value);
+            return this.evaluator.compileVec3(
+                expression,
+                precision,
+                this.compileValue(unwrapped),
+            );
         }
         return this.evaluator.compileVec3(expression, precision);
     }
@@ -3875,34 +3873,27 @@ class Compiler implements LoweringServices {
         node: ts.Node,
         precision: "float" | "double",
     ): string {
-        if (value.kind === "data" && value.dataType?.kind === "struct") {
-            const type = precision === "float" ? "bbl::Vec3" : "bbl::Vec3d";
-            const arrow = this.dataTypes.memberAccess(value.dataType.name);
-            const lanes = ["x", "y", "z"].map((name) => {
-                const field = this.dataTypes.structField(
-                    value.dataType!.kind === "struct"
-                        ? value.dataType!.name
-                        : "",
-                    name,
-                    node,
-                );
-                if (field.type.kind !== "number") {
-                    this.fail(
-                        node,
-                        `Vec3 data field '${name}' must be numeric.`,
-                    );
-                }
-                return this.castNumber(
-                    {
-                        kind: "number",
-                        cpp: `${value.cpp}${arrow}${field.name}`,
-                    },
-                    precision,
-                );
-            });
-            return `${type}{${lanes.join(", ")}}`;
-        }
         return this.evaluator.vec3FromRecord(value, node, precision);
+    }
+
+    /**
+     * A data struct's numeric field read where the struct stands;
+     * undefined when the field holds no number.
+     */
+    private structNumber(
+        value: Value,
+        name: string,
+        node: ts.Node,
+    ): Value | undefined {
+        if (value.dataType?.kind !== "struct") return undefined;
+        const struct = value.dataType.name;
+        const field = this.dataTypes.structField(struct, name, node);
+        return field.type.kind === "number"
+            ? {
+                  kind: "number",
+                  cpp: `${value.cpp}${this.dataTypes.memberAccess(struct)}${field.name}`,
+              }
+            : undefined;
     }
 
     /** One number Value at one sink's width — the rule, in one place. */
