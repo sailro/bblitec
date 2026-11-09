@@ -7431,9 +7431,13 @@ export class DataTypeRegistry {
         const partial = this.assertedEmpty(type);
         const view = this.recordViews.has(this.structIdentity(type));
         const proxy = this.proxyRecords.has(this.structIdentity(type));
-        const valueOf = (
-            property: ts.Symbol,
-        ): {
+        const valueOf = ({
+            owner,
+            symbol: property,
+        }: {
+            owner: ts.Type;
+            symbol: ts.Symbol;
+        }): {
             type: ts.Type;
             mapped: DataType | undefined;
             callable: boolean;
@@ -7449,15 +7453,21 @@ export class DataTypeRegistry {
             const callable =
                 callSignatures(this.checker, callableType, "exact").length >
                     0 && !this.isCallableRecordType(callableType);
-            const mapped = callable
-                ? allowStoredFunctions &&
-                  declaration !== undefined &&
-                  (ts.isPropertySignature(declaration) ||
+            // A mapped type's own property (`Record<K, () => void>`) has
+            // no declaration: the type's template declares its signature.
+            const declaresSignature =
+                declaration === undefined
+                    ? ((owner as ts.ObjectType).objectFlags &
+                          ts.ObjectFlags.Mapped) !==
+                      0
+                    : ts.isPropertySignature(declaration) ||
                       ts.isMethodSignature(declaration) ||
                       ts.isMethodDeclaration(declaration) ||
                       (this.classDemanded &&
                           (ts.isPropertyAssignment(declaration) ||
-                              ts.isShorthandPropertyAssignment(declaration))))
+                              ts.isShorthandPropertyAssignment(declaration)));
+            const mapped = callable
+                ? allowStoredFunctions && declaresSignature
                     ? this.fromFunctionType(callableType, declaration ?? node)
                     : undefined
                 : // A record's own field inherits the position the record is in
@@ -7488,7 +7498,7 @@ export class DataTypeRegistry {
         };
         for (const [name, declared] of layout.properties) {
             const property = declared[0]!.symbol;
-            const values = declared.map(({ symbol }) => valueOf(symbol));
+            const values = declared.map(valueOf);
             // A function an object literal declares is stored only in a
             // stored position (`fromStoredTsType`); elsewhere a component
             // member declaring its signature stores it for every member.
