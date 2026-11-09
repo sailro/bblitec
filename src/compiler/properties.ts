@@ -1360,6 +1360,22 @@ export const propertyRules: readonly PropertyRule[] = [
         record: ["lights", "shadow_generator"],
         carriesShadowGenerator: true,
     },
+    // The pin's public `ShadowGenerator` declares no member. These two are
+    // internals the native generator has no value for.
+    {
+        owner: "shadow-generator",
+        property: "_version",
+        unsupported:
+            "ShadowGenerator._version counts the pin's receiver-block publications; " +
+            "a native generator keeps no such counter.",
+    },
+    {
+        owner: "shadow-generator",
+        property: "_shadowTaskState",
+        unsupported:
+            "ShadowGenerator._shadowTaskState is the pin's task state; its static-cache " +
+            "refit gate is native cache state with no source value.",
+    },
     {
         owner: "gamepad",
         property: "index",
@@ -1635,6 +1651,17 @@ export const propertyRules: readonly PropertyRule[] = [
         feature: "mesh:geometry-access",
     },
     {
+        // world-matrix-state.ts bumps the version when a transform component
+        // changes value, on a new parent and with each ancestor's bump, and
+        // polls a provider parent on read. `mark_mesh_dirty` bumps on every
+        // write: the same change signal, a different number.
+        owner: "mesh",
+        property: "worldMatrixVersion",
+        unsupported:
+            "Mesh.worldMatrixVersion counts the pin's world-matrix invalidations; the native " +
+            "mesh counts every transform write, including one that changes nothing.",
+    },
+    {
         // cloneMeshNode shares this owner; setThinInstances updates its fields.
         owner: "mesh",
         property: "thinInstances",
@@ -1655,6 +1682,16 @@ export const propertyRules: readonly PropertyRule[] = [
         value: "number",
         helper: "bbl::thin_instance_count",
         feature: "mesh:thin-instances-dynamic",
+    },
+    {
+        // `ti._version` (`CsmRefitCaster` declares it): the pool's change
+        // counter, which every pinned thin-instance writer bumps.
+        owner: "thin-instance-pool",
+        property: "_version",
+        value: "number",
+        access: (pool) => `bbl::thin_instance_data(${pool}).version`,
+        impure: true,
+        feature: "mesh:thin-instances",
     },
     {
         owner: "thin-instance-pool",

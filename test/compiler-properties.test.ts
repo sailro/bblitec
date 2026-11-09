@@ -251,6 +251,41 @@ test("keeps the raw GPU device closed outside the matrix upload helper", () => {
     );
 });
 
+test("refuses the shadow generator internals a native generator has no value for", () => {
+    const generator = (read: string): string =>
+        sceneWithCamera(
+            `const sun = createDirectionalLight([0, -1, 0], 1);
+            const shadow = createCsmDirectionalShadowGenerator(engine, sun, { mapSize: 128, numCascades: 2 });
+            const view = shadow as unknown as { _version?: number; _shadowTaskState?: { _gate?: object } | null };
+            ${read}`,
+            ["createCsmDirectionalShadowGenerator", "createDirectionalLight"],
+        );
+    assert.throws(
+        () => compileSource(generator("const published = view._version;")),
+        /ShadowGenerator\._version counts the pin's receiver-block publications/,
+    );
+    assert.throws(
+        () =>
+            compileSource(
+                generator("const gate = view._shadowTaskState?._gate ?? null;"),
+            ),
+        /ShadowGenerator\._shadowTaskState is the pin's task state/,
+    );
+});
+
+test("refuses a mesh's world-matrix version, which the native mesh counts differently", () => {
+    assert.throws(
+        () =>
+            compileSource(
+                sceneWithCamera(
+                    "const box = createBox(engine, { size: 1 }); const moved = box.worldMatrixVersion;",
+                    ["createBox"],
+                ),
+            ),
+        /Mesh\.worldMatrixVersion counts the pin's world-matrix invalidations/,
+    );
+});
+
 test("rejects an undeclared property on a known owner", () => {
     // The table returning nothing has to fall through to the general
     // failure rather than resolving to something adjacent.
