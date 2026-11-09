@@ -110,7 +110,12 @@ export interface ProgramObservations {
 /** @unjournaled A pure function of the checked program, kept across replays. */
 const observations = new WeakMap<ts.Program, ProgramObservations>();
 
-const IDENTITY_SEARCHES = new Set(["includes", "indexOf", "lastIndexOf"]);
+/** The array methods that compare their argument with elements by identity. */
+export const IDENTITY_SEARCHES = new Set([
+    "includes",
+    "indexOf",
+    "lastIndexOf",
+]);
 const ENUMERATING_STATICS = new Set([
     "keys",
     "values",

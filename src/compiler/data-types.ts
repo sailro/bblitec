@@ -2243,6 +2243,46 @@ export class DataTypeRegistry {
         };
     }
 
+    /**
+     * A structural record type no layout stores (a member has no native
+     * storage) as a view of the native owner `actual` that the expression
+     * `node`, checked as that type, holds.
+     */
+    public layoutlessRecordViewDemand(
+        record: ts.Type,
+        actual: DataType,
+        node: ts.Expression,
+    ): NativeRecordStorageDemand | undefined {
+        const type = this.checker.getNonNullableType(
+            this.resolveTypeParameter(record),
+        );
+        const checked = this.checker.getNonNullableType(
+            this.checker.getTypeAtLocation(node),
+        );
+        if (
+            !isNativeStructuralView(actual) ||
+            (type.flags & ts.TypeFlags.Object) === 0 ||
+            !type.symbol?.declarations?.every(
+                (declaration) =>
+                    ts.isInterfaceDeclaration(declaration) ||
+                    ts.isTypeLiteralNode(declaration),
+            ) ||
+            declaredIn(type.symbol, "babylon", "dom", "webgpu") ||
+            declaredInDefaultLibrary(type.symbol) ||
+            this.fromStoredTsType(type, node) ||
+            !this.checker.isTypeAssignableTo(checked, type)
+        )
+            return undefined;
+        return {
+            ...this.recordDemand(type, node),
+            native: {
+                type: checked,
+                node: unwrapExpression(node),
+                storage: actual,
+            },
+        };
+    }
+
     public dictionaryRecordDemand(
         name: string,
         value: DataType,

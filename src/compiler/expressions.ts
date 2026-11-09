@@ -7847,6 +7847,10 @@ export class ExpressionLowerer {
         if (handlePush) {
             return handlePush;
         }
+        this.context.handleCollections.requireHandleTupleSearchStorage(
+            call,
+            member,
+        );
         const staticMethod =
             this.context.classLowerer.resolveStaticMethod(member);
         if (staticMethod) {

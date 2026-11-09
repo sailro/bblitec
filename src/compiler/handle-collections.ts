@@ -14,7 +14,12 @@ import { readAssetBytesSync } from "./asset-bytes-sync.js";
 import {
     DynamicBindingStorageRequired,
     demandedStorageType,
+    initializedVariableDeclaration,
+    requireDynamicBindingStorage,
 } from "./dynamic-binding-storage.js";
+import { nativeStructuralViewType } from "./native-owner-carrier.js";
+import { NativeRecordStorageRequired } from "./native-record-storage.js";
+import { IDENTITY_SEARCHES } from "./program-observations.js";
 import {
     handleCppType,
     isHandleKind,
@@ -435,6 +440,7 @@ interface HandleCollectionsContext
             | "expectSameEngine"
             | "expectArgumentCount"
             | "reachFeature"
+            | "probeEmission"
         > {}
 
 /**
@@ -1796,17 +1802,11 @@ export class HandleCollections {
         this.context.expectArgumentCount(call, 1, 1);
         const pushed = this.context.compileValue(argumentAt(call, 0));
         if (pushed.nativeError) {
-            const declaration =
-                this.context.symbols.valueSymbol(owner)?.valueDeclaration;
-            if (
-                declaration &&
-                ts.isVariableDeclaration(declaration) &&
-                declaration.initializer
-            )
-                throw new DynamicBindingStorageRequired(
-                    declaration,
-                    "error-array",
-                );
+            requireDynamicBindingStorage(
+                this.context.checker,
+                owner,
+                "error-array",
+            );
             return this.context.fail(
                 owner,
                 "An error list requires owned array storage.",
@@ -1814,12 +1814,12 @@ export class HandleCollections {
         }
         if (!compileTimeListKinds.includes(pushed.kind)) return undefined;
         if (this.context.isInRuntimeControlFlow()) {
-            const declaration =
-                this.context.symbols.valueSymbol(owner)?.valueDeclaration;
+            const declaration = initializedVariableDeclaration(
+                this.context.checker,
+                owner,
+            );
             if (
                 declaration &&
-                ts.isVariableDeclaration(declaration) &&
-                declaration.initializer &&
                 demandedStorageType(
                     this.context,
                     declaration,
@@ -1829,6 +1829,7 @@ export class HandleCollections {
             ) {
                 throw new DynamicBindingStorageRequired(declaration, "array");
             }
+            this.requireElementView(declaration, pushed, argumentAt(call, 0));
             return this.context.fail(
                 owner,
                 "A runtime-grown handle list requires native array storage.",
@@ -1855,6 +1856,59 @@ export class HandleCollections {
                 : pushed,
         );
         return { kind: "void", cpp: "" };
+    }
+
+    /**
+     * `<local>.includes(<value>)`, or an index search, over a compile-time
+     * list whose element type has no storage: the identity of a native
+     * owner is its own, so the list holds that owner natively.
+     */
+    public requireHandleTupleSearchStorage(
+        call: ts.CallExpression,
+        callee: NamedMember,
+    ): void {
+        if (!IDENTITY_SEARCHES.has(callee.name) || call.arguments.length === 0)
+            return;
+        const owner = this.context.unwrap(callee.expression);
+        if (!ts.isIdentifier(owner)) return;
+        const tuple = this.context.bindings.lookupOptional(owner);
+        if (tuple?.kind !== "tuple" || !tuple.tupleElements) return;
+        const searched = this.context.probeEmission(() =>
+            this.context.compileValue(argumentAt(call, 0)),
+        );
+        this.requireElementView(
+            initializedVariableDeclaration(this.context.checker, owner),
+            searched,
+            argumentAt(call, 0),
+        );
+    }
+
+    /**
+     * The element type of the list `declaration` declares, where it is a
+     * structural record no layout stores, as a view of the native owner
+     * `held` is: the list then has native array storage.
+     */
+    private requireElementView(
+        declaration: ts.VariableDeclaration | undefined,
+        held: Value,
+        node: ts.Expression,
+    ): void {
+        const element =
+            declaration &&
+            arrayElementType(
+                this.context.checker,
+                this.context.checker.getTypeAtLocation(declaration.name),
+            );
+        const native = nativeStructuralViewType(held);
+        const view =
+            element &&
+            native &&
+            this.context.dataTypes.layoutlessRecordViewDemand(
+                element,
+                native,
+                node,
+            );
+        if (view) throw new NativeRecordStorageRequired(view);
     }
 
     /**
