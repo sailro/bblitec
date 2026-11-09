@@ -48,6 +48,7 @@ import type {
 import type { ApplicationCpp } from "./compiler/source-units.js";
 import {
     nativeDeclarationFacts,
+    nativeDeclarationDiscardIfUnused,
     type NativeDeclaration,
 } from "./compiler/native-declarations.js";
 import {
@@ -10575,6 +10576,9 @@ class Compiler implements LoweringServices {
             });
             line = {
                 ...line,
+                ...(nativeDeclarationDiscardIfUnused(line)
+                    ? { discardIfUnused: true as const }
+                    : {}),
                 dependencies: [
                     ...(this.statementDependencies.at(-1) ?? []),
                 ].map((binding) => binding.name),

@@ -2089,7 +2089,7 @@ export class PinnedNumericLowerer {
                         type: shape,
                     });
                     lines.push(
-                        `${indent}const ${listStorage(shape)!}& ` +
+                        `${indent}const auto& ` +
                             `${cpp} = ` +
                             `${this.expression(source)};`,
                     );
@@ -2952,14 +2952,15 @@ export class PinnedNumericLowerer {
         // value position is truthy too, but `const c = colorGetter(i)`
         // declares the record, not the fact that it is there.
         const booleanShaped =
-            (ts.isPrefixUnaryExpression(initializer) &&
+            this.booleanValue(initializer) &&
+            ((ts.isPrefixUnaryExpression(initializer) &&
                 initializer.operator === ts.SyntaxKind.ExclamationToken) ||
-            (ts.isBinaryExpression(initializer) &&
-                !PINNED_ARITHMETIC_OPERATORS.has(
-                    initializer.operatorToken.kind,
-                ) &&
-                initializer.operatorToken.kind !==
-                    ts.SyntaxKind.QuestionQuestionToken);
+                (ts.isBinaryExpression(initializer) &&
+                    !PINNED_ARITHMETIC_OPERATORS.has(
+                        initializer.operatorToken.kind,
+                    ) &&
+                    initializer.operatorToken.kind !==
+                        ts.SyntaxKind.QuestionQuestionToken));
         const known = booleanShaped
             ? this.staticCondition(initializer)
             : undefined;
@@ -3414,9 +3415,21 @@ export class PinnedNumericLowerer {
         return `(${cppCondition(this.condition(node))})`;
     }
 
+    /** A specialized absent port always selects the right side of ||. */
+    private absentOrFallback(
+        node: ts.BinaryExpression,
+    ): ts.Expression | undefined {
+        return node.operatorToken.kind === ts.SyntaxKind.BarBarToken &&
+            this.binding(unwrapExpression(node.left))?.staticallyAbsent
+            ? node.right
+            : undefined;
+    }
+
     /** Value selection evaluates the left once and the selected right lazily. */
     private logicalValue(node: ts.BinaryExpression): string {
         const or = node.operatorToken.kind === ts.SyntaxKind.BarBarToken;
+        const fallback = this.absentOrFallback(node);
+        if (fallback) return this.expression(fallback);
         const kind = this.valueKind(node.left);
         const rightKind = this.valueKind(node.right);
         if (
@@ -4564,6 +4577,8 @@ export class PinnedNumericLowerer {
             if (truthy === this.valueKind(node.whenFalse)) return truthy;
         }
         if (ts.isBinaryExpression(node)) {
+            const fallback = this.absentOrFallback(node);
+            if (fallback) return this.valueKind(fallback);
             if (PINNED_COMPARISON_OPERATORS.has(node.operatorToken.kind))
                 return "boolean";
             if (

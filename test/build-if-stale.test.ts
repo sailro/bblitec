@@ -7,6 +7,8 @@ import {
     mkdtempSync,
     readFileSync,
     rmSync,
+    statSync,
+    utimesSync,
     writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -72,6 +74,45 @@ test("the build wrapper repairs missing JavaScript even when its input stamp mat
     write("dist/.build-stamp", "malformed");
     assert.doesNotMatch(build(), /up to date/);
     assert.match(build(), /up to date/);
+});
+
+test("a forced build refreshes sources whose byte length and timestamp were preserved", (t) => {
+    const { root, write } = fixture(t);
+    write(
+        "node_modules/@typescript/native/bin/tsc",
+        `
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+mkdirSync("dist/src", { recursive: true });
+writeFileSync("dist/src/entry.js", readFileSync("src/entry.ts"));
+`,
+    );
+    const source = join(root, "src/entry.ts");
+    const fixedTime = new Date("2020-01-01T00:00:00Z");
+    utimesSync(source, fixedTime, fixedTime);
+    const build = (force = false): string =>
+        execFileSync(
+            process.execPath,
+            ["tools/build-if-stale.mjs", ...(force ? ["--force"] : [])],
+            { cwd: root, encoding: "utf8" },
+        );
+    build();
+    const previous = statSync(source);
+    write("src/entry.ts", "export const answer = 43;");
+    utimesSync(source, fixedTime, fixedTime);
+    assert.equal(statSync(source).size, previous.size);
+    assert.equal(statSync(source).mtimeMs, previous.mtimeMs);
+    assert.match(build(), /up to date/);
+    assert.equal(
+        readFileSync(join(root, "dist/src/entry.js"), "utf8"),
+        "export const answer = 42;",
+    );
+    assert.doesNotMatch(build(true), /up to date/);
+    assert.equal(
+        readFileSync(join(root, "dist/src/entry.js"), "utf8"),
+        "export const answer = 43;",
+    );
+    assert.match(build(), /up to date/);
+    assert.equal(existsSync(join(root, "artifacts/.dist-writer.lock")), false);
 });
 
 test("parallel builds publish one complete dist tree without cleaning a running compiler", async (t) => {

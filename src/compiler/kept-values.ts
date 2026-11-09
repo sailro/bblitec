@@ -98,7 +98,7 @@ export function heldReferenceBases(
  * methods (a parameter property, a field): anything but a library global,
  * whose storing ones (`new Map(entries)`) keep through isStoringDataCall.
  */
-export function constructionKeepsArguments(
+function constructionKeepsArguments(
     checker: ts.TypeChecker,
     construction: ts.NewExpression,
 ): boolean {

@@ -188,7 +188,7 @@ export function libraryDrawBatch(
 }
 
 /** The forward declaration of a `libraryDrawBatch` struct, before the records naming it. */
-export function libraryDrawBatchDeclaration(
+function libraryDrawBatchDeclaration(
     model: PinnedRecordModel,
     pinned: string,
 ): string {
@@ -266,7 +266,7 @@ ${definitions}
 }
 
 /** The struct of a `libraryDrawBatch`: the runtime's batch and the record's own members. */
-export function libraryDrawBatchStruct(
+function libraryDrawBatchStruct(
     model: PinnedRecordModel,
     pinned: string,
     module: string,

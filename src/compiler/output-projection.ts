@@ -614,24 +614,128 @@ function nativeIdentifierCounts(body: readonly string[]): Map<string, number> {
     return counts;
 }
 
-/** Instrumentation erasure can leave a pure, unread performance.now initializer.
- * A live clock read remains in the entry and the PAL stage guard rejects it. */
-export function constructorEntryBody(body: readonly string[]): string[] {
-    const counts = nativeIdentifierCounts(body);
-    const deadClock =
-        /^\s*(?:\[\[maybe_unused\]\] )?(?:auto|double) ([A-Za-z_][A-Za-z0-9_]*) = bbl::pal::performance_milliseconds\(\);\s*$/;
-    return body.map((block) =>
-        block
-            .split("\n")
-            .filter((line) => {
-                const match = deadClock.exec(line);
-                return !match || counts.get(match[1]!) !== 1;
-            })
-            .join("\n"),
-    );
+interface NativeDeclarationSpan {
+    readonly start: number;
+    readonly end: number;
+    readonly lineStart: number;
+    readonly declaration: NativeDeclaration;
 }
 
-function markUnreferencedLocals(
+interface NativeDeclarationPattern {
+    readonly code: string;
+    readonly declaration: NativeDeclaration;
+    readonly tokens: readonly {
+        readonly kind: string;
+        readonly text: string;
+    }[];
+    readonly nameToken: number;
+}
+
+function declarationPatterns(
+    declarations: ReadonlyMap<string, NativeDeclaration>,
+): Map<string, NativeDeclarationPattern[]> {
+    const patterns = new Map<string, NativeDeclarationPattern[]>();
+    for (const [code, declaration] of declarations) {
+        const tokens = [...cppTokens(code)];
+        const nameToken = tokens.findIndex(
+            (token) =>
+                token.kind === "identifier" && token.text === declaration.name,
+        );
+        if (nameToken < 0) continue;
+        const pattern = {
+            code,
+            declaration,
+            tokens,
+            nameToken,
+        };
+        const candidates = patterns.get(declaration.name) ?? [];
+        candidates.push(pattern);
+        patterns.set(declaration.name, candidates);
+    }
+    return patterns;
+}
+
+function declarationSpans(
+    block: string,
+    patterns: ReadonlyMap<string, readonly NativeDeclarationPattern[]>,
+): NativeDeclarationSpan[] {
+    const tokens = [...cppTokens(block)];
+    const spans: NativeDeclarationSpan[] = [];
+    const matches = (
+        pattern: NativeDeclarationPattern,
+        nameIndex: number,
+    ): boolean => {
+        const start = nameIndex - pattern.nameToken;
+        if (start < 0 || start + pattern.tokens.length > tokens.length)
+            return false;
+        const tokenStart = tokens[start]!;
+        const lineStart = block.lastIndexOf("\n", tokenStart.start - 1) + 1;
+        const prefix = block.slice(lineStart, tokenStart.start);
+        if (prefix.trim() !== "" && prefix.trim() !== "[[maybe_unused]]")
+            return false;
+        if (block.startsWith(pattern.code, tokenStart.start)) return true;
+        for (const [offset, token] of pattern.tokens.entries()) {
+            const actual = tokens[start + offset]!;
+            if (actual.kind !== token.kind || actual.text !== token.text)
+                return false;
+        }
+        return true;
+    };
+    for (const [nameIndex, token] of tokens.entries()) {
+        if (token.kind !== "identifier") continue;
+        for (const pattern of patterns.get(token.text) ?? []) {
+            if (!matches(pattern, nameIndex)) continue;
+            const start = nameIndex - pattern.nameToken;
+            const first = tokens[start]!;
+            const last = tokens[start + pattern.tokens.length - 1]!;
+            spans.push({
+                start: first.start,
+                end: last.end,
+                lineStart: block.lastIndexOf("\n", first.start - 1) + 1,
+                declaration: pattern.declaration,
+            });
+        }
+    }
+    return spans
+        .sort((left, right) => left.start - right.start)
+        .filter(
+            (span, index, all) =>
+                index === 0 || span.start !== all[index - 1]!.start,
+        );
+}
+
+function projectNativeDeclarations(
+    body: string[],
+    declarations: ReadonlyMap<string, NativeDeclaration> | undefined,
+    project: (block: string, span: NativeDeclarationSpan) => string,
+): void {
+    if (!declarations?.size) return;
+    const patterns = declarationPatterns(declarations);
+    for (const [index, block] of body.entries()) {
+        const spans = declarationSpans(block, patterns);
+        for (let spanIndex = spans.length - 1; spanIndex >= 0; spanIndex--)
+            body[index] = project(body[index]!, spans[spanIndex]!);
+    }
+}
+
+/** Instrumentation erasure can leave a pure, unread performance.now initializer.
+ * A live clock read remains in the entry and the PAL stage guard rejects it. */
+export function constructorEntryBody(
+    body: readonly string[],
+    declarations?: ReadonlyMap<string, NativeDeclaration>,
+): string[] {
+    const result = [...body];
+    const counts = nativeIdentifierCounts(body);
+    projectNativeDeclarations(result, declarations, (current, span) =>
+        span.declaration.discardIfUnused &&
+        counts.get(span.declaration.name) === 1
+            ? current.slice(0, span.lineStart) + current.slice(span.end)
+            : current,
+    );
+    return result;
+}
+
+export function markUnreferencedLocals(
     body: string[],
     declarations?: ReadonlyMap<string, NativeDeclaration>,
 ): void {
@@ -645,28 +749,22 @@ function markUnreferencedLocals(
     // reader is a barrier (`await splat.firstSortReady`) is exactly the
     // shape this pass exists for. Attributes precede the specifier, so the
     // insertion point is the same one.
-    const declaration =
-        /^(\s*)((?:static )?(?:(?:auto|double) |std::optional<[^;=]*> ))([A-Za-z_][A-Za-z0-9_]*)(?: = |;)/;
     const counts = nativeIdentifierCounts(body);
-    for (const [index, block] of body.entries()) {
-        // Deferred callbacks are captured as one body entry containing
-        // several physical lines. Inspect each of those lines so a local
-        // whose only browser-instrumentation reader was erased is treated
-        // exactly like the same declaration in the outer entry body.
-        body[index] = block
-            .split("\n")
-            .filter((line) => {
-                const known = declarations?.get(line.trim());
-                return !known?.discardIfUnused || counts.get(known.name) !== 1;
-            })
-            .map((line) => {
-                const match = declaration.exec(line);
-                return match && counts.get(match[3]!) === 1
-                    ? `${match[1]}[[maybe_unused]] ${line.trimStart()}`
-                    : line;
-            })
-            .join("\n");
-    }
+    projectNativeDeclarations(body, declarations, (block, span) => {
+        if (counts.get(span.declaration.name) !== 1) return block;
+        if (span.declaration.discardIfUnused)
+            return block.slice(0, span.lineStart) + block.slice(span.end);
+        if (
+            span.declaration.attributes?.includes("[[maybe_unused]]") ||
+            block.slice(span.lineStart, span.start).includes("[[maybe_unused]]")
+        )
+            return block;
+        return (
+            block.slice(0, span.start) +
+            "[[maybe_unused]] " +
+            block.slice(span.start)
+        );
+    });
 }
 
 /**
@@ -1129,6 +1227,7 @@ ${projection.deferredCapabilitiesReached ? "#include <bblite/deferred_capability
     if (projection.physicsDebugConstructionBody) {
         const construction = constructorEntryBody(
             projection.physicsDebugConstructionBody,
+            projection.nativeDeclarations,
         );
         markUnreferencedLocals(construction, projection.nativeDeclarations);
         extraction = `\n#include <bblite/pal_physics_debug.hpp>\n#include <string_view>\n

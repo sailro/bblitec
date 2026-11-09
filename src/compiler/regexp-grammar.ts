@@ -16,7 +16,7 @@ export interface RegExpLayout {
     readonly optionalCaptures?: boolean;
 }
 
-export type RegExpToken =
+type RegExpToken =
     | { readonly kind: "escape" | "atom" | "anchor" | "alternative" }
     | { readonly kind: "class" }
     | {
@@ -32,7 +32,7 @@ export type RegExpToken =
       };
 
 /** Calls `visit` with each token of `pattern` in order. */
-export function scanRegExpSource(
+function scanRegExpSource(
     pattern: string,
     visit: (token: RegExpToken) => void,
 ): void {

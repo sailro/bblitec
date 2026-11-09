@@ -2939,8 +2939,7 @@ const authoredInputs: readonly SceneInput[] = [
             nativeEnvironment: {
                 BBLITE_SCREENSHOT_FRAME: "310",
             },
-            // MEASURED 0.005--0.006 / 0.033--0.037 on both backends across
-            // runs (the drop is a wall-clock timer: TODO.md's physics entry).
+            // Solver/timing deviations: docs/fidelity.md#physics-contract.
             // Step 300 is one second after the dropped box wakes the
             // sleeping tower, so the pose is mid-collapse and the ceiling
             // gates this port's own solver rather than asserting agreement

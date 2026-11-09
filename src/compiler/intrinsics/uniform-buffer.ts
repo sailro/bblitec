@@ -96,7 +96,13 @@ export function compileUniformBufferLabel(
     optionsExpression: ts.Expression | undefined,
 ): string {
     const label = context.allocateTemporaryCppName("uniform_label");
-    context.emit(`std::optional<std::string> ${label};`);
+    context.emit({
+        kind: "declaration",
+        type: "std::optional<std::string>",
+        name: label,
+        initializer: "",
+        initialization: "default",
+    });
     if (optionsExpression) {
         const write = (options: Value): void => {
             if (options.kind === "json-null" || options.kind === "void") return;

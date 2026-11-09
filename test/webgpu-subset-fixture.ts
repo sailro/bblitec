@@ -63,7 +63,7 @@ export async function compileLibraryShaders(
 }
 
 /** The Dawn build the fixtures link. */
-export const dawnRoot = resolve("artifacts/tools/dawn");
+const dawnRoot = resolve("artifacts/tools/dawn");
 
 /** One backend's fixture build: its sources, includes and defines, and its run's arguments. */
 export interface WebGpuFixture {
@@ -133,7 +133,7 @@ export function runWebGpuFixture(
 }
 
 /** The fixture's result lines, keyed by their first word. */
-export function resultLines(output: string): Map<string, string> {
+function resultLines(output: string): Map<string, string> {
     const lines = new Map<string, string>();
     for (const line of output.split(/\r?\n/)) {
         const space = line.indexOf(" ");

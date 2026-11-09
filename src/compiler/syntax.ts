@@ -2138,6 +2138,27 @@ export function bindingNameIdentifiers(name: ts.BindingName): ts.Identifier[] {
     );
 }
 
+/** A fixed-arity array binding with plain names, without holes, defaults or rest. */
+export function plainArrayBindingNames(
+    name: ts.BindingName,
+    arity: number,
+): readonly ts.Identifier[] | undefined {
+    if (
+        !ts.isArrayBindingPattern(name) ||
+        name.elements.length !== arity ||
+        !name.elements.every(
+            (element) =>
+                ts.isBindingElement(element) &&
+                ts.isIdentifier(element.name) &&
+                !element.initializer &&
+                !element.dotDotDotToken &&
+                !element.propertyName,
+        )
+    )
+        return undefined;
+    return bindingNameIdentifiers(name);
+}
+
 /**
  * What owns a frame a function-scoped binding lives in: a function, a class
  * static block, a namespace body (a function of its own at run time) or
@@ -2533,8 +2554,14 @@ function sourceFingerprint(node: ts.Node): string {
 }
 
 /** {@link sourceFingerprint}, walking the children `file` holds. */
-function fingerprintIn(node: ts.Node, file: ts.SourceFile): string {
-    if (isExpressionWrapper(node)) return fingerprintIn(node.expression, file);
+function fingerprintIn(
+    node: ts.Node,
+    file: ts.SourceFile,
+    identifier?: (node: ts.Identifier) => string,
+): string {
+    if (isExpressionWrapper(node))
+        return fingerprintIn(node.expression, file, identifier);
+    if (identifier && ts.isIdentifier(node)) return identifier(node);
     const leaf = fingerprintLeaf(node);
     if (leaf !== undefined) return leaf;
     const children = node
@@ -2547,8 +2574,63 @@ function fingerprintIn(node: ts.Node, file: ts.SourceFile): string {
         );
     if (children.length === 0) return ts.SyntaxKind[node.kind];
     return `${ts.SyntaxKind[node.kind]}(${children
-        .map((child) => fingerprintIn(child, file))
+        .map((child) => fingerprintIn(child, file, identifier))
         .join(",")})`;
+}
+
+/**
+ * A closed walk's syntax with bindings represented by their declaration
+ * identity. Bindings of its enclosing function receive encounter-order labels,
+ * so consistent parameter/local alpha-renaming does not change the result;
+ * symbols outside the closed walk retain their checker-resolved identity.
+ */
+export function symbolicSourceFingerprint(
+    root: ts.Node,
+    resolveSymbol: (node: ts.Identifier) => ts.Symbol | undefined,
+): string {
+    const locals = new Map<ts.Symbol, string>();
+    let nextLocal = 0;
+    let lexicalRoot = root;
+    while (lexicalRoot.parent && !ts.isFunctionLike(lexicalRoot)) {
+        lexicalRoot = lexicalRoot.parent;
+    }
+    const rootFile = lexicalRoot.getSourceFile();
+    const rootStart = lexicalRoot.getStart(rootFile);
+    const rootEnd = lexicalRoot.getEnd();
+    const isMemberSymbol = (symbol: ts.Symbol): boolean =>
+        (symbol.flags &
+            (ts.SymbolFlags.Property |
+                ts.SymbolFlags.Method |
+                ts.SymbolFlags.GetAccessor |
+                ts.SymbolFlags.SetAccessor)) !==
+        0;
+    const isLocal = (symbol: ts.Symbol): boolean =>
+        (
+            symbol.valueDeclaration ?? symbol.declarations?.[0]
+        )?.getSourceFile() === rootFile &&
+        (symbol.valueDeclaration ?? symbol.declarations?.[0])!.getStart(
+            rootFile,
+        ) >= rootStart &&
+        (symbol.valueDeclaration ?? symbol.declarations?.[0])!.getEnd() <=
+            rootEnd;
+    const symbolKey = (node: ts.Identifier): string => {
+        const symbol = resolveSymbol(node);
+        if (!symbol) return `identifier:${node.text}`;
+        if (isMemberSymbol(symbol)) return `member:${node.text}`;
+        if (isLocal(symbol)) {
+            let label = locals.get(symbol);
+            if (label === undefined) {
+                label = `local:${nextLocal++}`;
+                locals.set(symbol, label);
+            }
+            return label;
+        }
+        const declaration = symbol.valueDeclaration ?? symbol.declarations?.[0];
+        return declaration
+            ? `symbol:${declaration.getSourceFile().fileName}:${declaration.getStart()}`
+            : `symbol:${symbol.name}`;
+    };
+    return fingerprintIn(root, root.getSourceFile(), symbolKey);
 }
 
 /** A name's or literal's fingerprint. */
@@ -2573,7 +2655,7 @@ function fingerprintHead(node: ts.Node): string | undefined {
 const shapeFingerprints = new Map<string, string>();
 
 /** What a source shape is parsed as. */
-export type ShapeKind = "expression" | "type" | "binding";
+type ShapeKind = "expression" | "type" | "binding";
 
 /** The kind of syntax `node` is, for the shape it is compared with. */
 function shapeKindOf(node: ts.Node): ShapeKind {

@@ -636,6 +636,8 @@ export function gltfHasCompressedImages(document: JsonRecord): boolean {
 
 export interface AssetSpecializationFeatures {
     gpuDeformation: boolean;
+    /** Skin or morph geometry; node animation alone only needs local-vertex transport. */
+    vertexDeformation: boolean;
     morphStorage: boolean;
     /**
      * Joints in the largest skin any reached asset carries. Compared at
@@ -708,6 +710,7 @@ export function emitAssetSpecializations(
     if (gltfAssets.length === 0) {
         return {
             gpuDeformation: false,
+            vertexDeformation: false,
             morphStorage: false,
             maxSkinJoints: 0,
             nonTrianglePrimitives: false,
@@ -776,6 +779,9 @@ export function emitAssetSpecializations(
     );
     return {
         gpuDeformation: deformed,
+        vertexDeformation: anyAsset(
+            ({ loader }) => loader.skins || loader.morphTargets,
+        ),
         // Babylon Lite has one morph mechanism -- the uncapped storage-buffer
         // path -- and the composed morph variants read it, so any morph
         // target at all compiles it in. The two-slot vertex-attribute slice

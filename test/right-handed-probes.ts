@@ -34,7 +34,7 @@ const probes = {
         ),
 } satisfies Record<string, Probe>;
 
-export type RightHandedProbe = keyof typeof probes;
+type RightHandedProbe = keyof typeof probes;
 
 /** One probe run: its name, its argument, and exact edits to the pin it reads. */
 export interface ProbeRequest {

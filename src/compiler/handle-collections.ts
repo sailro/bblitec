@@ -33,6 +33,7 @@ import {
     libraryGlobal,
     type NamedMember,
     isLibraryStatic,
+    resolvedSymbol,
 } from "./symbols.js";
 import {
     argumentAt,
@@ -44,6 +45,7 @@ import {
     functionKind,
     isSuspensionPoint,
     variableKind,
+    symbolicSourceFingerprint,
 } from "./syntax.js";
 import { CompileError, unlessRefused } from "./compile-error.js";
 import {
@@ -506,6 +508,8 @@ function containerIdentity<T extends Value>(
 }
 
 export class HandleCollections {
+    private readonly meshWalkIdentities = new EmissionMap<string, number>();
+
     /** Fold only the hierarchy traversal; lower the source's Map updates normally. */
     public compileAssetOwnerMap(
         call: ts.CallExpression,
@@ -921,7 +925,14 @@ export class HandleCollections {
             body: declaration.body!.getText(),
         };
         return {
-            target: this.sourceMeshWalk(owner, collection, descriptor),
+            target: this.sourceMeshWalk(
+                owner,
+                collection,
+                descriptor,
+                symbolicSourceFingerprint(declaration.body!, (node) =>
+                    resolvedSymbol(this.context.checker, node),
+                ),
+            ),
             asset: owner.asset,
             container: owner.assetContainer,
         };
@@ -931,15 +942,25 @@ export class HandleCollections {
         owner: Value,
         target: HandleCollectionTarget,
         walk: CompiledMeshWalk,
+        identity?: string,
     ): HandleCollectionTarget {
         if (owner.asset?.kind !== "gltf" && owner.asset?.kind !== "babylon")
             return target;
-        const key = JSON.stringify(walk);
-        let index = this.context.sceneManifest.meshWalks.findIndex(
-            (candidate) => JSON.stringify(candidate) === key,
-        );
+        const key =
+            identity === undefined
+                ? undefined
+                : `${walk.kind}\u0000${identity}`;
+        let index =
+            key === undefined ? -1 : (this.meshWalkIdentities.get(key) ?? -1);
+        if (index < 0) {
+            const serialized = JSON.stringify(walk);
+            index = this.context.sceneManifest.meshWalks.findIndex(
+                (candidate) => JSON.stringify(candidate) === serialized,
+            );
+        }
         if (index < 0)
             index = this.context.sceneManifest.meshWalks.push(walk) - 1;
+        if (key !== undefined) this.meshWalkIdentities.set(key, index);
         const demanded = (writable(owner.asset).meshWalks ??= []);
         if (!demanded.includes(index)) writable(demanded).push(index);
         return {

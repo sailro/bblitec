@@ -5,6 +5,7 @@ import {
     arrayLiteralSlots,
     bindingElementKey,
     patternSlots,
+    plainArrayBindingNames,
     specifierSourceName,
     type PatternSlot,
 } from "../src/compiler/syntax.js";
@@ -102,4 +103,25 @@ test("binding element keys and specifier source names", () => {
     };
     visit(source);
     assert.deepEqual(names, ["a", "local", "c"]);
+});
+
+test("plain array bindings share fixed-arity admission without defaults or rest", () => {
+    const binding = (name: string): ts.BindingName =>
+        first(parse(`const ${name} = input;`), ts.isVariableDeclaration).name;
+    assert.deepEqual(
+        plainArrayBindingNames(binding("[key, value]"), 2)?.map(
+            (name) => name.text,
+        ),
+        ["key", "value"],
+    );
+    for (const name of [
+        "value",
+        "{key, value}",
+        "[key]",
+        "[key,,value]",
+        "[key, value = 1]",
+        "[key, ...value]",
+        "[key, {value}]",
+    ])
+        assert.equal(plainArrayBindingNames(binding(name), 2), undefined, name);
 });

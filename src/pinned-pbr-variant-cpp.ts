@@ -1050,8 +1050,8 @@ const lightSources: Readonly<Record<string, string>> = {
     width: "light.width",
     height: "light.height",
     // The factory computes `Math.cos(angle * 0.5)` once and the writer captures
-    // it; the record carries that cosine for the precision reason recorded in
-    // TODO.md rather than recomputing it per frame.
+    // it; the record keeps that precision (docs/fidelity.md#numeric-width)
+    // rather than recomputing it per frame.
     _cosHalfAngle: "light.cos_half_angle",
     // `Number.MAX_VALUE` fills a directional light's range slot.
     MAX_VALUE: "std::numeric_limits<float>::max()",

@@ -211,7 +211,10 @@ window.__bakeCsg2 = () => (${replayPlan.toString()})(
 `;
 }
 
-/** Called by the synchronous compiler's generation child. */
+/**
+ * Called by the synchronous compiler's generation child.
+ * @dynamicEntryPoint bakeCsg2Meshes imports this module in the generation child.
+ */
 // Referenced by name from the generation-child script `bakeCsg2Meshes` runs below.
 export async function executeCsg2Bake(
     request: Csg2BakeRequest,

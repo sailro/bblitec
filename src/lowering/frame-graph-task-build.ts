@@ -39,7 +39,7 @@ const RECORDED_TASK_KINDS = {
     },
 } as const;
 
-export type RecordedTaskKind = keyof typeof RECORDED_TASK_KINDS;
+type RecordedTaskKind = keyof typeof RECORDED_TASK_KINDS;
 
 /**
  * `buildFrameGraphTask`: record one task already in a live graph. Native

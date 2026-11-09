@@ -42,7 +42,7 @@ function tableKey<Table extends object>(
 /** An address mode the pin spells and the runtime has a row for. */
 export type PinnedAddressMode = keyof typeof addressModes;
 /** A filter the pin spells and the runtime has a row for. */
-export type PinnedTextureFilter = keyof typeof textureFilters;
+type PinnedTextureFilter = keyof typeof textureFilters;
 
 /** A spelling {@link addressModeByPin} holds, typed as the pin's own mode. */
 export function pinnedAddressMode(key: string): PinnedAddressMode | undefined {
@@ -119,7 +119,7 @@ export function pixelsTextureOptionsCpp(
     );
 }
 
-export const mipmapModeByPin: Readonly<Record<string, string>> = {
+const mipmapModeByPin: Readonly<Record<string, string>> = {
     nearest: "TextureMipmapMode::nearest",
     linear: "TextureMipmapMode::linear",
 };

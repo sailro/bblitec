@@ -64,6 +64,7 @@ import {
     sourceEntry,
     ownParameters,
     hasExportModifier,
+    plainArrayBindingNames,
 } from "../compiler/syntax.js";
 import {
     calledDeclaration,
@@ -12867,23 +12868,8 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
                 iterated,
                 "Pinned Object.entries of a non-dynamic value.",
             );
-        const names: ts.Identifier[] = [];
-        if (ts.isArrayBindingPattern(binding))
-            for (const element of binding.elements)
-                if (
-                    ts.isBindingElement(element) &&
-                    ts.isIdentifier(element.name) &&
-                    !element.initializer &&
-                    !element.dotDotDotToken
-                )
-                    names.push(element.name);
-        const [key, value] = names;
-        if (
-            !ts.isArrayBindingPattern(binding) ||
-            binding.elements.length !== 2 ||
-            !key ||
-            !value
-        )
+        const [key, value] = plainArrayBindingNames(binding, 2) ?? [];
+        if (!key || !value)
             return this.refuse(binding, "Pinned entry binding.");
         this.model.include("bblite/pinned_json.hpp");
         const range = this.temporary("range");

@@ -8,7 +8,7 @@ import { isRetypableDeclaration } from "./symbols.js";
  * array could grow them: the compile replays with growable array storage
  * for the property, which every record type sharing its layout keeps.
  */
-export class TupleArraySlotRequired extends StorageDemand {
+class TupleArraySlotRequired extends StorageDemand {
     constructor(
         readonly declaration: ts.PropertySignature | ts.PropertyDeclaration,
     ) {

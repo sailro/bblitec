@@ -193,6 +193,22 @@ for (const fixture of [
         status: 1,
         message: /mad: 0 -> 1/,
     },
+    {
+        name: "measured right-handed Sponza Dawn variation",
+        scene: "scene347",
+        before: report,
+        after: { goldenVersusDawn: { full: { mad: 0.0000025, max: 1 } } },
+        status: 0,
+        message: /known wobble/,
+    },
+    {
+        name: "right-handed Sponza SDL_GPU remains strict",
+        scene: "scene347",
+        before: { goldenVersusSdlGpu: { mad: 0 } },
+        after: { goldenVersusSdlGpu: { mad: 0.0000025 } },
+        status: 1,
+        message: /Moved:/,
+    },
 ]) {
     test(`neutrality handles ${fixture.name}`, (t) => {
         const root = mkdtempSync(join(tmpdir(), "bblite-neutrality-"));
@@ -201,7 +217,7 @@ for (const fixture of [
             const path = join(
                 root,
                 directory,
-                "scene9",
+                fixture.scene ?? "scene9",
                 "report-differential.json",
             );
             mkdirSync(dirname(path), { recursive: true });

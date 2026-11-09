@@ -939,7 +939,7 @@ function isDomEventTargetType(type: ts.Type): boolean {
     );
 }
 
-export function isDomElementType(symbol: ts.Symbol): boolean {
+function isDomElementType(symbol: ts.Symbol): boolean {
     return (
         declaredInDomLibrary(symbol) &&
         (libraryName(symbol) === "Element" ||
@@ -948,7 +948,7 @@ export function isDomElementType(symbol: ts.Symbol): boolean {
 }
 
 /** Text nodes share retained node handles, but are never element interfaces. */
-export function isDomTextType(symbol: ts.Symbol): boolean {
+function isDomTextType(symbol: ts.Symbol): boolean {
     return libraryName(symbol) === "Text";
 }
 

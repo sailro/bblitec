@@ -23,7 +23,7 @@ import { inheritsFrom } from "./type-facts.js";
 import type { Feature, Value } from "./types.js";
 
 /** A public member of a pinned interface, as the record lowerer stores it. */
-export interface PublicMember {
+interface PublicMember {
     readonly name: string;
     readonly field: string;
     readonly type: ts.Type;
@@ -58,7 +58,7 @@ export function internalMember(declaration: ts.Declaration): boolean {
  * The member `access` names on `owner`, when the pinned interface or one it
  * extends declares it publicly.
  */
-export function publicMember(
+function publicMember(
     checker: ts.TypeChecker,
     access: ts.PropertyAccessExpression,
     owner: string,

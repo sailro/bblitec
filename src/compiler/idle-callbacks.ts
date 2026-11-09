@@ -46,7 +46,7 @@ function requireIdleRealm(
 }
 
 /** The Window's own idle function a read names, through an authored view of Window too. */
-export function idleWindowFunctionSymbol(
+function idleWindowFunctionSymbol(
     checker: ts.TypeChecker,
     node: ts.Expression,
 ): ts.Symbol | undefined {

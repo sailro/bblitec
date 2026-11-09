@@ -13,8 +13,14 @@ import {
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { parseArgs } from "node:util";
 import { withDistWriter } from "./dist-access.mjs";
 
+const {
+    values: { force },
+} = parseArgs({
+    options: { force: { type: "boolean", default: false } },
+});
 const root = join(fileURLToPath(import.meta.url), "..", "..");
 const stampPath = join(root, "dist", ".build-stamp");
 process.chdir(root);
@@ -150,13 +156,13 @@ function run(scriptOrBin, args) {
 }
 
 const stamp = computeStamp();
-if (canReuse(stamp)) {
+if (!force && canReuse(stamp)) {
     console.log("build: dist is up to date (skipped clean + tsc).");
     process.exit(0);
 }
 
 withDistWriter(() => {
-    if (canReuse(stamp)) {
+    if (!force && canReuse(stamp)) {
         console.log("build: dist is up to date (skipped clean + tsc).");
         return;
     }

@@ -1,9 +1,11 @@
 import ts from "typescript";
 import { pinnedErrorCode, pinnedErrorCodeOf } from "./pinned-error.js";
-import { jsToUint32Call } from "./pinned-operators.js";
 import { LoweredSource, LoweringContext } from "./context.js";
 import { lowerGltfVatBinding } from "./gltf/vat-binding.js";
 import { lowerPinnedBody } from "./pinned-body-lowerer.js";
+import { lowerPinnedFunction } from "./pinned-function-lowerer.js";
+import { absentBinding } from "./pinned-numeric-lowerer.js";
+import { lowerPreparedVatValidation } from "./vat-prepared.js";
 
 import { recordAt } from "../compiler/record-access.js";
 import { sameSource } from "../compiler/syntax.js";
@@ -35,61 +37,6 @@ export class VatLowerer {
     }): LoweredSource {
         const file = this.context.sourceFile(VAT_MODULE);
         const defaultFrameRate = this.pinnedDefaultFrameRate(file);
-        // `clipFrameCount(group) = max(1, round(duration * fps) + 1)`, the
-        // inclusive-of-frame-zero count that decides each clip's row block.
-        // Asserted rather than transcribed blind: the row map and the
-        // shader's wrap both depend on it, so a changed formula must fail
-        // generation instead of shifting every baked pose by a frame.
-        const clipFrameCount = this.context.functionDeclaration(
-            VAT_MODULE,
-            "clipFrameCount",
-        ).declaration;
-        this.assertInventory(clipFrameCount, "clipFrameCount", [
-            "variable statement",
-            "return statement",
-        ]);
-        const frameCountReturn = this.context.findNodes(
-            clipFrameCount,
-            (node): node is ts.ReturnStatement => ts.isReturnStatement(node),
-        )[0]?.expression;
-        if (!frameCountReturn) {
-            this.context.contractError(
-                clipFrameCount,
-                "Expected clipFrameCount to return the baked frame count.",
-            );
-        }
-        this.context.assertExpressionShape(
-            frameCountReturn,
-            "Math.max(1, Math.round(group.duration * fps) + 1)",
-            "VAT clip frame count",
-        );
-        // The other half of the same formula. The port spells the rate as
-        // `kVatDefaultFrameRate` unconditionally, which is only right while
-        // `group.frameRate` is falsy for every clip this port can bake --
-        // true today because animation-lowerer.ts separately fails
-        // generation if a glTF clip carries a frameRate of its own. Pin the
-        // initializer so that stops being an unstated dependency: were
-        // upstream to write `?? DEFAULT_FRAME_RATE`, or read the rate from
-        // somewhere else, the hardcoded constant would silently shift every
-        // baked row by a frame instead of refusing.
-        const fpsDeclaration = this.context.findNodes(
-            clipFrameCount,
-            (node): node is ts.VariableDeclaration =>
-                ts.isVariableDeclaration(node) &&
-                ts.isIdentifier(node.name) &&
-                node.name.text === "fps",
-        )[0];
-        if (!fpsDeclaration?.initializer) {
-            this.context.contractError(
-                clipFrameCount,
-                "Expected clipFrameCount to bind its frame rate to `fps`.",
-            );
-        }
-        this.context.assertExpressionShape(
-            fpsDeclaration.initializer,
-            "group.frameRate || DEFAULT_FRAME_RATE",
-            "VAT clip frame rate",
-        );
         // `attachVat`'s own initial write and `play`'s: params = (fromRow,
         // fromRow + frameCount - 1, offset ?? 0, fps ?? clip.fps).
         this.assertInventory(
@@ -159,12 +106,13 @@ export class VatLowerer {
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 ${options.prepared ? "#include <cstring>\n" : ""}#include <stdexcept>
 
 namespace bbl {
 namespace {
 
-constexpr float kVatDefaultFrameRate = ${this.context.floatLiteral(
+constexpr double kVatDefaultFrameRate = ${this.context.doubleLiteral(
                 defaultFrameRate,
             )};
 
@@ -348,97 +296,6 @@ void seek_vat(Engine& engine, double seconds) {
     }
 
     private lowerPrepared(): string {
-        const positive = this.context.functionDeclaration(
-            VAT_MODULE,
-            "positiveInteger",
-        ).declaration;
-        this.context.assertStatementShapes(
-            positive.body!,
-            positive.body!.statements,
-            `
-            if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 1) {
-                ThrowLiteError(${this.errorCode("VAT prepared payload: ${a0} must be a positive integer.")}, field);
-            }
-            return value;
-        `,
-            "VAT prepared count",
-        );
-        const capture = this.context.functionDeclaration(
-            VAT_MODULE,
-            "validatePreparedCapture",
-        ).declaration;
-        this.context.assertStatementShapes(
-            capture.body!,
-            capture.body!.statements,
-            `
-            if (!capture) {
-                return undefined;
-            }
-            if (typeof capture !== "object" || Array.isArray(capture)) {
-                ThrowLiteError(${this.errorCode("VAT prepared payload: ${a0} must be a record.")}, field);
-            }
-            const validated: Record<number, Float32Array> = {};
-            for (const [key, values] of Object.entries(capture)) {
-                const bone = Number(key);
-                if (!Number.isSafeInteger(bone) || bone < 0 || bone >= boneCount || String(bone) !== key) {
-                    ThrowLiteError(${this.errorCode('VAT prepared payload: ${a0} contains invalid bone index "${a1}".')}, field, key);
-                }
-                if (!(values instanceof Float32Array) || values.length !== frameCount * valuesPerFrame) {
-                    ThrowLiteError(${this.errorCode("VAT prepared payload: ${a0}[${a1}] has an invalid length.")}, field, key);
-                }
-                validated[bone] = values;
-            }
-            return validated;
-        `,
-            "VAT prepared capture",
-        );
-        const create = this.context.functionDeclaration(
-            VAT_MODULE,
-            "createVatBakeResults",
-        ).declaration;
-        this.context.assertStatementShapes(
-            create.body!,
-            create.body!.statements,
-            `
-            const validated = prepared.map((source) => {
-                const boneCount = positiveInteger(source?.boneCount, "boneCount");
-                const frameCount = positiveInteger(source?.frameCount, "frameCount");
-                if (!(source?.data instanceof Float32Array) || source.data.length !== boneCount * frameCount * 16) {
-                    ThrowLiteError(${this.errorCode("VAT prepared payload: data length must equal boneCount * frameCount * 16.")});
-                }
-                if (!source.clips || typeof source.clips !== "object" || Array.isArray(source.clips)) {
-                    ThrowLiteError(${this.errorCode("VAT prepared payload: clips must be a record.")});
-                }
-                const clips: Record<string, VatClip> = {};
-                for (const [name, clip] of Object.entries(source.clips)) {
-                    if (
-                        !name ||
-                        !clip ||
-                        !Number.isSafeInteger(clip.fromRow) ||
-                        clip.fromRow < 0 ||
-                        !Number.isSafeInteger(clip.frameCount) ||
-                        clip.frameCount < 1 ||
-                        clip.fromRow + clip.frameCount > frameCount ||
-                        !Number.isFinite(clip.fps) ||
-                        clip.fps <= 0
-                    ) {
-                        ThrowLiteError(${this.errorCode('VAT prepared payload: clip "${a0}" is invalid.')}, name);
-                    }
-                    clips[name] = { fromRow: clip.fromRow, frameCount: clip.frameCount, fps: clip.fps };
-                }
-                return {
-                    boneCount,
-                    frameCount,
-                    data: source.data,
-                    clips,
-                    boneOrigins: validatePreparedCapture(source.boneOrigins, boneCount, 3, frameCount, "boneOrigins"),
-                    boneMatrices: validatePreparedCapture(source.boneMatrices, boneCount, 16, frameCount, "boneMatrices"),
-                };
-            });
-            return uploadPreparedMany(engine, validated);
-        `,
-            "VAT prepared payloads",
-        );
         // The result keeps every validated field but the data, which only
         // the texture holds; the sharing is the GPU's alone.
         const upload = this.context.functionDeclaration(
@@ -475,46 +332,9 @@ void seek_vat(Engine& engine, double seconds) {
         `,
             "VAT prepared upload",
         );
-        const [, , bone, length] = this.context.findNodes(
-            capture,
-            ts.isIfStatement,
-        );
-        const [data, , clip] = this.context.findNodes(create, ts.isIfStatement);
-        const code = (node: ts.Node): number =>
-            pinnedErrorCode(this.context, node);
         return `
-// ${this.context.provenance(VAT_MODULE, "createVatBakeResults, validatePreparedCapture and positiveInteger")}
 namespace {
-
-double vat_positive_integer(double value) {
-    if (!bbl::js::number_is_safe_integer(value) || value < 1.0)
-        throw std::runtime_error("#${code(positive)}");
-    return value;
-}
-
-// Object.entries gives property order, and a numeric key is its own
-// spelling, so \`String(bone) !== key\` never holds here.
-js::Nullable<js::Map<double, js::F32Array>> vat_prepared_capture(
-    const js::Nullable<js::Map<double, js::F32Array>>& capture,
-    double bone_count,
-    double values_per_frame,
-    double frame_count) {
-    if (!capture) return capture;
-    js::Map<double, js::F32Array> validated;
-    bbl::js::for_each_property_entry(*capture,
-        [&](const std::string& key, const js::F32Array& values) {
-            const double bone = bbl::js::number_from_string(key);
-            if (!bbl::js::number_is_safe_integer(bone) || bone < 0.0 ||
-                bone >= bone_count)
-                throw std::runtime_error("#${code(bone!)}");
-            if (static_cast<double>(values.size()) !=
-                frame_count * values_per_frame)
-                throw std::runtime_error("#${code(length!)}");
-            validated.set(bone, values);
-        });
-    return validated;
-}
-
+${lowerPreparedVatValidation(this.context)}
 } // namespace
 
 js::Array<VatBake> create_vat_bakes(
@@ -522,32 +342,8 @@ js::Array<VatBake> create_vat_bakes(
     const std::vector<PreparedVatPayload>& prepared) {
     std::vector<VatBakeRecord> validated;
     validated.reserve(prepared.size());
-    for (const PreparedVatPayload& source : prepared) {
-        const double bone_count = vat_positive_integer(source.bone_count);
-        const double frame_count = vat_positive_integer(source.frame_count);
-        if (static_cast<double>(source.data.size()) !=
-            bone_count * frame_count * 16.0)
-            throw std::runtime_error("#${code(data!)}");
-        VatBakeRecord bake;
-        for (const VatClipRow& row : source.clips) {
-            if (row.name.empty() ||
-                !bbl::js::number_is_safe_integer(row.from_row) ||
-                row.from_row < 0.0 ||
-                !bbl::js::number_is_safe_integer(row.frame_count) ||
-                row.frame_count < 1.0 ||
-                row.from_row + row.frame_count > frame_count ||
-                !std::isfinite(row.fps) || row.fps <= 0.0)
-                throw std::runtime_error("#${code(clip!)}");
-            bake.clips.push_back(row);
-        }
-        bake.bone_origins =
-            vat_prepared_capture(source.bone_origins, bone_count, 3.0, frame_count);
-        bake.bone_matrices =
-            vat_prepared_capture(source.bone_matrices, bone_count, 16.0, frame_count);
-        bake.bone_count = ${jsToUint32Call("bone_count")};
-        bake.frame_count = ${jsToUint32Call("frame_count")};
-        validated.push_back(std::move(bake));
-    }
+    for (const PreparedVatPayload& source : prepared)
+        validated.push_back(vat_validate_prepared(source));
     // uploadPreparedMany: payloads of one bone count and bit-equal data
     // share one texture, whose texels are the first one's.
     struct UniqueTexture {
@@ -589,19 +385,40 @@ js::Array<VatBake> create_vat_bakes(
 
     /** `bakeVat`: the clip-by-clip pose bake into a new texture. */
     private lowerBake(): string {
+        const clipFrames = lowerPinnedFunction(
+            this.context,
+            VAT_MODULE,
+            "clipFrameCount",
+            [
+                {
+                    pinned: "group",
+                    kind: "record",
+                    cpp: "group",
+                    annotation: "AnimationGroup",
+                    specialized: true,
+                    binding: { cpp: "group", type: "opaque" },
+                },
+            ],
+            {
+                cppName: "vat_clip_frames",
+                returns: "double",
+                leadingParameters: ["double duration"],
+                memberBindings: new Map([
+                    ["group.duration", { cpp: "duration", type: "scalar" }],
+                    // The glTF animation lowering refuses groups with an own frameRate.
+                    ["group.frameRate", absentBinding("undefined")],
+                    [
+                        "DEFAULT_FRAME_RATE",
+                        { cpp: "kVatDefaultFrameRate", type: "scalar" },
+                    ],
+                ]),
+            },
+        );
         return `namespace {
 
 ${lowerGltfVatBinding(this.context)}
 
-// clipFrameCount: inclusive of frame zero, so a one-second 60fps clip
-// bakes 61 rows.
-std::uint32_t vat_clip_frames(float duration, float fps) {
-    const double frames =
-        bbl::js::round_js(static_cast<double>(duration) *
-                   static_cast<double>(fps)) +
-        1.0;
-    return static_cast<std::uint32_t>(std::max(1.0, frames));
-}
+${clipFrames}
 
 } // namespace
 
@@ -644,8 +461,12 @@ VatBake bake_vat(
         const float duration = asset.clip_duration
             ? asset.clip_duration(clip_record.clip)
             : 0.0f;
-        const std::uint32_t frames =
-            vat_clip_frames(duration, kVatDefaultFrameRate);
+        const double frame_count = vat_clip_frames(static_cast<double>(duration));
+        if (!std::isfinite(frame_count) || frame_count < 0.0 ||
+            frame_count > static_cast<double>(
+                std::numeric_limits<std::uint32_t>::max() - total_frames))
+            throw std::runtime_error("VAT frame count exceeds native texture storage.");
+        const auto frames = static_cast<std::uint32_t>(frame_count);
         frames_per_clip.push_back(frames);
         bake.clips.push_back(VatClipRow{
             clip_record.name,

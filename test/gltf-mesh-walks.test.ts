@@ -6,6 +6,13 @@ import test from "node:test";
 import { jsonObject } from "./json.js";
 import ts from "typescript";
 import { compileSource } from "../src/compiler.js";
+import { createCompilerProgram } from "../src/compiler/program.js";
+import { resolvedSymbol } from "../src/compiler/symbols.js";
+import { symbolicSourceFingerprint } from "../src/compiler/syntax.js";
+import {
+    EmissionMap,
+    EmissionTransaction,
+} from "../src/compiler/emission-transaction.js";
 import {
     GLTF_MESH_PLAN,
     GLTF_MESH_WALKS,
@@ -235,6 +242,144 @@ test("compiler demand is per asset and keeps distinct source collector orders", 
             .lowerLoaderAdapter({ sourceMeshWalks: true })
             .source.includes("load_source_mesh_walks(asset, document)"),
     );
+});
+
+test("compiler deduplicates source collectors by normalized closed syntax", () => {
+    const equivalent = declaration
+        .getText(corpus)
+        .replace("collectMeshes", "collectMeshesAgain")
+        .replaceAll("container", "source")
+        .replace("const out", "const result")
+        .replace("out.push", "result.push")
+        .replace("return out", "return result")
+        .replace("const stack", "const pending")
+        .replaceAll("stack", "pending")
+        .replace("const node", "const item")
+        .replaceAll("node", "item")
+        .replace(
+            "{\n",
+            "{\n        // formatting and comments are not identity\n\n",
+        );
+    const result =
+        compileSource(`import {createEngine, loadGltf, type AssetContainer, type Mesh} from "@babylonjs/lite";
+        ${declaration.getText(corpus)}
+        ${equivalent}
+        const engine = await createEngine({});
+        const asset = await loadGltf(engine, "hierarchy.gltf");
+        for (const mesh of collectMeshes(asset)) {
+            if (!mesh.material) throw new Error("missing material");
+        }
+        for (const mesh of collectMeshesAgain(asset)) {
+            if (!mesh.material) throw new Error("missing material");
+        }
+    `);
+    assert.equal(result.manifest.meshWalks?.length, 1);
+});
+
+test("symbolic mesh-walk fingerprints normalize closed bindings only", () => {
+    const { program } = createCompilerProgram(
+        `
+        function first(container: { entities: unknown[] }) {
+            const pending = [...container.entities];
+            const result: unknown[] = [];
+            while (pending.length > 0) {
+                const item = pending.pop();
+                if (item) result.push(item);
+            }
+            return result;
+        }
+        function second(source: { entities: unknown[] }) {
+            // comments and layout do not identify a walk
+            const work = [...source.entities];
+            const output: unknown[] = [];
+            while (work.length > 0) {
+                const entry = work.pop();
+                if (entry) output.push(entry);
+            }
+            return output;
+        }
+        function different(source: { entities: unknown[] }) {
+            const work = [...source.entities];
+            const output: unknown[] = [];
+            while (work.length > 0) {
+                const entry = work.pop();
+                if (entry) output.unshift(entry);
+            }
+            return output;
+        }
+        function memberEntities(source: { entities: unknown[] }) {
+            return source.entities;
+        }
+        function memberChildren(source: { children: unknown[] }) {
+            return source.children;
+        }
+        function outerOne() {
+            const captured = 1;
+            return function walk(source: { entities: unknown[] }) {
+                return source.entities.length + captured;
+            };
+        }
+        function outerTwo() {
+            const captured = 2;
+            return function walk(source: { entities: unknown[] }) {
+                return source.entities.length + captured;
+            };
+        }
+    `,
+        "artifacts/mesh-walk-identity.ts",
+    );
+    const source = program.getSourceFile(
+        resolve("artifacts/mesh-walk-identity.ts"),
+    )!;
+    const functions = source.statements.filter(ts.isFunctionDeclaration);
+    const checker = program.getTypeChecker();
+    const fingerprint = (body: ts.FunctionDeclaration["body"]) =>
+        symbolicSourceFingerprint(body!, (node) =>
+            resolvedSymbol(checker, node),
+        );
+    assert.equal(
+        fingerprint(functions[0]!.body),
+        fingerprint(functions[1]!.body),
+    );
+    assert.notEqual(
+        fingerprint(functions[0]!.body),
+        fingerprint(functions[2]!.body),
+    );
+    assert.notEqual(
+        fingerprint(functions[3]!.body),
+        fingerprint(functions[4]!.body),
+    );
+    const closures = functions
+        .slice(5)
+        .map(
+            (declaration) =>
+                declaration.body!.statements.find(ts.isReturnStatement)!
+                    .expression!,
+        )
+        .filter(ts.isFunctionExpression);
+    assert.equal(closures.length, 2);
+    assert.notEqual(
+        symbolicSourceFingerprint(closures[0]!.body, (node) =>
+            resolvedSymbol(checker, node),
+        ),
+        symbolicSourceFingerprint(closures[1]!.body, (node) =>
+            resolvedSymbol(checker, node),
+        ),
+    );
+});
+
+test("mesh-walk identity state rolls back with speculative emission", () => {
+    const identities = new EmissionMap<string, number>();
+    identities.set("source\0walk", 2);
+    new EmissionTransaction().run(
+        () => {
+            identities.set("source\0walk", 9);
+            identities.set("source\0other", 10);
+        },
+        () => false,
+    );
+    assert.equal(identities.get("source\0walk"), 2);
+    assert.equal(identities.has("source\0other"), false);
 });
 
 const tools = optionalNativeFixtureTools();

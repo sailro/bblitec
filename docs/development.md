@@ -126,6 +126,8 @@ Commands follow `npm run scene --`. Targets are registry IDs, local TypeScript o
 
 - Build dist once with `npm run build`, then `node dist/src/scene-command.js` is faster. Rebuilds refuse while a
   consumer runs.
+- After restoring source files with preserved size/timestamps, use `npm run build -- --force`; it bypasses the
+  metadata reuse check, not the consumer lock.
 - Finish generation before native builds and shared-header edits before concurrent builds. Logs go in `artifacts/`.
 - Ad-hoc sources use folders by stem and diagnostic-only comparisons. `--site-root <dir>` and `--public-dir <dir>` place
   `/` URLs of sources outside the repository.
@@ -167,6 +169,7 @@ npm run lint:cpp -- all --generated --backend both
 
 - `lint:ts` (`-- --fix` for safe fixes): type-aware ESLint. `lint:tools`: strict `checkJs` over tools and plugins
   (`tsconfig.tools.json`) and browser init scripts (`tsconfig.browser.json`). `lint:exports` is advisory.
+  Functions invoked by generated child scripts declare `@dynamicEntryPoint` for that inventory.
 - Native: LLVM 22 clang-tidy/clang-format (PATH or Visual Studio; `CLANG_TIDY`, `CLANG_FORMAT` override).
 - `lint:cpp` takes scene IDs, Ninja build dirs or `all`; `--backend`, `--file`, `--jobs`, `--generated`, `--no-cache`. It
   never builds: build the scenes first, on both backends. A PCH older than its inputs is refused. Results:

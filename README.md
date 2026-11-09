@@ -22,6 +22,7 @@ Source pin: [upstream/babylon-lite.json](upstream/babylon-lite.json). Start with
 | [Debugging](docs/debugging.md) | Measurement, diagnosis, runtime switches |
 | [Status](docs/status.md) | Published measurements |
 | [TODO](TODO.md) | Internal work and qualification |
+| [Audit](audit.md) | Verified cross-cutting findings and remediation checks |
 
 ## Acknowledgements
 

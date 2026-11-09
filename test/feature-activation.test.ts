@@ -26,6 +26,7 @@ function specialization(
 ): AssetSpecializationFeatures {
     return {
         gpuDeformation: false,
+        vertexDeformation: false,
         morphStorage: false,
         maxSkinJoints: 0,
         nonTrianglePrimitives: false,

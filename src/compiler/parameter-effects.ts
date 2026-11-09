@@ -1067,7 +1067,7 @@ export function libraryWrittenArgument(
 }
 
 /** What a default-library call does to the object handed to it. */
-export type LibraryArgumentEffect = "reads" | "writes" | "unknown";
+type LibraryArgumentEffect = "reads" | "writes" | "unknown";
 
 /**
  * What a default-library call does to the object at argument `index`:
@@ -1077,7 +1077,7 @@ export type LibraryArgumentEffect = "reads" | "writes" | "unknown";
  * writes no argument (its receiver is the caller's concern). Anything else
  * may write it.
  */
-export function libraryArgumentEffect(
+function libraryArgumentEffect(
     checker: ts.TypeChecker,
     call: ts.CallExpression | ts.NewExpression,
     index: number,
