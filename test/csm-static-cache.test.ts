@@ -258,3 +258,56 @@ void receiver;`,
         /Reached enableCsmStaticCache options/,
     );
 });
+
+test("a custom receiver binds the receiver texture of a generator a record stored", () => {
+    // The options record is built with spreads, so the generator reaches
+    // the read as a stored handle rather than as the scene's own value.
+    const { cpp } =
+        compileSource(`import {createEngine,createSceneContext,createFreeCamera,createGround,addToScene,createDirectionalLight,
+createCsmDirectionalShadowGenerator,createShaderMaterial,getCsmReceiverTexture,setShaderTexture,registerSceneWithShadowSupport,
+type ShaderMaterial,type ShadowGenerator,type Texture2D} from "@babylonjs/lite";
+interface DecorOptions{enabled?:boolean;capacity?:number;shadow?:ShadowGenerator}
+interface HostOptions{decor?:{enabled?:boolean};shadow?:ShadowGenerator}
+function receiverTexture(shadow:ShadowGenerator):Texture2D{return getCsmReceiverTexture(shadow);}
+function wire(shadow:ShadowGenerator|null|undefined,materials:readonly ShaderMaterial[]):void{
+    if(!shadow||materials.length===0)return;
+    const texture=receiverTexture(shadow);
+    for(const material of materials)setShaderTexture(material,"csmShadow",texture);
+}
+function createDecor(options:DecorOptions,materials:readonly ShaderMaterial[]):void{wire(options.shadow,materials);}
+function createHost(options:HostOptions,materials:readonly ShaderMaterial[]):void{
+    const decor=options.decor??{enabled:false};
+    createDecor({...(decor.enabled!==false?{capacity:16}:{}),...decor,shadow:options.shadow},materials);
+}
+const engine=await createEngine(document.getElementById("renderCanvas") as HTMLCanvasElement);
+const scene=createSceneContext(engine);
+scene.camera=createFreeCamera([0,10,-20],[0,0,0]);
+const light=createDirectionalLight([0,-1,-1],1);
+addToScene(scene,light);
+const sg=createCsmDirectionalShadowGenerator(engine,light,{numCascades:2});
+light.shadowGenerator=sg;
+const receiver=createShaderMaterial({name:"receiver",
+    vertexSource:"@vertex fn main(@location(0) position:vec3<f32>)->@builtin(position) vec4<f32>{return sceneUniforms.viewProjection*vec4<f32>(position,1.0);}",
+    fragmentSource:"@fragment fn main(@builtin(position) at:vec4<f32>)->@location(0) vec4<f32>{return vec4<f32>(vec3<f32>(textureSampleCompareLevel(csmShadow,csmShadowSampler,at.xy*0.001,0,0.5)),1.0);}",
+    attributes:["position"],uniforms:["viewProjection"],
+    samplers:[{name:"csmShadow",sampleType:"depth",viewDimension:"2d-array",comparison:true}]});
+const ground=createGround(engine,{width:10,height:10});
+ground.material=receiver;
+addToScene(scene,ground);
+const materials:ShaderMaterial[]=[receiver];
+createHost({shadow:sg,decor:{enabled:false}},materials);
+await registerSceneWithShadowSupport(scene);
+`);
+    const texture =
+        /auto (\w+) = bbl::get_csm_receiver_texture\(v_engine, (\w+)\);/.exec(
+            cpp,
+        );
+    assert.ok(texture);
+    assert.notEqual(texture[2], "v_sg");
+    assert.match(
+        cpp,
+        new RegExp(
+            `bbl::set_shader_csm_texture\\(v_engine, \\w+, 0u, ${texture[1]}\\);`,
+        ),
+    );
+});

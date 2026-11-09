@@ -2748,8 +2748,8 @@ export interface ValueFields {
     classHoistedAssignment?: ts.BinaryExpression;
     /** The concrete native texture record produced by a texture factory. */
     textureStorage?: "file" | "pixels" | "solid" | "render" | "stored";
-    /** Borrowed 2D-array depth view returned by getCsmReceiverTexture. */
-    csmReceiverGeneratorIndex?: number;
+    /** Borrowed 2D-array depth view returned by getCsmReceiverTexture: its native value is the generator. */
+    csmReceiverTexture?: true;
     textureFile?: {
         /** Packaged source used only when source dimensions are reached. */
         readonly source?: string;
