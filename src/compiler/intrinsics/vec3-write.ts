@@ -9,7 +9,7 @@ type Vec3WriteContext = Pick<
     "dataTypes" | "fail" | "emit" | "bindings" | "requireEngine"
 >;
 
-export function writableVec3Lanes(
+function writableVec3Lanes(
     context: Vec3WriteContext,
     value: Value,
     node: ts.Node,

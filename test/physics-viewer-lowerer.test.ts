@@ -3,7 +3,11 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 import ts from "typescript";
 import { compileSource } from "../src/compiler.js";
-import { constructorEntryBody } from "../src/compiler/output-projection.js";
+import {
+    constructorEntryBody,
+    markUnreferencedLocals,
+} from "../src/compiler/output-projection.js";
+import type { NativeDeclaration } from "../src/compiler/native-declarations.js";
 import { LoweringContext } from "../src/lowering/context.js";
 import {
     lowerPhysicsViewer,
@@ -72,22 +76,108 @@ test("viewer contracts cover body geometry, lifecycle and live node transforms",
 });
 
 test("constructor projection omits only direct unread clock initializers", () => {
+    const clock: NativeDeclaration = {
+        kind: "declaration",
+        type: "double",
+        name: "unused",
+        initializer: "bbl::pal::performance_milliseconds()",
+        discardIfUnused: true,
+    };
+    const declarations = new Map([
+        [`${clock.type} ${clock.name} = ${clock.initializer};`, clock],
+    ]);
     assert.deepEqual(
-        constructorEntryBody([
-            "double unused = bbl::pal::performance_milliseconds();",
-            "auto mesh = create_mesh();",
-        ]),
+        constructorEntryBody(
+            [
+                "double unused = bbl::pal::performance_milliseconds();",
+                "auto mesh = create_mesh();",
+            ],
+            declarations,
+        ),
         ["", "auto mesh = create_mesh();"],
     );
-    for (const body of [
+    const usedClock: NativeDeclaration = {
+        ...clock,
+        name: "clock",
+    };
+    assert.deepEqual(
+        constructorEntryBody(
+            [
+                "double clock = bbl::pal::performance_milliseconds();",
+                "mesh.radius = clock;",
+            ],
+            new Map([
+                [
+                    `double ${usedClock.name} = ${usedClock.initializer};`,
+                    usedClock,
+                ],
+            ]),
+        ),
         [
             "double clock = bbl::pal::performance_milliseconds();",
             "mesh.radius = clock;",
         ],
-        ["double clock = 1.0 + bbl::pal::performance_milliseconds();"],
-        ["double clock = query_clock();"],
-    ])
-        assert.deepEqual(constructorEntryBody(body), body);
+    );
+    for (const [name, initializer] of [
+        ["clock", "1.0 + bbl::pal::performance_milliseconds()"],
+        ["clock", "query_clock()"],
+    ] as const) {
+        const declaration: NativeDeclaration = {
+            kind: "declaration",
+            type: "double",
+            name,
+            initializer,
+        };
+        const body = [`double ${name} = ${initializer};`];
+        assert.deepEqual(
+            constructorEntryBody(body, new Map([[body[0]!, declaration]])),
+            body,
+        );
+    }
+});
+
+test("structured declaration projection handles multiline templates, optionals and deferred blocks", () => {
+    const template: NativeDeclaration = {
+        kind: "declaration",
+        type: "auto",
+        name: "template_value",
+        initializer: "std::array{\n    1,\n    2,\n}",
+    };
+    const optional: NativeDeclaration = {
+        kind: "declaration",
+        type: "std::optional<std::string>",
+        name: "optional_value",
+        initializer: "",
+        initialization: "default",
+    };
+    const clock: NativeDeclaration = {
+        kind: "declaration",
+        type: "double",
+        name: "erased_clock",
+        initializer: "bbl::pal::performance_milliseconds()",
+        discardIfUnused: true,
+    };
+    const declarations = new Map<string, NativeDeclaration>([
+        ["auto template_value = std::array{\n    1,\n    2,\n};", template],
+        ["std::optional<std::string> optional_value{};", optional],
+        ["double erased_clock = bbl::pal::performance_milliseconds();", clock],
+    ]);
+    const body = [
+        "auto template_value = std::array{\n    1,\n    2,\n};",
+        "    std::optional<std::string> optional_value{};",
+        "    bbl::defer_start_continuation(engine, [&]() {\n" +
+            "        double erased_clock = bbl::pal::performance_milliseconds(\n" +
+            "            );\n" +
+            "    });",
+    ];
+    declarations.set(
+        "double erased_clock = bbl::pal::performance_milliseconds(\n    );",
+        clock,
+    );
+    markUnreferencedLocals(body, declarations);
+    assert.match(body[0]!, /^\[\[maybe_unused\]\] auto template_value/);
+    assert.match(body[1]!, /^\s*\[\[maybe_unused\]\] std::optional/);
+    assert.doesNotMatch(body[2]!, /erased_clock/);
 });
 
 test("body viewer compilation isolates startup and refuses observable bootstrap-dependent results", () => {

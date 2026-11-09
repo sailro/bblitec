@@ -1,0 +1,59 @@
+Replaced boxes contribute their intrinsic width to shrink-to-fit parents through
+LayoutDetails. Cyclic inline percentages use its existing intrinsic sizing mode.
+
+diff --git a/Source/Core/Layout/ReplacedFormattingContext.h b/Source/Core/Layout/ReplacedFormattingContext.h
+index 71f5ebe8a..3a6c5a9f9 100644
+--- a/Source/Core/Layout/ReplacedFormattingContext.h
++++ b/Source/Core/Layout/ReplacedFormattingContext.h
+@@ -19,16 +19,18 @@ public:
+ 
+ class ReplacedBox : public LayoutBox {
+ public:
+-	ReplacedBox(Element* element) : LayoutBox(Type::Replaced), element(element) {}
++	ReplacedBox(Element* element, Vector2f containing_block) : LayoutBox(Type::Replaced), element(element), containing_block(containing_block) {}
+ 
+ 	void Close();
+ 	Box& GetBox() { return box; }
+ 
+ 	const Box* GetIfBox() const override { return &box; }
++	float GetShrinkToFitWidth() const override;
+ 	String DebugDumpTree(int depth) const override;
+ 
+ private:
+ 	Element* element;
++	Vector2f containing_block;
+ 	Box box;
+ };
+ 
+diff --git a/Source/Core/Layout/ReplacedFormattingContext.cpp b/Source/Core/Layout/ReplacedFormattingContext.cpp
+index 8a34c3d46..e7b638409 100644
+--- a/Source/Core/Layout/ReplacedFormattingContext.cpp
++++ b/Source/Core/Layout/ReplacedFormattingContext.cpp
+@@ -12,13 +12,13 @@ UniquePtr<LayoutBox> ReplacedFormattingContext::Format(ContainerBox* parent_cont
+ 	RMLUI_ASSERT(element->IsReplaced());
+ 
+ 	// Replaced elements provide their own rendering, we just set their box here and notify them that the element has been sized.
+-	auto replaced_box = MakeUnique<ReplacedBox>(element);
++	const Vector2f containing_block = LayoutDetails::GetContainingBlock(parent_container, element->GetPosition()).size;
++	auto replaced_box = MakeUnique<ReplacedBox>(element, containing_block);
+ 	Box& box = replaced_box->GetBox();
+ 	if (override_initial_box)
+ 		box = *override_initial_box;
+ 	else
+ 	{
+-		const Vector2f containing_block = LayoutDetails::GetContainingBlock(parent_container, element->GetPosition()).size;
+ 		LayoutDetails::BuildBox(box, containing_block, element);
+ 	}
+ 
+@@ -43,6 +43,11 @@ void ReplacedBox::Close()
+ 	element->OnLayout();
+ }
+ 
++float ReplacedBox::GetShrinkToFitWidth() const
++{
++	return LayoutDetails::GetShrinkToFitWidth(element, containing_block, true);
++}
++
+ String ReplacedBox::DebugDumpTree(int depth) const
+ {
+ 	return String(depth * 2, ' ') + "ReplacedBox";

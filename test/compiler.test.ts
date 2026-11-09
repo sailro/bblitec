@@ -14412,21 +14412,30 @@ test("records direct browser primitive materialization", () => {
 });
 
 test("lowers platform time declarations to the native clock", () => {
-    const result = compileSource(`
+    const source = `
         import { createEngine } from "@babylonjs/lite";
 
         async function main() {
             const started = performance.now();
             await createEngine({});
         }
-    `);
-
-    assert.match(result.cpp, /bbl::pal::performance_milliseconds\(\)/);
-    assert.ok(
-        !result.manifest.adaptations.some(
-            ({ id }) => id === "browser-setup-erasure",
+    `;
+    const result = compileSource(
+        source.replace(
+            "await createEngine({});",
+            'await createEngine({}); if (started < 0) throw new Error("negative clock");',
         ),
     );
+    const unread = compileSource(source);
+
+    assert.match(result.cpp, /bbl::pal::performance_milliseconds\(\)/);
+    assert.doesNotMatch(unread.cpp, /bbl::pal::performance_milliseconds\(\)/);
+    for (const compiled of [result, unread])
+        assert.ok(
+            !compiled.manifest.adaptations.some(
+                ({ id }) => id === "browser-setup-erasure",
+            ),
+        );
 });
 
 test("erases browser declarations rooted at globalThis", () => {

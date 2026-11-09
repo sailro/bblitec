@@ -520,6 +520,13 @@
       "variants": ["all"]
     },
     {
+      "library": "rmlui",
+      "file": "native/patches/rmlui/0069-replaced-intrinsic-contributions.patch",
+      "purpose": "replaced boxes contribute their intrinsic width to shrink-to-fit parents through the shared intrinsic sizing path",
+      "upstream": { "state": "unsubmitted" },
+      "variants": ["all"]
+    },
+    {
       "library": "dawn",
       "file": "native/patches/dawn/0001-android-surface-loss.patch",
       "purpose": "Report Android Vulkan surface loss at the next acquisition without losing the device",

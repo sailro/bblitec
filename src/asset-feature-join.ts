@@ -249,7 +249,7 @@ export async function joinAssetFeatures({
             task.attachments.includes("LINEAR_VELOCITY"),
         ) &&
         manifest.features.includes("material:standard") &&
-        (specialization.gpuDeformation ||
+        (specialization.vertexDeformation ||
             manifest.features.includes("mesh:morph-targets") ||
             manifest.features.includes("mesh:skeleton"))
     )

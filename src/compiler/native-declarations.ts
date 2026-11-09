@@ -11,6 +11,16 @@ export interface NativeDeclaration {
     readonly discardIfUnused?: true;
 }
 
+/** Initializers whose evaluation is instrumentation-only when the binding is unread. */
+export function nativeDeclarationDiscardIfUnused(
+    declaration: NativeDeclaration,
+): boolean {
+    return (
+        (declaration.type === "auto" || declaration.type === "double") &&
+        declaration.initializer === "bbl::pal::performance_milliseconds()"
+    );
+}
+
 /** Object storage facts from the emitter's type spelling, without storage specifiers. */
 export function nativeDeclarationFacts(declaration: NativeDeclaration): {
     readonly type: string | undefined;

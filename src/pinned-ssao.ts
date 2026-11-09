@@ -80,7 +80,7 @@ export const SSAO_TEMPORAL_MODULE = "src/post-process/ssao/ssao-temporal.ts";
 export const SSAO_XEGTAO_GPU_MODULE =
     "src/post-process/ssao/ssao-xegtao-gpu.ts";
 export const SSAO_HALF_MODULE = "src/post-process/ssao/ssao-half-resolution.ts";
-export const SSAO_PBR_MODULE = "src/post-process/ssao/ssao-pbr.ts";
+const SSAO_PBR_MODULE = "src/post-process/ssao/ssao-pbr.ts";
 export const SSAO_PRUNING_MODULE =
     "src/post-process/ssao/ssao-motion-pruning.ts";
 export const SSAO_MOTION_MASK_MODULE =

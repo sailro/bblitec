@@ -5,8 +5,7 @@ import { libraryGlobal } from "./symbols.js";
 import { unwrapExpression } from "./syntax.js";
 
 /** How a library scheduler runs the callback it is handed: never before it returns. */
-export type SchedulerKind =
-    "timeout" | "interval" | "microtask" | "frame" | "idle";
+type SchedulerKind = "timeout" | "interval" | "microtask" | "frame" | "idle";
 
 const SCHEDULERS: ReadonlyMap<string, SchedulerKind> = new Map([
     ["queueMicrotask", "microtask"],

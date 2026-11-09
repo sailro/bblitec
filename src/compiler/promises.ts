@@ -80,7 +80,7 @@ function rejectionClause(
 }
 
 /** A static of the library's Promise a call names. */
-export type PromiseStatic =
+type PromiseStatic =
     "all" | "allSettled" | "any" | "race" | "reject" | "resolve";
 
 const PROMISE_STATICS: ReadonlyMap<string, PromiseStatic> = new Map(

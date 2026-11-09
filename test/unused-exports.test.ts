@@ -36,6 +36,10 @@ export function dynamicallyUsed(): void {}
 export function dynamicallyRenamed(): void {}
 export function dynamicallyNested(): void {}
 export function dynamicallyUnused(): void {}
+/** @dynamicEntryPoint generated process */
+export function generatedEntry(): void {}
+/** @dynamicEntryPoint only runtime functions can be dynamic entry points */
+export interface UnusedTaggedType { unused: number; }
 export interface PluginContext { value: string; }
 export function unusedFunction(): void {}
 export interface Recursive<T> { value: T; next?: Recursive<T[]>; }
@@ -85,6 +89,7 @@ dynamicallyUsed(); renamed(); dynamicallyNested();
             "unusedShape",
             "unusedFunction",
             "dynamicallyUnused",
+            "UnusedTaggedType",
         ].sort(),
     );
     assert.equal(

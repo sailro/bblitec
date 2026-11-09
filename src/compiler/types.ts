@@ -1333,7 +1333,7 @@ export const lightKinds = [
 export type LightKind = (typeof lightKinds)[number];
 
 /** What one light kind is, upstream and natively. */
-export interface LightKindFacts {
+interface LightKindFacts {
     /** The pinned module declaring its factory. */
     readonly modulePath: string;
     /** The factory, whose `applyLightBase` object holds `_writeLightUbo`. */

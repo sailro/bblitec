@@ -6,7 +6,6 @@ import {
 } from "./ui-selector.js";
 import type { UiGeneratedPart } from "./ui-generated-content.js";
 import { parseMediaQuery, type UiMediaConditions } from "./media-query.js";
-export type { UiMediaConditions } from "./media-query.js";
 
 /** The bounded selector forms projection lowers, by their `UiStyleSelectorKind` spelling. */
 const UI_STYLE_SELECTOR_KINDS = {

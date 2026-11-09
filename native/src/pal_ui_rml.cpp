@@ -6141,6 +6141,8 @@ public:
 class UiCanvasElement final : public Rml::Element {
     UiRmlRuntime* runtime_ = nullptr;
     UiElementHandle handle_{};
+    Rml::Vector2f intrinsic_dimensions_{-1.f, -1.f};
+    void OnUpdate() override;
     void OnRender() override;
     bool GetIntrinsicDimensions(Rml::Vector2f& dimensions, float& ratio) override;
 
@@ -8997,6 +8999,7 @@ struct UiRmlRuntime {
     UiBackgroundStyles background_styles;
     UiSelectTopLayer select_top_layer;
     double canvas_render_ms = 0;
+    bool canvas_layout_changed = false;
 };
 
 void substitute_css(const Rml::String& property, Rml::String& value) {
@@ -9014,22 +9017,28 @@ void substitute_css(const Rml::String& property, Rml::String& value) {
 // A canvas is a replaced element: its backing size, in CSS pixels, is its
 // intrinsic size and ratio wherever CSS leaves a dimension auto.
 bool UiCanvasElement::GetIntrinsicDimensions(Rml::Vector2f& dimensions, float& ratio) {
-    // Definite CSS sizes need no intrinsic fallback. Keep their ordinary
-    // layout path so shrink-to-fit parents include the authored width.
-    const auto& style = GetComputedValues();
-    if (style.width().type == Rml::Style::Width::Length &&
-        style.height().type == Rml::Style::Height::Length)
-        return false;
     if (!runtime_ || handle_.value >= runtime_->engine.ui_elements.size())
         return false;
     const auto& canvas = runtime_->engine.ui_elements[handle_.value].canvas;
-    if (!canvas || canvas->width <= 0.0 || canvas->height <= 0.0)
+    if (!canvas)
         return false;
     dimensions =
         Rml::Vector2f(static_cast<float>(canvas->width), static_cast<float>(canvas->height)) *
         runtime_->density_ratio;
-    ratio = dimensions.x / dimensions.y;
+    // A zero backing dimension removes the natural ratio, not replaced status.
+    ratio = dimensions.x > 0.f && dimensions.y > 0.f ? dimensions.x / dimensions.y : -1.f;
     return true;
+}
+
+void UiCanvasElement::OnUpdate() {
+    Element::OnUpdate();
+    Rml::Vector2f dimensions;
+    float ratio = -1.f;
+    if (GetIntrinsicDimensions(dimensions, ratio) && dimensions != intrinsic_dimensions_) {
+        intrinsic_dimensions_ = dimensions;
+        DirtyLayout();
+        runtime_->canvas_layout_changed = true;
+    }
 }
 
 void UiCanvasElement::OnRender() {
@@ -9313,9 +9322,10 @@ void update_ui_rml_runtime(UiRmlRuntime& runtime, std::uint32_t width, std::uint
         runtime.context->Update();
     if (runtime.background_styles.sync(*runtime.document))
         runtime.context->Update();
-    const bool layout_changed = tree_changed || viewport_changed || root_font_changed ||
-                                media_changed || generated_changed || containers_changed ||
-                                hover_changed;
+    const bool canvas_layout_changed = std::exchange(runtime.canvas_layout_changed, false);
+    const bool layout_changed = canvas_layout_changed || tree_changed || viewport_changed ||
+                                root_font_changed || media_changed || generated_changed ||
+                                containers_changed || hover_changed;
     cpu.split(cpu.sample.decorations, checkpoint);
     if (layout_changed)
         runtime.update_intrinsic_widths();

@@ -40,6 +40,7 @@ import { pinnedCsmFunctions } from "./pinned-csm.js";
 import { lowerCsmStaticCacheEnable } from "./csm-static-cache.js";
 import { lowerComputeAabb, positionsView } from "./pinned-compute-aabb.js";
 import { lowerSkeletonShadowBounds } from "./skeleton-shadow-bounds.js";
+import { lowerMorphShadowBounds } from "./morph-shadow-bounds.js";
 import type { ComposedEsmShadow } from "../pinned-esm-shadow.js";
 import { pinnedHeader } from "./pinned-header.js";
 import { lowerShadowEnabled } from "./shadow-enabled.js";
@@ -1327,12 +1328,8 @@ function assertShadowRenderGateContracts(context: LoweringContext): void {
             );
         }
     }
-    // The morph-bounds provider. Its expansion is transcribed rather than
-    // lowered -- the pinned body is a method on an object literal, which
-    // `lowerPinnedFunction` does not reach -- so the shape is pinned here
-    // instead, and these two lines are what a pinned change has to survive.
-    // Without them an upstream edit to the weighting compiles clean and
-    // fits a different volume.
+    // The native fit uses the provider whose body lowerMorphShadowBounds
+    // translates, with its ranges kept in the native geometry cache.
     const { declaration: morphProvider } = context.functionDeclaration(
         "src/shadow/enable-morph-target-shadows.ts",
         "enableMorphTargetShadows",
@@ -1341,11 +1338,6 @@ function assertShadowRenderGateContracts(context: LoweringContext): void {
         morphProvider,
         "enableDeformableShadowBounds(generator, morphBoundsProvider)",
         "morph-target shadow bounds registration",
-    );
-    context.expectShapeCount(
-        context.sourceFile("src/shadow/enable-morph-target-shadows.ts"),
-        "min[axis] = min[axis]! + targetMin[axis]! * weight",
-        "morph-target shadow bounds expansion",
     );
 }
 
@@ -1852,51 +1844,7 @@ inline constexpr std::array<float, 3> shadow_caster_bounds_fallback_max{
 ${
     morphBounds
         ? `
-/**
- * enableMorphTargetShadows' bounds provider, as the caster fit reads it.
- *
- * The pin builds a PROXY mesh over the caster whose boundMin/boundMax are
- * these, and bumps a version so the fit refreshes; this port has one caster
- * carrier and fills its bounds directly, which is the same thing without the
- * prototype chain. The base is the mesh's own AABB -- upstream
- * computeAabb(mesh._cpuPositions), which is exactly what this port already
- * folded into geometry.bounds_min/max at load.
- *
- * Each target contributes its DELTA buffer's own AABB scaled by that
- * target's weight, and a NEGATIVE weight swaps which end of the range moves
- * which bound. Live, not folded at creation: the weights are what the scene
- * animates, and the whole point of the provider is that the ortho volume
- * follows them. Without it the fit bounds a scrambled mesh by its unmorphed
- * box and clips the caster.
- */
-inline void expand_morph_caster_bounds(
-    const std::vector<std::array<Vec3, 2>>& target_ranges,
-    const float* weights,
-    std::size_t weight_count,
-    std::array<float, 3>& bounds_min,
-    std::array<float, 3>& bounds_max) {
-    for (std::size_t target = 0; target < target_ranges.size(); ++target) {
-        const float weight =
-            target < weight_count ? weights[target] : 0.0f;
-        // The pin's guard tests the weight for FALSINESS, so a NaN weight
-        // skips the target rather than poisoning the box. An equality
-        // test against zero would let one through, and a NaN bound makes
-        // the whole ortho fit NaN rather than one caster wrong.
-        if (!(weight != 0.0f)) continue;
-        const Vec3& low = target_ranges[target][0];
-        const Vec3& high = target_ranges[target][1];
-        const Vec3& target_min = weight < 0.0f ? high : low;
-        const Vec3& target_max = weight < 0.0f ? low : high;
-        const std::array<float, 3> min_axes{
-            target_min.x, target_min.y, target_min.z};
-        const std::array<float, 3> max_axes{
-            target_max.x, target_max.y, target_max.z};
-        for (std::size_t axis = 0; axis < 3; ++axis) {
-            bounds_min[axis] = bounds_min[axis] + min_axes[axis] * weight;
-            bounds_max[axis] = bounds_max[axis] + max_axes[axis] * weight;
-        }
-    }
-}
+${lowerMorphShadowBounds(context)}
 
 /**
  * The pin's per-target delta buffer, over the Vec3 deltas this port keeps.

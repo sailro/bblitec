@@ -35,7 +35,16 @@ function unusedExports(program: ts.Program): UnusedExport[] {
             const declaration = symbol.declarations?.find(
                 (item) => item.getSourceFile() === source,
             );
-            if (declaration) candidates.set(symbol, { source, declaration });
+            if (
+                declaration &&
+                !(
+                    ts.isFunctionDeclaration(declaration) &&
+                    ts
+                        .getJSDocTags(declaration)
+                        .some((tag) => tag.tagName.text === "dynamicEntryPoint")
+                )
+            )
+                candidates.set(symbol, { source, declaration });
         }
     }
     // Export usage only distinguishes a declaration's own module from any

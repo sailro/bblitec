@@ -14,6 +14,8 @@ import { type JsonObject } from "../src/json-fields.js";
 import { writeGlbFixture } from "./glb-fixture.js";
 import { packageGltfMeshPlan } from "../src/gltf-mesh-plan.js";
 import { packageGltfTransmissionPlan } from "../src/pinned-material-arms.js";
+import { compileSource } from "../src/compiler.js";
+import { joinAssetFeatures } from "../src/asset-feature-join.js";
 
 /** Specialize packaged assets the way generation does: parsed once. */
 function specialize(
@@ -217,13 +219,14 @@ test("accepts the pin-implemented material extensions and records the loader fac
  * A one-triangle document packaged the way generation packages every asset,
  * specialized from the record of the pin's own loader run.
  */
-async function packagedLoader(options: {
+async function packagedDocument(options: {
     skinned?: boolean;
     skins?: boolean;
     morph?: boolean;
+    animation?: boolean;
     mode?: number;
     scale?: number[];
-}): Promise<NonNullable<ReturnType<typeof specializeGltf>["loader"]>> {
+}): Promise<JsonObject> {
     const binary = new BinaryBuilder(Buffer.alloc(0));
     const accessors: JsonObject[] = [],
         bufferViews: JsonObject[] = [];
@@ -240,7 +243,8 @@ async function packagedLoader(options: {
         accessors.push({
             bufferView: bufferViews.length - 1,
             componentType: data instanceof Float32Array ? 5126 : 5121,
-            count: data.length / (type === "VEC3" ? 3 : 4),
+            count:
+                data.length / (type === "SCALAR" ? 1 : type === "VEC3" ? 3 : 4),
             type,
             normalized,
         });
@@ -273,12 +277,32 @@ async function packagedLoader(options: {
               }
             : {}),
     };
+    const animations = options.animation
+        ? [
+              {
+                  samplers: [
+                      {
+                          input: append(new Float32Array([0, 1]), "SCALAR"),
+                          output: append(
+                              new Float32Array([0, 0, 0, 1, 0, 0]),
+                              "VEC3",
+                          ),
+                          interpolation: "LINEAR",
+                      },
+                  ],
+                  channels: [
+                      { sampler: 0, target: { node: 0, path: "translation" } },
+                  ],
+              },
+          ]
+        : undefined;
     const document: JsonObject = {
         asset: { version: "2.0" },
         buffers: [{ byteLength: binary.byteLength }],
         bufferViews,
         accessors,
         ...(options.skins ? { skins: [{ joints: [1] }] } : {}),
+        ...(animations ? { animations } : {}),
         nodes: [
             {
                 mesh: 0,
@@ -295,10 +319,84 @@ async function packagedLoader(options: {
         document,
         new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength),
     );
+    await packageGltfTransmissionPlan(document);
+    return document;
+}
+
+async function packagedLoader(
+    options: Parameters<typeof packagedDocument>[0],
+): Promise<NonNullable<ReturnType<typeof specializeGltf>["loader"]>> {
+    const document = await packagedDocument(options);
     const { loader } = specializeGltf(document, "asset.glb");
     assert.ok(loader);
     return loader;
 }
+
+test("velocity preload distinguishes packaged node animation from skin/morph deformation", async (t) => {
+    const outputPath = mkdtempSync(join(tmpdir(), "bblite-deformation-join-"));
+    t.after(() => rmSync(outputPath, { recursive: true, force: true }));
+    for (const options of [
+        {},
+        { animation: true },
+        { skinned: true, skins: true },
+        { morph: true },
+    ]) {
+        const document = await packagedDocument(options);
+        for (const explicit of [false, true]) {
+            const result = compileSource(`
+                import {createEngine, createSceneContext, createBox, createStandardMaterial, loadGltf,
+                    addToScene, createGeometryRendererTask, GeometryTextureType, addTask, enableGeometryVelocity} from "@babylonjs/lite";
+                const engine = await createEngine({});
+                const scene = createSceneContext(engine);
+                const mesh = createBox(engine, 1);
+                mesh.material = createStandardMaterial();
+                addToScene(scene, mesh);
+                const asset = await loadGltf(engine, "asset.glb");
+                addToScene(scene, asset);
+                const task = createGeometryRendererTask({
+                    textureDescriptions: [{type: GeometryTextureType.LINEAR_VELOCITY}]
+                }, engine, scene);
+                addTask(scene, task);
+                ${explicit ? "enableGeometryVelocity(task);" : ""}
+            `);
+            const asset = result.manifest.assets.find(
+                (entry) => entry.kind === "gltf",
+            )!;
+            const documents = new Map([[asset.output, document]]);
+            const specialization = emitAssetSpecializations(
+                outputPath,
+                result.manifest.assets,
+                documents,
+            );
+            const deformation =
+                options.skinned === true || options.morph === true;
+            assert.equal(specialization.vertexDeformation, deformation);
+            assert.equal(
+                specialization.gpuDeformation,
+                deformation || options.animation === true,
+            );
+            const joined = await joinAssetFeatures({
+                result,
+                outputPath,
+                documents,
+                specialization,
+                splatHarmonics: undefined,
+            });
+            assert.equal(
+                result.manifest.features.includes("renderer:geometry-velocity"),
+                deformation || explicit,
+            );
+            assert.equal(
+                joined.joined.has("renderer:geometry-velocity"),
+                deformation && !explicit,
+            );
+            assert.equal(
+                result.cmake.includes('"renderer:geometry-velocity"'),
+                deformation || explicit,
+            );
+        }
+    }
+});
 
 test("reads the features the pinned loader ran from the packaged record", async () => {
     const skinned = await packagedLoader({

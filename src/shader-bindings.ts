@@ -182,7 +182,7 @@ export function sdlUniformSource(
  * dispatch binds its own counts there (`sdl_workgroup_counts_binding`,
  * native/src/pal_sdl_gpu_compute_pipeline.hpp).
  */
-export const SDL_WORKGROUP_COUNTS = "bbl_num_workgroups";
+const SDL_WORKGROUP_COUNTS = "bbl_num_workgroups";
 
 /**
  * The module with every entry point's `@builtin(num_workgroups)` parameter

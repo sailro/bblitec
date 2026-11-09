@@ -69,6 +69,29 @@ function lower(
     return lowerer.statements(file.statements, "").join("\n");
 }
 
+test("an absent specialized value selects a numeric or string logical fallback", () => {
+    for (const value of ["undefined", "null"] as const) {
+        const bindings: [string, PinnedBinding][] = [
+            ["missing", absentBinding(value)],
+            ["output", { cpp: "output", type: "scalar" }],
+            ["text", { cpp: "text", type: "string" }],
+        ];
+        assert.equal(
+            lower("output = missing || 60;", bindings),
+            "output = 60.0;",
+        );
+        for (const initializer of ["missing || 60", "0 || 60"])
+            assert.match(
+                lower(`const rate = ${initializer}; output = rate;`, bindings),
+                /const double rate = /,
+            );
+        assert.match(
+            lower('text = missing || "fallback";', bindings),
+            /text = std::string\("fallback"\);/,
+        );
+    }
+});
+
 test("numeric list reads preserve absent numbers and evaluate indices once", (t) => {
     const tools = optionalNativeFixtureTools(false);
     if (!tools) {
