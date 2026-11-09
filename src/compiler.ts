@@ -2519,7 +2519,8 @@ class Compiler implements LoweringServices {
      * inside the holder's value -- the stored value itself, or a member,
      * element or branch of a literal it builds -- whatever storage the
      * holder's type (declared or inferred) gave it. A value computed from
-     * them (`createCsgFromMesh(box)`) holds none of them.
+     * them (`createCsgFromMesh(box)`) holds none of them, and a scalar is
+     * copied into the holder.
      */
     public noteHeldNativeBindings(expression: ts.BinaryExpression): void {
         if (expression.operatorToken.kind !== ts.SyntaxKind.EqualsToken) return;
@@ -2529,7 +2530,13 @@ class Compiler implements LoweringServices {
         if (holders.length === 0) return;
         const held = heldIdentifiers(this.unwrap(expression.right), (node) =>
             this.unwrap(node),
-        ).flatMap((identifier) => this.identifierNativeBindings(identifier));
+        )
+            .filter((identifier) =>
+                typeCanCarryReference(
+                    this.checker.getTypeAtLocation(identifier),
+                ),
+            )
+            .flatMap((identifier) => this.identifierNativeBindings(identifier));
         if (held.length === 0) return;
         for (const holder of holders)
             this.heldNativeBindings.set(holder, [
