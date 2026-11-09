@@ -205,12 +205,15 @@ test("selects a helper-built stage per outcome of a run-time option", (t) => {
         t.skip("Native compiler required.");
         return;
     }
-    // Each outcome's material declares what its own stage reads.
+    // Each outcome's material declares what its own stage reads; a call
+    // whose material goes nowhere still runs its outcome's arm.
     const { compiled, cpp } = compileShaderMaterialFixture(`
     import { createEngine, createShaderMaterial, getShaderUniform, wgsl, type ShaderMaterial } from "babylon-lite";
+    let tally = 0;
     ${stageFactory({
         ...heldStages,
-        check: `let declared = 0;
+        check: `tally += lit ? 10 : 1;
+        let declared = 0;
         for (const name of ["uGain"]) {
             try { if (getShaderUniform(material, name) === 0.5) declared++; } catch (error) { declared--; }
         }
@@ -223,8 +226,9 @@ test("selects a helper-built stage per outcome of a run-time option", (t) => {
         for (const row of rows) {
             const gain = row.gain === null ? undefined : { amount: row.gain };
             if (surface(gain)) built++;
+            surface(gain);
         }
-        if (built !== 2) throw new Error("rows");
+        if (built !== 2 || tally !== 22) throw new Error("rows");
     }
     main();`);
     assert.equal(compiled.manifest.customShaderPrograms.length, 2);

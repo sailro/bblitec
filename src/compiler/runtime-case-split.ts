@@ -18,6 +18,7 @@ import {
     functionOfDeclaration,
     isSuspensionPoint,
     isValueReference,
+    valueUse,
     writeSites,
 } from "./syntax.js";
 import {
@@ -519,10 +520,13 @@ function splitCall(
     );
     if (tests.some((test) => test === undefined)) return undefined;
     const resultTsType = context.checker.getTypeAtLocation(call);
-    const resultType = isVoid(resultTsType)
+    // A call whose value goes nowhere merges none from its arms.
+    const valueless =
+        isVoid(resultTsType) || valueUse(call).kind === "discarded";
+    const resultType = valueless
         ? undefined
         : context.dataTypes.fromTsType(resultTsType, call);
-    if (resultType === undefined && !isVoid(resultTsType)) return undefined;
+    if (resultType === undefined && !valueless) return undefined;
     const result = resultType && {
         name: context.allocateTemporaryCppName("case_result"),
         type: resultType,

@@ -73,7 +73,7 @@ Rules:
 - Literals handed to functions keep their facts unless a callee's write reaches a member they hold. Static descriptor
   lists re-read a local `const` initializer whose names no visible write reaches.
 - A refusing local call whose arguments select by pure runtime tests compiles once per outcome (at most four tests) and
-  merges the results into native storage.
+  merges the results into native storage; a discarded call merges none.
 - Recursive groups evaluate a caller-independent default once at the root; other defaults refuse. A function a call
   passes counts as a call the callee may make: directly, as a literal in a record or array, or as a named async
   function there.
