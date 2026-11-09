@@ -868,7 +868,7 @@ export function platformHandleKind(
     if (libraryName(type) === "CustomEvent") return "custom-event";
     // Only a generation-executed producer makes one (executed-video-function.ts).
     if (libraryName(type) === "HTMLVideoElement") return "video";
-    if (["PointerEvent", "InputEvent"].includes(type.symbol.name))
+    if (["PointerEvent", "WheelEvent", "InputEvent"].includes(type.symbol.name))
         return "dom-event";
     return undefined;
 }

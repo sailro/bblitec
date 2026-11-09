@@ -960,7 +960,6 @@ test("refuses unrelated DOM records and unknown MouseEvent provenance", () => {
     for (const eventType of [
         "FocusEvent",
         "UIEvent",
-        "WheelEvent",
         "FocusEvent & {label: string}",
         "AuthoredFocus",
         "Readonly<FocusEvent>",

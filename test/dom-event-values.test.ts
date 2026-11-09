@@ -200,6 +200,28 @@ test("owned DOM events retain payload, routing, identity and listener cleanup", 
             if (event.composed || !event.bubbles || event.cancelable) throw new Error("physical change flags");
             physical += "C"; text.setAttribute("data-order", physical);
         });
+        type Wheel = (event: WheelEvent) => boolean;
+        function createWheel(options: {rotate(steps: number): void; isActive(wheel: Wheel): boolean}): Wheel {
+            const wheel: Wheel = (event) => {
+                if (event.ctrlKey || event.shiftKey) return false;
+                if (!options.isActive(wheel)) return true;
+                options.rotate(event.deltaY > 0 ? 1 : -1);
+                return true;
+            };
+            return wheel;
+        }
+        let turns = 0;
+        let activeWheel: Wheel | null = null;
+        const idleWheel = createWheel({rotate() { turns += 100; }, isActive: candidate => activeWheel === candidate});
+        const armedWheel = createWheel({rotate(steps) { turns += steps; }, isActive: candidate => activeWheel === candidate});
+        activeWheel = armedWheel;
+        text.addEventListener("wheel", (event) => {
+            const wheel = activeWheel;
+            if (!wheel || !wheel(event) || !idleWheel(event)) throw new Error("stored wheel callbacks");
+            activeWheel = null;
+            if (armedWheel(event) !== true) throw new Error("disarmed wheel callback");
+            text.setAttribute("data-wheel", String(turns));
+        });
         globalThis.close();
     `);
     writeFileSync(join(directory, "program.hpp"), result.cpp);
