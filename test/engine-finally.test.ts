@@ -7,6 +7,7 @@ import { compileSource } from "../src/compiler.js";
 import {
     optionalNativeFixtureTools,
     runNativeFixtureCompiler,
+    runRmlUiFixture,
 } from "./native-fixture.js";
 
 const source = `
@@ -28,6 +29,38 @@ test("startEngine finally cleanup belongs to the continuation completion", () =>
     const cpp = compileSource(source).cpp;
     assert.match(cpp, /defer_start_continuation/);
     assert.match(cpp, /finally_completion_\d+\.run\(\)/);
+});
+
+test("a block that closes after startEngine suspends in the application realm", () => {
+    const entry = (body: string, call = "void main();"): string => `
+        import { createEngine, startEngine } from "@babylonjs/lite";
+        let frames = 0;
+        async function main() {
+            const canvas = document.getElementById("renderCanvas") as HTMLCanvasElement;
+            ${body}
+        }
+        ${call}
+    `;
+    const create = "const engine = await createEngine(canvas);";
+    const start =
+        "await startEngine(engine); requestAnimationFrame(() => { frames++; });";
+    const flat = compileSource(entry(`${create} ${start}`));
+    assert.ok(!flat.manifest.features.includes("platform:window"));
+    assert.match(flat.cpp, /defer_start_continuation/);
+    for (const program of [
+        // The entry promise's rejection handler.
+        entry(
+            `${create} ${start}`,
+            "void main().catch(() => { frames = -1; });",
+        ),
+        entry(`try { ${create} ${start} } catch { frames = -1; }`),
+        entry(`${create} if (performance.now() >= 0) { ${start} }`),
+    ]) {
+        const result = compileSource(program);
+        assert.ok(result.manifest.features.includes("platform:window"));
+        assert.match(result.cpp, /co_await bbl::pal::start_realm_engine\(/);
+        assert.doesNotMatch(result.cpp, /defer_start_continuation/);
+    }
 });
 
 test("finally blocks explicitly refuse an additional suspended frame boundary", () => {
@@ -102,3 +135,33 @@ test(
         execFileSync(executable, { encoding: "utf8" });
     },
 );
+
+test("a rejection before or after startEngine reaches the entry promise's handler", (t) => {
+    const directory = resolve("artifacts/engine-start-rejection");
+    mkdirSync(directory, { recursive: true });
+    const result = compileSource(`
+        import { createEngine, startEngine } from "@babylonjs/lite";
+        async function main() {
+            const canvas = document.getElementById("renderCanvas") as HTMLCanvasElement;
+            const engine = await createEngine(canvas);
+            if (document.body.dataset.mode === "setup") throw new Error("setup failed");
+            await startEngine(engine);
+            document.body.dataset.started = "true";
+            throw new Error("continuation failed");
+        }
+        void main().catch((error) => {
+            document.body.dataset.failure = error.message;
+            globalThis.close();
+        });
+    `);
+    assert.ok(result.manifest.features.includes("platform:window"));
+    writeFileSync(join(directory, "program.hpp"), result.cpp);
+    runRmlUiFixture(t, "engine-start-rejection", {
+        macros: {
+            BBLITE_WORKERS: 1,
+            BBLITE_OFFSCREEN_SURFACES: 1,
+            BBLITE_HAS_DOM_INPUT: 1,
+            BBLITE_HAS_PBR_RENDERER: 0,
+        },
+    });
+});

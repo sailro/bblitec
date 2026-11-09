@@ -176,6 +176,7 @@ cancel })` is a program source; `new Response(stream, { status, statusText, head
 - Device recovery rebuilds GPU resources from CPU owners; GPU-only storage buffers lose contents. Only the scene
   strategy recovers; a loss with sprite, text, effect or frame-graph contexts refuses with the pin's message.
 - Recovery registers before `startEngine` in the entry, anywhere in an application realm.
+- `startEngine` inside a block (a catch clause, a branch, the entry promise's rejection handler) selects a realm.
 - `engine._renderFn` (the pin's frame function) can be wrapped; a wrapper that never calls it ends the native run.
 - After `stopEngine` no frame renders: the canvas keeps its last image, which a pending capture reads.
 - GPU task timing refuses TAA, screen-space and pass-less copy tasks, and on SDL_GPU colour/post-process tasks in TAA builds.
