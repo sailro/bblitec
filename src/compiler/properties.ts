@@ -2957,6 +2957,14 @@ export class PropertyAccessLowerer {
                     dataType: { kind: "number" },
                 };
             }
+            // A wheel delta is in CSS pixels (`dom_wheel_delta_y`):
+            // `WheelEvent.DOM_DELTA_PIXEL`, read off a checked payload.
+            if (property === "deltaMode")
+                return {
+                    kind: "number",
+                    cpp: `(static_cast<void>(${owner.cpp}.mouse_payload()), ${doubleLiteral(0)})`,
+                    dataType: { kind: "number" },
+                };
             this.context.fail(
                 nameSite,
                 `Platform mouse events do not expose '${property}'.`,

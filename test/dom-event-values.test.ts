@@ -203,7 +203,7 @@ test("owned DOM events retain payload, routing, identity and listener cleanup", 
         type Wheel = (event: WheelEvent) => boolean;
         function createWheel(options: {rotate(steps: number): void; isActive(wheel: Wheel): boolean}): Wheel {
             const wheel: Wheel = (event) => {
-                if (event.ctrlKey || event.shiftKey) return false;
+                if (event.ctrlKey || event.shiftKey || event.deltaMode !== 0) return false;
                 if (!options.isActive(wheel)) return true;
                 options.rotate(event.deltaY > 0 ? 1 : -1);
                 return true;
@@ -217,6 +217,7 @@ test("owned DOM events retain payload, routing, identity and listener cleanup", 
         activeWheel = armedWheel;
         text.addEventListener("wheel", (event) => {
             const wheel = activeWheel;
+            if (event.deltaMode !== 0) throw new Error("pixel wheel delta");
             if (!wheel || !wheel(event) || !idleWheel(event)) throw new Error("stored wheel callbacks");
             activeWheel = null;
             if (armedWheel(event) !== true) throw new Error("disarmed wheel callback");
