@@ -465,6 +465,48 @@ test("a survey's plan loses a write through this by its class and goes on", () =
     assert.equal(after.writes - before.writes, 0);
 });
 
+test("a survey's plan loses a write through an assignment's value by its target and goes on", () => {
+    // `(cache ??= {}).hits = ...` reads the lost binding and writes into
+    // what `cache` holds: the later read of `cache` waits for the next
+    // attempt, and the unrelated binding's demand is still collected.
+    const { checker, statements, context, declarationAt } = plannedStatements(`
+        let first = { gain: 1 };
+        let cache: { hits?: number } | undefined;
+        (cache ??= {}).hits = first.gain;
+        const read = cache?.hits;
+        let second = { level: 1 };
+    `);
+    const before = storagePlanningStatistics();
+    const planner = new StorageDemandPlanner(checker, true);
+    const binding = (index: number) => () => {
+        throw new DynamicBindingStorageRequired(
+            declarationAt(index),
+            undefined,
+        );
+    };
+    let lowered = 0;
+    planner.run(() => {
+        attemptPlanned(planner, context, statements[0]!, binding(0));
+        for (const index of [1, 2, 3])
+            attemptPlanned(planner, context, statements[index]!, () => {
+                lowered++;
+            });
+        attemptPlanned(planner, context, statements[4]!, binding(4));
+    });
+    const after = storagePlanningStatistics();
+    assert.deepEqual(
+        planner.demands.map((request) =>
+            request.kind === "dynamic"
+                ? request.declaration.name.getText()
+                : request.kind,
+        ),
+        ["first", "second"],
+    );
+    assert.equal(lowered, 1);
+    assert.equal(after.dependent - before.dependent, 2);
+    assert.equal(after.writes - before.writes, 0);
+});
+
 test("a survey's plan records a replay besides storage and goes on", () => {
     const { checker, statements, context, declarationAt } = plannedStatements(`
         const state = { query: "a" };

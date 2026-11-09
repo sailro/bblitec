@@ -707,9 +707,12 @@ export function rootExpression(
 /**
  * The expressions whose objects `expression` evaluates to or into: the root
  * of its access chain, and through a selection the root of each operand it
- * may yield (`(c ? a : b).n` is in `a` or in `b`). A root that is no name
- * -- a call, a literal -- is its caller's to follow; `isRoot` names an access
- * that is a root itself (a binding the caller models, a private field).
+ * may yield (`(c ? a : b).n` is in `a` or in `b`). An assignment yields the
+ * value it stores (`(x ??= {}).n` is in `x` or the new object, `(x = y).n`
+ * in what both hold); an arithmetic one yields a primitive. A root that is
+ * no name -- a call, a literal -- is its caller's to follow; `isRoot` names
+ * an access that is a root itself (a binding the caller models, a private
+ * field).
  */
 export function referenceBases(
     expression: ts.Expression,
@@ -717,6 +720,16 @@ export function referenceBases(
     isRoot?: (access: MemberAccess) => boolean,
 ): readonly ts.Expression[] {
     const root = rootExpression(expression, unwrap, isRoot);
+    if (isAssignmentExpression(root)) {
+        const kind = root.operatorToken.kind;
+        return kind === ts.SyntaxKind.EqualsToken ||
+            isLogicalAssignmentOperator(kind)
+            ? [
+                  ...referenceBases(root.left, unwrap, isRoot),
+                  ...referenceBases(root.right, unwrap, isRoot),
+              ]
+            : [];
+    }
     if (!isOperandSelection(root)) return [root];
     return valueOperands(root, unwrap).flatMap((operand) =>
         operand === root ? [root] : referenceBases(operand, unwrap, isRoot),
