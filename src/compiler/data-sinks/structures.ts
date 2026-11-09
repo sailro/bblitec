@@ -38,6 +38,7 @@ import {
 
 import type { DataSinkHost, DataSinkOperations } from "./contracts.js";
 import { ANY_KEY } from "../syntax.js";
+import { storeMembers } from "../json-record-views.js";
 import {
     arrayElementType,
     classInstanceDeclaration,
@@ -523,8 +524,12 @@ function valueStruct(
             fields,
             () => node,
         );
-        const aggregate = `bblscene::${dataType.name}${lowerer.context.dataTypes.isReferenceStruct(dataType.name) ? "Data" : ""}{${fields
-            .map((field) => {
+        const aggregate = `bblscene::${dataType.name}${lowerer.context.dataTypes.isReferenceStruct(dataType.name) ? "Data" : ""}{${storeMembers(
+            lowerer,
+            node,
+            fields,
+            (field) => field.sourceName,
+            (field) => {
                 const getter = value.recordGetters?.[field.sourceName];
                 const setter = value.recordSetters?.[field.sourceName];
                 if (getter || setter)
@@ -611,8 +616,8 @@ function valueStruct(
                     field,
                     stored,
                 );
-            })
-            .join(", ")}}`;
+            },
+        ).join(", ")}}`;
         if (self)
             return completeLiteralSelf(
                 lowerer.context,
@@ -696,8 +701,12 @@ function valueStruct(
             }),
             () => node,
         );
-        const aggregate = `bblscene::${dataType.name}${lowerer.context.dataTypes.isReferenceStruct(dataType.name) ? "Data" : ""}{${fields
-            .map((field) => {
+        const aggregate = `bblscene::${dataType.name}${lowerer.context.dataTypes.isReferenceStruct(dataType.name) ? "Data" : ""}{${storeMembers(
+            lowerer,
+            node,
+            fields,
+            (field) => field.sourceName,
+            (field) => {
                 const source = sourceFields.get(field.sourceName);
                 if (!source) {
                     if (
@@ -768,8 +777,8 @@ function valueStruct(
                     node,
                     field.sourceName,
                 );
-            })
-            .join(", ")}}`;
+            },
+        ).join(", ")}}`;
         return lowerer.context.dataTypes.isReferenceStruct(dataType.name)
             ? `bbl::js::make_ref<bblscene::${dataType.name}Data>(${aggregate})`
             : aggregate;
@@ -1123,16 +1132,21 @@ function valueEnummap(
                 `'${unknown}' is not a member of ${dataType.enumName}.`,
             );
         }
-        const compiled = new EmissionMap(
-            written.map((name) => [
-                name,
+        const stored = storeMembers(
+            lowerer,
+            node,
+            written,
+            (name) => name,
+            (name) =>
                 lowerer.compileMemberForSink(
                     properties[name]!,
                     dataType.element,
                     node,
                     name,
                 ),
-            ]),
+        );
+        const compiled = new EmissionMap(
+            written.map((name, index) => [name, stored[index]!]),
         );
         lowerer.context.dataTypes.observeEnumMapKeys(dataType, written, node);
         const reordered = members.some(

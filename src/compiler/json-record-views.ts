@@ -52,6 +52,30 @@ export function viewLiteral(
         : expression;
 }
 
+/**
+ * The members of the value a sink at `node` stores, one after another,
+ * each joining the demands later members meet (`storeLiteralMember`); a
+ * member the stored literal writes (`viewLiteral`) is named by its
+ * expression there.
+ */
+export function storeMembers<M>(
+    lowerer: DataSinkHost,
+    node: ts.Node,
+    members: readonly M[],
+    key: (member: M) => string | number,
+    store: (member: M) => string,
+): string[] {
+    const literal = viewLiteral(lowerer, node);
+    return members.map((_, index) =>
+        lowerer.storeLiteralMember(
+            members,
+            index,
+            (member) => literal && literalMember(literal, key(member)),
+            store,
+        ),
+    );
+}
+
 export function compileJsonTupleView(
     lowerer: DataSinkHost,
     tuple: Value,

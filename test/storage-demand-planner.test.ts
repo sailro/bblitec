@@ -814,6 +814,48 @@ test("a fresh record of records stored into a document demands every member's st
     );
 });
 
+test("a record of document arrays stored into a struct demands every element's document storage in one replay", (t) => {
+    // The returned literal stores a parsed document's arrays into a
+    // record's fields one after another; each element type joins the first
+    // field's document demand.
+    const source = `
+        interface Tint { seq: number; rgb: [number, number, number] }
+        interface Width { seq: number; w: number }
+        interface Height { key: string; h: number }
+        interface Save { v: number; tints?: Tint[]; widths?: Width[]; heights?: Height[] }
+        function normalize(d: Save): Save {
+            return { v: d.v, tints: d.tints ?? [], widths: d.widths ?? [], heights: d.heights ?? [] };
+        }
+        function total(save: Save): number {
+            let sum = save.v;
+            for (const row of save.tints ?? []) sum += row.seq + row.rgb[2];
+            for (const row of save.widths ?? []) sum += row.w;
+            for (const row of save.heights ?? []) sum += row.h + row.key.length;
+            return sum;
+        }
+        const save = normalize(JSON.parse('{"v":1,"tints":[{"seq":2,"rgb":[0,0,3]}],"heights":[{"key":"ab","h":4}]}') as Save);
+        if (total(save) !== 12) throw new Error(String(total(save)));
+        const text = JSON.stringify(save);
+        if (text !== '{"v":1,"tints":[{"seq":2,"rgb":[0,0,3]}],"widths":[],"heights":[{"key":"ab","h":4}]}') throw new Error(text);
+    `;
+    const strict = measured(false, () => compileSource(source));
+    // The three element types at once, then the compile.
+    assert.equal(strict.constructions, 2);
+    const tools = optionalNativeFixtureTools();
+    if (!tools) {
+        t.skip("Native fixture compiler unavailable.");
+        return;
+    }
+    runGeneratedProgram(
+        tools,
+        "storage-demand-planner/document-array-fields",
+        strict.result.cpp,
+        {
+            expectedOutput: "",
+        },
+    );
+});
+
 test("a record of literal tables demands every table's object storage in one replay", (t) => {
     const source = `
         type Lang = "en" | "fr" | "es";
