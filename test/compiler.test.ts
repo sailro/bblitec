@@ -17145,6 +17145,31 @@ test("retains Scene 118's nullable billboard pick record and all hit fields", ()
     );
 });
 
+test("a loop reading the camera's position each pass may return from inside", () => {
+    // The read records no composition row: the loop runs as written.
+    const result = compileSource(`
+        import { createArcRotateCamera, createEngine, getCameraPosition } from "babylon-lite";
+        const engine = await createEngine({});
+        const camera = createArcRotateCamera(1, 1, 10, { x: 0, y: 0, z: 0 });
+        const floorAt = (x: number, z: number): number => Math.sin(x) + Math.cos(z);
+        function lift(): boolean {
+            for (let pass = 0; pass < 4; pass++) {
+                const eye = getCameraPosition(camera);
+                if (eye.y >= floorAt(eye.x, eye.z) + 0.5) return true;
+                const before = camera.beta;
+                camera.beta -= 0.1;
+                if (camera.beta === before) return false;
+            }
+            return false;
+        }
+        if (!lift() && camera.beta > 2) throw new Error("lift");
+    `);
+    assert.match(
+        result.cpp,
+        /for \(; v_fn[0-9]+_block[0-9]+_pass < 4; [^)]*\) \{[\s\S]*?bbl::upstream::camera_position\([\s\S]*?return true;/,
+    );
+});
+
 test("refuses pickBillboardSprite's caller-owned picker by name", () => {
     assert.throws(
         () =>

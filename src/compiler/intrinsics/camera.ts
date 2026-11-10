@@ -1,4 +1,4 @@
-import { writable } from "../emission-transaction.js";
+import { EmissionSet, writable } from "../emission-transaction.js";
 import type { LoweringServices } from "../lowering-services.js";
 import ts from "typescript";
 import { argumentAt } from "../syntax.js";
@@ -11,6 +11,11 @@ import { presenceFlagCpp, type Value } from "../types.js";
 import type { IntrinsicCallContext } from "./context.js";
 import { recordAt } from "../record-access.js";
 import { isNullable } from "../type-facts.js";
+
+/** A camera's position is read from its record where it runs: no composition row is recorded. */
+export const runtimeOnlyCameraIntrinsics: ReadonlySet<string> = new EmissionSet(
+    ["getCameraPosition"],
+);
 
 export interface CameraIntrinsicContext
     extends
