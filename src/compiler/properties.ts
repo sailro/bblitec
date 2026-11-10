@@ -2412,9 +2412,11 @@ export class PropertyAccessLowerer {
      * read refuses only where the type requires the property: it is
      * undefined where the type declares the property optional or requires
      * no such property (an untyped value, a union one of whose arms lacks
-     * it), and where the read's own type admits an absent value. A class
-     * instance keeps its class's members, and every object
-     * Object.prototype's.
+     * it), and where the read's own type admits an absent value. A
+     * narrowing does not change which record a name holds: a name declared
+     * as a union one of whose arms lacks the property may hold that arm's
+     * record under a test generation does not settle. A class instance
+     * keeps its class's members, and every object Object.prototype's.
      */
     public absentPropertyReadsUndefined(
         owner: Value,
@@ -2432,6 +2434,26 @@ export class PropertyAccessLowerer {
                 ? (declaredProperty.flags & ts.SymbolFlags.Optional) !== 0
                 : !owner.classDeclaration &&
                   AbsentRecordProperties.omittable(property)
+        )
+            return true;
+        const named =
+            ts.isPropertyAccessExpression(read) ||
+            ts.isElementAccessExpression(read)
+                ? this.context.unwrap(read.expression)
+                : undefined;
+        const symbol =
+            named && ts.isIdentifier(named)
+                ? this.context.symbols.valueSymbol(named)
+                : undefined;
+        if (
+            symbol &&
+            !owner.classDeclaration &&
+            AbsentRecordProperties.omittable(property) &&
+            unionMembers(
+                this.context.checker.getNonNullableType(
+                    this.context.checker.getTypeOfSymbol(symbol),
+                ),
+            ).some((arm) => !arm.getProperty(property))
         )
             return true;
         const declared = this.context.dataLowerer.dataTypeAt(read);

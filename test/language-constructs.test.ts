@@ -3726,6 +3726,37 @@ check(
 `,
 );
 
+// The record a name holds is its success arm; the test that selects the
+// arm is not settled at generation, so the other arm's read is lowered too.
+check(
+    "narrowed-arm-property-read-of-a-record-holding-the-other-arm",
+    `
+    type Removal<R> =
+        | { readonly removed: true; readonly effect: R; readonly settled: boolean }
+        | { readonly removed: false; readonly reason: "unknown" | "busy"; readonly settled: false };
+    interface Outcome { committed: boolean; removed?: number[]; refusal?: { owner: string; reason: string } }
+    const refusal = (owner: string, reason: "surface" | "no-change"): Outcome => ({ committed: false, refusal: { owner, reason } });
+    const outcomeFor = <R>(id: number, outcome: Removal<R>): Outcome => outcome.removed
+        ? { committed: true, removed: [id] }
+        : refusal("remove:" + outcome.reason, outcome.reason === "unknown" ? "surface" : "no-change");
+    const log: string[] = [];
+    function executors<R>(controller: { remove(id: number): Removal<R> }) {
+        return {
+            remove(id: number): Outcome {
+                const outcome = controller.remove(id);
+                if (!outcome.removed) return outcomeFor(id, outcome);
+                log.push("settled");
+                return outcomeFor(id, outcome);
+            },
+        };
+    }
+    const kept = executors({ remove: () => { log.push("remove"); return { removed: true, effect: true, settled: true }; } }).remove(7);
+    if (!kept.committed || kept.removed![0] !== 7 || log.join() !== "remove,settled") throw new Error("removed");
+    const busy = executors<boolean>({ remove: () => ({ removed: false, reason: "busy", settled: false }) }).remove(8);
+    if (busy.committed || busy.refusal!.owner !== "remove:busy" || busy.refusal!.reason !== "no-change") throw new Error("refused");
+`,
+);
+
 check(
     "union-field-required-optional-and-absent-across-arms",
     `
