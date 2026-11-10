@@ -238,7 +238,8 @@ export function absentValueKind(
  *   `undefined`, unless its values may be `null` too ("either");
  * - a type that admits only `undefined` is `undefined`, only `null` is
  *   `null`, both is "either"; an optional chain that can short-circuit (a `?.`
- *   receiver that may be nullish) admits `undefined`;
+ *   receiver that may be nullish) admits `undefined`, and so does one whose
+ *   type names neither: it is absent only where a receiver's storage is;
  * - a type that names neither leaves the representation to say: a
  *   presence flag marks a slot that is not there (`undefined`); otherwise
  *   "unconstrained" -- a comparison keeps its absence test, text spells
@@ -275,9 +276,14 @@ export function absenceKind(
     if (value.slotFoundCpp) return { slotFoundCpp: value.slotFoundCpp };
     let absent = nullability(checker.getTypeAtLocation(node));
     // An optional chain that can short-circuit is undefined, whatever its
-    // type names; one whose `?.` receivers are all present cannot.
+    // type names; one whose `?.` receivers are all present cannot, so an
+    // absence its type does not name is a receiver's storage short-circuiting.
     const unwrapped = ts.isExpression(node) ? unwrapExpression(node) : node;
-    if (ts.isOptionalChain(unwrapped) && shortCircuits(checker, unwrapped))
+    if (
+        ts.isOptionalChain(unwrapped) &&
+        (shortCircuits(checker, unwrapped) ||
+            (!absent.null && !absent.undefined))
+    )
         absent = { ...absent, undefined: true };
     if (
         !absent.null &&
