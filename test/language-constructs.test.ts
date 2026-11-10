@@ -3651,6 +3651,36 @@ test("a run-time key selecting fields of different types refuses", () => {
 });
 
 check(
+    "dictionary-copied-by-spread-where-a-closed-record-is-declared",
+    `
+    type Action = "jump" | "run";
+    type Profile = Record<Action, string>;
+    interface Preferences { scheme: string; shortcuts: { classic: Profile; wasd: Profile } }
+    const definitions: readonly { action: Action; keys: Record<"classic" | "wasd", string> }[] = [
+        { action: "jump", keys: { classic: "Space", wasd: "KeyJ" } },
+        { action: "run", keys: { classic: "Shift", wasd: "KeyR" } },
+    ];
+    function profile(scheme: "classic" | "wasd"): Profile {
+        return Object.fromEntries(definitions.map((definition) => [definition.action, definition.keys[scheme]])) as Profile;
+    }
+    function defaults(): Preferences {
+        return { scheme: "classic", shortcuts: { classic: profile("classic"), wasd: profile("wasd") } };
+    }
+    function clone(preferences: Preferences): Preferences {
+        return {
+            scheme: preferences.scheme,
+            shortcuts: { classic: { ...preferences.shortcuts.classic }, wasd: { ...preferences.shortcuts.wasd } },
+        };
+    }
+    const original = defaults();
+    const copy = clone(original);
+    copy.shortcuts.classic.jump = "Enter";
+    if (original.shortcuts.classic.jump !== "Space" || copy.shortcuts.classic.jump !== "Enter" || copy.shortcuts.wasd.run !== "KeyR")
+        throw new Error("clone " + original.shortcuts.classic.jump + copy.shortcuts.classic.jump + copy.shortcuts.wasd.run);
+`,
+);
+
+check(
     "record-read-by-a-key-of-an-unbound-type-parameter",
     `
     function lengths<K extends string>(names: Readonly<Record<K, string>>): string {

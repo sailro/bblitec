@@ -6261,62 +6261,116 @@ export class ExpressionLowerer {
                       this.compileStaticObjectValue(unwrapped, true),
                   );
             if (record) return record;
-            const contextual =
-                this.context.checker.getContextualType(unwrapped);
-            const type = this.context.dataTypes.withDynamicJsonTypes(
-                dynamicSpread || optionalKeysSpread,
-                () => {
-                    const contextualType =
-                        contextual &&
-                        this.context.dataTypes.fromTsType(
-                            contextual,
-                            unwrapped,
-                        );
-                    // A dictionary spread contributes keys beyond the named
-                    // fields inferred for the object literal.
-                    if (
-                        contextualType?.kind === "map" &&
-                        contextualType.dictionary
-                    )
-                        return contextualType;
-                    // A run-time key selects one of the position's fields;
-                    // the literal's own type is an index signature.
-                    if (runtimeKeyed && contextualType?.kind === "struct")
-                        return contextualType;
-                    return (
-                        this.context.dataLowerer.dataTypeAt(unwrapped) ??
-                        contextualType
-                    );
-                },
+            const typed = this.compileTypedObjectValue(
+                unwrapped,
+                dynamicSpread,
+                optionalKeysSpread,
+                runtimeKeyed,
             );
-            if (type?.kind === "map" || dynamicSpread) {
-                const dictionary: DataType<"map"> =
-                    type?.kind === "map"
-                        ? type
-                        : {
-                              kind: "map",
-                              key: { kind: "string" },
-                              value: { kind: "json" },
-                              dictionary: true,
-                          };
-                if (unwrapped.properties.some(ts.isGetAccessorDeclaration))
-                    return this.documentWithGetters(unwrapped, dictionary);
-                return this.context.dataLowerer.leafValue(
-                    this.context.dataLowerer.compileForSink(
-                        unwrapped,
-                        dictionary,
-                    ),
-                    dictionary,
-                );
-            }
-            if (type?.kind === "struct") {
-                return this.context.dataLowerer.leafValue(
-                    this.context.dataLowerer.compileForSink(unwrapped, type),
-                    type,
-                );
-            }
+            if (typed) return typed;
         }
-        return this.compileStaticObjectValue(unwrapped);
+        // A spread only lowering knows to hold a dictionary (its declared
+        // type names a closed record whose storage is one) declines the
+        // compile-time record: the literal takes its position's storage.
+        return (
+            this.context.probeEmission(() =>
+                this.compileStaticObjectValue(unwrapped, "dictionary"),
+            ) ??
+            this.compileTypedObjectValue(unwrapped, false, false, false) ??
+            this.compileStaticObjectValue(unwrapped)
+        );
+    }
+
+    /**
+     * The one dictionary storage every member of a literal spreads
+     * (`{ ...profile }`); undefined for any other literal. The spreads are
+     * only looked at: the literal's sink lowers them.
+     */
+    private copiedDictionaryType(
+        literal: ts.ObjectLiteralExpression,
+    ): DataType<"map"> | undefined {
+        if (
+            literal.properties.length === 0 ||
+            !literal.properties.every(ts.isSpreadAssignment)
+        )
+            return undefined;
+        let copied: DataType<"map"> | undefined;
+        for (const property of literal.properties) {
+            const stored = this.context.probeEmission(
+                () => this.compileValue(property.expression).dataType,
+                () => false,
+            );
+            if (
+                stored?.kind !== "map" ||
+                !stored.dictionary ||
+                (copied && !dataTypesEqual(copied, stored))
+            )
+                return undefined;
+            copied = stored;
+        }
+        return copied;
+    }
+
+    /**
+     * An object literal as the storage its position names: a dictionary,
+     * or a struct. Undefined where the position names neither.
+     */
+    private compileTypedObjectValue(
+        unwrapped: ts.ObjectLiteralExpression,
+        dynamicSpread: boolean,
+        optionalKeysSpread: boolean,
+        runtimeKeyed: boolean,
+    ): Value | undefined {
+        const contextual = this.context.checker.getContextualType(unwrapped);
+        const type = this.context.dataTypes.withDynamicJsonTypes(
+            dynamicSpread || optionalKeysSpread,
+            () => {
+                // A literal that only copies dictionaries is a dictionary
+                // of their storage, whatever closed record its position
+                // declares them as.
+                const copied = this.copiedDictionaryType(unwrapped);
+                if (copied) return copied;
+                const contextualType =
+                    contextual &&
+                    this.context.dataTypes.fromTsType(contextual, unwrapped);
+                // A dictionary spread contributes keys beyond the named
+                // fields inferred for the object literal.
+                if (contextualType?.kind === "map" && contextualType.dictionary)
+                    return contextualType;
+                // A run-time key selects one of the position's fields;
+                // the literal's own type is an index signature.
+                if (runtimeKeyed && contextualType?.kind === "struct")
+                    return contextualType;
+                return (
+                    this.context.dataLowerer.dataTypeAt(unwrapped) ??
+                    contextualType
+                );
+            },
+        );
+        if (type?.kind === "map" || dynamicSpread) {
+            const dictionary: DataType<"map"> =
+                type?.kind === "map"
+                    ? type
+                    : {
+                          kind: "map",
+                          key: { kind: "string" },
+                          value: { kind: "json" },
+                          dictionary: true,
+                      };
+            if (unwrapped.properties.some(ts.isGetAccessorDeclaration))
+                return this.documentWithGetters(unwrapped, dictionary);
+            return this.context.dataLowerer.leafValue(
+                this.context.dataLowerer.compileForSink(unwrapped, dictionary),
+                dictionary,
+            );
+        }
+        if (type?.kind === "struct") {
+            return this.context.dataLowerer.leafValue(
+                this.context.dataLowerer.compileForSink(unwrapped, type),
+                type,
+            );
+        }
+        return undefined;
     }
 
     /**
@@ -6491,9 +6545,16 @@ export class ExpressionLowerer {
         );
     }
 
+    /**
+     * The compile-time record an object literal is. With
+     * `allowDictionarySpread` it declines (undefined) where a spread's keys
+     * are known only at run time: a dictionary, a document or a scalar
+     * (`"dictionary"`), and a struct whose `?` fields decide its keys too
+     * (`true`).
+     */
     private compileStaticObjectValue(
         unwrapped: ts.ObjectLiteralExpression,
-        allowDictionarySpread = false,
+        allowDictionarySpread: boolean | "dictionary" = false,
     ): Value | undefined {
         const properties: Record<string, Value> = {};
         const methods: Record<
@@ -6628,7 +6689,8 @@ export class ExpressionLowerer {
                     spread.dataType?.kind === "struct"
                 ) {
                     const known = ownKeysKnown(this.context, spread, property);
-                    if (!known && allowDictionarySpread) return undefined;
+                    if (!known && allowDictionarySpread === true)
+                        return undefined;
                     // A `?` field whose storage says whether it is own
                     // becomes a key the record holds while it is present.
                     const entries = structOwnEntries(
