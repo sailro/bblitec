@@ -184,8 +184,8 @@ function isRecordLike(checker: ts.TypeChecker, type: ts.Type): boolean {
 
 /**
  * The types a record type's property holds: its own; a union's, the
- * union of its arms' where every arm declares it, else each declaring
- * arm's.
+ * union of its arms' where every arm declares it, and each declaring
+ * arm's own, which the one layout stores in the same slot.
  */
 function propertyTypes(
     checker: ts.TypeChecker,
@@ -193,12 +193,15 @@ function propertyTypes(
     name: string,
 ): readonly ts.Type[] {
     const property = type.getProperty(name);
-    if (property || !type.isUnion())
-        return property ? [checker.getTypeOfSymbol(property)] : [];
-    return type.types.flatMap((member) => {
-        const declared = member.getProperty(name);
-        return declared ? [checker.getTypeOfSymbol(declared)] : [];
-    });
+    const own = property ? [checker.getTypeOfSymbol(property)] : [];
+    if (!type.isUnion()) return own;
+    return [
+        ...own,
+        ...type.types.flatMap((member) => {
+            const declared = member.getProperty(name);
+            return declared ? [checker.getTypeOfSymbol(declared)] : [];
+        }),
+    ];
 }
 
 /**

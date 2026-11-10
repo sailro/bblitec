@@ -143,6 +143,30 @@ check(
 `,
 );
 
+check(
+    "union-arm-fields-join-their-record-types",
+    `
+    type FlagHost = { kind: "tower"; index: number } | { kind: "house"; hid: number } | { kind: "wall"; key: string } | { kind: "ground" };
+    type RopeHost = { kind: "tower"; index: number } | { kind: "house"; hid: number } | { kind: "ground" };
+    type Point = readonly [number, number, number];
+    interface FlagSpan { id?: number; a: Point; b: Point; sag: number; seed: number; hostA?: FlagHost; hostB?: FlagHost }
+    interface RopeSpan { a: Point; b: Point; sag: number; hostA?: RopeHost; hostB?: RopeHost; tint?: readonly [number, number, number] }
+    const flags: FlagSpan[] = [
+        { id: 1, a: [0, 0, 0], b: [1, 0, 0], sag: 0.5, seed: 7, hostA: { kind: "ground" }, hostB: { kind: "wall", key: "w" } },
+        { id: 2, a: [0, 1, 0], b: [1, 1, 0], sag: 0.6, seed: 8 },
+    ];
+    const ropes: RopeSpan[] = [{ a: [0, 0, 1], b: [1, 0, 1], sag: 0.7, hostA: { kind: "house", hid: 9 }, hostB: { kind: "ground" } }];
+    const all = [...flags, ...ropes];
+    let sag = 0;
+    for (const span of all) sag += span.sag + span.a[0] + span.b[0];
+    if (Math.abs(sag - 4.8) > 1e-9 || all[0] !== flags[0] || all[2] !== ropes[0]) throw new Error("spans");
+    if (all[0]!.hostA?.kind !== "ground" || all[2]!.hostA?.kind !== "house" || all[1]!.hostA !== undefined)
+        throw new Error("hosts");
+    const wall = flags[0]!.hostB;
+    if (wall?.kind !== "wall" || wall.key !== "w" || all[2]!.hostB !== ropes[0]!.hostB) throw new Error("arms");
+    `,
+);
+
 test("record components and replay keep source instantiations separate", () => {
     const { checker, sourceFile } = createCompilerProgram(
         `
