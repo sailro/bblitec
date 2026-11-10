@@ -242,6 +242,46 @@ test("coverage honors transactions, failed probes, realm replay and nested colle
     assert.equal(report.realms[1]?.entry, resolve("worker.ts"));
 });
 
+test("a replay that ends short of an earlier attempt leaves that attempt's coverage", () => {
+    const frontend = createCompilerProgram(
+        "let first = 1; let second = 2; let third = 3;",
+        resolve("coverage-furthest.ts"),
+    );
+    const [first, second, third] = frontend.sourceFile.statements;
+    assert.ok(first && second && third);
+    const collector = new SourceCoverage();
+    const attempt = (reached: readonly ts.Statement[], stop: string): void => {
+        assert.throws(() =>
+            coverSourceRealm(frontend.program, "coverage-furthest.ts", () => {
+                for (const statement of reached)
+                    coverSourceStatement(statement, false, () => {});
+                throw new Error(stop);
+            }),
+        );
+    };
+    collector.run(() => {
+        attempt([first, second], "a demand after two statements");
+        attempt([first], "a demand after one statement");
+    });
+    const stopped = collector.report().realms[0]!;
+    assert.equal(stopped.complete, false);
+    assert.equal(stopped.terminal, "a demand after one statement");
+    assert.deepEqual(
+        stopped.sites.map((site) => site.state),
+        ["lowered", "lowered"],
+    );
+    // An attempt that goes further, or runs to the end, replaces it.
+    collector.run(() => {
+        attempt([first, second, third], "a demand after three statements");
+        coverSourceRealm(frontend.program, "coverage-furthest.ts", () => {
+            coverSourceStatement(first, false, () => {});
+        });
+    });
+    const finished = collector.report().realms[0]!;
+    assert.equal(finished.complete, true);
+    assert.equal(finished.sites.length, 1);
+});
+
 test("source identities distinguish nested calls sharing a start and preserve original nodes", () => {
     const file = ts.createSourceFile(
         "coverage-spans.ts",

@@ -144,7 +144,7 @@ past their reach, provisional until an attempt lowers it: a plan whose demands s
 statement is withdrawn.
 Group by shared capability and probe source shapes before implementing. The compiler's `--coverage <coverage.json>`
 (with `--out` or `--survey`) records statement-level retained, refused and rolled-back lowering; it does not prove
-native support.
+native support. A survey rewrites it at each restart with its furthest attempt (`complete: false` until it ends).
 
 ### Required files
 
