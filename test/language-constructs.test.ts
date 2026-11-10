@@ -3629,6 +3629,51 @@ test("a run-time key selecting fields of different types refuses", () => {
 });
 
 check(
+    "union-field-required-optional-and-absent-across-arms",
+    `
+    type Event = { kind: "birth"; where: number } | { kind: "death"; index: number; cause: number } | { kind: "debug"; index: number; cause?: number };
+    function make(flag: number): Event {
+        if (flag === 0) return { kind: "birth", where: 1 };
+        if (flag === 1) return { kind: "death", index: 2, cause: 3 };
+        return { kind: "debug", index: 4 };
+    }
+    const made = [make(Math.random() >= 0 ? 1 : 0), make(2), make(0)];
+    let sum = 0;
+    for (const event of made) sum += event.kind === "death" ? event.cause : event.kind === "debug" ? (event.cause ?? 10) : event.where;
+    if (sum !== 14) throw new Error("sum " + sum);
+`,
+);
+
+check(
+    "list-grown-through-the-parameters-of-inlined-calls",
+    `
+    type Event = { kind: "birth"; where: number } | { kind: "death"; index: number; cause: number; id: number } | { kind: "debug"; index: number; cause?: number };
+    interface State { id: Int32Array; dead: Uint8Array }
+    function emitDeath(state: State, index: number, cause: number, events: Event[]): void {
+        state.dead[index] = 1;
+        events.push({ kind: "death", index, cause, id: state.id[index]! });
+    }
+    function stepLifecycle(state: State, events: Event[]): void {
+        for (let i = 0; i < state.id.length; i++) {
+            if (state.id[i]! > 1 && state.dead[i] === 0) emitDeath(state, i, 7, events);
+            else if (state.dead[i] === 0) events.push({ kind: "debug", index: i });
+        }
+    }
+    const make = (): State => ({ id: new Int32Array([1, 2, 3]), dead: new Uint8Array(3) });
+    const step = (state: State, events: Event[]): void => { stepLifecycle(state, events); };
+    const run = (): number => {
+        const state = make();
+        const events: Event[] = [];
+        for (let n = 0; n < 2; n++) step(state, events);
+        const debug = events.filter((event) => event.kind === "debug");
+        return events.length * 10 + debug.length;
+    };
+    const out = run();
+    if (out !== 42) throw new Error("run " + out);
+`,
+);
+
+check(
     "run-time-key-over-a-record-lacking-some-of-its-keys",
     `
     type Lang = "en" | "fr" | "de";

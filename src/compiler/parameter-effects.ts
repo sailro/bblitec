@@ -1316,6 +1316,17 @@ export function parameterIsReadOnly(
     });
 }
 
+/** Whether a function rebinds a parameter: its name then no longer holds the argument. */
+export function parameterIsRebound(
+    checker: ts.TypeChecker,
+    fn: EffectFunction,
+    binding: ts.Identifier,
+): boolean {
+    return parameterEffects(checker, fn, binding).uses.some(
+        (use) => use.kind === "rebind",
+    );
+}
+
 function argumentWritesNothing(
     checker: ts.TypeChecker,
     use: Extract<ParameterUse, { kind: "argument" }>,

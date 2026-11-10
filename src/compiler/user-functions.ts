@@ -91,6 +91,7 @@ import {
     isEffectFunction,
     libraryWrittenArgument,
     parameterIsReadOnly,
+    parameterIsRebound,
     parameterOnlyRead,
 } from "./parameter-effects.js";
 import { nativeReturnTsType } from "./native-return-type.js";
@@ -1673,11 +1674,14 @@ export class UserFunctionLowerer {
      * in that function's own body and reads that call's binding. The
      * argument is the call site's expression: it is returned only when it
      * names nothing the function declares and no invocation context, so it
-     * reads the same bindings from inside the body.
+     * reads the same bindings from inside the body. With `held` `"object"`
+     * the parameter may be written through: it is only never rebound, so
+     * the name still holds the argument's object.
      */
     public inlinedArgument(
         identifier: ts.Identifier,
         scopeOf: (identifier: ts.Identifier) => object | undefined,
+        held: "value" | "object" = "value",
     ): ts.Expression | undefined {
         const parameter = resolvedSymbol(
             this.checker,
@@ -1705,7 +1709,13 @@ export class UserFunctionLowerer {
             invocation.call.arguments
                 .slice(0, index + 1)
                 .some(ts.isSpreadElement) ||
-            !parameterIsReadOnly(this.checker, declaration, parameter.name)
+            (held === "object"
+                ? parameterIsRebound(this.checker, declaration, parameter.name)
+                : !parameterIsReadOnly(
+                      this.checker,
+                      declaration,
+                      parameter.name,
+                  ))
         )
             return undefined;
         const foreign = someAnalysisNode(
