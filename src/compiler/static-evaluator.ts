@@ -798,7 +798,14 @@ export class StaticEvaluator {
                 0
                     ? { kind: "number" as const }
                     : undefined;
-            return this.narrowOptional(value, node, assertedNonNull, expected);
+            // A slot holding a number generation knows is present: the
+            // static `??` fold selects it on that same fact.
+            return this.narrowOptional(
+                value,
+                node,
+                assertedNonNull || value.staticNumber !== undefined,
+                expected,
+            );
         };
         const castOptionalNumber = (
             value: Value,

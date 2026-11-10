@@ -3757,6 +3757,55 @@ check(
 `,
 );
 
+// The record stored closures share is materialized; its optional numbers
+// keep the values generation knows, which the static `??` fold selects.
+check(
+    "optional-number-of-a-materialized-record-with-a-default",
+    `
+    interface Spec { homeX: number; race?: number; surfaceId?: number; surfaceY?: number }
+    interface State { race: Int8Array; surfaceId: Int32Array; surfaceY: Float32Array; homeX: Float32Array }
+    function createState(count: number): State {
+        return { race: new Int8Array(count), surfaceId: new Int32Array(count), surfaceY: new Float32Array(count), homeX: new Float32Array(count) };
+    }
+    function addAt(state: State, i: number, spec: Spec): number {
+        state.homeX[i] = spec.homeX;
+        state.race[i] = spec.race ?? -1;
+        state.surfaceId[i] = spec.surfaceId ?? -1;
+        state.surfaceY[i] = spec.surfaceY ?? 0;
+        return i;
+    }
+    function sanitize(spec: Spec): Spec { return { ...spec, homeX: Number.isFinite(spec.homeX) ? spec.homeX : 0 }; }
+    function pack(specs: readonly Spec[]): Float32Array {
+        const out = new Float32Array(specs.length * 3);
+        for (let i = 0; i < specs.length; i++) {
+            const s = sanitize(specs[i]!);
+            out[i * 3] = s.homeX;
+            out[i * 3 + 1] = s.race ?? -1;
+            out[i * 3 + 2] = s.surfaceId ?? -1;
+        }
+        return out;
+    }
+    const spec: Spec = { homeX: 1, race: 2, surfaceId: 10002, surfaceY: 1.5 };
+    const tests: (() => void)[] = [];
+    tests.push(() => {
+        const packed = pack([spec]);
+        if (packed[1] !== 2 || packed[2] !== 10002) throw new Error("packed");
+    });
+    tests.push(() => {
+        const state = createState(1);
+        addAt(state, 0, spec);
+        if (state.race[0] !== 2 || state.surfaceId[0] !== 10002 || state.surfaceY[0] !== 1.5) throw new Error("restored");
+    });
+    tests.push(() => {
+        const state = createState(1);
+        const fresh = { ...spec, surfaceId: undefined, surfaceY: undefined };
+        addAt(state, 0, fresh);
+        if (state.race[0] !== 2 || state.surfaceId[0] !== -1 || state.surfaceY[0] !== 0) throw new Error("fresh");
+    });
+    for (const test of tests) test();
+`,
+);
+
 check(
     "union-field-required-optional-and-absent-across-arms",
     `
