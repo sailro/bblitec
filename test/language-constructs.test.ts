@@ -3834,6 +3834,47 @@ check(
 `,
 );
 
+// A generic helper's `T & { id: number }` records are the instantiated
+// intersection's where its result is stored: one array, two names for its
+// element type.
+check(
+    "generic-intersection-array-stored-as-its-instantiation",
+    `
+    interface Migration<T extends { id?: number }, H extends { id?: number }> {
+        readonly towers: (T & { id: number })[];
+        readonly houses: (H & { id: number })[];
+        houseId(id: number): number | null;
+    }
+    function normalize<T extends { id?: number }>(input: readonly T[]): { items: Array<T & { id: number }>; nextId: number } {
+        let next = 1;
+        for (const item of input) if (item.id !== undefined) next = Math.max(next, item.id + 1);
+        const items = input.map((item) => ({ ...item, id: item.id ?? next++ }));
+        return { items, nextId: next };
+    }
+    function migrate<T extends { id?: number }, H extends { id?: number }>(v: number, rawTowers: readonly T[], rawHouses: readonly H[]): Migration<T, H> {
+        const towers = normalize(rawTowers).items;
+        const houses = normalize(rawHouses).items;
+        const houseId = (id: number): number | null => (v > 0 && houses.some((house) => house.id === id) ? id : null);
+        return { towers, houses, houseId };
+    }
+    interface Save { v?: number; towers?: { x: number; id?: number }[]; houses?: { cx: number; level?: number; crown?: "crenel" | "railing"; id?: number }[] }
+    const kept: Migration<NonNullable<Save["towers"]>[number], NonNullable<Save["houses"]>[number]>[] = [];
+    function normalizeSave(save: Save): Save {
+        const ids = migrate(save.v ?? 0, save.towers ?? [], save.houses ?? []);
+        kept.push(ids);
+        const homes = [7, 9].flatMap((home) => { const id = ids.houseId(home); return id === null ? [] : [id]; });
+        return { ...save, v: homes.length, towers: ids.towers, houses: ids.houses.filter((house) => ids.houseId(house.id) !== null) };
+    }
+    const flag = Math.random() >= 0;
+    const out = normalizeSave({ v: flag ? 2 : 0, towers: [{ x: 1 }], houses: [{ cx: 1 }, { cx: 2, level: 3, id: 7 }] });
+    const text = (out.towers ?? []).map((tower) => tower.x + ":" + tower.id).join() + "|" + (out.houses ?? []).map((house) => house.cx + ":" + house.id + ":" + (house.level ?? "-")).join();
+    if (text !== "1:1|1:8:-,2:7:3" || out.v !== 1) throw new Error(text);
+    // The stored result holds the same arrays.
+    kept[0]!.houses[0]!.cx = 5;
+    if (kept.length !== 1 || (out.houses ?? [])[0]!.cx !== 5 || kept[0]!.houseId(8) !== 8) throw new Error("kept");
+`,
+);
+
 // One arm names a single literal, another a set of them, both optional:
 // the field stores every arm's literals with the one empty state.
 check(

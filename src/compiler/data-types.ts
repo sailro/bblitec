@@ -2741,8 +2741,9 @@ export class DataTypeRegistry {
      * A generic record type naming type parameters the instantiations in
      * force substitute, as that one instantiation: its generic interface,
      * class or alias with each argument resolved (a generic argument as its
-     * own instantiation). Undefined for a type no instantiation reaches,
-     * and for one an argument of which does not resolve.
+     * own instantiation), or an intersection with each part resolved
+     * (`H & { id: number }`). Undefined for a type no instantiation
+     * reaches, and for one an argument of which does not resolve.
      */
     private instantiatedRecordOf(
         type: ts.Type,
@@ -2752,12 +2753,16 @@ export class DataTypeRegistry {
         const [generic, arguments_] =
             type.aliasSymbol && type.aliasTypeArguments?.length
                 ? [type.aliasSymbol, type.aliasTypeArguments]
-                : (object.objectFlags & ts.ObjectFlags.Reference) !== 0
-                  ? [
-                        (type as ts.TypeReference).target,
-                        this.checker.getTypeArguments(type as ts.TypeReference),
-                    ]
-                  : [undefined, []];
+                : type.isIntersection()
+                  ? [type, type.types]
+                  : (object.objectFlags & ts.ObjectFlags.Reference) !== 0
+                    ? [
+                          (type as ts.TypeReference).target,
+                          this.checker.getTypeArguments(
+                              type as ts.TypeReference,
+                          ),
+                      ]
+                    : [undefined, []];
         if (!generic) return undefined;
         const resolved = arguments_.map((argument) => {
             const concrete = this.resolveTypeParameter(argument);
@@ -3662,11 +3667,11 @@ export class DataTypeRegistry {
             demand &&
             record &&
             !joinable(demand, record) &&
-            (isPlainRecord(this.checker, record) ||
-                isRecordUnion(this.checker, record)) &&
             !this.isClassStruct(name)
                 ? this.withRecordDemand(demand, () =>
-                      this.instantiatedRecordOf(record),
+                      this.plainUnderSubstitution(record)
+                          ? this.instantiatedRecordOf(record)
+                          : undefined,
                   )
                 : undefined;
         const sourceInstantiation = instantiation(
@@ -3958,6 +3963,25 @@ export class DataTypeRegistry {
         }
         for (const demand of demands) this.requireJoin(demand);
         return demands.length > 0;
+    }
+
+    /**
+     * Whether a record type is a plain record, or a union of them, under
+     * the instantiations in force: itself, or an intersection whose parts
+     * are once each parameter is resolved (`H & { id: number }`).
+     */
+    private plainUnderSubstitution(record: ts.Type): boolean {
+        return (
+            isPlainRecord(this.checker, record) ||
+            isRecordUnion(this.checker, record) ||
+            (record.isIntersection() &&
+                record.types.every((part) =>
+                    isPlainRecord(
+                        this.checker,
+                        this.resolveTypeParameter(part),
+                    ),
+                ))
+        );
     }
 
     /**
