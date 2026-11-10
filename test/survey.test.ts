@@ -187,7 +187,8 @@ test("a survey reports each plan's demands and what ended it", () => {
     // Three record types would each restart the program once; the plan
     // after the first restart meets the other two and lowers to the end.
     // The plan also meets the refusal past them, which no attempt had
-    // reached when it ran.
+    // reached when it ran; the call whose body reads a record the plan
+    // lost is left to the next attempt, not refused.
     const lines: string[] = [];
     const partial: SurveyReport[] = [];
     const { report } = surveySource(
@@ -205,8 +206,10 @@ test("a survey reports each plan's demands and what ended it", () => {
         second = b('{"b":2}');
         let third: C = { c: 1 };
         third = c('{"c":2}');
+        function sum(): number { return first.a + second.b + third.c; }
+        const total = sum();
         const frame = unknownHostCall();
-        console.log(first.a + second.b + third.c);
+        console.log(total);
     `,
         { fileName: resolve("survey-plan.ts") },
         {
@@ -228,13 +231,13 @@ test("a survey reports each plan's demands and what ended it", () => {
     assert.equal(planned?.refusals.length, 0);
     assert.deepEqual(
         planned?.plan?.refusals.map((refusal) => refusal.site.line),
-        [15],
+        [17],
     );
     // The attempt that lowers to the end meets it itself; its census is
     // the strict attempts' alone.
     assert.deepEqual(
         report.refusals.map((refusal) => refusal.site.line),
-        [15],
+        [17],
     );
     assert.equal(report.plan, undefined);
 });

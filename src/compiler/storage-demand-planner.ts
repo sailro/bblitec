@@ -7,6 +7,7 @@ import {
     classBaseExpression,
     evaluationContainer,
     expressionMayRunCode,
+    reachedThroughName,
     referenceBases,
     statementDeclaredNames,
     unwrapExpression,
@@ -455,7 +456,14 @@ export class StorageDemandPlanner {
                 // A survey's strict attempt rolls the refused statement
                 // back and goes on: so does its plan.
                 statistics.refused++;
-                this.met.refused.push({ statement, error });
+                // A refusal at a name a rolled-back statement would have
+                // declared is that statement's loss, not this one's
+                // refusal: an attempt replaying its storage declares it.
+                const name = error.subject && reachedThroughName(error.subject);
+                const symbol = name && declaredSymbol(context.checker, name);
+                if (symbol && this.lostDeclarations.has(symbol))
+                    this.met.left++;
+                else this.met.refused.push({ statement, error });
                 this.lose(context.checker, statement);
                 return;
             }

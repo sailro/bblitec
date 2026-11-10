@@ -27,7 +27,7 @@ import {
 import { StorageDemand } from "./storage-demand.js";
 import type { PlanCensus } from "./storage-demand-planner.js";
 import {
-    rootExpression,
+    reachedThroughName,
     sourceFunctionName,
     statementDeclaredNames,
 } from "./syntax.js";
@@ -388,11 +388,8 @@ export class SurveyCollector {
     ): SurveySite | undefined {
         const subject = error.subject;
         if (!subject || attempt.declarations.size === 0) return undefined;
-        let root = ts.isExpression(subject) ? rootExpression(subject) : subject;
-        while (ts.isCallExpression(root))
-            root = rootExpression(root.expression);
-        if (!ts.isIdentifier(root)) return undefined;
-        const symbol = declaredSymbol(checker, root);
+        const root = reachedThroughName(subject);
+        const symbol = root && declaredSymbol(checker, root);
         return symbol ? attempt.declarations.get(symbol) : undefined;
     }
 
