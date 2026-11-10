@@ -30,7 +30,7 @@ function heldRecords(
     if (present.isUnion())
         return [
             ...(isRecordUnion(checker, present) ? [present] : []),
-            ...present.types.flatMap(below),
+            ...unionMembers(present).flatMap(below),
         ];
     if (checker.isArrayType(present) || checker.isTupleType(present))
         return checker
@@ -122,7 +122,7 @@ function readOut(
         );
     const found = new Set<ts.Type>();
     const visit = (holder: ts.Type): void => {
-        for (const part of holder.isUnion() ? holder.types : [holder])
+        for (const part of unionMembers(holder))
             for (const property of checker.getPropertiesOfType(part)) {
                 const read = reads
                     .get(property.name)
