@@ -79,7 +79,9 @@ export interface NamedRead {
  *   named no shape (untyped, or the `object` a `typeof` test leaves of it);
  * - property reads: each property name read as a value rather than called
  *   through, and the objects read wholesale or by a computed key (the
- *   reads that could take an object literal method's function value).
+ *   reads that could take an object literal method's function value);
+ * - copies: each object copied field by field into a new one -- a spread
+ *   into an object literal, the rest of an object pattern.
  */
 export interface ProgramObservations {
     readonly writes: ReadonlyMap<ts.Type, readonly ObservedWrite[]>;
@@ -108,6 +110,11 @@ export interface ProgramObservations {
     readonly arrayLocalElements: ReadonlyMap<ts.Symbol, readonly ts.Type[]>;
     readonly namedReads: ReadonlyMap<string, readonly NamedRead[]>;
     readonly wholesaleReads: readonly ts.Node[];
+    /** Where `from`'s own fields are copied into the new object `into` names. */
+    readonly copies: readonly {
+        readonly from: ts.Node;
+        readonly into: ts.Node;
+    }[];
     /**
      * The first site that gives an object a prototype no literal or
      * constructor gives it: `Object.create`, `Object.setPrototypeOf`,
@@ -266,6 +273,7 @@ function observe(program: ts.Program): ProgramObservations {
     };
     const namedReads = new Map<string, NamedRead[]>();
     const wholesaleReads: ts.Node[] = [];
+    const copies: { from: ts.Node; into: ts.Node }[] = [];
     let foreignPrototype: ts.Node | undefined;
     const typeOf = (node: ts.Node): ts.Type => checker.getTypeAtLocation(node);
     let order = 0;
@@ -572,12 +580,18 @@ function observe(program: ts.Program): ProgramObservations {
         else if (ts.isSpreadAssignment(node)) {
             enumerated(node.expression);
             wholesaleReads.push(node.expression);
+            copies.push({ from: node.expression, into: node.parent });
         } else if (
             ts.isObjectBindingPattern(node) &&
             node.elements.some((element) => element.dotDotDotToken)
-        )
+        ) {
             enumerated(node);
-        else if (ts.isNewExpression(node)) {
+            copies.push({
+                from: node,
+                into: node.elements.find((element) => element.dotDotDotToken)!
+                    .name,
+            });
+        } else if (ts.isNewExpression(node)) {
             const name = libraryGlobal(checker, node.expression);
             if (name && KEYED_COLLECTIONS.has(name)) {
                 const keyOf = (keys: ts.Type): ts.Type | undefined => {
@@ -705,6 +719,7 @@ function observe(program: ts.Program): ProgramObservations {
         arrayLocalElements,
         namedReads,
         wholesaleReads,
+        copies,
         foreignPrototype,
     };
 }

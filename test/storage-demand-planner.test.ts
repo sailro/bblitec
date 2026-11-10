@@ -931,6 +931,42 @@ test("a record type read out of a document is a document with it, in one replay"
     );
 });
 
+test("a record copied out of a parsed document field by field is a document with it, in one replay", async (t) => {
+    // A migration rebuilds the save out of spreads and rests of its parsed
+    // records: each copy's type was one replay of its own.
+    const source = `
+    interface Pane { id: number; tower: number; s?: number }
+    interface Door { id: number; house: number; purpose?: string }
+    interface Fish { x: number; lc?: number }
+    interface Save { version: number; panes: Pane[]; doors: Door[]; fish: Fish[] }
+    const text = '{"version":3,"panes":[{"id":1,"tower":2,"s":1},{"id":2,"tower":3,"s":2}],"doors":[{"id":4,"house":1,"purpose":"bogus"},{"id":5,"house":2}],"fish":[{"x":1.5,"lc":7}]}';
+    function migrate(d: Save): string {
+        const panes = d.panes.map((pane) => {
+            const normalized = { ...pane };
+            if (Math.abs((pane.s ?? 1) - 1) <= 1e-9) delete normalized.s;
+            return normalized;
+        });
+        const doors = d.doors.map((door) => {
+            const raw = (door as Door & { purpose?: unknown }).purpose;
+            if (raw === "entrance" || raw === undefined) return { ...door };
+            const { purpose: _invalid, ...rest } = door as Door & { purpose?: unknown };
+            return rest as Door;
+        });
+        const fish = d.fish.map(({ lc: _retired, ...kept }) => kept);
+        return panes.map((pane) => pane.id + ":" + (pane.s ?? "-")).join() + "|" + doors.map((door) => door.id + ":" + (door.purpose ?? "-")).join() + "|" + fish.map((kept) => kept.x + ":" + ("lc" in kept ? "lc" : "-")).join();
+    }
+    const out = migrate(JSON.parse(text) as Save);
+    if (out !== "1:-,2:2|4:-,5:-|1.5:-") throw new Error(out);
+`;
+    const strict = measured(false, () => compileSource(source));
+    assert.equal(strict.constructions, 2);
+    await runSelfCheckingProgram(
+        t,
+        "storage-demand-planner/copy-closure",
+        source,
+    );
+});
+
 test("a record read out of an asserted parse is a document with everything read out of that parse", async (t) => {
     // The save is only asserted and read; its first stored value is a room,
     // far below it. The lamps and owners are siblings of the room, and the
