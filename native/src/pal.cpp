@@ -416,6 +416,13 @@ double performance_milliseconds() {
     return state.fixed ? state.milliseconds : monotonic_milliseconds();
 }
 
+namespace {
+/** Every event the program creates is stamped with `performance.now()`. */
+const struct DomEventClockInstaller {
+    DomEventClockInstaller() { dom_event_clock() = &performance_milliseconds; }
+} dom_event_clock_installer;
+} // namespace
+
 double performance_time_origin() {
     static const double origin = [] {
         const auto epoch = std::chrono::system_clock::now().time_since_epoch();

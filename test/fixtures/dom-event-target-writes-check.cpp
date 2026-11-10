@@ -28,6 +28,7 @@ int main() try {
             throw std::runtime_error(message);
     };
     check(SDL_Init(SDL_INIT_VIDEO), "SDL initialization");
+    dom_event_clock() = &pal::performance_milliseconds;
     SDL_Window* window =
         SDL_CreateWindow("DOM event target writes fixture", 640, 480, SDL_WINDOW_HIDDEN);
     check(window != nullptr, "Window creation");
@@ -51,8 +52,7 @@ int main() try {
         check(ui_get_attribute(engine, origin, "data-kept1") == "detached" &&
                   ui_get_attribute(engine, origin, "data-kept2") == "attached",
               "a node test kept in a name answers by its target");
-        check(ui_get_attribute(engine, origin, "data-panels") ==
-                  "none,loading,button,",
+        check(ui_get_attribute(engine, origin, "data-panels") == "none,loading,button,",
               "an absent element falls back to another that may be absent");
         check(ui_get_attribute(engine, origin, "data-cancelled") == "document",
               "the document received the detached target's event");
@@ -64,6 +64,8 @@ int main() try {
               "a constructed event carries its related target");
         check(ui_get_attribute(engine, origin, "data-client") == "9",
               "an init typed as the platform dictionary sets its fields");
+        check(ui_get_attribute(engine, origin, "data-stamped") == "now",
+              "an event's time stamp is the clock when it was created");
         check(ui_get_attribute(engine, origin, "data-tabled") == "move7,over,",
               "a table of handlers registers each for its own event class");
 

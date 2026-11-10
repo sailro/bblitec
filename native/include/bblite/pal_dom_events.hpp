@@ -499,7 +499,7 @@ template <typename Event>
                               std::optional<DomEventTarget> related = std::nullopt) {
     if (path.empty())
         throw std::logic_error("DOM events require a target.");
-    payload.dom = std::make_shared<DomEventState>();
+    payload.dom = new_dom_event_state();
     payload.dom->type = std::move(type);
     payload.dom->target = path.front();
     payload.dom->path = std::move(path);

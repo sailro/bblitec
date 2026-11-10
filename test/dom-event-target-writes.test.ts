@@ -149,7 +149,14 @@ test("an event target narrowed to an element writes like the retained element it
             ["pointerover", onTableOver as EventListener, { passive: true }],
         ];
         for (const [type, handler, options] of table) button.addEventListener(type, handler, options);
+        // An event's time stamp is the clock's reading when it was created.
+        const before = performance.now();
+        let stamped = "none";
+        button.addEventListener("pointermove", (e) => {
+            stamped = e.timeStamp >= before && e.timeStamp <= performance.now() ? "now" : "off";
+        }, { once: true });
         button.dispatchEvent(new MouseEvent("pointermove", { bubbles: true, clientX: 7 }));
+        origin.setAttribute("data-stamped", stamped);
         hover(previous);
         for (const [type, handler, options] of table) button.removeEventListener(type, handler, options);
         button.dispatchEvent(new MouseEvent("pointermove", { bubbles: true, clientX: 9 }));

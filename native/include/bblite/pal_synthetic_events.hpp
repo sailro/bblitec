@@ -115,7 +115,7 @@ require_event_options(js::JsonValue options, std::string_view event,
                                                                 const js::JsonValue& options) {
     PlatformMouseEvent event;
     event.payload_kind = kind;
-    event.dom = std::make_shared<DomEventState>();
+    event.dom = new_dom_event_state();
     event.dom->type = std::move(type);
     event.dom->trusted = false;
     event.dom->bubbles = options.get("bubbles").truthy();

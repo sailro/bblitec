@@ -2336,6 +2336,11 @@ function touchEventMember(
         ? { kind: "boolean", cpp: `${payload}.${modifier}` }
         : undefined;
 }
+/** The numbers an event's dispatch state holds, by DOM member. */
+const DOM_EVENT_NUMBERS: ReadonlyMap<string, string> = new Map([
+    ["eventPhase", "phase"],
+    ["timeStamp", "time_stamp"],
+]);
 const DOM_EVENT_FLAGS = new EmissionMap<string, string>([
     ["bubbles", "bubbles"],
     ["cancelable", "cancelable"],
@@ -3256,10 +3261,11 @@ export class PropertyAccessLowerer {
                         ? { excludedStrings: foreignEventTypes(owner.kind) }
                         : {}),
                 };
-            if (property === "eventPhase")
+            const numberField = DOM_EVENT_NUMBERS.get(property);
+            if (numberField)
                 return {
                     kind: "number",
-                    cpp: `bbl::dom_event_state(${owner.cpp}).phase`,
+                    cpp: `bbl::dom_event_state(${owner.cpp}).${numberField}`,
                 };
             const booleanField = DOM_EVENT_FLAGS.get(property);
             if (booleanField)
@@ -3633,8 +3639,9 @@ export class PropertyAccessLowerer {
                 };
             if (property === "type")
                 return { kind: "string", cpp: `${owner.cpp}.dom->type` };
-            if (property === "eventPhase")
-                return { kind: "number", cpp: `${owner.cpp}.dom->phase` };
+            const number = DOM_EVENT_NUMBERS.get(property);
+            if (number)
+                return { kind: "number", cpp: `${owner.cpp}.dom->${number}` };
             const flag = DOM_EVENT_FLAGS.get(property);
             if (flag)
                 return { kind: "boolean", cpp: `${owner.cpp}.dom->${flag}` };
