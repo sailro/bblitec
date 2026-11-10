@@ -3894,6 +3894,27 @@ check(
 `,
 );
 
+// A `map` building empty records has no storage of its own: its array is
+// the one its place declares, each record its own.
+check(
+    "map-building-empty-records-for-a-declared-record-list",
+    `
+    interface Target { name?: string; bone?: number }
+    interface Request { asset: string; clips: string[]; targets: Target[] }
+    interface View { readonly asset: string; readonly targets: readonly Target[] }
+    function describe(view: View): string { return view.asset + ":" + view.targets.length + ":" + view.targets.map((t) => t.name ?? "any").join("|"); }
+    const flag = Math.random() >= 0;
+    const meshes = [{ skinned: flag }, { skinned: !flag }, { skinned: true }];
+    const skinned = meshes.filter((mesh) => mesh.skinned);
+    const request: Request = { asset: "assets/a.glb", clips: ["swim"], targets: skinned.map(() => ({})) };
+    if (request.targets.length !== 2 || request.targets[0]!.name !== undefined) throw new Error("targets");
+    request.targets[1]!.bone = 3;
+    if (request.targets[0]!.bone !== undefined || request.targets[1]!.bone !== 3) throw new Error("own records");
+    const named: View = { asset: "b", targets: skinned.map((_, index) => (index === 0 ? {} : { name: "n" + index })) };
+    if (describe(request) !== "assets/a.glb:2:any|any" || describe(named) !== "b:2:any|n1") throw new Error(describe(named));
+`,
+);
+
 // A function lowered at its call returns a `map` building empty lists as
 // the lists of records it declares, each list its own.
 check(
