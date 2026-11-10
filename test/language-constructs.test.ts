@@ -3894,6 +3894,33 @@ check(
 `,
 );
 
+// A function lowered at its call returns a `map` building empty lists as
+// the lists of records it declares, each list its own.
+check(
+    "early-return-of-a-map-building-empty-lists-in-a-function-lowered-at-its-call",
+    `
+    interface Crossing { at: number; height: number }
+    interface Save { paths?: { x1: number; x2: number }[] }
+    interface Carve { pathAt(x: number): number }
+    function crossings(runs: number[][], save: Save, carve: Carve, max: number): Crossing[][] {
+        const segs = (save.paths ?? []).map((p) => ({ x1: p.x1, x2: p.x2 }));
+        if (segs.length === 0) {
+            return runs.map(() => []);
+        }
+        return runs.map((run) => run.filter((at) => carve.pathAt(at) > 0 && segs.some((s) => s.x1 <= at && at <= s.x2)).map((at) => ({ at, height: max })));
+    }
+    const flag = Math.random() >= 0;
+    const runs = [[1, 5, 9], [2]];
+    const carve: Carve = { pathAt: (x) => x - 1 };
+    const none = crossings(runs, flag ? {} : { paths: [] }, carve, 2);
+    if (none.length !== 2 || none[0]!.length !== 0 || none[1]!.length !== 0) throw new Error("none");
+    none[1]!.push({ at: 7, height: 1 });
+    if (none[0]!.length !== 0 || none[1]![0]!.at !== 7) throw new Error("own lists");
+    const some = crossings(runs, { paths: [{ x1: 4, x2: 10 }] }, carve, 3);
+    if (some[0]!.length !== 2 || some[0]![1]!.at !== 9 || some[0]![0]!.height !== 3 || some[1]!.length !== 0) throw new Error("some");
+`,
+);
+
 // A parsed list of lists spread into a new array stores each inner list as
 // the array sink stores a parsed one.
 check(

@@ -1547,6 +1547,7 @@ export interface UserFunctionContext
             | "reachesOnlyClosedEffects"
             | "requiresStaticDataIteration"
             | "probeEmission"
+            | "transaction"
             | "runGenerationFunction"
             | "conditions"
             | "withRecordScopes"
@@ -6662,12 +6663,7 @@ export class UserFunctionLowerer {
             this.documentReturnStorage(returnType)
                 ? {
                       compileReturn: (expression, type) =>
-                          this.compileNativeReturnValue(
-                              context,
-                              context.compileValue(expression),
-                              type,
-                              expression,
-                          ),
+                          this.compileInlinedReturn(context, expression, type),
                   }
                 : {},
         );
@@ -6687,6 +6683,38 @@ export class UserFunctionLowerer {
                 : { kind: "void", cpp: "" },
             abrupt: terminated && !firstReturn(statements),
         };
+    }
+
+    /**
+     * The value an inlined function returns, stored as its return type: a
+     * parsed document demands dynamic return storage, and a value whose own
+     * storage the return type cannot keep (a `map` building empty lists,
+     * returned as lists of records) is lowered as that type, as a shared
+     * function's return is.
+     */
+    private compileInlinedReturn(
+        context: UserFunctionContext,
+        expression: ts.Expression,
+        type: DataType,
+    ): string {
+        let value: Value | undefined;
+        let stored = "";
+        try {
+            context.transaction(() => {
+                value = context.compileValue(expression);
+                stored = this.compileNativeReturnValue(
+                    context,
+                    value,
+                    type,
+                    expression,
+                );
+            });
+            return stored;
+        } catch (error) {
+            if (value === undefined || !(error instanceof CompileError))
+                throw error;
+            return context.dataLowerer.compileForSink(expression, type);
+        }
     }
 
     private compileNativeReturnValue(
