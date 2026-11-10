@@ -5480,10 +5480,6 @@ test("Object.create, defineProperty and getPrototypeOf refuse unrepresented form
             "class A {} class B extends A {} const a = new A(); const r = Object.getPrototypeOf(a) === A.prototype;",
             /a class other classes extend is not represented/,
         ],
-        [
-            "const p = Object.getPrototypeOf({ a: 1 }); const r = p === null;",
-            /Unsupported call target 'Object\.getPrototypeOf'/,
-        ],
     ] as const)
         assert.throws(() => compileSource(source), message);
 });

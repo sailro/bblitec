@@ -93,6 +93,7 @@ import {
     SOURCE_LOOP_MEMBERS,
 } from "./web-audio-members.js";
 import { fullscreenElementValue } from "./fullscreen.js";
+import { compileLibraryPrototype } from "./prototype-values.js";
 import { eventTargetCpp } from "./dom-targets.js";
 import { readCharacterProperty } from "./intrinsics/character-controller.js";
 import { readPhysicsProperty } from "./physics-surface.js";
@@ -3241,6 +3242,8 @@ export class PropertyAccessLowerer {
         const stopped = this.context.optionalChainStop(expression);
         if (stopped) return stopped;
         this.refuseMethodValue(expression);
+        const prototype = compileLibraryPrototype(this.context, expression);
+        if (prototype) return prototype;
         const collection = this.context.unwrap(expression.expression);
         if (
             expression.name.text === "length" &&

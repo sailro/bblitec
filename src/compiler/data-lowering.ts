@@ -70,7 +70,6 @@ import {
     libraryName,
     memberAccessors,
     namedMember,
-    isLibraryStatic,
     libraryStaticMember,
     arrayMemberName,
     isSymbolPropertyKey,
@@ -79,6 +78,11 @@ import {
     compileCollectionIterable,
     compileMapInitializer,
 } from "./collection-methods.js";
+import {
+    knownPrototype,
+    prototypeOfArgument,
+    readsPrototype,
+} from "./prototype-values.js";
 import { requireObservedPromise } from "./promise-observations.js";
 import {
     isDocumentRecordDemand,
@@ -18691,7 +18695,8 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         if (
             value.kind === "data" &&
             (value.dataType?.kind === "product" ||
-                value.dataType?.kind === "iterator")
+                value.dataType?.kind === "iterator" ||
+                value.dataType?.kind === "prototype")
         ) {
             return objectTruthinessCpp(value) ?? "true";
         }
@@ -19244,8 +19249,10 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
 
     /**
      * `Object.getPrototypeOf(value) === C.prototype` for a class C no class
-     * extends: the value is exactly a C, which `instanceof C` decides. A
-     * class with subclasses, or any other prototype, refuses.
+     * extends: the value is exactly a C, which `instanceof C` decides; a
+     * class with subclasses refuses. Two prototypes read in place
+     * (`readsPrototype`) compare as the identities they are, settled here
+     * when generation knows both.
      */
     private prototypeComparison(
         left: ts.Expression,
@@ -19254,36 +19261,37 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         const prototypeArgument = (
             node: ts.Expression,
         ): ts.Expression | undefined =>
-            ts.isCallExpression(node) &&
-            node.arguments.length === 1 &&
-            isLibraryStatic(
-                this.context.checker,
-                node.expression,
-                "Object",
-                "getPrototypeOf",
-            )
-                ? node.arguments[0]
-                : undefined;
+            prototypeOfArgument(this.context.checker, node);
         const [call, prototype] = prototypeArgument(left)
             ? [left, right]
             : prototypeArgument(right)
               ? [right, left]
               : [];
-        if (!call || !prototype) return undefined;
-        const instance = prototypeArgument(call)!;
-        const owner = this.context.unwrap(prototype);
+        const owner = prototype && this.context.unwrap(prototype);
         const declaration =
+            owner &&
             ts.isPropertyAccessExpression(owner) &&
             owner.name.text === "prototype" &&
             ts.isIdentifier(owner.expression)
                 ? resolvedSymbol(this.context.checker, owner.expression)
                       ?.valueDeclaration
                 : undefined;
-        if (!declaration || !ts.isClassLike(declaration))
-            return this.context.fail(
-                call,
-                "Object.getPrototypeOf is lowered in a comparison with a class's prototype only.",
-            );
+        if (!call || !declaration || !ts.isClassLike(declaration)) {
+            if (
+                !readsPrototype(this.context, left) ||
+                !readsPrototype(this.context, right)
+            )
+                return undefined;
+            const first = this.context.compileValue(left);
+            const second = this.context.compileValue(right);
+            const [known, other] = [first, second].map(knownPrototype);
+            return known !== undefined && other !== undefined
+                ? known === other
+                    ? "true"
+                    : "false"
+                : `${first.cpp} == ${second.cpp}`;
+        }
+        const instance = prototypeArgument(call)!;
         if (
             this.context.dataTypes.classHierarchy.subclasses(declaration)
                 .length > 0

@@ -125,6 +125,10 @@ Rules:
 - Numeric typed-array and numeric-view indexed `??` reads preserve missing-slot presence and lazy fallbacks.
 - Typed-array iteration retains its buffer owner and yields numbers read when each element is visited.
 - Array `slice` on parsed documents and native array views copies outer slots and preserves nested identities.
+- `Object.getPrototypeOf` answers for records, dictionaries, arrays, strings, numbers, booleans and documents (by
+  run-time kind; TypeError on null/undefined), compared with `Object`/`Array`/`String`/`Number`/`Boolean.prototype` or
+  `null`; a class instance compares with `C.prototype` only. It refuses in a program that calls `Object.create`,
+  `setPrototypeOf` or names `__proto__`.
 
 ## Assets and I/O
 

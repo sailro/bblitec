@@ -21,6 +21,7 @@ import {
     writeSites,
     writeSiteOf,
     accessKey,
+    propertyKey,
     patternSlots,
     equalityOperator,
     operandYield,
@@ -105,10 +106,26 @@ export interface ProgramObservations {
     readonly arrayLocalElements: ReadonlyMap<ts.Symbol, readonly ts.Type[]>;
     readonly namedReads: ReadonlyMap<string, readonly NamedRead[]>;
     readonly wholesaleReads: readonly ts.Node[];
+    /**
+     * The sites that give an object a prototype no literal or constructor
+     * gives it: `Object.create`, `Object.setPrototypeOf`,
+     * `Reflect.setPrototypeOf`, a `__proto__` member or key, and the
+     * null-prototype results of `Object.groupBy` and a match's `groups`.
+     */
+    readonly foreignPrototypes: readonly ts.Node[];
 }
 
 /** @unjournaled A pure function of the checked program, kept across replays. */
 const observations = new WeakMap<ts.Program, ProgramObservations>();
+
+/** The `Object` statics whose result or target has a prototype of the caller's choosing, or none. */
+const FOREIGN_PROTOTYPE_STATICS = new Set([
+    "create",
+    "setPrototypeOf",
+    "groupBy",
+]);
+/** The library types whose `groups` object has no prototype. */
+const MATCH_RESULTS = new Set(["RegExpMatchArray", "RegExpExecArray"]);
 
 /** The array methods that compare their argument with elements by identity. */
 export const IDENTITY_SEARCHES = new Set([
@@ -243,6 +260,7 @@ function observe(program: ts.Program): ProgramObservations {
     };
     const namedReads = new Map<string, NamedRead[]>();
     const wholesaleReads: ts.Node[] = [];
+    const foreignPrototypes: ts.Node[] = [];
     const typeOf = (node: ts.Node): ts.Type => checker.getTypeAtLocation(node);
     let order = 0;
     const place = (
@@ -485,10 +503,23 @@ function observe(program: ts.Program): ProgramObservations {
             ts.isElementAccessExpression(node)
         ) {
             const key = accessKey(node);
+            if (
+                key === "__proto__" ||
+                (key === "groups" &&
+                    unionMembers(typeOf(node.expression)).some((member) =>
+                        MATCH_RESULTS.has(libraryName(member) ?? ""),
+                    ))
+            )
+                foreignPrototypes.push(node);
             if (readsOnlyAsMember(node)) {
                 // Read as a member of the access around it.
             } else if (key !== undefined) read(key, node, node.expression);
             else wholesaleReads.push(node.expression);
+        } else if (
+            ts.isPropertyAssignment(node) &&
+            propertyKey(node.name) === "__proto__"
+        ) {
+            foreignPrototypes.push(node);
         } else if (ts.isObjectBindingPattern(node)) {
             for (const { element, read: slot } of patternSlots(node))
                 if (slot.kind === "member" && slot.key !== undefined)
@@ -588,6 +619,11 @@ function observe(program: ts.Program): ProgramObservations {
                         (read === "all" || index === read),
                 ),
             );
+        if (
+            (owner === "Object" && FOREIGN_PROTOTYPE_STATICS.has(method)) ||
+            (owner === "Reflect" && method === "setPrototypeOf")
+        )
+            foreignPrototypes.push(node);
         if (owner === "Object") {
             if (method === "assign" && first) {
                 addWrite(first, { node });
@@ -658,5 +694,6 @@ function observe(program: ts.Program): ProgramObservations {
         arrayLocalElements,
         namedReads,
         wholesaleReads,
+        foreignPrototypes,
     };
 }

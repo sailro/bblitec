@@ -545,7 +545,8 @@ const boxedOpaqueSink = {
 
 /** A leaf only a value of its own kind converts to. */
 function sameKindSink<
-    K extends "symbol" | "bigint" | "i64array" | "u64array" | "gpu",
+    K extends
+        "symbol" | "bigint" | "prototype" | "i64array" | "u64array" | "gpu",
 >(kind: K): DataSinkOperations<K>[K] {
     return {
         expression: (type, lowerer, expression, unwrapped) =>
@@ -612,6 +613,7 @@ export const scalarsSinks: DataSinkOperations<
     | "number"
     | "symbol"
     | "bigint"
+    | "prototype"
     | "i64array"
     | "u64array"
     | "boolean"
@@ -833,6 +835,7 @@ export const scalarsSinks: DataSinkOperations<
     number: { expression: expressionNumber, value: valueNumber },
     symbol: sameKindSink("symbol"),
     bigint: sameKindSink("bigint"),
+    prototype: sameKindSink("prototype"),
     i64array: sameKindSink("i64array"),
     u64array: sameKindSink("u64array"),
     boolean: { expression: expressionBoolean, value: valueBoolean },

@@ -423,6 +423,11 @@ struct JsonNativeObject {
     virtual void define(std::string_view, const JsonValue&) {
         throw std::runtime_error("Dynamic property definition requires an owned object.");
     }
+    /** `Object.getPrototypeOf`: a record view's or a dictionary's is `Object.prototype`. */
+    [[nodiscard]] virtual Prototype prototype() const {
+        throw std::runtime_error(
+            "Object.getPrototypeOf: this object's prototype is not represented.");
+    }
     virtual void gc_trace(const TraceVisitor& visitor) const = 0;
 };
 
@@ -735,6 +740,29 @@ public:
                 return entry.second.property_value();
         }
         return {};
+    }
+
+    /**
+     * `Object.getPrototypeOf(value)`: its kind's prototype, in a program that gives no object
+     * another one. Null and undefined throw the TypeError `ToObject` throws.
+     */
+    [[nodiscard]] Prototype prototype() const {
+        switch (kind_) {
+        case Kind::undefined:
+        case Kind::null:
+            throw_nullish_access("Cannot convert undefined or null to object");
+        case Kind::boolean:
+            return Prototype::boolean;
+        case Kind::number:
+            return Prototype::number;
+        case Kind::string:
+            return Prototype::string;
+        case Kind::array:
+            return Prototype::array;
+        case Kind::object:
+            break;
+        }
+        return native_ ? native_->prototype() : Prototype::object;
     }
 
     /** JavaScript member reads reject nullish receivers; dictionary lookups use get/at. */
@@ -1255,6 +1283,10 @@ template <typename T>
     return map_keys(value);
 }
 
+/** Whether `T` is a string-keyed dictionary. */
+template <typename T> inline constexpr bool is_dictionary_v = false;
+template <typename T> inline constexpr bool is_dictionary_v<Map<std::string, T>> = true;
+
 template <typename T> struct JsonNativeBox final : JsonNativeObject {
     T value;
     explicit JsonNativeBox(T source) : value(std::move(source)) {}
@@ -1298,6 +1330,12 @@ template <typename T> struct JsonNativeBox final : JsonNativeObject {
             value.set(name, member);
         } else
             JsonNativeObject::define(key, member);
+    }
+    Prototype prototype() const override {
+        if constexpr (is_dictionary_v<T>)
+            return Prototype::object;
+        else
+            return JsonNativeObject::prototype();
     }
     void gc_trace(const TraceVisitor& visitor) const override { visitor(value); }
 };
@@ -1400,6 +1438,7 @@ template <typename Getter> struct JsonRecordView final : JsonNativeObject {
     bbl::js::Array<std::string> own_keys() const override { return {keys.begin(), keys.end()}; }
     const std::type_info& type() const override { return typeid(JsonRecordView); }
     const void* identity() const override { return this; }
+    Prototype prototype() const override { return Prototype::object; }
     void gc_trace(const TraceVisitor& visitor) const override {
         visitor(getter);
         visitor(keys);

@@ -41,6 +41,7 @@ import {
     isRealmGlobalObject,
 } from "./host-globals.js";
 import { callableRecordValue } from "./callable-records.js";
+import { compileObjectGetPrototypeOf } from "./prototype-values.js";
 import {
     compileCollectionEntries,
     compileEntryCollection,
@@ -1784,6 +1785,7 @@ export const OBJECT_STATIC_HANDLERS: ReadonlyMap<
     ["defineProperties", compileObjectDefineProperties],
     ["entries", compileObjectEntries],
     ["fromEntries", compileObjectFromEntries],
+    ["getPrototypeOf", compileObjectGetPrototypeOf],
     ["hasOwn", compileObjectHasOwn],
     ["is", compileObjectIs],
 ]);
