@@ -223,6 +223,33 @@ export function elementInterfaceTag(name: string): string | undefined {
         : undefined;
 }
 
+/**
+ * The node or element interface a `value instanceof C` test names, where
+ * native answers it by the value's target (`compileDomInstanceOf`).
+ */
+function domInstanceOfTest(
+    context: Pick<Context, "libraryGlobal">,
+    expression: ts.Expression,
+): (WindowInterface & { kind: "element" }) | undefined {
+    if (
+        !ts.isBinaryExpression(expression) ||
+        expression.operatorToken.kind !== ts.SyntaxKind.InstanceOfKeyword
+    )
+        return undefined;
+    const entry = WINDOW_INTERFACES.get(
+        context.libraryGlobal(expression.right) ?? "",
+    );
+    return entry?.kind === "element" ? entry : undefined;
+}
+
+/** Whether an expression is a node or element interface test native answers. */
+export function isDomInstanceOf(
+    context: Pick<Context, "libraryGlobal">,
+    expression: ts.Expression,
+): expression is ts.BinaryExpression {
+    return domInstanceOfTest(context, expression) !== undefined;
+}
+
 /** Retained HTML element interfaces follow the element's tag and document identity. */
 export function compileDomInstanceOf(
     context: Context &
@@ -232,15 +259,8 @@ export function compileDomInstanceOf(
         >,
     expression: ts.Expression,
 ): string | undefined {
-    if (
-        !ts.isBinaryExpression(expression) ||
-        expression.operatorToken.kind !== ts.SyntaxKind.InstanceOfKeyword
-    )
-        return undefined;
-    const entry = WINDOW_INTERFACES.get(
-        context.libraryGlobal(expression.right) ?? "",
-    );
-    if (entry?.kind !== "element") return undefined;
+    const entry = domInstanceOfTest(context, expression);
+    if (!entry || !ts.isBinaryExpression(expression)) return undefined;
     const value = context.compileValue(expression.left);
     const type = value.dataType;
     if (

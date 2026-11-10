@@ -48,6 +48,9 @@ int main() try {
               "a detached element is not connected");
         check(ui_get_attribute(engine, origin, "data-connected2") == "true",
               "a connected element is");
+        check(ui_get_attribute(engine, origin, "data-kept1") == "detached" &&
+                  ui_get_attribute(engine, origin, "data-kept2") == "attached",
+              "a node test kept in a name answers by its target");
         check(ui_get_attribute(engine, origin, "data-cancelled") == "document",
               "the document received the detached target's event");
         check(ui_get_attribute(engine, origin, "data-downs") == "2",

@@ -43,7 +43,7 @@ import {
 import { promiseExecutor } from "./promise-executor.js";
 import { isNativeBrowserFileExpression } from "./browser-file.js";
 import { customEventDispatchTarget } from "./custom-events.js";
-import { windowInterfaceTypeof } from "./dom-targets.js";
+import { isDomInstanceOf, windowInterfaceTypeof } from "./dom-targets.js";
 import {
     hasOnlyReportingEffects,
     writesUnobservedCanvasMetadata,
@@ -1333,6 +1333,13 @@ export class BrowserErasure {
         // global object, which every realm has: not browser state.
         if (this.languageGlobalRead(unwrapped)) return false;
         if (hasDomLowering(this.context.checker, unwrapped)) return false;
+        // A node or element interface test of a native target is the
+        // target's own answer (`compileDomInstanceOf`).
+        if (
+            isDomInstanceOf(this.context, unwrapped) &&
+            !this.isBrowserOnlyNode(unwrapped.left)
+        )
+            return false;
         if (
             this.context.options.deferredCapabilities &&
             ts.isPropertyAccessExpression(unwrapped) &&

@@ -74,6 +74,15 @@ test("an event target narrowed to an element writes like the retained element it
         };
         origin.setAttribute("data-connected1", cancelPress(1));
         origin.setAttribute("data-connected2", cancelPress(2));
+        // The same test kept in a name is the target's own answer too.
+        const kept = (id: number): string => {
+            const downOn = read(id)?.target ?? pressedOn;
+            if (!downOn) return "none";
+            const detached = typeof Node !== "undefined" && downOn instanceof Node && !downOn.isConnected;
+            return detached ? "detached" : "attached";
+        };
+        origin.setAttribute("data-kept1", kept(1));
+        origin.setAttribute("data-kept2", kept(2));
         // A binding every branch gives a constructed event owns that event.
         let downs = 0;
         button.addEventListener("pointerdown", () => { downs++; });
