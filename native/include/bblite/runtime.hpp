@@ -6267,9 +6267,14 @@ template <typename Callback>
 /** SDL-backed browser Gamepad surface (implemented by pal_sdl.cpp). */
 js::Array<js::Nullable<GamepadHandle>> platform_gamepads(Engine& engine);
 double gamepad_index(Engine& engine, GamepadHandle gamepad);
+bool gamepad_connected(Engine& engine, GamepadHandle gamepad);
+/** "standard": every pad SDL opens as a gamepad is remapped to the standard layout. */
+std::string gamepad_mapping(Engine& engine, GamepadHandle gamepad);
 js::Array<double> gamepad_axes(Engine& engine, GamepadHandle gamepad);
 js::Array<GamepadButtonHandle> gamepad_buttons(Engine& engine, GamepadHandle gamepad);
 bool gamepad_button_pressed(Engine& engine, GamepadButtonHandle button);
+/** A trigger's travel in [0, 1]; 1 for any other button while it is down. */
+double gamepad_button_value(Engine& engine, GamepadButtonHandle button);
 
 /** Public PBR Texture2D slots backed by one material record. */
 enum class MaterialTextureSlot : std::uint8_t {

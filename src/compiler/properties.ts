@@ -1387,6 +1387,20 @@ export const propertyRules: readonly PropertyRule[] = [
     },
     {
         owner: "gamepad",
+        property: "connected",
+        value: "boolean",
+        helper: "bbl::gamepad_connected",
+        helperTakesEngine: true,
+    },
+    {
+        owner: "gamepad",
+        property: "mapping",
+        value: "string",
+        helper: "bbl::gamepad_mapping",
+        helperTakesEngine: true,
+    },
+    {
+        owner: "gamepad",
         property: "axes",
         value: "data",
         dataType: { kind: "vector", element: { kind: "number" } },
@@ -1411,6 +1425,13 @@ export const propertyRules: readonly PropertyRule[] = [
         property: "pressed",
         value: "boolean",
         helper: "bbl::gamepad_button_pressed",
+        helperTakesEngine: true,
+    },
+    {
+        owner: "gamepad-button",
+        property: "value",
+        value: "number",
+        helper: "bbl::gamepad_button_value",
         helperTakesEngine: true,
     },
     // A Touch snapshot (`bbl::DomTouch`); pageX/pageY read the client

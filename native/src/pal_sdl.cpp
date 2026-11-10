@@ -241,6 +241,13 @@ js::Array<js::Nullable<GamepadHandle>> platform_gamepads(Engine& engine) {
 
 double gamepad_index(Engine&, GamepadHandle gamepad) { return static_cast<double>(gamepad.index); }
 
+bool gamepad_connected(Engine&, GamepadHandle handle) {
+    SDL_Gamepad* gamepad = opened_gamepad(handle);
+    return gamepad && SDL_GamepadConnected(gamepad);
+}
+
+std::string gamepad_mapping(Engine&, GamepadHandle) { return "standard"; }
+
 js::Array<double> gamepad_axes(Engine& engine, GamepadHandle handle) {
     std::array<double, 4> values{};
     SDL_Gamepad* gamepad = opened_gamepad(handle);
@@ -274,17 +281,23 @@ js::Array<GamepadButtonHandle> gamepad_buttons(Engine& engine, GamepadHandle gam
     return PlatformGamepadState::Gamepad(gamepad).buttons;
 }
 
-bool gamepad_button_pressed(Engine&, GamepadButtonHandle button) {
+double gamepad_button_value(Engine&, GamepadButtonHandle button) {
     SDL_Gamepad* gamepad = opened_gamepad(button.gamepad);
     if (!gamepad)
-        return false;
+        return 0.0;
     if (button.index == 6 || button.index == 7) {
         const SDL_GamepadAxis trigger =
             button.index == 6 ? SDL_GAMEPAD_AXIS_LEFT_TRIGGER : SDL_GAMEPAD_AXIS_RIGHT_TRIGGER;
-        return SDL_GetGamepadAxis(gamepad, trigger) > 0;
+        return std::clamp(static_cast<double>(SDL_GetGamepadAxis(gamepad, trigger)) / 32767.0, 0.0,
+                          1.0);
     }
     const SDL_GamepadButton mapped = standard_gamepad_button(button.index);
-    return mapped != SDL_GAMEPAD_BUTTON_INVALID && SDL_GetGamepadButton(gamepad, mapped);
+    return mapped != SDL_GAMEPAD_BUTTON_INVALID && SDL_GetGamepadButton(gamepad, mapped) ? 1.0
+                                                                                         : 0.0;
+}
+
+bool gamepad_button_pressed(Engine& engine, GamepadButtonHandle button) {
+    return gamepad_button_value(engine, button) > 0.0;
 }
 #endif
 
