@@ -62,8 +62,10 @@ int main() try {
               "a constructed event without a related target has none");
         check(ui_get_attribute(engine, origin, "data-related") == "previous",
               "a constructed event carries its related target");
-        check(ui_get_attribute(engine, origin, "data-client") == "3",
+        check(ui_get_attribute(engine, origin, "data-client") == "9",
               "an init typed as the platform dictionary sets its fields");
+        check(ui_get_attribute(engine, origin, "data-tabled") == "move7,over,",
+              "a table of handlers registers each for its own event class");
 
         pal::UiRmlRuntime runtime(engine, window, 640, 480);
         const auto update = [&](double milliseconds) {

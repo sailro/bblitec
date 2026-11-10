@@ -107,6 +107,8 @@ import {
     isBlockScopedVariable,
     functionOfDeclaration,
     keysMayMatch,
+    isTypeAssertion,
+    wrappersUnder,
 } from "./syntax.js";
 import {
     commonResourceValue,
@@ -3295,6 +3297,31 @@ export class DeclarationLowerer {
             : undefined;
     }
 
+    /**
+     * Whether an array literal holds, at any depth of its array elements, a
+     * function asserted to a function type its own declaration is not
+     * assignable to (a handler of one event class stored as a listener of
+     * every event).
+     */
+    private holdsReassertedFunction(initializer: ts.Expression): boolean {
+        const checker = this.context.checker;
+        const list = unwrapExpression(initializer);
+        if (!ts.isArrayLiteralExpression(list)) return false;
+        return list.elements.some((element) => {
+            if (ts.isSpreadElement(element)) return false;
+            if (this.holdsReassertedFunction(element)) return true;
+            const assertion = wrappersUnder(element).find(isTypeAssertion);
+            if (!assertion) return false;
+            const asserted = checker.getTypeAtLocation(assertion);
+            const own = checker.getTypeAtLocation(assertion.expression);
+            return (
+                callSignatures(checker, asserted, "present").length > 0 &&
+                callSignatures(checker, own, "present").length > 0 &&
+                !checker.isTypeAssignableTo(own, asserted)
+            );
+        });
+    }
+
     private emitAnnotatedDataDeclaration(
         declaration: ts.VariableDeclaration,
         cppName: string,
@@ -3310,6 +3337,17 @@ export class DeclarationLowerer {
         if (!declaration.initializer) {
             return false;
         }
+        // A never-written list holding a function asserted to a signature
+        // its declaration lacks (`onDown as EventListener`) has no storage
+        // as its annotation: it stays the compile-time list it is, as the
+        // same list without the annotation does.
+        if (
+            !this.context.dynamicBindings.has(declaration) &&
+            variableKind(declaration.parent) === "const" &&
+            this.holdsReassertedFunction(declaration.initializer) &&
+            !objectIsMutated()
+        )
+            return false;
         const createsObject =
             ts.isObjectLiteralExpression(
                 this.context.unwrap(declaration.initializer),

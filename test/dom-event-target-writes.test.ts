@@ -139,6 +139,21 @@ test("an event target narrowed to an element writes like the retained element it
         });
         const plain: MouseEventInit = { bubbles: true, clientX: 3 };
         button.dispatchEvent(new MouseEvent("pointermove", plain));
+        // A table of handlers stored as listeners of every event registers
+        // each as the listener of its own event class.
+        let tabled = "";
+        function onTableMove(e: PointerEvent): void { tabled += "move" + e.clientX + ","; }
+        function onTableOver(e: PointerEvent): void { tabled += e.relatedTarget === previous ? "over," : "from,"; }
+        const table: [string, EventListener, AddEventListenerOptions?][] = [
+            ["pointermove", onTableMove as EventListener],
+            ["pointerover", onTableOver as EventListener, { passive: true }],
+        ];
+        for (const [type, handler, options] of table) button.addEventListener(type, handler, options);
+        button.dispatchEvent(new MouseEvent("pointermove", { bubbles: true, clientX: 7 }));
+        hover(previous);
+        for (const [type, handler, options] of table) button.removeEventListener(type, handler, options);
+        button.dispatchEvent(new MouseEvent("pointermove", { bubbles: true, clientX: 9 }));
+        origin.setAttribute("data-tabled", tabled);
         globalThis.close();
     `);
     writeFileSync(join(directory, "program.hpp"), cpp);
