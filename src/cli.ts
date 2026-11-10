@@ -703,9 +703,12 @@ function writeSurvey(
     compileOptions: CompileOptions,
 ): void {
     // A survey of a large entry runs for hours: it says where it is.
+    // Each restart leaves the census found so far, so a survey stopped
+    // early is still read.
     const { report } = surveySource(source, compileOptions, {
         report: (line) => console.error(line),
         intervalMs: 5 * 60 * 1000,
+        partial: (found) => writeJsonRecord(censusPath, found),
     });
     writeJsonRecord(censusPath, report);
     console.log(

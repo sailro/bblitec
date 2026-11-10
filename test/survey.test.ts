@@ -146,6 +146,40 @@ test("a survey's progress names each restart's cause, what it demands and where 
     );
 });
 
+test("a survey leaves the census it has found at each restart", () => {
+    // The unsupported call refuses before the rebinding restarts the
+    // program: the census at that restart already holds it.
+    const partial: SurveyReport[] = [];
+    const { report } = surveySource(
+        `
+        declare function unknownHostCall(): number;
+        interface Settings { gain: number }
+        function parsed(text: string): Settings { return JSON.parse(text); }
+        const frame = unknownHostCall();
+        let active: Settings = { gain: 2 };
+        active = parsed('{"gain":3}');
+        console.log(active.gain);
+    `,
+        { fileName: resolve("survey-partial.ts") },
+        {
+            report: () => {},
+            intervalMs: 0,
+            partial: (found) => partial.push(found),
+        },
+    );
+    assert.equal(partial.length, 1);
+    assert.equal(partial[0]!.complete, false);
+    assert.match(
+        partial[0]!.terminal!,
+        /^Survey still running: restart after attempt 1: /,
+    );
+    assert.ok(report.complete && report.refusals.length > 0);
+    assert.deepEqual(
+        partial[0]!.refusals.map((refusal) => refusal.site.line),
+        report.refusals.map((refusal) => refusal.site.line),
+    );
+});
+
 test("a survey reports each plan's demands and what ended it", () => {
     // Three record types would each restart the program once; the plan
     // after the first restart meets the other two and lowers to the end.

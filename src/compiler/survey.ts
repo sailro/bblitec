@@ -144,6 +144,11 @@ function describeStop(cause: unknown, lowering: ts.Node | undefined): string {
 export interface SurveyProgress {
     readonly report: (line: string) => void;
     readonly intervalMs: number;
+    /**
+     * Receives the census as it stands at each restart, marked incomplete:
+     * a survey stopped before its end leaves what it had found.
+     */
+    readonly partial?: (report: SurveyReport) => void;
 }
 
 export class SurveyCollector {
@@ -196,6 +201,11 @@ export class SurveyCollector {
         this.progress?.report(
             `Survey restart after attempt ${this.attempts}: ${this.restart}`,
         );
+        this.progress?.partial?.({
+            ...this.report(),
+            complete: false,
+            terminal: `Survey still running: restart after attempt ${this.attempts}: ${this.restart}`,
+        });
     }
 
     /**
