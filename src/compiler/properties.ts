@@ -14,6 +14,7 @@
 // compile-time metadata rather than from a native field, and
 // `camera.target` synthesizes a three-component record. Those differ in
 // what they *do*, not in which field they name.
+import { foreignEventTypes } from "./dom-listeners.js";
 import { AbsentRecordProperties } from "./absent-record-properties.js";
 import { readEngineRenderFunction } from "./engine-render-function.js";
 import { elementChildrenSnapshot, readByOneWalk } from "./element-children.js";
@@ -2986,6 +2987,12 @@ export class PropertyAccessLowerer {
                     readOnly: true,
                 };
             }
+            if (property === "location")
+                return {
+                    kind: "number",
+                    cpp: `static_cast<double>(${owner.cpp}.location)`,
+                    dataType: { kind: "number" },
+                };
             this.context.fail(
                 nameSite,
                 `Platform keyboard events do not expose '${property}'.`,
@@ -3205,6 +3212,11 @@ export class PropertyAccessLowerer {
                 return {
                     kind: "string",
                     cpp: `bbl::dom_event_state(${owner.cpp}).type`,
+                    // A listener's own event is of its family's kind.
+                    ...(owner.kind !== "custom-event" &&
+                    !owner.platformEventBase
+                        ? { excludedStrings: foreignEventTypes(owner.kind) }
+                        : {}),
                 };
             if (property === "eventPhase")
                 return {

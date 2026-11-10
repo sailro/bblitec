@@ -18,6 +18,7 @@ import {
     compileClassInstanceOf,
     conditionComparison,
     foldBooleanComparison,
+    foldExcludedString,
     foldSettledComparison,
     type ComparisonContext,
 } from "./comparisons.js";
@@ -859,6 +860,8 @@ export class ConditionLowerer {
             if (foldedBoolean) {
                 return foldedBoolean;
             }
+            const excluded = foldExcludedString(this.context, unwrapped);
+            if (excluded) return excluded;
             // The data equality path has to inspect both operands before it
             // can decide whether it owns the comparison. Calls emit as they
             // are inspected, so discard a declined probe and let the numeric

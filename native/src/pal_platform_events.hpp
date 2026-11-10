@@ -186,6 +186,20 @@ inline void observe_text_composition(Engine& engine, const SDL_Event& event) {
     }
 }
 
+/** `KeyboardEvent.location` of a DOM code: the side of a modifier, the numeric keypad, else standard. */
+inline std::uint32_t keyboard_event_location(std::string_view code) {
+    for (const std::string_view modifier : {"Control", "Shift", "Alt", "Meta"}) {
+        if (!code.starts_with(modifier))
+            continue;
+        const std::string_view side = code.substr(modifier.size());
+        if (side == "Left")
+            return 1;
+        if (side == "Right")
+            return 2;
+    }
+    return code.starts_with("Numpad") ? 3 : 0;
+}
+
 /** The keyboard event a platform key reports, with the engine's composition state. */
 inline PlatformKeyboardEvent platform_keyboard_event(const Engine& engine, std::string_view code,
                                                      bool repeat, PlatformModifierKeys modifiers) {
@@ -194,6 +208,7 @@ inline PlatformKeyboardEvent platform_keyboard_event(const Engine& engine, std::
         .key = keyboard_event_key(code),
         .repeat = repeat,
         .is_composing = engine.text_composing,
+        .location = keyboard_event_location(code),
     };
     static_cast<PlatformModifierKeys&>(event) = modifiers;
     return event;

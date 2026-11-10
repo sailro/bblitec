@@ -91,6 +91,9 @@ before implementing: a source refusal does not mean RmlUi lacks the feature.
 - `inputmode`, input `type` and inherited `spellcheck` choose the platform keyboard and autocorrection; labels activate
   their `for` or nested control.
 - Key events read `isComposing` inside an input method composition (SDL text editing until a commit or focus loss).
+  `location` is 1 or 2 for a left or right modifier, 3 for the numeric keypad.
+- A listener's event is of its family's kind, so `event.type` compared with another family's type is settled: one
+  function listening to key and pointer events lowers its `keydown` branch for the key family only.
 - Pointer capture (element, engine canvas or stored element) retargets the pointer's events, compatibility mouse
   events and hover until release, pointerup or pointercancel; touch presses capture implicitly. SDL holds a captured
   mouse beyond the window.

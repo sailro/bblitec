@@ -121,6 +121,90 @@ int main() {
     );
 });
 
+test("a listener shared by keyboard and pointer events settles its event's type by its family", (t) => {
+    // One function listens to both families. Its pointer lowering never
+    // sees a key event, so the keyboard members it reads under a `keydown`
+    // or `keyup` test are not lowered there; its keyboard lowering reads
+    // them, the key's location included.
+    const result = compileSource(`
+        ${preamble}
+        const BLOCKED = ["pointerdown", "wheel", "keydown", "keyup"] as const;
+        interface HeldKey { key: string; code: string; location: number }
+        const heldKeyId = (event: Event): string => {
+            const { code, key } = event as KeyboardEvent;
+            return code || key || "";
+        };
+        const heldKeys = new Map<string, HeldKey>();
+        let pointers = 0;
+        const intercept = (event: Event): void => {
+            if (event.type === "keyup") heldKeys.delete(heldKeyId(event));
+            if (event.type === "keydown" && heldKeyId(event)) {
+                const { key, code, location } = event as KeyboardEvent;
+                heldKeys.set(heldKeyId(event), { key: key ?? "", code: code ?? "", location: location ?? 0 });
+                const held = heldKeys.get("ShiftLeft");
+                if (!held || held.key !== "Shift" || held.location !== 1) throw new Error("held key");
+            }
+            if (event.type !== "keydown" && event.type !== "keyup") pointers++;
+            const expected = event.type === "keydown" ? 1 : event.type === "keyup" ? 0 : 1;
+            if (heldKeys.size === expected && pointers === (event.type === "keydown" ? 0 : 1)) event.preventDefault();
+        };
+        for (const type of BLOCKED) window.addEventListener(type, intercept, { capture: true });
+    `);
+    const tools = optionalNativeFixtureTools(false);
+    if (!tools) {
+        t.skip("Native fixture compiler unavailable.");
+        return;
+    }
+    runGeneratedProgram(
+        tools,
+        "native-shared-family-listener",
+        `#define main generated_main
+${result.cpp}
+#undef main
+#include <cassert>
+namespace {
+    const auto shared_listener_input = std::make_shared<bbl::DomInput>();
+    std::shared_ptr<bbl::DomEventState> event_state(const std::string& type) {
+        auto state = std::make_shared<bbl::DomEventState>();
+        state->type = type;
+        state->target = bbl::DomEventTarget::window();
+        state->path = {state->target};
+        state->cancelable = true;
+        return state;
+    }
+}
+namespace bbl {
+    Engine create_engine(EngineOptions) {
+        Engine engine;
+        engine.dom_input = shared_listener_input;
+        return engine;
+    }
+}
+int main() {
+    assert(generated_main() == 0);
+    bbl::PlatformKeyboardEvent down;
+    down.code = "ShiftLeft";
+    down.key = "Shift";
+    down.location = 1;
+    down.dom = event_state("keydown");
+    shared_listener_input->keyboard.dispatch(down);
+    assert(down.default_prevented);
+    bbl::PlatformMouseEvent pointer;
+    pointer.dom = event_state("pointerdown");
+    shared_listener_input->pointer.dispatch(pointer);
+    assert(pointer.default_prevented);
+    bbl::PlatformKeyboardEvent up;
+    up.code = "ShiftLeft";
+    up.key = "Shift";
+    up.location = 1;
+    up.dom = event_state("keyup");
+    shared_listener_input->keyboard.dispatch(up);
+    assert(up.default_prevented);
+}
+`,
+    );
+});
+
 test("a structural interface over a host list's elements is a view of each native owner", async (t) => {
     // The reader a test can feed plain objects: its interface is the part
     // of a browser Gamepad it uses, and the browser's own list sinks into
@@ -298,11 +382,11 @@ test("structural event storage refuses invented owners and unsupported members",
         () =>
             compileSource(`
                 ${preamble}
-                function location(event: Pick<KeyboardEvent, "location">): number { return event.location; }
-                const readers: Array<typeof location> = [location];
+                function legacy(event: Pick<KeyboardEvent, "keyCode">): number { return event.keyCode; }
+                const readers: Array<typeof legacy> = [legacy];
                 window.addEventListener("keydown", event => readers[0]!(event));
             `),
-        /Platform keyboard events do not expose 'location'/,
+        /Platform keyboard events do not expose 'keyCode'/,
     );
     assert.throws(
         () =>

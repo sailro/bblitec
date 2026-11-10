@@ -3178,6 +3178,12 @@ export interface ValueFields {
     /** A value bound by a native runtime iteration, not a static unroll. */
     runtimeIteration?: true;
     staticString?: string;
+    /**
+     * Strings generation knows a run-time string never is (an event's
+     * `type` is no name of a listener family that receives another kind of
+     * event): a comparison with one of them is settled.
+     */
+    excludedStrings?: ReadonlySet<string>;
     /** Local text whose standalone writes update its generation-known value. */
     orderedTextDeclaration?: ts.VariableDeclaration;
     /** Runtime control-flow depth at that declaration: deeper writes may not run. */

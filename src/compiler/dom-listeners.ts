@@ -186,6 +186,31 @@ const NAMED_FAMILIES: readonly NamedDomListenerFamily[] = [
     "drag",
 ];
 
+/** @unjournaled `foreignEventTypes` answers, by event kind: a function of the family table. */
+const foreignTypes = new Map<string, ReadonlySet<string>>();
+
+/**
+ * The DOM event types an event of `kind` never has: the names of the
+ * families whose listeners receive another kind of event (a pointer-family
+ * listener is never dispatched a keydown). A family dispatching the base
+ * Event view excludes nothing: that view may be read as either kind.
+ */
+export function foreignEventTypes(
+    kind: "platform-keyboard-event" | "platform-mouse-event",
+): ReadonlySet<string> {
+    let foreign = foreignTypes.get(kind);
+    if (!foreign) {
+        foreign = new Set(
+            NAMED_FAMILIES.flatMap((family) => {
+                const { event, names } = DOM_LISTENER_FAMILIES[family];
+                return "kind" in event && event.kind !== kind ? [...names] : [];
+            }),
+        );
+        foreignTypes.set(kind, foreign);
+    }
+    return foreign;
+}
+
 /** The families an element `on<type>` handler joins. */
 export type ElementHandlerFamily = {
     [F in DomListenerFamily]: (typeof DOM_LISTENER_FAMILIES)[F] extends {

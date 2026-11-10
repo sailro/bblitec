@@ -15,8 +15,11 @@ import {
     foldNumericComparison,
 } from "../lowering/pinned-operators.js";
 import { localClassOfSymbol } from "./class-members.js";
+import { unlessRefused } from "./compile-error.js";
 import { isJsonValue } from "./json-bridge.js";
 import type { LoweringServices } from "./lowering-services.js";
+import { declaredInDomLibrary } from "./symbols.js";
+import { equalityOperator, unwrapExpression } from "./syntax.js";
 import type { Value } from "./types.js";
 import { valueKinds } from "./type-facts.js";
 
@@ -155,6 +158,49 @@ export interface ComparisonContext extends Pick<
     | "probeEmission"
     | "fail"
 > {}
+
+/**
+ * An equality of a string literal with a member of a DOM event that
+ * generation knows is never that string (`Value.excludedStrings`: an
+ * event's `type` against a type its listener's family never dispatches):
+ * the answer as `"true"`/`"false"`, or nothing for any other comparison.
+ * The member read has no effect, so the settled comparison drops it.
+ */
+export function foldExcludedString(
+    context: ComparisonContext,
+    expression: ts.BinaryExpression,
+): string | undefined {
+    const equality = equalityOperator(expression.operatorToken.kind);
+    if (!equality) return undefined;
+    for (const [literal, other] of [
+        [expression.left, expression.right],
+        [expression.right, expression.left],
+    ] as const) {
+        const text = context.evaluator.resolveStaticExpression(literal);
+        const read = unwrapExpression(other);
+        if (
+            !ts.isStringLiteralLike(text) ||
+            !ts.isPropertyAccessExpression(read) ||
+            !declaredInDomLibrary(
+                context.checker
+                    .getNonNullableType(
+                        context.checker.getTypeAtLocation(read.expression),
+                    )
+                    .getSymbol(),
+            )
+        )
+            continue;
+        const never = context.probeEmission(
+            () =>
+                unlessRefused(() =>
+                    context.propertyAccess.compilePropertyAccess(read),
+                )?.excludedStrings?.has(text.text) === true,
+            () => false,
+        );
+        if (never) return equality.negated ? "true" : "false";
+    }
+    return undefined;
+}
 
 /**
  * A strict comparison to a boolean where both sides settle at generation.

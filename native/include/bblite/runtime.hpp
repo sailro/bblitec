@@ -202,6 +202,8 @@ struct PlatformKeyboardEvent : PlatformEventFlags, PlatformModifierKeys {
     bool repeat = false;
     /** Inside an input method composition (`Engine::text_composing` when the key arrived). */
     bool is_composing = false;
+    /** `KeyboardEvent.location`: 0 standard, 1 and 2 a left and a right modifier, 3 the numeric keypad. */
+    std::uint32_t location = 0;
 };
 
 /** A storage notification delivered to a different Window sharing the storage area. */
