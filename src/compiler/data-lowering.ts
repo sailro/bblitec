@@ -20730,11 +20730,20 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         };
     }
 
-    /** `new Set(...)`, `new Map(...)`: a fresh collection the loop ranges over. */
+    /**
+     * `new Set(...)`, `new Map(...)`: a fresh collection the loop ranges
+     * over. A module constant without storage is the collection it
+     * constructs, where the loop stands (`compileStaticContainer`).
+     */
     private constructedCollection(
         expression: ts.Expression,
     ): Value | undefined {
-        const constructed = this.context.unwrap(expression);
+        const named = this.context.unwrap(expression);
+        const constructed =
+            ts.isIdentifier(named) &&
+            !this.context.bindings.lookupOptional(named)
+                ? this.context.resolveStaticExpression(named)
+                : named;
         if (
             !ts.isNewExpression(constructed) ||
             !["Set", "Map", "Array"].includes(

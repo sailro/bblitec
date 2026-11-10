@@ -1129,6 +1129,28 @@ test("ambient availability guards settle through imported helpers", async (t) =>
     await executeGeneratedAssertions(t, "ambient-typeof-module", result.cpp);
 });
 
+test("a loop over another module's constant set ranges over the set it constructs", async (t) => {
+    const directory = resolve("artifacts/imported-constant-set");
+    mkdirSync(directory, { recursive: true });
+    writeFileSync(
+        join(directory, "kinds.ts"),
+        `export type Kind = "food" | "fish" | "bread" | "beer" | "wood";
+        export const PERISHABLE: ReadonlySet<Kind> = new Set<Kind>(["food", "fish", "bread", "beer"]);
+        export function policy(kind: Kind): string { return PERISHABLE.has(kind) ? "fresh" : "durable"; }`,
+    );
+    const result = compileSource(
+        `import { PERISHABLE, policy } from "./kinds.js";
+        (() => { if (policy("wood") !== "durable" || !PERISHABLE.has("food")) throw new Error("has"); })();
+        (() => {
+            let fresh = "";
+            for (const kind of PERISHABLE) if (policy(kind) === "fresh") fresh += kind[0];
+            if (fresh !== "ffbb") throw new Error("fresh " + fresh);
+        })();`,
+        { fileName: join(directory, "entry.ts") },
+    );
+    await executeGeneratedAssertions(t, "imported-constant-set", result.cpp);
+});
+
 check(
     "optional-container-method-continuations",
     `
