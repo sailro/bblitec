@@ -13135,6 +13135,15 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 cpp: `${value.cpp}.asserted_instance<${this.context.dataTypes.cppType(dataType)}>()`,
                 dataType,
             };
+        // A parsed array is stored as the array sink stores it: parsed
+        // records stay documents, every other element converts.
+        if (isJsonValue(value) && dataType.kind === "vector")
+            return {
+                kind: "data",
+                cpp: this.compileKnownValueForSink(value, dataType, source),
+                dataType,
+                freshData: true,
+            };
         if (isJsonValue(value)) this.requireDocumentRecord(dataType);
         if (dataType.kind === "enummap" && value.dataType?.kind === "struct")
             this.requireEnumMapBinding(expression, dataType);

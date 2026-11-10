@@ -3894,6 +3894,30 @@ check(
 `,
 );
 
+// A parsed number list assigned to a declared number list is stored as the
+// list sink stores it.
+check(
+    "parsed-number-list-assigned-to-a-declared-number-list",
+    `
+    interface Point { position: number[]; look?: number[] }
+    interface Path { points: Point[]; lookAt?: number[] }
+    const flag = Math.random() >= 0;
+    const path = JSON.parse(flag ? '{"points":[{"position":[1,2,3]},{"position":[4,5,6],"look":[7,8,9]}],"lookAt":[10,11,12]}' : '{"points":[]}') as Path;
+    function aim(p: Path, index: number, locked: boolean): number {
+        const lookAt = locked ? p.lookAt : undefined;
+        let target: readonly number[];
+        if (lookAt) {
+            target = lookAt;
+        } else {
+            const point = p.points[index]!;
+            target = point.look ?? point.position;
+        }
+        return target[0]! + target[1]! + target[2]!;
+    }
+    if (aim(path, 0, true) !== 33 || aim(path, 0, false) !== 6 || aim(path, 1, false) !== 24) throw new Error("aim");
+`,
+);
+
 // A tagged record union whose arms hold points of two lengths, one of them
 // optional, beside arms with no point: one array stores the field.
 check(
