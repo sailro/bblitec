@@ -485,6 +485,25 @@ test("deferred recursive callbacks and async record methods retain independent a
         true,
     ));
 
+test("a stored function returns an async call's promise as its value-or-promise result", (t) =>
+    nativeCheck(
+        t,
+        "value-or-promise-return",
+        `
+    type Outcome={ok:boolean;home:string};
+    type Executor=(action:string)=>Outcome|Promise<Outcome>;
+    const place=async(home:string):Promise<Outcome>=>{await Promise.resolve();return {ok:home==="tower",home};};
+    const executors:Executor[]=[];
+    executors.push((action)=>{if(action==="bad")return {ok:false,home:""};return place(action);});
+    void(async()=>{
+        const quick=await executors[0]!("bad");const slow=await executors[0]!("tower");
+        if(quick.ok||!slow.ok||slow.home!=="tower")throw new Error("outcomes");
+        globalThis.close();
+    })();
+`,
+        true,
+    ));
+
 test("a thenable check tells a promise from the value it may be instead", (t) =>
     nativeCheck(
         t,
