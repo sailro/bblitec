@@ -241,3 +241,31 @@ export function readsTitle(): string | null { return label.getAttribute("title")
     assert.equal(footprint("readsTitle").writes.objects.size, 0);
     assert.ok(footprint("readsTitle").reads.objects.has("page:label"));
 });
+
+test("a query bag's lookups read it; its setters write it", () => {
+    const { footprint, order, initializer } = analysis(`
+const query = new URLSearchParams(location.search);
+const scaled = (name: string, fallback: number): number => {
+    const text = query.get(name);
+    return text !== null && Number.isFinite(Number(text)) ? Number(text) : fallback;
+};
+export function looksUp(): boolean { return query.has("scale") && query.getAll("scale").length > 0 && query.get("scale") !== "" && query.toString() !== ""; }
+export function sets(): void { query.set("scale", "2"); }
+export const options = { size: scaled("size", 1024), bias: scaled("bias", 0.001), unread: scaled("normal", 0.02) };`);
+    assert.equal(footprint("looksUp").writes.objects.size, 0);
+    assert.ok(footprint("looksUp").reads.objects.size > 0);
+    assert.ok(footprint("sets").writes.objects.size > 0);
+    // Lookups of one bag need no order among themselves.
+    const literal = initializer("options");
+    assert.ok(ts.isObjectLiteralExpression(literal));
+    assert.deepEqual(
+        order.operandsToPin(
+            literal.properties.map((property) =>
+                ts.isPropertyAssignment(property)
+                    ? property.initializer
+                    : property,
+            ),
+        ),
+        [false, false, false],
+    );
+});

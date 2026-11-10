@@ -45,6 +45,13 @@ test("evaluates and drops the PCF normalBias the pinned factory never reads", ()
         computed.cpp,
         /static_cast<void>\(\(bbl::pal::performance_milliseconds\(\) \/ 1000\.0\)\);/,
     );
+    // Query lookups before it write nothing it reads, so it keeps its place.
+    const queried = compileSource(
+        shadowScene(
+            'mapSize: Math.round(size), bias: Number(query.get("bias") ?? "0.001"), normalBias: Number(query.get("normal") ?? "0.02"), darkness: Number(query.get("dark") ?? "0.3")',
+        ),
+    );
+    assert.match(queried.cpp, /create_pcf_directional_shadow_generator\(/);
     // The header that lowers the factories also asserts the pin's bodies
     // never read the option.
     assert.doesNotThrow(() => pinnedShadowHeader(new LoweringContext()));

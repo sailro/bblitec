@@ -226,6 +226,10 @@ const PLATFORM_METHOD_EFFECTS: ReadonlyMap<
     ],
     ["DOMTokenList", new Map(methodEffects("reads", "contains"))],
     [
+        "URLSearchParams",
+        new Map(methodEffects("reads", "get", "getAll", "has", "toString")),
+    ],
+    [
         "Window",
         new Map([
             ...methodEffects("reads", "getComputedStyle", "matchMedia"),
