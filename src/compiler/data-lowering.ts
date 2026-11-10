@@ -4981,6 +4981,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
 
     public compileNullishCoalesce(
         expression: ts.BinaryExpression,
+        sink?: DataType,
     ): Value | undefined {
         // The operator tests storage even when TypeScript still considers a
         // field narrowed across a helper that can have changed it.
@@ -5281,6 +5282,21 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 return this.leafValue(
                     `(${leftFound} ? ${found} : ${fallbackArm(union, () => this.compileKnownValueForSink(fallback, union, expression.right))})`,
                     union,
+                );
+            }
+            // Objects of two kinds kept where any object is (`object |
+            // null`, stored as a document value): each operand is stored
+            // as that document value.
+            if (sink?.kind === "json" && fallback.kind !== left.kind) {
+                const { optionalFoundCpp: _found, ...present } = left;
+                const found = this.compileKnownValueForSink(
+                    present,
+                    sink,
+                    expression.left,
+                );
+                return this.leafValue(
+                    `(${leftFound} ? ${found} : ${fallbackArm(sink, () => this.compileKnownValueForSink(fallback, sink, expression.right))})`,
+                    sink,
                 );
             }
             if (fallback.kind !== left.kind) {
@@ -11932,7 +11948,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             if (folded !== unwrapped) {
                 return this.compileForSink(folded, dataType);
             }
-            const selected = this.compileNullishCoalesce(unwrapped);
+            const selected = this.compileNullishCoalesce(unwrapped, dataType);
             if (selected)
                 return this.compileKnownValueForSink(
                     selected,

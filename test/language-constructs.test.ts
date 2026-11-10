@@ -3894,6 +3894,31 @@ check(
 `,
 );
 
+// `object | null` keeps any object for its identity: a record or, where
+// none is open, an array.
+check(
+    "object-kept-from-a-record-or-an-array-by-identity",
+    `
+    interface Nav { options(): readonly string[] }
+    let open: Nav | null = null;
+    let heldIn: object | null = null;
+    let log = "";
+    const flag = Math.random() >= 0;
+    const root: number[] | null = flag ? [1, 2] : null;
+    function handle(use: boolean): void {
+        const list = use ? open : null;
+        const area: object | null = list ?? root;
+        if (!area) { heldIn = null; log += "none,"; return; }
+        log += heldIn !== area ? "changed," : "same,";
+        heldIn = area;
+    }
+    handle(flag); handle(flag);
+    open = { options: () => ["a"] };
+    handle(flag); handle(flag); handle(!flag); handle(!flag);
+    if (log !== "changed,same,changed,same,changed,same,") throw new Error(log);
+`,
+);
+
 // One arm names a single literal, another a set of them, both optional:
 // the field stores every arm's literals with the one empty state.
 check(

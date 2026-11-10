@@ -3491,6 +3491,40 @@ test("defaults an absent nullable array element before nullish coalescing", () =
     assert.doesNotMatch(result.cpp, /array_index_checked\(v_\w*pads,/);
 });
 
+test("a record or an element kept as an object is selected by the record's presence", () => {
+    // `list ?? root` under `object | null`: two kinds of object, each
+    // stored as the document value the name keeps for its identity.
+    const result = compileSource(`
+        import { createEngine } from "@babylonjs/lite";
+        const canvas = document.getElementById("renderCanvas") as HTMLCanvasElement;
+        await createEngine(canvas);
+        interface Nav { options(): readonly HTMLElement[]; entry(): HTMLElement | null }
+        const panel = document.createElement("div");
+        const menu = document.createElement("ul");
+        panel.appendChild(menu);
+        document.body.appendChild(panel);
+        let openList: { menu: HTMLElement; navigation: Nav } | null = null;
+        function openNav(root: Node): Nav | null { return openList && root.contains(openList.menu) ? openList.navigation : null; }
+        let heldIn: object | null = null;
+        let log = "";
+        function handle(root: HTMLElement | null): void {
+            const list = root ? openNav(root) : null;
+            const area: object | null = list ?? root;
+            if (!area) { heldIn = null; log += "none,"; return; }
+            log += heldIn !== area ? "changed," : "same,";
+            heldIn = area;
+        }
+        handle(panel);
+        openList = { menu, navigation: { options: () => [menu], entry: () => null } };
+        handle(panel);
+        handle(null);
+    `);
+    assert.match(
+        result.cpp,
+        /_area = \(v_fn\d+_list\.is_null\(\) \|\| v_fn\d+_list\.is_undefined\(\) \? bbl::js::json_value\(bbl::dom_target_value\(/,
+    );
+});
+
 test("a gamepad source built before the engine reads the pads through the Window's engine", () => {
     const directory = resolve("artifacts/gamepad-before-engine");
     mkdirSync(directory, { recursive: true });
