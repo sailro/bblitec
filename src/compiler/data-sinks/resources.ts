@@ -425,6 +425,21 @@ function valueResource(
     if (
         dataType.kind === "handle" &&
         dataType.handle === "texture" &&
+        value.kind === "record" &&
+        !value.cpp
+    ) {
+        const stated = [
+            ...Object.keys(value.recordProperties ?? {}),
+            ...Object.keys(value.recordGetters ?? {}),
+        ];
+        lowerer.context.fail(
+            node,
+            `A Texture2D record states texture, view, sampler, width and height as GPU parts; this one states ${stated.join(", ") || "none"}.`,
+        );
+    }
+    if (
+        dataType.kind === "handle" &&
+        dataType.handle === "texture" &&
         value.kind === "render-texture"
     ) {
         if (
