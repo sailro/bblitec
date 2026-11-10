@@ -3894,6 +3894,38 @@ check(
 `,
 );
 
+// A tagged record union whose arms hold points of two lengths, one of them
+// optional, beside arms with no point: one array stores the field.
+check(
+    "tagged-union-field-of-two-tuple-lengths-some-arms-lacking-it",
+    `
+    type Hit =
+        | { kind: "bridge"; span: number; point: [number, number] }
+        | { kind: "chimney"; host: "tower" | "house"; index: number; point: [number, number, number] }
+        | { kind: "wall"; run: number; point?: [number, number, number] }
+        | { kind: "prop"; id: number };
+    const flag = Math.random() >= 0;
+    const late = { hits: (() => []) as () => readonly Hit[] };
+    if (late.hits().length !== 0) throw new Error("before");
+    late.hits = () => [
+        { kind: "bridge", span: 2, point: [1, 2] },
+        { kind: "chimney", host: flag ? "house" : "tower", index: 4, point: [1, 2, 3] },
+        { kind: "wall", run: 6 },
+        { kind: "wall", run: 7, point: [8, 9, 10] },
+        { kind: "prop", id: 5 },
+    ];
+    let sum = 0;
+    let text = "";
+    for (const hit of late.hits()) {
+        if (hit.kind === "bridge") sum += hit.point[1] + hit.span + hit.point.length;
+        else if (hit.kind === "chimney") { sum += hit.point[2] + hit.index + hit.point.length; text += hit.host; }
+        else if (hit.kind === "wall") sum += hit.run + (hit.point ? hit.point[2] : 100);
+        else sum += hit.id;
+    }
+    if (sum !== 144 || text !== "house") throw new Error("sum " + sum + text);
+`,
+);
+
 // A `map` building empty records has no storage of its own: its array is
 // the one its place declares, each record its own.
 check(

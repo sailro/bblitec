@@ -6235,16 +6235,7 @@ export class DataTypeRegistry {
                     ts.IndexKind.Number,
                 );
                 const element = indexed && this.fromStoredTsType(indexed, node);
-                return element
-                    ? {
-                          kind: "vector",
-                          element: markIdentityFunctions(
-                              this.markStoredObjectReferences(
-                                  this.arrayElementStorage(element),
-                              ),
-                          ),
-                      }
-                    : undefined;
+                return element ? this.sharedArrayStorage(element) : undefined;
             } finally {
                 this.arrayUnionsInProgress.delete(type);
             }
@@ -6356,6 +6347,47 @@ export class DataTypeRegistry {
     }
 
     private readonly arrayUnionsInProgress = new EmissionSet<ts.Type>();
+
+    /** The array storing tuples and arrays of several lengths whose elements are stored as `element`. */
+    private sharedArrayStorage(element: DataType): DataType<"vector"> {
+        return {
+            kind: "vector",
+            element: markIdentityFunctions(
+                this.markStoredObjectReferences(
+                    this.arrayElementStorage(element),
+                ),
+            ),
+        };
+    }
+
+    /**
+     * The array storing a field some arms of a record union declare as
+     * tuples or arrays of several lengths, as the union of those types is
+     * stored where every arm declares it. Undefined where a type is no
+     * array or the elements are stored differently.
+     */
+    private sharedArrayOfArms(
+        types: readonly ts.Type[],
+        node: ts.Node,
+    ): DataType<"vector"> | undefined {
+        let shared: DataType | undefined;
+        for (const type of types) {
+            if (
+                !this.checker.isTupleType(type) &&
+                !this.checker.isArrayType(type)
+            )
+                return undefined;
+            const indexed = this.checker.getIndexTypeOfType(
+                type,
+                ts.IndexKind.Number,
+            );
+            const element = indexed && this.fromStoredTsType(indexed, node);
+            if (!element || (shared && !dataTypesEqual(shared, element)))
+                return undefined;
+            shared = element;
+        }
+        return shared && this.sharedArrayStorage(shared);
+    }
 
     /** Fixed tuple alternatives share lanes where their stored representations agree. */
     private fromTupleUnion(
@@ -6961,6 +6993,21 @@ export class DataTypeRegistry {
                     const nullable = candidates.find(
                         (candidate) => candidate?.kind === "optional",
                     );
+                    // Tuples of several lengths are one array, as their
+                    // union is where every arm declares the field.
+                    const array = sharedProperty
+                        ? undefined
+                        : this.sharedArrayOfArms(
+                              propertyTypes.map((propertyType) =>
+                                  this.checker.getNonNullableType(propertyType),
+                              ),
+                              node,
+                          );
+                    if (array)
+                        mapped =
+                            nullable?.kind === "optional"
+                                ? { ...nullable, inner: array }
+                                : array;
                     if (
                         !mapped &&
                         nullable?.kind === "optional" &&
