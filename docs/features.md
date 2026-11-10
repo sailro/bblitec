@@ -73,6 +73,8 @@ Rules:
   `Record<string, unknown>` are documents.
 - A record type a parsed document is stored as is a document, with every record type the program reads out of it
   (members, array elements, dictionary values).
+- A stored binding whose literal spells plain JSON that no layout holds (empty arrays, elements of mixed shapes: a
+  JSON import of saved data) is a document.
 - Reached `Iterable<T>` parameters specialize to concrete collection storage, preserving iterator cursor identity.
 - A module `let` assigned only by unreachable functions keeps its initializer. Strict comparisons fold through `const`
   aliases, absent `??` lefts and generation-known booleans.

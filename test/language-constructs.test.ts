@@ -6376,6 +6376,31 @@ test("a JSON import is the one object its text parses to", async (t) => {
     await executeGeneratedAssertions(t, "json-import", result.cpp);
 });
 
+test("a JSON import no layout stores is the document it spells", async (t) => {
+    // Empty arrays and elements of mixed shapes: the literal's own type has
+    // no layout, so a binding that must be stored holds it as a document.
+    const result = compileSource(
+        `
+        import save from "./json-import-document.json";
+        interface Item { id: number; name?: string; tags?: string[] }
+        interface Rocks { drops: number[]; removed: number[] }
+        interface Save { version: number; items: Item[]; rocks: Rocks; meta: Record<string, unknown> | null }
+        function total(data: Save): number {
+            let sum = data.version + data.rocks.drops.length;
+            for (const item of data.items) sum += item.id + (item.tags?.length ?? 0);
+            return sum;
+        }
+        const held: Save[] = [];
+        held.push(save as Save);
+        held[0]!.rocks.drops.push(4);
+        const sum = total(held[0]!);
+        if (sum !== 8 || save.rocks.drops.length !== 1) throw new Error("json import document " + sum);
+    `,
+        { fileName: "test/fixtures/json-import-document.ts" },
+    );
+    await executeGeneratedAssertions(t, "json-import-document", result.cpp);
+});
+
 test("constant numeric tables support runtime indexing and static string projections", () => {
     const result = compileSource(`
         const AXES = [[0, 1, 2], [1, 0, 2], [2, 1, 0]] as const;
