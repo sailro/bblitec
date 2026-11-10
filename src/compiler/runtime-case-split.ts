@@ -16,6 +16,7 @@ import { ApplicationRealmRequired } from "./worker-modules.js";
 import type { Value } from "./types.js";
 import {
     functionOfDeclaration,
+    isModuleScopeFunction,
     isSuspensionPoint,
     isValueReference,
     valueUse,
@@ -297,21 +298,20 @@ function dependedSelectors(
         : undefined;
 }
 
-/** A function declared at a module's top level, directly or through an import. */
+/** A name calling a module's own function (`isModuleScopeFunction`), directly or through an import. */
 export function moduleLevelCallee(
     checker: ts.TypeChecker,
     callee: ts.Expression,
 ): boolean {
     if (!ts.isIdentifier(callee)) return false;
     const declaration = resolvedSymbol(checker, callee)?.valueDeclaration;
-    if (!declaration) return false;
-    if (ts.isFunctionDeclaration(declaration))
-        return ts.isSourceFile(declaration.parent);
     return (
-        ts.isVariableDeclaration(declaration) &&
-        functionOfDeclaration(declaration) !== undefined &&
-        ts.isVariableStatement(declaration.parent.parent) &&
-        ts.isSourceFile(declaration.parent.parent.parent)
+        declaration !== undefined &&
+        isModuleScopeFunction(
+            ts.isVariableDeclaration(declaration)
+                ? (functionOfDeclaration(declaration) ?? declaration)
+                : declaration,
+        )
     );
 }
 

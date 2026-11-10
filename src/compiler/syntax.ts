@@ -2400,6 +2400,29 @@ export function functionOfDeclaration(
 }
 
 /**
+ * Whether a function is a module's own: a `function` statement of a source
+ * file, or the function literal a file's `const` is initialized with,
+ * through parentheses and type assertions. Nothing rebinds either, and
+ * neither closes over a local binding.
+ */
+export function isModuleScopeFunction(declaration: ts.Node): boolean {
+    if (ts.isFunctionDeclaration(declaration))
+        return ts.isSourceFile(declaration.parent);
+    if (
+        !ts.isArrowFunction(declaration) &&
+        !ts.isFunctionExpression(declaration)
+    )
+        return false;
+    const binding = outermostWrapper(declaration).parent;
+    return (
+        ts.isVariableDeclaration(binding) &&
+        variableKind(binding) === "const" &&
+        ts.isVariableStatement(binding.parent.parent) &&
+        ts.isSourceFile(binding.parent.parent.parent)
+    );
+}
+
+/**
  * The synchronous, non-generator source function a declaration names: a
  * function declaration, or a `const` bound to a function literal.
  */

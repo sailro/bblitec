@@ -133,8 +133,8 @@ import {
     writeSites,
     expressionHasEffects,
     functionKind,
+    isModuleScopeFunction,
     regularExpressionParts,
-    type SupportedFunction,
     variableKind,
     jsonScalarLiteral,
     notJson,
@@ -153,24 +153,6 @@ import {
     mathMemberCall,
 } from "./math-intrinsics.js";
 import { knownCondition } from "./values/model.js";
-
-/**
- * The function a module-scope declaration names: a `function` or a `const`
- * arrow/function expression whose statement sits in the source file.
- */
-function isModuleScopeFunction(declaration: SupportedFunction): boolean {
-    if (ts.isFunctionDeclaration(declaration)) {
-        return ts.isSourceFile(declaration.parent);
-    }
-    const binding = declaration.parent;
-    return (
-        ts.isVariableDeclaration(binding) &&
-        ts.isVariableDeclarationList(binding.parent) &&
-        variableKind(binding.parent) === "const" &&
-        ts.isVariableStatement(binding.parent.parent) &&
-        ts.isSourceFile(binding.parent.parent.parent)
-    );
-}
 
 /** Whether a symbol names a module-scope `const` declared in the program. */
 function isModuleConstant(symbol: ts.Symbol): boolean {
