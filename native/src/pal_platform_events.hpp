@@ -1333,6 +1333,8 @@ inline void set_dom_pointer_context(const Engine& engine, PlatformMouseEvent& po
 inline std::shared_ptr<DomEventBatch> prepare_dom_platform_input(Engine& engine,
                                                                  const SDL_Event& event) {
     observe_text_composition(engine, event);
+    if (event.type == SDL_EVENT_WINDOW_FOCUS_GAINED || event.type == SDL_EVENT_WINDOW_FOCUS_LOST)
+        pal::window_input_focus() = event.type == SDL_EVENT_WINDOW_FOCUS_GAINED;
 #if BBLITE_HAS_GAMEPAD
     // Every gamepad event reaches the Window's gamepads, listened to or not.
     if (event.type == SDL_EVENT_GAMEPAD_ADDED || event.type == SDL_EVENT_GAMEPAD_REMOVED ||

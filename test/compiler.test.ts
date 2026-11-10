@@ -3506,7 +3506,7 @@ test("a gamepad source built before the engine reads the pads through the Window
                 typeof navigator !== "undefined" && typeof navigator.getGamepads === "function" ? navigator.getGamepads() : null;
             return {
                 getGamepads,
-                isActive: () => typeof document === "undefined" || document.visibilityState === "visible",
+                isActive: () => typeof document === "undefined" || (document.visibilityState === "visible" && document.hasFocus()),
                 standard: () => {
                     let count = 0;
                     for (const pad of getGamepads() ?? []) if (pad && pad.connected && pad.mapping === "standard") count++;
@@ -3537,6 +3537,8 @@ test("a gamepad source built before the engine reads the pads through the Window
         result.cpp,
         /platform_gamepads\(bbl::pal::window_document_engine\(\)\)/,
     );
+    // The Window's input focus gates the source.
+    assert.match(result.cpp, /document_hidden.*bbl::document_has_focus\(\)/s);
     // A pad read where no engine exists yet is the Window's too.
     assert.match(
         result.cpp,

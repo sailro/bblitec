@@ -83,6 +83,7 @@ before implementing: a source refusal does not mean RmlUi lacks the feature.
   later for each new one. gamepaddisconnected fires for an announced pad's removal. Test passes drop gamepad input. A
   pad reads `index`, `connected`, `mapping` (always "standard"), `axes` and `buttons` (`pressed`, `value`: a trigger's
   travel, 1 for another button down); an interface declaring those members holds the pad itself.
+- `document.hasFocus()` is the window's input focus, from SDL's focus events.
 - An event's `target`/`currentTarget` narrowed by `instanceof` to an element is that retained element; writes through it
   lower as the element's own.
 - Dynamically created scripts are retained, never rendered: an external script fails to load (a task fires `error`

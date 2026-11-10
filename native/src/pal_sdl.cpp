@@ -43,6 +43,8 @@
 
 namespace bbl {
 
+bool document_has_focus() { return pal::window_input_focus(); }
+
 #if BBLITE_HAS_GAMEPAD
 struct PlatformGamepadState {
     struct Gamepad {

@@ -74,6 +74,7 @@ import {
 import {
     computedStyleElement,
     documentVisibilityAvailable,
+    isDocumentFocusCall,
     isDocumentVisibilityRead,
 } from "./window-events.js";
 import { stringLiteral } from "../cpp-literals.js";
@@ -1402,7 +1403,8 @@ export class BrowserErasure {
         )
             return false;
         if (
-            isDocumentVisibilityRead(this.context, unwrapped) &&
+            (isDocumentVisibilityRead(this.context, unwrapped) ||
+                isDocumentFocusCall(this.context, unwrapped)) &&
             documentVisibilityAvailable(this.context)
         ) {
             return false;

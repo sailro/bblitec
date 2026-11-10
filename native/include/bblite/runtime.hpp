@@ -6264,6 +6264,9 @@ template <typename Callback>
     };
 }
 
+/** `document.hasFocus()`: whether the Window has input focus (implemented by pal_sdl.cpp). */
+bool document_has_focus();
+
 /** SDL-backed browser Gamepad surface (implemented by pal_sdl.cpp). */
 js::Array<js::Nullable<GamepadHandle>> platform_gamepads(Engine& engine);
 double gamepad_index(Engine& engine, GamepadHandle gamepad);
