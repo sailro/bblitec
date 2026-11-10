@@ -492,12 +492,12 @@ test("a stored function returns an async call's promise as its value-or-promise 
         `
     type Outcome={ok:boolean;home:string};
     type Executor=(action:string)=>Outcome|Promise<Outcome>;
-    const place=async(home:string):Promise<Outcome>=>{await Promise.resolve();return {ok:home==="tower",home};};
+    const place=async(home:string):Promise<Outcome>=>{await Promise.resolve();return {ok:home==="post",home};};
     const executors:Executor[]=[];
     executors.push((action)=>{if(action==="bad")return {ok:false,home:""};return place(action);});
     void(async()=>{
-        const quick=await executors[0]!("bad");const slow=await executors[0]!("tower");
-        if(quick.ok||!slow.ok||slow.home!=="tower")throw new Error("outcomes");
+        const quick=await executors[0]!("bad");const slow=await executors[0]!("post");
+        if(quick.ok||!slow.ok||slow.home!=="post")throw new Error("outcomes");
         globalThis.close();
     })();
 `,

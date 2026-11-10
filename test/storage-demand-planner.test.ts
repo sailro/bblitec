@@ -893,33 +893,33 @@ test("a record type read out of a document is a document with it, in one replay"
     // Every type below is read out of the parsed save and stored as itself:
     // each was one replay of its own, as its first value arrived.
     const source = `
-    interface Door { open: boolean; label: string }
-    interface Lamp { lit: boolean }
-    interface Room { name: string; doors: Door[]; main?: Door; lamps: Record<string, Lamp> }
+    interface Tab { open: boolean; label: string }
+    interface Flag { lit: boolean }
+    interface Group { name: string; tabs: Tab[]; main?: Tab; flags: Record<string, Flag> }
     interface Owner { name: string; age: number }
-    interface House { rooms: Room[]; owner: Owner }
-    interface Save { version: number; house: House }
-    const text = '{"version":2,"house":{"rooms":[{"name":"hall","doors":[{"open":true,"label":"front"}],"main":{"open":false,"label":"m"},"lamps":{"a":{"lit":true}}}],"owner":{"name":"Ada","age":36}}}';
+    interface Cell { groups: Group[]; owner: Owner }
+    interface Save { version: number; cell: Cell }
+    const text = '{"version":2,"cell":{"groups":[{"name":"hall","tabs":[{"open":true,"label":"front"}],"main":{"open":false,"label":"m"},"flags":{"a":{"lit":true}}}],"owner":{"name":"Ada","age":36}}}';
     const saves: Save[] = [];
     saves.push(JSON.parse(text) as Save);
-    const doors: Door[] = [];
-    const rooms: Room[] = [];
+    const tabs: Tab[] = [];
+    const groups: Group[] = [];
     const owners: Owner[] = [];
-    const lamps: Lamp[] = [];
-    const houses: House[] = [];
+    const flags: Flag[] = [];
+    const cells: Cell[] = [];
     for (const save of saves) {
-        houses.push(save.house);
-        owners.push(save.house.owner);
-        for (const room of save.house.rooms) {
-            rooms.push(room);
-            if (room.main) doors.push(room.main);
-            for (const door of room.doors) doors.push(door);
-            for (const key of Object.keys(room.lamps)) lamps.push(room.lamps[key]!);
+        cells.push(save.cell);
+        owners.push(save.cell.owner);
+        for (const group of save.cell.groups) {
+            groups.push(group);
+            if (group.main) tabs.push(group.main);
+            for (const tab of group.tabs) tabs.push(tab);
+            for (const key of Object.keys(group.flags)) flags.push(group.flags[key]!);
         }
     }
     // A literal of a type so stored is the same kind of object.
-    doors.push({ open: true, label: "side" });
-    const out = houses.length + "|" + owners[0]!.name + "|" + rooms[0]!.name + "|" + doors.map((door) => door.label).join("+") + "|" + lamps[0]!.lit;
+    tabs.push({ open: true, label: "side" });
+    const out = cells.length + "|" + owners[0]!.name + "|" + groups[0]!.name + "|" + tabs.map((tab) => tab.label).join("+") + "|" + flags[0]!.lit;
     if (out !== "1|Ada|hall|m+front+side|true") throw new Error(out);
 `;
     const strict = measured(false, () => compileSource(source));
@@ -935,25 +935,25 @@ test("a record copied out of a parsed document field by field is a document with
     // A migration rebuilds the save out of spreads and rests of its parsed
     // records: each copy's type was one replay of its own.
     const source = `
-    interface Pane { id: number; tower: number; s?: number }
-    interface Door { id: number; house: number; purpose?: string }
-    interface Fish { x: number; lc?: number }
-    interface Save { version: number; panes: Pane[]; doors: Door[]; fish: Fish[] }
-    const text = '{"version":3,"panes":[{"id":1,"tower":2,"s":1},{"id":2,"tower":3,"s":2}],"doors":[{"id":4,"house":1,"purpose":"bogus"},{"id":5,"house":2}],"fish":[{"x":1.5,"lc":7}]}';
+    interface Part { id: number; post: number; s?: number }
+    interface Tab { id: number; cell: number; purpose?: string }
+    interface Extra { x: number; lc?: number }
+    interface Save { version: number; parts: Part[]; tabs: Tab[]; extra: Extra[] }
+    const text = '{"version":3,"parts":[{"id":1,"post":2,"s":1},{"id":2,"post":3,"s":2}],"tabs":[{"id":4,"cell":1,"purpose":"bogus"},{"id":5,"cell":2}],"extra":[{"x":1.5,"lc":7}]}';
     function migrate(d: Save): string {
-        const panes = d.panes.map((pane) => {
-            const normalized = { ...pane };
-            if (Math.abs((pane.s ?? 1) - 1) <= 1e-9) delete normalized.s;
+        const parts = d.parts.map((part) => {
+            const normalized = { ...part };
+            if (Math.abs((part.s ?? 1) - 1) <= 1e-9) delete normalized.s;
             return normalized;
         });
-        const doors = d.doors.map((door) => {
-            const raw = (door as Door & { purpose?: unknown }).purpose;
-            if (raw === "entrance" || raw === undefined) return { ...door };
-            const { purpose: _invalid, ...rest } = door as Door & { purpose?: unknown };
-            return rest as Door;
+        const tabs = d.tabs.map((tab) => {
+            const raw = (tab as Tab & { purpose?: unknown }).purpose;
+            if (raw === "entrance" || raw === undefined) return { ...tab };
+            const { purpose: _invalid, ...rest } = tab as Tab & { purpose?: unknown };
+            return rest as Tab;
         });
-        const fish = d.fish.map(({ lc: _retired, ...kept }) => kept);
-        return panes.map((pane) => pane.id + ":" + (pane.s ?? "-")).join() + "|" + doors.map((door) => door.id + ":" + (door.purpose ?? "-")).join() + "|" + fish.map((kept) => kept.x + ":" + ("lc" in kept ? "lc" : "-")).join();
+        const extra = d.extra.map(({ lc: _retired, ...kept }) => kept);
+        return parts.map((part) => part.id + ":" + (part.s ?? "-")).join() + "|" + tabs.map((tab) => tab.id + ":" + (tab.purpose ?? "-")).join() + "|" + extra.map((kept) => kept.x + ":" + ("lc" in kept ? "lc" : "-")).join();
     }
     const out = migrate(JSON.parse(text) as Save);
     if (out !== "1:-,2:2|4:-,5:-|1.5:-") throw new Error(out);
@@ -973,9 +973,9 @@ test("a document handed where another record type is declared makes that type a 
     const source = `
     interface Claim { t: number; h?: number; who: string }
     interface Course { seq: number; v: number }
-    interface Stair { id: number; courses?: Course[] }
-    interface Save { claims: Claim[]; stairs: Stair[] }
-    const text = '{"claims":[{"t":2,"h":7,"who":"ada"},{"t":3,"who":"bob"}],"stairs":[{"id":1,"courses":[{"seq":1,"v":4},{"seq":2,"v":5}]},{"id":2}]}';
+    interface Step { id: number; courses?: Course[] }
+    interface Save { claims: Claim[]; steps: Step[] }
+    const text = '{"claims":[{"t":2,"h":7,"who":"ada"},{"t":3,"who":"bob"}],"steps":[{"id":1,"courses":[{"seq":1,"v":4},{"seq":2,"v":5}]},{"id":2}]}';
     const homes: { t: number; h?: number }[] = [];
     function keep(home: { t: number; h?: number }): number { homes.push(home); return home.h ?? home.t; }
     const folded: { seq: number; v: number }[] = [];
@@ -985,7 +985,7 @@ test("a document handed where another record type is declared makes that type a 
         return total;
     }
     function migrate(d: Save): string {
-        return d.claims.map((claim) => claim.who + keep(claim)).join() + "|" + d.stairs.map((stair) => stair.id + ":" + fold(stair.courses)).join();
+        return d.claims.map((claim) => claim.who + keep(claim)).join() + "|" + d.steps.map((step) => step.id + ":" + fold(step.courses)).join();
     }
     const out = migrate(JSON.parse(text) as Save);
     if (out !== "ada7,bob3|1:9,2:0" || homes.length !== 2 || homes[1]!.t !== 3 || folded.length !== 2 || folded[1]!.seq !== 2) throw new Error(out);
@@ -1004,10 +1004,10 @@ test("an intersection over a parsed record arrived in that record's parse, in on
     // type it is given: the instantiated intersection and the helper's own
     // under that instantiation were two replays for each.
     const source = `
-    interface Villager { id?: number; name: string }
-    interface Fish { id?: number; x: number }
-    interface Save { villagers: Villager[]; fish: Fish[] }
-    function normalizeStableIds<T extends { id?: number }>(input: readonly T[], minimumNextId = 1): { items: Array<T & { id: number }>; nextId: number } {
+    interface Member { id?: number; name: string }
+    interface Extra { id?: number; x: number }
+    interface Save { members: Member[]; extra: Extra[] }
+    function numbered<T extends { id?: number }>(input: readonly T[], minimumNextId = 1): { items: Array<T & { id: number }>; nextId: number } {
         const reserved = new Set<number>();
         for (const item of input) if (Number.isSafeInteger(item.id) && item.id! > 0 && !reserved.has(item.id!)) reserved.add(item.id!);
         const used = new Set<number>();
@@ -1023,11 +1023,11 @@ test("an intersection over a parsed record arrived in that record's parse, in on
         for (const id of used) nextId = Math.max(nextId, id + 1);
         return { items, nextId };
     }
-    const text = '{"villagers":[{"id":4,"name":"ada"},{"name":"bob"},{"id":4,"name":"cy"}],"fish":[{"x":1.5},{"id":9,"x":2.5}]}';
+    const text = '{"members":[{"id":4,"name":"ada"},{"name":"bob"},{"id":4,"name":"cy"}],"extra":[{"x":1.5},{"id":9,"x":2.5}]}';
     function migrate(d: Save): string {
-        const villagers = normalizeStableIds(d.villagers).items;
-        const fish = normalizeStableIds(d.fish, 3);
-        return villagers.map((villager) => villager.name + villager.id).join() + "|" + fish.items.map((kept) => kept.x + ":" + kept.id).join() + "|" + fish.nextId;
+        const members = numbered(d.members).items;
+        const extra = numbered(d.extra, 3);
+        return members.map((member) => member.name + member.id).join() + "|" + extra.items.map((kept) => kept.x + ":" + kept.id).join() + "|" + extra.nextId;
     }
     const out = migrate(JSON.parse(text) as Save);
     if (out !== "ada4,bob5,cy6|1.5:10,2.5:9|11") throw new Error(out);
@@ -1042,26 +1042,26 @@ test("an intersection over a parsed record arrived in that record's parse, in on
 });
 
 test("a record read out of an asserted parse is a document with everything read out of that parse", async (t) => {
-    // The save is only asserted and read; its first stored value is a room,
-    // far below it. The lamps and owners are siblings of the room, and the
+    // The save is only asserted and read; its first stored value is a group,
+    // far below it. The flags and owners are siblings of the group, and the
     // helper's `T & { id: number }` holds an owner's own properties.
     const source = `
-    interface Door { open: boolean; label: string }
-    interface Lamp { lit: boolean }
-    interface Room { name: string; doors: Door[]; main?: Door; lamps: Record<string, Lamp> }
+    interface Tab { open: boolean; label: string }
+    interface Flag { lit: boolean }
+    interface Group { name: string; tabs: Tab[]; main?: Tab; flags: Record<string, Flag> }
     interface Owner { name: string; age: number }
-    interface Save { version: number; rooms: Room[]; owners: Owner[]; lamps: Lamp[] }
-    const text = '{"version":2,"rooms":[{"name":"hall","doors":[{"open":true,"label":"front"}],"main":{"open":false,"label":"m"},"lamps":{"a":{"lit":true}}}],"owners":[{"name":"Ada","age":36}],"lamps":[{"lit":false}]}';
+    interface Save { version: number; groups: Group[]; owners: Owner[]; flags: Flag[] }
+    const text = '{"version":2,"groups":[{"name":"hall","tabs":[{"open":true,"label":"front"}],"main":{"open":false,"label":"m"},"flags":{"a":{"lit":true}}}],"owners":[{"name":"Ada","age":36}],"flags":[{"lit":false}]}';
     function withIds<T>(input: readonly T[]): Array<T & { id: number }> { return input.map((item, index) => ({ ...item, id: index + 1 })); }
     function migrate(d: Partial<Save>): string {
-        const rooms: Room[] = [];
-        for (const room of d.rooms ?? []) rooms.push(room);
+        const groups: Group[] = [];
+        for (const group of d.groups ?? []) groups.push(group);
         const owners = withIds(d.owners ?? []);
-        const lamps: Lamp[] = [];
-        for (const lamp of d.lamps ?? []) lamps.push(lamp);
-        const doors: Door[] = [];
-        for (const room of rooms) for (const door of room.doors) doors.push(door);
-        return rooms[0]!.name + "|" + owners[0]!.name + owners[0]!.id + "|" + lamps.length + "|" + doors[0]!.label;
+        const flags: Flag[] = [];
+        for (const flag of d.flags ?? []) flags.push(flag);
+        const tabs: Tab[] = [];
+        for (const group of groups) for (const tab of group.tabs) tabs.push(tab);
+        return groups[0]!.name + "|" + owners[0]!.name + owners[0]!.id + "|" + flags.length + "|" + tabs[0]!.label;
     }
     function parseSave(parsed: unknown): string {
         if (!parsed || typeof parsed !== "object") return "";

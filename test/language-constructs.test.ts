@@ -1134,16 +1134,16 @@ test("a loop over another module's constant set ranges over the set it construct
     mkdirSync(directory, { recursive: true });
     writeFileSync(
         join(directory, "kinds.ts"),
-        `export type Kind = "food" | "fish" | "bread" | "beer" | "wood";
-        export const PERISHABLE: ReadonlySet<Kind> = new Set<Kind>(["food", "fish", "bread", "beer"]);
-        export function policy(kind: Kind): string { return PERISHABLE.has(kind) ? "fresh" : "durable"; }`,
+        `export type Kind = "alpha" | "extra" | "beta" | "gamma" | "delta";
+        export const FLAGGED: ReadonlySet<Kind> = new Set<Kind>(["alpha", "extra", "beta", "gamma"]);
+        export function policy(kind: Kind): string { return FLAGGED.has(kind) ? "fresh" : "durable"; }`,
     );
     const result = compileSource(
-        `import { PERISHABLE, policy } from "./kinds.js";
-        (() => { if (policy("wood") !== "durable" || !PERISHABLE.has("food")) throw new Error("has"); })();
+        `import { FLAGGED, policy } from "./kinds.js";
+        (() => { if (policy("delta") !== "durable" || !FLAGGED.has("alpha")) throw new Error("has"); })();
         (() => {
             let fresh = "";
-            for (const kind of PERISHABLE) if (policy(kind) === "fresh") fresh += kind[0];
+            for (const kind of FLAGGED) if (policy(kind) === "fresh") fresh += kind[0];
             if (fresh !== "ffbb") throw new Error("fresh " + fresh);
         })();`,
         { fileName: join(directory, "entry.ts") },
@@ -3829,8 +3829,8 @@ check(
     }
     const registry: Homes[] = [createHomes()];
     const homes = registry[0]!;
-    const text = homes.claim(1, 2, "door") + "|" + homes.claim(3, 4, () => { commits++; }) + "|" + homes.claim(5, 6, undefined, () => { commits += 10; }) + "|" + homes.claim(7, 8);
-    if (text !== "door:1:2|none:3:4|none:5:6|none:7:8" || commits !== 11) throw new Error(text + commits);
+    const text = homes.claim(1, 2, "tab") + "|" + homes.claim(3, 4, () => { commits++; }) + "|" + homes.claim(5, 6, undefined, () => { commits += 10; }) + "|" + homes.claim(7, 8);
+    if (text !== "tab:1:2|none:3:4|none:5:6|none:7:8" || commits !== 11) throw new Error(text + commits);
 `,
 );
 
@@ -3841,9 +3841,9 @@ check(
     "generic-intersection-array-stored-as-its-instantiation",
     `
     interface Migration<T extends { id?: number }, H extends { id?: number }> {
-        readonly towers: (T & { id: number })[];
-        readonly houses: (H & { id: number })[];
-        houseId(id: number): number | null;
+        readonly posts: (T & { id: number })[];
+        readonly cells: (H & { id: number })[];
+        cellId(id: number): number | null;
     }
     function normalize<T extends { id?: number }>(input: readonly T[]): { items: Array<T & { id: number }>; nextId: number } {
         let next = 1;
@@ -3851,27 +3851,27 @@ check(
         const items = input.map((item) => ({ ...item, id: item.id ?? next++ }));
         return { items, nextId: next };
     }
-    function migrate<T extends { id?: number }, H extends { id?: number }>(v: number, rawTowers: readonly T[], rawHouses: readonly H[]): Migration<T, H> {
-        const towers = normalize(rawTowers).items;
-        const houses = normalize(rawHouses).items;
-        const houseId = (id: number): number | null => (v > 0 && houses.some((house) => house.id === id) ? id : null);
-        return { towers, houses, houseId };
+    function migrate<T extends { id?: number }, H extends { id?: number }>(v: number, rawPosts: readonly T[], rawCells: readonly H[]): Migration<T, H> {
+        const posts = normalize(rawPosts).items;
+        const cells = normalize(rawCells).items;
+        const cellId = (id: number): number | null => (v > 0 && cells.some((cell) => cell.id === id) ? id : null);
+        return { posts, cells, cellId };
     }
-    interface Save { v?: number; towers?: { x: number; id?: number }[]; houses?: { cx: number; level?: number; crown?: "crenel" | "railing"; id?: number }[] }
-    const kept: Migration<NonNullable<Save["towers"]>[number], NonNullable<Save["houses"]>[number]>[] = [];
+    interface Save { v?: number; posts?: { x: number; id?: number }[]; cells?: { cx: number; level?: number; edge?: "notched" | "plain"; id?: number }[] }
+    const kept: Migration<NonNullable<Save["posts"]>[number], NonNullable<Save["cells"]>[number]>[] = [];
     function normalizeSave(save: Save): Save {
-        const ids = migrate(save.v ?? 0, save.towers ?? [], save.houses ?? []);
+        const ids = migrate(save.v ?? 0, save.posts ?? [], save.cells ?? []);
         kept.push(ids);
-        const homes = [7, 9].flatMap((home) => { const id = ids.houseId(home); return id === null ? [] : [id]; });
-        return { ...save, v: homes.length, towers: ids.towers, houses: ids.houses.filter((house) => ids.houseId(house.id) !== null) };
+        const homes = [7, 9].flatMap((home) => { const id = ids.cellId(home); return id === null ? [] : [id]; });
+        return { ...save, v: homes.length, posts: ids.posts, cells: ids.cells.filter((cell) => ids.cellId(cell.id) !== null) };
     }
     const flag = Math.random() >= 0;
-    const out = normalizeSave({ v: flag ? 2 : 0, towers: [{ x: 1 }], houses: [{ cx: 1 }, { cx: 2, level: 3, id: 7 }] });
-    const text = (out.towers ?? []).map((tower) => tower.x + ":" + tower.id).join() + "|" + (out.houses ?? []).map((house) => house.cx + ":" + house.id + ":" + (house.level ?? "-")).join();
+    const out = normalizeSave({ v: flag ? 2 : 0, posts: [{ x: 1 }], cells: [{ cx: 1 }, { cx: 2, level: 3, id: 7 }] });
+    const text = (out.posts ?? []).map((post) => post.x + ":" + post.id).join() + "|" + (out.cells ?? []).map((cell) => cell.cx + ":" + cell.id + ":" + (cell.level ?? "-")).join();
     if (text !== "1:1|1:8:-,2:7:3" || out.v !== 1) throw new Error(text);
     // The stored result holds the same arrays.
-    kept[0]!.houses[0]!.cx = 5;
-    if (kept.length !== 1 || (out.houses ?? [])[0]!.cx !== 5 || kept[0]!.houseId(8) !== 8) throw new Error("kept");
+    kept[0]!.cells[0]!.cx = 5;
+    if (kept.length !== 1 || (out.cells ?? [])[0]!.cx !== 5 || kept[0]!.cellId(8) !== 8) throw new Error("kept");
 `,
 );
 
@@ -3880,13 +3880,13 @@ check(
 check(
     "map-built-from-number-entries-a-callback-returns",
     `
-    interface HouseRun { houseIndex: number; run: number }
+    interface CellRun { cellIndex: number; run: number }
     const flag = Math.random() >= 0;
-    const records: HouseRun[] = [{ houseIndex: flag ? 4 : 0, run: 0 }, { houseIndex: 6, run: 1 }];
-    const byIndex = new Map(records.map((house) => [house.houseIndex, house.houseIndex]));
+    const records: CellRun[] = [{ cellIndex: flag ? 4 : 0, run: 0 }, { cellIndex: 6, run: 1 }];
+    const byIndex = new Map(records.map((cell) => [cell.cellIndex, cell.cellIndex]));
     if (byIndex.size !== 2 || byIndex.get(4) !== 4 || byIndex.get(6) !== 6 || byIndex.get(5) !== undefined) throw new Error("same");
-    const runOf = new Map(records.map((house) => [house.houseIndex, house.run] as const));
-    const named = new Map<string, HouseRun>(records.map((house) => ["h" + house.houseIndex, house]));
+    const runOf = new Map(records.map((cell) => [cell.cellIndex, cell.run] as const));
+    const named = new Map<string, CellRun>(records.map((cell) => ["h" + cell.cellIndex, cell]));
     if (runOf.get(6) !== 1 || runOf.get(4) !== 0 || named.get("h4")!.run !== 0 || named.size !== 2) throw new Error("entries");
     let sum = 0;
     for (const [index, run] of runOf) sum += index * 10 + run;
@@ -3900,18 +3900,18 @@ check(
     "closure-calling-names-a-later-pattern-declares",
     `
     const flag = Math.random() >= 0;
-    interface Boundary { houseRadius(index: number): number; towerRadius(index: number): number; margin: number }
+    interface Boundary { cellRadius(index: number): number; postRadius(index: number): number; margin: number }
     function makeBoundary(scale: number): Boundary {
-        return { houseRadius: (index) => index * scale, towerRadius: (index) => index * scale + 1, margin: scale / 2 };
+        return { cellRadius: (index) => index * scale, postRadius: (index) => index * scale + 1, margin: scale / 2 };
     }
     interface Align { read(index: number): number }
     function makeAlign(deps: { radius: (index: number) => number; grounded: () => boolean }): Align {
         return { read: (index) => (deps.grounded() ? deps.radius(index) : -1) };
     }
     function build(scale: number): number {
-        const align = makeAlign({ radius: (index) => towerBoundaryRadius(index) + houseRadius(index) + margin, grounded: () => ready });
+        const align = makeAlign({ radius: (index) => postLimit(index) + cellRadius(index) + margin, grounded: () => ready });
         const boundary = makeBoundary(scale);
-        const { houseRadius, towerRadius: towerBoundaryRadius, margin } = boundary;
+        const { cellRadius, postRadius: postLimit, margin } = boundary;
         const ready = flag;
         return align.read(2);
     }
@@ -3956,16 +3956,16 @@ check(
     "tagged-union-field-of-two-tuple-lengths-some-arms-lacking-it",
     `
     type Hit =
-        | { kind: "bridge"; span: number; point: [number, number] }
-        | { kind: "chimney"; host: "tower" | "house"; index: number; point: [number, number, number] }
+        | { kind: "link"; span: number; point: [number, number] }
+        | { kind: "marker"; host: "post" | "cell"; index: number; point: [number, number, number] }
         | { kind: "wall"; run: number; point?: [number, number, number] }
         | { kind: "prop"; id: number };
     const flag = Math.random() >= 0;
     const late = { hits: (() => []) as () => readonly Hit[] };
     if (late.hits().length !== 0) throw new Error("before");
     late.hits = () => [
-        { kind: "bridge", span: 2, point: [1, 2] },
-        { kind: "chimney", host: flag ? "house" : "tower", index: 4, point: [1, 2, 3] },
+        { kind: "link", span: 2, point: [1, 2] },
+        { kind: "marker", host: flag ? "cell" : "post", index: 4, point: [1, 2, 3] },
         { kind: "wall", run: 6 },
         { kind: "wall", run: 7, point: [8, 9, 10] },
         { kind: "prop", id: 5 },
@@ -3973,12 +3973,12 @@ check(
     let sum = 0;
     let text = "";
     for (const hit of late.hits()) {
-        if (hit.kind === "bridge") sum += hit.point[1] + hit.span + hit.point.length;
-        else if (hit.kind === "chimney") { sum += hit.point[2] + hit.index + hit.point.length; text += hit.host; }
+        if (hit.kind === "link") sum += hit.point[1] + hit.span + hit.point.length;
+        else if (hit.kind === "marker") { sum += hit.point[2] + hit.index + hit.point.length; text += hit.host; }
         else if (hit.kind === "wall") sum += hit.run + (hit.point ? hit.point[2] : 100);
         else sum += hit.id;
     }
-    if (sum !== 144 || text !== "house") throw new Error("sum " + sum + text);
+    if (sum !== 144 || text !== "cell") throw new Error("sum " + sum + text);
 `,
 );
 
@@ -4080,18 +4080,18 @@ check(
 check(
     "union-field-with-different-optional-literals-across-arms",
     `
-    type Structure = "house" | "tower" | "wall";
+    type Structure = "cell" | "post" | "wall";
     interface Segment { structure?: Structure; run?: number }
     type Source =
-        | { kind: "polygon"; index: number; structure?: "house"; run?: number }
+        | { kind: "polygon"; index: number; structure?: "cell"; run?: number }
         | { kind: "segment"; index: number; structure?: Segment["structure"]; run?: number }
         | { kind: "blocker"; index: number }
-        | { kind: "water" };
+        | { kind: "gap" };
     const flag = Math.random() >= 0;
     const sources = new Map<string, readonly Source[]>();
-    const segments: Segment[] = [{ structure: flag ? "tower" : "wall", run: 2 }, {}];
+    const segments: Segment[] = [{ structure: flag ? "post" : "wall", run: 2 }, {}];
     function trace(key: string, found: readonly Source[]): void { sources.set(key, found.slice()); }
-    trace("a", [{ kind: "polygon", index: 0, structure: "house" }, { kind: "segment", index: 1, structure: segments[0]!.structure, run: segments[0]!.run }, { kind: "water" }]);
+    trace("a", [{ kind: "polygon", index: 0, structure: "cell" }, { kind: "segment", index: 1, structure: segments[0]!.structure, run: segments[0]!.run }, { kind: "gap" }]);
     trace("b", [{ kind: "segment", index: 2, structure: segments[1]!.structure }, { kind: "blocker", index: 3 }]);
     const describe = (source: Source): string =>
         source.kind === "polygon" || source.kind === "segment"
@@ -4100,9 +4100,9 @@ check(
               ? "blocker:" + source.index
               : source.kind;
     const out = (sources.get("a") ?? []).map(describe).join() + "|" + (sources.get("b") ?? []).map(describe).join();
-    if (out !== "polygon:0:house:-,segment:1:tower:2,water|segment:2:-:-,blocker:3") throw new Error(out);
-    const towers = (sources.get("a") ?? []).filter((source) => source.kind === "segment" && source.structure === "tower").length;
-    if (towers !== 1) throw new Error("towers " + towers);
+    if (out !== "polygon:0:cell:-,segment:1:post:2,gap|segment:2:-:-,blocker:3") throw new Error(out);
+    const posts = (sources.get("a") ?? []).filter((source) => source.kind === "segment" && source.structure === "post").length;
+    if (posts !== 1) throw new Error("posts " + posts);
 `,
 );
 
