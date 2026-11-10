@@ -139,8 +139,9 @@ Rules:
 - Reached URLs and base64 data become packaged assets. `--public-dir` maps deployment-relative assets,
   `--public-url` serves unmapped root-relative ones, `--site-url` sets the base (default `http://localhost/`);
   registry scenes use the pinned `lab/public`. Runtime asset URLs require a finite inferred local candidate set;
-  unknown keys and percent-encoded bodies refuse. Inference follows closed local Map registries, member and `push`
-  writes and array callback parameters.
+  unknown keys and percent-encoded bodies refuse. Inference follows closed local Map registries (`set` calls or
+  constructor entries), member and `push` writes, array callback parameters, awaited values, `Promise.all` and the
+  methods of a record a call built.
 - `fetch` (application realm): absolute HTTP(S), method, string headers, body, static cache mode, `keepalive`, `signal`; streamed
   `body` reader. Known asset fetches use packaged responses. A `typeof fetch` wrapper forwards its runtime `RequestInit`
   (signal, headers). Request objects, teeing and Headers iteration refuse.

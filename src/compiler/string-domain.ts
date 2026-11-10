@@ -393,6 +393,8 @@ function directFunctionUse(node: ts.Identifier): boolean {
 interface MapRegistry {
     readonly values: readonly ts.Expression[];
     readonly pushed: readonly ts.Expression[];
+    /** The iterable of `[key, value]` entries the Map was constructed from. */
+    readonly entries?: ts.Expression;
 }
 
 /** Array methods whose callback's first parameter is each element. */
@@ -501,10 +503,11 @@ function mapRegistry(
     const initializer = unwrapExpression(declaration.initializer);
     if (
         !ts.isNewExpression(initializer) ||
-        (initializer.arguments?.length ?? 0) !== 0 ||
+        (initializer.arguments?.length ?? 0) > 1 ||
         !isLibraryMap(checker, declaration.name)
     )
         return undefined;
+    const entries = initializer.arguments?.[0];
     const statement = declaration.parent.parent;
     if (ts.isVariableStatement(statement) && hasExportModifier(statement))
         return undefined;
@@ -525,7 +528,8 @@ function mapRegistry(
                 !ts.isPropertyAccessExpression(parent) ||
                 parent.expression !== child
             ) {
-                closed = false;
+                // Handed out as a `ReadonlyMap`, it is only read there.
+                closed = handedAsReadonlyMap(checker, child);
                 return;
             }
             const method = parent.name.text;
@@ -539,15 +543,52 @@ function mapRegistry(
                 closed = ts.isExpressionStatement(
                     outermostWrapper(call).parent,
                 );
-            } else if (method === "get" && called)
-                closed = classifyRegistryArray(checker, call, pushed);
-            else closed = mapReads.has(method);
+            } else if (method === "get" && called) {
+                // Only an array a read hands out can gain elements unseen.
+                const held = checker.getNonNullableType(
+                    checker.getTypeAtLocation(call),
+                );
+                closed =
+                    (!checker.isArrayType(held) &&
+                        !checker.isTupleType(held)) ||
+                    classifyRegistryArray(checker, call, pushed);
+            } else closed = mapReads.has(method);
             return;
         }
         ts.forEachChild(child, visit);
     };
     visit(declaration.parent.parent.parent);
-    return closed ? { values, pushed } : undefined;
+    return closed
+        ? { values, pushed, ...(entries ? { entries } : {}) }
+        : undefined;
+}
+
+/** Whether a Map's name is stored where the place it fills is declared a `ReadonlyMap`. */
+function handedAsReadonlyMap(
+    checker: ts.TypeChecker,
+    reference: ts.Identifier,
+): boolean {
+    const parent = reference.parent;
+    const contextual = ts.isShorthandPropertyAssignment(parent)
+        ? checker.getContextualType(parent.parent)
+        : undefined;
+    // An async function's returned literal is also contextually a promise.
+    const places = (contextual ? unionMembers(contextual) : []).flatMap(
+        (member) => member.getProperty(reference.text) ?? [],
+    );
+    return (
+        places.length > 0 &&
+        places.every((place) => {
+            const declared = checker.getTypeOfSymbolAtLocation(
+                place,
+                reference,
+            );
+            return (
+                declaredInDefaultLibrary(declared.symbol) &&
+                libraryName(declared) === "ReadonlyMap"
+            );
+        })
+    );
 }
 
 // Source facts outlive emission attempts, but never retain a lowering context.
@@ -1275,6 +1316,9 @@ class StringDomain {
         )
             // A member read from null/undefined throws before selecting a URL.
             return nothing;
+        // An awaited promise is the value it settles with.
+        if (ts.isAwaitExpression(node))
+            return this.read(node.expression, projection, environment);
         // A deployment constant: the value the package is built for.
         if (!projection.length && ts.isPropertyAccessExpression(node)) {
             const deployed = browserDeploymentValue(this.context, node);
@@ -1757,6 +1801,18 @@ class StringDomain {
                               : undefined,
                 ),
             );
+        const index =
+            key !== undefined && /^\d+$/.test(key) ? Number(key) : undefined;
+        if (
+            ts.isArrayLiteralExpression(node) &&
+            index !== undefined &&
+            !node.elements.slice(0, index + 1).some(ts.isSpreadElement)
+        ) {
+            const element = node.elements[index];
+            return element
+                ? this.read(element, projection.slice(1), environment)
+                : undefined;
+        }
         if (ts.isArrayLiteralExpression(node) && key === ANY_KEY)
             return node.elements.length === 0
                 ? nothing
@@ -1872,63 +1928,150 @@ class StringDomain {
         );
     }
 
+    /** What a call of `declaration` returns, its parameters reading the call's arguments. */
+    private invoked(
+        declaration: SupportedFunction,
+        call: ts.CallExpression,
+        projection: KeyPath,
+        environment: Environment,
+    ): Domain {
+        const nested = new Map(environment);
+        for (const [index, parameter] of declaration.parameters.entries()) {
+            if (!ts.isIdentifier(parameter.name)) return undefined;
+            const symbol = resolvedSymbol(this.context.checker, parameter.name);
+            const input = parameterInput(
+                this.context.checker,
+                call,
+                declaration,
+                index,
+            );
+            if (input.kind === "unknown" || input.kind === "rest")
+                return undefined;
+            if (input.kind === "element") {
+                if (symbol)
+                    nested.set(symbol, {
+                        expression: input.spread,
+                        projection: [ANY_KEY],
+                        environment,
+                    });
+                continue;
+            }
+            const argument =
+                input.kind === "argument" ? input.argument : input.initializer;
+            if (symbol && argument)
+                nested.set(symbol, {
+                    expression: argument,
+                    projection: [],
+                    environment,
+                });
+            else if (symbol)
+                nested.set(symbol, {
+                    expression: parameter.name,
+                    projection: [],
+                    environment,
+                    absent: true,
+                });
+        }
+        return this.returned(declaration, projection, nested);
+    }
+
+    /**
+     * The functions a record's member `name` holds, where the record is a
+     * never-written const a call built: each object literal the called
+     * function returns defines the member as a method, a function literal,
+     * or a never-written const holding one. Undefined otherwise.
+     */
+    private builtRecordMethods(
+        receiver: ts.Expression,
+        name: string,
+    ): readonly SupportedFunction[] | undefined {
+        const checker = this.context.checker;
+        const node = unwrapExpression(receiver);
+        const symbol = ts.isIdentifier(node)
+            ? resolvedSymbol(checker, node)
+            : undefined;
+        const declaration = symbol?.valueDeclaration;
+        if (
+            !symbol ||
+            !declaration ||
+            !ts.isVariableDeclaration(declaration) ||
+            variableKind(declaration.parent) !== "const" ||
+            !declaration.initializer ||
+            this.graph.mutated.has(symbol)
+        )
+            return undefined;
+        let built = unwrapExpression(declaration.initializer);
+        if (ts.isAwaitExpression(built))
+            built = unwrapExpression(built.expression);
+        const builder = ts.isCallExpression(built)
+            ? calledFunction(checker, built)
+            : undefined;
+        if (!builder?.body || !ts.isBlock(builder.body)) return undefined;
+        const held = (value: ts.Expression): SupportedFunction | undefined => {
+            const unwrapped = unwrapExpression(value);
+            if (isFunctionLiteral(unwrapped)) return unwrapped;
+            const binding = ts.isIdentifier(unwrapped)
+                ? resolvedSymbol(checker, unwrapped)
+                : undefined;
+            const bound = binding?.valueDeclaration;
+            return binding &&
+                bound &&
+                ts.isVariableDeclaration(bound) &&
+                variableKind(bound.parent) === "const" &&
+                !this.graph.mutated.has(binding)
+                ? functionOfDeclaration(bound)
+                : undefined;
+        };
+        const methods: SupportedFunction[] = [];
+        let closed = true;
+        forEachReturn([builder.body], (statement) => {
+            const returned =
+                statement.expression && unwrapExpression(statement.expression);
+            const member =
+                returned && ts.isObjectLiteralExpression(returned)
+                    ? returned.properties.find(
+                          (property) =>
+                              property.name !== undefined &&
+                              this.context.propertyName(property.name) === name,
+                      )
+                    : undefined;
+            const method =
+                member && ts.isMethodDeclaration(member)
+                    ? member
+                    : member && ts.isShorthandPropertyAssignment(member)
+                      ? held(member.name)
+                      : member && ts.isPropertyAssignment(member)
+                        ? held(member.initializer)
+                        : undefined;
+            if (method?.body) methods.push(method);
+            else closed = false;
+        });
+        return closed && methods.length ? methods : undefined;
+    }
+
     private call(
         call: ts.CallExpression,
         projection: KeyPath,
         environment: Environment,
     ): Domain {
         const declaration = calledFunction(this.context.checker, call);
-        if (declaration?.body) {
-            const nested = new Map(environment);
-            for (const [index, parameter] of declaration.parameters.entries()) {
-                if (!ts.isIdentifier(parameter.name)) return undefined;
-                const symbol = resolvedSymbol(
-                    this.context.checker,
-                    parameter.name,
-                );
-                const input = parameterInput(
-                    this.context.checker,
-                    call,
-                    declaration,
-                    index,
-                );
-                if (input.kind === "unknown" || input.kind === "rest")
-                    return undefined;
-                if (input.kind === "element") {
-                    if (symbol)
-                        nested.set(symbol, {
-                            expression: input.spread,
-                            projection: [ANY_KEY],
-                            environment,
-                        });
-                    continue;
-                }
-                const argument =
-                    input.kind === "argument"
-                        ? input.argument
-                        : input.initializer;
-                if (symbol && argument)
-                    nested.set(symbol, {
-                        expression: argument,
-                        projection: [],
-                        environment,
-                    });
-                else if (symbol)
-                    nested.set(symbol, {
-                        expression: parameter.name,
-                        projection: [],
-                        environment,
-                        absent: true,
-                    });
-            }
-            return this.returned(declaration, projection, nested);
-        }
+        if (declaration?.body)
+            return this.invoked(declaration, call, projection, environment);
         const callee = namedMember(
             this.context.checker,
             unwrapExpression(call.expression),
         );
         if (!callee) return undefined;
         const method = callee.name;
+        // A method of a record a call built is that record's own.
+        const built = this.builtRecordMethods(callee.expression, method);
+        if (built)
+            return this.union(
+                built.map(
+                    (own) => () =>
+                        this.invoked(own, call, projection, environment),
+                ),
+            );
         if (
             method === "get" &&
             isLibraryMap(this.context.checker, callee.expression)
@@ -1944,6 +2087,13 @@ class StringDomain {
                 ? objectIdentityCallArgument(this.context.checker, call)
                 : undefined;
         if (frozen) return this.read(frozen, projection, environment);
+        // Promise.all settles with its argument's elements, each awaited.
+        if (
+            method === "all" &&
+            call.arguments.length === 1 &&
+            this.context.libraryGlobal(callee.expression) === "Promise"
+        )
+            return this.read(call.arguments[0]!, projection, environment);
         // Object.values lists its argument's member values.
         const listed =
             method === "values" &&
@@ -2105,7 +2255,18 @@ class StringDomain {
             return undefined;
         if (registry.pushed.length && projection[0] !== ANY_KEY)
             return undefined;
+        const { entries } = registry;
         const alternatives = [
+            ...(entries
+                ? [
+                      () =>
+                          this.read(
+                              entries,
+                              [ANY_KEY, "1", ...projection],
+                              environment,
+                          ),
+                  ]
+                : []),
             ...registry.values.map(
                 (value) => () => this.read(value, projection, environment),
             ),
