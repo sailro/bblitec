@@ -2027,22 +2027,33 @@ class StringDomain {
         forEachReturn([builder.body], (statement) => {
             const returned =
                 statement.expression && unwrapExpression(statement.expression);
-            const member =
+            const members =
                 returned && ts.isObjectLiteralExpression(returned)
-                    ? returned.properties.find(
-                          (property) =>
-                              property.name !== undefined &&
-                              this.context.propertyName(property.name) === name,
+                    ? objectLiteralMembers(returned, (key) =>
+                          this.context.propertyName(key),
                       )
-                    : undefined;
+                    : [];
+            // A spread or a run-time key could define the member too.
+            const named = members.some(
+                (member) =>
+                    member.kind === "spread" ||
+                    (member.kind !== "proto" && member.key === undefined),
+            )
+                ? []
+                : members.filter(
+                      (member) =>
+                          member.kind !== "spread" &&
+                          member.kind !== "proto" &&
+                          member.key === name,
+                  );
+            const member = named.length === 1 ? named[0] : undefined;
             const method =
-                member && ts.isMethodDeclaration(member)
-                    ? member
-                    : member && ts.isShorthandPropertyAssignment(member)
-                      ? held(member.name)
-                      : member && ts.isPropertyAssignment(member)
-                        ? held(member.initializer)
-                        : undefined;
+                member?.kind === "method" && ts.isMethodDeclaration(member.node)
+                    ? member.node
+                    : member?.kind === "shorthand" ||
+                        member?.kind === "property"
+                      ? held(member.value)
+                      : undefined;
             if (method?.body) methods.push(method);
             else closed = false;
         });
