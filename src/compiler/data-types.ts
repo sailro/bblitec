@@ -8026,17 +8026,19 @@ export class DataTypeRegistry {
                 untagged,
             );
             const accessor = this.propertyAccessor(property, view || proxy);
-            if (
-                declared.some(
-                    ({ symbol }) =>
-                        this.propertyAccessor(symbol, view || proxy) !==
-                        accessor,
-                )
-            )
+            const other = declared.find(
+                ({ symbol }) =>
+                    this.propertyAccessor(symbol, view || proxy) !== accessor,
+            );
+            if (other) {
+                const [slot, plain] = accessor
+                    ? [declared[0]!.owner, other.owner]
+                    : [other.owner, declared[0]!.owner];
                 this.fail(
                     node,
-                    `Property '${name}' is an accessor in one of the record types sharing '${provisionalName}' but not another.`,
+                    `Property '${name}' is an accessor in '${this.checker.typeToString(slot)}' but not in '${this.checker.typeToString(plain)}', and one layout ('${provisionalName}') stores both.`,
                 );
+            }
             fields.push({
                 sourceName: name,
                 name: sanitizeIdentifier(

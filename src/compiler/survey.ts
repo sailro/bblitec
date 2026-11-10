@@ -87,6 +87,29 @@ export interface SurveyReport {
     };
 }
 
+/**
+ * The census a survey publishes when it ends: its last attempt's, or --
+ * where an error outside statement lowering ended it (an attempt's setup
+ * refused) -- that of the attempt that went furthest, with what ended it.
+ */
+export function publishedSurvey(
+    ended: SurveyReport,
+    furthest: SurveyReport | undefined,
+): SurveyReport {
+    if (
+        ended.complete ||
+        !furthest ||
+        furthest.statements.attempted <= ended.statements.attempted
+    )
+        return ended;
+    const { terminal: _running, terminalStack: _frames, ...found } = furthest;
+    return {
+        ...found,
+        ...(ended.terminal ? { terminal: ended.terminal } : {}),
+        ...(ended.terminalStack ? { terminalStack: ended.terminalStack } : {}),
+    };
+}
+
 /** What a surveyed statement lowering needs from its context. */
 interface StatementContext {
     readonly checker: ts.TypeChecker;

@@ -20,7 +20,7 @@ import {
     surveySource,
     compileSource,
 } from "./compiler.js";
-import type { SurveyReport } from "./compiler/survey.js";
+import { publishedSurvey, type SurveyReport } from "./compiler/survey.js";
 import {
     composeBillboardPickingShader,
     composeCloudPickingShader,
@@ -708,7 +708,7 @@ function writeSurvey(
     // of the attempt that went furthest, which a restart nearer the start
     // of the program does not replace, beside what the last plan met.
     let furthest: SurveyReport | undefined;
-    const { report } = surveySource(source, compileOptions, {
+    const { report: last } = surveySource(source, compileOptions, {
         report: (line) => console.error(line),
         intervalMs: 5 * 60 * 1000,
         partial: (found) => {
@@ -722,6 +722,7 @@ function writeSurvey(
             writeJsonRecord(censusPath, furthest);
         },
     });
+    const report = publishedSurvey(last, furthest);
     writeJsonRecord(censusPath, report);
     console.log(
         `Survey: ${report.statements.attempted} statement lowerings, ${report.statements.refused} refused ` +

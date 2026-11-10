@@ -12,7 +12,11 @@ import { join, resolve } from "node:path";
 import test from "node:test";
 import { jsonArray, jsonObject } from "./json.js";
 import { compileSource, surveySource } from "../src/compiler.js";
-import { refusalClass, type SurveyReport } from "../src/compiler/survey.js";
+import {
+    publishedSurvey,
+    refusalClass,
+    type SurveyReport,
+} from "../src/compiler/survey.js";
 import {
     getScene,
     registrySceneCompileOptions,
@@ -416,6 +420,64 @@ test("an error outside statement lowering ends the survey as incomplete", () => 
     const frames = report.terminalStack ?? [];
     assert.ok(frames.length > 0 && frames.length <= 12);
     assert.ok(frames.every((frame) => frame.startsWith("at ")));
+});
+
+test("a survey ended outside statement lowering publishes its furthest attempt with what ended it", () => {
+    const census = (
+        attempted: number,
+        more: Partial<SurveyReport> = {},
+    ): SurveyReport => ({
+        schemaVersion: 1,
+        complete: false,
+        statements: { attempted, refused: 0 },
+        refusals: [],
+        classes: [],
+        ...more,
+    });
+    const plan = {
+        statements: { attempted: 40, left: 3, refused: 0 },
+        refusals: [],
+    };
+    const furthest = census(25, { terminal: "Survey still running", plan });
+    const ended = census(0, {
+        terminal: "a record layout refused",
+        terminalStack: ["at setup"],
+    });
+    assert.deepEqual(
+        publishedSurvey(ended, furthest),
+        census(25, {
+            plan,
+            terminal: "a record layout refused",
+            terminalStack: ["at setup"],
+        }),
+    );
+    // An attempt that ran to the end, or further, is its own census.
+    const complete = census(30, { complete: true });
+    assert.equal(publishedSurvey(complete, furthest), complete);
+    assert.equal(publishedSurvey(ended, undefined), ended);
+    assert.equal(publishedSurvey(census(25), furthest).plan, undefined);
+});
+
+test("a joined record layout names the two types that disagree on an accessor", () => {
+    // `Live.cx` is the getter its literal defines; a `Plain` stored as a
+    // `Live` joins the two types' layouts.
+    assert.throws(
+        () =>
+            compileSource(`
+                interface Plain { cx: number; cz: number }
+                interface Live { readonly cx: number; readonly cz: number }
+                const flag = Math.random() >= 0;
+                const live: Live = { get cx() { return flag ? 1 : 0; }, cz: 2 };
+                const plains: Plain[] = [{ cx: 3, cz: 4 }];
+                const all: Live[] = [live];
+                all.push(plains[0]!);
+                plains[0]!.cx = 9;
+                let total = 0;
+                for (const entry of all) total += entry.cx + entry.cz;
+                if (total !== 14) throw new Error("total " + total);
+            `),
+        /Property 'cx' is an accessor in 'Live' but not in 'Plain', and one layout \('Plain'\) stores both\./,
+    );
 });
 
 test("a site refusal decided after lowering is recorded against its statement", () => {
