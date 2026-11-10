@@ -1549,11 +1549,9 @@ export class StaticEvaluator {
         const folded = this.generationText(unwrapped);
         if (folded !== undefined) return folded;
         if (ts.isConditionalExpression(unwrapped)) {
-            // A settled conditional is the arm it selects.
-            const arm = selectedStaticExpression(
-                this.selection(false),
-                unwrapped,
-            );
+            // A conditional pure conditions settle is the arm it selects;
+            // a condition with effects runs where the text is built.
+            const arm = this.selectedArm(unwrapped);
             if (arm) return this.compileStringLiteral(arm);
         }
         this.fail(
