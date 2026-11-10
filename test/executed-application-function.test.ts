@@ -240,6 +240,103 @@ test("selects a helper-built stage per outcome of a run-time option", (t) => {
     );
 });
 
+/**
+ * A factory composing its fragment from the boolean `flags` of an options
+ * record the caller names; `options` builds that record from a parsed row
+ * and `after` runs on the material the call returns.
+ */
+const namedOptionsScene = (scene: {
+    flags: readonly string[];
+    rows: string;
+    options: string;
+    after?: string;
+}): string => `
+    import { createEngine, createShaderMaterial, getShaderUniform, setShaderUniform, type ShaderMaterial } from "babylon-lite";
+
+    const VERTEX = \`${POSITION_VERTEX_WGSL}\`;
+    interface SurfaceOptions {
+        ${scene.flags.map((flag) => `${flag}: boolean;`).join(" ")}
+        gain?: { amount: number };
+        tone: { warm: boolean };
+    }
+
+    function surface(opts: SurfaceOptions): ShaderMaterial {
+        let fragment = "@fragment fn mainFragment() -> @location(0) vec4<f32> { return vec4<f32>(TONE * GAIN); }";
+        ${scene.flags.map((flag) => `if (opts.${flag}) fragment = "// ${flag}\\n" + fragment;`).join("\n        ")}
+        fragment = fragment.replace("TONE", opts.tone.warm ? "0.75" : "0.25");
+        fragment = fragment.replace("GAIN", opts.gain ? "shaderUniforms.uGain" : "1.0");
+        return createShaderMaterial({
+            vertexSource: VERTEX,
+            fragmentSource: fragment,
+            attributes: ["position"],
+            uniforms: ["worldViewProjection", ...(opts.gain ? [{ name: "uGain", type: "f32" as const, defaultValue: opts.gain.amount }] : [])],
+        });
+    }
+
+    async function main() {
+        await createEngine({});
+        const rows = JSON.parse('${scene.rows}') as { ${scene.flags.map((flag) => `${flag}: boolean;`).join(" ")} gain: number | null; warm: boolean }[];
+        let glowing = 0;
+        for (const row of rows) {
+            const options = ${scene.options};
+            const material = surface(options);
+            ${scene.after ?? ""}
+        }
+        if (glowing !== 1) throw new Error("variants");
+    }
+    main();`;
+
+test("selects a material per outcome of a named record's members", (t) => {
+    const native = optionalNativeFixtureTools(false);
+    if (!native) {
+        t.skip("Native compiler required.");
+        return;
+    }
+    // A boolean member, a member only some rows write and a nested record's
+    // boolean each select; the merged material then resolves a uniform's
+    // name against its own variant, which declares it or does not.
+    const { compiled, cpp } = compileShaderMaterialFixture(
+        namedOptionsScene({
+            flags: ["lit"],
+            rows: '[{"lit":true,"gain":0.5,"warm":false},{"lit":false,"gain":null,"warm":true},{"lit":true,"gain":null,"warm":true}]',
+            options:
+                "{ lit: row.lit, tone: { warm: row.warm }, ...(row.gain === null ? {} : { gain: { amount: row.gain } }) }",
+            after: `let declared = false;
+            for (const name of ["uGain"]) {
+                try { declared = getShaderUniform(material, name) === 0.5; } catch (error) { declared = false; }
+            }
+            if (declared !== (row.gain !== null)) throw new Error("declared");
+            if (row.gain !== null) {
+                setShaderUniform(material, "uGain", row.gain + 1);
+                if (getShaderUniform(material, "uGain") === 1.5) glowing++;
+            }`,
+        }),
+    );
+    assert.equal(compiled.manifest.customShaderPrograms.length, 8);
+    runGeneratedProgram(
+        native,
+        "executed-application-function/member-outcomes",
+        `${cpp}\n#define main generated_main\n${compiled.cpp}\n#undef main\nint main(){assert(generated_main()==0);}`,
+        { expectedOutput: "" },
+    );
+});
+
+test("names the run-time tests a call compiles too many outcomes of", () => {
+    assert.match(
+        refusal(
+            namedOptionsScene({
+                flags: ["a", "b", "c", "d", "e"],
+                rows: '[{"a":true,"b":false,"c":true,"d":false,"e":true,"gain":null,"warm":false}]',
+                options:
+                    "{ a: row.a, b: row.b, c: row.c, d: row.d, e: row.e, tone: { warm: false } }",
+                after: "if (material) glowing++;",
+            }),
+            "test/executed-options-entry.ts",
+        ),
+        /compiles once per outcome of at most 4 run-time tests; it reads 5: options\.a, options\.b, options\.c, options\.d, options\.e\./,
+    );
+});
+
 const pluginScene = (plugin: string, prelude = ""): string => `
     import {
         addToScene,

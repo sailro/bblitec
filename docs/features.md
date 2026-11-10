@@ -71,9 +71,13 @@ Rules:
 - A module `let` assigned only by unreachable functions keeps its initializer. Strict comparisons fold through `const`
   aliases, absent `??` lefts and generation-known booleans.
 - Literals handed to functions keep their facts unless a callee's write reaches a member they hold. Static descriptor
-  lists re-read a local `const` initializer whose names no visible write reaches.
-- A refusing local call whose arguments select by pure runtime tests compiles once per outcome (at most four tests) and
-  merges the results into native storage; a discarded call merges none.
+  lists re-read a local `const` initializer whose names no visible write reaches. A parameter that took its own object
+  reads the lists its literal argument gave it until its function first writes, keeps or captures the object.
+- A refusing local call whose arguments select by pure runtime tests, in the call or as boolean or optional members
+  (two levels deep) of a record an argument names, compiles once per outcome and merges the results into native
+  storage; a discarded call merges none. At most four tests split, of at most eight read; past either, the refusal
+  names them. A shader material so merged resolves uniform, texture and storage-buffer names against its own variant
+  at run time.
 - Recursive groups evaluate a caller-independent default once at the root; other defaults refuse. A function a call
   passes counts as a call the callee may make: directly, as a literal in a record or array, or as a named async
   function there.

@@ -98,6 +98,7 @@ test("registers unique generated scene targets", () => {
             "regression-render-target-sampler",
             "regression-vat-bone-texture",
             "regression-case-split-options",
+            "regression-member-selected-material",
             "regression-csm-static-cache",
             "regression-render-task-transmission",
             "regression-mesh-opacity-runtime",
