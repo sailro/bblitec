@@ -419,7 +419,7 @@ double performance_milliseconds() {
 namespace {
 /** Every event the program creates is stamped with `performance.now()`. */
 const struct DomEventClockInstaller {
-    DomEventClockInstaller() { dom_event_clock() = &performance_milliseconds; }
+    DomEventClockInstaller() noexcept { dom_event_clock() = &performance_milliseconds; }
 } dom_event_clock_installer;
 } // namespace
 
