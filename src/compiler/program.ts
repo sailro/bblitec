@@ -98,50 +98,105 @@ function pinnedInternalDeclarations(): string {
 }
 
 /**
- * The bundler convention `import text from "./shader.wgsl?raw"`: the file's
- * bytes as a string. The import resolves to a synthesized module beside the
- * file, spelled with this suffix, whose default export is that string.
- * The generation record lists the text file itself as the input it read.
+ * A file an import reads as data, not as a module of statements: the
+ * bundler convention `import text from "./shader.wgsl?raw"` (the file's
+ * bytes as a string) and a JSON module (`import table from "./table.json"`:
+ * the value its text parses to, one object every importer shares). The
+ * import resolves to a synthesized module beside the file, spelled with the
+ * kind's suffix, whose default export is that value. The generation record
+ * lists the file itself as the input it read.
  */
-const RAW_TEXT_MODULE_SUFFIX = ".raw-text-import.ts";
+interface CarriedFileKind {
+    /** What a refusal calls the import. */
+    readonly name: string;
+    readonly suffix: string;
+    /** The file a specifier of this kind names, relative to its importer. */
+    file(moduleName: string): string | undefined;
+    /** The synthesized module's source for the file's text. */
+    source(text: string, path: string): string;
+}
 
-/** The synthesized module a `?raw` specifier resolves to, or undefined for any other specifier. */
-function rawTextImportPath(
+const CARRIED_FILE_KINDS: readonly CarriedFileKind[] = [
+    {
+        name: "Raw text import",
+        suffix: ".raw-text-import.ts",
+        file: (moduleName) =>
+            moduleName.endsWith("?raw")
+                ? moduleName.slice(0, -"?raw".length)
+                : undefined,
+        source: (text) =>
+            `const rawText = ${JSON.stringify(text)};\nexport default rawText;\n`,
+    },
+    {
+        name: "JSON import",
+        suffix: ".json-import.ts",
+        file: (moduleName) =>
+            moduleName.startsWith(".") && moduleName.endsWith(".json")
+                ? moduleName
+                : undefined,
+        source: (text, path) => {
+            let value: unknown;
+            try {
+                value = JSON.parse(text);
+            } catch (error) {
+                throw new Error(
+                    `JSON import reads '${path}', which is not JSON.`,
+                    { cause: error },
+                );
+            }
+            // An object literal spells `__proto__` as its prototype, where
+            // JSON.parse makes it an own property.
+            const ownsProto = (part: unknown): boolean =>
+                typeof part === "object" &&
+                part !== null &&
+                (Object.hasOwn(part, "__proto__") ||
+                    Object.values(part).some(ownsProto));
+            if (ownsProto(value))
+                throw new Error(
+                    `JSON import reads '${path}', whose '__proto__' key no object literal holds as an own property.`,
+                );
+            return `const json = ${JSON.stringify(value)};\nexport default json;\n`;
+        },
+    },
+];
+
+/** The synthesized module a specifier of a carried file resolves to, or undefined for any other specifier. */
+function carriedFileImportPath(
     moduleName: string,
     containingFile: string,
 ): string | undefined {
-    if (!moduleName.endsWith("?raw")) {
-        return undefined;
+    for (const kind of CARRIED_FILE_KINDS) {
+        const file = kind.file(moduleName);
+        if (file !== undefined)
+            return resolve(dirname(containingFile), file) + kind.suffix;
     }
-    const relativePath = moduleName.slice(0, -"?raw".length);
-    return (
-        resolve(dirname(containingFile), relativePath) + RAW_TEXT_MODULE_SUFFIX
-    );
+    return undefined;
 }
 
-/** The text file a synthesized raw-text module carries, or undefined for a real path. */
-function rawTextSourcePath(path: string): string | undefined {
-    return path.endsWith(RAW_TEXT_MODULE_SUFFIX)
-        ? path.slice(0, -RAW_TEXT_MODULE_SUFFIX.length)
-        : undefined;
+/** The file a synthesized module carries and its kind, or undefined for a real path. */
+function carriedFile(
+    path: string,
+): { kind: CarriedFileKind; file: string } | undefined {
+    const kind = CARRIED_FILE_KINDS.find(({ suffix }) => path.endsWith(suffix));
+    return kind && { kind, file: path.slice(0, -kind.suffix.length) };
 }
 
-/** The synthesized module's source: the text file's bytes as one default export. */
-function rawTextModuleSource(
+/** The synthesized module's source: the file's value as one default export. */
+function carriedFileModuleSource(
     path: string,
     host: ts.CompilerHost,
 ): string | undefined {
-    const textPath = rawTextSourcePath(path);
-    if (textPath === undefined) {
+    const carried = carriedFile(path);
+    if (!carried) {
         return undefined;
     }
-    const text = host.readFile(textPath);
+    const text = host.readFile(carried.file);
     if (text === undefined) {
         throw new Error(
-            `Raw text import reads '${textPath}', which does not exist.`,
+            `${carried.kind.name} reads '${carried.file}', which does not exist.`,
         );
     }
-    return `const rawText = ${JSON.stringify(text)};\nexport default rawText;\n`;
+    return carried.kind.source(text, carried.file);
 }
 
 export interface CompilerProgram {
@@ -271,11 +326,11 @@ export function createCompilerProgram(
         ...defaultHost,
         fileExists: (path) =>
             virtualSource(path) !== undefined ||
-            rawTextSourcePath(path) !== undefined ||
+            carriedFile(path) !== undefined ||
             defaultHost.fileExists(path),
         readFile: (path) =>
             virtualSource(path) ??
-            rawTextModuleSource(path, defaultHost) ??
+            carriedFileModuleSource(path, defaultHost) ??
             defaultHost.readFile(path),
         getSourceFile: (
             path,
@@ -292,11 +347,11 @@ export function createCompilerProgram(
                     true,
                 );
             }
-            const rawText = rawTextModuleSource(path, defaultHost);
-            if (rawText !== undefined) {
+            const carried = carriedFileModuleSource(path, defaultHost);
+            if (carried !== undefined) {
                 return ts.createSourceFile(
                     path,
-                    rawText,
+                    carried,
                     languageVersion,
                     true,
                     ts.ScriptKind.TS,
@@ -386,11 +441,14 @@ export function createCompilerProgram(
                         },
                     };
                 }
-                const rawImport = rawTextImportPath(moduleName, containingFile);
-                if (rawImport) {
+                const carried = carriedFileImportPath(
+                    moduleName,
+                    containingFile,
+                );
+                if (carried) {
                     return {
                         resolvedModule: {
-                            resolvedFileName: rawImport,
+                            resolvedFileName: carried,
                             extension: ts.Extension.Ts,
                             isExternalLibraryImport: false,
                         },
@@ -466,7 +524,7 @@ export function createCompilerProgram(
     const localFiles = program
         .getSourceFiles()
         .map((file) =>
-            resolve(rawTextSourcePath(file.fileName) ?? file.fileName),
+            resolve(carriedFile(file.fileName)?.file ?? file.fileName),
         )
         .filter((path) => path !== loaderName && !inlineStartup.has(path))
         .concat(page ? [resolve(page.path)] : [])

@@ -6282,6 +6282,30 @@ test("raw text imports support constant string replacement through helpers", () 
     );
 });
 
+test("a JSON import is the one object its text parses to", async (t) => {
+    const result = compileSource(
+        `
+        import table from "./json-import.json";
+        import again from "./json-import.json";
+        interface Table { size: string; houses: { id: number; x: number }[]; meta: { version: number } }
+        function total(input: Table): number {
+            let sum = input.meta.version;
+            for (const house of input.houses) sum += house.id + house.x;
+            return sum;
+        }
+        const before = total(table);
+        again.meta.version = 10;
+        if (table.size !== "small" || before !== 7.5 || total(table) !== 14.5 || table !== again) throw new Error("json import");
+    `,
+        { fileName: "test/fixtures/json-import.ts" },
+    );
+    assert.ok(
+        result.manifest.inputs.includes("test/fixtures/json-import.json"),
+        "the JSON file is a recorded input",
+    );
+    await executeGeneratedAssertions(t, "json-import", result.cpp);
+});
+
 test("constant numeric tables support runtime indexing and static string projections", () => {
     const result = compileSource(`
         const AXES = [[0, 1, 2], [1, 0, 2], [2, 1, 0]] as const;
