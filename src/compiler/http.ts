@@ -317,47 +317,50 @@ export function compileHttpResponseMethod(
     // constructor, without a fetch call having activated the promise realm.
     if (!lowerer.context.options.workers) throw new ApplicationRealmRequired();
     lowerer.context.expectArgumentCount(call, 0, 0);
+    // A packaged response's read settles to a value that knows its file.
+    const packagedRead = (
+        result: Value,
+        settled: (value: Value, source: string) => Value,
+    ): Value =>
+        owner.packagedBodySource &&
+        result.kind === "promise" &&
+        result.promiseResult
+            ? {
+                  ...result,
+                  promiseResult: settled(
+                      result.promiseResult,
+                      owner.packagedBodySource,
+                  ),
+              }
+            : result;
     if (method === "text") {
-        const result = lowerer.leafValue(
-            `bbl::pal::http_response_text(${owner.cpp})`,
-            {
+        return packagedRead(
+            lowerer.leafValue(`bbl::pal::http_response_text(${owner.cpp})`, {
                 kind: "promise",
                 result: { kind: "string" },
-            },
+            }),
+            (value, packagedBodySource) => ({ ...value, packagedBodySource }),
         );
-        return owner.packagedBodySource &&
-            result.kind === "promise" &&
-            result.promiseResult
-            ? {
-                  ...result,
-                  promiseResult: {
-                      ...result.promiseResult,
-                      packagedBodySource: owner.packagedBodySource,
-                  },
-              }
-            : result;
     }
     if (method === "arrayBuffer") {
-        const result = lowerer.leafValue(
-            `bbl::pal::http_response_buffer(${owner.cpp})`,
-            { kind: "promise", result: { kind: "arraybuffer" } },
-        );
         // A packaged response's fresh read is its file's bytes.
-        return owner.packagedBodySource &&
-            result.kind === "promise" &&
-            result.promiseResult?.kind === "data"
-            ? {
-                  ...result,
-                  promiseResult: {
-                      ...result.promiseResult,
-                      fetchedBytes: packagedBodyRead(
-                          lowerer.context,
-                          call,
-                          owner.packagedBodySource,
-                      ),
-                  },
-              }
-            : result;
+        return packagedRead(
+            lowerer.leafValue(`bbl::pal::http_response_buffer(${owner.cpp})`, {
+                kind: "promise",
+                result: { kind: "arraybuffer" },
+            }),
+            (value, source) =>
+                value.kind === "data"
+                    ? {
+                          ...value,
+                          fetchedBytes: packagedBodyRead(
+                              lowerer.context,
+                              call,
+                              source,
+                          ),
+                      }
+                    : value,
+        );
     }
     if (method === "json") {
         lowerer.context.reachFeature("data:json", call);

@@ -185,9 +185,13 @@ check(
         let sum = data.n;
         for (const item of data.list) sum += item;
         const added = (n += 1);
-        return \`\${n}|\${text}|\${String(numericText)}|\${nil}|\${Number.isNaN(missing)}|\${sum}|\${added}|\${data.n}\`;
+        let count = data.n;
+        count++;
+        ++count;
+        const before = count--;
+        return \`\${n}|\${text}|\${String(numericText)}|\${nil}|\${Number.isNaN(missing)}|\${sum}|\${added}|\${data.n}|\${count}|\${before}\`;
     }
     const out = tally();
-    if (out !== "25|x2|43|4|true|11|25|5") throw new Error(out);
+    if (out !== "25|x2|43|4|true|11|25|5|6|7") throw new Error(out);
 `,
 );

@@ -7,6 +7,7 @@ import {
     optionalNativeFixtureTools,
     runGeneratedProgram,
 } from "./native-fixture.js";
+import { runSelfCheckingProgram } from "./self-checking-program.js";
 
 test("document optional chains preserve lazy keys, continuations and typed lengths", (t) => {
     const source = `
@@ -51,7 +52,7 @@ test("document optional chains preserve lazy keys, continuations and typed lengt
     runGeneratedProgram(native, "json-optional-chains/semantics", result.cpp);
 });
 
-test("an optional method call on a document member is undefined when the member is absent", (t) => {
+test("an optional method call on a document member is undefined when the member is absent", async (t) => {
     const source = `
         type Lang = 'en' | 'fr';
         interface Doc { items?: number[]; label?: string | null; nested?: { tags?: string[] }; names?: Partial<Record<Lang, string>>; }
@@ -77,23 +78,9 @@ test("an optional method call on a document member is undefined when the member 
         const text = describe(empty) + ' ' + describe(full);
         if (text !== 'none|none|none|none|unnamed|unnamed 2,4|a|x+y|1|unnamed|b') throw new Error(text);
     `;
-    runInNewContext(
-        ts.transpileModule(source, {
-            compilerOptions: {
-                target: ts.ScriptTarget.ES2022,
-                module: ts.ModuleKind.None,
-            },
-        }).outputText,
-    );
-    const result = compileSource(source);
-    const native = optionalNativeFixtureTools(false);
-    if (!native) {
-        t.skip("Native fixture compiler unavailable.");
-        return;
-    }
-    runGeneratedProgram(
-        native,
+    await runSelfCheckingProgram(
+        t,
         "json-optional-chains/method-calls",
-        result.cpp,
+        source,
     );
 });

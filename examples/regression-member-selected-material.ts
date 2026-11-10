@@ -19,7 +19,8 @@ import {
     setShaderUniform,
     startEngine,
 } from "@babylonjs/lite";
-import type { EngineContext, ShaderMaterial } from "@babylonjs/lite";
+import type { ShaderMaterial } from "@babylonjs/lite";
+import { SURFACE_VERTEX } from "./regression-option-surface.js";
 
 interface SurfaceOptions {
     name: string;
@@ -29,16 +30,8 @@ interface SurfaceOptions {
     tone: { warm: boolean };
 }
 
-const VERTEX = `struct VertexOutput{@builtin(position) position:vec4<f32>,};
-@vertex fn mainVertex(input:VertexInput)->VertexOutput{
-    var out:VertexOutput;
-    out.position = shaderSystem.worldViewProjection * vec4<f32>(input.position * vec3<f32>(1.0, HEIGHT, 1.0), 1.0);
-    return out;
-}`;
-
-function surface(engine: EngineContext, opts: SurfaceOptions): ShaderMaterial {
-    void engine;
-    const vertexSource = VERTEX.replace("HEIGHT", opts.tall ? "1.6" : "0.8");
+function surface(opts: SurfaceOptions): ShaderMaterial {
+    const vertexSource = SURFACE_VERTEX.replace("HEIGHT", opts.tall ? "1.6" : "0.8");
     const glow = opts.glow ? " + vec3<f32>(shaderUniforms.uGlow)" : "";
     let fragmentSource = `struct VertexOutput{@builtin(position) position:vec4<f32>,};
 @fragment fn mainFragment(input:VertexOutput)->@location(0) vec4<f32>{
@@ -80,7 +73,7 @@ for (const row of rows) {
         tone: { warm: row.warm },
         ...(row.glow === null ? {} : { glow: { strength: row.glow } }),
     };
-    const material = surface(engine, options);
+    const material = surface(options);
     // Only a glowing variant declares uGlow: the write names it on whichever
     // variant the material is.
     if (row.glow !== null) setShaderUniform(material, "uGlow", row.glow * 3);

@@ -344,6 +344,11 @@ export interface LoweringServices {
         expression: ts.Expression,
         resolving?: ReadonlySet<ts.Symbol>,
     ): ts.Expression;
+    /**
+     * The value of a name no run-time binding holds in this scope, where it
+     * names a constant without storage: its initializer's.
+     */
+    constantNameValue(name: ts.Identifier): Value | undefined;
     resolveStaticLiteral(expression: ts.Expression): ts.Expression;
     compileTypedArrayArgument(
         expression: ts.Expression,

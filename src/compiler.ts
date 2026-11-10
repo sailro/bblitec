@@ -822,9 +822,7 @@ function lowerSourceApplication(
         // are always strict: a discarded plan runs between them, as far as
         // it can, after each restart while plans pay -- each demand a plan
         // adds saves a strict attempt as long as the last one. Costs are
-        // the time each took: a plan lowers a statement several times
-        // slower than a strict attempt does, so a count of statements
-        // would let plans run that cost more than the attempts they save.
+        // the time each took.
         // After a plan that took longer than the attempts it saved, strict
         // attempts run as long before the next one, twice as long after
         // each further such plan: a survey whose plans stop paying spends
@@ -846,6 +844,7 @@ function lowerSourceApplication(
                 planning = addPlanned(planner) > 0;
                 continue;
             }
+            const started = performance.now();
             try {
                 return survey
                     ? survey.attempt(input.sourceFile.fileName, lower)
@@ -862,9 +861,7 @@ function lowerSourceApplication(
                     planning = true;
                     continue;
                 }
-                const strict = survey.attemptMilliseconds(
-                    input.sourceFile.fileName,
-                );
+                const strict = performance.now() - started;
                 owed -= strict;
                 if (owed > 0) continue;
                 const began = performance.now();
@@ -880,10 +877,10 @@ function lowerSourceApplication(
                 }
                 for (const replay of planner.replays) acceptReplay(replay);
                 const added = addPlanned(planner);
-                const planned = performance.now() - began;
-                survey.planned(added, planned, planner.ended());
-                unpaid = added * strict > planned ? 0 : unpaid + 1;
-                owed = unpaid === 0 ? 0 : planned * 2 ** (unpaid - 1);
+                const spent = performance.now() - began;
+                survey.planned(added, spent, planner.ended());
+                unpaid = added * strict > spent ? 0 : unpaid + 1;
+                owed = unpaid === 0 ? 0 : spent * 2 ** (unpaid - 1);
             }
         }
     };
@@ -964,6 +961,11 @@ class Compiler implements LoweringServices {
         ts.VariableDeclaration,
         ts.Expression | false
     >();
+    /**
+     * `rereadsAlike` answers, by expression.
+     * @unjournaled A function of the program's syntax.
+     */
+    private readonly rereadAlike = new WeakMap<ts.Expression, boolean>();
     /** The scene composition records this compilation projects into its manifest. */
     public readonly sceneManifest: SceneManifestRecorder =
         new SceneManifestRecorder(this);
@@ -3861,29 +3863,6 @@ class Compiler implements LoweringServices {
         expression: ts.Expression,
         precision: "float" | "double",
     ): string {
-        const unwrapped = this.unwrap(expression);
-        if (
-            ts.isObjectLiteralExpression(unwrapped) &&
-            unwrapped.properties.length === 1 &&
-            ts.isSpreadAssignment(unwrapped.properties[0]!)
-        ) {
-            return this.vec3FromRecord(
-                this.compileValue(unwrapped.properties[0].expression),
-                unwrapped.properties[0].expression,
-                precision,
-            );
-        }
-        if (
-            ts.isIdentifier(unwrapped) ||
-            ts.isElementAccessExpression(unwrapped) ||
-            ts.isPropertyAccessExpression(unwrapped)
-        ) {
-            return this.evaluator.compileVec3(
-                expression,
-                precision,
-                this.compileValue(unwrapped),
-            );
-        }
         return this.evaluator.compileVec3(expression, precision);
     }
 
@@ -5707,8 +5686,7 @@ class Compiler implements LoweringServices {
         identifier: ts.Identifier,
     ): ts.CallExpression | undefined {
         const initializer = this.rerunCallInitializer(identifier);
-        return initializer &&
-            !this.evaluator.isWrittenThrough(initializer.declaration)
+        return initializer && this.unwrittenConst(initializer.declaration)
             ? initializer.call
             : undefined;
     }
@@ -5718,6 +5696,12 @@ class Compiler implements LoweringServices {
         resolving: ReadonlySet<ts.Symbol> = new EmissionSet(),
     ): ts.Expression {
         return this.evaluator.resolveStaticExpression(expression, resolving);
+    }
+
+    public constantNameValue(name: ts.Identifier): Value | undefined {
+        return this.resolveStaticExpression(name) !== name
+            ? this.compileValue(name)
+            : undefined;
     }
 
     /** Read complete current snapshots through the ordinary property ownership rules. */
@@ -5883,6 +5867,8 @@ class Compiler implements LoweringServices {
      * function only reads.
      */
     private rereadsAlike(expression: ts.Expression): boolean {
+        const known = this.rereadAlike.get(expression);
+        if (known !== undefined) return known;
         const stableName = (name: ts.Identifier): boolean => {
             const named = this.symbols.valueSymbol(name)?.valueDeclaration;
             if (!named) return false;
@@ -5938,7 +5924,9 @@ class Compiler implements LoweringServices {
                 return !isValueReference(node) || stableName(node);
             return !ts.forEachChild(node, (child) => !stable(child));
         };
-        return stable(expression);
+        const alike = stable(expression);
+        this.rereadAlike.set(expression, alike);
+        return alike;
     }
 
     /** The fold over required literals, which may read closed helpers. */
@@ -5979,12 +5967,10 @@ class Compiler implements LoweringServices {
             )
         )
             return undefined;
-        let fact = this.bindings.lookupOptional(root);
-        for (const key of keys)
-            fact =
-                fact && this.bindings.recordPropertiesAreCurrent(fact)
-                    ? fact.recordProperties?.[key]
-                    : undefined;
+        const fact = this.bindings.currentRecordMember(
+            this.bindings.lookupOptional(root),
+            keys,
+        );
         return fact && this.currentStaticLiteral(fact, expression);
     }
 

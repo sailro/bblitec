@@ -1067,8 +1067,9 @@ function refuseForeignClassView(
     node: ts.Node,
     instance?: ts.ClassLikeDeclaration,
 ): void {
-    const { type } = storedRecord(lowerer, node);
     const dataTypes = lowerer.context.dataTypes;
+    if (!dataTypes.hasObjectViews) return;
+    const { type } = storedRecord(lowerer, node);
     const viewed = type && dataTypes.classViewOf(type);
     if (!viewed || (instance && dataTypes.sharesClassStruct(viewed, instance)))
         return;

@@ -705,11 +705,9 @@ function compileObjectFromEntries(
     call: ts.CallExpression,
 ): Value {
     context.expectArgumentCount(call, 1, 1);
-    const resultType =
-        context.dataLowerer.dataTypeAt(call) ??
-        context.dataTypes.withDynamicJsonTypes(true, () =>
-            context.dataLowerer.dataTypeAt(call),
-        );
+    const resultType = context.dataTypes.orDynamicJsonTypes(() =>
+        context.dataLowerer.dataTypeAt(call),
+    );
     const record = context.probeEmission(() => {
         const entries = compileCollectionEntries(
             context.dataLowerer,

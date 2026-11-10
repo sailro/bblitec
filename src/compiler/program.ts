@@ -110,68 +110,73 @@ interface CarriedFileKind {
     /** What a refusal calls the import. */
     readonly name: string;
     readonly suffix: string;
-    /** The file a specifier of this kind names, relative to its importer. */
-    file(moduleName: string): string | undefined;
     /** The synthesized module's source for the file's text. */
     source(text: string, path: string): string;
 }
 
+/** The specifier suffix that names a file's text: a spelling, not a file. */
+const RAW_TEXT_QUERY = "?raw";
+
+const RAW_TEXT_IMPORT: CarriedFileKind = {
+    name: "Raw text import",
+    suffix: ".raw-text-import.ts",
+    source: (text) =>
+        `const rawText = ${JSON.stringify(text)};\nexport default rawText;\n`,
+};
+
+/** Whichever way a specifier names it, a file resolution finds to be JSON. */
+const JSON_IMPORT: CarriedFileKind = {
+    name: "JSON import",
+    suffix: ".json-import.ts",
+    source: (text, path) => {
+        let value: unknown;
+        try {
+            value = JSON.parse(text);
+        } catch (error) {
+            throw new Error(`JSON import reads '${path}', which is not JSON.`, {
+                cause: error,
+            });
+        }
+        // An object literal spells `__proto__` as its prototype, where
+        // JSON.parse makes it an own property.
+        const ownsProto = (part: unknown): boolean =>
+            typeof part === "object" &&
+            part !== null &&
+            (Object.hasOwn(part, "__proto__") ||
+                Object.values(part).some(ownsProto));
+        if (ownsProto(value))
+            throw new Error(
+                `JSON import reads '${path}', whose '__proto__' key no object literal holds as an own property.`,
+            );
+        return `const json = ${JSON.stringify(value)};\nexport default json;\n`;
+    },
+};
+
 const CARRIED_FILE_KINDS: readonly CarriedFileKind[] = [
-    {
-        name: "Raw text import",
-        suffix: ".raw-text-import.ts",
-        file: (moduleName) =>
-            moduleName.endsWith("?raw")
-                ? moduleName.slice(0, -"?raw".length)
-                : undefined,
-        source: (text) =>
-            `const rawText = ${JSON.stringify(text)};\nexport default rawText;\n`,
-    },
-    {
-        name: "JSON import",
-        suffix: ".json-import.ts",
-        file: (moduleName) =>
-            moduleName.startsWith(".") && moduleName.endsWith(".json")
-                ? moduleName
-                : undefined,
-        source: (text, path) => {
-            let value: unknown;
-            try {
-                value = JSON.parse(text);
-            } catch (error) {
-                throw new Error(
-                    `JSON import reads '${path}', which is not JSON.`,
-                    { cause: error },
-                );
-            }
-            // An object literal spells `__proto__` as its prototype, where
-            // JSON.parse makes it an own property.
-            const ownsProto = (part: unknown): boolean =>
-                typeof part === "object" &&
-                part !== null &&
-                (Object.hasOwn(part, "__proto__") ||
-                    Object.values(part).some(ownsProto));
-            if (ownsProto(value))
-                throw new Error(
-                    `JSON import reads '${path}', whose '__proto__' key no object literal holds as an own property.`,
-                );
-            return `const json = ${JSON.stringify(value)};\nexport default json;\n`;
-        },
-    },
+    RAW_TEXT_IMPORT,
+    JSON_IMPORT,
 ];
 
-/** The synthesized module a specifier of a carried file resolves to, or undefined for any other specifier. */
-function carriedFileImportPath(
-    moduleName: string,
-    containingFile: string,
-): string | undefined {
-    for (const kind of CARRIED_FILE_KINDS) {
-        const file = kind.file(moduleName);
-        if (file !== undefined)
-            return resolve(dirname(containingFile), file) + kind.suffix;
-    }
-    return undefined;
+/** The resolution of an import of a carried file: the synthesized module beside it. */
+function carriedFileModule(
+    file: string,
+    kind: CarriedFileKind,
+): ts.ResolvedModuleWithFailedLookupLocations {
+    return {
+        resolvedModule: {
+            resolvedFileName: file + kind.suffix,
+            extension: ts.Extension.Ts,
+            isExternalLibraryImport: false,
+        },
+    };
 }
+
+/**
+ * The synthesized source of each carried file, by module path, with the
+ * text it was made from: a program and its worker-module programs read
+ * one file once.
+ */
+const carriedFileSources = new Map<string, { text: string; source: string }>();
 
 /** The file a synthesized module carries and its kind, or undefined for a real path. */
 function carriedFile(
@@ -196,7 +201,11 @@ function carriedFileModuleSource(
             `${carried.kind.name} reads '${carried.file}', which does not exist.`,
         );
     }
-    return carried.kind.source(text, carried.file);
+    const known = carriedFileSources.get(path);
+    if (known?.text === text) return known.source;
+    const source = carried.kind.source(text, carried.file);
+    carriedFileSources.set(path, { text, source });
+    return source;
 }
 
 export interface CompilerProgram {
@@ -317,6 +326,9 @@ export function createCompilerProgram(
         // DOM number handle into NodeJS.Timeout.
         types: [],
         allowJs: true,
+        // A JSON file resolves, to the module that carries its value
+        // (`JSON_IMPORT`).
+        resolveJsonModule: true,
         noEmit: true,
         skipLibCheck: true,
         strict: true,
@@ -441,19 +453,14 @@ export function createCompilerProgram(
                         },
                     };
                 }
-                const carried = carriedFileImportPath(
-                    moduleName,
-                    containingFile,
-                );
-                if (carried) {
-                    return {
-                        resolvedModule: {
-                            resolvedFileName: carried,
-                            extension: ts.Extension.Ts,
-                            isExternalLibraryImport: false,
-                        },
-                    };
-                }
+                if (moduleName.endsWith(RAW_TEXT_QUERY))
+                    return carriedFileModule(
+                        resolve(
+                            dirname(containingFile),
+                            moduleName.slice(0, -RAW_TEXT_QUERY.length),
+                        ),
+                        RAW_TEXT_IMPORT,
+                    );
                 const resolved = ts.resolveModuleName(
                     moduleName,
                     containingFile,
@@ -462,6 +469,11 @@ export function createCompilerProgram(
                     undefined,
                     redirectedReference,
                 );
+                if (resolved.resolvedModule?.extension === ts.Extension.Json)
+                    return carriedFileModule(
+                        resolved.resolvedModule.resolvedFileName,
+                        JSON_IMPORT,
+                    );
                 const implementation = resolve(
                     dirname(containingFile),
                     moduleName,

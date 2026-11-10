@@ -668,6 +668,7 @@ interface DataLoweringContext extends Pick<
     | "sceneManifest"
     | "propertyAccess"
     | "resolveStaticExpression"
+    | "constantNameValue"
     | "executedModuleConstantElements"
     | "executedModuleConstantMapEntry"
     | "executedInitializerElements"
@@ -783,14 +784,18 @@ interface JsonAssignmentTarget {
     readonly key: string;
 }
 
-/** The document a dynamic compound assignment reads, and the statement storing its result. */
-interface JsonCompoundPlace {
+/**
+ * A place holding a document that an assignment reads and stores back to
+ * (compound, logical, `++`/`--`): the read, and the statement storing the
+ * next value.
+ */
+interface JsonPlace {
     readonly read: string;
     store(next: string): string;
 }
 
-/** A document's property as the place of a compound assignment. */
-function jsonPropertyPlace(target: JsonAssignmentTarget): JsonCompoundPlace {
+/** A document's property as such a place. */
+function jsonPropertyPlace(target: JsonAssignmentTarget): JsonPlace {
     return {
         read: `${target.owner}.read_property(${target.key})`,
         store: (next) => `${target.owner}.set(${target.key}, ${next});`,
@@ -945,7 +950,7 @@ export class DataLowerer {
             if (!operator) return undefined;
             const left = this.context.unwrap(expression.left);
             return this.withStoreKeysHeld(expression, () => {
-                const place = this.jsonCompoundPlace(left);
+                const place = this.jsonPlace(left);
                 return place
                     ? this.emitJsonCompoundAssignment(
                           expression,
@@ -5541,9 +5546,32 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
     }
 
     /**
-     * A read of a property the record's type admits as absent (optional,
-     * or typed to include undefined) and its struct does not store: the
-     * record lacks it, so the read is `undefined`. A computed receiver
+     * Whether the record type `owner` is read as admits a property as
+     * absent: `symbol` declares it optional or typed to include undefined,
+     * or, where the type declares no such property, its string index holds
+     * values that do.
+     */
+    private admitsAbsentProperty(
+        owner: ts.Expression,
+        symbol: ts.Symbol | undefined,
+    ): boolean {
+        const checker = this.context.checker;
+        if (symbol)
+            return (
+                (symbol.flags & ts.SymbolFlags.Optional) !== 0 ||
+                admitsUndefined(checker.getTypeOfSymbol(symbol))
+            );
+        const indexed = checker.getIndexTypeOfType(
+            checker.getTypeAtLocation(owner),
+            ts.IndexKind.String,
+        );
+        return indexed !== undefined && admitsUndefined(indexed);
+    }
+
+    /**
+     * A read of a property the record's type admits as absent
+     * (`admitsAbsentProperty`) and its struct does not store: the record
+     * lacks it, so the read is `undefined`. A computed receiver
      * (`options[i]!.hidden`) is still evaluated once, for its effects.
      */
     private absentPropertyRead(
@@ -5552,18 +5580,11 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         access: ts.PropertyAccessExpression,
     ): Value | undefined {
         const property = access.name.text;
-        const symbol = accessedPropertySymbol(this.context.checker, access);
-        const indexed = !symbol
-            ? this.context.checker.getIndexTypeOfType(
-                  this.context.checker.getTypeAtLocation(access.expression),
-                  ts.IndexKind.String,
-              )
-            : undefined;
         if (
-            symbol
-                ? (symbol.flags & ts.SymbolFlags.Optional) === 0 &&
-                  !admitsUndefined(this.context.checker.getTypeOfSymbol(symbol))
-                : !indexed || !admitsUndefined(indexed)
+            !this.admitsAbsentProperty(
+                access.expression,
+                accessedPropertySymbol(this.context.checker, access),
+            )
         )
             return undefined;
         const path = !owner.impure && isCppPath(owner.cpp);
@@ -6785,10 +6806,18 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                     "Dynamic struct access requires at least one key.",
                 );
             }
-            // A key the struct's records provably lack reads undefined
-            // (`absentRecordProperty`); a write needs its field.
+            // A key the record's type admits as absent and the struct's
+            // records provably lack reads undefined, as a named read of it
+            // does (`absentPropertyRead`); a write needs its field.
+            const keyedType = this.context.checker.getNonNullableType(
+                this.context.checker.getTypeAtLocation(access.expression),
+            );
             const keyed = members.map((member) =>
                 mode === "read" &&
+                this.admitsAbsentProperty(
+                    access.expression,
+                    this.context.checker.getPropertyOfType(keyedType, member),
+                ) &&
                 this.context.dataTypes.absentRecordProperty(
                     dataType.name,
                     member,
@@ -16325,7 +16354,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 left,
             );
             if (accessor) return result(accessor);
-            const json = this.jsonAssignmentTarget(left);
+            const json = this.jsonPlace(left);
             if (json) {
                 const previous =
                     this.context.allocateTemporaryCppName("logical_value");
@@ -16333,7 +16362,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                     kind: "declaration",
                     type: "const auto",
                     name: previous,
-                    initializer: `${json.owner}.read_property(${json.key})`,
+                    initializer: json.read,
                 });
                 const guard = this.logicalAssignmentGuard(
                     expression,
@@ -16345,14 +16374,10 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                     });
                     this.context.emit({
                         kind: "expression",
-                        code: `${json.owner}.set(${json.key}, ${value});`,
+                        code: json.store(value),
                     });
                 });
-                return result(
-                    this.leafValue(`${json.owner}.read_property(${json.key})`, {
-                        kind: "json",
-                    }),
-                );
+                return result(this.leafValue(json.read, { kind: "json" }));
             }
         }
         // A dictionary entry has no native lvalue: its presence is the
@@ -16535,13 +16560,11 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
     }
 
     /**
-     * Where a compound assignment to a document stores: a document's
+     * The document place an assignment target names: a document's
      * property, or a name holding a document (a local a parsed number
      * initialized).
      */
-    private jsonCompoundPlace(
-        left: ts.Expression,
-    ): JsonCompoundPlace | undefined {
+    private jsonPlace(left: ts.Expression): JsonPlace | undefined {
         if (
             ts.isPropertyAccessExpression(left) ||
             ts.isElementAccessExpression(left)
@@ -16559,7 +16582,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
     /** Keep the selected place and old primitive ahead of the right side. */
     private emitJsonCompoundAssignment(
         expression: ts.BinaryExpression,
-        place: JsonCompoundPlace,
+        place: JsonPlace,
         operator: string,
     ): Value {
         if (
@@ -16796,7 +16819,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             return this.emitLocalDataAssignment(expression, left);
         }
         if (ts.isIdentifier(left)) {
-            const place = this.jsonCompoundPlace(left);
+            const place = this.jsonPlace(left);
             if (!place) return false;
             this.emitJsonCompoundAssignment(expression, place, operator);
             return true;
@@ -16809,23 +16832,16 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         }
         if (operator === "=")
             this.requireOwnUndefinedWrite(left, expression.right);
-        const json = this.jsonAssignmentTarget(left);
+        const json = this.jsonPlace(left);
         if (json) {
             if (operator !== "=") {
-                this.emitJsonCompoundAssignment(
-                    expression,
-                    jsonPropertyPlace(json),
-                    operator,
-                );
+                this.emitJsonCompoundAssignment(expression, json, operator);
                 return true;
             }
             const value = this.compileForSink(expression.right, {
                 kind: "json",
             });
-            this.context.emit({
-                kind: "expression",
-                code: `${json.owner}.set(${json.key}, ${value});`,
-            });
+            this.context.emit({ kind: "expression", code: json.store(value) });
             return true;
         }
         if (
@@ -18621,14 +18637,8 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
     private compileJsonUpdate(
         expression: ts.PrefixUnaryExpression | ts.PostfixUnaryExpression,
     ): Value | undefined {
-        const operand = this.context.unwrap(expression.operand);
-        if (
-            !ts.isPropertyAccessExpression(operand) &&
-            !ts.isElementAccessExpression(operand)
-        )
-            return undefined;
-        const target = this.jsonAssignmentTarget(operand);
-        if (!target) return undefined;
+        const place = this.jsonPlace(this.context.unwrap(expression.operand));
+        if (!place) return undefined;
         const previous =
             this.context.allocateTemporaryCppName("update_previous");
         const next = this.context.allocateTemporaryCppName("update_next");
@@ -18636,7 +18646,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             kind: "declaration",
             type: "const double",
             name: previous,
-            initializer: `${target.owner}.read_property(${target.key}).to_number()`,
+            initializer: `${place.read}.to_number()`,
         });
         this.context.emit({
             kind: "declaration",
@@ -18646,7 +18656,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         });
         this.context.emit({
             kind: "expression",
-            code: `${target.owner}.set(${target.key}, bbl::js::json_value(${next}));`,
+            code: place.store(`bbl::js::json_value(${next})`),
         });
         return this.leafValue(
             ts.isPrefixUnaryExpression(expression) ? next : previous,

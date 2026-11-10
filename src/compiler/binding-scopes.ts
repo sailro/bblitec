@@ -2082,6 +2082,19 @@ export class BindingScopes {
         );
     }
 
+    /** The member a key path reaches from `value` through record facts each still current. */
+    public currentRecordMember(
+        value: Value | undefined,
+        path: readonly string[],
+    ): Value | undefined {
+        for (const key of path)
+            value =
+                value && this.recordPropertiesAreCurrent(value)
+                    ? value.recordProperties?.[key]
+                    : undefined;
+        return value;
+    }
+
     /** An indexed view retains the source record's field-map identity. */
     public retainRecordPropertiesAlias(
         value: Value,

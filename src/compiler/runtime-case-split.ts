@@ -1,7 +1,8 @@
 import ts from "typescript";
 import { someAnalysisNode } from "./analysis-walk.js";
-import { CompileError } from "./compile-error.js";
+import { CompileError, unlessRefused } from "./compile-error.js";
 import { writable } from "./emission-transaction.js";
+import type { DataType } from "./data-types/model.js";
 import type { LoweringServices } from "./lowering-services.js";
 import { declaredSymbol, resolvedSymbol, sameExpression } from "./symbols.js";
 import { StorageDemand } from "./storage-demand.js";
@@ -90,8 +91,18 @@ export function compileWithRuntimeCaseSplit(
         // the runtime test forced; per outcome it may not be needed, so it
         // stands only when the split fails too.
         if (!refusesPerOutcome(error)) throw error;
-        // Which tests stay runtime ones is asked only of a call that refused.
-        const runtime = runtimeSelectors(context, tests);
+        // Which members of the records its arguments name select, and
+        // which tests stay runtime ones, is asked only of a call that
+        // refused. The tests keep the order the arguments spell them in.
+        const runtime = runtimeSelectors(
+            context,
+            [
+                ...tests.groups,
+                ...tests.records.flatMap((record) =>
+                    recordMemberSelectors(context, record),
+                ),
+            ].sort((left, right) => left.nodes[0]!.pos - right.nodes[0]!.pos),
+        );
         if (runtime === undefined) throw error;
         if (runtime.variable.length > MAX_CANDIDATE_SELECTORS)
             throw beyondSplit(error, runtime.variable, MAX_CANDIDATE_SELECTORS);
@@ -134,7 +145,7 @@ function beyondSplit(
 ): unknown {
     if (!(error instanceof CompileError)) return error;
     const names = tests.map((test) =>
-        [test.test.getText(), ...(test.member ?? [])].join("."),
+        [test.test.getText(), ...(test.member?.path ?? [])].join("."),
     );
     return new CompileError(
         error.fileName,
@@ -164,15 +175,42 @@ type Outcome = "truthy" | "falsy" | "absent";
  * boolean; a `presence` an argument value that is an object or one absence
  * (`undefined` or `null`); an `optional-boolean` a boolean or one absence.
  * `outcomes` are the ones the value can take. With `member`, the value is
- * the member at that key path of the record `test` names, of `memberType`.
+ * the member at that key path of the record `test` names, of that type;
+ * `present` is the storage of an object member where an arm found it.
  */
 interface Selector {
     kind: "condition" | "boolean" | "presence" | "optional-boolean";
     test: ts.Expression;
     nodes: readonly ts.Expression[];
     outcomes: readonly Outcome[];
-    member?: readonly string[];
-    memberType?: ts.Type;
+    member?: {
+        readonly path: readonly string[];
+        readonly type: ts.Type;
+        readonly present?: DataType | undefined;
+    };
+}
+
+/** A selector on a record's member. */
+type MemberSelector = Selector & Required<Pick<Selector, "member">>;
+
+function isMemberSelector(selector: Selector): selector is MemberSelector {
+    return selector.member !== undefined;
+}
+
+/** A record an argument names: every position naming it, and its type there. */
+interface RecordArgument {
+    nodes: ts.Identifier[];
+    type: ts.Type;
+}
+
+/**
+ * What a call's arguments select with: the tests they spell, and the
+ * records they name, whose members of a few outcomes are tests too
+ * (`recordMemberSelectors`).
+ */
+interface SelectorTests {
+    groups: readonly Selector[];
+    records: readonly RecordArgument[];
 }
 
 /** Every outcome a test of `kind` can take. */
@@ -225,7 +263,7 @@ function withOutcomes<T>(
         for (const node of selector.nodes) {
             if (selector.kind === "condition")
                 context.conditionOverrides.set(node, outcome === "truthy");
-            else if (selector.member)
+            else if (isMemberSelector(selector))
                 records.set(
                     node,
                     withForcedMember(
@@ -233,7 +271,7 @@ function withOutcomes<T>(
                         selector,
                         node,
                         records.get(node) ?? context.compileValue(node),
-                        selector.member,
+                        selector.member.path,
                         outcome,
                     ),
                 );
@@ -287,11 +325,7 @@ function forcedValue(
                       read(),
                       node,
                       true,
-                      selector.member &&
-                          context.dataTypes.fromTsType(
-                              context.checker.getNonNullableType(type),
-                              node,
-                          ),
+                      selector.member?.present,
                   ),
                   truthinessCpp: "true",
                   optionalFoundCpp: "true",
@@ -311,7 +345,7 @@ function forcedValue(
  */
 function withForcedMember(
     context: CaseSplitContext,
-    selector: Selector,
+    selector: MemberSelector,
     node: ts.Expression,
     record: Value,
     path: readonly string[],
@@ -343,7 +377,7 @@ function withForcedMember(
                   context,
                   selector,
                   node,
-                  selector.memberType!,
+                  selector.member.type,
                   () => member,
                   outcome,
               )),
@@ -358,13 +392,10 @@ function selectorValue(
     context: CaseSplitContext,
     selector: Selector,
 ): Value | undefined {
-    let value: Value | undefined = context.compileValue(selector.test);
-    for (const key of selector.member ?? [])
-        value =
-            value && context.bindings.recordPropertiesAreCurrent(value)
-                ? value.recordProperties?.[key]
-                : undefined;
-    return value;
+    return context.bindings.currentRecordMember(
+        context.compileValue(selector.test),
+        selector.member?.path ?? [],
+    );
 }
 
 /**
@@ -440,25 +471,38 @@ export function moduleLevelCallee(
 
 /**
  * The distinct tests a call's arguments select with, each with every node
- * spelling it, when the call can be split on them: no argument assigns,
- * constructs or suspends, its calls go to module-level functions handed
- * none of the bindings the tests read, and no test writes.
+ * spelling it, and the records they name, when the call can be split on
+ * them: no argument assigns, constructs or suspends, its calls go to
+ * module-level functions handed none of the bindings the tests read, and
+ * no test writes.
  */
 function selectorTests(
     context: CaseSplitContext,
     call: ts.CallExpression,
-): Selector[] | undefined {
+): SelectorTests | undefined {
+    const calls: ts.CallExpression[] = [];
+    const effects = (node: ts.Node): boolean => {
+        if (ts.isFunctionLike(node)) return false;
+        if (ts.isCallExpression(node)) {
+            if (!moduleLevelCallee(context.checker, node.expression))
+                return true;
+            calls.push(node);
+        } else if (
+            ts.isNewExpression(node) ||
+            ts.isTaggedTemplateExpression(node) ||
+            isSuspensionPoint(node, { yield: true }) ||
+            writeSites(node).length > 0
+        )
+            return true;
+        return ts.forEachChild(node, effects) ?? false;
+    };
+    if (call.arguments.some(effects)) return undefined;
     // Each distinct test with every place it appears.
     const groups: (Selector & { nodes: ts.Expression[] })[] = [];
-    const addGroup = (
-        kind: Selector["kind"],
-        test: ts.Expression,
-        member?: { path: readonly string[]; type: ts.Type },
-    ): void => {
+    const addGroup = (kind: Selector["kind"], test: ts.Expression): void => {
         const group = groups.find(
             (candidate) =>
                 candidate.kind === kind &&
-                candidate.member?.join(".") === member?.path.join(".") &&
                 sameExpression(context.checker, candidate.test, test),
         );
         if (group) group.nodes.push(test);
@@ -468,44 +512,9 @@ function selectorTests(
                 test,
                 nodes: [test],
                 outcomes: KIND_OUTCOMES[kind],
-                ...(member
-                    ? { member: member.path, memberType: member.type }
-                    : {}),
             });
     };
-    const calls: ts.CallExpression[] = [];
-    let effects = false;
-    // The members of a few outcomes of a record a name holds, and of the
-    // records nested in it.
-    const recordMembers = (
-        node: ts.Identifier,
-        record: Value,
-        type: ts.Type,
-        path: readonly string[],
-    ): void => {
-        if (
-            record.kind !== "record" ||
-            !record.recordProperties ||
-            !context.bindings.recordPropertiesAreCurrent(record)
-        )
-            return;
-        for (const [key, member] of Object.entries(record.recordProperties)) {
-            const property = context.checker.getPropertyOfType(type, key);
-            if (!property) continue;
-            const memberType = context.checker.getTypeOfSymbolAtLocation(
-                property,
-                node,
-            );
-            const kind = selectorKind(memberType);
-            if (kind)
-                addGroup(kind, node, {
-                    path: [...path, key],
-                    type: memberType,
-                });
-            else if (path.length + 1 < MAX_MEMBER_DEPTH)
-                recordMembers(node, member, memberType, [...path, key]);
-        }
-    };
+    const records: RecordArgument[] = [];
     // An argument value of a few outcomes, unless it is a literal (already
     // a constant) or a selection inside it already splits it; else the
     // record it names.
@@ -519,28 +528,16 @@ function selectorTests(
         const kind = selectorKind(type);
         if (kind) {
             if (!containsSelection(node)) addGroup(kind, node);
-        } else if (ts.isIdentifier(node)) {
-            const record = context.bindings.lookupOptional(node);
-            if (record) recordMembers(node, record, type, []);
+        } else if (ts.isIdentifier(node) && heldRecord(context, node)) {
+            const record = records.find((candidate) =>
+                sameExpression(context.checker, candidate.nodes[0]!, node),
+            );
+            if (record) record.nodes.push(node);
+            else records.push({ nodes: [node], type });
         }
     };
     const visit = (node: ts.Node): void => {
-        if (effects || ts.isFunctionLike(node)) return;
-        if (ts.isCallExpression(node)) {
-            if (!moduleLevelCallee(context.checker, node.expression)) {
-                effects = true;
-                return;
-            }
-            calls.push(node);
-        } else if (
-            ts.isNewExpression(node) ||
-            ts.isTaggedTemplateExpression(node) ||
-            isSuspensionPoint(node, { yield: true }) ||
-            writeSites(node).length > 0
-        ) {
-            effects = true;
-            return;
-        }
+        if (ts.isFunctionLike(node)) return;
         if (ts.isConditionalExpression(node))
             addGroup("condition", node.condition);
         if (ts.isPropertyAssignment(node)) valuePosition(node.initializer);
@@ -552,7 +549,7 @@ function selectorTests(
         valuePosition(argument);
         visit(argument);
     });
-    if (effects || groups.length === 0) return undefined;
+    if (groups.length === 0 && records.length === 0) return undefined;
     // The bindings the tests read; no call in the arguments may receive one.
     const roots = new Set<ts.Symbol>();
     const binding = (node: ts.Node): node is ts.Identifier =>
@@ -564,9 +561,12 @@ function selectorTests(
         }
         ts.forEachChild(node, collect);
     };
-    for (const { test: condition } of groups) {
-        if (context.evaluationOrder.writesStorage(condition)) return undefined;
-        collect(condition);
+    for (const test of [
+        ...groups.map((group) => group.test),
+        ...records.map((record) => record.nodes[0]!),
+    ]) {
+        if (context.evaluationOrder.writesStorage(test)) return undefined;
+        collect(test);
     }
     const receivesRoot = (node: ts.Node): boolean =>
         (binding(node) &&
@@ -582,7 +582,80 @@ function selectorTests(
         (ts.forEachChild(node, receivesRoot) ?? false);
     if (calls.some((inner) => inner.arguments.some(receivesRoot)))
         return undefined;
-    return groups;
+    return { groups, records };
+}
+
+/** The compile-time record a name holds, while its facts are current. */
+function heldRecord(
+    context: CaseSplitContext,
+    name: ts.Identifier,
+): Value | undefined {
+    const held = context.bindings.lookupOptional(name);
+    return held?.kind === "record" &&
+        held.recordProperties &&
+        context.bindings.recordPropertiesAreCurrent(held)
+        ? held
+        : undefined;
+}
+
+/**
+ * The members of a few outcomes of the record an argument names, and of
+ * the records nested in it, as selectors.
+ */
+function recordMemberSelectors(
+    context: CaseSplitContext,
+    { nodes, type }: RecordArgument,
+): Selector[] {
+    const node = nodes[0]!;
+    const selectors: Selector[] = [];
+    const members = (
+        record: Value | undefined,
+        recordType: ts.Type,
+        path: readonly string[],
+    ): void => {
+        for (const [key, member] of Object.entries(
+            record?.recordProperties ?? {},
+        )) {
+            const property = context.checker.getPropertyOfType(recordType, key);
+            if (!property) continue;
+            const memberType = context.checker.getTypeOfSymbolAtLocation(
+                property,
+                node,
+            );
+            const kind = selectorKind(memberType);
+            const below = [...path, key];
+            if (kind)
+                selectors.push({
+                    kind,
+                    test: node,
+                    nodes,
+                    outcomes: KIND_OUTCOMES[kind],
+                    member: {
+                        path: below,
+                        type: memberType,
+                        present:
+                            kind === "presence"
+                                ? unlessRefused(() =>
+                                      context.dataTypes.fromTsType(
+                                          context.checker.getNonNullableType(
+                                              memberType,
+                                          ),
+                                          node,
+                                      ),
+                                  )
+                                : undefined,
+                    },
+                });
+            else if (
+                below.length < MAX_MEMBER_DEPTH &&
+                member.kind === "record" &&
+                context.bindings.recordPropertiesAreCurrent(member)
+            )
+                members(member, memberType, below);
+        }
+    };
+    members(heldRecord(context, node), type, []);
+    return selectors;
 }
 
 /** Whether an expression holds a selection a split reads as its own test. */
@@ -604,14 +677,24 @@ function runtimeSelectors(
 ): RuntimeSelectors | undefined {
     const fixed: Selector[] = [];
     const variable: Selector[] = [];
+    // A record is read once for all of its members.
+    const read = new Map<ts.Expression, Value | undefined>();
+    const valueOf = (group: Selector): Value | undefined => {
+        if (!read.has(group.test))
+            read.set(
+                group.test,
+                context.probeEmission(
+                    () => context.compileValue(group.test),
+                    () => false,
+                ),
+            );
+        return context.bindings.currentRecordMember(
+            read.get(group.test),
+            group.member?.path ?? [],
+        );
+    };
     for (const group of groups) {
-        const value =
-            group.kind === "condition"
-                ? undefined
-                : context.probeEmission(
-                      () => selectorValue(context, group),
-                      () => false,
-                  );
+        const value = group.kind === "condition" ? undefined : valueOf(group);
         const truth = knownCondition(
             group.member
                 ? value && context.dataLowerer.truthinessCondition(value)

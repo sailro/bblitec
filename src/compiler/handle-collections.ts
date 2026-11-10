@@ -1829,7 +1829,11 @@ export class HandleCollections {
             ) {
                 throw new DynamicBindingStorageRequired(declaration, "array");
             }
-            this.requireElementView(declaration, pushed, argumentAt(call, 0));
+            this.requireElementView(
+                declaration,
+                () => pushed,
+                argumentAt(call, 0),
+            );
             return this.context.fail(
                 owner,
                 "A runtime-grown handle list requires native array storage.",
@@ -1873,12 +1877,14 @@ export class HandleCollections {
         if (!ts.isIdentifier(owner)) return;
         const tuple = this.context.bindings.lookupOptional(owner);
         if (tuple?.kind !== "tuple" || !tuple.tupleElements) return;
-        const searched = this.context.probeEmission(() =>
-            this.context.compileValue(argumentAt(call, 0)),
-        );
+        // The searched value is only looked at: the search lowers it.
         this.requireElementView(
             initializedVariableDeclaration(this.context.checker, owner),
-            searched,
+            () =>
+                this.context.probeEmission(
+                    () => this.context.compileValue(argumentAt(call, 0)),
+                    () => false,
+                ),
             argumentAt(call, 0),
         );
     }
@@ -1886,11 +1892,11 @@ export class HandleCollections {
     /**
      * The element type of the list `declaration` declares, where it is a
      * structural record no layout stores, as a view of the native owner
-     * `held` is: the list then has native array storage.
+     * `held` gives: the list then has native array storage.
      */
     private requireElementView(
         declaration: ts.VariableDeclaration | undefined,
-        held: Value,
+        held: () => Value,
         node: ts.Expression,
     ): void {
         const element =
@@ -1899,13 +1905,11 @@ export class HandleCollections {
                 this.context.checker,
                 this.context.checker.getTypeAtLocation(declaration.name),
             );
-        const native = nativeStructuralViewType(held);
         const view =
             element &&
-            native &&
             this.context.dataTypes.layoutlessRecordViewDemand(
                 element,
-                native,
+                () => nativeStructuralViewType(held()),
                 node,
             );
         if (view) throw new NativeRecordStorageRequired(view);

@@ -112,9 +112,9 @@ import {
 import {
     compileAudioMethodCall,
     compileAudioConstructor,
-    audioPrototypeValue,
     audioTypeof,
 } from "./audio-surface.js";
+import { compileLibraryPrototype } from "./prototype-values.js";
 import { compileVatMethodCall } from "./intrinsics/vat.js";
 import { compilePhysicsMethodCall } from "./physics-surface.js";
 import { compileCustomEventConstructor } from "./custom-events.js";
@@ -352,6 +352,7 @@ export interface ExpressionContext
             | "defineThis"
             | "resolveThisField"
             | "resolveStaticExpression"
+            | "constantNameValue"
             | "canvasSizeValue"
             | "propertyAccess"
             | "registerClassInstance"
@@ -1089,8 +1090,8 @@ export class ExpressionLowerer {
             const arrayFunction = arrayFunctionValue(this.context, unwrapped);
             if (arrayFunction) return arrayFunction;
             if (mathFunction) return mathFunction;
-            const audioPrototype = audioPrototypeValue(this.context, unwrapped);
-            if (audioPrototype) return audioPrototype;
+            const prototype = compileLibraryPrototype(this.context, unwrapped);
+            if (prototype) return prototype;
             const constant = enumMemberConstant(
                 this.context.checker,
                 unwrapped,
@@ -7898,11 +7899,7 @@ export class ExpressionLowerer {
             const receiverValue = ts.isIdentifier(receiver)
                 ? (this.context.bindings.lookupOptional(receiver) ??
                   this.compileModuleNamespace(receiver) ??
-                  // A module constant without storage is its initializer,
-                  // as a member read of it is.
-                  (this.context.resolveStaticExpression(receiver) !== receiver
-                      ? this.compileValue(receiver)
-                      : undefined))
+                  this.context.constantNameValue(receiver))
                 : receiver.kind === ts.SyntaxKind.ThisKeyword
                   ? this.context.activeThis()
                   : voidReceiver(

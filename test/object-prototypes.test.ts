@@ -1,14 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { runInNewContext } from "node:vm";
-import ts from "typescript";
 import { compileSource } from "../src/compiler.js";
-import {
-    optionalNativeFixtureTools,
-    runGeneratedProgram,
-} from "./native-fixture.js";
+import { runSelfCheckingProgram } from "./self-checking-program.js";
 
-test("Object.getPrototypeOf answers with the prototype of a value's kind", (t) => {
+test("Object.getPrototypeOf answers with the prototype of a value's kind", async (t) => {
     const source = `
         function canonical(value: unknown, path = "root"): string {
             if (value === null || typeof value === "string" || typeof value === "boolean") return JSON.stringify(value);
@@ -65,22 +60,8 @@ test("Object.getPrototypeOf answers with the prototype of a value's kind", (t) =
         class Box { constructor(public value: number) {} }
         if (Object.getPrototypeOf(new Box(1)) !== Box.prototype) throw new Error("class instance");
     `;
-    runInNewContext(
-        ts.transpileModule(source, {
-            compilerOptions: {
-                target: ts.ScriptTarget.ES2022,
-                module: ts.ModuleKind.None,
-            },
-        }).outputText,
-    );
-    const result = compileSource(source);
-    assert.match(result.cpp, /\.prototype\(\)/);
-    const native = optionalNativeFixtureTools(false);
-    if (!native) {
-        t.skip("Native fixture compiler unavailable.");
-        return;
-    }
-    runGeneratedProgram(native, "object-prototypes/semantics", result.cpp);
+    assert.match(compileSource(source).cpp, /\.prototype\(\)/);
+    await runSelfCheckingProgram(t, "object-prototypes/semantics", source);
 });
 
 const read = `

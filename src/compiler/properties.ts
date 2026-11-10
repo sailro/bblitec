@@ -14,6 +14,7 @@
 // compile-time metadata rather than from a native field, and
 // `camera.target` synthesizes a three-component record. Those differ in
 // what they *do*, not in which field they name.
+import { AbsentRecordProperties } from "./absent-record-properties.js";
 import { readEngineRenderFunction } from "./engine-render-function.js";
 import { elementChildrenSnapshot, readByOneWalk } from "./element-children.js";
 import {
@@ -93,7 +94,6 @@ import {
     SOURCE_LOOP_MEMBERS,
 } from "./web-audio-members.js";
 import { fullscreenElementValue } from "./fullscreen.js";
-import { compileLibraryPrototype } from "./prototype-values.js";
 import { eventTargetCpp } from "./dom-targets.js";
 import { readCharacterProperty } from "./intrinsics/character-controller.js";
 import { readPhysicsProperty } from "./physics-surface.js";
@@ -2422,17 +2422,21 @@ export class PropertyAccessLowerer {
         property: string,
         read: ts.Node,
     ): boolean {
-        const declared = this.context.dataLowerer.dataTypeAt(read);
         const readType = this.context.checker.getTypeAtLocation(read);
+        if (nullability(readType).undefined) return true;
         const declaredProperty = this.context.checker
             .getNonNullableType(ownerType)
             .getProperty(property);
+        if (
+            declaredProperty !== undefined
+                ? (declaredProperty.flags & ts.SymbolFlags.Optional) !== 0
+                : !owner.classDeclaration &&
+                  AbsentRecordProperties.omittable(property)
+        )
+            return true;
+        const declared = this.context.dataLowerer.dataTypeAt(read);
         return (
             declared?.kind === "optional" ||
-            nullability(readType).undefined ||
-            (declaredProperty !== undefined
-                ? (declaredProperty.flags & ts.SymbolFlags.Optional) !== 0
-                : !owner.classDeclaration && !(property in Object.prototype)) ||
             (declared?.kind === "function" &&
                 unionMembers(readType).some((member) =>
                     holdsOnly(member, ["null", "undefined"]),
@@ -3242,8 +3246,6 @@ export class PropertyAccessLowerer {
         const stopped = this.context.optionalChainStop(expression);
         if (stopped) return stopped;
         this.refuseMethodValue(expression);
-        const prototype = compileLibraryPrototype(this.context, expression);
-        if (prototype) return prototype;
         const collection = this.context.unwrap(expression.expression);
         if (
             expression.name.text === "length" &&
@@ -4297,11 +4299,10 @@ export class PropertyAccessLowerer {
         if (character) return character;
         const physics = readPhysicsProperty(this.context, owner, expression);
         if (physics) return physics;
-        const staticProperty = this.context.bindings.recordPropertiesAreCurrent(
+        const staticProperty = this.context.bindings.currentRecordMember(
             owner,
-        )
-            ? owner.recordProperties?.[expression.name.text]
-            : undefined;
+            [expression.name.text],
+        );
         if (
             staticProperty &&
             !(owner.kind === "data" && owner.dataType?.kind === "struct")

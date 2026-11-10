@@ -1,4 +1,5 @@
 import ts from "typescript";
+import { audioContextPrototype } from "./audio-surface.js";
 import type { LoweringServices } from "./lowering-services.js";
 import { isJsonValue } from "./json-bridge.js";
 import { programObservations } from "./program-observations.js";
@@ -22,13 +23,16 @@ type PrototypeContext = Pick<
     | "reachJson"
 >;
 
-/** The constructors whose prototype a represented value can have, and its native identity. */
-const PROTOTYPES: ReadonlyMap<string, string> = new Map([
-    ["Object", "object"],
-    ["Array", "array"],
-    ["String", "string"],
-    ["Number", "number"],
-    ["Boolean", "boolean"],
+/**
+ * The constructors whose prototype a represented value can have; the
+ * native identity of each is its name in lower case.
+ */
+const PROTOTYPES: ReadonlySet<string> = new Set([
+    "Object",
+    "Array",
+    "String",
+    "Number",
+    "Boolean",
 ]);
 
 /** The native spelling of an identity generation knows. */
@@ -61,14 +65,23 @@ function libraryPrototype(
     )
         return undefined;
     const owner = context.libraryGlobal(expression.expression);
-    return owner === undefined ? undefined : PROTOTYPES.get(owner);
+    return owner !== undefined && PROTOTYPES.has(owner)
+        ? owner.toLowerCase()
+        : undefined;
 }
 
-/** `Object.prototype` and its like read as a value; undefined for any other access. */
+/**
+ * `<constructor>.prototype` read as a value: `Object.prototype` and its
+ * like as the identity it names, the audio context's as the record of the
+ * optional methods no host has; undefined for any other access.
+ */
 export function compileLibraryPrototype(
     context: Pick<PrototypeContext, "libraryGlobal" | "reachJsData">,
     expression: ts.PropertyAccessExpression,
 ): Value | undefined {
+    if (expression.name.text !== "prototype") return undefined;
+    if (context.libraryGlobal(expression.expression) === "AudioContext")
+        return audioContextPrototype();
     const identity = libraryPrototype(context, expression);
     return identity === undefined
         ? undefined
@@ -104,7 +117,7 @@ export function readsPrototype(
  * array or tuple `Array.prototype`, a string, number or boolean its
  * wrapper's; a document answers by its run-time kind and throws the
  * TypeError on null and undefined. That is exact only in a program that
- * gives no object another prototype (`foreignPrototypes`): `Object.create(null)`
+ * gives no object another prototype (`foreignPrototype`): `Object.create(null)`
  * lowers to a dictionary no representation tells from a literal's. A class
  * instance's prototype is read by a comparison alone (`prototypeComparison`);
  * any other value refuses by its type.
@@ -114,7 +127,7 @@ export function compileObjectGetPrototypeOf(
     call: ts.CallExpression,
 ): Value {
     context.expectArgumentCount(call, 1, 1);
-    const [foreign] = programObservations(context.program).foreignPrototypes;
+    const foreign = programObservations(context.program).foreignPrototype;
     if (foreign) {
         const source = foreign.getSourceFile();
         const { line } = source.getLineAndCharacterOfPosition(

@@ -21,7 +21,7 @@ import {
     writeSites,
     writeSiteOf,
     accessKey,
-    propertyKey,
+    isProtoSetter,
     patternSlots,
     equalityOperator,
     operandYield,
@@ -107,12 +107,12 @@ export interface ProgramObservations {
     readonly namedReads: ReadonlyMap<string, readonly NamedRead[]>;
     readonly wholesaleReads: readonly ts.Node[];
     /**
-     * The sites that give an object a prototype no literal or constructor
-     * gives it: `Object.create`, `Object.setPrototypeOf`,
+     * The first site that gives an object a prototype no literal or
+     * constructor gives it: `Object.create`, `Object.setPrototypeOf`,
      * `Reflect.setPrototypeOf`, a `__proto__` member or key, and the
      * null-prototype results of `Object.groupBy` and a match's `groups`.
      */
-    readonly foreignPrototypes: readonly ts.Node[];
+    readonly foreignPrototype: ts.Node | undefined;
 }
 
 /** @unjournaled A pure function of the checked program, kept across replays. */
@@ -260,7 +260,7 @@ function observe(program: ts.Program): ProgramObservations {
     };
     const namedReads = new Map<string, NamedRead[]>();
     const wholesaleReads: ts.Node[] = [];
-    const foreignPrototypes: ts.Node[] = [];
+    let foreignPrototype: ts.Node | undefined;
     const typeOf = (node: ts.Node): ts.Type => checker.getTypeAtLocation(node);
     let order = 0;
     const place = (
@@ -510,16 +510,13 @@ function observe(program: ts.Program): ProgramObservations {
                         MATCH_RESULTS.has(libraryName(member) ?? ""),
                     ))
             )
-                foreignPrototypes.push(node);
+                foreignPrototype ??= node;
             if (readsOnlyAsMember(node)) {
                 // Read as a member of the access around it.
             } else if (key !== undefined) read(key, node, node.expression);
             else wholesaleReads.push(node.expression);
-        } else if (
-            ts.isPropertyAssignment(node) &&
-            propertyKey(node.name) === "__proto__"
-        ) {
-            foreignPrototypes.push(node);
+        } else if (ts.isPropertyAssignment(node) && isProtoSetter(node)) {
+            foreignPrototype ??= node;
         } else if (ts.isObjectBindingPattern(node)) {
             for (const { element, read: slot } of patternSlots(node))
                 if (slot.kind === "member" && slot.key !== undefined)
@@ -623,7 +620,7 @@ function observe(program: ts.Program): ProgramObservations {
             (owner === "Object" && FOREIGN_PROTOTYPE_STATICS.has(method)) ||
             (owner === "Reflect" && method === "setPrototypeOf")
         )
-            foreignPrototypes.push(node);
+            foreignPrototype ??= node;
         if (owner === "Object") {
             if (method === "assign" && first) {
                 addWrite(first, { node });
@@ -694,6 +691,6 @@ function observe(program: ts.Program): ProgramObservations {
         arrayLocalElements,
         namedReads,
         wholesaleReads,
-        foreignPrototypes,
+        foreignPrototype,
     };
 }

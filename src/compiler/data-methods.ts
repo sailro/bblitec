@@ -501,6 +501,29 @@ function arrayUsesOnlyRead(
     return !written;
 }
 
+/**
+ * A data method's owner named without a run-time binding in this scope: a
+ * module string, query bag or typed array is its value at the use site, a
+ * constant record its initializer's, and any other name a static container.
+ */
+function unboundOwner(
+    lowerer: DataLowerer,
+    owner: ts.Identifier,
+): Value | undefined {
+    const type = lowerer.dataTypeAt(owner);
+    if (
+        type?.kind === "string" ||
+        type?.kind === "search-params" ||
+        isTypedArrayType(type)
+    )
+        return lowerer.context.compileValue(owner);
+    return (
+        (type?.kind === "struct"
+            ? lowerer.context.constantNameValue(owner)
+            : undefined) ?? lowerer.compileStaticContainer(owner)
+    );
+}
+
 export function compileDataMethodCall(
     lowerer: DataLowerer,
     call: ts.CallExpression,
@@ -629,18 +652,7 @@ export function compileDataMethodCall(
             ? lowerer.context.compileValue(ownerExpression)
             : ts.isIdentifier(ownerExpression)
               ? (lowerer.context.bindings.lookupOptional(ownerExpression) ??
-                // A module string, query bag, typed array or constant record
-                // without a runtime binding in this scope is its value at
-                // the use site.
-                (["string", "search-params"].includes(
-                    lowerer.dataTypeAt(ownerExpression)?.kind ?? "",
-                ) ||
-                isTypedArrayType(lowerer.dataTypeAt(ownerExpression)) ||
-                (lowerer.dataTypeAt(ownerExpression)?.kind === "struct" &&
-                    lowerer.context.resolveStaticExpression(ownerExpression) !==
-                        ownerExpression)
-                    ? lowerer.context.compileValue(ownerExpression)
-                    : lowerer.compileStaticContainer(ownerExpression)))
+                unboundOwner(lowerer, ownerExpression))
               : (ts.isPropertyAccessExpression(ownerExpression) ||
                       ts.isElementAccessExpression(ownerExpression)) &&
                   lowerer.plainDataOwnerChain(ownerExpression)

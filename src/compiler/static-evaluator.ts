@@ -317,9 +317,7 @@ const PURE_STRING_METHODS: ReadonlySet<string> = new Set([
  * (`StaticEvaluator.compileVector`).
  */
 interface VectorSink {
-    /** The native type built. */
-    type: string;
-    /** The vector's name in refusals. */
+    /** The vector's name: in refusals, and its native type's (`builtVector`). */
     name: string;
     /** The lane names in order; their count is the vector's size. */
     lanes: readonly string[];
@@ -340,32 +338,39 @@ function expectedVector(sink: VectorSink): string {
     return `Expected a ${sink.name} array [${lanes}]${sink.records ? ` or object { ${lanes} }` : ""}.`;
 }
 
-function vec3Sink(precision: "float" | "double"): VectorSink {
-    return {
-        type: precision === "float" ? "bbl::Vec3" : "bbl::Vec3d",
-        name: "Vec3",
-        lanes: ["x", "y", "z"],
-        precision,
-        records: "vector",
-    };
+/** The native vector a sink builds from its lanes, each already at the sink's width. */
+function builtVector(sink: VectorSink, lanes: readonly string[]): string {
+    return `bbl::${sink.name}${sink.precision === "double" ? "d" : ""}{${lanes.join(", ")}}`;
 }
 
+const VEC3_SINKS: Readonly<Record<VectorSink["precision"], VectorSink>> = {
+    float: {
+        name: "Vec3",
+        lanes: ["x", "y", "z"],
+        precision: "float",
+        records: "vector",
+    },
+    double: {
+        name: "Vec3",
+        lanes: ["x", "y", "z"],
+        precision: "double",
+        records: "vector",
+    },
+};
+
 const VEC2_SINK: VectorSink = {
-    type: "bbl::Vec2",
     name: "Vec2",
     lanes: ["x", "y"],
     precision: "float",
 };
 
 const VEC4_SINK: VectorSink = {
-    type: "bbl::Vec4",
     name: "Vec4",
     lanes: ["x", "y", "z", "w"],
     precision: "float",
 };
 
 const COLOR3_SINK: VectorSink = {
-    type: "bbl::Color3",
     name: "Color3",
     lanes: ["r", "g", "b"],
     precision: "float",
@@ -373,7 +378,6 @@ const COLOR3_SINK: VectorSink = {
 };
 
 const COLOR4_SINK: VectorSink = {
-    type: "bbl::Color4",
     name: "Color4",
     lanes: ["r", "g", "b", "a"],
     precision: "float",
@@ -499,27 +503,38 @@ export class StaticEvaluator {
     /**
      * The native vector a sink builds from `expression`, read in the one
      * order every vector sink shares: a property already holding the
-     * sink's native value, a record's named lanes, a data tuple's lanes, a
-     * compile-time tuple, an array literal (its tuple spreads expanded) and
-     * an object literal of the named lanes. A module constant passed by
-     * name is the literal it initializes to, so the binding is followed
-     * before any of them is matched. `value` is the expression's value
-     * when the caller already compiled it.
+     * sink's native value, a copy of a record (`{ ...record }`), a record's
+     * named lanes, a data tuple's lanes, a compile-time tuple, an array
+     * literal (its tuple spreads expanded) and an object literal of the
+     * named lanes. A module constant passed by name is the literal it
+     * initializes to, so the binding is followed before any of them is
+     * matched.
      */
-    private compileVector(
-        expression: ts.Expression,
-        sink: VectorSink,
-        value?: Value,
-    ): string {
+    private compileVector(expression: ts.Expression, sink: VectorSink): string {
         const unwrapped = this.unwrap(this.resolveStaticExpression(expression));
         if (sink.native && ts.isPropertyAccessExpression(unwrapped)) {
             const property = this.resolveProperty(unwrapped);
             if (property?.kind === sink.native) return property.cpp;
         }
+        const copied =
+            sink.records &&
+            ts.isObjectLiteralExpression(unwrapped) &&
+            unwrapped.properties.length === 1 &&
+            ts.isSpreadAssignment(unwrapped.properties[0]!)
+                ? unwrapped.properties[0].expression
+                : undefined;
+        if (copied) {
+            this.requireLaneRecord(expression, unwrapped, sink);
+            return this.vectorFromRecord(
+                this.resolveValue(copied),
+                copied,
+                sink,
+            );
+        }
         const size = sink.lanes.length;
         const built = (lanes: readonly string[]): string =>
-            `${sink.type}{${lanes.join(", ")}}`;
-        const resolved = value ?? this.vectorValue(expression, unwrapped);
+            builtVector(sink, lanes);
+        const resolved = this.vectorValue(expression, unwrapped);
         // A record reaching a vector sink is read lane by lane where it
         // stands: a navmesh query's snapped point handed to the next query
         // by its local, a clear colour a module constant holds.
@@ -617,7 +632,7 @@ export class StaticEvaluator {
             }
             return this.castNumber(lane, sink.precision);
         });
-        return `${sink.type}{${lanes.join(", ")}}`;
+        return builtVector(sink, lanes);
     }
 
     /**
@@ -630,9 +645,8 @@ export class StaticEvaluator {
     public compileVec3(
         expression: ts.Expression,
         precision: "float" | "double",
-        value?: Value,
     ): string {
-        return this.compileVector(expression, vec3Sink(precision), value);
+        return this.compileVector(expression, VEC3_SINKS[precision]);
     }
 
     /** A native Vec3 from a record's x/y/z lanes (`vectorFromRecord`). */
@@ -641,7 +655,7 @@ export class StaticEvaluator {
         node: ts.Node,
         precision: "float" | "double",
     ): string {
-        return this.vectorFromRecord(value, node, vec3Sink(precision));
+        return this.vectorFromRecord(value, node, VEC3_SINKS[precision]);
     }
 
     public compileVec2(expression: ts.Expression): string {

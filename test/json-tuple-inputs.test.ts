@@ -7,6 +7,7 @@ import {
     optionalNativeFixtureTools,
     runGeneratedProgram,
 } from "./native-fixture.js";
+import { runSelfCheckingProgram } from "./self-checking-program.js";
 
 test("JSON stringify accepts represented tuple members after optional unknown calls", async (t) => {
     const source = `
@@ -218,22 +219,10 @@ test("a fresh array stored in a document is that document's own array", async (t
         rows.push({ n: 1 });
         if (rows.length !== 1) throw new Error("fallback array");
     `;
-    runInNewContext(
-        ts.transpileModule(source, {
-            compilerOptions: {
-                target: ts.ScriptTarget.ES2022,
-                module: ts.ModuleKind.None,
-            },
-        }).outputText,
+    await runSelfCheckingProgram(
+        t,
+        "json-tuple-inputs/fresh-document-array",
+        source,
+        { expectedOutput: "" },
     );
-    const result = compileSource(source);
-    const native = optionalNativeFixtureTools(false);
-    await t.test("native assertions", { skip: !native }, () => {
-        runGeneratedProgram(
-            native!,
-            "json-tuple-inputs/fresh-document-array",
-            result.cpp,
-            { expectedOutput: "" },
-        );
-    });
 });

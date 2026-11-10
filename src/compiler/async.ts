@@ -1040,9 +1040,7 @@ export class AsyncLowerer {
         // The settlement is native storage whatever it will hold: where the
         // checker types the result `unknown` (an executor that resolves
         // with no value), it is dynamic.
-        const type =
-            settlementType() ??
-            context.dataTypes.withDynamicJsonTypes(true, settlementType);
+        const type = context.dataTypes.orDynamicJsonTypes(settlementType);
         if (type?.kind !== "promise")
             return context.fail(
                 node,

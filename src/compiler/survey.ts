@@ -89,8 +89,6 @@ interface Census extends SurveyRefusal {
 
 /** One compile attempt of one realm; a replay of that realm replaces it. */
 interface Attempt {
-    /** When the attempt began, on the `performance` clock. */
-    began: number;
     attempted: number;
     refusals: Map<string, Census>;
     /** Bindings the rolled-back statements would have declared, by symbol. */
@@ -217,18 +215,11 @@ export class SurveyCollector {
         );
     }
 
-    /** How long ago the last attempt of `realm` began: at its restart, how long it ran. */
-    public attemptMilliseconds(realm: string): number {
-        const attempt = this.realms.get(realm);
-        return attempt ? performance.now() - attempt.began : 0;
-    }
-
     /** Runs one realm's compile attempt, replacing the census a previous attempt of that realm left. */
     public attempt<T>(realm: string, run: () => T): T {
         this.attempts++;
         const previous = this.current;
         const attempt: Attempt = {
-            began: performance.now(),
             attempted: 0,
             refusals: new Map(),
             declarations: new Map(),

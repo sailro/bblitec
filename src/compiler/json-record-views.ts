@@ -41,7 +41,7 @@ function sharedGetter(
  * or the initializer of the const it names. A view's members are that
  * literal's members (`literalMember`).
  */
-export function viewLiteral(
+function viewLiteral(
     lowerer: DataSinkHost,
     node: ts.Node,
 ): ts.Expression | undefined {
