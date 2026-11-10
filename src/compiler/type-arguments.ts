@@ -119,17 +119,27 @@ export function determinedTypeArguments(
     }
     parameters.forEach((parameter, index) => {
         const symbol = parameterSymbols[index]!;
-        // No argument infers it: TypeScript instantiates a constrained
-        // parameter that `unknown` cannot satisfy as its constraint.
+        const declared =
+            parameter.constraint &&
+            checker.getTypeAtLocation(parameter.constraint);
         const constraint =
-            parameter.constraint && !parameter.default
-                ? checker.getTypeAtLocation(parameter.constraint)
+            declared && !mentionsTypeParameter(checker, declared)
+                ? declared
                 : undefined;
+        const bound = bindings.get(symbol);
+        // No argument infers it: TypeScript instantiates a constrained
+        // parameter that `unknown` cannot satisfy as its constraint. One an
+        // empty array literal binds to `never` has no value at this call:
+        // its constraint names the storage nothing fills.
         if (
-            !bindings.has(symbol) &&
             constraint &&
-            !mentionsTypeParameter(checker, constraint) &&
-            !checker.isTypeAssignableTo(checker.getUnknownType(), constraint)
+            (bound === undefined
+                ? !parameter.default &&
+                  !checker.isTypeAssignableTo(
+                      checker.getUnknownType(),
+                      constraint,
+                  )
+                : (bound.flags & ts.TypeFlags.Never) !== 0)
         )
             bindings.set(symbol, constraint);
     });

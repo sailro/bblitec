@@ -167,6 +167,31 @@ check(
     `,
 );
 
+check(
+    "never-bound-type-parameters-store-their-constraint",
+    `
+    interface KeyHost { seq: number; save: { id: number } }
+    function hostForKey<Host extends KeyHost>(key: string, hosts: readonly Host[]): Host | undefined {
+        const value = Number(key);
+        if (Number.isNaN(value)) return undefined;
+        return hosts.find((host) => host.seq === value);
+    }
+    function orphanKeys<Host extends KeyHost>(keys: Iterable<string>, hosts: readonly Host[]): string[] {
+        const orphans: string[] = [];
+        for (const key of keys) {
+            if (hostForKey(key, hosts) === undefined) orphans.push(key);
+        }
+        return orphans;
+    }
+    const hosts = [{ seq: 1, save: { id: 10 }, label: "a" }, { seq: 2, save: { id: 20 }, label: "b" }];
+    const orphans = orphanKeys(["1", "x", "3"], hosts);
+    if (orphans.join() !== "x,3") throw new Error(orphans.join());
+    const found = hostForKey("2", hosts);
+    if (found !== hosts[1] || found?.label !== "b") throw new Error("found");
+    if (orphanKeys(["1"], []).join() !== "1" || hostForKey("1", []) !== undefined) throw new Error("empty");
+    `,
+);
+
 test("record components and replay keep source instantiations separate", () => {
     const { checker, sourceFile } = createCompilerProgram(
         `

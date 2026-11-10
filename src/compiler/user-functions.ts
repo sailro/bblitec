@@ -7395,6 +7395,18 @@ export class UserFunctionLowerer {
                   ir.declaration,
               )
             : undefined;
+        // A type parameter the call binds to `never` leaves the instantiated
+        // result without its storage: the declared result names it under
+        // the call's bindings.
+        const declared =
+            type || !signature
+                ? undefined
+                : this.checker.getSignatureFromDeclaration(ir.declaration);
+        if (declared && declared !== signature)
+            type = context.dataTypes.fromTsType(
+                this.checker.getReturnTypeOfSignature(declared),
+                ir.declaration,
+            );
         if (
             !type &&
             signature &&
