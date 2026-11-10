@@ -1,6 +1,9 @@
 import { stringLiteral } from "../cpp-literals.js";
 import ts from "typescript";
-import { cameraRecordField } from "../compiler/properties.js";
+import {
+    cameraOptionalRecordField,
+    cameraRecordField,
+} from "../compiler/properties.js";
 import {
     cameraScalarWrite,
     cameraVectorComponentWrite,
@@ -450,8 +453,15 @@ ${bulkBody}
             const path = this.context.propertyPath(access);
             if (path?.length === 2 && path[0] === "camera") {
                 const field = cameraRecordField(path[1]!);
+                const limit = cameraOptionalRecordField(path[1]!);
                 const setter = scalarFields.find((name) => name === path[1]);
-                if (field)
+                if (limit)
+                    bindings.set(path.join("."), {
+                        cpp: `*camera.${limit}`,
+                        type: "scalar",
+                        absentCpp: `!camera.${limit}.has_value()`,
+                    });
+                else if (field)
                     bindings.set(path.join("."), {
                         cpp: `camera.${field}`,
                         type: "scalar",
@@ -466,14 +476,6 @@ ${bulkBody}
                               }
                             : {}),
                     });
-                else if (path[1]?.endsWith("Limit")) {
-                    const field = snakeCase(path[1]);
-                    bindings.set(path.join("."), {
-                        cpp: `*camera.${field}`,
-                        type: "scalar",
-                        absentCpp: `!camera.${field}.has_value()`,
-                    });
-                }
             }
         }
         // The target vector is the camera's own: an alias of it

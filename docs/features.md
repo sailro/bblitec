@@ -209,6 +209,7 @@ cancel })` is a program source; `new Response(stream, { status, statusText, head
 
 - ArcRotate/Free cameras, orthographic projection, viewports and SDL controls are live; `attachControl` variants keep
   independent attachments.
+- ArcRotate limits read back as `setCameraLimits` wrote them, `undefined` until set.
 - Window realms: keys reach camera controls after a primary press on the canvas gives it focus.
 - Parented/geospatial cameras, high-precision matrices and floating origin refuse public matrix caches; later
   orthographic plane writes refuse.

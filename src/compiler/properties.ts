@@ -1008,6 +1008,28 @@ export const propertyRules: readonly PropertyRule[] = [
         value: "number",
         record: ["cameras", "wheel_precision"],
     },
+    // The limits `setCameraLimits` writes: absent until one is set.
+    ...(
+        [
+            ["lowerAlphaLimit", "lower_alpha_limit"],
+            ["upperAlphaLimit", "upper_alpha_limit"],
+            ["lowerBetaLimit", "lower_beta_limit"],
+            ["upperBetaLimit", "upper_beta_limit"],
+            ["lowerRadiusLimit", "lower_radius_limit"],
+            ["upperRadiusLimit", "upper_radius_limit"],
+        ] as const
+    ).map(([property, field]): PropertyRule => ({
+        owner: "camera",
+        property,
+        value: "data",
+        dataType: {
+            kind: "optional",
+            inner: { kind: "number" },
+            undefinedOnly: true,
+        },
+        record: ["cameras", field],
+        nativeOptionalScalar: "double",
+    })),
     {
         owner: "camera",
         property: "panningSensibility",
@@ -1859,12 +1881,28 @@ export const propertyRules: readonly PropertyRule[] = [
  * other. Reads and writes now agree by construction.
  */
 export function cameraRecordField(property: string): string | undefined {
+    return cameraRecordRule(property, false);
+}
+
+/** The record field of a camera property absent until written (`std::optional`): a limit. */
+export function cameraOptionalRecordField(
+    property: string,
+): string | undefined {
+    return cameraRecordRule(property, true);
+}
+
+function cameraRecordRule(
+    property: string,
+    optional: boolean,
+): string | undefined {
     if (property === "worldMatrixVersion") return undefined;
     const rule = propertyRules.find(
         (candidate) =>
             candidate.owner === "camera" &&
             candidate.property === property &&
-            "record" in candidate,
+            "record" in candidate &&
+            ("nativeOptionalScalar" in candidate &&
+                candidate.nativeOptionalScalar !== undefined) === optional,
     );
     return rule && "record" in rule ? rule.record?.[1] : undefined;
 }
