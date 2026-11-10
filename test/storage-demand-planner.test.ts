@@ -953,8 +953,12 @@ test("a record read out of an asserted parse is a document with everything read 
         for (const room of rooms) for (const door of room.doors) doors.push(door);
         return rooms[0]!.name + "|" + owners[0]!.name + owners[0]!.id + "|" + lamps.length + "|" + doors[0]!.label;
     }
-    const parsed: unknown = JSON.parse(text);
-    const out = migrate(parsed as Partial<Save>);
+    function parseSave(parsed: unknown): string {
+        if (!parsed || typeof parsed !== "object") return "";
+        const d = parsed as Partial<Save>;
+        return migrate(d);
+    }
+    const out = parseSave(JSON.parse(text));
     if (out !== "hall|Ada1|1|front") throw new Error(out);
 `;
     const strict = measured(false, () => compileSource(source));

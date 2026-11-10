@@ -52,10 +52,11 @@ function heldRecords(
  * - every record type a property the program reads off a `record` holds
  *   (`heldRecords`), and so on from each (`readOut`): a value read out of
  *   a document is a document;
- * - where `record` is itself read out of a type the program asserts untyped
- *   data as (`JSON.parse(text) as Save`), that type and everything read
- *   out of it: the document a `record` arrived in is one of those, however
- *   far down its first stored value was found.
+ * - where `record` is itself read out of a type the program asserts data
+ *   of no shape as (`JSON.parse(text) as Save`, or the `object` a `typeof`
+ *   test leaves of it), that type and everything read out of it: the
+ *   document a `record` arrived in is one of those, however far down its
+ *   first stored value was found.
  *
  * A record type has one storage, so these types are stored as documents
  * with `record` rather than one compile attempt later each, when their
@@ -74,8 +75,9 @@ export function documentReadClosure(
     const answered = known.get(record);
     if (answered) return answered;
     const closure = new Set(readOut(checker, program, record));
-    for (const { asserted, open } of programObservations(program).assertions) {
-        if (!open) continue;
+    for (const { asserted, shapeless } of programObservations(program)
+        .assertions) {
+        if (!shapeless) continue;
         for (const parsed of heldRecords(checker, asserted)) {
             if (parsed === record || closure.has(parsed)) continue;
             const below = readOut(checker, program, parsed);

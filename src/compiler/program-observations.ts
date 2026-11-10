@@ -73,9 +73,10 @@ export interface NamedRead {
  *   and `structuredClone`;
  * - widened arrays: the element types of mutable arrays read where a
  *   mutable array of another element type is expected, and that type;
- * - assertions: the types `as`/`<T>` retype a value to, and whether the
+ * - assertions: the types `as`/`<T>` retype a value to, whether the
  *   operand was untyped (an assertion to `any` or `unknown` retypes nothing
- *   the open holders of the index do not already count);
+ *   the open holders of the index do not already count), and whether it
+ *   named no shape (untyped, or the `object` a `typeof` test leaves of it);
  * - property reads: each property name read as a value rather than called
  *   through, and the objects read wholesale or by a computed key (the
  *   reads that could take an object literal method's function value).
@@ -90,6 +91,7 @@ export interface ProgramObservations {
     readonly assertions: readonly {
         readonly asserted: ts.Type;
         readonly open: boolean;
+        readonly shapeless: boolean;
     }[];
     /**
      * Mutable arrays the program hands to a mutable array of another element
@@ -247,7 +249,11 @@ function observe(program: ts.Program): ProgramObservations {
     const identities = new Set<ts.Type>();
     const identityConsumers = new Map<ts.Node, Set<ts.Type>>();
     const enumerations = new Set<ts.Type>();
-    const assertions: { asserted: ts.Type; open: boolean }[] = [];
+    const assertions: {
+        asserted: ts.Type;
+        open: boolean;
+        shapeless: boolean;
+    }[] = [];
     const widenedArrays: {
         own: ts.Type;
         wide: ts.Type;
@@ -470,8 +476,16 @@ function observe(program: ts.Program): ProgramObservations {
             if (
                 !untyped(asserted) &&
                 (asserted.flags & ts.TypeFlags.Never) === 0
-            )
-                assertions.push({ asserted, open: untyped(typeOf(operand)) });
+            ) {
+                const from = typeOf(operand);
+                assertions.push({
+                    asserted,
+                    open: untyped(from),
+                    shapeless:
+                        untyped(from) ||
+                        (from.flags & ts.TypeFlags.NonPrimitive) !== 0,
+                });
+            }
         }
         // A function whose body the program does not hold may write any
         // object it is handed: an ambient declaration's, or the engine's
