@@ -999,6 +999,48 @@ test("a document handed where another record type is declared makes that type a 
     );
 });
 
+test("an intersection over a parsed record arrived in that record's parse, in one replay", async (t) => {
+    // A generic helper returns `T & { id: number }` for each parsed record
+    // type it is given: the instantiated intersection and the helper's own
+    // under that instantiation were two replays for each.
+    const source = `
+    interface Villager { id?: number; name: string }
+    interface Fish { id?: number; x: number }
+    interface Save { villagers: Villager[]; fish: Fish[] }
+    function normalizeStableIds<T extends { id?: number }>(input: readonly T[], minimumNextId = 1): { items: Array<T & { id: number }>; nextId: number } {
+        const reserved = new Set<number>();
+        for (const item of input) if (Number.isSafeInteger(item.id) && item.id! > 0 && !reserved.has(item.id!)) reserved.add(item.id!);
+        const used = new Set<number>();
+        let replacement = minimumNextId;
+        for (const id of reserved) replacement = Math.max(replacement, id + 1);
+        const items = input.map((item) => {
+            let id = item.id;
+            if (!Number.isSafeInteger(id) || id! <= 0 || used.has(id!)) id = replacement++;
+            used.add(id!);
+            return { ...item, id: id! };
+        });
+        let nextId = minimumNextId;
+        for (const id of used) nextId = Math.max(nextId, id + 1);
+        return { items, nextId };
+    }
+    const text = '{"villagers":[{"id":4,"name":"ada"},{"name":"bob"},{"id":4,"name":"cy"}],"fish":[{"x":1.5},{"id":9,"x":2.5}]}';
+    function migrate(d: Save): string {
+        const villagers = normalizeStableIds(d.villagers).items;
+        const fish = normalizeStableIds(d.fish, 3);
+        return villagers.map((villager) => villager.name + villager.id).join() + "|" + fish.items.map((kept) => kept.x + ":" + kept.id).join() + "|" + fish.nextId;
+    }
+    const out = migrate(JSON.parse(text) as Save);
+    if (out !== "ada4,bob5,cy6|1.5:10,2.5:9|11") throw new Error(out);
+`;
+    const strict = measured(false, () => compileSource(source));
+    assert.equal(strict.constructions, 2);
+    await runSelfCheckingProgram(
+        t,
+        "storage-demand-planner/intersection-closure",
+        source,
+    );
+});
+
 test("a record read out of an asserted parse is a document with everything read out of that parse", async (t) => {
     // The save is only asserted and read; its first stored value is a room,
     // far below it. The lamps and owners are siblings of the room, and the

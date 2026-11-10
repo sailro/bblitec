@@ -118,7 +118,8 @@ function copiedRecords(
  *   shape as (`JSON.parse(text) as Save`, or the `object` a `typeof` test
  *   leaves of it), that type and everything it holds: the document a
  *   `record` arrived in is one of those, however far down its first stored
- *   value was found.
+ *   value was found. An intersection arrived where one of its parts did
+ *   (`Save & { id: number }` over a parsed `Save`).
  *
  * A record type has one storage, so these types are stored as documents
  * with `record` rather than one compile attempt later each, when their
@@ -137,13 +138,19 @@ export function documentReadClosure(
     const answered = known.get(record);
     if (answered) return answered;
     const closure = new Set(heldDocuments(checker, program, record));
+    const arrived = record.isIntersection()
+        ? [record, ...record.types]
+        : [record];
     for (const { asserted, shapeless } of programObservations(program)
         .assertions) {
         if (!shapeless) continue;
         for (const parsed of heldRecords(checker, asserted)) {
             if (parsed === record || closure.has(parsed)) continue;
             const below = heldDocuments(checker, program, parsed);
-            if (!below.includes(record)) continue;
+            if (
+                !arrived.some((part) => part === parsed || below.includes(part))
+            )
+                continue;
             closure.add(parsed);
             for (const held of below) if (held !== record) closure.add(held);
         }
