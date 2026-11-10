@@ -62,7 +62,7 @@ before implementing: a source refusal does not mean RmlUi lacks the feature.
 | Styles | cssText, static style fields, classList; getComputedStyle display/opacity/visibility/zIndex | `setProperty` priority, dynamic names, other computed properties |
 | Queries | Literal selectors, runtime text in quoted attribute values, unions of literal selectors, state pseudo-classes, `matches`, `closest`, ID lookup, `contains`, `instanceof` | `:scope`, pseudo-elements, other runtime selector text |
 | Pointer/keyboard | Mouse, multi-touch, touch events, pointer capture, click/dblclick, wheel, contextmenu, keys, `on<event>` properties | Coalesced events, Touch radius/rotation/stylus fields |
-| Events | transitionend, storage, file drags (first file), gamepadconnected/gamepaddisconnected, CustomEvent, constructed Event/MouseEvent/PointerEvent/InputEvent, `composedPath` | Element CustomEvent dispatch, authored drags, cross-document redispatch |
+| Events | transitionend, storage, file drags (first file), gamepadconnected/gamepaddisconnected, CustomEvent, constructed Event/MouseEvent/PointerEvent/InputEvent/KeyboardEvent (keydown and keyup reach the key listeners), `composedPath` | Element CustomEvent dispatch, authored drags, cross-document redispatch |
 | Forms | Focus/blur and the bubbling focusin/focusout after them, activeElement, `tabIndex`, text/password/checkbox/color/range inputs, textarea, select, output, details/summary | Full browser form behavior; `hidden=until-found` |
 
 - Selector structure is parsed at generation with the literal grammar. In a runtime attribute value, a line break

@@ -5,6 +5,8 @@ import {
     type DataTypeRegistry,
 } from "./data-types.js";
 import { declaredSymbol, libraryGlobal, resolvedSymbol } from "./symbols.js";
+import { unwrapExpression, variableKind } from "./syntax.js";
+import { isSyntheticEventClass } from "./synthetic-event-classes.js";
 
 /** An escaped Promise reject callback accepts the runtime's represented Error reason. */
 export function inferPromiseRejectStorage(
@@ -101,9 +103,7 @@ export function assignsOnlyConstructedEvents(
             const right = node.right;
             constructed =
                 ts.isNewExpression(right) &&
-                ["Event", "MouseEvent", "PointerEvent", "InputEvent"].includes(
-                    libraryGlobal(right.expression) ?? "",
-                );
+                isSyntheticEventClass(libraryGlobal(right.expression));
         }
         ts.forEachChild(node, visit);
     };
@@ -114,6 +114,52 @@ export function assignsOnlyConstructedEvents(
         )!,
     );
     return constructed && writes > 0;
+}
+
+/**
+ * Whether every value a function declared to return a DOM event returns is
+ * an event it constructed: `new KeyboardEvent(...)` itself, a `const` such
+ * a construction initializes, or a `let name: Event;` every assignment
+ * gives one (`assignsOnlyConstructedEvents`). The function returns the
+ * event it owns, not one a platform callback lends.
+ */
+export function returnsOnlyConstructedEvents(
+    declaration: ts.SignatureDeclaration,
+    checker: ts.TypeChecker,
+    libraryGlobal: (expression: ts.Expression) => string | undefined,
+): boolean {
+    const body = ts.isFunctionLike(declaration)
+        ? (declaration as ts.FunctionLikeDeclaration).body
+        : undefined;
+    if (!body) return false;
+    const constructs = (value: ts.Expression): boolean =>
+        ts.isNewExpression(value) &&
+        isSyntheticEventClass(libraryGlobal(value.expression));
+    const owned = (returned: ts.Expression): boolean => {
+        const value = unwrapExpression(returned);
+        if (constructs(value)) return true;
+        const held = ts.isIdentifier(value)
+            ? declaredSymbol(checker, value)?.valueDeclaration
+            : undefined;
+        if (!held || !ts.isVariableDeclaration(held)) return false;
+        return held.initializer
+            ? variableKind(held) === "const" &&
+                  constructs(unwrapExpression(held.initializer))
+            : assignsOnlyConstructedEvents(held, checker, libraryGlobal);
+    };
+    if (!ts.isBlock(body)) return owned(body);
+    let returns = 0;
+    let all = true;
+    const visit = (node: ts.Node): void => {
+        if (!all || (node !== body && ts.isFunctionLike(node))) return;
+        if (ts.isReturnStatement(node)) {
+            returns++;
+            all = node.expression !== undefined && owned(node.expression);
+        }
+        ts.forEachChild(node, visit);
+    };
+    visit(body);
+    return all && returns > 0;
 }
 
 export function inferUninitializedStorage(

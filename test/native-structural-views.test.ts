@@ -205,6 +205,104 @@ int main() {
     );
 });
 
+test("a constructed KeyboardEvent reaches the key listeners as the event its maker owns", (t) => {
+    // An interlock releases the keys it saw go down with keyup events it
+    // constructs in a helper, marks in a WeakSet and dispatches where each
+    // key was pressed; the listeners tell them from a player's by identity.
+    const result = compileSource(`
+        ${preamble}
+        const BLOCKED = ["pointerdown", "keydown", "keyup"] as const;
+        interface HeldKey { target: EventTarget; key: string; code: string; location: number }
+        const heldKeyId = (event: Event): string => {
+            const { code, key } = event as KeyboardEvent;
+            return code || key || "";
+        };
+        const settlingReleases = new WeakSet<Event>();
+        function isSettlingRelease(event: Event): boolean { return settlingReleases.has(event); }
+        function keyupFor(held: HeldKey): Event {
+            const init = { key: held.key, code: held.code, location: held.location, bubbles: true, cancelable: true };
+            let event: Event;
+            if (typeof KeyboardEvent !== "undefined") {
+                event = new KeyboardEvent("keyup", init);
+            } else {
+                event = new Event("keyup", init);
+                Object.defineProperties(event, { key: { value: held.key }, code: { value: held.code }, location: { value: held.location } });
+            }
+            settlingReleases.add(event);
+            return event;
+        }
+        let released = "";
+        function createInterlock(target: EventTarget): { setBlocked(next: boolean): void; held(): number } {
+            let blocked = false;
+            const heldKeys = new Map<string, HeldKey>();
+            const intercept = (event: Event): void => {
+                if (event.type === "keyup") heldKeys.delete(heldKeyId(event));
+                if (settlingReleases.has(event)) return;
+                if (!blocked) {
+                    if (event.type === "keydown" && heldKeyId(event)) {
+                        const { key, code, location } = event as KeyboardEvent;
+                        heldKeys.set(heldKeyId(event), { target, key: key ?? "", code: code ?? "", location: location ?? 0 });
+                    }
+                    return;
+                }
+                if (event.cancelable) event.preventDefault();
+                event.stopImmediatePropagation();
+            };
+            for (const type of BLOCKED) target.addEventListener(type, intercept, { capture: true });
+            return {
+                setBlocked(next: boolean): void {
+                    const engaging = next && !blocked;
+                    blocked = next;
+                    if (!engaging) return;
+                    for (const held of [...heldKeys.values()]) {
+                        held.target.dispatchEvent(keyupFor(held));
+                    }
+                },
+                held: () => heldKeys.size,
+            };
+        }
+        const interlock = createInterlock(window);
+        window.addEventListener("keyup", (event) => {
+            if (isSettlingRelease(event)) released += event.code + event.location;
+        });
+        // The program presses a key itself: a constructed keydown reaches the
+        // interlock as a player's would.
+        window.dispatchEvent(new KeyboardEvent("keydown", { key: "Shift", code: "ShiftLeft", location: 1, bubbles: true, cancelable: true }));
+        if (interlock.held() !== 1) throw new Error("held key");
+        interlock.setBlocked(true);
+        if (released !== "ShiftLeft1" || interlock.held() !== 0) throw new Error("released " + released);
+        // A key pressed while blocked is cancelled and stopped.
+        if (window.dispatchEvent(new KeyboardEvent("keydown", { key: "a", code: "KeyA", bubbles: true, cancelable: true }))) throw new Error("blocked key");
+        if (interlock.held() !== 0) throw new Error("blocked key held");
+    `);
+    assert.match(result.cpp, /bbl::synthetic_keyboard_event_from_options\(/);
+    const tools = optionalNativeFixtureTools(false);
+    if (!tools) {
+        t.skip("Native fixture compiler unavailable.");
+        return;
+    }
+    runGeneratedProgram(
+        tools,
+        "native-constructed-key-event",
+        `#define main generated_main
+${result.cpp}
+#undef main
+#include <cassert>
+namespace {
+    const auto interlock_input = std::make_shared<bbl::DomInput>();
+}
+namespace bbl {
+    Engine create_engine(EngineOptions) {
+        Engine engine;
+        engine.dom_input = interlock_input;
+        return engine;
+    }
+}
+int main() { assert(generated_main() == 0); }
+`,
+    );
+});
+
 test("a structural interface over a host list's elements is a view of each native owner", async (t) => {
     // The reader a test can feed plain objects: its interface is the part
     // of a browser Gamepad it uses, and the browser's own list sinks into

@@ -168,6 +168,7 @@ import {
 } from "./type-arguments.js";
 import { emitSharedCell, sharedCellCpp } from "./shared-cells.js";
 import { isStaticMember } from "./class-members.js";
+import { returnsOnlyConstructedEvents } from "./uninitialized-handle.js";
 
 export interface CallbackInvocationOptions {
     coroutine?: true;
@@ -2224,6 +2225,16 @@ export class UserFunctionLowerer {
         node: ts.Node,
     ): DataType | undefined {
         const mapped = context.dataTypes.fromSharedReturnType(type, node);
+        // A function returning only events it constructed returns the event
+        // it owns, whatever DOM event interface declares its result.
+        if (
+            mapped?.kind === "borrowed-platform-event" &&
+            ts.isFunctionLike(node) &&
+            returnsOnlyConstructedEvents(node, this.checker, (expression) =>
+                libraryGlobal(this.checker, expression),
+            )
+        )
+            return { kind: "handle", handle: "dom-event" };
         return mapped?.kind === "struct" &&
             sourceTypeHasObservedIdentity(
                 this.checker,

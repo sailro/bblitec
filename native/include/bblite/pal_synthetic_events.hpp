@@ -25,6 +25,8 @@ public:
         PlatformMouseEvent event;
         Engine* owner = nullptr;
         std::weak_ptr<const int> owner_lifetime;
+        /** A constructed KeyboardEvent's keys; `event` then carries the DOM state they share. */
+        std::optional<PlatformKeyboardEvent> keyboard{};
     };
     OwnedDomEvent() = default;
     explicit OwnedDomEvent(PlatformMouseEvent event)
@@ -41,6 +43,18 @@ public:
         return payload_->event;
     }
     [[nodiscard]] const PlatformMouseEvent& mouse() const { return event().mouse_payload(); }
+    /** This event carrying a constructed KeyboardEvent's keys. */
+    [[nodiscard]] OwnedDomEvent with_keyboard(PlatformKeyboardEvent keyboard) const {
+        static_cast<void>(event());
+        keyboard.dom = dom;
+        payload_->keyboard = std::move(keyboard);
+        return *this;
+    }
+    /** The keys of a constructed KeyboardEvent, else null. */
+    [[nodiscard]] const PlatformKeyboardEvent* keyboard() const {
+        static_cast<void>(event());
+        return payload_->keyboard ? &*payload_->keyboard : nullptr;
+    }
     [[nodiscard]] js::BorrowedEvent borrowed_event() const {
         return js::BorrowedEvent(event()).retaining(payload_);
     }
@@ -152,6 +166,28 @@ require_event_options(js::JsonValue options, std::string_view event,
     return OwnedDomEvent(std::move(event));
 }
 
+/** `new KeyboardEvent(type, init)`: the base event with the keys its init dictionary gives. */
+[[nodiscard]] inline OwnedDomEvent
+synthetic_keyboard_event_from_options(std::string type, const js::JsonValue& options) {
+    const auto text = [&](const char* name) {
+        const auto value = options.get(name);
+        return value.is_undefined() ? std::string{} : value.to_string();
+    };
+    PlatformKeyboardEvent keyboard;
+    keyboard.key = text("key");
+    keyboard.code = text("code");
+    const auto location = options.get("location");
+    keyboard.location = location.is_undefined() ? 0u : js::to_uint32(location.to_number());
+    keyboard.repeat = options.get("repeat").truthy();
+    keyboard.is_composing = options.get("isComposing").truthy();
+    keyboard.shift_key = options.get("shiftKey").truthy();
+    keyboard.ctrl_key = options.get("ctrlKey").truthy();
+    keyboard.alt_key = options.get("altKey").truthy();
+    keyboard.meta_key = options.get("metaKey").truthy();
+    return synthetic_event_from_options(std::move(type), OwnedDomEvent::Kind::Event, options)
+        .with_keyboard(std::move(keyboard));
+}
+
 [[nodiscard]] inline bool dispatch_synthetic_event(Engine& engine, DomEventTarget target,
                                                    const OwnedDomEvent& event) {
     static_cast<void>(event.event());
@@ -184,8 +220,12 @@ require_event_options(js::JsonValue options, std::string_view event,
                                                        "beforeinput",
                                                        "input",
                                                        "change"};
-    if (std::find(std::begin(represented), std::end(represented), event.dom->type) ==
-        std::end(represented))
+    // A constructed KeyboardEvent reaches the key listeners, any other event the pointer family's.
+    static constexpr std::string_view keys[] = {"keydown", "keyup"};
+    const PlatformKeyboardEvent* keyboard = event.keyboard();
+    if (keyboard ? std::find(std::begin(keys), std::end(keys), event.dom->type) == std::end(keys)
+                 : std::find(std::begin(represented), std::end(represented), event.dom->type) ==
+                       std::end(represented))
         throw std::runtime_error("Synthetic dispatch does not represent this event channel.");
     event.dom->trusted = false;
     event.set_owner(engine);
@@ -208,16 +248,17 @@ require_event_options(js::JsonValue options, std::string_view event,
         throw std::logic_error("Element dispatch requires retained UI.");
 #endif
     }
-    dom_input(engine).pointer.dispatch(
-        event.event(),
-        [](auto& callback, const auto& value) {
+    const auto invoke = [](auto& callback, const auto& value) {
 #if BBLITE_WORKERS
-            pal::EventLoop::current().dispatch_synchronous_callback([&] { callback(value); });
+        pal::EventLoop::current().dispatch_synchronous_callback([&] { callback(value); });
 #else
-            callback(value);
+        callback(value);
 #endif
-        },
-        &engine);
+    };
+    if (keyboard)
+        dom_input(engine).keyboard.dispatch(*keyboard, invoke, &engine);
+    else
+        dom_input(engine).pointer.dispatch(event.event(), invoke, &engine);
     return !event.is_default_prevented();
 }
 
