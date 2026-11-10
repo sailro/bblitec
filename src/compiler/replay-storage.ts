@@ -91,6 +91,18 @@ export function storageRequestSite(
     }
 }
 
+/** What a request asks for and where, one text for every request that asks it there. */
+export function storageRequestKey(request: StorageRequest): string {
+    const site = storageRequestSite(request);
+    const where =
+        site === undefined
+            ? ""
+            : typeof site === "string"
+              ? site
+              : `${site.getSourceFile().fileName}:${site.getStart()}`;
+    return `${describeStorageRequests([request])}@${where}`;
+}
+
 /** What storage requests ask for, for reports: each kind once, a record's with what it demands. */
 export function describeStorageRequests(
     requests: readonly StorageRequest[],

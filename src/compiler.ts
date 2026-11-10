@@ -103,7 +103,11 @@ import {
 } from "./compiler/storage-demand-planner.js";
 import { moduleLevelCallee } from "./compiler/runtime-case-split.js";
 import { StorageDemand } from "./compiler/storage-demand.js";
-import { ReplayStorage } from "./compiler/replay-storage.js";
+import {
+    ReplayStorage,
+    storageRequestKey,
+    type StorageRequest,
+} from "./compiler/replay-storage.js";
 import {
     NativeRecordDemandRefused,
     NativeRecordStorageRequired,
@@ -811,11 +815,16 @@ function lowerSourceApplication(
             } else return false;
             return true;
         };
-        const addPlanned = (planner: StorageDemandPlanner): number =>
+        // The demands of a plan a survey withdrew: a later plan leaves them
+        // to the strict attempts, which meet them in program order.
+        const withdrawn = new Set<string>();
+        const addPlanned = (planner: StorageDemandPlanner): StorageRequest[] =>
             planner.demands.filter(
                 (demand) =>
-                    !storage.joinsAlreadyHeld(demand) && storage.add(demand),
-            ).length;
+                    !withdrawn.has(storageRequestKey(demand)) &&
+                    !storage.joinsAlreadyHeld(demand) &&
+                    storage.add(demand),
+            );
         // Once a storage demand restarted the realm, every attempt outside a
         // survey is a plan: it goes on past the demands later statements do
         // not read, so one attempt meets a run of them, and a plan that
@@ -839,7 +848,10 @@ function lowerSourceApplication(
         // together. Until an attempt replaying with them lowers a
         // statement, `withdraw` puts the storage back as it was.
         let withdraw: (() => void) | undefined;
-        let planned = 0;
+        let lastPlan: { demands: StorageRequest[]; spent: number } = {
+            demands: [],
+            spent: 0,
+        };
         for (;;) {
             if (planning) {
                 const planner = new StorageDemandPlanner(input.checker);
@@ -849,7 +861,7 @@ function lowerSourceApplication(
                 } catch (planningError) {
                     if (!acceptReplay(planningError)) throw planningError;
                 }
-                planning = addPlanned(planner) > 0;
+                planning = addPlanned(planner).length > 0;
                 continue;
             }
             const started = performance.now();
@@ -866,10 +878,12 @@ function lowerSourceApplication(
                 ) {
                     withdraw();
                     withdraw = undefined;
+                    for (const demand of lastPlan.demands)
+                        withdrawn.add(storageRequestKey(demand));
                     survey.withdrew(error);
                     // The plan did not pay: strict attempts run before the next.
                     unpaid++;
-                    owed = planned * 2 ** (unpaid - 1);
+                    owed = lastPlan.spent * 2 ** (unpaid - 1);
                     continue;
                 }
                 withdraw = undefined;
@@ -900,7 +914,8 @@ function lowerSourceApplication(
                 }
                 for (const replay of planner.replays) acceptReplay(replay);
                 const held = storage.snapshot();
-                const added = addPlanned(planner);
+                const demands = addPlanned(planner);
+                const added = demands.length;
                 if (added > 0) withdraw = held;
                 const spent = performance.now() - began;
                 survey.planned(
@@ -910,7 +925,7 @@ function lowerSourceApplication(
                     planner.ended(),
                     planner.met,
                 );
-                planned = spent;
+                lastPlan = { demands, spent };
                 unpaid = added * strict > spent ? 0 : unpaid + 1;
                 owed = unpaid === 0 ? 0 : spent * 2 ** (unpaid - 1);
             }

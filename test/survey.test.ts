@@ -16,6 +16,7 @@ import { compileSource, surveySource } from "../src/compiler.js";
 import { createCompilerProgram } from "../src/compiler/program.js";
 import {
     ReplayStorage,
+    storageRequestKey,
     type StorageRequest,
 } from "../src/compiler/replay-storage.js";
 import {
@@ -466,6 +467,16 @@ test("a plan's demands are withdrawn from the replay storage as it stood", () =>
     // What it held before the plan stays; the plan's demands are new again.
     for (const request of before) assert.equal(storage.add(request), false);
     for (const request of planned) assert.equal(storage.add(request), true);
+    // A later plan asking the same thing at the same place is recognized.
+    assert.equal(
+        storageRequestKey({ kind: "parameter-object", declaration: parameter }),
+        storageRequestKey(planned[1]!),
+    );
+    assert.notEqual(
+        storageRequestKey(planned[0]!),
+        storageRequestKey(planned[1]!),
+    );
+    assert.equal(new Set(planned.map(storageRequestKey)).size, planned.length);
 });
 
 test("a survey ended outside statement lowering publishes its furthest attempt with what ended it", () => {
