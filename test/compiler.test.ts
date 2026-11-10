@@ -3914,6 +3914,17 @@ test("gives constructor-assigned resource fields distinct native storage", () =>
     assert.match(result.cpp, /v_bblite_class_field_scene_/);
 });
 
+test("a reassigned record method with no native signature names the part that has none", () => {
+    assert.throws(
+        () =>
+            compileSource(`
+                const late = { held: ((value: WeakRef<object>) => value.deref() !== undefined) as (value: WeakRef<object>) => boolean };
+                late.held = () => false;
+            `),
+        /A mutable record method requires a concrete native function signature: 'WeakRef<object>' > type argument 'object': no native representation\./,
+    );
+});
+
 test("rejects reassigning a resource-holding class field", () => {
     // Resource storage is wired once; branch-sensitive rebinding needs a
     // runtime class representation that this subset does not yet provide.

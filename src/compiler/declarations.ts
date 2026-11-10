@@ -2566,11 +2566,22 @@ export class DeclarationLowerer {
                                 : {}),
                         }
                       : this.context.dataLowerer.dataTypeAt(site);
-            if (type?.kind !== "function")
+            if (type?.kind !== "function") {
+                const lacking =
+                    property &&
+                    this.context.dataTypes.unrepresentedSignaturePart(
+                        this.context.checker.getTypeOfSymbolAtLocation(
+                            property,
+                            name,
+                        ),
+                        name,
+                    );
                 this.context.fail(
                     site,
-                    "A mutable record method requires a concrete native function signature.",
+                    "A mutable record method requires a concrete native function signature" +
+                        (lacking ? `: ${lacking}.` : "."),
                 );
+            }
             const slot = emitSharedCell(
                 this.context,
                 this.context.allocateTemporaryCppName(`record_method_${key}`),

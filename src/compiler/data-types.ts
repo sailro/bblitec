@@ -4473,6 +4473,40 @@ export class DataTypeRegistry {
         }
     }
 
+    /**
+     * Why a function type has no native signature, for a refusal: its
+     * first parameter or its result with no data type, explained as
+     * `unrepresentedPart` explains it. Nothing where every part has one.
+     */
+    public unrepresentedSignaturePart(
+        type: ts.Type,
+        node: ts.Node,
+    ): string | undefined {
+        const signature = callSignatures(this.checker, type, "present")[0];
+        if (!signature) return undefined;
+        const parts = [
+            ...signature.parameters.map((parameter) =>
+                this.checker.getTypeOfSymbolAtLocation(parameter, node),
+            ),
+            this.checker.getReturnTypeOfSignature(signature),
+        ];
+        for (const part of parts) {
+            if ((part.flags & ts.TypeFlags.VoidLike) !== 0) continue;
+            let mapped: DataType | undefined;
+            try {
+                mapped = this.fromTsType(part, node);
+            } catch (error) {
+                if (
+                    !(error instanceof CompileError) &&
+                    !(error instanceof StorageDemand)
+                )
+                    throw error;
+            }
+            if (!mapped) return this.unrepresentedPart(part, node);
+        }
+        return undefined;
+    }
+
     /** A checked recursive boundary may retain a dynamic parsed value. Call sinks
      * still require JSON storage; this does not erase arbitrary native objects. */
     public dynamicJsonType(type: ts.Type): DataType<"json"> | undefined {
