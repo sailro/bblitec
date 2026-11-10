@@ -51,6 +51,9 @@ int main() try {
         check(ui_get_attribute(engine, origin, "data-kept1") == "detached" &&
                   ui_get_attribute(engine, origin, "data-kept2") == "attached",
               "a node test kept in a name answers by its target");
+        check(ui_get_attribute(engine, origin, "data-panels") ==
+                  "none,loading,button,",
+              "an absent element falls back to another that may be absent");
         check(ui_get_attribute(engine, origin, "data-cancelled") == "document",
               "the document received the detached target's event");
         check(ui_get_attribute(engine, origin, "data-downs") == "2",

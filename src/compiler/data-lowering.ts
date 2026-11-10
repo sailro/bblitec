@@ -5467,14 +5467,20 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 );
             }
             const rightType = this.dataTypeAt(expression.right);
+            const rightInner =
+                rightType?.kind === "optional"
+                    ? this.context.dataTypes.markStoredObjectReferences(
+                          rightType.inner,
+                      )
+                    : undefined;
             if (
                 rightType?.kind === "optional" &&
-                dataTypesEqual(
-                    this.context.dataTypes.markStoredObjectReferences(
-                        rightType.inner,
-                    ),
-                    inner,
-                )
+                rightInner &&
+                (dataTypesEqual(rightInner, inner) ||
+                    // One kind of resource, however each side names its engine.
+                    (rightInner.kind === "handle" &&
+                        inner.kind === "handle" &&
+                        rightInner.handle === inner.handle))
             ) {
                 // Only the fallback can remain nullish. Its absence metadata
                 // need not match the left operand's retained storage.

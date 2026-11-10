@@ -83,6 +83,32 @@ test("an event target narrowed to an element writes like the retained element it
         };
         origin.setAttribute("data-kept1", kept(1));
         origin.setAttribute("data-kept2", kept(2));
+        // An element that may be absent falls back to another that may be.
+        interface Layer { panel: HTMLElement }
+        const stacks = new Map<Window, Layer[]>();
+        const topLayer = (stack: Layer[]): Layer | undefined => stack[stack.length - 1];
+        function topPanel(target: Window = window): HTMLElement | null {
+            const stack = stacks.get(target);
+            return stack ? topLayer(stack)?.panel ?? null : null;
+        }
+        function startScreen(): HTMLElement | null {
+            const splash = document.getElementById("loading");
+            return splash && splash.classList.contains("is-ready") ? splash : null;
+        }
+        let panels = "";
+        const focused = (): void => {
+            const panel = topPanel() ?? startScreen();
+            panels += panel === null ? "none," : panel.id + ",";
+        };
+        focused();
+        const splash = document.createElement("div");
+        splash.id = "loading";
+        splash.classList.add("is-ready");
+        document.body.appendChild(splash);
+        focused();
+        stacks.set(window, [{ panel: button }]);
+        focused();
+        origin.setAttribute("data-panels", panels);
         // A binding every branch gives a constructed event owns that event.
         let downs = 0;
         button.addEventListener("pointerdown", () => { downs++; });
