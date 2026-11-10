@@ -703,12 +703,18 @@ function writeSurvey(
     compileOptions: CompileOptions,
 ): void {
     // A survey of a large entry runs for hours: it says where it is.
-    // Each restart leaves the census found so far, so a survey stopped
-    // early is still read.
+    // A survey stopped early is still read: each restart leaves the census
+    // of the attempt that went furthest, which a restart nearer the start
+    // of the program does not replace.
+    let furthest = -1;
     const { report } = surveySource(source, compileOptions, {
         report: (line) => console.error(line),
         intervalMs: 5 * 60 * 1000,
-        partial: (found) => writeJsonRecord(censusPath, found),
+        partial: (found) => {
+            if (found.statements.attempted < furthest) return;
+            furthest = found.statements.attempted;
+            writeJsonRecord(censusPath, found);
+        },
     });
     writeJsonRecord(censusPath, report);
     console.log(
