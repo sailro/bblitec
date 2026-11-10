@@ -179,18 +179,23 @@ test("a survey reports each plan's demands and what ended it", () => {
 });
 
 test("a member call through a refused binding is a cascade of its declaration", () => {
-    // `handle` is never bound: its member calls name it, not a gap of their own.
     // FinalizationRegistry is deliberately outside the supported runtime.
-    const { report } = surveySource(
-        `
+    const create = `
         let total = 0;
         function create(name: string): { ready: number; add(value: number): void } {
             const raw = { name };
             return { ready: new FinalizationRegistry<string>(() => {}).unregister(raw) ? 1 : 0, add(value: number): void { total += value; } };
+        }`;
+    // A local `handle` is never bound: its member calls name it, not a gap
+    // of their own.
+    const { report } = surveySource(
+        `${create}
+        function run(): void {
+            const handle = create("mode");
+            handle.add(2);
+            (handle!).add(3);
         }
-        const handle = create("mode");
-        handle.add(2);
-        (handle!).add(3);
+        run();
         localStorage.setItem("total", String(total));
     `,
         { fileName: resolve("survey-member-cascade.ts") },
@@ -198,13 +203,28 @@ test("a member call through a refused binding is a cascade of its declaration", 
     assert.equal(report.complete, true);
     const [declaration, ...members] = report.refusals;
     assert.ok(declaration, listed(report));
-    assert.equal(declaration.statement.line, 7);
+    assert.equal(declaration.statement.line, 8);
     assert.equal(declaration.cascade, undefined);
     assert.equal(members.length, 2, listed(report));
     for (const member of members) {
         assert.match(member.message, /handle!?\)?\.add/);
         assert.deepEqual(member.cascade, declaration.site);
     }
+    // A module constant's member call reads its initializer, as a read of
+    // it does: each use reaches the declaration's refusal again.
+    const module = surveySource(
+        `${create}
+        const handle = create("mode");
+        handle.add(2);
+        (handle!).add(3);
+        localStorage.setItem("total", String(total));
+    `,
+        { fileName: resolve("survey-member-cascade.ts") },
+    ).report;
+    assert.equal(module.refusals.length, 1, listed(module));
+    assert.equal(module.refusals[0]!.statement.line, 7);
+    assert.equal(module.refusals[0]!.occurrences, 3);
+    assert.equal(module.refusals[0]!.statements, 3);
 });
 
 test("a refused value return is the calling statement's refusal", () => {

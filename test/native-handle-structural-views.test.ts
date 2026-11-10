@@ -126,7 +126,7 @@ test("structural annotations retain unsupported native member refusals", () => {
             function run(engine: EngineContext): number { return new Reader().read(createBox(engine)); }
             const calls: Array<typeof run> = [run];
         `),
-        /not supported|Unsupported|not lowered|not implemented|requires/,
+        /Mesh\.worldMatrixVersion counts the pin's world-matrix invalidations/,
     );
 });
 
