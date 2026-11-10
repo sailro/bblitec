@@ -3894,6 +3894,38 @@ check(
 `,
 );
 
+// A closure built above a destructuring pattern calls the names the
+// pattern declares, once they are initialized.
+check(
+    "closure-calling-names-a-later-pattern-declares",
+    `
+    const flag = Math.random() >= 0;
+    interface Boundary { houseRadius(index: number): number; towerRadius(index: number): number; margin: number }
+    function makeBoundary(scale: number): Boundary {
+        return { houseRadius: (index) => index * scale, towerRadius: (index) => index * scale + 1, margin: scale / 2 };
+    }
+    interface Align { read(index: number): number }
+    function makeAlign(deps: { radius: (index: number) => number; grounded: () => boolean }): Align {
+        return { read: (index) => (deps.grounded() ? deps.radius(index) : -1) };
+    }
+    function build(scale: number): number {
+        const align = makeAlign({ radius: (index) => towerBoundaryRadius(index) + houseRadius(index) + margin, grounded: () => ready });
+        const boundary = makeBoundary(scale);
+        const { houseRadius, towerRadius: towerBoundaryRadius, margin } = boundary;
+        const ready = flag;
+        return align.read(2);
+    }
+    if (build(3) !== 14.5) throw new Error("returned record " + build(3));
+    function local(scale: number): number {
+        const align = makeAlign({ radius: (index) => twice(index) + offset, grounded: () => true });
+        const tools = { twice: (index: number): number => index * 2 * scale, offset: flag ? 1 : 0 };
+        const { twice, offset } = tools;
+        return align.read(3);
+    }
+    if (local(2) !== 13) throw new Error("literal record " + local(2));
+`,
+);
+
 // A parsed number list assigned to a declared number list is stored as the
 // list sink stores it.
 check(

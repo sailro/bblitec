@@ -597,6 +597,53 @@ export class DeclarationLowerer {
         this.forwardBindings.set(symbol, "hoisted");
     }
 
+    /**
+     * Makes a later destructured name a callback reads exist before the
+     * callback (`const { radius } = boundary`, read by a closure built
+     * above it): temporal-dead-zone storage of the name's own type, which
+     * the pattern fills where the source declares it
+     * (`initializeForwardPatternName`).
+     */
+    public hoistForwardPatternName(
+        name: ts.Identifier,
+        symbol: ts.Symbol,
+    ): void {
+        const checked = this.context.checker.getTypeAtLocation(name);
+        const mapped = this.context.dataTypes.withDynamicJsonTypes(
+            true,
+            () =>
+                this.context.dataLowerer.dataTypeAt(name) ??
+                this.context.dataTypes.fromStoredTsType(checked, name) ??
+                this.context.dataTypes.dynamicJsonType(checked),
+        );
+        if (!mapped)
+            this.context.fail(
+                name,
+                "A stored closure reading a later binding requires an owned data type to preserve its temporal dead zone.",
+            );
+        const type = this.context.dataTypes.markStoredObjectReferences(mapped);
+        this.forwardBindings.set(symbol, {
+            cppName: this.declareLexicalBinding(name, symbol, type),
+            type,
+        });
+    }
+
+    /** Fills a destructured name's temporal-dead-zone storage; false where the name has none. */
+    private initializeForwardPatternName(
+        name: ts.Identifier,
+        value: Value,
+    ): boolean {
+        const symbol = this.context.symbols.valueSymbol(name);
+        const forward = symbol ? this.forwardBindings.get(symbol) : undefined;
+        if (!symbol || !forward || forward === "hoisted") return false;
+        this.forwardBindings.delete(symbol);
+        this.context.emit({
+            kind: "expression",
+            code: `${forward.cppName}->initialize(${this.context.dataLowerer.compileKnownValueForSink(value, forward.type, name)});`,
+        });
+        return true;
+    }
+
     /** A module's retained lexical home exists before its lazy evaluation. */
     public prepareModuleBinding(declaration: ts.VariableDeclaration): void {
         if (
@@ -5973,6 +6020,8 @@ export class DeclarationLowerer {
                     this.bindPattern(name, initialValue, element);
                     continue;
                 }
+                if (this.initializeForwardPatternName(name, initialValue))
+                    continue;
                 const cppName = this.context.bindings.cppIdentifier(name.text);
                 if (this.context.mutableCapturedParameter(name, initialValue)) {
                     this.context.bindings.bindParameterValue(
@@ -6378,6 +6427,8 @@ export class DeclarationLowerer {
                 this.bindPattern(name, propertyValue, element);
                 continue;
             }
+            if (this.initializeForwardPatternName(name, propertyValue))
+                continue;
             if (this.context.mutableCapturedParameter(name, propertyValue)) {
                 this.context.bindings.bindParameterValue(name, propertyValue);
                 continue;

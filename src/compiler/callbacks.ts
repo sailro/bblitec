@@ -26,7 +26,11 @@ import type {
     LoweringStatement,
 } from "./lowering-services.js";
 import { verbatimEmission, type NativeEmission } from "./native-statements.js";
-import { functionOfDeclaration, isBlockScopedVariable } from "./syntax.js";
+import {
+    functionOfDeclaration,
+    isBlockScopedVariable,
+    variableKind,
+} from "./syntax.js";
 import { callSignatures } from "./type-facts.js";
 
 /** What callback lowering reads of the compiler. */
@@ -572,6 +576,20 @@ export class CallbackLowerer {
         }[] = [];
         const reads = this.context.bindings.unboundClosureReads(callback);
         for (const [symbol, { direct }] of reads) {
+            // A later destructured name of a plain record pattern has only
+            // declaration-time storage: its value is the record's member.
+            const element = this.pendingPatternName(symbol);
+            if (element) {
+                this.context.bindings.withScopeDepth(
+                    element.owner.scopeDepth,
+                    () =>
+                        this.context.declarations.hoistForwardPatternName(
+                            element.name,
+                            symbol,
+                        ),
+                );
+                continue;
+            }
             const pending = this.pendingDeclaration(symbol);
             const functionValue =
                 pending !== undefined &&
@@ -633,6 +651,39 @@ export class CallbackLowerer {
                 ),
             );
         }
+    }
+
+    /**
+     * The name a `const { name } = record` pattern declares, in a statement
+     * a block being lowered has not reached yet: a top-level element with
+     * no default and no rest, whose statement emission stands at the level
+     * of.
+     */
+    private pendingPatternName(
+        symbol: ts.Symbol,
+    ): { name: ts.Identifier; owner: LoweringStatement } | undefined {
+        const element = symbol.valueDeclaration;
+        if (
+            !element ||
+            !ts.isBindingElement(element) ||
+            !ts.isIdentifier(element.name) ||
+            element.initializer ||
+            element.dotDotDotToken ||
+            !ts.isObjectBindingPattern(element.parent) ||
+            !ts.isVariableDeclaration(element.parent.parent) ||
+            !element.parent.parent.initializer ||
+            !ts.isVariableStatement(element.parent.parent.parent.parent) ||
+            variableKind(element.parent.parent.parent) !== "const" ||
+            this.context.bindings.peekBinding(symbol)
+        )
+            return undefined;
+        const statement = element.parent.parent.parent.parent;
+        const owner = this.context.loweringStatementIn(statement.parent);
+        return owner &&
+            owner.statement.pos < statement.pos &&
+            this.context.emitsAtLevelOf(owner)
+            ? { name: element.name, owner }
+            : undefined;
     }
 
     /**
