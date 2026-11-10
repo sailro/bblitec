@@ -4529,6 +4529,28 @@ function emitPbrAlphaBlendAssignment(
 }
 
 /**
+ * `pbr.doubleSided = value`: the pin composes the material's double-sided
+ * arm and its cull mode from the value at its first draw
+ * (`PBR_HAS_DOUBLE_SIDED`). Generation composes that state for no write.
+ */
+function refusePbrDoubleSidedAssignment(
+    context: AssignmentContext,
+    state: TargetPropertyAssignment,
+): boolean {
+    const { left, target, property } = state;
+    if (
+        target.kind !== "material" ||
+        property !== "doubleSided" ||
+        materialFamily(context, target, left.expression) !== "pbr"
+    )
+        return false;
+    return context.fail(
+        left,
+        "A PBR material's doubleSided composes its double-sided shader arm and cull mode; generation composes no state for a write after creation.",
+    );
+}
+
+/**
  * The PBR texture props an assignment writes (`createPbrMaterial`'s), by the
  * native slot each fills, and when the write is admitted: before scene
  * registration, also definitely, or live.
@@ -5010,6 +5032,7 @@ const targetPropertyHandlers2 = new EmissionMap<
         (property) => [property, emitPbrTextureSlotAssignment] as const,
     ),
     ["alphaBlend", emitPbrAlphaBlendAssignment],
+    ["doubleSided", refusePbrDoubleSidedAssignment],
     ["diffuseTexture", emitDiffuseTextureAssignment],
     ["parent", emitParentAssignment],
 ]);
