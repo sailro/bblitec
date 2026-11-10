@@ -210,11 +210,13 @@ export function demandedStorageType(
         dataTypes.hasNativeRecordView(source)
             ? checker.getTypeAtLocation(initializer)
             : undefined);
-    return (
+    const stored = (): DataType | undefined =>
         dataTypes.fromStoredTsType(
             actualSource ?? source,
             actualSource ? initializer! : declaration,
-        ) ??
+        );
+    return (
+        stored() ??
         // A dictionary of unknown values is a document.
         (storage === "source"
             ? dataTypes.dynamicJsonType(source)
@@ -225,6 +227,10 @@ export function demandedStorageType(
         ts.isObjectLiteralExpression(initializer) &&
         initializer.properties.length === 0
             ? { kind: "json" as const }
+            : undefined) ??
+        // A record's fields hold unknown values as documents.
+        (storage === "source"
+            ? dataTypes.withDynamicJsonTypes(true, stored)
             : undefined)
     );
 }

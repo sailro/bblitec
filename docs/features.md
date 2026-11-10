@@ -69,6 +69,8 @@ Rules:
 - Static composition can spread unchanged literal array fields of stored records and generation-selected fresh array branches.
   Their lengths remain known when whole-program mutation analysis rules out array writes; identity comparisons are allowed.
 - `unknown[]` fields require finite source element layouts; object/class initializers and declaration-matched aliases contribute.
+- A record binding whose member is written by a run-time key or replaced takes native storage; its fields typed
+  `Record<string, unknown>` are documents.
 - Reached `Iterable<T>` parameters specialize to concrete collection storage, preserving iterator cursor identity.
 - A module `let` assigned only by unreachable functions keeps its initializer. Strict comparisons fold through `const`
   aliases, absent `??` lefts and generation-known booleans.

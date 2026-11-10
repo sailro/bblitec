@@ -8324,6 +8324,54 @@ check(
 );
 
 check(
+    "record-members-written-by-runtime-keys-and-replaced-by-documents",
+    `
+    type Doc = Record<string, unknown>;
+    type Kind = "first" | "second";
+    interface KindState {
+        doc: Doc | null;
+        error: string | null;
+        dirty: boolean;
+        flags: Record<string, boolean>;
+        nums: Record<string, number>;
+    }
+    const REGISTRY: Record<Kind, { flags: readonly string[]; nums: readonly string[] }> = {
+        first: { flags: ["awake", "fed"], nums: ["age"] },
+        second: { flags: ["awake"], nums: ["age", "hunger"] },
+    };
+    const SEEDS: Record<string, number> = { age: 2 };
+    function freshState(): KindState {
+        return { doc: null, error: null, dirty: false, flags: {}, nums: {} };
+    }
+    const state: Record<Kind, KindState> = { first: freshState(), second: freshState() };
+    function seed(st: KindState, k: Kind): void {
+        const reg = REGISTRY[k];
+        for (const f of reg.flags) {
+            if (!(f in st.flags)) st.flags[f] = false;
+        }
+        for (const n of reg.nums) {
+            if (!(n in st.nums)) st.nums[n] = SEEDS[n] ?? 0;
+        }
+    }
+    function load(k: Kind, text: string): void {
+        const st = state[k];
+        st.doc = JSON.parse(text) as Doc;
+        st.dirty = true;
+        seed(st, k);
+    }
+    load("first", '{"rules":[1,2]}');
+    load("second", '{"rules":[]}');
+    state.first.flags.awake = true;
+    seed(state.first, "first");
+    if (state.first.flags.awake !== true || state.first.flags.fed !== false || state.second.nums.age !== 2 || state.second.nums.hunger !== 0)
+        throw new Error("seeded");
+    if (state.first.doc === null || JSON.stringify(state.first.doc) !== '{"rules":[1,2]}' || !state.second.dirty)
+        throw new Error("documents");
+    if (Object.keys(state.second.flags).join() !== "awake" || Object.keys(state.first.nums).join() !== "age") throw new Error("keys");
+    `,
+);
+
+check(
     "dictionary-entries-and-dynamic-record-keys",
     `
     const keys = ["a", "bb"];

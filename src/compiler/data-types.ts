@@ -7458,14 +7458,16 @@ export class DataTypeRegistry {
             return { kind: "null" };
         // A field typed `object` holds dynamic values, as such a binding does
         // (`dynamicJsonType`): the records it holds keep their identity. So
-        // does one typed `unknown` where storage is dynamic; elsewhere its
-        // record keeps the concrete values it holds.
+        // does one typed `unknown`, or a dictionary of unknown values, where
+        // storage is dynamic; elsewhere its record keeps the concrete values
+        // it holds.
+        const present = this.checker.getNonNullableType(resolved);
         if (
             (this.dynamicJsonStorage &&
-                (resolved.flags & ts.TypeFlags.Unknown) !== 0) ||
-            (this.checker.getNonNullableType(resolved).flags &
-                ts.TypeFlags.NonPrimitive) !==
-                0
+                ((resolved.flags & ts.TypeFlags.Unknown) !== 0 ||
+                    (!this.checker.isArrayLikeType(present) &&
+                        this.dynamicJsonType(present) !== undefined))) ||
+            (present.flags & ts.TypeFlags.NonPrimitive) !== 0
         )
             return { kind: "json" };
         if (!undefinedOnly(resolved)) {

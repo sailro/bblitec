@@ -3,6 +3,7 @@ import { EmissionMap, writable } from "./emission-transaction.js";
 import { storeClassField } from "./classes.js";
 import { resolvedBuiltinConstructor } from "./builtin-constructors.js";
 import { setRecordProperty } from "./object-statics.js";
+import { requireHeldRecordStorage } from "./dynamic-binding-storage.js";
 import { refuseRealmHostWrite } from "./host-globals.js";
 import { shadowCasterMaterialWrite } from "./shadow-caster-material.js";
 import { emitEngineRenderFunctionWrite } from "./engine-render-function.js";
@@ -620,6 +621,8 @@ export interface AssignmentContext
             | "options"
             | "noteImpureRead"
             | "evaluationOrder"
+            | "dynamicBindings"
+            | "parameterObjects"
             | "libraryGlobal"
             | "admissions"
             | "isRuntimeResourceConstruction"
@@ -1514,6 +1517,7 @@ export function emitPropertyAssignment(
         // is the UI owner's, as its property spelling is.
         if (context.emitUiPropertyAssignment(expression)) return;
         if (emitComputedKeyAssignment(context, expression)) return;
+        requireWrittenRecordStorage(context, expression.left);
         context.fail(
             expression.left,
             "Only property assignments are supported.",
@@ -2485,7 +2489,28 @@ export function emitPropertyAssignment(
         return;
     }
 
+    requireWrittenRecordStorage(context, left);
     context.fail(left, `Unsupported property assignment '${left.getText()}'.`);
+}
+
+/**
+ * A member or entry write no compile-time record takes in place (a key
+ * known only at run time, a member whose value changes kind): the binding
+ * holding the record takes native storage, whose stores are the data
+ * model's.
+ */
+function requireWrittenRecordStorage(
+    context: AssignmentContext,
+    left: ts.Expression,
+): void {
+    if (
+        !ts.isPropertyAccessExpression(left) &&
+        !ts.isElementAccessExpression(left)
+    )
+        return;
+    const owner = context.resolveRecordValue(left.expression);
+    if (owner?.kind === "record" && !owner.dataType)
+        requireHeldRecordStorage(context, owner, left, left.expression);
 }
 
 /**
