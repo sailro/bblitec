@@ -165,3 +165,58 @@ test("promise constructors own escaping resolvers and races preserve settlement 
     assert.ifError(execution.error);
     assert.equal(execution.status, 0);
 });
+
+test("an executor that resolves with no value settles an untyped promise with undefined", async (t) => {
+    // The checker types each of these `Promise<unknown>`: the settlement
+    // holds whatever its resolving function is handed, undefined for none.
+    const body = `(async()=>{
+        let waits=0;
+        for(let step=0;step<3;step++){await new Promise((resolve)=>setTimeout(resolve,step));waits++;}
+        if(waits!==3)throw new Error("timer resolver");
+        const none=await new Promise((resolve)=>setTimeout(resolve,0));
+        if(none!==undefined)throw new Error("no value settles undefined");
+        const explicit=await new Promise((resolve)=>{resolve(undefined);});
+        if(explicit!==undefined)throw new Error("explicit undefined");
+        const handed=await new Promise((resolve)=>setTimeout(()=>resolve(7),0));
+        if(handed!==7)throw new Error("a handed number");
+        const text=await new Promise((resolve)=>resolve("ready"));
+        if(typeof text!=="string"||text!=="ready")throw new Error("a handed string");
+        let order="";
+        const sleeper=new Promise((resolve)=>setTimeout(resolve,5)).then(()=>{order+="late";});
+        await new Promise((resolve)=>setTimeout(resolve,0));
+        order+="early,";
+        await sleeper;
+        if(order!=="early,late")throw new Error("timer order "+order);
+        globalThis.close();
+    })();`;
+    let closed = false;
+    await runInNewContext(
+        ts.transpile(body, { target: ts.ScriptTarget.ES2022 }),
+        {
+            setTimeout,
+            close: () => {
+                closed = true;
+            },
+        },
+    );
+    assert.equal(closed, true, "JavaScript oracle completed");
+    const result = compileSource(body);
+    assert.match(result.cpp, /bbl::js::Promise<bbl::js::JsonValue>/);
+    const tools = optionalNativeFixtureTools(false);
+    if (!tools) {
+        t.skip("Native fixture compiler unavailable.");
+        return;
+    }
+    runGeneratedProgram(
+        tools,
+        "promise-construction/untyped",
+        `#define main generated_main\n${result.cpp}\n#undef main\n` +
+            `int main(){const auto baseline=bbl::js::managed_node_count();const int result=generated_main();` +
+            `bbl::js::collect_cycles();if(bbl::js::managed_node_count()!=baseline)throw std::runtime_error("untyped promise ownership leak");return result;}\n`,
+        {
+            flags: ["/DBBLITE_WORKERS=1"],
+            timeoutMs: 10000,
+            expectedOutput: "",
+        },
+    );
+});

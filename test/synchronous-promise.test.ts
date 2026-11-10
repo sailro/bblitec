@@ -78,6 +78,11 @@ async function main(): Promise<void> {
     const picker = typeof w.showSaveFilePicker === "function" ? "native" : "fallback";
     if (picker !== "fallback") throw new Error("typeof of an absent picker");
     if ((await sum()) !== 22) throw new Error("escaping resolve");
+    // The checker types this one Promise<unknown>.
+    const kept = await new Promise((resolve) => {
+        resolve("kept");
+    });
+    if (kept !== "kept") throw new Error("untyped settlement");
     let rejected = "";
     try {
         await failing("rejected");
@@ -119,6 +124,7 @@ test("constructed promises settle, reject and end pending activations natively",
         fileName: join(directory, "entry.ts"),
     });
     assert.match(result.cpp, /bbl::js::SynchronousPromise<double>/);
+    assert.match(result.cpp, /bbl::js::SynchronousPromise<bbl::js::JsonValue>/);
     assert.match(
         result.cpp,
         /catch \(const bbl::js::PendingActivation&\) \{\s*bbl::js::end_abandoned_activation\(\);/,

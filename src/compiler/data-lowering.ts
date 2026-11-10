@@ -1562,8 +1562,10 @@ export class DataLowerer {
                         node,
                         "Promise resolver requires an owned result type.",
                     );
+                // A resolving function called with no argument resolves
+                // with undefined.
                 argument = this.compileKnownValueForSink(
-                    value,
+                    values[0] ?? undefinedValue(),
                     result.dataType,
                     node,
                 );
