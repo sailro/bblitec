@@ -1991,7 +1991,7 @@ test("compares the value of an optional boolean from a dynamic record lookup", (
         function active(id: number): boolean {
             return defs[id]?.active === true;
         }
-        const missing = active(2);
+        const missing = active(Math.floor(performance.now()) % 3);
     `);
 
     assert.match(

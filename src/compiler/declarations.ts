@@ -6310,8 +6310,12 @@ export class DeclarationLowerer {
             if (
                 !propertyValue &&
                 !value.moduleNamespace &&
-                nullability(this.context.checker.getTypeAtLocation(name))
-                    .undefined
+                this.context.propertyAccess.absentPropertyReadsUndefined(
+                    value,
+                    this.context.checker.getTypeAtLocation(element.parent),
+                    property,
+                    name,
+                )
             )
                 propertyValue = undefinedValue();
             if (!propertyValue) {

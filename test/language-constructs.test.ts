@@ -3586,14 +3586,26 @@ check(
         const fish = plain(plain(raw).fish);
         return fish.variants === undefined ? fallback : fish.variants;
     }
+    // A keyed read and a destructuring read the absence as a member does.
+    type Kind = "wood" | "pot" | "egg" | "beer";
+    const TALLY_KEY: Readonly<Partial<Record<Kind, "logs" | "pots">>> = { wood: "logs", pot: "pots" };
+    const tracker = { note(kind: Kind): string { const key = TALLY_KEY[kind]; return key === undefined ? "none" : key; } };
+    function keyOf(input: number | undefined): number | undefined { return typeof input === "number" ? input : undefined; }
+    function ids<T extends { id?: unknown }>(rows: readonly T[]): string {
+        const projected = rows.map(({ id, ...row }) => ({ ...row, id: keyOf(id as number | undefined) }));
+        return projected.map((row) => (row.id === undefined ? "new" : String(row.id))).join(",");
+    }
     const text = [
         describe(made),
         describe(refused),
         variants({}, ["perch"]).join("+"),
         variants({ fish: { variants: ["carp", "pike"] } }, ["perch"]).join("+"),
         variants(null, ["perch"]).join("+"),
+        tracker.note("wood"),
+        tracker.note("beer"),
+        ids([{ id: 2, v: "a" }, { v: "b" }]),
     ].join("|");
-    if (text !== "made 7|refused by lift|perch|carp+pike|perch") throw new Error(text);
+    if (text !== "made 7|refused by lift|perch|carp+pike|perch|logs|none|2,new") throw new Error(text);
 `,
 );
 

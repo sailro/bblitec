@@ -5569,6 +5569,17 @@ export class ExpressionLowerer {
                         ...undefinedValue(),
                         preserveUncheckedLookup: true,
                     };
+                if (
+                    this.context.propertyAccess.absentPropertyReadsUndefined(
+                        owner,
+                        this.context.checker.getTypeAtLocation(
+                            unwrapped.expression,
+                        ),
+                        property,
+                        unwrapped,
+                    )
+                )
+                    return undefinedValue();
                 this.context.fail(
                     unwrapped.argumentExpression,
                     `Compile-time record has no property '${property}'.`,

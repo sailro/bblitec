@@ -21,6 +21,7 @@ import {
     holdsOnly,
     arrayShape,
     isVoid,
+    nullability,
     unionMembers,
 } from "./type-facts.js";
 import ts from "typescript";
@@ -2403,6 +2404,42 @@ export class PropertyAccessLowerer {
     }
 
     /**
+     * Whether a compile-time record that lacks `property` reads it as
+     * `undefined`, by a member, a keyed or a destructuring `read` of a
+     * record of `ownerType`. Object literals omit optional fields entirely,
+     * and the record keeps that absence as JavaScript's `undefined`. The
+     * read refuses only where the type requires the property: it is
+     * undefined where the type declares the property optional or requires
+     * no such property (an untyped value, a union one of whose arms lacks
+     * it), and where the read's own type admits an absent value. A class
+     * instance keeps its class's members, and every object
+     * Object.prototype's.
+     */
+    public absentPropertyReadsUndefined(
+        owner: Value,
+        ownerType: ts.Type,
+        property: string,
+        read: ts.Node,
+    ): boolean {
+        const declared = this.context.dataLowerer.dataTypeAt(read);
+        const readType = this.context.checker.getTypeAtLocation(read);
+        const declaredProperty = this.context.checker
+            .getNonNullableType(ownerType)
+            .getProperty(property);
+        return (
+            declared?.kind === "optional" ||
+            nullability(readType).undefined ||
+            (declaredProperty !== undefined
+                ? (declaredProperty.flags & ts.SymbolFlags.Optional) !== 0
+                : !owner.classDeclaration && !(property in Object.prototype)) ||
+            (declared?.kind === "function" &&
+                unionMembers(readType).some((member) =>
+                    holdsOnly(member, ["null", "undefined"]),
+                ))
+        );
+    }
+
+    /**
      * A read through an absent receiver, after the operands JavaScript
      * evaluates first: its TypeError, typed as the value `node` would have
      * produced. `member` is the key, when generation knows it.
@@ -3827,40 +3864,17 @@ export class PropertyAccessLowerer {
                     this.refuseMethodValue(expression, classMethod);
                 const method = owner.recordMethods?.[property] ?? classMethod;
                 if (method) return recordMethodValue(owner, method);
-                const declared =
-                    this.context.dataLowerer.dataTypeAt(expression);
-                const declaredTsType =
-                    this.context.checker.getTypeAtLocation(expression);
-                const declaredMembers = unionMembers(declaredTsType);
-                const declaredProperty = this.context.checker
-                    .getNonNullableType(
+                if (
+                    this.absentPropertyReadsUndefined(
+                        owner,
                         this.context.checker.getTypeAtLocation(
                             expression.expression,
                         ),
+                        property,
+                        expression,
                     )
-                    .getProperty(property);
-                if (
-                    declared?.kind === "optional" ||
-                    (declaredProperty !== undefined
-                        ? (declaredProperty.flags & ts.SymbolFlags.Optional) !==
-                          0
-                        : // The owner's type requires no such property: an
-                          // untyped value, or a union one of whose arms lacks
-                          // it. A class instance keeps its class's members,
-                          // and every object Object.prototype's.
-                          !owner.classDeclaration &&
-                          !(property in Object.prototype)) ||
-                    (declared?.kind === "function" &&
-                        declaredMembers.some((member) =>
-                            holdsOnly(member, ["null", "undefined"]),
-                        ))
-                ) {
-                    // Object literals omit optional fields entirely. A
-                    // compile-time record preserves that absence as
-                    // JavaScript's `undefined`, which `??`, equality
-                    // guards, `typeof` and concatenation read.
+                )
                     return undefinedValue();
-                }
                 this.context.fail(
                     expression,
                     `Static record has no property '${property}' ` +
