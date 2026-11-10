@@ -2166,6 +2166,22 @@ export class DataTypeRegistry {
                         );
                     this.recordNativeViews.set(identity, type);
                 });
+            if (demand.classView)
+                this.withRecordDemand(demand, () => {
+                    const identity = this.structIdentity(demand.type);
+                    const previous = this.recordClassViews.get(identity);
+                    if (
+                        demand.document ||
+                        demand.documentDictionary ||
+                        demand.dictionary ||
+                        (previous && previous !== demand.classView)
+                    )
+                        this.fail(
+                            demand.node,
+                            "A structural record has conflicting native object storage demands.",
+                        );
+                    this.recordClassViews.set(identity, demand.classView!);
+                });
             for (const join of demand.joins ?? []) {
                 const known = joins.get(join.source);
                 if (known) known.push(join);
@@ -2204,6 +2220,63 @@ export class DataTypeRegistry {
                 ),
             ),
         );
+    }
+
+    /**
+     * Record types demanded as views of a class (`classViewDemand`), by
+     * record identity: each maps to that class's shared instance.
+     */
+    private readonly recordClassViews = new EmissionMap<
+        NativeRecordStorageDemand["identity"],
+        ts.ClassLikeDeclaration
+    >();
+
+    /**
+     * The record type struct `name` maps, as a view of the class
+     * `declaration` whose instance is stored as it: the instance has every
+     * property the record type declares, so it is itself the record and no
+     * copy is made.
+     */
+    public classViewDemand(
+        name: string,
+        declaration: ts.ClassLikeDeclaration,
+    ): NativeRecordStorageDemand | undefined {
+        const source = this.nativeRecordSources.get(name);
+        const instance = this.classInstanceType(declaration);
+        if (!source || !instance || this.isClassStruct(name)) return undefined;
+        const view = this.checker.getNonNullableType(source.type);
+        return (view.flags & ts.TypeFlags.Object) !== 0 &&
+            this.checker.getPropertiesOfType(view).length > 0 &&
+            callSignatures(this.checker, view, "exact").length === 0 &&
+            view.getConstructSignatures().length === 0 &&
+            this.checker.getIndexInfosOfType(view).length === 0 &&
+            this.checker.isTypeAssignableTo(instance, view)
+            ? { ...source, classView: declaration }
+            : undefined;
+    }
+
+    /** The class whose instances a record type is stored as (`classViewDemand`). */
+    public classViewOf(type: ts.Type): ts.ClassLikeDeclaration | undefined {
+        return this.recordClassViews.size
+            ? this.recordClassViews.get(
+                  this.structIdentity(
+                      this.checker.getNonNullableType(
+                          this.resolveTypeParameter(type),
+                      ),
+                  ),
+              )
+            : undefined;
+    }
+
+    /** The instance type of a named class that declares no type parameters. */
+    private classInstanceType(
+        declaration: ts.ClassLikeDeclaration,
+    ): ts.Type | undefined {
+        const symbol =
+            declaration.name && !declaration.typeParameters?.length
+                ? declaredSymbol(this.checker, declaration.name)
+                : undefined;
+        return symbol && this.checker.getDeclaredTypeOfSymbol(symbol);
     }
 
     /** A checked structural projection retains the represented native owner. */
@@ -7009,6 +7082,12 @@ export class DataTypeRegistry {
         call?: DataType<"function">,
     ): DataType | undefined {
         const identity = this.structIdentity(type);
+        const viewed = this.recordClassViews.get(identity);
+        const instance = viewed && this.classInstanceType(viewed);
+        if (instance)
+            return this.withClassDemand(true, () =>
+                this.fromLocalClassType(instance, node),
+            );
         const native = this.recordNativeViews.get(identity);
         if (native) {
             if (
@@ -8694,6 +8773,14 @@ export class DataTypeRegistry {
             this.storage.sharedClasses.size > 0 &&
             this.storage.sharedClasses.has(this.sharedClassKey(declaration))
         );
+    }
+
+    /** Whether instances of two classes are records of one struct. */
+    public sharesClassStruct(
+        left: ts.ClassLikeDeclaration,
+        right: ts.ClassLikeDeclaration,
+    ): boolean {
+        return this.sharedClassKey(left) === this.sharedClassKey(right);
     }
 
     /** A hierarchy shares one struct, named by its root. */

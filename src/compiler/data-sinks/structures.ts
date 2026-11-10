@@ -140,6 +140,7 @@ function expressionStruct(
         return `${lowerer.context.dataTypes.cppType(dataType)}{}`;
     }
     if (ts.isObjectLiteralExpression(unwrapped)) {
+        refuseForeignClassView(lowerer, expression);
         if (
             unwrapped.properties.some((property) =>
                 ts.isSpreadAssignment(property),
@@ -425,6 +426,7 @@ function valueStruct(
     }
     const sharedClass = lowerer.context.dataTypes.classStruct(dataType.name);
     if (sharedClass && value.kind === "record") {
+        refuseForeignClassView(lowerer, node, value.classDeclaration);
         // A probe declines on the refusal; a committed store replays shared.
         if (!lowerer.context.speculating)
             lowerer.context.dataTypes.requireSharedClass(
@@ -1041,11 +1043,40 @@ function refuseClassRecordCopy(
                   : "shared",
           )
         : "its record type has no checked source";
-    if (observed)
-        lowerer.context.fail(
-            node,
-            `A '${symbol.name}' instance stored as '${target ? checker.typeToString(target) : dataType.name}' would be a copy of the one object JavaScript keeps, and ${observed}.`,
-        );
+    if (!observed) return;
+    // The instance has every property the record type declares: stored
+    // as itself, there is no copy.
+    const view = lowerer.context.dataTypes.classViewDemand(
+        dataType.name,
+        declaration,
+    );
+    if (view) throw new NativeRecordStorageRequired(view);
+    lowerer.context.fail(
+        node,
+        `A '${symbol.name}' instance stored as '${target ? checker.typeToString(target) : dataType.name}' would be a copy of the one object JavaScript keeps, and ${observed}.`,
+    );
+}
+
+/**
+ * A record type stored as one class's instances (`classViewDemand`) holds
+ * only them: a literal or another class's instance stored as it would be
+ * a second kind of object under one layout.
+ */
+function refuseForeignClassView(
+    lowerer: DataSinkHost,
+    node: ts.Node,
+    instance?: ts.ClassLikeDeclaration,
+): void {
+    const { type } = storedRecord(lowerer, node);
+    const dataTypes = lowerer.context.dataTypes;
+    const viewed = type && dataTypes.classViewOf(type);
+    if (!viewed || (instance && dataTypes.sharesClassStruct(viewed, instance)))
+        return;
+    const name = viewed.name?.text ?? "class";
+    lowerer.context.fail(
+        node,
+        `'${lowerer.context.checker.typeToString(type)}' is stored as the '${name}' instances it holds; ${instance?.name ? `a '${instance.name.text}' instance` : "a record that is not one"} stored as it would be a copy of the one object JavaScript keeps.`,
+    );
 }
 
 /**
