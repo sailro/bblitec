@@ -3629,6 +3629,25 @@ test("a run-time key selecting fields of different types refuses", () => {
 });
 
 check(
+    "absent-value-asserted-present-and-passed-on",
+    `
+    function reach(packed: Float32Array, stride: number): number { const declared = Math.max(0, Math.trunc(packed[0] ?? 0)); return declared * stride; }
+    function penReach(enclosures: Float32Array, pen: number): number { return reach(enclosures, 2) + pen; }
+    function accessible(pen: number, enclosures?: Float32Array): boolean {
+        if (pen === 0) return true;
+        const r = penReach(enclosures!, pen);
+        return r > 1;
+    }
+    const free = Math.random() >= 0 ? 0 : 1;
+    if (!accessible(free)) throw new Error("unrestricted");
+    if (!accessible(1 - free, new Float32Array([3, 0]))) throw new Error("present");
+    let thrown = false;
+    try { accessible(1 - free); } catch (error) { thrown = error instanceof TypeError; }
+    if (!thrown) throw new Error("absent read");
+`,
+);
+
+check(
     "union-field-required-optional-and-absent-across-arms",
     `
     type Event = { kind: "birth"; where: number } | { kind: "death"; index: number; cause: number } | { kind: "debug"; index: number; cause?: number };
