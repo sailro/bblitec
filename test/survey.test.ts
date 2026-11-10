@@ -11,7 +11,13 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test from "node:test";
 import { jsonArray, jsonObject } from "./json.js";
+import ts from "typescript";
 import { compileSource, surveySource } from "../src/compiler.js";
+import { createCompilerProgram } from "../src/compiler/program.js";
+import {
+    ReplayStorage,
+    type StorageRequest,
+} from "../src/compiler/replay-storage.js";
 import {
     publishedSurvey,
     refusalClass,
@@ -420,6 +426,46 @@ test("an error outside statement lowering ends the survey as incomplete", () => 
     const frames = report.terminalStack ?? [];
     assert.ok(frames.length > 0 && frames.length <= 12);
     assert.ok(frames.every((frame) => frame.startsWith("at ")));
+});
+
+test("a plan's demands are withdrawn from the replay storage as it stood", () => {
+    // A survey plan's demands are provisional: where the attempt replaying
+    // with them refuses before it lowers a statement, the storage is put
+    // back and the strict attempts go on.
+    const frontend = createCompilerProgram(
+        `interface Samples { values: ArrayLike<number> }
+         function read(samples: Samples): number { return samples.values.length; }
+         const held = read({ values: [1] });`,
+        resolve("survey-withdraw.ts"),
+    );
+    const [record, reader, statement] = frontend.sourceFile.statements;
+    assert.ok(record && ts.isInterfaceDeclaration(record));
+    assert.ok(reader && ts.isFunctionDeclaration(reader));
+    assert.ok(statement && ts.isVariableStatement(statement));
+    const slot = record.members[0];
+    const parameter = reader.parameters[0];
+    const binding = statement.declarationList.declarations[0];
+    assert.ok(slot && ts.isPropertySignature(slot) && parameter && binding);
+    const storage = new ReplayStorage(frontend.checker);
+    const before: StorageRequest[] = [
+        { kind: "numeric-slot", declaration: slot, numeric: "array" },
+        { kind: "enum-array", unions: ["a|b"] },
+    ];
+    const planned: StorageRequest[] = [
+        { kind: "numeric-slot", declaration: slot, numeric: "view" },
+        { kind: "parameter-object", declaration: parameter },
+        { kind: "dynamic", declaration: binding, storage: undefined },
+        { kind: "enum-array", unions: ["c|d"] },
+        { kind: "thrown-value", valueKind: "string" },
+    ];
+    for (const request of before) assert.equal(storage.add(request), true);
+    const withdraw = storage.snapshot();
+    for (const request of planned) assert.equal(storage.add(request), true);
+    for (const request of planned) assert.equal(storage.add(request), false);
+    withdraw();
+    // What it held before the plan stays; the plan's demands are new again.
+    for (const request of before) assert.equal(storage.add(request), false);
+    for (const request of planned) assert.equal(storage.add(request), true);
 });
 
 test("a survey ended outside statement lowering publishes its furthest attempt with what ended it", () => {

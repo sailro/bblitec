@@ -834,6 +834,12 @@ function lowerSourceApplication(
         let planning = false;
         let owed = 0;
         let unpaid = 0;
+        // A survey plan's demands are provisional (it met them past
+        // statements it rolled back): two of them may hold no one layout
+        // together. Until an attempt replaying with them lowers a
+        // statement, `withdraw` puts the storage back as it was.
+        let withdraw: (() => void) | undefined;
+        let planned = 0;
         for (;;) {
             if (planning) {
                 const planner = new StorageDemandPlanner(input.checker);
@@ -852,6 +858,21 @@ function lowerSourceApplication(
                     ? survey.attempt(input.sourceFile.fileName, lower)
                     : lower();
             } catch (error) {
+                if (
+                    withdraw &&
+                    survey &&
+                    error instanceof CompileError &&
+                    survey.stoppedInSetup(input.sourceFile.fileName)
+                ) {
+                    withdraw();
+                    withdraw = undefined;
+                    survey.withdrew(error);
+                    // The plan did not pay: strict attempts run before the next.
+                    unpaid++;
+                    owed = planned * 2 ** (unpaid - 1);
+                    continue;
+                }
+                withdraw = undefined;
                 if (!acceptReplay(error)) throw error;
                 survey?.restarted(error);
                 if (
@@ -878,7 +899,9 @@ function lowerSourceApplication(
                     if (!acceptReplay(planningError)) throw planningError;
                 }
                 for (const replay of planner.replays) acceptReplay(replay);
+                const held = storage.snapshot();
                 const added = addPlanned(planner);
+                if (added > 0) withdraw = held;
                 const spent = performance.now() - began;
                 survey.planned(
                     input.checker,
@@ -887,6 +910,7 @@ function lowerSourceApplication(
                     planner.ended(),
                     planner.met,
                 );
+                planned = spent;
                 unpaid = added * strict > spent ? 0 : unpaid + 1;
                 owed = unpaid === 0 ? 0 : spent * 2 ** (unpaid - 1);
             }

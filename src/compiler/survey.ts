@@ -240,6 +240,21 @@ export class SurveyCollector {
         this.leavePartial(restart);
     }
 
+    /** Whether the realm's last attempt ended before it lowered a statement. */
+    public stoppedInSetup(realm: string): boolean {
+        return this.realms.get(realm)?.attempted === 0;
+    }
+
+    /**
+     * Reports a plan's demands withdrawn: the attempt replaying with them
+     * refused before it lowered a statement.
+     */
+    public withdrew(refusal: CompileError): void {
+        this.progress?.report(
+            `Survey plan withdrawn: replaying with its demands refused before any statement: ${refusal.message}`,
+        );
+    }
+
     /** Hands the census as it stands, marked incomplete, with what the last plan met. */
     private leavePartial(running: string): void {
         if (!this.progress?.partial) return;

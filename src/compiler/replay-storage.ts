@@ -185,6 +185,56 @@ export class ReplayStorage {
         return this.refusedRecords.get(this.recordKey(demand));
     }
 
+    /**
+     * What this storage holds now: the returned function puts it back,
+     * withdrawing every demand added since.
+     */
+    public snapshot(): () => void {
+        const map = <K, V>(held: Map<K, V>): (() => void) => {
+            const entries = [...held];
+            return () => {
+                held.clear();
+                for (const [key, value] of entries) held.set(key, value);
+            };
+        };
+        const set = <T>(held: Set<T>): (() => void) => {
+            const values = [...held];
+            return () => {
+                held.clear();
+                for (const value of values) held.add(value);
+            };
+        };
+        const numeric = [...this.numericSlots].map(
+            ([declaration, kinds]) => [declaration, [...kinds]] as const,
+        );
+        const restores = [
+            map(this.dynamicBindings),
+            map(this.records),
+            map(this.refusedRecords),
+            this.genericFunctions.snapshot(),
+            set(this.absenceTags),
+            set(this.classFieldPresence),
+            set(this.engineOwners),
+            map(this.assertedHandleFields),
+            map(this.completions),
+            set(this.unprovenCompletions),
+            set(this.parameterObjects),
+            set(this.tupleArraySlots),
+            () => {
+                this.numericSlots.clear();
+                for (const [declaration, kinds] of numeric)
+                    this.numericSlots.set(declaration, new Set(kinds));
+            },
+            set(this.stringElementUnions),
+            set(this.orderedRecordSchemas),
+            set(this.thrownValueKinds),
+            set(this.sharedClasses),
+        ];
+        return () => {
+            for (const restore of restores) restore();
+        };
+    }
+
     /** Adds what `request` demands; false when this storage already holds it. */
     public add(request: StorageRequest): boolean {
         switch (request.kind) {
