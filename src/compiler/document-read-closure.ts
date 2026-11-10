@@ -55,9 +55,11 @@ const copied = new WeakMap<
 >();
 
 /**
- * The program's field-by-field copies between record types
- * (`ProgramObservations.copies`): the record types a copied object may be
- * (an intersection's parts too) and those the copy holds.
+ * Where the program's values pass from record types to others: its
+ * field-by-field copies (`ProgramObservations.copies`) and the values it
+ * hands where another record type is declared (`handed`). `from` is the
+ * record types the value may be (an intersection's parts too), `into`
+ * those the copy holds or the declared type names.
  */
 function copiedRecords(
     checker: ts.TypeChecker,
@@ -65,22 +67,35 @@ function copiedRecords(
 ): readonly { from: readonly ts.Type[]; into: readonly ts.Type[] }[] {
     let known = copied.get(program);
     if (!known) {
-        known = programObservations(program)
-            .copies.map(({ from, into }) => {
-                const source = checker.getTypeAtLocation(from);
+        const observed = programObservations(program);
+        const recordsOf = (value: ts.Node): readonly ts.Type[] => {
+            const type = checker.getTypeAtLocation(value);
+            return [
+                ...heldRecords(checker, type),
+                ...unionMembers(checker.getNonNullableType(type)).flatMap(
+                    (member) => (member.isIntersection() ? member.types : []),
+                ),
+            ];
+        };
+        known = [
+            ...observed.copies.map(({ from, into }) => ({
+                from: recordsOf(from),
+                into: heldRecords(checker, checker.getTypeAtLocation(into)),
+            })),
+            ...observed.handed.map((value) => {
+                const declared = checker.getContextualType(value);
+                const from = declared ? recordsOf(value) : [];
                 return {
-                    from: [
-                        ...heldRecords(checker, source),
-                        ...unionMembers(
-                            checker.getNonNullableType(source),
-                        ).flatMap((member) =>
-                            member.isIntersection() ? member.types : [],
-                        ),
-                    ],
-                    into: heldRecords(checker, checker.getTypeAtLocation(into)),
+                    from,
+                    into:
+                        declared && from.length > 0
+                            ? heldRecords(checker, declared).filter(
+                                  (record) => !from.includes(record),
+                              )
+                            : [],
                 };
-            })
-            .filter(({ from, into }) => from.length > 0 && into.length > 0);
+            }),
+        ].filter(({ from, into }) => from.length > 0 && into.length > 0);
         copied.set(program, known);
     }
     return known;
@@ -94,8 +109,10 @@ function copiedRecords(
  *   (`heldRecords`), and so on from each (`readOut`): a value read out of
  *   a document is a document;
  * - every record type one of these is copied into field by field (a spread
- *   into a literal, the rest of a pattern), with what is read out of it:
- *   the copy of a document's fields holds document values
+ *   into a literal, the rest of a pattern) or handed as (an argument, a
+ *   returned or assigned value under another declared type), with what is
+ *   read out of it: the copy of a document's fields holds document values,
+ *   and a document seen as another type is that type's value
  *   (`heldDocuments`);
  * - where `record` is itself held by a type the program asserts data of no
  *   shape as (`JSON.parse(text) as Save`, or the `object` a `typeof` test
@@ -144,8 +161,8 @@ const documents = new WeakMap<ts.Program, Map<ts.Type, readonly ts.Type[]>>();
 
 /**
  * The record types a document `record` hands its values to: those read
- * out of it (`readOut`), those any of them is copied into field by field
- * (`copiedRecords`), and those read out of the copies.
+ * out of it (`readOut`), those any of them is copied into or handed as
+ * (`copiedRecords`), and those read out of these.
  */
 function heldDocuments(
     checker: ts.TypeChecker,

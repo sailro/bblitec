@@ -967,6 +967,38 @@ test("a record copied out of a parsed document field by field is a document with
     );
 });
 
+test("a document handed where another record type is declared makes that type a document, in one replay", async (t) => {
+    // The parameters' own record types keep the parsed records they are
+    // handed: each was one replay of its own.
+    const source = `
+    interface Claim { t: number; h?: number; who: string }
+    interface Course { seq: number; v: number }
+    interface Stair { id: number; courses?: Course[] }
+    interface Save { claims: Claim[]; stairs: Stair[] }
+    const text = '{"claims":[{"t":2,"h":7,"who":"ada"},{"t":3,"who":"bob"}],"stairs":[{"id":1,"courses":[{"seq":1,"v":4},{"seq":2,"v":5}]},{"id":2}]}';
+    const homes: { t: number; h?: number }[] = [];
+    function keep(home: { t: number; h?: number }): number { homes.push(home); return home.h ?? home.t; }
+    const folded: { seq: number; v: number }[] = [];
+    function fold(courses: { seq: number; v: number }[] | undefined): number {
+        let total = 0;
+        for (const course of courses ?? []) { folded.push(course); total += course.v; }
+        return total;
+    }
+    function migrate(d: Save): string {
+        return d.claims.map((claim) => claim.who + keep(claim)).join() + "|" + d.stairs.map((stair) => stair.id + ":" + fold(stair.courses)).join();
+    }
+    const out = migrate(JSON.parse(text) as Save);
+    if (out !== "ada7,bob3|1:9,2:0" || homes.length !== 2 || homes[1]!.t !== 3 || folded.length !== 2 || folded[1]!.seq !== 2) throw new Error(out);
+`;
+    const strict = measured(false, () => compileSource(source));
+    assert.equal(strict.constructions, 2);
+    await runSelfCheckingProgram(
+        t,
+        "storage-demand-planner/handed-closure",
+        source,
+    );
+});
+
 test("a record read out of an asserted parse is a document with everything read out of that parse", async (t) => {
     // The save is only asserted and read; its first stored value is a room,
     // far below it. The lamps and owners are siblings of the room, and the

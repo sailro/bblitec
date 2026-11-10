@@ -81,7 +81,10 @@ export interface NamedRead {
  *   through, and the objects read wholesale or by a computed key (the
  *   reads that could take an object literal method's function value);
  * - copies: each object copied field by field into a new one -- a spread
- *   into an object literal, the rest of an object pattern.
+ *   into an object literal, the rest of an object pattern;
+ * - handed values: each value given where a type is declared for it -- an
+ *   argument, a returned value, the initializer of a typed declaration or
+ *   of a property, an assigned value.
  */
 export interface ProgramObservations {
     readonly writes: ReadonlyMap<ts.Type, readonly ObservedWrite[]>;
@@ -115,6 +118,8 @@ export interface ProgramObservations {
         readonly from: ts.Node;
         readonly into: ts.Node;
     }[];
+    /** Values given where their contextual type declares another type for them. */
+    readonly handed: readonly ts.Expression[];
     /**
      * The first site that gives an object a prototype no literal or
      * constructor gives it: `Object.create`, `Object.setPrototypeOf`,
@@ -274,6 +279,19 @@ function observe(program: ts.Program): ProgramObservations {
     const namedReads = new Map<string, NamedRead[]>();
     const wholesaleReads: ts.Node[] = [];
     const copies: { from: ts.Node; into: ts.Node }[] = [];
+    const handed: ts.Expression[] = [];
+    // A literal or a function is created where it is given: it has no
+    // other type to bring.
+    const hand = (value: ts.Expression | undefined): void => {
+        if (
+            value &&
+            !ts.isLiteralExpression(value) &&
+            !ts.isFunctionLike(value) &&
+            !ts.isObjectLiteralExpression(value) &&
+            !ts.isArrayLiteralExpression(value)
+        )
+            handed.push(value);
+    };
     let foreignPrototype: ts.Node | undefined;
     const typeOf = (node: ts.Node): ts.Type => checker.getTypeAtLocation(node);
     let order = 0;
@@ -445,6 +463,17 @@ function observe(program: ts.Program): ProgramObservations {
             : yieldsNewArray(checker, unwrapped);
     };
     const visit = (node: ts.Node): void => {
+        if (ts.isCallExpression(node) || ts.isNewExpression(node))
+            node.arguments?.forEach(hand);
+        else if (ts.isReturnStatement(node)) hand(node.expression);
+        else if (ts.isVariableDeclaration(node) && node.type)
+            hand(node.initializer);
+        else if (ts.isPropertyAssignment(node)) hand(node.initializer);
+        else if (
+            ts.isBinaryExpression(node) &&
+            node.operatorToken.kind === ts.SyntaxKind.EqualsToken
+        )
+            hand(node.right);
         // A new array is created with the type it is read as.
         if (ts.isExpression(node) && !newArrayValue(node)) {
             const own = mutableElement(typeOf(node));
@@ -720,6 +749,7 @@ function observe(program: ts.Program): ProgramObservations {
         namedReads,
         wholesaleReads,
         copies,
+        handed,
         foreignPrototype,
     };
 }
