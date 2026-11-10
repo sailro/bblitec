@@ -5631,11 +5631,10 @@ export class ExpressionLowerer {
             staticNumberValue(this.context, unwrapped.argumentExpression);
         if (staticIndex === undefined) {
             const elements = owner.tupleElements ?? [];
+            // An empty array has no element at any index.
             if (elements.length === 0) {
-                this.context.fail(
-                    unwrapped,
-                    "A runtime index cannot read an empty static tuple.",
-                );
+                this.context.emitDiscardedValue(selector);
+                return undefinedValue();
             }
             let selected = elements[0]!;
             for (let lane = 1; lane < elements.length; lane += 1) {

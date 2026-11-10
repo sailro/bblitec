@@ -3621,6 +3621,22 @@ test("a compile-time record lacking a property its type requires refuses the rea
     );
 });
 
+check(
+    "run-time-index-into-an-empty-array",
+    `
+    function build<Entry>(entries: readonly Entry[], boundsAt: (entry: Entry, out: { min: number; max: number }) => void): number {
+        const bounds = entries.map(() => ({ min: 0, max: 0 }));
+        for (let index = 0; index < entries.length; index++) boundsAt(entries[index]!, bounds[index]!);
+        let widest = 0;
+        for (let index = 0; index < bounds.length; index++) widest = Math.max(widest, bounds[index]!.max - bounds[index]!.min);
+        return widest;
+    }
+    const none = build([], () => {});
+    const some = build([3, 7], (entry, out) => { out.min = -entry; out.max = entry; });
+    if (none !== 0 || some !== 14) throw new Error(none + " " + some);
+`,
+);
+
 test("a type outside the data model refuses by the path to the part without a representation", () => {
     assert.throws(
         () =>
