@@ -96,20 +96,19 @@ const RECORD_STORAGE_FLAGS = [
     "bareCallable",
 ] as const;
 
+/** The properties an anonymous record type's report name spells before it elides the rest. */
+const NAMED_SHAPE_PROPERTIES = 6;
+
 /** A record type's name for a report; an anonymous one is its shape's. */
 function recordTypeName(type: ts.Type): string {
-    return (
-        type.aliasSymbol?.name ??
-        (type.symbol && (type.symbol.flags & ts.SymbolFlags.TypeLiteral) === 0
-            ? type.symbol.name
-            : `{ ${type
-                  .getProperties()
-                  .map((property) => property.name)
-                  .join(", ")} }`)
-    );
+    if (type.aliasSymbol) return type.aliasSymbol.name;
+    if (type.symbol && (type.symbol.flags & ts.SymbolFlags.TypeLiteral) === 0)
+        return type.symbol.name;
+    const names = type.getProperties().map((property) => property.name);
+    return `{ ${names.slice(0, NAMED_SHAPE_PROPERTIES).join(", ")}${names.length > NAMED_SHAPE_PROPERTIES ? ", ..." : ""} }`;
 }
 
-/** What a record demand asks for, for reports: its flags, joins and accessors. */
+/** What a record demand asks for, for reports: its record, flags, joins and accessors. */
 export function describeRecordDemand(
     demand: NativeRecordStorageDemand,
 ): string {
@@ -123,7 +122,7 @@ export function describeRecordDemand(
         );
     if (demand.accessors?.length)
         asked.push(`${demand.accessors.length} accessor(s)`);
-    return asked.join(", ") || "shared";
+    return `${recordTypeName(demand.type)}: ${asked.join(", ") || "shared"}`;
 }
 
 /**

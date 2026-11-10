@@ -135,10 +135,10 @@ test("a survey's progress names each restart's cause, what it demands and where 
         lines.at(-1)!,
         /^Survey progress: attempt 2, .*; last restart: NativeRecordStorageRequired: .* at .*survey-restart\.ts:2$/,
     );
-    // Each restart is reported as it happens.
+    // Each restart is reported as it happens, naming the record it stores.
     assert.equal(
         lines.filter((line) =>
-            /^Survey restart after attempt 1: NativeRecordStorageRequired: record \(document\) at /.test(
+            /^Survey restart after attempt 1: NativeRecordStorageRequired: record \(Settings: document\) at /.test(
                 line,
             ),
         ).length,
