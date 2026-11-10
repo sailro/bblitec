@@ -485,6 +485,29 @@ test("deferred recursive callbacks and async record methods retain independent a
         true,
     ));
 
+test("a thenable check tells a promise from the value it may be instead", (t) =>
+    nativeCheck(
+        t,
+        "thenable-check",
+        `
+    type Choice={id:number};
+    const seen:number[]=[];
+    function arrive(prepare:()=>Choice|Promise<Choice>):void{
+        const prepared=prepare();
+        if(prepared&&typeof (prepared as PromiseLike<Choice>).then==="function"){void Promise.resolve(prepared).then((choice)=>{seen.push(choice.id);});}
+        else seen.push((prepared as Choice).id*10);
+    }
+    void(async()=>{
+        arrive(()=>({id:1}));
+        arrive(async()=>({id:2}));
+        await Promise.resolve();await Promise.resolve();await Promise.resolve();
+        if(seen.join(",")!=="10,2")throw new Error("thenable "+seen.join(","));
+        globalThis.close();
+    })();
+`,
+        true,
+    ));
+
 test("value-or-promise unions await either arm in an asynchronous realm", (t) =>
     nativeCheck(
         t,

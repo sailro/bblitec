@@ -431,6 +431,13 @@ export interface ExpressionContext
 }
 
 /** Whether an expression's value is an object spread's operand, directly or through the operators that yield it. */
+/** The members a promise has. */
+const PROMISE_METHODS: ReadonlySet<string> = new Set([
+    "then",
+    "catch",
+    "finally",
+]);
+
 /**
  * The one storage every property of a compile-time record holds; undefined
  * where they differ or one has none.
@@ -1793,6 +1800,8 @@ export class ExpressionLowerer {
                 return staticStringValue(tag, (text) =>
                     this.context.cppString(text),
                 );
+            const selected = this.unionMemberTypeof(expression);
+            if (selected) return selected;
             // typeof observes an element past the end as undefined.
             const compiledOperand =
                 (ts.isElementAccessExpression(expression)
@@ -6479,6 +6488,43 @@ export class ExpressionLowerer {
      *   number), "function" for one of its methods.
      * Undefined for any other operand.
      */
+    /**
+     * `typeof owner.member` where the owner is held as a data union each of
+     * whose members' storage answers (`storageMemberTypeof`): the answer of
+     * the member it holds, selected at run time.
+     */
+    private unionMemberTypeof(expression: ts.Expression): Value | undefined {
+        if (
+            !ts.isPropertyAccessExpression(expression) ||
+            ts.isOptionalChain(expression) ||
+            expressionHasEffects(expression.expression)
+        )
+            return undefined;
+        const answer = (member: Value): Value | undefined => {
+            const tag = this.storageMemberTypeof(member, expression);
+            return (
+                tag &&
+                staticStringValue(tag, (text) => this.context.cppString(text))
+            );
+        };
+        return this.context.probeEmission(() => {
+            const owner = unlessRefused(() =>
+                this.compileValue(expression.expression),
+            );
+            return owner?.kind === "data" &&
+                owner.dataType?.kind === "union" &&
+                owner.dataType.members.every((member) =>
+                    answer({ kind: "data", cpp: "", dataType: member }),
+                )
+                ? this.context.dataLowerer.readThroughUnion(
+                      owner,
+                      expression,
+                      (member) => answer(member)!,
+                  )
+                : undefined;
+        });
+    }
+
     private staticMemberTypeof(
         expression: ts.Expression,
     ): "undefined" | "function" | undefined {
@@ -6514,14 +6560,42 @@ export class ExpressionLowerer {
             () => unlessRefused(() => this.compileValue(receiver)),
             () => false,
         );
+        return owner && this.storageMemberTypeof(owner, expression);
+    }
+
+    /**
+     * `typeof owner.member` as the owner's storage answers it at generation:
+     * a promise has its three methods and no other member (the test a
+     * thenable check makes), a struct whose records provably lack the member
+     * reads undefined, and a primitive has its wrapper's methods.
+     */
+    private storageMemberTypeof(
+        owner: Value,
+        expression: ts.PropertyAccessExpression,
+    ): "undefined" | "function" | undefined {
+        const checker = this.context.checker;
+        if (owner.kind === "promise" || owner.dataType?.kind === "promise")
+            return PROMISE_METHODS.has(expression.name.text)
+                ? "function"
+                : "undefined";
+        if (
+            owner.kind === "data" &&
+            owner.dataType?.kind === "struct" &&
+            this.context.dataTypes.absentRecordProperty(
+                owner.dataType.name,
+                expression.name.text,
+                expression,
+            )
+        )
+            return "undefined";
         const kind =
-            owner?.dataType?.kind === "number" ||
-            owner?.dataType?.kind === "string" ||
-            owner?.dataType?.kind === "boolean"
+            owner.dataType?.kind === "number" ||
+            owner.dataType?.kind === "string" ||
+            owner.dataType?.kind === "boolean"
                 ? owner.dataType.kind
-                : owner?.kind === "number" ||
-                    owner?.kind === "string" ||
-                    owner?.kind === "boolean"
+                : owner.kind === "number" ||
+                    owner.kind === "string" ||
+                    owner.kind === "boolean"
                   ? owner.kind
                   : undefined;
         if (!kind) return undefined;

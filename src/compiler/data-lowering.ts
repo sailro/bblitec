@@ -4656,6 +4656,17 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         };
     }
 
+    /** `unionMemberRead` over a value held as a data union; undefined for any other value. */
+    public readThroughUnion(
+        owner: Value,
+        node: ts.Node,
+        read: (member: Value) => Value,
+    ): Value | undefined {
+        return owner.kind === "data" && owner.dataType?.kind === "union"
+            ? this.unionMemberRead(owner, owner.dataType.members, node, read)
+            : undefined;
+    }
+
     /**
      * `left ?? right` over the data model — the general operator, taken
      * after the handle-collection concept and the static-record fold have
@@ -18692,8 +18703,12 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
     public truthinessCondition(value: Value): string | undefined {
         if (isUndefinedDataType(value.dataType))
             return `(static_cast<void>(${value.cpp}), false)`;
+        // A promise is an object. One held in a name has nothing to run,
+        // so generation knows the test.
         if (value.kind === "promise")
-            return `(static_cast<void>(${value.cpp}), true)`;
+            return !value.impure && isCppPath(value.cpp)
+                ? "true"
+                : `(static_cast<void>(${value.cpp}), true)`;
         if (value.kind === "data" && value.dataType?.kind === "event-target")
             return "true";
         const primitive =
