@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import test from "node:test";
+import test, { type TestContext } from "node:test";
 import ts from "typescript";
 import { compileSource, surveySource } from "../src/compiler.js";
 import { SourceCoverage } from "../src/compiler/source-coverage.js";
@@ -28,6 +28,20 @@ const state = `
     saved.push(()=>state.ready());
     const state=make();
 `;
+
+/**
+ * A program compiled in one storage replay (two constructions), run
+ * natively against its own assertions.
+ */
+async function oneReplay(
+    t: TestContext,
+    name: string,
+    source: string,
+): Promise<void> {
+    const strict = measured(false, () => compileSource(source));
+    assert.equal(strict.constructions, 2);
+    await runSelfCheckingProgram(t, `storage-demand-planner/${name}`, source);
+}
 
 function measured<T>(enabled: boolean, run: () => T) {
     const before = storagePlanningStatistics();
@@ -890,8 +904,7 @@ test("a record of literal tables demands every table's object storage in one rep
 });
 
 test("a record type read out of a document is a document with it, in one replay", async (t) => {
-    // Every type below is read out of the parsed save and stored as itself:
-    // each was one replay of its own, as its first value arrived.
+    // Every type below is read out of the parsed save and stored as itself.
     const source = `
     interface Tab { open: boolean; label: string }
     interface Flag { lit: boolean }
@@ -922,18 +935,12 @@ test("a record type read out of a document is a document with it, in one replay"
     const out = cells.length + "|" + owners[0]!.name + "|" + groups[0]!.name + "|" + tabs.map((tab) => tab.label).join("+") + "|" + flags[0]!.lit;
     if (out !== "1|Ada|hall|m+front+side|true") throw new Error(out);
 `;
-    const strict = measured(false, () => compileSource(source));
-    assert.equal(strict.constructions, 2);
-    await runSelfCheckingProgram(
-        t,
-        "storage-demand-planner/read-closure",
-        source,
-    );
+    await oneReplay(t, "read-closure", source);
 });
 
 test("a record copied out of a parsed document field by field is a document with it, in one replay", async (t) => {
     // A migration rebuilds the save out of spreads and rests of its parsed
-    // records: each copy's type was one replay of its own.
+    // records.
     const source = `
     interface Part { id: number; post: number; s?: number }
     interface Tab { id: number; cell: number; purpose?: string }
@@ -958,18 +965,12 @@ test("a record copied out of a parsed document field by field is a document with
     const out = migrate(JSON.parse(text) as Save);
     if (out !== "1:-,2:2|4:-,5:-|1.5:-") throw new Error(out);
 `;
-    const strict = measured(false, () => compileSource(source));
-    assert.equal(strict.constructions, 2);
-    await runSelfCheckingProgram(
-        t,
-        "storage-demand-planner/copy-closure",
-        source,
-    );
+    await oneReplay(t, "copy-closure", source);
 });
 
 test("a document handed where another record type is declared makes that type a document, in one replay", async (t) => {
     // The parameters' own record types keep the parsed records they are
-    // handed: each was one replay of its own.
+    // handed.
     const source = `
     interface Claim { t: number; h?: number; who: string }
     interface Course { seq: number; v: number }
@@ -990,19 +991,13 @@ test("a document handed where another record type is declared makes that type a 
     const out = migrate(JSON.parse(text) as Save);
     if (out !== "ada7,bob3|1:9,2:0" || homes.length !== 2 || homes[1]!.t !== 3 || folded.length !== 2 || folded[1]!.seq !== 2) throw new Error(out);
 `;
-    const strict = measured(false, () => compileSource(source));
-    assert.equal(strict.constructions, 2);
-    await runSelfCheckingProgram(
-        t,
-        "storage-demand-planner/handed-closure",
-        source,
-    );
+    await oneReplay(t, "handed-closure", source);
 });
 
 test("an intersection over a parsed record arrived in that record's parse, in one replay", async (t) => {
     // A generic helper returns `T & { id: number }` for each parsed record
-    // type it is given: the instantiated intersection and the helper's own
-    // under that instantiation were two replays for each.
+    // type it is given: the instantiated intersection, and the helper's own
+    // under that instantiation.
     const source = `
     interface Member { id?: number; name: string }
     interface Extra { id?: number; x: number }
@@ -1032,13 +1027,7 @@ test("an intersection over a parsed record arrived in that record's parse, in on
     const out = migrate(JSON.parse(text) as Save);
     if (out !== "ada4,bob5,cy6|1.5:10,2.5:9|11") throw new Error(out);
 `;
-    const strict = measured(false, () => compileSource(source));
-    assert.equal(strict.constructions, 2);
-    await runSelfCheckingProgram(
-        t,
-        "storage-demand-planner/intersection-closure",
-        source,
-    );
+    await oneReplay(t, "intersection-closure", source);
 });
 
 test("a record read out of an asserted parse is a document with everything read out of that parse", async (t) => {
@@ -1071,11 +1060,5 @@ test("a record read out of an asserted parse is a document with everything read 
     const out = parseSave(JSON.parse(text));
     if (out !== "hall|Ada1|1|front") throw new Error(out);
 `;
-    const strict = measured(false, () => compileSource(source));
-    assert.equal(strict.constructions, 2);
-    await runSelfCheckingProgram(
-        t,
-        "storage-demand-planner/parse-roots",
-        source,
-    );
+    await oneReplay(t, "parse-roots", source);
 });

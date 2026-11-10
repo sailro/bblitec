@@ -669,10 +669,10 @@ export function surveySource(
     return withSurvey(collector, () => {
         try {
             const result = compileSourceApplication(source, options);
-            return { report: collector.report(), result };
+            return { report: collector.published(), result };
         } catch (error) {
             if (!(error instanceof Error)) throw error;
-            return { report: collector.report(error) };
+            return { report: collector.published(error) };
         }
     });
 }
@@ -843,15 +843,23 @@ function lowerSourceApplication(
         let planning = false;
         let owed = 0;
         let unpaid = 0;
+        // A plan that did not pay: strict attempts run as long as it took
+        // before the next one, twice as long after each further such plan.
+        const owe = (spent: number): void => {
+            unpaid++;
+            owed = spent * 2 ** (unpaid - 1);
+        };
         // A survey plan's demands are provisional (it met them past
         // statements it rolled back): two of them may hold no one layout
         // together. Until an attempt replaying with them lowers a
-        // statement, `withdraw` puts the storage back as it was.
-        let withdraw: (() => void) | undefined;
-        let lastPlan: { demands: StorageRequest[]; spent: number } = {
-            demands: [],
-            spent: 0,
-        };
+        // statement, `restore` puts the storage back as it was.
+        let provisional:
+            | {
+                  restore: () => void;
+                  demands: readonly StorageRequest[];
+                  spent: number;
+              }
+            | undefined;
         for (;;) {
             if (planning) {
                 const planner = new StorageDemandPlanner(input.checker);
@@ -871,22 +879,20 @@ function lowerSourceApplication(
                     : lower();
             } catch (error) {
                 if (
-                    withdraw &&
+                    provisional &&
                     survey &&
                     error instanceof CompileError &&
                     survey.stoppedInSetup(input.sourceFile.fileName)
                 ) {
-                    withdraw();
-                    withdraw = undefined;
-                    for (const demand of lastPlan.demands)
+                    provisional.restore();
+                    for (const demand of provisional.demands)
                         withdrawn.add(storageRequestKey(demand));
                     survey.withdrew(error);
-                    // The plan did not pay: strict attempts run before the next.
-                    unpaid++;
-                    owed = lastPlan.spent * 2 ** (unpaid - 1);
+                    owe(provisional.spent);
+                    provisional = undefined;
                     continue;
                 }
-                withdraw = undefined;
+                provisional = undefined;
                 if (!acceptReplay(error)) throw error;
                 survey?.restarted(error);
                 if (
@@ -913,21 +919,22 @@ function lowerSourceApplication(
                     if (!acceptReplay(planningError)) throw planningError;
                 }
                 for (const replay of planner.replays) acceptReplay(replay);
-                const held = storage.snapshot();
+                const restore = storage.snapshot();
                 const demands = addPlanned(planner);
-                const added = demands.length;
-                if (added > 0) withdraw = held;
                 const spent = performance.now() - began;
                 survey.planned(
                     input.checker,
-                    added,
+                    demands.length,
                     spent,
                     planner.ended(),
                     planner.met,
                 );
-                lastPlan = { demands, spent };
-                unpaid = added * strict > spent ? 0 : unpaid + 1;
-                owed = unpaid === 0 ? 0 : spent * 2 ** (unpaid - 1);
+                if (demands.length > 0)
+                    provisional = { restore, demands, spent };
+                if (demands.length * strict > spent) {
+                    unpaid = 0;
+                    owed = 0;
+                } else owe(spent);
             }
         }
     };

@@ -199,8 +199,10 @@ export class SurveyCollector {
     private restart: string | undefined;
     /** @unjournaled The statement lowering began last: where a restart's demand rose. */
     private lowering: ts.Statement | undefined;
-    /** @unjournaled The last plan's census and the statements it left (`SurveyReport.plan`). */
-    private plan: { census: Attempt; left: number } | undefined;
+    /** @unjournaled What the last plan met (`SurveyReport.plan`). */
+    private plan: SurveyReport["plan"];
+    /** @unjournaled The census of the attempt that went furthest, as last handed out. */
+    private furthest: SurveyReport | undefined;
 
     public constructor(private readonly progress?: SurveyProgress) {}
 
@@ -255,32 +257,33 @@ export class SurveyCollector {
         );
     }
 
-    /** Hands the census as it stands, marked incomplete, with what the last plan met. */
+    /**
+     * Keeps the census as it stands, marked incomplete, with what the last
+     * plan met, where its attempt went at least as far as any before it; a
+     * census nearer the start of the program gives only its plan. Hands out
+     * what is kept: a survey stopped early is still read.
+     */
     private leavePartial(running: string): void {
-        if (!this.progress?.partial) return;
-        const planned =
-            this.plan && SurveyCollector.refusalsOf([this.plan.census]);
-        this.progress.partial({
+        const found: SurveyReport = {
             ...this.report(),
             complete: false,
             terminal: `Survey still running: ${running}`,
-            ...(this.plan && planned
-                ? {
-                      plan: {
-                          statements: {
-                              attempted: this.plan.census.attempted,
-                              left: this.plan.left,
-                              refused: planned.reduce(
-                                  (count, refusal) =>
-                                      count + refusal.occurrences,
-                                  0,
-                              ),
-                          },
-                          refusals: planned,
-                      },
-                  }
-                : {}),
-        });
+            ...(this.plan ? { plan: this.plan } : {}),
+        };
+        if (
+            !this.furthest ||
+            found.statements.attempted >= this.furthest.statements.attempted
+        )
+            this.furthest = found;
+        else if (found.plan)
+            this.furthest = { ...this.furthest, plan: found.plan };
+        else return;
+        this.progress?.partial?.(this.furthest);
+    }
+
+    /** The census the survey publishes when it ends (`publishedSurvey`). */
+    public published(terminal?: Error): SurveyReport {
+        return publishedSurvey(this.report(terminal), this.furthest);
     }
 
     /**
@@ -301,7 +304,14 @@ export class SurveyCollector {
         };
         for (const { statement, error } of met.refused)
             this.record(census, checker, statement, error);
-        this.plan = { census, left: met.left };
+        this.plan = {
+            statements: {
+                attempted: met.lowered,
+                left: met.left,
+                refused: met.refused.length,
+            },
+            refusals: SurveyCollector.refusalsOf([census]),
+        };
         const ending = `plan after attempt ${this.attempts}: ${added} demands added in ${Math.round(milliseconds / 1000)} s; ended by ${
             ended.cause === undefined
                 ? "the end of the program"

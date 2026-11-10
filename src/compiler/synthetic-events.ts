@@ -7,6 +7,7 @@ import { jsonAbsenceCpp } from "./values/model.js";
 import { namedMember } from "./symbols.js";
 import { recordDocumentSnapshot } from "./data-sinks/scalars.js";
 import {
+    constructsSyntheticEvent,
     isSyntheticEventClass,
     SYNTHETIC_EVENT_OPTIONS as options,
 } from "./synthetic-event-classes.js";
@@ -161,9 +162,9 @@ export function compileSyntheticEventDispatch(
         context.fail(call, "dispatchEvent requires one event.");
     const type = context.dataLowerer.dataTypeAt(call.arguments[0]!);
     const expression = context.unwrap(call.arguments[0]!);
-    const constructed =
-        ts.isNewExpression(expression) &&
-        isSyntheticEventClass(context.libraryGlobal(expression.expression));
+    const constructed = constructsSyntheticEvent(expression, (callee) =>
+        context.libraryGlobal(callee),
+    );
     const bound = ts.isIdentifier(expression)
         ? context.bindings.lookupOptional(expression)
         : undefined;

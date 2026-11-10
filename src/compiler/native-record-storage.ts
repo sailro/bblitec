@@ -5,6 +5,7 @@ import ts from "typescript";
 import type { InstantiatedRecord, RecordJoin } from "./record-components.js";
 import type { DataType } from "./data-types/model.js";
 import { dataTypesEqual } from "./data-types/operations.js";
+import { declaredRecordName } from "./type-facts.js";
 
 /** The source type and generic environment that produced a native record. */
 export interface NativeRecordStorageDemand {
@@ -101,9 +102,8 @@ const NAMED_SHAPE_PROPERTIES = 6;
 
 /** A record type's name for a report; an anonymous one is its shape's. */
 function recordTypeName(type: ts.Type): string {
-    if (type.aliasSymbol) return type.aliasSymbol.name;
-    if (type.symbol && (type.symbol.flags & ts.SymbolFlags.TypeLiteral) === 0)
-        return type.symbol.name;
+    const declared = declaredRecordName(type);
+    if (declared) return declared;
     const names = type.getProperties().map((property) => property.name);
     return `{ ${names.slice(0, NAMED_SHAPE_PROPERTIES).join(", ")}${names.length > NAMED_SHAPE_PROPERTIES ? ", ..." : ""} }`;
 }

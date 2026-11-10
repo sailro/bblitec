@@ -1130,25 +1130,25 @@ test("ambient availability guards settle through imported helpers", async (t) =>
 });
 
 test("a loop over another module's constant set ranges over the set it constructs", async (t) => {
-    const directory = resolve("artifacts/imported-constant-set");
-    mkdirSync(directory, { recursive: true });
-    writeFileSync(
-        join(directory, "kinds.ts"),
-        `export type Kind = "alpha" | "extra" | "beta" | "gamma" | "delta";
-        export const FLAGGED: ReadonlySet<Kind> = new Set<Kind>(["alpha", "extra", "beta", "gamma"]);
-        export function policy(kind: Kind): string { return FLAGGED.has(kind) ? "fresh" : "durable"; }`,
-    );
-    const result = compileSource(
+    const cpp = compileModules(
+        resolve("artifacts/imported-constant-set"),
+        [
+            [
+                "kinds",
+                `export type Kind = "alpha" | "extra" | "beta" | "gamma" | "delta";
+                export const FLAGGED: ReadonlySet<Kind> = new Set<Kind>(["alpha", "extra", "beta", "gamma"]);
+                export function policy(kind: Kind): string { return FLAGGED.has(kind) ? "fresh" : "durable"; }`,
+            ],
+        ],
         `import { FLAGGED, policy } from "./kinds.js";
         (() => { if (policy("delta") !== "durable" || !FLAGGED.has("alpha")) throw new Error("has"); })();
         (() => {
             let fresh = "";
             for (const kind of FLAGGED) if (policy(kind) === "fresh") fresh += kind[0];
-            if (fresh !== "ffbb") throw new Error("fresh " + fresh);
+            if (fresh !== "aebg") throw new Error("fresh " + fresh);
         })();`,
-        { fileName: join(directory, "entry.ts") },
     );
-    await executeGeneratedAssertions(t, "imported-constant-set", result.cpp);
+    await executeGeneratedAssertions(t, "imported-constant-set", cpp);
 });
 
 check(
@@ -4055,8 +4055,8 @@ check(
 check(
     "object-kept-from-a-record-or-an-array-by-identity",
     `
-    interface Nav { options(): readonly string[] }
-    let open: Nav | null = null;
+    interface Lister { options(): readonly string[] }
+    let open: Lister | null = null;
     let heldIn: object | null = null;
     let log = "";
     const flag = Math.random() >= 0;

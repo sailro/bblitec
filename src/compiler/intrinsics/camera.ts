@@ -9,6 +9,7 @@ import {
 } from "../option-helpers.js";
 import { presenceFlagCpp, type Value } from "../types.js";
 import type { IntrinsicCallContext } from "./context.js";
+import { CAMERA_LIMIT_PROPERTIES } from "../camera-setters.js";
 import { recordAt } from "../record-access.js";
 import { isNullable } from "../type-facts.js";
 
@@ -522,14 +523,7 @@ export function compileCameraIntrinsic(
                 );
             }
             const limits = context.expectObjectLiteral(argumentAt(call, 1));
-            const fields = [
-                "lowerAlphaLimit",
-                "upperAlphaLimit",
-                "lowerBetaLimit",
-                "upperBetaLimit",
-                "lowerRadiusLimit",
-                "upperRadiusLimit",
-            ] as const;
+            const fields = CAMERA_LIMIT_PROPERTIES;
             let presentMask = 0;
             const values = fields.map((field, index) => {
                 const value = context.objectProperty(limits, field);

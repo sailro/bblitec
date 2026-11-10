@@ -4,6 +4,7 @@ import {
     unwrapExpression,
     wrappedParent,
     objectLiteralMembers,
+    optionalChainReceivers,
 } from "./syntax.js";
 import { presenceFlagCpp, type Value } from "./values/model.js";
 
@@ -159,6 +160,22 @@ function absentFlags(member: ts.Type): number {
     );
 }
 
+/**
+ * The name a record type is declared under: its alias's, or its own
+ * symbol's. Undefined for the anonymous type of a type literal or of an
+ * object literal.
+ */
+export function declaredRecordName(type: ts.Type): string | undefined {
+    return (
+        type.aliasSymbol?.name ??
+        (type.symbol &&
+        type.symbol.name !== "__type" &&
+        type.symbol.name !== "__object"
+            ? type.symbol.name
+            : undefined)
+    );
+}
+
 /** A union's members, or the type itself. */
 export function unionMembers(type: ts.Type): readonly ts.Type[] {
     return type.isUnion() ? type.types : [type];
@@ -227,6 +244,22 @@ export function absentValueKind(
     return absent.undefined ? "undefined" : undefined;
 }
 
+/** Whether a `?.` link of an optional chain has a receiver that may be nullish. */
+function shortCircuits(
+    checker: ts.TypeChecker,
+    chain: ts.OptionalChain,
+): boolean {
+    return optionalChainReceivers(chain).some((linked) => {
+        const receiver = checker.getTypeAtLocation(linked);
+        const { null: isNull, undefined: isUndefined } = nullability(receiver);
+        return (
+            isNull ||
+            isUndefined ||
+            (receiver.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) !== 0
+        );
+    });
+}
+
 /**
  * The one rule for which absent value `value`, read at `node`, is when it
  * is absent -- for strict comparisons, text and `typeof` alike. The native
@@ -245,29 +278,6 @@ export function absentValueKind(
  *   "unconstrained" -- a comparison keeps its absence test, text spells
  *   what the optional holds, `typeof` answers "undefined".
  */
-/** Whether a `?.` link of an optional chain has a receiver that may be nullish. */
-function shortCircuits(
-    checker: ts.TypeChecker,
-    chain: ts.OptionalChain,
-): boolean {
-    for (
-        let link: ts.Expression = chain;
-        ts.isOptionalChain(link);
-        link = link.expression
-    ) {
-        if (ts.isNonNullChain(link) || !link.questionDotToken) continue;
-        const receiver = checker.getTypeAtLocation(link.expression);
-        const { null: isNull, undefined: isUndefined } = nullability(receiver);
-        if (
-            isNull ||
-            isUndefined ||
-            (receiver.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) !== 0
-        )
-            return true;
-    }
-    return false;
-}
-
 export function absenceKind(
     checker: ts.TypeChecker,
     value: Value,

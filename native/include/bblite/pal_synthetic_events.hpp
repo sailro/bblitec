@@ -110,6 +110,20 @@ require_event_options(js::JsonValue options, std::string_view event,
     return options;
 }
 
+/** The modifier keys an event's init dictionary gives. */
+inline void read_modifier_keys(PlatformModifierKeys& keys, const js::JsonValue& options) {
+    keys.shift_key = options.get("shiftKey").truthy();
+    keys.ctrl_key = options.get("ctrlKey").truthy();
+    keys.alt_key = options.get("altKey").truthy();
+    keys.meta_key = options.get("metaKey").truthy();
+}
+
+/** A string member of an event's init dictionary; one it does not give is the empty string. */
+[[nodiscard]] inline std::string init_text(const js::JsonValue& options, const char* name) {
+    const auto value = options.get(name);
+    return value.is_undefined() ? std::string{} : value.to_string();
+}
+
 [[nodiscard]] inline OwnedDomEvent synthetic_event_from_options(std::string type,
                                                                 OwnedDomEvent::Kind kind,
                                                                 const js::JsonValue& options) {
@@ -140,15 +154,11 @@ require_event_options(js::JsonValue options, std::string_view event,
         event.screen_y = number("screenY");
         event.movement_x = js::to_int32(number("movementX"));
         event.movement_y = js::to_int32(number("movementY"));
-        event.shift_key = options.get("shiftKey").truthy();
-        event.ctrl_key = options.get("ctrlKey").truthy();
-        event.alt_key = options.get("altKey").truthy();
-        event.meta_key = options.get("metaKey").truthy();
+        read_modifier_keys(event, options);
     }
     if (kind == OwnedDomEvent::Kind::Pointer) {
         event.pointer_id = js::to_int32(number("pointerId"));
-        const auto pointer_type = options.get("pointerType");
-        event.pointer_type = pointer_type.is_undefined() ? "" : pointer_type.to_string();
+        event.pointer_type = init_text(options, "pointerType");
         event.is_primary = options.get("isPrimary").truthy();
         const auto pressure = number("pressure");
         if (!std::isfinite(pressure) || !std::isfinite(static_cast<float>(pressure)))
@@ -159,8 +169,7 @@ require_event_options(js::JsonValue options, std::string_view event,
         const auto data = options.get("data");
         if (!data.is_null() && !data.is_undefined())
             event.input_data = data.to_string();
-        const auto input_type = options.get("inputType");
-        event.input_type = input_type.is_undefined() ? "" : input_type.to_string();
+        event.input_type = init_text(options, "inputType");
         event.is_composing = options.get("isComposing").truthy();
     }
     return OwnedDomEvent(std::move(event));
@@ -169,21 +178,14 @@ require_event_options(js::JsonValue options, std::string_view event,
 /** `new KeyboardEvent(type, init)`: the base event with the keys its init dictionary gives. */
 [[nodiscard]] inline OwnedDomEvent
 synthetic_keyboard_event_from_options(std::string type, const js::JsonValue& options) {
-    const auto text = [&](const char* name) {
-        const auto value = options.get(name);
-        return value.is_undefined() ? std::string{} : value.to_string();
-    };
     PlatformKeyboardEvent keyboard;
-    keyboard.key = text("key");
-    keyboard.code = text("code");
+    keyboard.key = init_text(options, "key");
+    keyboard.code = init_text(options, "code");
     const auto location = options.get("location");
     keyboard.location = location.is_undefined() ? 0u : js::to_uint32(location.to_number());
     keyboard.repeat = options.get("repeat").truthy();
     keyboard.is_composing = options.get("isComposing").truthy();
-    keyboard.shift_key = options.get("shiftKey").truthy();
-    keyboard.ctrl_key = options.get("ctrlKey").truthy();
-    keyboard.alt_key = options.get("altKey").truthy();
-    keyboard.meta_key = options.get("metaKey").truthy();
+    read_modifier_keys(keyboard, options);
     return synthetic_event_from_options(std::move(type), OwnedDomEvent::Kind::Event, options)
         .with_keyboard(std::move(keyboard));
 }

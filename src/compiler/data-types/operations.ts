@@ -58,6 +58,19 @@ export function passesByReferenceKind(type: DataType): boolean {
     return kinds[type.kind].byReference;
 }
 
+/** The index of a union's one member of `kind`; -1 where it has none or several. */
+export function soleMemberIndex(
+    type: DataType<"union">,
+    kind: DataType["kind"],
+): number {
+    const first = type.members.findIndex((member) => member.kind === kind);
+    return type.members.some(
+        (member, index) => index > first && member.kind === kind,
+    )
+        ? -1
+        : first;
+}
+
 /** A storage past its optional wrapper. */
 export function presentDataType(
     type: DataType | undefined,

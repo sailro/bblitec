@@ -3492,32 +3492,31 @@ test("defaults an absent nullable array element before nullish coalescing", () =
 });
 
 test("a record or an element kept as an object is selected by the record's presence", () => {
-    // `list ?? root` under `object | null`: two kinds of object, each
-    // stored as the document value the name keeps for its identity.
+    // `list ?? root` under `object | null`: a record and an element, each
+    // stored as the document value the name keeps for its identity (the
+    // identities themselves run in `language-constructs.test.ts`).
     const result = compileSource(`
         import { createEngine } from "@babylonjs/lite";
         const canvas = document.getElementById("renderCanvas") as HTMLCanvasElement;
         await createEngine(canvas);
-        interface Nav { options(): readonly HTMLElement[]; entry(): HTMLElement | null }
-        const panel = document.createElement("div");
-        const menu = document.createElement("ul");
-        panel.appendChild(menu);
-        document.body.appendChild(panel);
-        let openList: { menu: HTMLElement; navigation: Nav } | null = null;
-        function openNav(root: Node): Nav | null { return openList && root.contains(openList.menu) ? openList.navigation : null; }
-        let heldIn: object | null = null;
-        let log = "";
+        interface Lister { options(): readonly HTMLElement[]; entry(): HTMLElement | null }
+        const outer = document.createElement("div");
+        const inner = document.createElement("ul");
+        outer.appendChild(inner);
+        document.body.appendChild(outer);
+        let current: { inner: HTMLElement; lister: Lister } | null = null;
+        function listerIn(root: Node): Lister | null { return current && root.contains(current.inner) ? current.lister : null; }
+        let kept: object | null = null;
         function handle(root: HTMLElement | null): void {
-            const list = root ? openNav(root) : null;
+            const list = root ? listerIn(root) : null;
             const area: object | null = list ?? root;
-            if (!area) { heldIn = null; log += "none,"; return; }
-            log += heldIn !== area ? "changed," : "same,";
-            heldIn = area;
+            kept = area;
         }
-        handle(panel);
-        openList = { menu, navigation: { options: () => [menu], entry: () => null } };
-        handle(panel);
+        handle(outer);
+        current = { inner, lister: { options: () => [inner], entry: () => null } };
+        handle(outer);
         handle(null);
+        if (kept !== null) throw new Error("kept");
     `);
     assert.match(
         result.cpp,

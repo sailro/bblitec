@@ -1,9 +1,6 @@
 import { stringLiteral } from "../cpp-literals.js";
 import ts from "typescript";
-import {
-    cameraOptionalRecordField,
-    cameraRecordField,
-} from "../compiler/properties.js";
+import { cameraRecordRule } from "../compiler/properties.js";
 import {
     cameraScalarWrite,
     cameraVectorComponentWrite,
@@ -452,18 +449,17 @@ ${bulkBody}
         )) {
             const path = this.context.propertyPath(access);
             if (path?.length === 2 && path[0] === "camera") {
-                const field = cameraRecordField(path[1]!);
-                const limit = cameraOptionalRecordField(path[1]!);
+                const stored = cameraRecordRule(path[1]!);
                 const setter = scalarFields.find((name) => name === path[1]);
-                if (limit)
+                if (stored?.optional)
                     bindings.set(path.join("."), {
-                        cpp: `*camera.${limit}`,
+                        cpp: `*camera.${stored.field}`,
                         type: "scalar",
-                        absentCpp: `!camera.${limit}.has_value()`,
+                        absentCpp: `!camera.${stored.field}.has_value()`,
                     });
-                else if (field)
+                else if (stored)
                     bindings.set(path.join("."), {
-                        cpp: `camera.${field}`,
+                        cpp: `camera.${stored.field}`,
                         type: "scalar",
                         ...(setter
                             ? {

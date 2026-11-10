@@ -43,6 +43,7 @@ import {
     isMemberAccess,
     ANY_KEY,
     writeSites,
+    optionalChainReceivers,
 } from "./syntax.js";
 import { promiseExecutor } from "./promise-executor.js";
 import { isNativeBrowserFileExpression } from "./browser-file.js";
@@ -1324,19 +1325,13 @@ export class BrowserErasure {
 
     /** Whether a `?.` link of an optional chain has a receiver name bound to an absent value. */
     private stoppedByAbsentName(expression: ts.Expression): boolean {
-        for (
-            let link = expression;
-            ts.isOptionalChain(link);
-            link = link.expression
-        ) {
-            if (ts.isNonNullChain(link) || !link.questionDotToken) continue;
-            const receiver = this.context.unwrap(link.expression);
+        return optionalChainReceivers(expression).some((linked) => {
+            const receiver = this.context.unwrap(linked);
             const bound = ts.isIdentifier(receiver)
                 ? this.context.bindings.lookupOptional(receiver)
                 : undefined;
-            if (bound && isAbsentValue(bound)) return true;
-        }
-        return false;
+            return bound !== undefined && isAbsentValue(bound);
+        });
     }
 
     private browserValueOf(expression: ts.Expression): Value["browserValue"] {

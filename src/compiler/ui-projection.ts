@@ -5794,12 +5794,8 @@ export class UiProjection {
                       this.declaresUiTags(element, receiver, [tag]),
                   )?.[1]
                 : undefined;
-        const attribute =
-            types === undefined
-                ? this.uiIdlAttribute(element, property, receiver, site)
-                : undefined;
-        if (!attribute && !types) return undefined;
-        const target = `${this.context.requireEngine(element, site)}, ${element.cpp}`;
+        const engineTarget = (): string =>
+            `${this.context.requireEngine(element, site)}, ${element.cpp}`;
         const read = (
             cpp: string,
             kind: "boolean" | "number" | "string",
@@ -5814,10 +5810,17 @@ export class UiProjection {
             `{${names.map((name) => this.context.cppString(name)).join(", ")}}`;
         if (types)
             return read(
-                `bbl::ui_get_enumerated_attribute(${target}, "type", ${keywords(types)}, ${this.context.cppString(types[0]!)})`,
+                `bbl::ui_get_enumerated_attribute(${engineTarget()}, "type", ${keywords(types)}, ${this.context.cppString(types[0]!)})`,
                 "string",
             );
+        const attribute = this.uiIdlAttribute(
+            element,
+            property,
+            receiver,
+            site,
+        );
         if (!attribute) return undefined;
+        const target = engineTarget();
         switch (attribute.kind) {
             case "script-async":
                 return read(`bbl::ui_script_async(${target})`, "boolean");

@@ -572,31 +572,44 @@ function mapRegistry(
         : undefined;
 }
 
-/** Whether a Map's name is stored where the place it fills is declared a `ReadonlyMap`. */
+/**
+ * Whether a Map's name is given where the place it fills is declared a
+ * `ReadonlyMap`: a property's value (a shorthand's name too), an argument,
+ * a returned or assigned value.
+ */
 function handedAsReadonlyMap(
     checker: ts.TypeChecker,
     reference: ts.Identifier,
 ): boolean {
     const parent = reference.parent;
-    const contextual = ts.isShorthandPropertyAssignment(parent)
-        ? checker.getContextualType(parent.parent)
-        : undefined;
-    // An async function's returned literal is also contextually a promise.
-    const places = (contextual ? unionMembers(contextual) : []).flatMap(
-        (member) => member.getProperty(reference.text) ?? [],
+    // A shorthand's name has no contextual type of its own: the literal's
+    // property of that name declares its place. An async function's
+    // returned value is also contextually a promise of it.
+    const shorthand = ts.isShorthandPropertyAssignment(parent);
+    const contextual = checker.getContextualType(
+        shorthand ? parent.parent : reference,
     );
+    if (!contextual) return false;
+    const declared = shorthand
+        ? unionMembers(contextual).flatMap((member) => {
+              const place = member.getProperty(reference.text);
+              return place
+                  ? [checker.getTypeOfSymbolAtLocation(place, reference)]
+                  : [];
+          })
+        : unionMembers(contextual).filter(
+              (member) =>
+                  !["Promise", "PromiseLike"].includes(
+                      libraryName(member) ?? "",
+                  ),
+          );
     return (
-        places.length > 0 &&
-        places.every((place) => {
-            const declared = checker.getTypeOfSymbolAtLocation(
-                place,
-                reference,
-            );
-            return (
-                declaredInDefaultLibrary(declared.symbol) &&
-                libraryName(declared) === "ReadonlyMap"
-            );
-        })
+        declared.length > 0 &&
+        declared.every(
+            (place) =>
+                declaredInDefaultLibrary(place.symbol) &&
+                libraryName(place) === "ReadonlyMap",
+        )
     );
 }
 

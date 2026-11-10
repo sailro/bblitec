@@ -6,7 +6,8 @@ import {
 } from "./data-types.js";
 import { declaredSymbol, libraryGlobal, resolvedSymbol } from "./symbols.js";
 import { unwrapExpression, variableKind } from "./syntax.js";
-import { isSyntheticEventClass } from "./synthetic-event-classes.js";
+import { constructsSyntheticEvent } from "./synthetic-event-classes.js";
+import { returnsOnly } from "./fresh-records.js";
 
 /** An escaped Promise reject callback accepts the runtime's represented Error reason. */
 export function inferPromiseRejectStorage(
@@ -100,10 +101,7 @@ export function assignsOnlyConstructedEvents(
             declaredSymbol(checker, node.left) === symbol
         ) {
             writes++;
-            const right = node.right;
-            constructed =
-                ts.isNewExpression(right) &&
-                isSyntheticEventClass(libraryGlobal(right.expression));
+            constructed = constructsSyntheticEvent(node.right, libraryGlobal);
         }
         ts.forEachChild(node, visit);
     };
@@ -128,38 +126,26 @@ export function returnsOnlyConstructedEvents(
     checker: ts.TypeChecker,
     libraryGlobal: (expression: ts.Expression) => string | undefined,
 ): boolean {
-    const body = ts.isFunctionLike(declaration)
-        ? (declaration as ts.FunctionLikeDeclaration).body
-        : undefined;
-    if (!body) return false;
-    const constructs = (value: ts.Expression): boolean =>
-        ts.isNewExpression(value) &&
-        isSyntheticEventClass(libraryGlobal(value.expression));
-    const owned = (returned: ts.Expression): boolean => {
-        const value = unwrapExpression(returned);
-        if (constructs(value)) return true;
-        const held = ts.isIdentifier(value)
-            ? declaredSymbol(checker, value)?.valueDeclaration
-            : undefined;
-        if (!held || !ts.isVariableDeclaration(held)) return false;
-        return held.initializer
-            ? variableKind(held) === "const" &&
-                  constructs(unwrapExpression(held.initializer))
-            : assignsOnlyConstructedEvents(held, checker, libraryGlobal);
-    };
-    if (!ts.isBlock(body)) return owned(body);
-    let returns = 0;
-    let all = true;
-    const visit = (node: ts.Node): void => {
-        if (!all || (node !== body && ts.isFunctionLike(node))) return;
-        if (ts.isReturnStatement(node)) {
-            returns++;
-            all = node.expression !== undefined && owned(node.expression);
-        }
-        ts.forEachChild(node, visit);
-    };
-    visit(body);
-    return all && returns > 0;
+    // A signature without a body returns nothing it constructed.
+    return returnsOnly(
+        declaration as ts.FunctionLikeDeclaration,
+        new Set(),
+        (returned) => {
+            const value = unwrapExpression(returned);
+            if (constructsSyntheticEvent(value, libraryGlobal)) return true;
+            const held = ts.isIdentifier(value)
+                ? declaredSymbol(checker, value)?.valueDeclaration
+                : undefined;
+            if (!held || !ts.isVariableDeclaration(held)) return false;
+            return held.initializer
+                ? variableKind(held) === "const" &&
+                      constructsSyntheticEvent(
+                          unwrapExpression(held.initializer),
+                          libraryGlobal,
+                      )
+                : assignsOnlyConstructedEvents(held, checker, libraryGlobal);
+        },
+    );
 }
 
 export function inferUninitializedStorage(

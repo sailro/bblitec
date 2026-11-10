@@ -11,11 +11,12 @@ import {
 import type { DataType, DataTypeRegistry } from "./data-types.js";
 import { declaredSymbol, resolvedSymbol } from "./symbols.js";
 import {
-    isProtoSetter,
+    notJson,
     outermostWrapper,
     unwrapExpression,
     variableKind,
 } from "./syntax.js";
+import { staticJsonValue } from "./option-helpers.js";
 import { onlyReadsFields } from "./constructed-fields.js";
 import {
     nullability,
@@ -235,42 +236,13 @@ export function demandedStorageType(
         // A literal of plain JSON values no layout stores (an empty array
         // in it holds no element type, its arrays mix shapes) is the
         // document it spells.
-        (initializer && spellsJson(initializer)
+        (initializer &&
+        staticJsonValue(
+            { resolveStaticExpression: (spelled) => unwrapExpression(spelled) },
+            initializer,
+        ) !== notJson
             ? { kind: "json" as const }
             : undefined)
-    );
-}
-
-/**
- * Whether an expression spells a JSON value: object and array literals of
- * such values under plain keys, strings, numbers, booleans and `null`.
- */
-function spellsJson(expression: ts.Expression): boolean {
-    const node = unwrapExpression(expression);
-    if (ts.isObjectLiteralExpression(node))
-        return node.properties.every(
-            (property) =>
-                ts.isPropertyAssignment(property) &&
-                !ts.isComputedPropertyName(property.name) &&
-                !isProtoSetter(property) &&
-                spellsJson(property.initializer),
-        );
-    if (ts.isArrayLiteralExpression(node))
-        return node.elements.every(
-            (element) =>
-                !ts.isSpreadElement(element) &&
-                !ts.isOmittedExpression(element) &&
-                spellsJson(element),
-        );
-    return (
-        ts.isStringLiteralLike(node) ||
-        ts.isNumericLiteral(node) ||
-        node.kind === ts.SyntaxKind.TrueKeyword ||
-        node.kind === ts.SyntaxKind.FalseKeyword ||
-        node.kind === ts.SyntaxKind.NullKeyword ||
-        (ts.isPrefixUnaryExpression(node) &&
-            node.operator === ts.SyntaxKind.MinusToken &&
-            ts.isNumericLiteral(node.operand))
     );
 }
 

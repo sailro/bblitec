@@ -6,6 +6,7 @@ import {
     isNativeStructuralView,
     isUndefinedDataType,
     presentDataType,
+    tupleComponents,
     type DataType,
 } from "../data-types.js";
 import {
@@ -811,7 +812,7 @@ function valueProduct(
         dataType.elements.every((element) => element.kind === "number")
     ) {
         lowerer.context.reachJsData();
-        return `([&]() { const auto lanes = ${value.cpp}; return ${lowerer.context.dataTypes.cppType(dataType)}{${dataType.elements.map((_element, index) => `lanes[${index}]`).join(", ")}}; }())`;
+        return `([&]() { const auto lanes = ${value.cpp}; return ${lowerer.context.dataTypes.cppType(dataType)}{${tupleComponents("lanes", dataType.elements.length, "double").join(", ")}}; }())`;
     }
     return value.dataType && dataTypesEqual(value.dataType, dataType)
         ? value.cpp

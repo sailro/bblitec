@@ -40,6 +40,7 @@ import {
     recordTraceConditions,
     type DataTypeCppContext,
     erasedFieldWidens,
+    presentDataType,
 } from "./data-types/operations.js";
 export type { DataType, TypedArrayKind } from "./data-types/model.js";
 export {
@@ -64,6 +65,7 @@ export {
     dataTypesEqual,
     passesByReferenceKind,
     presentDataType,
+    soleMemberIndex,
     isOpaqueReference,
     isNativeStructuralView,
     isScalarDataType,
@@ -101,7 +103,7 @@ import {
 import {
     instantiatedRecord,
     isPlainRecord,
-    isRecordUnion,
+    isRecordLike,
     layoutsCompatible,
     recordIdentity,
     type InstantiatedRecord,
@@ -155,6 +157,8 @@ import {
     boundedTupleElements,
     tupleElements,
     fixedTupleElements,
+    signatureParameterTypes,
+    declaredRecordName,
 } from "./type-facts.js";
 import { nativeReturnTsType } from "./native-return-type.js";
 import {
@@ -3975,8 +3979,7 @@ export class DataTypeRegistry {
      */
     private plainUnderSubstitution(record: ts.Type): boolean {
         return (
-            isPlainRecord(this.checker, record) ||
-            isRecordUnion(this.checker, record) ||
+            isRecordLike(this.checker, record) ||
             (record.isIntersection() &&
                 record.types.every((part) =>
                     isPlainRecord(
@@ -4001,8 +4004,7 @@ export class DataTypeRegistry {
                 !this.withRecordDemand(demand, () =>
                     this.mentionsSubstitution(record),
                 )) &&
-            (isPlainRecord(this.checker, record) ||
-                isRecordUnion(this.checker, record))
+            isRecordLike(this.checker, record)
         );
     }
 
@@ -4400,20 +4402,8 @@ export class DataTypeRegistry {
      * them all.
      */
     public unrepresentedPart(type: ts.Type, node: ts.Node): string {
-        // A part whose own mapping refuses, or demands storage, says
-        // nothing of its parts.
-        const represented = (part: ts.Type): boolean | undefined => {
-            try {
-                return this.fromTsType(part, node) !== undefined;
-            } catch (error) {
-                if (
-                    error instanceof CompileError ||
-                    error instanceof StorageDemand
-                )
-                    return undefined;
-                throw error;
-            }
-        };
+        const represented = (part: ts.Type): boolean | undefined =>
+            this.represented(part, node);
         const path = [`'${this.checker.typeToString(type)}'`];
         let current = type;
         for (;;) {
@@ -4477,6 +4467,20 @@ export class DataTypeRegistry {
     }
 
     /**
+     * Whether `part` has a native data type; undefined where its own
+     * mapping refuses or demands storage, which says nothing of its parts.
+     */
+    private represented(part: ts.Type, node: ts.Node): boolean | undefined {
+        try {
+            return this.fromTsType(part, node) !== undefined;
+        } catch (error) {
+            if (error instanceof CompileError || error instanceof StorageDemand)
+                return undefined;
+            throw error;
+        }
+    }
+
+    /**
      * Why a function type has no native signature, for a refusal: its
      * first parameter or its result with no data type, explained as
      * `unrepresentedPart` explains it. Nothing where every part has one.
@@ -4488,26 +4492,15 @@ export class DataTypeRegistry {
         const signature = callSignatures(this.checker, type, "present")[0];
         if (!signature) return undefined;
         const parts = [
-            ...signature.parameters.map((parameter) =>
-                this.checker.getTypeOfSymbolAtLocation(parameter, node),
-            ),
+            ...signatureParameterTypes(this.checker, signature, node),
             this.checker.getReturnTypeOfSignature(signature),
         ];
-        for (const part of parts) {
-            if ((part.flags & ts.TypeFlags.VoidLike) !== 0) continue;
-            let mapped: DataType | undefined;
-            try {
-                mapped = this.fromTsType(part, node);
-            } catch (error) {
-                if (
-                    !(error instanceof CompileError) &&
-                    !(error instanceof StorageDemand)
-                )
-                    throw error;
-            }
-            if (!mapped) return this.unrepresentedPart(part, node);
-        }
-        return undefined;
+        const lacking = parts.find(
+            (part) =>
+                (part.flags & ts.TypeFlags.VoidLike) === 0 &&
+                this.represented(part, node) !== true,
+        );
+        return lacking && this.unrepresentedPart(lacking, node);
     }
 
     /** A checked recursive boundary may retain a dynamic parsed value. Call sinks
@@ -4562,13 +4555,11 @@ export class DataTypeRegistry {
         type: ts.Type,
         node: ts.Node,
     ): DataType | undefined {
-        const records = (candidate: ts.Type): boolean => {
-            const record = this.checker.getNonNullableType(candidate);
-            return (
-                isPlainRecord(this.checker, record) ||
-                isRecordUnion(this.checker, record)
+        const records = (candidate: ts.Type): boolean =>
+            isRecordLike(
+                this.checker,
+                this.checker.getNonNullableType(candidate),
             );
-        };
         const present = this.checker.getNonNullableType(type);
         const element = this.checker.isArrayType(present)
             ? arrayElementType(this.checker, present)
@@ -6375,16 +6366,8 @@ export class DataTypeRegistry {
     ): DataType<"vector"> | undefined {
         let shared: DataType | undefined;
         for (const type of types) {
-            if (
-                !this.checker.isTupleType(type) &&
-                !this.checker.isArrayType(type)
-            )
-                return undefined;
-            const indexed = this.checker.getIndexTypeOfType(
-                type,
-                ts.IndexKind.Number,
-            );
-            const element = indexed && this.fromStoredTsType(indexed, node);
+            const held = arrayShape(this.checker, type)?.element;
+            const element = held && this.fromStoredTsType(held, node);
             if (!element || (shared && !dataTypesEqual(shared, element)))
                 return undefined;
             shared = element;
@@ -6945,22 +6928,9 @@ export class DataTypeRegistry {
             const literalStrings = propertyTypes.flatMap((propertyType) =>
                 unionMembers(propertyType),
             );
-            if (
-                literalStrings.every(
-                    (propertyType) =>
-                        (propertyType.flags & ts.TypeFlags.StringLiteral) !== 0,
-                )
-            ) {
-                // Arms told apart by their fields may share tag literals.
-                mapped = this.registerEnum(type, [
-                    ...new Set(
-                        literalStrings.map(
-                            (propertyType) =>
-                                (propertyType as ts.StringLiteralType).value,
-                        ),
-                    ),
-                ]);
-            } else {
+            // Arms told apart by their fields may share tag literals.
+            mapped = this.literalEnum(type, literalStrings);
+            if (!mapped) {
                 const candidates = propertyTypes.map((propertyType, index) =>
                     this.fromRecordFieldType(
                         propertyType,
@@ -6990,11 +6960,10 @@ export class DataTypeRegistry {
                           )
                         : undefined;
                     // A field only some arms declare has no checker-wide
-                    // property union. Arms storing it one way, some with an
-                    // empty state (required in one arm, `?` in another),
-                    // store it with that state.
+                    // property union.
                     const nullable = candidates.find(
-                        (candidate) => candidate?.kind === "optional",
+                        (candidate): candidate is DataType<"optional"> =>
+                            candidate?.kind === "optional",
                     );
                     // Tuples of several lengths are one array, as their
                     // union is where every arm declares the field.
@@ -7007,20 +6976,20 @@ export class DataTypeRegistry {
                               node,
                           );
                     if (array)
-                        mapped =
-                            nullable?.kind === "optional"
-                                ? { ...nullable, inner: array }
-                                : array;
+                        mapped = nullable
+                            ? { ...nullable, inner: array }
+                            : array;
+                    // Arms storing it one way, some with an empty state
+                    // (required in one arm, `?` in another), store it with
+                    // that state.
                     if (
                         !mapped &&
-                        nullable?.kind === "optional" &&
+                        nullable &&
                         candidates.every(
                             (candidate) =>
                                 candidate &&
                                 dataTypesEqual(
-                                    candidate.kind === "optional"
-                                        ? candidate.inner
-                                        : candidate,
+                                    presentDataType(candidate)!,
                                     nullable.inner,
                                 ),
                         )
@@ -7034,30 +7003,12 @@ export class DataTypeRegistry {
                         (propertyType) =>
                             (propertyType.flags & ts.TypeFlags.Undefined) === 0,
                     );
-                    if (
-                        !mapped &&
-                        nullable?.kind === "optional" &&
-                        present.length > 0 &&
-                        present.every(
-                            (propertyType) =>
-                                (propertyType.flags &
-                                    ts.TypeFlags.StringLiteral) !==
-                                0,
-                        )
-                    )
-                        mapped = {
-                            ...nullable,
-                            inner: this.registerEnum(type, [
-                                ...new Set(
-                                    present.map(
-                                        (propertyType) =>
-                                            (
-                                                propertyType as ts.StringLiteralType
-                                            ).value,
-                                    ),
-                                ),
-                            ]),
-                        };
+                    const literals =
+                        !mapped && nullable && present.length > 0
+                            ? this.literalEnum(type, present)
+                            : undefined;
+                    if (nullable && literals)
+                        mapped = { ...nullable, inner: literals };
                     // Its plain-record payloads can still share one layout,
                     // preserving each payload's identity.
                     if (
@@ -7365,22 +7316,15 @@ export class DataTypeRegistry {
                 key: { kind: "string" },
                 value: { kind: dictionary },
             };
-        const declaredName = (named: ts.Type): string | undefined =>
-            named.aliasSymbol?.name ??
-            (named.symbol &&
-            named.symbol.name !== "__type" &&
-            named.symbol.name !== "__object"
-                ? named.symbol.name
-                : undefined);
         // A record component's struct takes its widest member's name, and
         // stores the functions any named member declares.
         const component = this.recordComponentOf(type);
-        const preferredName = declaredName(component?.named ?? type);
+        const preferredName = declaredRecordName(component?.named ?? type);
         const storesFunctions =
             preferredName !== undefined ||
             this.classDemanded ||
             component?.members.some(
-                (member) => declaredName(member) !== undefined,
+                (member) => declaredRecordName(member) !== undefined,
             ) === true;
         return (
             this.mapRecursiveStruct(type, preferredName, (name) =>
@@ -9499,6 +9443,24 @@ export class DataTypeRegistry {
     public enumMembers(name: string): string[] {
         const definition = this.enumsByName.get(name);
         return definition ? [...definition.members] : [];
+    }
+
+    /** The enum of the string literals `members` are; undefined where one is not a string literal. */
+    private literalEnum(
+        type: ts.UnionType,
+        members: readonly ts.Type[],
+    ): DataType | undefined {
+        return members.every(
+            (member) => (member.flags & ts.TypeFlags.StringLiteral) !== 0,
+        )
+            ? this.registerEnum(type, [
+                  ...new Set(
+                      members.map(
+                          (member) => (member as ts.StringLiteralType).value,
+                      ),
+                  ),
+              ])
+            : undefined;
     }
 
     private registerEnum(type: ts.UnionType, literals: string[]): DataType {

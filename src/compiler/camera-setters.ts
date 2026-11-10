@@ -1,4 +1,17 @@
 /**
+ * The ArcRotate limits `setCameraLimits` writes, in the order of the bits
+ * of its native present mask.
+ */
+export const CAMERA_LIMIT_PROPERTIES = [
+    "lowerAlphaLimit",
+    "upperAlphaLimit",
+    "lowerBetaLimit",
+    "upperBetaLimit",
+    "lowerRadiusLimit",
+    "upperRadiusLimit",
+] as const;
+
+/**
  * A call to the generated camera scalar setter, which versions the camera
  * on a changed value. `qualified` spells it from outside namespace `bbl`.
  */

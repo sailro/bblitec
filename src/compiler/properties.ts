@@ -38,7 +38,8 @@ import {
     isEffectTaskMethodName,
     reachEffectTaskMethod,
 } from "./effect-task-methods.js";
-import { doubleLiteral } from "../cpp-literals.js";
+import { doubleLiteral, snakeCase } from "../cpp-literals.js";
+import { CAMERA_LIMIT_PROPERTIES } from "./camera-setters.js";
 import {
     compositeScalarAccessors,
     compositeScalarFunction,
@@ -1009,16 +1010,7 @@ export const propertyRules: readonly PropertyRule[] = [
         record: ["cameras", "wheel_precision"],
     },
     // The limits `setCameraLimits` writes: absent until one is set.
-    ...(
-        [
-            ["lowerAlphaLimit", "lower_alpha_limit"],
-            ["upperAlphaLimit", "upper_alpha_limit"],
-            ["lowerBetaLimit", "lower_beta_limit"],
-            ["upperBetaLimit", "upper_beta_limit"],
-            ["lowerRadiusLimit", "lower_radius_limit"],
-            ["upperRadiusLimit", "upper_radius_limit"],
-        ] as const
-    ).map(([property, field]): PropertyRule => ({
+    ...CAMERA_LIMIT_PROPERTIES.map((property): PropertyRule => ({
         owner: "camera",
         property,
         value: "data",
@@ -1027,7 +1019,7 @@ export const propertyRules: readonly PropertyRule[] = [
             inner: { kind: "number" },
             undefinedOnly: true,
         },
-        record: ["cameras", field],
+        record: ["cameras", snakeCase(property)],
         nativeOptionalScalar: "double",
     })),
     {
@@ -1881,30 +1873,41 @@ export const propertyRules: readonly PropertyRule[] = [
  * other. Reads and writes now agree by construction.
  */
 export function cameraRecordField(property: string): string | undefined {
-    return cameraRecordRule(property, false);
+    const stored = cameraRecordRule(property);
+    return stored && !stored.optional ? stored.field : undefined;
 }
 
-/** The record field of a camera property absent until written (`std::optional`): a limit. */
-export function cameraOptionalRecordField(
-    property: string,
-): string | undefined {
-    return cameraRecordRule(property, true);
+/** A camera property's native record field. */
+export interface CameraRecordField {
+    readonly field: string;
+    /** Absent until written (`std::optional`): a limit. */
+    readonly optional: boolean;
 }
 
-function cameraRecordRule(
+const CAMERA_RECORD_FIELDS: ReadonlyMap<string, CameraRecordField> = (() => {
+    const fields = new Map<string, CameraRecordField>();
+    for (const rule of propertyRules) {
+        const field = "record" in rule ? rule.record?.[1] : undefined;
+        if (
+            rule.owner !== "camera" ||
+            field === undefined ||
+            rule.property === "worldMatrixVersion"
+        )
+            continue;
+        const optional =
+            "nativeOptionalScalar" in rule &&
+            rule.nativeOptionalScalar !== undefined;
+        if (!fields.has(rule.property))
+            fields.set(rule.property, { field, optional });
+    }
+    return fields;
+})();
+
+/** The native record field a camera property stores into, with whether it may be absent. */
+export function cameraRecordRule(
     property: string,
-    optional: boolean,
-): string | undefined {
-    if (property === "worldMatrixVersion") return undefined;
-    const rule = propertyRules.find(
-        (candidate) =>
-            candidate.owner === "camera" &&
-            candidate.property === property &&
-            "record" in candidate &&
-            ("nativeOptionalScalar" in candidate &&
-                candidate.nativeOptionalScalar !== undefined) === optional,
-    );
-    return rule && "record" in rule ? rule.record?.[1] : undefined;
+): CameraRecordField | undefined {
+    return CAMERA_RECORD_FIELDS.get(property);
 }
 
 /** A primitive stored on the handle value itself has no resource setter. */
@@ -2514,11 +2517,9 @@ export class PropertyAccessLowerer {
             symbol &&
             !owner.classDeclaration &&
             AbsentRecordProperties.omittable(property) &&
-            unionMembers(
-                this.context.checker.getNonNullableType(
-                    this.context.checker.getTypeOfSymbol(symbol),
-                ),
-            ).some((arm) => !arm.getProperty(property))
+            presentMembers(this.context.checker.getTypeOfSymbol(symbol)).some(
+                (arm) => !arm.getProperty(property),
+            )
         )
             return true;
         const declared = this.context.dataLowerer.dataTypeAt(read);

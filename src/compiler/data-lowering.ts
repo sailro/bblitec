@@ -219,6 +219,7 @@ import {
     type TypedArrayKind,
     callMember,
     isUiElementHandleType,
+    soleMemberIndex,
 } from "./data-types.js";
 import {
     commonResourceValue,
@@ -4548,10 +4549,8 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         // A narrowing to a function (`typeof value === "function"`) leaves
         // the union's one function member, whichever signature spells it.
         if (narrowed?.kind === "function") {
-            const functions = type.members.flatMap((member, index) =>
-                member.kind === "function" ? [index] : [],
-            );
-            if (functions.length === 1) return functions[0]!;
+            const sole = soleMemberIndex(type, "function");
+            if (sole >= 0) return sole;
         }
         // A record held under another record type of the same storage (a
         // method's fresh literal read through its interface's `readonly`
@@ -21479,20 +21478,14 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         // A parsed array spreads into a new array, each element stored as
         // its element sink stores a parsed value; parsed records stay
         // documents.
-        if (isJsonValue(iterable)) {
-            this.requireDocumentRecord(dataType.element);
+        if (isJsonValue(iterable))
             return {
                 ...this.leafValue(
-                    this.documentElementsCopy(
-                        iterable,
-                        dataType.element,
-                        spread,
-                    ),
+                    this.compileKnownValueForSink(iterable, dataType, spread),
                     dataType,
                 ),
                 freshSpread: true,
             };
-        }
         const iterated = this.iteratedElements(iterable);
         if (iterated && "lanes" in iterated) {
             return {

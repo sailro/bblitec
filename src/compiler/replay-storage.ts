@@ -202,46 +202,37 @@ export class ReplayStorage {
      * withdrawing every demand added since.
      */
     public snapshot(): () => void {
-        const map = <K, V>(held: Map<K, V>): (() => void) => {
-            const entries = [...held];
-            return () => {
-                held.clear();
-                for (const [key, value] of entries) held.set(key, value);
-            };
-        };
-        const set = <T>(held: Set<T>): (() => void) => {
-            const values = [...held];
-            return () => {
-                held.clear();
-                for (const value of values) held.add(value);
-            };
-        };
-        const numeric = [...this.numericSlots].map(
-            ([declaration, kinds]) => [declaration, [...kinds]] as const,
-        );
-        const restores = [
-            map(this.dynamicBindings),
-            map(this.records),
-            map(this.refusedRecords),
-            this.genericFunctions.snapshot(),
-            set(this.absenceTags),
-            set(this.classFieldPresence),
-            set(this.engineOwners),
-            map(this.assertedHandleFields),
-            map(this.completions),
-            set(this.unprovenCompletions),
-            set(this.parameterObjects),
-            set(this.tupleArraySlots),
-            () => {
-                this.numericSlots.clear();
-                for (const [declaration, kinds] of numeric)
-                    this.numericSlots.set(declaration, new Set(kinds));
-            },
-            set(this.stringElementUnions),
-            set(this.orderedRecordSchemas),
-            set(this.thrownValueKinds),
-            set(this.sharedClasses),
-        ];
+        // Every container the storage holds is one of demands: none is
+        // listed, so a new one is covered. A Set held as a Map's value is
+        // copied with it.
+        const copied = (value: unknown): unknown =>
+            value instanceof Set ? new Set(value) : value;
+        const restores = Object.values(this).flatMap((held: unknown) => {
+            if (held instanceof GenericFunctionStorage)
+                return [held.snapshot()];
+            if (held instanceof Map) {
+                const entries = [...held].map(
+                    ([key, value]) => [key, copied(value)] as const,
+                );
+                return [
+                    () => {
+                        held.clear();
+                        for (const [key, value] of entries)
+                            held.set(key, copied(value));
+                    },
+                ];
+            }
+            if (held instanceof Set) {
+                const values = [...held];
+                return [
+                    () => {
+                        held.clear();
+                        for (const value of values) held.add(value);
+                    },
+                ];
+            }
+            return [];
+        });
         return () => {
             for (const restore of restores) restore();
         };

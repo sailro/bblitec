@@ -20,7 +20,6 @@ import {
     surveySource,
     compileSource,
 } from "./compiler.js";
-import { publishedSurvey, type SurveyReport } from "./compiler/survey.js";
 import {
     composeBillboardPickingShader,
     composeCloudPickingShader,
@@ -704,27 +703,16 @@ function writeSurvey(
     compileOptions: CompileOptions,
     leaveCoverage: () => void,
 ): void {
-    // A survey of a large entry runs for hours: it says where it is.
-    // A survey stopped early is still read: each restart leaves the census
-    // of the attempt that went furthest, which a restart nearer the start
-    // of the program does not replace, beside what the last plan met.
-    let furthest: SurveyReport | undefined;
-    const { report: last } = surveySource(source, compileOptions, {
+    // A survey of a large entry runs for hours: it says where it is, and
+    // leaves the census it keeps at each restart.
+    const { report } = surveySource(source, compileOptions, {
         report: (line) => console.error(line),
         intervalMs: 5 * 60 * 1000,
         partial: (found) => {
-            if (
-                !furthest ||
-                found.statements.attempted >= furthest.statements.attempted
-            )
-                furthest = found;
-            else if (found.plan) furthest = { ...furthest, plan: found.plan };
-            else return;
-            writeJsonRecord(censusPath, furthest);
+            writeJsonRecord(censusPath, found);
             leaveCoverage();
         },
     });
-    const report = publishedSurvey(last, furthest);
     writeJsonRecord(censusPath, report);
     console.log(
         `Survey: ${report.statements.attempted} statement lowerings, ${report.statements.refused} refused ` +

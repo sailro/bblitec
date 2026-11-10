@@ -1,14 +1,12 @@
 import assert from "node:assert/strict";
-import { mkdirSync, writeFileSync } from "node:fs";
-import { join, resolve } from "node:path";
 import test from "node:test";
-import { runInNewContext } from "node:vm";
 import ts from "typescript";
 import { compileSource } from "../src/compiler.js";
 import {
     optionalNativeFixtureTools,
     runGeneratedProgram,
 } from "./native-fixture.js";
+import { runTranspiled } from "./self-checking-program.js";
 
 const preamble = `
     import { createEngine } from "@babylonjs/lite";
@@ -121,6 +119,14 @@ int main() {
     );
 });
 
+/** The name a key event's listener keeps its key under, read off the event as a KeyboardEvent. */
+const keyIdentity = `
+    const idOf = (event: Event): string => {
+        const { code, key } = event as KeyboardEvent;
+        return code || key || "";
+    };
+`;
+
 test("a listener shared by keyboard and pointer events settles its event's type by its family", (t) => {
     // One function listens to both families. Its pointer lowering never
     // sees a key event, so the keyboard members it reads under a `keydown`
@@ -128,27 +134,24 @@ test("a listener shared by keyboard and pointer events settles its event's type 
     // them, the key's location included.
     const result = compileSource(`
         ${preamble}
-        const BLOCKED = ["pointerdown", "wheel", "keydown", "keyup"] as const;
-        interface HeldKey { key: string; code: string; location: number }
-        const heldKeyId = (event: Event): string => {
-            const { code, key } = event as KeyboardEvent;
-            return code || key || "";
-        };
-        const heldKeys = new Map<string, HeldKey>();
-        let pointers = 0;
-        const intercept = (event: Event): void => {
-            if (event.type === "keyup") heldKeys.delete(heldKeyId(event));
-            if (event.type === "keydown" && heldKeyId(event)) {
+        const TYPES = ["pointerdown", "wheel", "keydown", "keyup"] as const;
+        interface Pressed { key: string; code: string; location: number }
+        ${keyIdentity}
+        const pressed = new Map<string, Pressed>();
+        let others = 0;
+        const listen = (event: Event): void => {
+            if (event.type === "keyup") pressed.delete(idOf(event));
+            if (event.type === "keydown" && idOf(event)) {
                 const { key, code, location } = event as KeyboardEvent;
-                heldKeys.set(heldKeyId(event), { key: key ?? "", code: code ?? "", location: location ?? 0 });
-                const held = heldKeys.get("ShiftLeft");
-                if (!held || held.key !== "Shift" || held.location !== 1) throw new Error("held key");
+                pressed.set(idOf(event), { key: key ?? "", code: code ?? "", location: location ?? 0 });
+                const entry = pressed.get("ShiftLeft");
+                if (!entry || entry.key !== "Shift" || entry.location !== 1) throw new Error("pressed key");
             }
-            if (event.type !== "keydown" && event.type !== "keyup") pointers++;
+            if (event.type !== "keydown" && event.type !== "keyup") others++;
             const expected = event.type === "keydown" ? 1 : event.type === "keyup" ? 0 : 1;
-            if (heldKeys.size === expected && pointers === (event.type === "keydown" ? 0 : 1)) event.preventDefault();
+            if (pressed.size === expected && others === (event.type === "keydown" ? 0 : 1)) event.preventDefault();
         };
-        for (const type of BLOCKED) window.addEventListener(type, intercept, { capture: true });
+        for (const type of TYPES) window.addEventListener(type, listen, { capture: true });
     `);
     const tools = optionalNativeFixtureTools(false);
     if (!tools) {
@@ -206,74 +209,72 @@ int main() {
 });
 
 test("a constructed KeyboardEvent reaches the key listeners as the event its maker owns", (t) => {
-    // An interlock releases the keys it saw go down with keyup events it
-    // constructs in a helper, marks in a WeakSet and dispatches where each
-    // key was pressed; the listeners tell them from a player's by identity.
+    // A gate lets go of the keys it saw go down with keyup events it
+    // constructs in a helper, keeps in a WeakSet and dispatches where each
+    // key was pressed; the listeners tell them from a pressed key's by
+    // identity.
     const result = compileSource(`
         ${preamble}
-        const BLOCKED = ["pointerdown", "keydown", "keyup"] as const;
-        interface HeldKey { target: EventTarget; key: string; code: string; location: number }
-        const heldKeyId = (event: Event): string => {
-            const { code, key } = event as KeyboardEvent;
-            return code || key || "";
-        };
-        const settlingReleases = new WeakSet<Event>();
-        function isSettlingRelease(event: Event): boolean { return settlingReleases.has(event); }
-        function keyupFor(held: HeldKey): Event {
-            const init = { key: held.key, code: held.code, location: held.location, bubbles: true, cancelable: true };
+        const TYPES = ["pointerdown", "keydown", "keyup"] as const;
+        interface Pressed { target: EventTarget; key: string; code: string; location: number }
+        ${keyIdentity}
+        const made = new WeakSet<Event>();
+        function isMade(event: Event): boolean { return made.has(event); }
+        function releaseOf(entry: Pressed): Event {
+            const init = { key: entry.key, code: entry.code, location: entry.location, bubbles: true, cancelable: true };
             let event: Event;
             if (typeof KeyboardEvent !== "undefined") {
                 event = new KeyboardEvent("keyup", init);
             } else {
                 event = new Event("keyup", init);
-                Object.defineProperties(event, { key: { value: held.key }, code: { value: held.code }, location: { value: held.location } });
+                Object.defineProperties(event, { key: { value: entry.key }, code: { value: entry.code }, location: { value: entry.location } });
             }
-            settlingReleases.add(event);
+            made.add(event);
             return event;
         }
-        let released = "";
-        function createInterlock(target: EventTarget): { setBlocked(next: boolean): void; held(): number } {
-            let blocked = false;
-            const heldKeys = new Map<string, HeldKey>();
-            const intercept = (event: Event): void => {
-                if (event.type === "keyup") heldKeys.delete(heldKeyId(event));
-                if (settlingReleases.has(event)) return;
-                if (!blocked) {
-                    if (event.type === "keydown" && heldKeyId(event)) {
+        let seen = "";
+        function createGate(target: EventTarget): { setClosed(next: boolean): void; count(): number } {
+            let closed = false;
+            const pressed = new Map<string, Pressed>();
+            const listen = (event: Event): void => {
+                if (event.type === "keyup") pressed.delete(idOf(event));
+                if (made.has(event)) return;
+                if (!closed) {
+                    if (event.type === "keydown" && idOf(event)) {
                         const { key, code, location } = event as KeyboardEvent;
-                        heldKeys.set(heldKeyId(event), { target, key: key ?? "", code: code ?? "", location: location ?? 0 });
+                        pressed.set(idOf(event), { target, key: key ?? "", code: code ?? "", location: location ?? 0 });
                     }
                     return;
                 }
                 if (event.cancelable) event.preventDefault();
                 event.stopImmediatePropagation();
             };
-            for (const type of BLOCKED) target.addEventListener(type, intercept, { capture: true });
+            for (const type of TYPES) target.addEventListener(type, listen, { capture: true });
             return {
-                setBlocked(next: boolean): void {
-                    const engaging = next && !blocked;
-                    blocked = next;
-                    if (!engaging) return;
-                    for (const held of [...heldKeys.values()]) {
-                        held.target.dispatchEvent(keyupFor(held));
+                setClosed(next: boolean): void {
+                    const closing = next && !closed;
+                    closed = next;
+                    if (!closing) return;
+                    for (const entry of [...pressed.values()]) {
+                        entry.target.dispatchEvent(releaseOf(entry));
                     }
                 },
-                held: () => heldKeys.size,
+                count: () => pressed.size,
             };
         }
-        const interlock = createInterlock(window);
+        const gate = createGate(window);
         window.addEventListener("keyup", (event) => {
-            if (isSettlingRelease(event)) released += event.code + event.location;
+            if (isMade(event)) seen += event.code + event.location;
         });
         // The program presses a key itself: a constructed keydown reaches the
-        // interlock as a player's would.
+        // gate as a pressed key's would.
         window.dispatchEvent(new KeyboardEvent("keydown", { key: "Shift", code: "ShiftLeft", location: 1, bubbles: true, cancelable: true }));
-        if (interlock.held() !== 1) throw new Error("held key");
-        interlock.setBlocked(true);
-        if (released !== "ShiftLeft1" || interlock.held() !== 0) throw new Error("released " + released);
-        // A key pressed while blocked is cancelled and stopped.
-        if (window.dispatchEvent(new KeyboardEvent("keydown", { key: "a", code: "KeyA", bubbles: true, cancelable: true }))) throw new Error("blocked key");
-        if (interlock.held() !== 0) throw new Error("blocked key held");
+        if (gate.count() !== 1) throw new Error("pressed key");
+        gate.setClosed(true);
+        if (seen !== "ShiftLeft1" || gate.count() !== 0) throw new Error("seen " + seen);
+        // A key pressed while closed is cancelled and stopped.
+        if (window.dispatchEvent(new KeyboardEvent("keydown", { key: "a", code: "KeyA", bubbles: true, cancelable: true }))) throw new Error("closed key");
+        if (gate.count() !== 0) throw new Error("closed key counted");
     `);
     assert.match(result.cpp, /bbl::synthetic_keyboard_event_from_options\(/);
     const tools = optionalNativeFixtureTools(false);
@@ -289,12 +290,12 @@ ${result.cpp}
 #undef main
 #include <cassert>
 namespace {
-    const auto interlock_input = std::make_shared<bbl::DomInput>();
+    const auto gate_input = std::make_shared<bbl::DomInput>();
 }
 namespace bbl {
     Engine create_engine(EngineOptions) {
         Engine engine;
-        engine.dom_input = interlock_input;
+        engine.dom_input = gate_input;
         return engine;
     }
 }
@@ -375,17 +376,9 @@ test("a structural interface over a host list's elements is a view of each nativ
             { pressed: pressing, value: pressing ? 0.5 : 0 },
         ],
     });
-    await runInNewContext(
-        ts.transpileModule(
-            `${source}
+    await runTranspiled(
+        `${source}
 main();`,
-            {
-                compilerOptions: {
-                    target: ts.ScriptTarget.ES2022,
-                    module: ts.ModuleKind.CommonJS,
-                },
-            },
-        ).outputText,
         {
             exports: {},
             require: () => ({ createEngine: () => ({}) }),
@@ -399,20 +392,18 @@ main();`,
             },
             Uint8Array,
         },
+        ts.ModuleKind.CommonJS,
     );
 
     const result = compileSource(source);
     const tools = optionalNativeFixtureTools(false);
     if (!tools) return t.skip("The native fixture compiler is unavailable.");
-    const output = resolve("artifacts/native-structural-pads");
-    mkdirSync(output, { recursive: true });
-    writeFileSync(join(output, "program.hpp"), result.cpp);
     runGeneratedProgram(
         tools,
         "native-structural-pads",
         `
         #define main generated_main
-        #include "program.hpp"
+${result.cpp}
         #undef main
         #include <cassert>
         namespace bbl {

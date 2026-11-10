@@ -10,6 +10,7 @@ import {
     arrayElementType,
     callSignatures,
     classInstanceDeclaration,
+    declaredRecordName,
     unionMembers,
 } from "./type-facts.js";
 
@@ -178,7 +179,7 @@ export function isRecordUnion(
 }
 
 /** Whether a type is a plain record or a union of them. */
-function isRecordLike(checker: ts.TypeChecker, type: ts.Type): boolean {
+export function isRecordLike(checker: ts.TypeChecker, type: ts.Type): boolean {
     return isPlainRecord(checker, type) || isRecordUnion(checker, type);
 }
 
@@ -380,12 +381,7 @@ export function recordComponents(
         // The widest shape names the layout and orders its fields; among
         // equally wide shapes, a declared type before an object literal's.
         const declared = (member: ts.Type): number =>
-            member.aliasSymbol ||
-            (member.symbol &&
-                member.symbol.name !== "__type" &&
-                member.symbol.name !== "__object")
-                ? 0
-                : 1;
+            declaredRecordName(member) === undefined ? 1 : 0;
         const named = [...shapes].sort(
             (left, right) =>
                 checker.getPropertiesOfType(right).length -
