@@ -166,3 +166,50 @@ test("leaves a module constant built from a written one to its refusal", () => {
         );
     }
 });
+
+// A local `const` a closed helper initializes: a static map reads the
+// elements a generation run gives only when that run is the declaration's.
+const plannedCells = (prefix: string, after: string): string => `
+    function plan(prefix: string): string[] {
+        const out: string[] = [];
+        for (let i = 0; i < 2; i++) out.push(prefix + "-" + i);
+        return out;
+    }
+    async function main(): Promise<void> {
+        ${prefix}
+        const labels = plan(prefix);
+        ${after}
+        labels.map((label) => {
+            const cell = document.createElement("span");
+            cell.textContent = label;
+            document.body.appendChild(cell);
+            return cell;
+        });
+    }
+    void main();`;
+
+test("a static map over a helper's array reads what its declaration built", (t) => {
+    assert.match(
+        compileSource(plannedCells(`const prefix = "first";`, "")).cpp,
+        /ui_set_text\([^\n]*"first-0"\)/,
+    );
+    // The prefix is rebound after the call: the array holds the first plan.
+    const { cpp } = compileSource(
+        plannedCells(`let prefix = "first";`, `prefix = "second";`),
+    );
+    assert.doesNotMatch(cpp, /second-0/);
+    mkdirSync(resolve("artifacts/executed-initializer-arguments"), {
+        recursive: true,
+    });
+    writeFileSync(
+        resolve("artifacts/executed-initializer-arguments/program.hpp"),
+        cpp,
+    );
+    runRmlUiFixture(t, "executed-initializer-arguments", {
+        macros: {
+            BBLITE_WORKERS: 1,
+            BBLITE_OFFSCREEN_SURFACES: 1,
+            BBLITE_HAS_DOM_INPUT: 1,
+        },
+    });
+});

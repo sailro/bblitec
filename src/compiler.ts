@@ -5633,14 +5633,16 @@ class Compiler implements LoweringServices {
     }
 
     /**
-     * The elements a const local's closed-helper initializer produces at
-     * generation (`const icons = plan(opts.icons)`); undefined when the
-     * call cannot run there or its result is no array.
+     * The elements a const local's closed-helper initializer produced
+     * (`const icons = plan(opts.icons)`), for a reader that knows nothing
+     * changes the array; undefined when a run at the read is not the
+     * declaration's (`rerunCallInitializer`), the call cannot run at
+     * generation or its result is no array.
      */
     public executedInitializerElements(
         identifier: ts.Identifier,
     ): readonly Value[] | undefined {
-        const initializer = this.constCallInitializer(identifier);
+        const initializer = this.rerunCallInitializer(identifier);
         const executed = initializer && this.executedCall(initializer.call);
         return Array.isArray(executed)
             ? executed.map((element: unknown) =>
@@ -5654,8 +5656,13 @@ class Compiler implements LoweringServices {
             : undefined;
     }
 
-    /** The call a `const` binding's initializer is, with its declaration. */
-    private constCallInitializer(
+    /**
+     * The helper call a `const` binding's initializer is, with its
+     * declaration, when running it at a later read calls what the
+     * declaration called: a module's own function, with arguments that
+     * re-read alike.
+     */
+    private rerunCallInitializer(
         identifier: ts.Identifier,
     ):
         | { declaration: ts.VariableDeclaration; call: ts.CallExpression }
@@ -5670,7 +5677,10 @@ class Compiler implements LoweringServices {
         )
             return undefined;
         const call = this.unwrap(declaration.initializer);
-        return ts.isCallExpression(call) && !call.questionDotToken
+        return ts.isCallExpression(call) &&
+            !call.questionDotToken &&
+            moduleLevelCallee(this.checker, call.expression) &&
+            call.arguments.every((argument) => this.rereadsAlike(argument))
             ? { declaration, call }
             : undefined;
     }
@@ -5688,19 +5698,16 @@ class Compiler implements LoweringServices {
     /**
      * The helper call a local `const` holds the result of
      * (`const sources = stageSources(lit)`), when evaluating it at a later
-     * read gives what the declaration held: nothing writes through the
-     * binding, the helper is a module's own and its arguments re-read alike.
+     * read gives what the binding holds there: a run there is the
+     * declaration's (`rerunCallInitializer`) and nothing writes through the
+     * binding.
      */
     private settledCallInitializer(
         identifier: ts.Identifier,
     ): ts.CallExpression | undefined {
-        const initializer = this.constCallInitializer(identifier);
+        const initializer = this.rerunCallInitializer(identifier);
         return initializer &&
-            moduleLevelCallee(this.checker, initializer.call.expression) &&
-            !this.evaluator.isWrittenThrough(initializer.declaration) &&
-            initializer.call.arguments.every((argument) =>
-                this.rereadsAlike(argument),
-            )
+            !this.evaluator.isWrittenThrough(initializer.declaration)
             ? initializer.call
             : undefined;
     }
