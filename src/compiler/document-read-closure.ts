@@ -59,7 +59,10 @@ export function documentReadClosure(
     record: ts.Type,
 ): readonly ts.Type[] {
     let known = closures.get(program);
-    if (!known) closures.set(program, (known = new Map()));
+    if (!known) {
+        known = new Map<ts.Type, readonly ts.Type[]>();
+        closures.set(program, known);
+    }
     const answered = known.get(record);
     if (answered) return answered;
     const reads = programObservations(program).namedReads;
