@@ -5263,40 +5263,32 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                     fallbackLines,
                 );
             // Operands of two members of the operator's union type (a found
-            // record or a literal) are each stored as that union.
+            // record or a literal) are each stored as that union. Objects
+            // of two kinds kept where any object is (`object | null`,
+            // stored as a document value) are each stored as that document
+            // value.
             const union = this.dataTypeAt(expression);
-            if (
+            const stored =
                 left.kind === "data" &&
                 union?.kind === "union" &&
                 (fallback.kind !== left.kind ||
                     (fallback.dataType !== undefined &&
                         left.dataType !== undefined &&
                         !dataTypesEqual(fallback.dataType, left.dataType)))
-            ) {
+                    ? union
+                    : sink?.kind === "json" && fallback.kind !== left.kind
+                      ? sink
+                      : undefined;
+            if (stored) {
                 const { optionalFoundCpp: _found, ...present } = left;
                 const found = this.compileKnownValueForSink(
                     present,
-                    union,
+                    stored,
                     expression.left,
                 );
                 return this.leafValue(
-                    `(${leftFound} ? ${found} : ${fallbackArm(union, () => this.compileKnownValueForSink(fallback, union, expression.right))})`,
-                    union,
-                );
-            }
-            // Objects of two kinds kept where any object is (`object |
-            // null`, stored as a document value): each operand is stored
-            // as that document value.
-            if (sink?.kind === "json" && fallback.kind !== left.kind) {
-                const { optionalFoundCpp: _found, ...present } = left;
-                const found = this.compileKnownValueForSink(
-                    present,
-                    sink,
-                    expression.left,
-                );
-                return this.leafValue(
-                    `(${leftFound} ? ${found} : ${fallbackArm(sink, () => this.compileKnownValueForSink(fallback, sink, expression.right))})`,
-                    sink,
+                    `(${leftFound} ? ${found} : ${fallbackArm(stored, () => this.compileKnownValueForSink(fallback, stored, expression.right))})`,
+                    stored,
                 );
             }
             if (fallback.kind !== left.kind) {

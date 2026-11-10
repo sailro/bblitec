@@ -20,6 +20,7 @@ import {
 } from "./static-evaluator.js";
 import { readOnlyDataMethods } from "./receiver-methods.js";
 import { callWritesReceiver } from "./parameter-effects.js";
+import { promiseStatic } from "./promises.js";
 import {
     declarationNamed,
     outermostWrapper,
@@ -189,6 +190,14 @@ interface SourceGraph {
     readonly registries: ReadonlyMap<ts.Symbol, MapRegistry>;
     /** Functions some code reads as a value, so calls may reach them unseen. */
     readonly escaped: ReadonlySet<SupportedFunction>;
+    /**
+     * `builtRecordMethods` answers, by the const holding the record and the
+     * member: a function of the checked program, filled as it is asked.
+     */
+    readonly builtMethods: Map<
+        ts.VariableDeclaration,
+        Map<string, readonly SupportedFunction[] | undefined>
+    >;
 }
 
 interface MemberWrite {
@@ -1032,6 +1041,7 @@ function sourceGraph(
         otherwiseMutated,
         registries,
         escaped,
+        builtMethods: new Map(),
     };
     sourceGraphs.set(checker, graph);
     return graph;
@@ -1495,6 +1505,29 @@ class StringDomain {
         );
     }
 
+    /** The declaration of the never-written const `expression` names, with the value it holds. */
+    private unwrittenConst(
+        expression: ts.Expression,
+    ):
+        | (ts.VariableDeclaration & { readonly initializer: ts.Expression })
+        | undefined {
+        const node = unwrapExpression(expression);
+        const symbol = ts.isIdentifier(node)
+            ? resolvedSymbol(this.context.checker, node)
+            : undefined;
+        const declaration = symbol?.valueDeclaration;
+        return symbol &&
+            declaration &&
+            ts.isVariableDeclaration(declaration) &&
+            variableKind(declaration.parent) === "const" &&
+            declaration.initializer &&
+            !this.graph.mutated.has(symbol)
+            ? (declaration as ts.VariableDeclaration & {
+                  readonly initializer: ts.Expression;
+              })
+            : undefined;
+    }
+
     /**
      * The keys of the object literal a never-written const holds, every one
      * named (no spread or computed key); undefined otherwise.
@@ -1502,19 +1535,8 @@ class StringDomain {
     private closedRecordKeys(
         expression: ts.Expression,
     ): ReadonlySet<string> | undefined {
-        const node = unwrapExpression(expression);
-        const symbol =
-            ts.isIdentifier(node) && resolvedSymbol(this.context.checker, node);
-        const declaration = symbol ? symbol.valueDeclaration : undefined;
-        if (
-            !symbol ||
-            !declaration ||
-            !ts.isVariableDeclaration(declaration) ||
-            variableKind(declaration.parent) !== "const" ||
-            !declaration.initializer ||
-            this.graph.mutated.has(symbol)
-        )
-            return undefined;
+        const declaration = this.unwrittenConst(expression);
+        if (!declaration) return undefined;
         const literal = unwrapExpression(declaration.initializer);
         if (!ts.isObjectLiteralExpression(literal)) return undefined;
         const keys = new Set<string>();
@@ -1801,8 +1823,7 @@ class StringDomain {
                               : undefined,
                 ),
             );
-        const index =
-            key !== undefined && /^\d+$/.test(key) ? Number(key) : undefined;
+        const index = key === undefined ? undefined : keyIndex(key);
         if (
             ts.isArrayLiteralExpression(node) &&
             index !== undefined &&
@@ -1978,50 +1999,37 @@ class StringDomain {
     /**
      * The functions a record's member `name` holds, where the record is a
      * never-written const a call built: each object literal the called
-     * function returns defines the member as a method, a function literal,
-     * or a never-written const holding one. Undefined otherwise.
+     * function returns defines the member as a method or as a function
+     * (`callbackFunction`). Undefined otherwise.
      */
     private builtRecordMethods(
         receiver: ts.Expression,
         name: string,
     ): readonly SupportedFunction[] | undefined {
-        const checker = this.context.checker;
-        const node = unwrapExpression(receiver);
-        const symbol = ts.isIdentifier(node)
-            ? resolvedSymbol(checker, node)
-            : undefined;
-        const declaration = symbol?.valueDeclaration;
-        if (
-            !symbol ||
-            !declaration ||
-            !ts.isVariableDeclaration(declaration) ||
-            variableKind(declaration.parent) !== "const" ||
-            !declaration.initializer ||
-            this.graph.mutated.has(symbol)
-        )
-            return undefined;
-        let built = unwrapExpression(declaration.initializer);
+        const declaration = this.unwrittenConst(receiver);
+        if (!declaration) return undefined;
+        let known = this.graph.builtMethods.get(declaration);
+        if (!known) {
+            known = new Map();
+            this.graph.builtMethods.set(declaration, known);
+        }
+        if (!known.has(name))
+            known.set(name, this.builtMethodsOf(declaration.initializer, name));
+        return known.get(name);
+    }
+
+    /** `builtRecordMethods` for the value a const holds. */
+    private builtMethodsOf(
+        value: ts.Expression,
+        name: string,
+    ): readonly SupportedFunction[] | undefined {
+        let built = unwrapExpression(value);
         if (ts.isAwaitExpression(built))
             built = unwrapExpression(built.expression);
         const builder = ts.isCallExpression(built)
-            ? calledFunction(checker, built)
+            ? calledFunction(this.context.checker, built)
             : undefined;
         if (!builder?.body || !ts.isBlock(builder.body)) return undefined;
-        const held = (value: ts.Expression): SupportedFunction | undefined => {
-            const unwrapped = unwrapExpression(value);
-            if (isFunctionLiteral(unwrapped)) return unwrapped;
-            const binding = ts.isIdentifier(unwrapped)
-                ? resolvedSymbol(checker, unwrapped)
-                : undefined;
-            const bound = binding?.valueDeclaration;
-            return binding &&
-                bound &&
-                ts.isVariableDeclaration(bound) &&
-                variableKind(bound.parent) === "const" &&
-                !this.graph.mutated.has(binding)
-                ? functionOfDeclaration(bound)
-                : undefined;
-        };
         const methods: SupportedFunction[] = [];
         let closed = true;
         forEachReturn([builder.body], (statement) => {
@@ -2052,7 +2060,7 @@ class StringDomain {
                     ? member.node
                     : member?.kind === "shorthand" ||
                         member?.kind === "property"
-                      ? held(member.value)
+                      ? this.callbackFunction(member.value)
                       : undefined;
             if (method?.body) methods.push(method);
             else closed = false;
@@ -2100,9 +2108,8 @@ class StringDomain {
         if (frozen) return this.read(frozen, projection, environment);
         // Promise.all settles with its argument's elements, each awaited.
         if (
-            method === "all" &&
             call.arguments.length === 1 &&
-            this.context.libraryGlobal(callee.expression) === "Promise"
+            promiseStatic(this.context.checker, call) === "all"
         )
             return this.read(call.arguments[0]!, projection, environment);
         // Object.values lists its argument's member values.

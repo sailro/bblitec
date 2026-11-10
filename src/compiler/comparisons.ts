@@ -16,6 +16,7 @@ import {
 } from "../lowering/pinned-operators.js";
 import { localClassOfSymbol } from "./class-members.js";
 import { unlessRefused } from "./compile-error.js";
+import { EVENT_TYPE_MEMBER } from "./dom-listeners.js";
 import { isJsonValue } from "./json-bridge.js";
 import type { LoweringServices } from "./lowering-services.js";
 import { declaredInDomLibrary } from "./symbols.js";
@@ -176,11 +177,17 @@ export function foldExcludedString(
         [expression.left, expression.right],
         [expression.right, expression.left],
     ] as const) {
-        const text = context.evaluator.resolveStaticExpression(literal);
+        // Only the read of that member carries the fact: any other
+        // comparison is left before anything is resolved or lowered.
         const read = unwrapExpression(other);
         if (
-            !ts.isStringLiteralLike(text) ||
             !ts.isPropertyAccessExpression(read) ||
+            read.name.text !== EVENT_TYPE_MEMBER
+        )
+            continue;
+        const text = context.evaluator.resolveStaticExpression(literal);
+        if (
+            !ts.isStringLiteralLike(text) ||
             !declaredInDomLibrary(
                 context.checker
                     .getNonNullableType(

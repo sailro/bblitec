@@ -83,8 +83,10 @@ export interface NamedRead {
  * - copies: each object copied field by field into a new one -- a spread
  *   into an object literal, the rest of an object pattern;
  * - handed values: each value given where a type is declared for it -- an
- *   argument, a returned value, the initializer of a typed declaration or
- *   of a property, an assigned value.
+ *   argument, a returned value (an arrow's expression body too), the
+ *   initializer of a typed declaration, parameter or class field, a
+ *   property's value (a shorthand's name too), an array literal's element,
+ *   an assigned value.
  */
 export interface ProgramObservations {
     readonly writes: ReadonlyMap<ts.Type, readonly ObservedWrite[]>;
@@ -466,10 +468,21 @@ function observe(program: ts.Program): ProgramObservations {
         if (ts.isCallExpression(node) || ts.isNewExpression(node))
             node.arguments?.forEach(hand);
         else if (ts.isReturnStatement(node)) hand(node.expression);
-        else if (ts.isVariableDeclaration(node) && node.type)
+        else if (ts.isArrowFunction(node) && !ts.isBlock(node.body))
+            hand(node.body);
+        else if (
+            (ts.isVariableDeclaration(node) ||
+                ts.isParameter(node) ||
+                ts.isPropertyDeclaration(node)) &&
+            node.type
+        )
             hand(node.initializer);
         else if (ts.isPropertyAssignment(node)) hand(node.initializer);
-        else if (
+        else if (ts.isShorthandPropertyAssignment(node)) hand(node.name);
+        else if (ts.isArrayLiteralExpression(node)) {
+            for (const element of node.elements)
+                if (!ts.isSpreadElement(element)) hand(element);
+        } else if (
             ts.isBinaryExpression(node) &&
             node.operatorToken.kind === ts.SyntaxKind.EqualsToken
         )

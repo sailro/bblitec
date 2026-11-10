@@ -108,6 +108,7 @@ import {
     functionOfDeclaration,
     keysMayMatch,
     isTypeAssertion,
+    isExpressionWrapper,
     wrappersUnder,
 } from "./syntax.js";
 import {
@@ -439,21 +440,32 @@ export class DeclarationLowerer {
         "hoisted" | { cppName: string; type: DataType }
     >();
 
+    /**
+     * The storage of a binding declared with `initializer`, or of a name a
+     * pattern declares (no initializer of its own).
+     */
     private lexicalBindingType(
         name: ts.Identifier,
-        initializer: ts.Expression,
+        initializer?: ts.Expression,
     ): DataType | undefined {
         // A deployment constant the checker leaves untyped (an
         // `import.meta.env` key its declarations omit) holds its folded value.
-        const deployed = browserDeploymentValue(this.context, initializer);
+        const deployed =
+            initializer && browserDeploymentValue(this.context, initializer);
         const held =
             ts.isVariableDeclaration(name.parent) &&
             heldClassInstanceType(this.context.checker, name.parent);
         const type =
             (held
-                ? this.context.dataTypes.fromStoredTsType(held, initializer)
+                ? this.context.dataTypes.fromStoredTsType(
+                      held,
+                      initializer ?? name,
+                  )
                 : this.context.dataLowerer.dataTypeAt(name)) ??
-            this.context.dataTypes.fromCheckedObjectInitializer(initializer) ??
+            (initializer &&
+                this.context.dataTypes.fromCheckedObjectInitializer(
+                    initializer,
+                )) ??
             this.context.dataTypes.fromStoredTsType(
                 this.context.checker.getTypeAtLocation(name),
                 name,
@@ -498,6 +510,41 @@ export class DeclarationLowerer {
         return cppName;
     }
 
+    /**
+     * Declares temporal-dead-zone storage of `type` for a name a closure
+     * reads before its declaration; a name with no owned data type is
+     * refused.
+     */
+    private declareForwardStorage(
+        name: ts.Identifier,
+        symbol: ts.Symbol,
+        type: DataType | undefined,
+        site: ts.Node,
+    ): void {
+        if (!type)
+            this.context.fail(
+                site,
+                "A stored closure reading a later binding requires an owned data type to preserve its temporal dead zone.",
+            );
+        this.forwardBindings.set(symbol, {
+            cppName: this.declareLexicalBinding(name, symbol, type),
+            type,
+        });
+    }
+
+    /** Fills temporal-dead-zone storage with the value its declaration gives it. */
+    private emitLexicalInitialization(
+        cppName: string,
+        type: DataType,
+        value: Value,
+        site: ts.Node,
+    ): void {
+        this.context.emit({
+            kind: "expression",
+            code: `${cppName}->initialize(${this.context.dataLowerer.compileKnownValueForSink(value, type, site)});`,
+        });
+    }
+
     private initializeLexicalBinding(
         declaration: ts.VariableDeclaration,
         cppName: string,
@@ -511,10 +558,7 @@ export class DeclarationLowerer {
             this.context.emitDiscardedValue(value);
             return;
         }
-        this.context.emit({
-            kind: "expression",
-            code: `${cppName}->initialize(${this.context.dataLowerer.compileKnownValueForSink(value, type, initializer)});`,
-        });
+        this.emitLexicalInitialization(cppName, type, value, initializer);
         if (
             type.kind === "string" &&
             value.staticString !== undefined &&
@@ -576,21 +620,12 @@ export class DeclarationLowerer {
                           declaration.initializer,
                       ),
               );
-        if (type) {
-            this.forwardBindings.set(symbol, {
-                cppName: this.declareLexicalBinding(
-                    declaration.name,
-                    symbol,
-                    type,
-                ),
+        if (type || initialization === "temporal-dead-zone")
+            return this.declareForwardStorage(
+                declaration.name,
+                symbol,
                 type,
-            });
-            return;
-        }
-        if (initialization === "temporal-dead-zone")
-            this.context.fail(
                 declaration,
-                "A stored closure reading a later binding requires an owned data type to preserve its temporal dead zone.",
             );
         if (!pure && !initializeAhead) return;
         this.emitVariableDeclaration(declaration);
@@ -608,24 +643,15 @@ export class DeclarationLowerer {
         name: ts.Identifier,
         symbol: ts.Symbol,
     ): void {
-        const checked = this.context.checker.getTypeAtLocation(name);
-        const mapped = this.context.dataTypes.withDynamicJsonTypes(
-            true,
-            () =>
-                this.context.dataLowerer.dataTypeAt(name) ??
-                this.context.dataTypes.fromStoredTsType(checked, name) ??
-                this.context.dataTypes.dynamicJsonType(checked),
+        const mapped = this.context.dataTypes.withDynamicJsonTypes(true, () =>
+            this.lexicalBindingType(name),
         );
-        if (!mapped)
-            this.context.fail(
-                name,
-                "A stored closure reading a later binding requires an owned data type to preserve its temporal dead zone.",
-            );
-        const type = this.context.dataTypes.markStoredObjectReferences(mapped);
-        this.forwardBindings.set(symbol, {
-            cppName: this.declareLexicalBinding(name, symbol, type),
-            type,
-        });
+        this.declareForwardStorage(
+            name,
+            symbol,
+            mapped && this.context.dataTypes.markStoredObjectReferences(mapped),
+            name,
+        );
     }
 
     /** Fills a destructured name's temporal-dead-zone storage; false where the name has none. */
@@ -637,10 +663,12 @@ export class DeclarationLowerer {
         const forward = symbol ? this.forwardBindings.get(symbol) : undefined;
         if (!symbol || !forward || forward === "hoisted") return false;
         this.forwardBindings.delete(symbol);
-        this.context.emit({
-            kind: "expression",
-            code: `${forward.cppName}->initialize(${this.context.dataLowerer.compileKnownValueForSink(value, forward.type, name)});`,
-        });
+        this.emitLexicalInitialization(
+            forward.cppName,
+            forward.type,
+            value,
+            name,
+        );
         return true;
     }
 
@@ -3356,6 +3384,14 @@ export class DeclarationLowerer {
         if (!ts.isArrayLiteralExpression(list)) return false;
         return list.elements.some((element) => {
             if (ts.isSpreadElement(element)) return false;
+            // Only an element under a wrapper can be asserted, and only a
+            // nested list holds more elements: a table of data is passed
+            // over an element at a time.
+            if (!isExpressionWrapper(element))
+                return (
+                    ts.isArrayLiteralExpression(element) &&
+                    this.holdsReassertedFunction(element)
+                );
             if (this.holdsReassertedFunction(element)) return true;
             const assertion = wrappersUnder(element).find(isTypeAssertion);
             if (!assertion) return false;
@@ -5845,6 +5881,20 @@ export class DeclarationLowerer {
             value,
             declaration.initializer,
         );
+        // A name with temporal-dead-zone storage is filled where a record's
+        // field binds it (`initializeForwardPatternName`); a pattern over
+        // any other value leaves it unfilled, and is refused.
+        for (const element of declaration.name.elements) {
+            const symbol = ts.isIdentifier(element.name)
+                ? this.context.symbols.valueSymbol(element.name)
+                : undefined;
+            const forward = symbol && this.forwardBindings.get(symbol);
+            if (forward && forward !== "hoisted")
+                this.context.fail(
+                    element.name,
+                    "A closure reading a later destructured name requires that name bound from a record's field.",
+                );
+        }
     }
 
     /**

@@ -186,8 +186,28 @@ const NAMED_FAMILIES: readonly NamedDomListenerFamily[] = [
     "drag",
 ];
 
-/** @unjournaled `foreignEventTypes` answers, by event kind: a function of the family table. */
-const foreignTypes = new Map<string, ReadonlySet<string>>();
+/** An event kind a listener family dispatches as its own. */
+type FamilyEventKind = "platform-keyboard-event" | "platform-mouse-event";
+
+/** The names of the families whose listeners receive another kind of event than `kind`. */
+function namesOfOtherKinds(kind: FamilyEventKind): ReadonlySet<string> {
+    return new Set(
+        NAMED_FAMILIES.flatMap((family) => {
+            const { event, names } = DOM_LISTENER_FAMILIES[family];
+            return "kind" in event && event.kind !== kind ? [...names] : [];
+        }),
+    );
+}
+
+const FOREIGN_EVENT_TYPES: Readonly<
+    Record<FamilyEventKind, ReadonlySet<string>>
+> = {
+    "platform-keyboard-event": namesOfOtherKinds("platform-keyboard-event"),
+    "platform-mouse-event": namesOfOtherKinds("platform-mouse-event"),
+};
+
+/** The event member whose read carries the types its event never has (`Value.excludedStrings`). */
+export const EVENT_TYPE_MEMBER = "type";
 
 /**
  * The DOM event types an event of `kind` never has: the names of the
@@ -195,20 +215,8 @@ const foreignTypes = new Map<string, ReadonlySet<string>>();
  * listener is never dispatched a keydown). A family dispatching the base
  * Event view excludes nothing: that view may be read as either kind.
  */
-export function foreignEventTypes(
-    kind: "platform-keyboard-event" | "platform-mouse-event",
-): ReadonlySet<string> {
-    let foreign = foreignTypes.get(kind);
-    if (!foreign) {
-        foreign = new Set(
-            NAMED_FAMILIES.flatMap((family) => {
-                const { event, names } = DOM_LISTENER_FAMILIES[family];
-                return "kind" in event && event.kind !== kind ? [...names] : [];
-            }),
-        );
-        foreignTypes.set(kind, foreign);
-    }
-    return foreign;
+export function foreignEventTypes(kind: FamilyEventKind): ReadonlySet<string> {
+    return FOREIGN_EVENT_TYPES[kind];
 }
 
 /** The families an element `on<type>` handler joins. */

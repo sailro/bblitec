@@ -673,16 +673,34 @@ export class CallbackLowerer {
             !ts.isVariableDeclaration(element.parent.parent) ||
             !element.parent.parent.initializer ||
             !ts.isVariableStatement(element.parent.parent.parent.parent) ||
-            variableKind(element.parent.parent.parent) !== "const" ||
-            this.context.bindings.peekBinding(symbol)
+            variableKind(element.parent.parent.parent) !== "const"
         )
             return undefined;
-        const statement = element.parent.parent.parent.parent;
+        const owner = this.pendingOwner(
+            symbol,
+            element.parent.parent.parent.parent,
+        );
+        return owner && this.context.emitsAtLevelOf(owner)
+            ? { name: element.name, owner }
+            : undefined;
+    }
+
+    /**
+     * The statement a block being lowered stands at, where that block has
+     * not reached `statement` yet (or, with `includeInitializing`, is
+     * lowering it) and `symbol` is still unbound.
+     */
+    private pendingOwner(
+        symbol: ts.Symbol,
+        statement: ts.VariableStatement,
+        includeInitializing = false,
+    ): LoweringStatement | undefined {
+        if (this.context.bindings.peekBinding(symbol)) return undefined;
         const owner = this.context.loweringStatementIn(statement.parent);
         return owner &&
-            owner.statement.pos < statement.pos &&
-            this.context.emitsAtLevelOf(owner)
-            ? { name: element.name, owner }
+            (owner.statement.pos < statement.pos ||
+                (includeInitializing && owner.statement === statement))
+            ? owner
             : undefined;
     }
 
@@ -704,17 +722,15 @@ export class CallbackLowerer {
             !ts.isVariableDeclaration(declaration) ||
             !ts.isIdentifier(declaration.name) ||
             !isBlockScopedVariable(declaration) ||
-            !ts.isVariableStatement(declaration.parent.parent) ||
-            this.context.bindings.peekBinding(symbol)
+            !ts.isVariableStatement(declaration.parent.parent)
         )
             return undefined;
-        const statement = declaration.parent.parent;
-        const owner = this.context.loweringStatementIn(statement.parent);
-        return owner &&
-            (owner.statement.pos < statement.pos ||
-                (includeInitializing && owner.statement === statement))
-            ? { declaration, owner }
-            : undefined;
+        const owner = this.pendingOwner(
+            symbol,
+            declaration.parent.parent,
+            includeInitializing,
+        );
+        return owner ? { declaration, owner } : undefined;
     }
 
     /**

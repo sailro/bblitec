@@ -238,6 +238,7 @@ import {
 } from "./browser-erasure.js";
 import {
     compileImmediatePromise,
+    isPromiseReaction,
     type PromiseLoweringContext,
 } from "./promises.js";
 import { staticNumberValue } from "./option-helpers.js";
@@ -430,14 +431,6 @@ export interface ExpressionContext
     ): Value;
 }
 
-/** Whether an expression's value is an object spread's operand, directly or through the operators that yield it. */
-/** The members a promise has. */
-const PROMISE_METHODS: ReadonlySet<string> = new Set([
-    "then",
-    "catch",
-    "finally",
-]);
-
 /**
  * The one storage every property of a compile-time record holds; undefined
  * where they differ or one has none.
@@ -455,6 +448,7 @@ function onePropertyStorage(record: Value): DataType | undefined {
         : undefined;
 }
 
+/** Whether an expression's value is an object spread's operand, directly or through the operators that yield it. */
 function spreadsItsValue(expression: ts.Expression): boolean {
     return ts.isSpreadAssignment(
         outermostWrapper(expression, { branches: "objects" }).parent,
@@ -1795,13 +1789,8 @@ export class ExpressionLowerer {
                     staticString: "undefined",
                 };
             }
-            const tag = this.staticMemberTypeof(expression);
-            if (tag)
-                return staticStringValue(tag, (text) =>
-                    this.context.cppString(text),
-                );
-            const selected = this.unionMemberTypeof(expression);
-            if (selected) return selected;
+            const known = this.knownMemberTypeof(expression);
+            if (known) return known;
             // typeof observes an element past the end as undefined.
             const compiledOperand =
                 (ts.isElementAccessExpression(expression)
@@ -6267,7 +6256,7 @@ export class ExpressionLowerer {
             const record = runtimeKeyed
                 ? undefined
                 : this.context.probeEmission(() =>
-                      this.compileStaticObjectValue(unwrapped, true),
+                      this.compileStaticObjectValue(unwrapped, "run-time-keys"),
                   );
             if (record) return record;
             const typed = this.compileTypedObjectValue(
@@ -6278,6 +6267,8 @@ export class ExpressionLowerer {
             );
             if (typed) return typed;
         }
+        if (!unwrapped.properties.some(ts.isSpreadAssignment))
+            return this.compileStaticObjectValue(unwrapped);
         // A spread only lowering knows to hold a dictionary (its declared
         // type names a closed record whose storage is one) declines the
         // compile-time record: the literal takes its position's storage.
@@ -6305,10 +6296,19 @@ export class ExpressionLowerer {
             return undefined;
         let copied: DataType<"map"> | undefined;
         for (const property of literal.properties) {
-            const stored = this.context.probeEmission(
-                () => this.compileValue(property.expression).dataType,
-                () => false,
-            );
+            // A bound name's own storage answers, unless a narrowing may
+            // have unwrapped it.
+            const operand = this.context.unwrap(property.expression);
+            const bound = ts.isIdentifier(operand)
+                ? this.context.bindings.lookupOptional(operand)?.dataType
+                : undefined;
+            const stored =
+                bound && bound.kind !== "optional"
+                    ? bound
+                    : this.context.probeEmission(
+                          () => this.compileValue(property.expression).dataType,
+                          () => false,
+                      );
             if (
                 stored?.kind !== "map" ||
                 !stored.dictionary ||
@@ -6480,48 +6480,14 @@ export class ExpressionLowerer {
      *   its wrapper prototype's: "undefined" for a name it lacks (`typeof
      *   (5).then`, which a thenable test reads off a value held as a
      *   number), "function" for one of its methods.
+     * - for a member of an owner held as a data union each of whose
+     *   members' storage answers, the answer of the member it holds,
+     *   selected at run time.
      * Undefined for any other operand.
      */
-    /**
-     * `typeof owner.member` where the owner is held as a data union each of
-     * whose members' storage answers (`storageMemberTypeof`): the answer of
-     * the member it holds, selected at run time.
-     */
-    private unionMemberTypeof(expression: ts.Expression): Value | undefined {
-        if (
-            !ts.isPropertyAccessExpression(expression) ||
-            ts.isOptionalChain(expression) ||
-            expressionHasEffects(expression.expression)
-        )
-            return undefined;
-        const answer = (member: Value): Value | undefined => {
-            const tag = this.storageMemberTypeof(member, expression);
-            return (
-                tag &&
-                staticStringValue(tag, (text) => this.context.cppString(text))
-            );
-        };
-        return this.context.probeEmission(() => {
-            const owner = unlessRefused(() =>
-                this.compileValue(expression.expression),
-            );
-            return owner?.kind === "data" &&
-                owner.dataType?.kind === "union" &&
-                owner.dataType.members.every((member) =>
-                    answer({ kind: "data", cpp: "", dataType: member }),
-                )
-                ? this.context.dataLowerer.readThroughUnion(
-                      owner,
-                      expression,
-                      (member) => answer(member)!,
-                  )
-                : undefined;
-        });
-    }
-
-    private staticMemberTypeof(
-        expression: ts.Expression,
-    ): "undefined" | "function" | undefined {
+    private knownMemberTypeof(expression: ts.Expression): Value | undefined {
+        const text = (tag: "undefined" | "function"): Value =>
+            staticStringValue(tag, (name) => this.context.cppString(name));
         const checker = this.context.checker;
         if (
             ts.isIdentifier(expression) &&
@@ -6532,13 +6498,13 @@ export class ExpressionLowerer {
                 "webgpu",
             ]) === "function"
         )
-            return "function";
+            return text("function");
         if (
             !ts.isPropertyAccessExpression(expression) ||
             expressionHasEffects(expression.expression)
         )
             return undefined;
-        if (readsLoweredDomMethod(checker, expression)) return "function";
+        if (readsLoweredDomMethod(checker, expression)) return text("function");
         // An optional chain may read no owner.
         if (ts.isOptionalChain(expression)) return undefined;
         const receiver = expression.expression;
@@ -6546,7 +6512,7 @@ export class ExpressionLowerer {
             EVENT_TARGET_METHODS.has(expression.name.text) &&
             probedDomTarget(this.context, receiver)
         )
-            return "function";
+            return text("function");
         // An owner's storage, not its type (a cast may name an object type
         // for a value held as a number), decides; a receiver that does not
         // lower here is the ordinary path's.
@@ -6554,7 +6520,25 @@ export class ExpressionLowerer {
             () => unlessRefused(() => this.compileValue(receiver)),
             () => false,
         );
-        return owner && this.storageMemberTypeof(owner, expression);
+        if (!owner) return undefined;
+        const tag = this.storageMemberTypeof(owner, expression);
+        if (tag) return text(tag);
+        const answer = (member: Value): Value | undefined => {
+            const held = this.storageMemberTypeof(member, expression);
+            return held && text(held);
+        };
+        // The owner is lowered for keeps only where every member answers.
+        return owner.kind === "data" &&
+            owner.dataType?.kind === "union" &&
+            owner.dataType.members.every((member) =>
+                answer({ kind: "data", cpp: "", dataType: member }),
+            )
+            ? this.context.dataLowerer.readThroughUnion(
+                  this.compileValue(receiver),
+                  expression,
+                  (member) => answer(member)!,
+              )
+            : undefined;
     }
 
     /**
@@ -6569,7 +6553,7 @@ export class ExpressionLowerer {
     ): "undefined" | "function" | undefined {
         const checker = this.context.checker;
         if (owner.kind === "promise" || owner.dataType?.kind === "promise")
-            return PROMISE_METHODS.has(expression.name.text)
+            return isPromiseReaction(expression.name.text)
                 ? "function"
                 : "undefined";
         if (
@@ -6620,15 +6604,15 @@ export class ExpressionLowerer {
     }
 
     /**
-     * The compile-time record an object literal is. With
-     * `allowDictionarySpread` it declines (undefined) where a spread's keys
-     * are known only at run time: a dictionary, a document or a scalar
-     * (`"dictionary"`), and a struct whose `?` fields decide its keys too
-     * (`true`).
+     * The compile-time record an object literal is. With `declines` it is
+     * undefined where a spread's keys are known only at run time:
+     * `"dictionary"` for a dictionary, a document or a scalar, and
+     * `"run-time-keys"` for those and a struct whose `?` fields decide its
+     * keys.
      */
     private compileStaticObjectValue(
         unwrapped: ts.ObjectLiteralExpression,
-        allowDictionarySpread: boolean | "dictionary" = false,
+        declines?: "dictionary" | "run-time-keys",
     ): Value | undefined {
         const properties: Record<string, Value> = {};
         const methods: Record<
@@ -6763,7 +6747,7 @@ export class ExpressionLowerer {
                     spread.dataType?.kind === "struct"
                 ) {
                     const known = ownKeysKnown(this.context, spread, property);
-                    if (!known && allowDictionarySpread === true)
+                    if (!known && declines === "run-time-keys")
                         return undefined;
                     // A `?` field whose storage says whether it is own
                     // becomes a key the record holds while it is present.
@@ -6827,7 +6811,7 @@ export class ExpressionLowerer {
                     spread.recordProperties === undefined
                 ) {
                     if (
-                        allowDictionarySpread &&
+                        declines &&
                         (spread.dataType?.kind === "map" ||
                             (spread.dataType?.kind === "optional" &&
                                 spread.dataType.inner.kind === "map" &&

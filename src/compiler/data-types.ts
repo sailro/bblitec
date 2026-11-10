@@ -11,7 +11,10 @@ import {
     type EngineOwnerStorageDeclaration,
 } from "./engine-owner-storage.js";
 import { demandOrPlan } from "./storage-demand-planner.js";
-import { documentReadClosure } from "./document-read-closure.js";
+import {
+    documentReadClosure,
+    intersectedParts,
+} from "./document-read-closure.js";
 import { StorageDemand } from "./storage-demand.js";
 import { CompileError } from "./compile-error.js";
 import { UNINHABITED_DOM_OBJECTS } from "./data-types/model.js";
@@ -7314,8 +7317,7 @@ export class DataTypeRegistry {
     private intersectsDocumentRecord(type: ts.Type): boolean {
         return (
             this.documentRecords.size !== 0 &&
-            type.isIntersection() &&
-            type.types.some((part) =>
+            intersectedParts(type).some((part) =>
                 this.documentRecords.has(
                     this.structIdentity(
                         this.checker.getNonNullableType(

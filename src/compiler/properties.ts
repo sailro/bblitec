@@ -14,7 +14,7 @@
 // compile-time metadata rather than from a native field, and
 // `camera.target` synthesizes a three-component record. Those differ in
 // what they *do*, not in which field they name.
-import { foreignEventTypes } from "./dom-listeners.js";
+import { EVENT_TYPE_MEMBER, foreignEventTypes } from "./dom-listeners.js";
 import { AbsentRecordProperties } from "./absent-record-properties.js";
 import { readEngineRenderFunction } from "./engine-render-function.js";
 import { elementChildrenSnapshot, readByOneWalk } from "./element-children.js";
@@ -3251,7 +3251,7 @@ export class PropertyAccessLowerer {
                 };
             const declared = readProperty(this.context, owner, property, site);
             if (declared) return declared;
-            if (property === "type")
+            if (property === EVENT_TYPE_MEMBER)
                 return {
                     kind: "string",
                     cpp: `bbl::dom_event_state(${owner.cpp}).type`,

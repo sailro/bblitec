@@ -103,6 +103,11 @@ export function promiseStatic(
 /** A reaction method of the library's Promise. */
 export type PromiseReaction = "then" | "catch" | "finally";
 
+/** Whether `name` is a reaction method: the members a promise has. */
+export function isPromiseReaction(name: string): name is PromiseReaction {
+    return name === "then" || name === "catch" || name === "finally";
+}
+
 /**
  * The reaction member a callee names on a library Promise (`p.then`), or
  * undefined: a user class's own `then` is an ordinary method.
@@ -114,7 +119,7 @@ export function promiseReactionOf(
     const access = namedMember(checker, callee);
     if (!access) return undefined;
     const name = access.name;
-    return (name === "then" || name === "catch" || name === "finally") &&
+    return isPromiseReaction(name) &&
         libraryName(checker.getTypeAtLocation(access.expression)) === "Promise"
         ? { ...access, reaction: name }
         : undefined;
@@ -142,7 +147,7 @@ export function optionalPromiseReactionOf(
     const present = presentMembers(
         checker.getTypeAtLocation(access.expression),
     );
-    return (name === "then" || name === "catch" || name === "finally") &&
+    return isPromiseReaction(name) &&
         present.length > 0 &&
         present.every((member) => libraryName(member) === "Promise")
         ? { ...access, reaction: name }
