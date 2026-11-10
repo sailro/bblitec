@@ -111,10 +111,14 @@ std::string ui_get_attribute(Engine& engine, UiElementHandle element, std::strin
 /** A URL-reflecting attribute: its value parsed against `base`, the value if that fails, else "". */
 std::string ui_get_url_attribute(Engine& engine, UiElementHandle element, std::string_view name,
                                  std::string_view base);
-/** An enumerated attribute limited to known keywords: the matching keyword, else "". */
+/**
+ * An enumerated attribute limited to known keywords: the matching keyword, else
+ * the keyword of its missing and invalid value default (none: "").
+ */
 std::string ui_get_enumerated_attribute(Engine& engine, UiElementHandle element,
                                         std::string_view name,
-                                        std::initializer_list<std::string_view> keywords);
+                                        std::initializer_list<std::string_view> keywords,
+                                        std::string_view missing = {});
 /** `draggable`: the true/false state, else whether the element drags by default. */
 bool ui_get_draggable(Engine& engine, UiElementHandle element);
 /** `spellcheck`: the nearest true/false state of the element and its ancestors, else true. */

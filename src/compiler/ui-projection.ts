@@ -511,6 +511,42 @@ const UI_INPUT_MODES = [
     "search",
 ];
 
+/**
+ * The `type` keywords of the elements whose `type` is an enumerated
+ * attribute limited to known values, the missing and invalid value default
+ * first: the getter answers the state's keyword.
+ */
+const UI_TYPE_KEYWORDS: ReadonlyMap<string, readonly string[]> = new Map([
+    [
+        "input",
+        [
+            "text",
+            "hidden",
+            "search",
+            "tel",
+            "url",
+            "email",
+            "password",
+            "date",
+            "month",
+            "week",
+            "time",
+            "datetime-local",
+            "number",
+            "range",
+            "color",
+            "checkbox",
+            "radio",
+            "file",
+            "submit",
+            "image",
+            "reset",
+            "button",
+        ],
+    ],
+    ["button", ["submit", "reset", "button"]],
+]);
+
 /** A link's `target` names this browsing context: absent, empty, `_self`, `_parent` or `_top`. */
 function linksThisContext(
     attributes: Readonly<Record<string, string>>,
@@ -5623,7 +5659,8 @@ export class UiProjection {
     /**
      * The content attribute a string IDL attribute reflects. `type` is an
      * enumerated attribute whose missing value is not empty, so only its
-     * writes reflect; min/max/step belong to inputs.
+     * writes reflect (`uiIdlAttributeRead` reads it); min/max/step belong
+     * to inputs.
      */
     public reflectedUiAttribute(
         element: Value,
@@ -5751,13 +5788,17 @@ export class UiProjection {
                 site,
                 "Reading autocomplete (the IDL-exposed autofill value) is not lowered natively.",
             );
-        const attribute = this.uiIdlAttribute(
-            element,
-            property,
-            receiver,
-            site,
-        );
-        if (!attribute) return undefined;
+        const types =
+            property === "type"
+                ? [...UI_TYPE_KEYWORDS].find(([tag]) =>
+                      this.declaresUiTags(element, receiver, [tag]),
+                  )?.[1]
+                : undefined;
+        const attribute =
+            types === undefined
+                ? this.uiIdlAttribute(element, property, receiver, site)
+                : undefined;
+        if (!attribute && !types) return undefined;
         const target = `${this.context.requireEngine(element, site)}, ${element.cpp}`;
         const read = (
             cpp: string,
@@ -5769,6 +5810,14 @@ export class UiProjection {
             impure: true,
             ...(kind === "string" ? { freshData: true } : {}),
         });
+        const keywords = (names: readonly string[]): string =>
+            `{${names.map((name) => this.context.cppString(name)).join(", ")}}`;
+        if (types)
+            return read(
+                `bbl::ui_get_enumerated_attribute(${target}, "type", ${keywords(types)}, ${this.context.cppString(types[0]!)})`,
+                "string",
+            );
+        if (!attribute) return undefined;
         switch (attribute.kind) {
             case "script-async":
                 return read(`bbl::ui_script_async(${target})`, "boolean");
@@ -5785,7 +5834,7 @@ export class UiProjection {
                 return read(`bbl::ui_get_spellcheck(${target})`, "boolean");
             case "input-mode":
                 return read(
-                    `bbl::ui_get_enumerated_attribute(${target}, "inputmode", {${UI_INPUT_MODES.map((mode) => this.context.cppString(mode)).join(", ")}})`,
+                    `bbl::ui_get_enumerated_attribute(${target}, "inputmode", ${keywords(UI_INPUT_MODES)})`,
                     "string",
                 );
             case "scroll":

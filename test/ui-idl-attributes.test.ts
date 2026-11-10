@@ -73,6 +73,18 @@ test("element IDL attributes reflect with HTML semantics and reach native contro
         label.htmlFor = "check";
         label.textContent = "Toggle";
         record(label.htmlFor);
+        // type is limited to its element's keywords; a missing or invalid
+        // value is the default state's.
+        const typed = document.createElement("input");
+        record(typed.type + check.type);
+        typed.type = "range";
+        record(typed.type);
+        const send = document.createElement("button");
+        record(send.type);
+        send.type = "button";
+        record(send.type);
+        send.setAttribute("type", "bogus");
+        record(send.type);
         const box = document.createElement("div");
         box.id = "box";
         box.className = "box";
@@ -91,6 +103,8 @@ test("element IDL attributes reflect with HTML semantics and reach native contro
         /bbl::ui_set_max_length\(/,
         /bbl::ui_get_enumerated_attribute\([^;]+"inputmode", \{"none", "text", "tel", "url", "email", "numeric", "decimal", "search"\}\)/,
         /bbl::ui_set_attribute\([^;]+"for", "check"\)/,
+        /bbl::ui_get_enumerated_attribute\([^;]+"type", \{"text", "hidden", [^}]+\}, "text"\)/,
+        /bbl::ui_get_enumerated_attribute\([^;]+"type", \{"submit", "reset", "button"\}, "submit"\)/,
         /bbl::ui_set_scroll_offset\([^;]+, false, 50.0\)/,
     ])
         assert.match(cpp, lowered);
@@ -101,6 +115,24 @@ test("element IDL attributes reflect with HTML semantics and reach native contro
             BBLITE_HAS_DOM_INPUT: 1,
         },
     });
+});
+
+test("an event target narrowed to an input reads its type", () => {
+    const cpp = compileEntry(`
+        const TEXT_INPUT_TYPES = new Set(["text", "search", "number"]);
+        function isTextEntryTarget(target: EventTarget | null): boolean {
+            if (typeof Element === "undefined" || !(target instanceof Element)) return false;
+            if (target instanceof HTMLTextAreaElement) return true;
+            if (target instanceof HTMLInputElement) return TEXT_INPUT_TYPES.has(target.type);
+            return target.closest("[contenteditable='true'], [contenteditable='']") !== null;
+        }
+        let typed = 0;
+        window.addEventListener("keydown", (event) => { if (isTextEntryTarget(event.target)) typed++; });
+    `);
+    assert.match(
+        cpp,
+        /bbl::ui_get_enumerated_attribute\([^;]+"type", \{"text", "hidden", [^}]+\}, "text"\)/,
+    );
 });
 
 test("unrepresented IDL attribute forms refuse", () => {
