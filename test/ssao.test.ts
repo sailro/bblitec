@@ -1,8 +1,15 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { compileSource } from "../src/compiler.js";
+import { LoweringContext } from "../src/lowering/context.js";
+import { FactoryLowerer } from "../src/lowering/factory/material-factories.js";
 import { materialPluginListKey } from "../src/pinned-material-plugins.js";
 import { importPinnedModule } from "../src/pinned-shader-composer.js";
+import {
+    cppFunction,
+    optionalNativeFixtureTools,
+    runGeneratedProgram,
+} from "./native-fixture.js";
 import {
     composeSsaoTask,
     ssaoPbrPluginManifest,
@@ -193,7 +200,7 @@ test("PBR metallic and roughness factors written on a held material are its reco
     assert.match(result.cpp, /\.roughness_factor = /);
 });
 
-test("PBR intensities and reflectance computed at run time are their record's lanes", () => {
+test("PBR intensities and reflectance computed at run time are their record's lanes", (t) => {
     // `_writeMaterialData` copies the three unconditionally and no
     // composition reads them, so only a static value rides the manifest.
     const options = (live: string): string => `
@@ -221,6 +228,56 @@ test("PBR intensities and reflectance computed at run time are their record's la
     assert.deepEqual(
         [fixed.directIntensity, fixed.environmentIntensity, fixed.reflectance],
         [2, 1.2, 1.04],
+    );
+    // The factory the scene links copies each run-time lane into the record
+    // the block writer reads.
+    const native = optionalNativeFixtureTools(false);
+    if (!native) {
+        t.skip("Native fixture compiler unavailable.");
+        return;
+    }
+    const created = compileSource(`
+        import { createEngine, createPbrMaterial } from "@babylonjs/lite";
+        async function main() {
+            const engine = await createEngine({});
+            const zero = Math.random() * 0;
+            const live = createPbrMaterial({ directIntensity: 1.5 + zero, environmentIntensity: 0.25 + zero, reflectance: 0.08 + zero });
+            const fixed = createPbrMaterial({ directIntensity: 2, environmentIntensity: 0.5 });
+            void live; void fixed;
+        }
+        main();
+    `);
+    assert.equal(
+        created.manifest.scenePbrMaterials[0]!.directIntensity,
+        undefined,
+    );
+    assert.equal(created.manifest.scenePbrMaterials[1]!.directIntensity, 2);
+    const checked = created.cpp.replace(
+        "        return 0;",
+        `        const auto& live = bbl::handle_at(v_engine.materials, v_live);
+        assert(live.direct_intensity == 1.5f && live.environment_intensity == 0.25f && live.reflectance == 0.08f);
+        const auto& fixed = bbl::handle_at(v_engine.materials, v_fixed);
+        assert(fixed.direct_intensity == 2.0f && fixed.environment_intensity == 0.5f && fixed.reflectance == 0.04f);
+        return 0;`,
+    );
+    assert.notEqual(checked, created.cpp);
+    const factory = new FactoryLowerer(
+        new LoweringContext(),
+    ).lowerPbrMaterialFactory().source;
+    runGeneratedProgram(
+        native,
+        "pbr-runtime-lanes",
+        `#include <bblite/runtime.hpp>
+#include <bblite/js_data.hpp>
+#include <cassert>
+namespace bbl {
+Engine create_engine(EngineOptions) { return {}; }
+${cppFunction(factory, "[[maybe_unused]] static TextureData solid_texture_data(")}
+${cppFunction(factory, "[[maybe_unused]] static FileTexture retained_solid_texture(")}
+${cppFunction(factory, "MaterialHandle create_pbr_material(")}
+}
+${checked}`,
+        { timeoutMs: 10000, expectedOutput: "" },
     );
 });
 

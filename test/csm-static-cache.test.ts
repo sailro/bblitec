@@ -3,11 +3,14 @@ import test from "node:test";
 import { compileSource } from "../src/compiler.js";
 import { LoweringContext } from "../src/lowering/context.js";
 import { csmRefitLibrary } from "../src/lowering/csm-static-cache.js";
+import { FactoryLowerer } from "../src/lowering/factory/material-factories.js";
 import { importPinnedModule } from "../src/pinned-shader-composer.js";
 import {
+    cppFunction,
     optionalNativeFixtureTools,
     runGeneratedProgram,
 } from "./native-fixture.js";
+import { compileShaderMaterialFixture } from "./shader-material-fixture.js";
 
 interface PinCaster {
     worldMatrixVersion: number;
@@ -309,5 +312,84 @@ await registerSceneWithShadowSupport(scene);
         new RegExp(
             `bbl::set_shader_csm_texture\\(v_engine, \\w+, 0u, ${texture[1]}\\);`,
         ),
+    );
+});
+
+test("a stored generator's receiver texture binds through the native texture setters", (t) => {
+    const native = optionalNativeFixtureTools(false);
+    if (!native) {
+        t.skip("Native fixture compiler unavailable.");
+        return;
+    }
+    // The generator crosses a spread-built record, so the read and the bind
+    // take the handle the record stored.
+    const { compiled, cpp } = compileShaderMaterialFixture(`
+import {addToScene,createSceneContext,createEngine,createDirectionalLight,createCsmDirectionalShadowGenerator,
+createShaderMaterial,getCsmReceiverTexture,setShaderTexture,
+type ShaderMaterial,type ShadowGenerator,type Texture2D} from "@babylonjs/lite";
+interface DecorOptions{enabled?:boolean;capacity?:number;shadow?:ShadowGenerator}
+interface HostOptions{decor?:{enabled?:boolean};shadow?:ShadowGenerator}
+function receiverTexture(shadow:ShadowGenerator):Texture2D{return getCsmReceiverTexture(shadow);}
+function wire(shadow:ShadowGenerator|null|undefined,materials:readonly ShaderMaterial[]):void{
+    if(!shadow||materials.length===0)return;
+    const texture=receiverTexture(shadow);
+    for(const material of materials)setShaderTexture(material,"csmShadow",texture);
+}
+function createDecor(options:DecorOptions,materials:readonly ShaderMaterial[]):void{wire(options.shadow,materials);}
+function createHost(options:HostOptions,materials:readonly ShaderMaterial[]):void{
+    const decor=options.decor??{enabled:false};
+    createDecor({...(decor.enabled!==false?{capacity:16}:{}),...decor,shadow:options.shadow},materials);
+}
+async function main(){
+    const engine=await createEngine({});
+    const scene=createSceneContext(engine);
+    const light=createDirectionalLight([0,-1,-1],1);
+    addToScene(scene,light);
+    const sg=createCsmDirectionalShadowGenerator(engine,light,{mapSize:256,numCascades:2,lambda:0.5,
+        cascadeBlendPercentage:0.1,bias:0.001,darkness:0.1,frustumEdgeFalloff:0.2});
+    const receiver=createShaderMaterial({name:"receiver",
+        vertexSource:"@vertex fn main(@location(0) position:vec3<f32>)->@builtin(position) vec4<f32>{return sceneUniforms.viewProjection*vec4<f32>(position,1.0);}",
+        fragmentSource:"@fragment fn main(@builtin(position) at:vec4<f32>)->@location(0) vec4<f32>{return vec4<f32>(vec3<f32>(textureSampleCompareLevel(csmShadow,csmShadowSampler,at.xy*0.001,0,0.5)),1.0);}",
+        attributes:["position"],uniforms:["viewProjection"],
+        samplers:[{name:"csmShadow",sampleType:"depth",viewDimension:"2d-array",comparison:true}]});
+    const materials:ShaderMaterial[]=[receiver];
+    createHost({shadow:sg,decor:{enabled:false}},materials);
+}
+main();
+`);
+    // The fixture names every option, so the pinned defaults are unread.
+    const checked = compiled.cpp
+        .replace("#include <bblite/upstream/pinned_shadow.hpp>", "")
+        .replace(
+            "        return 0;",
+            `        assert(bbl::handle_at(v_engine.shadow_generators, v_sg).csm_receiver_texture_read);
+        const auto& bound = bbl::handle_at(v_engine.materials, v_receiver).shader_csm_textures;
+        assert(bound.size() == 1 && bound[0].value == v_sg.value);
+        return 0;`,
+        );
+    assert.ok(checked.includes("csm_receiver_texture_read"));
+    const factory = new FactoryLowerer(
+        new LoweringContext(),
+    ).lowerShaderMaterialFactory().source;
+    runGeneratedProgram(
+        native,
+        "csm-receiver-stored-generator",
+        `${cpp}
+namespace bbl {
+Scene create_scene_context(Engine& engine) { Scene scene; scene.engine = &engine; return scene; }
+LightHandle create_directional_light(Engine& engine, Vec3, double) {
+    engine.lights.emplace_back();
+    return LightHandle{static_cast<std::uint32_t>(engine.lights.size() - 1)};
+}
+void add_to_scene(Scene& scene, LightHandle light) { scene.lights.push_back(light); }
+ShadowGeneratorHandle create_csm_directional_shadow_generator(Engine& engine, LightHandle, CsmDirectionalShadowOptions) {
+    engine.shadow_generators.emplace_back();
+    engine.shadow_generators.back().filter = ShadowFilter::csm_directional;
+    return ShadowGeneratorHandle{static_cast<std::uint32_t>(engine.shadow_generators.size() - 1)};
+}
+${cppFunction(factory, "void set_shader_csm_texture(")}
+}
+${checked}`,
+        { timeoutMs: 10000, expectedOutput: "" },
     );
 });
