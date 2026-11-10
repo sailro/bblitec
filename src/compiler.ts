@@ -1324,6 +1324,7 @@ class Compiler implements LoweringServices {
                     node,
                 ),
             (value, name, node) => this.structNumber(value, name, node),
+            this.absenceTags,
         );
     }
 

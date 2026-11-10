@@ -1,5 +1,6 @@
 import { someAnalysisNode } from "./analysis-walk.js";
 import { traceSourceNode } from "./source-trace.js";
+import { refuseEitherAbsence } from "./absence-tag-storage.js";
 
 /**
  * The `Object` statics that return their argument unchanged: freezing,
@@ -468,7 +469,30 @@ export class StaticEvaluator {
             name: string,
             node: ts.Node,
         ) => Value | undefined,
+        /** The storages already tagged to tell `null` from `undefined`. */
+        private readonly absenceTags: ReadonlySet<ts.Declaration>,
     ) {}
+
+    /**
+     * The number an optional number coerces to (`numberFromOptionalCpp`).
+     * Where its one empty state holds both absent values, which read 0 and
+     * NaN, its storage is demanded tagged; only an untaggable one refuses.
+     */
+    private numberFromOptional(value: Value, node: ts.Node): string {
+        return (
+            numberFromOptionalCpp(this.checker, value, node) ??
+            refuseEitherAbsence(
+                {
+                    checker: this.checker,
+                    absenceTags: this.absenceTags,
+                    fail: this.fail,
+                },
+                node,
+                value,
+                "Numeric coercion requires distinguishable null and undefined storage.",
+            )
+        );
+    }
 
     /** @unjournaled A module constant's required text, fixed when first read: JS evaluates it once. */
     private readonly constantTexts = new Map<ts.Symbol, string>();
@@ -792,12 +816,7 @@ export class StaticEvaluator {
                 return undefined;
             }
             this.onJsData();
-            const compiled =
-                numberFromOptionalCpp(this.checker, value, node) ??
-                this.fail(
-                    expression,
-                    "Numeric coercion requires distinguishable null and undefined storage.",
-                );
+            const compiled = this.numberFromOptional(value, node);
             return precision === "float"
                 ? `static_cast<float>(${compiled})`
                 : compiled;
@@ -935,16 +954,10 @@ export class StaticEvaluator {
                 operand.dataType.inner.kind === "number"
             ) {
                 this.onJsData();
-                const converted =
-                    numberFromOptionalCpp(
-                        this.checker,
-                        operand,
-                        unwrapExpression(unwrapped.operand),
-                    ) ??
-                    this.fail(
-                        unwrapped.operand,
-                        "Numeric coercion requires distinguishable null and undefined storage.",
-                    );
+                const converted = this.numberFromOptional(
+                    operand,
+                    unwrapExpression(unwrapped.operand),
+                );
                 return `(${operator}${precision === "float" ? `static_cast<float>(${converted})` : converted})`;
             }
             // Unary plus and minus apply ToNumber, which `castNumber` is for

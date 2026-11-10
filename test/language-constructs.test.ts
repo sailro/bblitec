@@ -3629,6 +3629,22 @@ test("a run-time key selecting fields of different types refuses", () => {
 });
 
 check(
+    "optional-number-coerced-tells-null-from-undefined",
+    `
+    interface Rec { born: number; expires?: number | null; policy: "durable" | "fresh" }
+    function normalize(record: Rec): number | null {
+        const born = Math.max(0, Math.trunc(record.born));
+        return record.policy === "durable" ? null : Number.isFinite(record.expires) ? Math.max(1, Math.trunc(record.expires!)) : born + 1;
+    }
+    const records: Rec[] = [{ born: 2, policy: "fresh" }, { born: 3, expires: 7.5, policy: "fresh" }, { born: 1, expires: null, policy: "fresh" }, { born: 1, expires: 4, policy: "durable" }];
+    const out = records.map((record) => String(normalize(record))).join(",");
+    if (out !== "3,7,2,null") throw new Error(out);
+    const absent = records.map((record) => String(Math.trunc(record.expires!))).join(",");
+    if (absent !== "NaN,7,0,4") throw new Error(absent);
+`,
+);
+
+check(
     "absent-value-asserted-present-and-passed-on",
     `
     function reach(packed: Float32Array, stride: number): number { const declared = Math.max(0, Math.trunc(packed[0] ?? 0)); return declared * stride; }
