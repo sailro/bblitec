@@ -67,11 +67,21 @@ test("conflicting scalar dictionary demands refuse without changing the retained
             new ClassHierarchy(frontend.checker, frontend.program),
         );
         assert.throws(
-            () => registry.prepareRecordComponents(new Map(), [conflict]),
+            () =>
+                registry.prepareRecordComponents(
+                    new Map(),
+                    [conflict],
+                    frontend.program,
+                ),
             /conflicting scalar dictionary storage/,
         );
         assert.throws(
-            () => registry.prepareRecordComponents(new Map(), [previous, next]),
+            () =>
+                registry.prepareRecordComponents(
+                    new Map(),
+                    [previous, next],
+                    frontend.program,
+                ),
             /conflicting scalar dictionary storage/,
         );
     }

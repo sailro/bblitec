@@ -11,6 +11,7 @@ import {
     type EngineOwnerStorageDeclaration,
 } from "./engine-owner-storage.js";
 import { demandOrPlan } from "./storage-demand-planner.js";
+import { documentReadClosure } from "./document-read-closure.js";
 import { StorageDemand } from "./storage-demand.js";
 import { CompileError } from "./compile-error.js";
 import { UNINHABITED_DOM_OBJECTS } from "./data-types/model.js";
@@ -2099,6 +2100,7 @@ export class DataTypeRegistry {
     public prepareRecordComponents(
         components: ReadonlyMap<RecordComponentKey, RecordComponent>,
         demands: Iterable<NativeRecordStorageDemand>,
+        program: ts.Program,
     ): void {
         this.recordComponents = components;
         const joins = new Map<ts.Type, RecordJoin[]>();
@@ -2139,10 +2141,20 @@ export class DataTypeRegistry {
                     if (!own) this.prototypeAccessors.add(declaration);
                     if (setter) this.setterProperties.add(declaration);
                 }
+            // A record type read out of a document is a document with it
+            // (`documentReadClosure`).
             if (demand.document)
-                this.withRecordDemand(demand, () =>
-                    this.documentRecords.add(this.structIdentity(demand.type)),
-                );
+                this.withRecordDemand(demand, () => {
+                    for (const record of [
+                        demand.type,
+                        ...documentReadClosure(
+                            this.checker,
+                            program,
+                            demand.type,
+                        ),
+                    ])
+                        this.documentRecords.add(this.structIdentity(record));
+                });
             if (demand.documentDictionary)
                 this.withRecordDemand(demand, () =>
                     this.documentDictionaries.add(

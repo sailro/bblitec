@@ -19,6 +19,7 @@ import {
     optionalNativeFixtureTools,
     runGeneratedProgram,
 } from "./native-fixture.js";
+import { runSelfCheckingProgram } from "./self-checking-program.js";
 
 const state = `
     interface State { read<T>(fn:()=>T):T; ready():boolean; }
@@ -885,5 +886,47 @@ test("a record of literal tables demands every table's object storage in one rep
         {
             expectedOutput: "",
         },
+    );
+});
+
+test("a record type read out of a document is a document with it, in one replay", async (t) => {
+    // Every type below is read out of the parsed save and stored as itself:
+    // each was one replay of its own, as its first value arrived.
+    const source = `
+    interface Door { open: boolean; label: string }
+    interface Lamp { lit: boolean }
+    interface Room { name: string; doors: Door[]; main?: Door; lamps: Record<string, Lamp> }
+    interface Owner { name: string; age: number }
+    interface House { rooms: Room[]; owner: Owner }
+    interface Save { version: number; house: House }
+    const text = '{"version":2,"house":{"rooms":[{"name":"hall","doors":[{"open":true,"label":"front"}],"main":{"open":false,"label":"m"},"lamps":{"a":{"lit":true}}}],"owner":{"name":"Ada","age":36}}}';
+    const saves: Save[] = [];
+    saves.push(JSON.parse(text) as Save);
+    const doors: Door[] = [];
+    const rooms: Room[] = [];
+    const owners: Owner[] = [];
+    const lamps: Lamp[] = [];
+    const houses: House[] = [];
+    for (const save of saves) {
+        houses.push(save.house);
+        owners.push(save.house.owner);
+        for (const room of save.house.rooms) {
+            rooms.push(room);
+            if (room.main) doors.push(room.main);
+            for (const door of room.doors) doors.push(door);
+            for (const key of Object.keys(room.lamps)) lamps.push(room.lamps[key]!);
+        }
+    }
+    // A literal of a type so stored is the same kind of object.
+    doors.push({ open: true, label: "side" });
+    const out = houses.length + "|" + owners[0]!.name + "|" + rooms[0]!.name + "|" + doors.map((door) => door.label).join("+") + "|" + lamps[0]!.lit;
+    if (out !== "1|Ada|hall|m+front+side|true") throw new Error(out);
+`;
+    const strict = measured(false, () => compileSource(source));
+    assert.equal(strict.constructions, 2);
+    await runSelfCheckingProgram(
+        t,
+        "storage-demand-planner/read-closure",
+        source,
     );
 });

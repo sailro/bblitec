@@ -71,6 +71,8 @@ Rules:
 - `unknown[]` fields require finite source element layouts; object/class initializers and declaration-matched aliases contribute.
 - A record binding whose member is written by a run-time key or replaced takes native storage; its fields typed
   `Record<string, unknown>` are documents.
+- A record type a parsed document is stored as is a document, with every record type the program reads out of it
+  (members, array elements, dictionary values).
 - Reached `Iterable<T>` parameters specialize to concrete collection storage, preserving iterator cursor identity.
 - A module `let` assigned only by unreachable functions keeps its initializer. Strict comparisons fold through `const`
   aliases, absent `??` lefts and generation-known booleans.

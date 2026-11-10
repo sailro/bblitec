@@ -1515,6 +1515,7 @@ class Compiler implements LoweringServices {
                 ),
             ),
             this.ownedRecords.values(),
+            this.program,
         );
         // A demand no native object can hold stands refused: the replay
         // drops it, and a statement demanding it again refuses instead of
