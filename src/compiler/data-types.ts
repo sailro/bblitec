@@ -6861,8 +6861,29 @@ export class DataTypeRegistry {
                           )
                         : undefined;
                     // A field only some arms declare has no checker-wide
-                    // property union. Its plain-record payloads can still
-                    // share one layout, preserving each payload's identity.
+                    // property union. Arms storing it one way, some with an
+                    // empty state (required in one arm, `?` in another),
+                    // store it with that state.
+                    const nullable = candidates.find(
+                        (candidate) => candidate?.kind === "optional",
+                    );
+                    if (
+                        !mapped &&
+                        nullable?.kind === "optional" &&
+                        candidates.every(
+                            (candidate) =>
+                                candidate &&
+                                dataTypesEqual(
+                                    candidate.kind === "optional"
+                                        ? candidate.inner
+                                        : candidate,
+                                    nullable.inner,
+                                ),
+                        )
+                    )
+                        mapped = nullable;
+                    // Its plain-record payloads can still share one layout,
+                    // preserving each payload's identity.
                     if (
                         !mapped &&
                         armFields &&
