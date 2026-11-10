@@ -7133,6 +7133,27 @@ export class DataTypeRegistry {
         };
     }
 
+    /**
+     * Whether `type` is an intersection with a record type stored as
+     * documents (`T & { id: number }` over a parsed `T`): its records are
+     * that type's records too, so they are documents.
+     */
+    private intersectsDocumentRecord(type: ts.Type): boolean {
+        return (
+            this.documentRecords.size !== 0 &&
+            type.isIntersection() &&
+            type.types.some((part) =>
+                this.documentRecords.has(
+                    this.structIdentity(
+                        this.checker.getNonNullableType(
+                            this.resolveTypeParameter(part),
+                        ),
+                    ),
+                ),
+            )
+        );
+    }
+
     private fromStructType(
         type: ts.Type,
         node: ts.Node,
@@ -7156,7 +7177,11 @@ export class DataTypeRegistry {
                 this.fail(node, CONFLICTING_RECORD_VIEWS);
             return view.storage;
         }
-        if (this.documentRecords.has(identity)) return { kind: "json" };
+        if (
+            this.documentRecords.has(identity) ||
+            this.intersectsDocumentRecord(type)
+        )
+            return { kind: "json" };
         const dictionary = this.recordDictionaries.get(identity);
         if (dictionary)
             return {

@@ -46,12 +46,20 @@ function heldRecords(
 }
 
 /**
- * The record types whose values are documents once `record`'s are: every
- * record type a property the program reads off a `record` holds
- * (`heldRecords`), and so on from each. A value read out of a document is a
- * document and a record type has one storage, so these types are stored as
- * documents with `record` rather than one compile attempt later each, when
- * their first value arrives.
+ * The record types whose values are documents once `record`'s are, read
+ * down and up:
+ *
+ * - every record type a property the program reads off a `record` holds
+ *   (`heldRecords`), and so on from each (`readOut`): a value read out of
+ *   a document is a document;
+ * - where `record` is itself read out of a type the program asserts untyped
+ *   data as (`JSON.parse(text) as Save`), that type and everything read
+ *   out of it: the document a `record` arrived in is one of those, however
+ *   far down its first stored value was found.
+ *
+ * A record type has one storage, so these types are stored as documents
+ * with `record` rather than one compile attempt later each, when their
+ * first value arrives.
  */
 export function documentReadClosure(
     checker: ts.TypeChecker,
@@ -62,6 +70,41 @@ export function documentReadClosure(
     if (!known) {
         known = new Map<ts.Type, readonly ts.Type[]>();
         closures.set(program, known);
+    }
+    const answered = known.get(record);
+    if (answered) return answered;
+    const closure = new Set(readOut(checker, program, record));
+    for (const { asserted, open } of programObservations(program).assertions) {
+        if (!open) continue;
+        for (const parsed of heldRecords(checker, asserted)) {
+            if (parsed === record || closure.has(parsed)) continue;
+            const below = readOut(checker, program, parsed);
+            if (!below.includes(record)) continue;
+            closure.add(parsed);
+            for (const held of below) if (held !== record) closure.add(held);
+        }
+    }
+    const answer = [...closure];
+    known.set(record, answer);
+    return answer;
+}
+
+/**
+ * @unjournaled `readOut` answers, by program and record type: a function
+ * of the checked program.
+ */
+const readOuts = new WeakMap<ts.Program, Map<ts.Type, readonly ts.Type[]>>();
+
+/** The record types the program reads out of a `record`, and out of each of those. */
+function readOut(
+    checker: ts.TypeChecker,
+    program: ts.Program,
+    record: ts.Type,
+): readonly ts.Type[] {
+    let known = readOuts.get(program);
+    if (!known) {
+        known = new Map<ts.Type, readonly ts.Type[]>();
+        readOuts.set(program, known);
     }
     const answered = known.get(record);
     if (answered) return answered;

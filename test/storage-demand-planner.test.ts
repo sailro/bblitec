@@ -930,3 +930,38 @@ test("a record type read out of a document is a document with it, in one replay"
         source,
     );
 });
+
+test("a record read out of an asserted parse is a document with everything read out of that parse", async (t) => {
+    // The save is only asserted and read; its first stored value is a room,
+    // far below it. The lamps and owners are siblings of the room, and the
+    // helper's `T & { id: number }` holds an owner's own properties.
+    const source = `
+    interface Door { open: boolean; label: string }
+    interface Lamp { lit: boolean }
+    interface Room { name: string; doors: Door[]; main?: Door; lamps: Record<string, Lamp> }
+    interface Owner { name: string; age: number }
+    interface Save { version: number; rooms: Room[]; owners: Owner[]; lamps: Lamp[] }
+    const text = '{"version":2,"rooms":[{"name":"hall","doors":[{"open":true,"label":"front"}],"main":{"open":false,"label":"m"},"lamps":{"a":{"lit":true}}}],"owners":[{"name":"Ada","age":36}],"lamps":[{"lit":false}]}';
+    function withIds<T>(input: readonly T[]): Array<T & { id: number }> { return input.map((item, index) => ({ ...item, id: index + 1 })); }
+    function migrate(d: Partial<Save>): string {
+        const rooms: Room[] = [];
+        for (const room of d.rooms ?? []) rooms.push(room);
+        const owners = withIds(d.owners ?? []);
+        const lamps: Lamp[] = [];
+        for (const lamp of d.lamps ?? []) lamps.push(lamp);
+        const doors: Door[] = [];
+        for (const room of rooms) for (const door of room.doors) doors.push(door);
+        return rooms[0]!.name + "|" + owners[0]!.name + owners[0]!.id + "|" + lamps.length + "|" + doors[0]!.label;
+    }
+    const parsed: unknown = JSON.parse(text);
+    const out = migrate(parsed as Partial<Save>);
+    if (out !== "hall|Ada1|1|front") throw new Error(out);
+`;
+    const strict = measured(false, () => compileSource(source));
+    assert.equal(strict.constructions, 2);
+    await runSelfCheckingProgram(
+        t,
+        "storage-demand-planner/parse-roots",
+        source,
+    );
+});
