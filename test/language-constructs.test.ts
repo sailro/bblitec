@@ -3834,6 +3834,37 @@ check(
 `,
 );
 
+// One arm names a single literal, another a set of them, both optional:
+// the field stores every arm's literals with the one empty state.
+check(
+    "union-field-with-different-optional-literals-across-arms",
+    `
+    type Structure = "house" | "tower" | "wall";
+    interface Segment { structure?: Structure; run?: number }
+    type Source =
+        | { kind: "polygon"; index: number; structure?: "house"; run?: number }
+        | { kind: "segment"; index: number; structure?: Segment["structure"]; run?: number }
+        | { kind: "blocker"; index: number }
+        | { kind: "water" };
+    const flag = Math.random() >= 0;
+    const sources = new Map<string, readonly Source[]>();
+    const segments: Segment[] = [{ structure: flag ? "tower" : "wall", run: 2 }, {}];
+    function trace(key: string, found: readonly Source[]): void { sources.set(key, found.slice()); }
+    trace("a", [{ kind: "polygon", index: 0, structure: "house" }, { kind: "segment", index: 1, structure: segments[0]!.structure, run: segments[0]!.run }, { kind: "water" }]);
+    trace("b", [{ kind: "segment", index: 2, structure: segments[1]!.structure }, { kind: "blocker", index: 3 }]);
+    const describe = (source: Source): string =>
+        source.kind === "polygon" || source.kind === "segment"
+            ? source.kind + ":" + source.index + ":" + (source.structure ?? "-") + ":" + (source.run ?? "-")
+            : source.kind === "blocker"
+              ? "blocker:" + source.index
+              : source.kind;
+    const out = (sources.get("a") ?? []).map(describe).join() + "|" + (sources.get("b") ?? []).map(describe).join();
+    if (out !== "polygon:0:house:-,segment:1:tower:2,water|segment:2:-:-,blocker:3") throw new Error(out);
+    const towers = (sources.get("a") ?? []).filter((source) => source.kind === "segment" && source.structure === "tower").length;
+    if (towers !== 1) throw new Error("towers " + towers);
+`,
+);
+
 check(
     "union-field-required-optional-and-absent-across-arms",
     `

@@ -6918,6 +6918,38 @@ export class DataTypeRegistry {
                         )
                     )
                         mapped = nullable;
+                    // Arms storing string literals, some with that empty
+                    // state (`structure?: "house"` in one arm, another
+                    // literal set in the next), store every arm's literals
+                    // with it.
+                    const present = literalStrings.filter(
+                        (propertyType) =>
+                            (propertyType.flags & ts.TypeFlags.Undefined) === 0,
+                    );
+                    if (
+                        !mapped &&
+                        nullable?.kind === "optional" &&
+                        present.length > 0 &&
+                        present.every(
+                            (propertyType) =>
+                                (propertyType.flags &
+                                    ts.TypeFlags.StringLiteral) !==
+                                0,
+                        )
+                    )
+                        mapped = {
+                            ...nullable,
+                            inner: this.registerEnum(type, [
+                                ...new Set(
+                                    present.map(
+                                        (propertyType) =>
+                                            (
+                                                propertyType as ts.StringLiteralType
+                                            ).value,
+                                    ),
+                                ),
+                            ]),
+                        };
                     // Its plain-record payloads can still share one layout,
                     // preserving each payload's identity.
                     if (
