@@ -374,7 +374,8 @@ type OpaqueEngineKind =
     | "scale-gizmo"
     | "bounding-box-gizmo"
     | "camera-gizmo"
-    | "light-gizmo";
+    | "light-gizmo"
+    | "render-target-texture";
 
 /**
  * The pinned type name and the native record behind each of them.
@@ -416,6 +417,11 @@ const opaqueEngineTypes: Record<
     },
     CameraGizmo: { kind: "camera-gizmo", cppType: "bbl::CameraGizmoHandle" },
     LightGizmo: { kind: "light-gizmo", cppType: "bbl::LightGizmoHandle" },
+    // `createRenderTargetTexture`'s result: its target and sampled facades.
+    RenderTargetTextureResult: {
+        kind: "render-target-texture",
+        cppType: "bbl::RenderTargetTexture",
+    },
 };
 
 /**

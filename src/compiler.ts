@@ -225,6 +225,7 @@ import {
     type DataType,
     type TypedArrayKind,
 } from "./compiler/data-types.js";
+import { metadataFieldsForKind } from "./compiler/values/metadata.js";
 import { engineFieldIdentities } from "./compiler/engine-field-identities.js";
 import {
     ExpressionLowerer,
@@ -8552,18 +8553,24 @@ class Compiler implements LoweringServices {
         ) {
             writable(target).engineCpp = value.engineCpp;
         }
-        if (target.kind === "scene") {
-            for (const key of [
-                "sceneEnvironmentState",
-                "sceneTopologyState",
-                "sceneCamera",
-                "surfaceCanvas",
-                "msaaSamples",
-            ] as const) {
-                const metadata = value[key];
-                if (metadata === undefined) delete writable(target)[key];
-                else Object.assign(writable(target), { [key]: metadata });
-            }
+        // A scene's state, and the attachments a render-target texture
+        // declared (what its `.texture` read samples), ride the name.
+        const carried =
+            target.kind === "scene"
+                ? ([
+                      "sceneEnvironmentState",
+                      "sceneTopologyState",
+                      "sceneCamera",
+                      "surfaceCanvas",
+                      "msaaSamples",
+                  ] as const)
+                : target.kind === "render-target-texture"
+                  ? metadataFieldsForKind(target.kind)
+                  : [];
+        for (const key of carried) {
+            const metadata = value[key];
+            if (metadata === undefined) delete writable(target)[key];
+            else Object.assign(writable(target), { [key]: metadata });
         }
         // A declaration without an initializer is represented by optional
         // native storage, but assigning into that storage must still make the

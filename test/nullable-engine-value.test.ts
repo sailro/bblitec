@@ -114,6 +114,53 @@ test("one widget's storage refuses another widget's handle", () => {
     );
 });
 
+test("a render-target texture assigned inside a try is held by its name", () => {
+    // The result has no data type either; its declaration is the storage a
+    // `try` body fills, and its attachments ride the name to the reads.
+    const result = compileSource(`
+        import {
+            addTask, createEngine, createRenderTask, createSceneContext,
+            createSurfaceRenderTargetTexture, setShaderTexture, createShaderMaterial,
+            withSampledDepthTexture,
+        } from "@babylonjs/lite";
+        const canvas = document.getElementById("renderCanvas") as HTMLCanvasElement;
+        const engine = await createEngine(canvas);
+        const scene = createSceneContext(engine);
+        function createMask(): boolean {
+            let mask: ReturnType<typeof createSurfaceRenderTargetTexture>;
+            try {
+                mask = createSurfaceRenderTargetTexture(engine, {
+                    lbl: "mask", format: "r8unorm", dFormat: "depth24plus", samples: 1, size: scene.surface,
+                }, withSampledDepthTexture);
+            } catch (error) {
+                console.info("mask unavailable", error);
+                return false;
+            }
+            addTask(scene, createRenderTask({ name: "mask", rt: mask.rt, clr: true }, engine, scene));
+            const reader = createShaderMaterial({
+                name: "reader",
+                vertexSource: "@vertex fn main(@location(0) position: vec3<f32>) -> @builtin(position) vec4<f32> { return sceneUniforms.viewProjection * vec4<f32>(position, 1.0); }",
+                fragmentSource: "@fragment fn main(@builtin(position) at: vec4<f32>) -> @location(0) vec4<f32> { return textureSample(coverage, coverageSampler, at.xy * 0.001); }",
+                attributes: ["position"], uniforms: ["viewProjection"], samplers: ["coverage"],
+            });
+            setShaderTexture(reader, "coverage", mask.texture);
+            return true;
+        }
+        if (!createMask()) throw new Error("mask");
+    `);
+    const storage =
+        /std::optional<bbl::RenderTargetTexture> (v_\w*mask)\{\};/.exec(
+            result.cpp,
+        )?.[1];
+    assert.ok(storage, "the declaration is empty optional storage");
+    assert.ok(
+        result.cpp.includes(`${storage} = bbl::create_render_target_texture(`),
+        "the factory result lands in the storage",
+    );
+    assert.ok(result.cpp.includes(`(*${storage}).rt`));
+    assert.ok(result.cpp.includes(`, 0u, (*${storage}).texture);`));
+});
+
 test("a scene's own type of the same name is not an engine value", () => {
     // The table is keyed by the pinned typings, not by a name: a source
     // interface that happens to be called PositionGizmo stays plain data and
