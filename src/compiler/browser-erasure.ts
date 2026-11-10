@@ -21,7 +21,11 @@ import {
 // the configured search string. Unrepresented browser instrumentation is
 // handled separately from observable platform operations.
 import ts from "typescript";
-import { undefinedValue, absenceOfNull } from "./values/model.js";
+import {
+    undefinedValue,
+    absenceOfNull,
+    isAbsentValue,
+} from "./values/model.js";
 import { cancelledSchedulerOf, schedulerOf } from "./schedulers.js";
 import { forEachAnalysisNode } from "./analysis-walk.js";
 import {
@@ -1318,6 +1322,23 @@ export class BrowserErasure {
         return false;
     }
 
+    /** Whether a `?.` link of an optional chain has a receiver name bound to an absent value. */
+    private stoppedByAbsentName(expression: ts.Expression): boolean {
+        for (
+            let link = expression;
+            ts.isOptionalChain(link);
+            link = link.expression
+        ) {
+            if (ts.isNonNullChain(link) || !link.questionDotToken) continue;
+            const receiver = this.context.unwrap(link.expression);
+            const bound = ts.isIdentifier(receiver)
+                ? this.context.bindings.lookupOptional(receiver)
+                : undefined;
+            if (bound && isAbsentValue(bound)) return true;
+        }
+        return false;
+    }
+
     private browserValueOf(expression: ts.Expression): Value["browserValue"] {
         return this.evaluateOnce(
             expression,
@@ -1333,6 +1354,10 @@ export class BrowserErasure {
         // global object, which every realm has: not browser state.
         if (this.languageGlobalRead(unwrapped)) return false;
         if (hasDomLowering(this.context.checker, unwrapped)) return false;
+        // A chain stopped by a name generation knows absent (an omitted
+        // `signal?: AbortSignal`) is `undefined`, whatever library declares
+        // the members it never reads.
+        if (this.stoppedByAbsentName(unwrapped)) return false;
         // A node or element interface test of a native target is the
         // target's own answer (`compileDomInstanceOf`).
         if (
