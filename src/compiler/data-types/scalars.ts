@@ -90,6 +90,7 @@ export const scalarKinds: DataKindOperations<
     | "number"
     | "symbol"
     | "bigint"
+    | "prototype"
     | "i64array"
     | "u64array"
     | "boolean"
@@ -237,6 +238,7 @@ export const scalarKinds: DataKindOperations<
             implicitString: true,
         },
     },
+    prototype: reseatingLeaf("bbl::js::Prototype", "proto"),
     i64array: {
         ...reseatingLeaf("bbl::js::I64Array", "i64", true),
         sharesStorage: true,

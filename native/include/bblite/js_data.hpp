@@ -1261,6 +1261,12 @@ template <typename T>
     return target[index];
 }
 
+/**
+ * A prototype object `Object.getPrototypeOf` answers with: an identity that compares. Every
+ * object, array and primitive has its kind's in a program that gives no object another one.
+ */
+enum class Prototype : std::uint8_t { object, array, string, number, boolean };
+
 /** A read through null or undefined: JavaScript's TypeError. */
 [[noreturn]] inline void
 throw_nullish_access(const char* message = "Cannot read properties of null or undefined") {

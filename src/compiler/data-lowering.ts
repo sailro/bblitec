@@ -70,7 +70,6 @@ import {
     libraryName,
     memberAccessors,
     namedMember,
-    isLibraryStatic,
     libraryStaticMember,
     arrayMemberName,
     isSymbolPropertyKey,
@@ -79,6 +78,11 @@ import {
     compileCollectionIterable,
     compileMapInitializer,
 } from "./collection-methods.js";
+import {
+    knownPrototype,
+    prototypeOfArgument,
+    readsPrototype,
+} from "./prototype-values.js";
 import { requireObservedPromise } from "./promise-observations.js";
 import {
     isDocumentRecordDemand,
@@ -664,6 +668,7 @@ interface DataLoweringContext extends Pick<
     | "sceneManifest"
     | "propertyAccess"
     | "resolveStaticExpression"
+    | "constantNameValue"
     | "executedModuleConstantElements"
     | "executedModuleConstantMapEntry"
     | "executedInitializerElements"
@@ -777,6 +782,24 @@ interface PairedAbsence {
 interface JsonAssignmentTarget {
     readonly owner: string;
     readonly key: string;
+}
+
+/**
+ * A place holding a document that an assignment reads and stores back to
+ * (compound, logical, `++`/`--`): the read, and the statement storing the
+ * next value.
+ */
+interface JsonPlace {
+    readonly read: string;
+    store(next: string): string;
+}
+
+/** A document's property as such a place. */
+function jsonPropertyPlace(target: JsonAssignmentTarget): JsonPlace {
+    return {
+        read: `${target.owner}.read_property(${target.key})`,
+        store: (next) => `${target.owner}.set(${target.key}, ${next});`,
+    };
 }
 
 /** A Map/Record entry with a number value, absent until set. */
@@ -927,15 +950,11 @@ export class DataLowerer {
             if (!operator) return undefined;
             const left = this.context.unwrap(expression.left);
             return this.withStoreKeysHeld(expression, () => {
-                const target =
-                    ts.isPropertyAccessExpression(left) ||
-                    ts.isElementAccessExpression(left)
-                        ? this.jsonAssignmentTarget(left)
-                        : undefined;
-                return target
+                const place = this.jsonPlace(left);
+                return place
                     ? this.emitJsonCompoundAssignment(
                           expression,
-                          target,
+                          place,
                           operator,
                       )
                     : this.compileCompoundStoreValue(expression, left);
@@ -1548,8 +1567,10 @@ export class DataLowerer {
                         node,
                         "Promise resolver requires an owned result type.",
                     );
+                // A resolving function called with no argument resolves
+                // with undefined.
                 argument = this.compileKnownValueForSink(
-                    value,
+                    values[0] ?? undefinedValue(),
                     result.dataType,
                     node,
                 );
@@ -3286,7 +3307,18 @@ export class DataLowerer {
                 access.expression,
             );
             const notNullish = `(!(${selected.cpp}).is_null() && !(${selected.cpp}).is_undefined())`;
-            present = access.questionDotToken
+            // A member call's `?.` sits on its callee (`owner?.method()`).
+            const link =
+                ts.isCallExpression(access) && !access.questionDotToken
+                    ? this.context.unwrap(access.expression)
+                    : access;
+            present = (
+                ts.isPropertyAccessExpression(link) ||
+                ts.isElementAccessExpression(link) ||
+                ts.isCallExpression(link)
+                    ? link.questionDotToken
+                    : undefined
+            )
                 ? ownerFound
                     ? `(${ownerFound} && ${notNullish})`
                     : notNullish
@@ -5514,9 +5546,32 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
     }
 
     /**
-     * A read of a property the record's type admits as absent (optional,
-     * or typed to include undefined) and its struct does not store: the
-     * record lacks it, so the read is `undefined`. A computed receiver
+     * Whether the record type `owner` is read as admits a property as
+     * absent: `symbol` declares it optional or typed to include undefined,
+     * or, where the type declares no such property, its string index holds
+     * values that do.
+     */
+    private admitsAbsentProperty(
+        owner: ts.Expression,
+        symbol: ts.Symbol | undefined,
+    ): boolean {
+        const checker = this.context.checker;
+        if (symbol)
+            return (
+                (symbol.flags & ts.SymbolFlags.Optional) !== 0 ||
+                admitsUndefined(checker.getTypeOfSymbol(symbol))
+            );
+        const indexed = checker.getIndexTypeOfType(
+            checker.getTypeAtLocation(owner),
+            ts.IndexKind.String,
+        );
+        return indexed !== undefined && admitsUndefined(indexed);
+    }
+
+    /**
+     * A read of a property the record's type admits as absent
+     * (`admitsAbsentProperty`) and its struct does not store: the record
+     * lacks it, so the read is `undefined`. A computed receiver
      * (`options[i]!.hidden`) is still evaluated once, for its effects.
      */
     private absentPropertyRead(
@@ -5525,18 +5580,11 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         access: ts.PropertyAccessExpression,
     ): Value | undefined {
         const property = access.name.text;
-        const symbol = accessedPropertySymbol(this.context.checker, access);
-        const indexed = !symbol
-            ? this.context.checker.getIndexTypeOfType(
-                  this.context.checker.getTypeAtLocation(access.expression),
-                  ts.IndexKind.String,
-              )
-            : undefined;
         if (
-            symbol
-                ? (symbol.flags & ts.SymbolFlags.Optional) === 0 &&
-                  !admitsUndefined(this.context.checker.getTypeOfSymbol(symbol))
-                : !indexed || !admitsUndefined(indexed)
+            !this.admitsAbsentProperty(
+                access.expression,
+                accessedPropertySymbol(this.context.checker, access),
+            )
         )
             return undefined;
         const path = !owner.impure && isCppPath(owner.cpp);
@@ -6758,15 +6806,48 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                     "Dynamic struct access requires at least one key.",
                 );
             }
-            const fields = members.map((member) =>
-                this.context.dataTypes.structField(
+            // A key the record's type admits as absent and the struct's
+            // records provably lack reads undefined, as a named read of it
+            // does (`absentPropertyRead`); a write needs its field.
+            const keyedType = this.context.checker.getNonNullableType(
+                this.context.checker.getTypeAtLocation(access.expression),
+            );
+            const keyed = members.map((member) =>
+                mode === "read" &&
+                this.admitsAbsentProperty(
+                    access.expression,
+                    this.context.checker.getPropertyOfType(keyedType, member),
+                ) &&
+                this.context.dataTypes.absentRecordProperty(
                     dataType.name,
                     member,
                     access,
-                    "accessors",
-                ),
+                )
+                    ? undefined
+                    : this.context.dataTypes.structField(
+                          dataType.name,
+                          member,
+                          access,
+                          "accessors",
+                      ),
             );
+            const fields = keyed.filter((field) => field !== undefined);
+            if (fields.length === 0) {
+                this.context.emitDiscardedValue(
+                    this.context.compileValue(access.argumentExpression),
+                );
+                return undefinedValue();
+            }
             const commonType = fields[0]!.type;
+            if (
+                fields.length !== keyed.length &&
+                fields.some((field) => field.accessor)
+            ) {
+                this.context.fail(
+                    access,
+                    "A dynamic key over accessor fields requires a field for each of its keys.",
+                );
+            }
             if (mode === "write" && owner.recordProperties)
                 for (const field of fields)
                     delete writable(owner.recordProperties)[field.sourceName];
@@ -6801,10 +6882,22 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 );
             const keyTemporary =
                 this.context.allocateTemporaryCppName("property_key");
+            // The read is undefined under a key no field stores, so it
+            // answers a nullable value in place of the selected field.
+            const selectedType =
+                fields.length === keyed.length
+                    ? commonType
+                    : this.context.dataTypes.nullableType(commonType, true);
             // An accessor slot answers its getter's value.
-            const read = (field: DataStructField): string =>
-                `${owner.cpp}${arrow}${field.name}${field.accessor ? ".get()" : ""}`;
-            let selected = read(fields.at(-1)!);
+            const read = (field: DataStructField | undefined): string => {
+                if (!field)
+                    return this.context.dataTypes.absentValue(selectedType);
+                const stored = `${owner.cpp}${arrow}${field.name}${field.accessor ? ".get()" : ""}`;
+                return selectedType === commonType
+                    ? stored
+                    : this.context.dataTypes.presentValue(selectedType, stored);
+            };
+            let selected = read(keyed.at(-1));
             for (let index = members.length - 2; index >= 0; --index) {
                 const member = members[index]!;
                 const memberCpp = this.context.dataTypes.enumMemberCpp(
@@ -6814,13 +6907,13 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 );
                 selected =
                     `(${keyTemporary} == ${memberCpp} ? ` +
-                    `${read(fields[index]!)} : ${selected})`;
+                    `${read(keyed[index])} : ${selected})`;
             }
             return {
                 ...this.leafValue(
                     `([&](const auto ${keyTemporary}) -> decltype(auto) { ` +
                         `return (${selected}); })(${key})`,
-                    commonType,
+                    selectedType,
                 ),
                 ...(fields.some((field) => field.uncheckedProperty)
                     ? { preserveUncheckedLookup: true as const }
@@ -10803,7 +10896,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         if (!dataType) {
             this.context.fail(
                 expression,
-                `new ${constructor} requires concrete data type arguments or a contextual container type.`,
+                `new ${constructor} requires concrete data type arguments or a contextual container type: ${this.context.dataTypes.unrepresentedPart(this.context.checker.getTypeAtLocation(expression), expression)}.`,
             );
         }
         if (dataType.kind !== constructedKind) {
@@ -16261,7 +16354,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 left,
             );
             if (accessor) return result(accessor);
-            const json = this.jsonAssignmentTarget(left);
+            const json = this.jsonPlace(left);
             if (json) {
                 const previous =
                     this.context.allocateTemporaryCppName("logical_value");
@@ -16269,7 +16362,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                     kind: "declaration",
                     type: "const auto",
                     name: previous,
-                    initializer: `${json.owner}.read_property(${json.key})`,
+                    initializer: json.read,
                 });
                 const guard = this.logicalAssignmentGuard(
                     expression,
@@ -16281,14 +16374,10 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                     });
                     this.context.emit({
                         kind: "expression",
-                        code: `${json.owner}.set(${json.key}, ${value});`,
+                        code: json.store(value),
                     });
                 });
-                return result(
-                    this.leafValue(`${json.owner}.read_property(${json.key})`, {
-                        kind: "json",
-                    }),
-                );
+                return result(this.leafValue(json.read, { kind: "json" }));
             }
         }
         // A dictionary entry has no native lvalue: its presence is the
@@ -16470,10 +16559,30 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         return { owner: owner.cpp, key };
     }
 
-    /** Keep the selected owner, key and old primitive ahead of the right side. */
+    /**
+     * The document place an assignment target names: a document's
+     * property, or a name holding a document (a local a parsed number
+     * initialized).
+     */
+    private jsonPlace(left: ts.Expression): JsonPlace | undefined {
+        if (
+            ts.isPropertyAccessExpression(left) ||
+            ts.isElementAccessExpression(left)
+        ) {
+            const target = this.jsonAssignmentTarget(left);
+            return target && jsonPropertyPlace(target);
+        }
+        if (!ts.isIdentifier(left)) return undefined;
+        const held = this.context.bindings.lookupOptional(left);
+        return held && isJsonValue(held) && held.cpp
+            ? { read: held.cpp, store: (next) => `${held.cpp} = ${next};` }
+            : undefined;
+    }
+
+    /** Keep the selected place and old primitive ahead of the right side. */
     private emitJsonCompoundAssignment(
         expression: ts.BinaryExpression,
-        target: JsonAssignmentTarget,
+        place: JsonPlace,
         operator: string,
     ): Value {
         if (
@@ -16491,7 +16600,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             kind: "declaration",
             type: "const auto",
             name: previous,
-            initializer: `${target.owner}.read_property(${target.key})`,
+            initializer: place.read,
         });
         const right = this.context.allocateTemporaryCppName("compound_right");
         this.context.emit({
@@ -16527,10 +16636,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                     ? `(${previous}.is_string() || ${right}.is_string() ? bbl::js::json_value(${previous}.to_string() + ${right}.to_string()) : ${number})`
                     : number,
         });
-        this.context.emit({
-            kind: "expression",
-            code: `${target.owner}.set(${target.key}, ${next});`,
-        });
+        this.context.emit({ kind: "expression", code: place.store(next) });
         return this.leafValue(next, { kind: "json" });
     }
 
@@ -16712,6 +16818,12 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         if (ts.isIdentifier(left) && operator === "=") {
             return this.emitLocalDataAssignment(expression, left);
         }
+        if (ts.isIdentifier(left)) {
+            const place = this.jsonPlace(left);
+            if (!place) return false;
+            this.emitJsonCompoundAssignment(expression, place, operator);
+            return true;
+        }
         if (
             !ts.isPropertyAccessExpression(left) &&
             !ts.isElementAccessExpression(left)
@@ -16720,7 +16832,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         }
         if (operator === "=")
             this.requireOwnUndefinedWrite(left, expression.right);
-        const json = this.jsonAssignmentTarget(left);
+        const json = this.jsonPlace(left);
         if (json) {
             if (operator !== "=") {
                 this.emitJsonCompoundAssignment(expression, json, operator);
@@ -16729,10 +16841,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             const value = this.compileForSink(expression.right, {
                 kind: "json",
             });
-            this.context.emit({
-                kind: "expression",
-                code: `${json.owner}.set(${json.key}, ${value});`,
-            });
+            this.context.emit({ kind: "expression", code: json.store(value) });
             return true;
         }
         if (
@@ -18528,14 +18637,8 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
     private compileJsonUpdate(
         expression: ts.PrefixUnaryExpression | ts.PostfixUnaryExpression,
     ): Value | undefined {
-        const operand = this.context.unwrap(expression.operand);
-        if (
-            !ts.isPropertyAccessExpression(operand) &&
-            !ts.isElementAccessExpression(operand)
-        )
-            return undefined;
-        const target = this.jsonAssignmentTarget(operand);
-        if (!target) return undefined;
+        const place = this.jsonPlace(this.context.unwrap(expression.operand));
+        if (!place) return undefined;
         const previous =
             this.context.allocateTemporaryCppName("update_previous");
         const next = this.context.allocateTemporaryCppName("update_next");
@@ -18543,7 +18646,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             kind: "declaration",
             type: "const double",
             name: previous,
-            initializer: `${target.owner}.read_property(${target.key}).to_number()`,
+            initializer: `${place.read}.to_number()`,
         });
         this.context.emit({
             kind: "declaration",
@@ -18553,7 +18656,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         });
         this.context.emit({
             kind: "expression",
-            code: `${target.owner}.set(${target.key}, bbl::js::json_value(${next}));`,
+            code: place.store(`bbl::js::json_value(${next})`),
         });
         return this.leafValue(
             ts.isPrefixUnaryExpression(expression) ? next : previous,
@@ -18604,7 +18707,8 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         if (
             value.kind === "data" &&
             (value.dataType?.kind === "product" ||
-                value.dataType?.kind === "iterator")
+                value.dataType?.kind === "iterator" ||
+                value.dataType?.kind === "prototype")
         ) {
             return objectTruthinessCpp(value) ?? "true";
         }
@@ -19157,8 +19261,10 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
 
     /**
      * `Object.getPrototypeOf(value) === C.prototype` for a class C no class
-     * extends: the value is exactly a C, which `instanceof C` decides. A
-     * class with subclasses, or any other prototype, refuses.
+     * extends: the value is exactly a C, which `instanceof C` decides; a
+     * class with subclasses refuses. Two prototypes read in place
+     * (`readsPrototype`) compare as the identities they are, settled here
+     * when generation knows both.
      */
     private prototypeComparison(
         left: ts.Expression,
@@ -19167,36 +19273,37 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         const prototypeArgument = (
             node: ts.Expression,
         ): ts.Expression | undefined =>
-            ts.isCallExpression(node) &&
-            node.arguments.length === 1 &&
-            isLibraryStatic(
-                this.context.checker,
-                node.expression,
-                "Object",
-                "getPrototypeOf",
-            )
-                ? node.arguments[0]
-                : undefined;
+            prototypeOfArgument(this.context.checker, node);
         const [call, prototype] = prototypeArgument(left)
             ? [left, right]
             : prototypeArgument(right)
               ? [right, left]
               : [];
-        if (!call || !prototype) return undefined;
-        const instance = prototypeArgument(call)!;
-        const owner = this.context.unwrap(prototype);
+        const owner = prototype && this.context.unwrap(prototype);
         const declaration =
+            owner &&
             ts.isPropertyAccessExpression(owner) &&
             owner.name.text === "prototype" &&
             ts.isIdentifier(owner.expression)
                 ? resolvedSymbol(this.context.checker, owner.expression)
                       ?.valueDeclaration
                 : undefined;
-        if (!declaration || !ts.isClassLike(declaration))
-            return this.context.fail(
-                call,
-                "Object.getPrototypeOf is lowered in a comparison with a class's prototype only.",
-            );
+        if (!call || !declaration || !ts.isClassLike(declaration)) {
+            if (
+                !readsPrototype(this.context, left) ||
+                !readsPrototype(this.context, right)
+            )
+                return undefined;
+            const first = this.context.compileValue(left);
+            const second = this.context.compileValue(right);
+            const [known, other] = [first, second].map(knownPrototype);
+            return known !== undefined && other !== undefined
+                ? known === other
+                    ? "true"
+                    : "false"
+                : `${first.cpp} == ${second.cpp}`;
+        }
+        const instance = prototypeArgument(call)!;
         if (
             this.context.dataTypes.classHierarchy.subclasses(declaration)
                 .length > 0

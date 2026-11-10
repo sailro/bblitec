@@ -69,7 +69,7 @@ const resourceMetadataFields = {
     tuple: ["tupleElements", "staticJson"],
     texture: [
         "textureStorage",
-        "csmReceiverGeneratorIndex",
+        "csmReceiverTexture",
         "textureFile",
         "textureWidth",
         "textureHeight",

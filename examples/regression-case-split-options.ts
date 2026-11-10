@@ -18,6 +18,7 @@ import {
     startEngine,
 } from "@babylonjs/lite";
 import type { EngineContext, ShaderMaterial } from "@babylonjs/lite";
+import { SURFACE_VERTEX } from "./regression-option-surface.js";
 
 interface SurfaceOptions {
     tint: [number, number, number];
@@ -26,16 +27,9 @@ interface SurfaceOptions {
     tall: boolean;
 }
 
-const VERTEX = `struct VertexOutput{@builtin(position) position:vec4<f32>,};
-@vertex fn mainVertex(input:VertexInput)->VertexOutput{
-    var out:VertexOutput;
-    out.position = shaderSystem.worldViewProjection * vec4<f32>(input.position * vec3<f32>(1.0, HEIGHT, 1.0), 1.0);
-    return out;
-}`;
-
 function surface(engine: EngineContext, name: string, opts: SurfaceOptions): ShaderMaterial {
     void engine;
-    const vertexSource = VERTEX.replace("HEIGHT", opts.tall ? "1.6" : "0.8");
+    const vertexSource = SURFACE_VERTEX.replace("HEIGHT", opts.tall ? "1.6" : "0.8");
     const glow = opts.glow ? " + vec3<f32>(shaderUniforms.uGlow)" : "";
     let fragmentSource = `struct VertexOutput{@builtin(position) position:vec4<f32>,};
 @fragment fn mainFragment(input:VertexOutput)->@location(0) vec4<f32>{

@@ -7,6 +7,7 @@ import {
     optionalNativeFixtureTools,
     runGeneratedProgram,
 } from "./native-fixture.js";
+import { runSelfCheckingProgram } from "./self-checking-program.js";
 
 test("JSON stringify accepts represented tuple members after optional unknown calls", async (t) => {
     const source = `
@@ -190,4 +191,38 @@ test("a typeof-guarded parsed scalar stores the primitive union member its kind 
             result.cpp,
         );
     });
+});
+
+test("a fresh array stored in a document is that document's own array", async (t) => {
+    const source = `
+        const doc = JSON.parse("{}") as Record<string, unknown>;
+        doc.list = [];
+        (doc.list as number[]).push(1);
+        if ((doc.list as number[]).length !== 1) throw new Error("push into a stored fresh array");
+        doc.rows = [[1, 2], [3]];
+        (doc.rows as number[][])[0]!.push(9);
+        if (JSON.stringify(doc.rows) !== "[[1,2,9],[3]]") throw new Error("nested fresh arrays");
+        doc.a = doc.b = [];
+        (doc.b as number[]).push(1);
+        if ((doc.a as number[]).length !== 1) throw new Error("one array under two keys");
+        function grow(value: unknown): number {
+            if (!Array.isArray(value)) return -1;
+            value.push(4);
+            return value.length;
+        }
+        const seed = Math.random();
+        if (grow([seed, 2, 3]) !== 4) throw new Error("push through unknown");
+        interface Row { n: number }
+        interface Table { rows?: Row[] }
+        const table = JSON.parse("{}") as Table;
+        const rows: Row[] = table.rows ?? [];
+        rows.push({ n: 1 });
+        if (rows.length !== 1) throw new Error("fallback array");
+    `;
+    await runSelfCheckingProgram(
+        t,
+        "json-tuple-inputs/fresh-document-array",
+        source,
+        { expectedOutput: "" },
+    );
 });

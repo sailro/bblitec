@@ -41,6 +41,7 @@ import {
     isRealmGlobalObject,
 } from "./host-globals.js";
 import { callableRecordValue } from "./callable-records.js";
+import { compileObjectGetPrototypeOf } from "./prototype-values.js";
 import {
     compileCollectionEntries,
     compileEntryCollection,
@@ -704,11 +705,9 @@ function compileObjectFromEntries(
     call: ts.CallExpression,
 ): Value {
     context.expectArgumentCount(call, 1, 1);
-    const resultType =
-        context.dataLowerer.dataTypeAt(call) ??
-        context.dataTypes.withDynamicJsonTypes(true, () =>
-            context.dataLowerer.dataTypeAt(call),
-        );
+    const resultType = context.dataTypes.orDynamicJsonTypes(() =>
+        context.dataLowerer.dataTypeAt(call),
+    );
     const record = context.probeEmission(() => {
         const entries = compileCollectionEntries(
             context.dataLowerer,
@@ -1784,6 +1783,7 @@ export const OBJECT_STATIC_HANDLERS: ReadonlyMap<
     ["defineProperties", compileObjectDefineProperties],
     ["entries", compileObjectEntries],
     ["fromEntries", compileObjectFromEntries],
+    ["getPrototypeOf", compileObjectGetPrototypeOf],
     ["hasOwn", compileObjectHasOwn],
     ["is", compileObjectIs],
 ]);

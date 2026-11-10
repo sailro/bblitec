@@ -875,3 +875,28 @@ function fetchedFile(
 ): string {
     return localAssetPath(source, context.options.fileName) ?? source;
 }
+
+/**
+ * What a fresh `arrayBuffer()` read of an owned packaged response yields:
+ * its one served file's bytes (`packagedBodySource`), as a generation-time
+ * response's read does.
+ */
+export function packagedBodyRead(
+    context: Pick<LoweringServices, "options">,
+    read: ts.CallExpression,
+    body: string,
+): NonNullable<Value["fetchedBytes"]> {
+    return {
+        expression: read,
+        sources: [
+            fetchedFile(
+                context,
+                resolveBundledAsset(
+                    body,
+                    context.options.fileName,
+                    context.options,
+                ),
+            ),
+        ],
+    };
+}

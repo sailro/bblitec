@@ -40,6 +40,11 @@ export interface NativeRecordStorageDemand {
         readonly node: ts.Node;
         readonly storage: DataType;
     };
+    /**
+     * A record type whose records are this class's instances, which have
+     * every property it declares: each is stored as the instance.
+     */
+    classView?: ts.ClassLikeDeclaration;
     /** Distinct checked native owners cannot overwrite one structural demand. */
     nativeConflict?: true;
     /** A function can enter this callable record before any named property is installed. */
@@ -91,6 +96,20 @@ const RECORD_STORAGE_FLAGS = [
     "bareCallable",
 ] as const;
 
+/** What a record demand asks for, for reports: its flags, joins and accessors. */
+export function describeRecordDemand(
+    demand: NativeRecordStorageDemand,
+): string {
+    const asked: string[] = RECORD_STORAGE_FLAGS.filter((flag) => demand[flag]);
+    if (demand.dictionary) asked.push(`dictionary of ${demand.dictionary}`);
+    if (demand.native) asked.push("native");
+    if (demand.classView) asked.push("class view");
+    if (demand.joins?.length) asked.push(`${demand.joins.length} join(s)`);
+    if (demand.accessors?.length)
+        asked.push(`${demand.accessors.length} accessor(s)`);
+    return asked.join(", ") || "shared";
+}
+
 /**
  * Replays strengthen ownership and accumulate the joins and accessors
  * lowering met: `previous` merged with `next`, or undefined when `next`
@@ -105,7 +124,12 @@ export function mergeNativeRecordStorage(
         next.nativeConflict ||
         (previous?.native !== undefined &&
             next.native !== undefined &&
-            !dataTypesEqual(previous.native.storage, next.native.storage));
+            !dataTypesEqual(previous.native.storage, next.native.storage)) ||
+        (previous?.classView !== undefined &&
+            next.classView !== undefined &&
+            previous.classView !== next.classView) ||
+        ((previous?.native ?? next.native) !== undefined &&
+            (previous?.classView ?? next.classView) !== undefined);
     const dictionaryConflict =
         previous?.dictionaryConflict ||
         next.dictionaryConflict ||
@@ -137,6 +161,7 @@ export function mergeNativeRecordStorage(
         (dictionaryConflict && !previous?.dictionaryConflict) ||
         (next.dictionary !== undefined && previous?.dictionary === undefined) ||
         (next.native !== undefined && previous?.native === undefined) ||
+        (next.classView !== undefined && previous?.classView === undefined) ||
         RECORD_STORAGE_FLAGS.some((flag) => next[flag] && !previous[flag]);
     for (const { name, setter, own } of next.accessors ?? []) {
         const known = accessors.get(name);
@@ -157,6 +182,7 @@ export function mergeNativeRecordStorage(
         ...previous,
         ...next,
         ...(previous?.native ? { native: previous.native } : {}),
+        ...(previous?.classView ? { classView: previous.classView } : {}),
         ...(previous?.dictionary ? { dictionary: previous.dictionary } : {}),
         ...(nativeConflict ? { nativeConflict: true } : {}),
         ...(dictionaryConflict ? { dictionaryConflict: true } : {}),

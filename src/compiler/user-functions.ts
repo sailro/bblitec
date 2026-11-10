@@ -7395,6 +7395,18 @@ export class UserFunctionLowerer {
                   ir.declaration,
               )
             : undefined;
+        // A type parameter the call binds to `never` leaves the instantiated
+        // result without its storage: the declared result names it under
+        // the call's bindings.
+        const declared =
+            type || !signature
+                ? undefined
+                : this.checker.getSignatureFromDeclaration(ir.declaration);
+        if (declared && declared !== signature)
+            type = context.dataTypes.fromTsType(
+                this.checker.getReturnTypeOfSignature(declared),
+                ir.declaration,
+            );
         if (
             !type &&
             signature &&
@@ -7461,7 +7473,10 @@ export class UserFunctionLowerer {
         if (!type) {
             context.fail(
                 callNode,
-                `Function '${refusalName(ir)}' uses early value returns but its return type is outside the native data model.`,
+                `Function '${refusalName(ir)}' uses early value returns but its return type is outside the native data model` +
+                    (signature
+                        ? `: ${context.dataTypes.unrepresentedPart(this.checker.getReturnTypeOfSignature(signature), callNode)}.`
+                        : "."),
             );
         }
         return context.dataTypes.ownReturnedArray(type);

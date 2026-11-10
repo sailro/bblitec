@@ -66,6 +66,9 @@ int main() {
             if (failure)
                 std::rethrow_exception(failure);
             assert(ui_get_attribute(engine, physical, "data-retained") == "yes");
+            dispatch_dom_pointer(engine, dom_event(PlatformMouseEvent{.delta_y = 100}, "wheel",
+                                                   dom_ui_path(engine, physical)));
+            assert(ui_get_attribute(engine, physical, "data-wheel") == "1");
             std::optional<OwnedDomEvent> expired;
             {
                 Engine temporary;

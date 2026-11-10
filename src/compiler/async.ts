@@ -1033,9 +1033,14 @@ export class AsyncLowerer {
         // An async executor suspends inside construction.
         if (synchronous && asynchronous) throw new ApplicationRealmRequired();
         // Outside a realm a Promise<T> is represented by T itself.
-        const type = synchronous
-            ? this.synchronousPromiseType(node)
-            : context.dataLowerer.dataTypeAt(node);
+        const settlementType = (): DataType | undefined =>
+            synchronous
+                ? this.synchronousPromiseType(node)
+                : context.dataLowerer.dataTypeAt(node);
+        // The settlement is native storage whatever it will hold: where the
+        // checker types the result `unknown` (an executor that resolves
+        // with no value), it is dynamic.
+        const type = context.dataTypes.orDynamicJsonTypes(settlementType);
         if (type?.kind !== "promise")
             return context.fail(
                 node,

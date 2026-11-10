@@ -189,6 +189,8 @@ interface DataKinds {
     symbol: { kind: "symbol" };
     /** An arbitrary-precision ECMAScript BigInt. */
     bigint: { kind: "bigint" };
+    /** A prototype object `Object.getPrototypeOf` answers with: an identity, compared. */
+    prototype: { kind: "prototype" };
     /** BigInt64Array and BigUint64Array: 64-bit elements read as BigInts. */
     i64array: { kind: "i64array" };
     u64array: { kind: "u64array" };

@@ -1399,7 +1399,7 @@ function compileSetShaderTexture(
     const engine = context.requireEngine(material, call);
     const dynamic = !material.shaderVariant || name.staticString === undefined;
     const slot = dynamic
-        ? `bbl::shader_texture_slot_by_name(${engine}, ${material.cpp}, ${name.cpp}, ${texture.csmReceiverGeneratorIndex !== undefined ? "true" : "false"})`
+        ? `bbl::shader_texture_slot_by_name(${engine}, ${material.cpp}, ${name.cpp}, ${texture.csmReceiverTexture ? "true" : "false"})`
         : `${context.intrinsicOptions.resolveShaderTextureSlot(material, argumentAt(call, 1))}u`;
     if (texture.kind === "render-texture") {
         context.expectSameEngine(material, texture, call);
@@ -1416,14 +1416,13 @@ function compileSetShaderTexture(
         texture.textureStorage === "stored" ||
         (texture.dataType?.kind === "handle" &&
             texture.dataType.handle === "texture");
-    const setter =
-        texture.csmReceiverGeneratorIndex !== undefined
-            ? "set_shader_csm_texture"
-            : storedTexture || texture.textureStorage === "pixels"
-              ? "set_shader_pixels_texture"
-              : texture.textureFile
-                ? "set_shader_texture"
-                : undefined;
+    const setter = texture.csmReceiverTexture
+        ? "set_shader_csm_texture"
+        : storedTexture || texture.textureStorage === "pixels"
+          ? "set_shader_pixels_texture"
+          : texture.textureFile
+            ? "set_shader_texture"
+            : undefined;
     if (!setter) {
         context.fail(
             argumentAt(call, 2),

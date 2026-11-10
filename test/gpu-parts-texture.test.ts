@@ -68,6 +68,16 @@ test("a Texture2D's GPU parts convert only as the interface's five required fiel
             ),
         /argument/i,
     );
+    // A facade stored as a Texture2D names the parts it states instead.
+    assert.throws(
+        () =>
+            compileSource(
+                program(
+                    "((): { live(): Texture2D } => { const facade = { get view(): GPUTextureView { return tex.createView(); }, sampler, _sampleType: 'float' } as unknown as Texture2D; return { live: () => facade }; })().live()",
+                ),
+            ),
+        /A Texture2D record states texture, view, sampler, width and height as GPU parts; this one states sampler, _sampleType, view\./,
+    );
 });
 
 test("the regression scene's bone texture lowers through the GPU parts", () => {

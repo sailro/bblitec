@@ -82,8 +82,8 @@ npm run scene -- check <check-id> [--backend sdl_gpu|dawn] [--phase <id>] [--kee
 - `checks/<id>.json` defines phases (frames, input, env) and expectations (captures, state, images, logs); plugins in
   `checks/plugins/`. A twin builds the unchanged no-query source. `observe.captureReady` selects the awaited dataset flag.
 - Prefer numeric checks where small missing objects could pass image gates.
-- Input tape: `-` or `UiIdle@0:0` idles; `UiWheelUp/Down` are SDL packets, `WheelUp/Down` a browser notch; `<entry>*<n>`
-  repeats; recovery tapes include `Dataset`, `GlobalCall`, `DeviceLoss`.
+- Input tape: one entry per frame, queued as SDL events the next frame's drain delivers (`PlatformInputReplay`); `-` or
+  `UiIdle@0:0` idles; `<entry>*<n>` repeats; recovery tapes include `Dataset`, `GlobalCall`, `DeviceLoss`.
 - Scene149 resized reference uses unchanged-module startup at 960x600 (live resize throws in the pin).
 
 ## Memory

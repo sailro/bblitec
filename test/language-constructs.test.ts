@@ -3057,35 +3057,124 @@ check(
     `,
 );
 
-test("a class instance copied into an interface element or field refuses where the copy is observable", () => {
+check(
+    "a class instance stored as a record type is that instance where a copy would be observable",
+    `
+    interface Counting { n: number; inc(): number }
+    class Counter implements Counting { n = 0; inc(): number { return ++this.n; } }
+    const first = new Counter();
+    const xs: Counting[] = [first];
+    xs[0]!.inc();
+    const holder: { c: Counting } = { c: first };
+    holder.c.inc();
+    function make(): Counter[] { return [new Counter()]; }
+    const made: Counting[] = make();
+    made[0]!.inc();
+    if (first.n !== 2 || xs[0] !== first || holder.c !== first || xs[0]!.n !== 2 || made[0]!.n !== 1)
+        throw new Error("one counter " + first.n);
+    interface Named { readonly name: string }
+    class Person implements Named { constructor(readonly name: string) {} }
+    const ada = new Person("ada");
+    const people: Named[] = [ada];
+    if (people[0] !== ada || people[0]!.name !== "ada") throw new Error("one person");
+    interface Busy { count: number; readonly busy: boolean }
+    class Tally { count = 0; get busy(): boolean { return this.count > 0; } bump(): void { this.count++; } view(): Busy { return this; } }
+    const tally = new Tally();
+    const tallies = new Map<number, Tally>([[1, tally]]);
+    const view = tally.view();
+    if (view.busy) throw new Error("idle");
+    tallies.get(1)!.bump();
+    if (!view.busy || view.count !== 1 || view !== tallies.get(1)) throw new Error("one tally");
+    view.count = 5;
+    if (tallies.get(1)!.count !== 5) throw new Error("written through the view");
+    interface Handle { slot: number }
+    class Store {
+        private readonly alive = new Set<number>();
+        add(slot: number): Handle { this.alive.add(slot); return { slot }; }
+        isAlive(handle: Handle): boolean { return this.alive.has(handle.slot); }
+        remove(handle: Handle): void { this.alive.delete(handle.slot); }
+    }
+    type Liveness = Pick<Store, "isAlive">;
+    class Frame {
+        private readonly entries = new Map<number, string>();
+        constructor(private readonly core: Liveness) {}
+        bind(handle: Handle, label: string): void { this.entries.set(handle.slot, label); }
+        label(handle: Handle): string { return this.core.isAlive(handle) ? this.entries.get(handle.slot) ?? "" : "dead"; }
+        reads(core: Liveness): boolean { return this.core === core; }
+    }
+    interface Labels { label(handle: Handle): string }
+    class Bounds {
+        constructor(private readonly frame: Labels | null) {}
+        describe(handle: Handle): string { return this.frame ? this.frame.label(handle) : "none"; }
+        shows(frame: Labels): boolean { return this.frame === frame; }
+    }
+    const store = new Store();
+    const frame = new Frame(store);
+    const bounds = new Bounds(frame);
+    const empty = new Bounds(null);
+    const slot = store.add(1);
+    frame.bind(slot, "one");
+    if (!frame.reads(store) || !bounds.shows(frame) || empty.shows(frame)) throw new Error("one store and frame");
+    if (bounds.describe(slot) !== "one" || empty.describe(slot) !== "none") throw new Error("bound");
+    store.remove(slot);
+    if (bounds.describe(slot) !== "dead") throw new Error("removed");
+    `,
+);
+
+check(
+    "a method returning this returns the receiver its call read once",
+    `
+    class Tally { count = 0; bump(): void { this.count++; } self(): Tally { return this; } }
+    let reads = 0;
+    const tallies = new Map<number, Tally>([[1, new Tally()]]);
+    function pick(key: number): Tally { reads++; return tallies.get(key)!; }
+    const same = tallies.get(1)!.self();
+    tallies.get(1)!.bump();
+    if (same !== tallies.get(1) || same.count !== 1) throw new Error("self");
+    const again = pick(1).self();
+    if (again !== same || reads !== 1) throw new Error("receiver read once");
+    interface Owner { tally: Tally }
+    const owners: Owner[] = [{ tally: same }];
+    if (owners[0]!.tally.self() !== same || owners[0]!.tally.self().count !== 1) throw new Error("field receiver");
+    `,
+);
+
+check(
+    "a class handing out this is one object under its interface view",
+    `
+    interface Tool { activate(): void }
+    const made: Tool[] = [];
+    let active = 0;
+    class Move implements Tool { constructor() { made.push(this); } activate(): void { active++; } }
+    const tools: Tool[] = [new Move()];
+    if (tools[0] !== made[0]) throw new Error("one tool");
+    tools[0]!.activate();
+    made[0]!.activate();
+    if (active !== 2) throw new Error("activated");
+    `,
+);
+
+test("a record type stored as one class's instances refuses another record where a copy is observable", () => {
     const prelude =
-        "interface Counting { n: number; inc(): number } class Counter implements Counting { n = 0; inc(): number { return ++this.n; } }";
-    for (const store of [
-        "const xs: Counting[] = [new Counter()]; xs[0]!.inc();",
-        "const holder: { c: Counting } = { c: new Counter() }; holder.c.inc();",
-        "function make(): Counter[] { return [new Counter()]; } const xs: Counting[] = make(); xs[0]!.inc();",
-    ])
-        assert.throws(
-            () => compileSource(`${prelude} ${store} export {};`),
-            /A 'Counter' instance stored as 'Counting' would be a copy of the one object JavaScript keeps, and the program writes 'n'/,
-            store,
-        );
-    // A copy is also told apart by identity, and a getter reads its fields.
-    for (const [source, refusal] of [
-        [
-            "interface Named { readonly name: string } class Person implements Named { constructor(readonly name: string) {} } const ada = new Person('ada'); const people: Named[] = [ada]; const same = people[0] === ada;",
-            /A 'Person' instance stored as 'Named' would be a copy of the one object JavaScript keeps/,
-        ],
-        [
-            "interface Counter { count: number; readonly busy: boolean } class Tally { count = 0; get busy(): boolean { return this.count > 0; } bump(): void { this.count++; } view(): Counter { return this; } } const tallies = new Map<number, Tally>([[1, new Tally()]]); tallies.get(1)!.bump(); const view = tallies.get(1)!.view(); const busy = view.busy;",
-            /A 'Tally' instance stored as 'Counter' would be a copy of the one object JavaScript keeps/,
-        ],
-    ] as const)
-        assert.throws(() => compileSource(`${source} export {};`), refusal);
+        "interface Tool { activate(): void } const made: Tool[] = []; class Move implements Tool { constructor() { made.push(this); } activate(): void {} }";
     assert.throws(
         () =>
             compileSource(
-                `${prelude} const c: Counting = new Counter(); const f = c.inc.bind(c); export {};`,
+                `${prelude} class Paint implements Tool { activate(): void {} } const tools: Tool[] = [new Move(), new Paint()]; const same = tools[0] === made[0]; export {};`,
+            ),
+        /'Tool' is stored as the 'Move' instances it holds; a 'Paint' instance stored as it would be a copy of the one object JavaScript keeps/,
+    );
+    assert.throws(
+        () =>
+            compileSource(
+                `${prelude} const tools: Tool[] = [new Move(), { activate(): void {} }]; const same = tools[0] === made[0]; export {};`,
+            ),
+        /'Tool' is stored as the 'Move' instances it holds; a record that is not one stored as it would be a copy of the one object JavaScript keeps/,
+    );
+    assert.throws(
+        () =>
+            compileSource(
+                "interface Counting { n: number; inc(): number } class Counter implements Counting { n = 0; inc(): number { return ++this.n; } } const c: Counting = new Counter(); const f = c.inc.bind(c); export {};",
             ),
         /Method 'inc' is read as a value; method values are unsupported/,
     );
@@ -3114,21 +3203,6 @@ check(
     if (log.join() !== "m+,m-,p+1,p-,m+,m-,p+2") throw new Error(log.join());
     `,
 );
-
-test("a class handing out this keeps its identity apart from an interface view", () => {
-    assert.throws(
-        () =>
-            compileSource(`
-            interface Tool { activate(): void }
-            const made: Tool[] = [];
-            class Move implements Tool { constructor() { made.push(this); } activate(): void {} }
-            const tools: Tool[] = [new Move()];
-            const same = tools[0] === made[0];
-            export {};
-            `),
-        /A 'Move' instance stored as 'Tool' would be a copy of the one object JavaScript keeps, and the program compares or keys such records by identity/,
-    );
-});
 
 check(
     "a class instance whose fields nothing writes is viewed through its getters",
@@ -3551,6 +3625,102 @@ test("a run-time key selecting fields of different types refuses", () => {
             if (mixed.count !== 2) throw new Error("count");
             `),
         /Dynamic struct keys must select fields with one common data type/,
+    );
+});
+
+check(
+    "run-time-key-over-a-record-lacking-some-of-its-keys",
+    `
+    type Lang = "en" | "fr" | "de";
+    type Names = Partial<Record<Lang, string>>;
+    function nameFor(entry: { name: string; names?: Names }, lang: Lang): string {
+        return entry.names?.[lang] ?? entry.name;
+    }
+    const stone = { name: "Stone", names: { fr: "Pierre" } };
+    const bare = { name: "Bare", names: {} };
+    const counts = { en: 1, de: 3 };
+    const countFor = (table: Partial<Record<Lang, number>>, lang: Lang): number => table[lang] ?? 0;
+    const langs: Lang[] = ["en", "fr", "de"];
+    const out: string[] = [];
+    for (const lang of langs) out.push(nameFor(stone, lang), nameFor(bare, lang), String(countFor(counts, lang)));
+    if (out.join("|") !== "Stone|Bare|1|Pierre|Bare|0|Stone|Bare|3") throw new Error(out.join("|"));
+`,
+);
+
+check(
+    "absent-properties-of-records-whose-type-does-not-require-them",
+    `
+    type Outcome = { changed: true; id: number } | { changed: false; reason: "dimensions" | "lift" };
+    const describe = (result: Outcome): string =>
+        result.changed ? "made " + result.id : "refused " + (result.reason === "lift" ? "by lift" : result.reason);
+    const made: Outcome = { changed: true, id: 7 };
+    const refused: Outcome = { changed: false, reason: "lift" };
+    function plain(value: any): any { return value !== null && typeof value === "object" ? value : {}; }
+    function variants(raw: any, fallback: string[]): string[] {
+        const fish = plain(plain(raw).fish);
+        return fish.variants === undefined ? fallback : fish.variants;
+    }
+    // A keyed read and a destructuring read the absence as a member does.
+    type Kind = "wood" | "pot" | "egg" | "beer";
+    const TALLY_KEY: Readonly<Partial<Record<Kind, "logs" | "pots">>> = { wood: "logs", pot: "pots" };
+    const tracker = { note(kind: Kind): string { const key = TALLY_KEY[kind]; return key === undefined ? "none" : key; } };
+    function keyOf(input: number | undefined): number | undefined { return typeof input === "number" ? input : undefined; }
+    function ids<T extends { id?: unknown }>(rows: readonly T[]): string {
+        const projected = rows.map(({ id, ...row }) => ({ ...row, id: keyOf(id as number | undefined) }));
+        return projected.map((row) => (row.id === undefined ? "new" : String(row.id))).join(",");
+    }
+    const text = [
+        describe(made),
+        describe(refused),
+        variants({}, ["perch"]).join("+"),
+        variants({ fish: { variants: ["carp", "pike"] } }, ["perch"]).join("+"),
+        variants(null, ["perch"]).join("+"),
+        tracker.note("wood"),
+        tracker.note("beer"),
+        ids([{ id: 2, v: "a" }, { v: "b" }]),
+    ].join("|");
+    if (text !== "made 7|refused by lift|perch|carp+pike|perch|logs|none|2,new") throw new Error(text);
+`,
+);
+
+test("a compile-time record lacking a property its type requires refuses the read", () => {
+    assert.throws(
+        () =>
+            compileSource(`
+            interface Row { source: string; count: number; }
+            const row = { count: 1 } as Row;
+            if (row.source !== undefined) throw new Error("source");
+            `),
+        /Static record has no property 'source'/,
+    );
+});
+
+check(
+    "run-time-index-into-an-empty-array",
+    `
+    function build<Entry>(entries: readonly Entry[], boundsAt: (entry: Entry, out: { min: number; max: number }) => void): number {
+        const bounds = entries.map(() => ({ min: 0, max: 0 }));
+        for (let index = 0; index < entries.length; index++) boundsAt(entries[index]!, bounds[index]!);
+        let widest = 0;
+        for (let index = 0; index < bounds.length; index++) widest = Math.max(widest, bounds[index]!.max - bounds[index]!.min);
+        return widest;
+    }
+    const none = build([], () => {});
+    const some = build([3, 7], (entry, out) => { out.min = -entry; out.max = entry; });
+    if (none !== 0 || some !== 14) throw new Error(none + " " + some);
+`,
+);
+
+test("a type outside the data model refuses by the path to the part without a representation", () => {
+    assert.throws(
+        () =>
+            compileSource(`
+            interface Planner { plan(from: number): number; cache: WeakRef<object>; }
+            interface Scenario { name: string; planner: Planner; }
+            const owners = new Map<number, Scenario>();
+            console.log(owners.size);
+            `),
+        /new Map requires concrete data type arguments or a contextual container type: 'Map<number, Scenario>' > type argument 'Scenario' > property 'planner' of type 'Planner' > property 'cache' of type 'WeakRef<object>' > type argument 'object': no native representation/,
     );
 });
 
@@ -5328,10 +5498,6 @@ test("Object.create, defineProperty and getPrototypeOf refuse unrepresented form
             "class A {} class B extends A {} const a = new A(); const r = Object.getPrototypeOf(a) === A.prototype;",
             /a class other classes extend is not represented/,
         ],
-        [
-            "const p = Object.getPrototypeOf({ a: 1 }); const r = p === null;",
-            /Unsupported call target 'Object\.getPrototypeOf'/,
-        ],
     ] as const)
         assert.throws(() => compileSource(source), message);
 });
@@ -6184,6 +6350,30 @@ test("raw text imports support constant string replacement through helpers", () 
     assert.ok(
         result.manifest.inputs.includes("test/fixtures/raw-text-import.wgsl"),
     );
+});
+
+test("a JSON import is the one object its text parses to", async (t) => {
+    const result = compileSource(
+        `
+        import table from "./json-import.json";
+        import again from "./json-import.json";
+        interface Table { size: string; houses: { id: number; x: number }[]; meta: { version: number } }
+        function total(input: Table): number {
+            let sum = input.meta.version;
+            for (const house of input.houses) sum += house.id + house.x;
+            return sum;
+        }
+        const before = total(table);
+        again.meta.version = 10;
+        if (table.size !== "small" || before !== 7.5 || total(table) !== 14.5 || table !== again) throw new Error("json import");
+    `,
+        { fileName: "test/fixtures/json-import.ts" },
+    );
+    assert.ok(
+        result.manifest.inputs.includes("test/fixtures/json-import.json"),
+        "the JSON file is a recorded input",
+    );
+    await executeGeneratedAssertions(t, "json-import", result.cpp);
 });
 
 test("constant numeric tables support runtime indexing and static string projections", () => {
@@ -8145,6 +8335,54 @@ check(
     view[1] = 50;
     if (parts[1] !== 50) throw new Error("asserted tuple keeps identity");
 `,
+);
+
+check(
+    "record-members-written-by-runtime-keys-and-replaced-by-documents",
+    `
+    type Doc = Record<string, unknown>;
+    type Kind = "first" | "second";
+    interface KindState {
+        doc: Doc | null;
+        error: string | null;
+        dirty: boolean;
+        flags: Record<string, boolean>;
+        nums: Record<string, number>;
+    }
+    const REGISTRY: Record<Kind, { flags: readonly string[]; nums: readonly string[] }> = {
+        first: { flags: ["awake", "fed"], nums: ["age"] },
+        second: { flags: ["awake"], nums: ["age", "hunger"] },
+    };
+    const SEEDS: Record<string, number> = { age: 2 };
+    function freshState(): KindState {
+        return { doc: null, error: null, dirty: false, flags: {}, nums: {} };
+    }
+    const state: Record<Kind, KindState> = { first: freshState(), second: freshState() };
+    function seed(st: KindState, k: Kind): void {
+        const reg = REGISTRY[k];
+        for (const f of reg.flags) {
+            if (!(f in st.flags)) st.flags[f] = false;
+        }
+        for (const n of reg.nums) {
+            if (!(n in st.nums)) st.nums[n] = SEEDS[n] ?? 0;
+        }
+    }
+    function load(k: Kind, text: string): void {
+        const st = state[k];
+        st.doc = JSON.parse(text) as Doc;
+        st.dirty = true;
+        seed(st, k);
+    }
+    load("first", '{"rules":[1,2]}');
+    load("second", '{"rules":[]}');
+    state.first.flags.awake = true;
+    seed(state.first, "first");
+    if (state.first.flags.awake !== true || state.first.flags.fed !== false || state.second.nums.age !== 2 || state.second.nums.hunger !== 0)
+        throw new Error("seeded");
+    if (state.first.doc === null || JSON.stringify(state.first.doc) !== '{"rules":[1,2]}' || !state.second.dirty)
+        throw new Error("documents");
+    if (Object.keys(state.second.flags).join() !== "awake" || Object.keys(state.first.nums).join() !== "age") throw new Error("keys");
+    `,
 );
 
 check(

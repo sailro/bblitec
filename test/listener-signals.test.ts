@@ -215,6 +215,10 @@ test("listener signals end canvas, Window, Document and visibility listeners und
         function installCaptureTarget(target: EventTarget, signal: AbortSignal): void {
             target.addEventListener("pointerdown", () => { ++hits; }, { capture: true, signal });
         }
+        interface Wiring { target: HTMLElement; signal: AbortSignal }
+        function installRecordTarget(wiring: Wiring): void {
+            wiring.target.addEventListener("pointerdown", () => { ++hits; }, { signal: wiring.signal, passive: true });
+        }
         async function main(): Promise<void> {
             const engine = await createEngine({});
             const canvas = document.getElementById("renderCanvas") as HTMLCanvasElement;
@@ -231,13 +235,14 @@ test("listener signals end canvas, Window, Document and visibility listeners und
             document.addEventListener("keydown", count, { signal: sceneSignal });
             document.addEventListener("visibilitychange", () => { ++hits; }, { signal: sceneSignal });
             installCaptureTarget(canvas, sceneSignal);
+            installRecordTarget({ target: canvas, signal: sceneSignal });
             const kept = (): void => { ++hits; };
             canvas.addEventListener("pointerdown", kept);
             requestAnimationFrame(() => {
-                if (hits !== 11) throw new Error("listeners before abort " + hits);
+                if (hits !== 12) throw new Error("listeners before abort " + hits);
                 scene.abort();
                 requestAnimationFrame(() => {
-                    if (hits !== 12) throw new Error("listeners after abort " + hits);
+                    if (hits !== 13) throw new Error("listeners after abort " + hits);
                 });
             });
             startEngine(engine);
@@ -282,7 +287,7 @@ void start_engine(Engine& engine) {
         engine.animation_frame_once_callbacks.clear();
         callbacks.front()(16.0);
     };
-    assert(dispatch() == 11);
+    assert(dispatch() == 12);
     frame();
     assert(dispatch() == 1);
     frame();

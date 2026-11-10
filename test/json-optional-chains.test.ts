@@ -7,6 +7,7 @@ import {
     optionalNativeFixtureTools,
     runGeneratedProgram,
 } from "./native-fixture.js";
+import { runSelfCheckingProgram } from "./self-checking-program.js";
 
 test("document optional chains preserve lazy keys, continuations and typed lengths", (t) => {
     const source = `
@@ -49,4 +50,37 @@ test("document optional chains preserve lazy keys, continuations and typed lengt
         return;
     }
     runGeneratedProgram(native, "json-optional-chains/semantics", result.cpp);
+});
+
+test("an optional method call on a document member is undefined when the member is absent", async (t) => {
+    const source = `
+        type Lang = 'en' | 'fr';
+        interface Doc { items?: number[]; label?: string | null; nested?: { tags?: string[] }; names?: Partial<Record<Lang, string>>; }
+        const empty = JSON.parse('{"label":null}') as Doc;
+        const full = JSON.parse('{"items":[1,2],"label":" a ","nested":{"tags":["x","y"]},"names":{"fr":" b "}}') as Doc;
+        function named(doc: { names?: Partial<Record<Lang, string>> }, lang: Lang): string {
+            return doc.names?.[lang]?.trim() || 'unnamed';
+        }
+        function describe(doc: Doc): string {
+            const doubled = doc.items?.map((value) => value * 2);
+            const label = doc.label?.trim();
+            const tags = doc.nested?.tags?.join('+');
+            const count = doc.nested?.tags.slice(1).length;
+            return [
+                doubled === undefined ? 'none' : doubled.join(','),
+                label === undefined ? 'none' : label,
+                tags === undefined ? 'none' : tags,
+                count === undefined ? 'none' : String(count),
+                named(doc, 'en'),
+                named(doc, 'fr'),
+            ].join('|');
+        }
+        const text = describe(empty) + ' ' + describe(full);
+        if (text !== 'none|none|none|none|unnamed|unnamed 2,4|a|x+y|1|unnamed|b') throw new Error(text);
+    `;
+    await runSelfCheckingProgram(
+        t,
+        "json-optional-chains/method-calls",
+        source,
+    );
 });

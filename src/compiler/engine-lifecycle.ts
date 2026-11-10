@@ -7,6 +7,7 @@ import {
     writable,
 } from "./emission-transaction.js";
 import { persistContinuationLocals } from "./continuation-storage.js";
+import { ApplicationRealmRequired } from "./worker-modules.js";
 import ts from "typescript";
 import { framePollExecutor } from "./frame-poll.js";
 import { memberAccessors, staticAccessKey } from "./symbols.js";
@@ -479,7 +480,6 @@ export class EngineLifecycle {
         | {
               readonly index: number;
               readonly engine: string;
-              readonly node: ts.Node;
               readonly indentLevel: number;
           }
         | undefined;
@@ -718,7 +718,6 @@ export class EngineLifecycle {
         this.engineStartMark = {
             index: this.context.body.length,
             engine: engineCpp,
-            node,
             indentLevel: this.context.indentLevel,
         };
     }
@@ -880,24 +879,21 @@ export class EngineLifecycle {
         // closing brace in the tail at a shallower indent, and moving it
         // into the lambda would emit unbalanced C++ -- so the shape is
         // checked here, where the emitted lines say what it is, rather
-        // than guessed from the lowering scope.
+        // than guessed from the lowering scope. Such a block suspends with
+        // the start: a handler of the entry's promise, a catch clause or a
+        // branch runs after frames have drawn. The application realm starts
+        // its engine as a promise the block awaits.
         const depth = (line: string): number =>
             line.length - line.trimStart().length;
         const startDepth = depth(
             renderNativeEmission(this.context.body[index]!),
         );
-        const escapes = tail.find(
-            (line) => line.trim().length > 0 && depth(line) < startDepth,
-        );
-        if (escapes !== undefined) {
-            this.context.fail(
-                mark.node,
-                "startEngine is lowered at the entry body's top level " +
-                    "alone: the statements after it become the frame " +
-                    "conductor's deferred callback, and a block that " +
-                    "closes after it has no boundary for one.",
-            );
-        }
+        if (
+            tail.some(
+                (line) => line.trim().length > 0 && depth(line) < startDepth,
+            )
+        )
+            throw new ApplicationRealmRequired();
         const indent = " ".repeat(startDepth);
         // A part runs after its frame count or promise gate. Statement-bearing
         // parts stay nested so later parts can name earlier persistent locals.

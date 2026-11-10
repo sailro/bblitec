@@ -451,20 +451,15 @@ export function compileShadowIntrinsic(
                 "shadow-generator",
                 argumentAt(call, 0),
             );
-            if (generator.shadowGeneratorIndex === undefined) {
-                context.fail(
-                    argumentAt(call, 0),
-                    "A CSM receiver texture requires a generator created in this scene.",
-                );
-            }
             // The generator keeps its receiver texture, which a later
-            // enableCsmStaticCache refuses.
+            // enableCsmStaticCache refuses. The texture's native value is
+            // the generator's handle, so one a record stored serves too.
             return {
                 kind: "texture",
                 cpp: `bbl::get_csm_receiver_texture(${context.requireEngine(generator, call)}, ${generator.cpp})`,
                 engineCpp: context.requireEngine(generator, call),
                 isDepthTexture: true,
-                csmReceiverGeneratorIndex: generator.shadowGeneratorIndex,
+                csmReceiverTexture: true,
             };
         }
 

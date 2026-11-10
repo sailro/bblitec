@@ -73,6 +73,55 @@ ${compiled.cpp}`,
     );
 });
 
+test("a structural view of a mesh reads its thin-instance pool's version", (t) => {
+    // The view restates the pool's `_version`, which each pinned thin
+    // writer bumps from the 1 its creation sets; a mesh without a pool
+    // reads none.
+    const compiled =
+        compileSource(`import {createEngine,createBox,setThinInstances,setThinInstanceCount,type Mesh} from "@babylonjs/lite";
+interface Observed{thinInstances?:{_version?:number|undefined}|null|undefined}
+const engine=await createEngine(new OffscreenCanvas(1,1));
+const plain=createBox(engine),thin=createBox(engine);
+const held:readonly Mesh[]=[plain,thin];
+const view=held as unknown as readonly Observed[];
+const pool=(index:number):number=>view[index]!.thinInstances?._version??-1;
+if(pool(0)!==-1||pool(1)!==-1)throw new Error("absent pools");
+setThinInstances(thin,new Float32Array(48),3);
+if(pool(0)!==-1||pool(1)!==1)throw new Error("created pool version");
+setThinInstanceCount(thin,2);
+if(pool(1)!==2)throw new Error("bumped pool version");
+globalThis.close();
+`);
+    assert.match(
+        compiled.cpp,
+        /bbl::thin_instance_data\(bbl::handle_at\(v_engine\.meshes, .+\)\.thin_instances\)\.version/,
+    );
+    const native = optionalNativeFixtureTools(false);
+    if (!native) {
+        t.skip("Native compiler required for version reads.");
+        return;
+    }
+    const context = new LoweringContext();
+    const thin = lowerThinInstanceApi(context, compiled.manifest.features);
+    runGeneratedProgram(
+        native,
+        "thin-instance-version-view",
+        `#include <bblite/runtime.hpp>
+#include <bblite/thin_instance.hpp>
+namespace bbl {
+Engine create_engine(EngineOptions) { return {}; }
+MeshHandle create_box(Engine& engine, BoxOptions) { return store_mesh_record(engine, MeshRecord{}); }
+${lowerThinInstanceOwnership(context)}
+${thin}
+}
+${compiled.cpp}`,
+        {
+            flags: ["/Gy"],
+            timeoutMs: 10000,
+        },
+    );
+});
+
 test("cloning an unbound mesh does not establish a thin pool", () => {
     // The clone reads its own record, which an unbound source gave no pool
     // (a later binding of the source is not the clone's): the member read

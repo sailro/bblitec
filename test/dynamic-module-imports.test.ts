@@ -60,6 +60,10 @@ test("finite imports retain namespace identity, live exports and asynchronous re
     `,
         { fileName: join(directory, "entry.ts") },
     );
+    // A module is named by its path from the entry's directory, the same
+    // wherever the program is checked out.
+    assert.match(result.cpp, /bbl::js::ModuleNamespace\{"state\.ts"\}/);
+    assert.ok(!result.cpp.includes(directory.replaceAll("\\", "\\\\")));
     const tools = optionalNativeFixtureTools(false);
     if (!tools) {
         t.skip("Native fixture compiler unavailable.");

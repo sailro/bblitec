@@ -96,6 +96,28 @@ test("surface render targets retain sampled depth and validate descriptor owners
             ),
         /single-sample depth attachment/,
     );
+    // A static extent no 32-bit native extent holds refuses at generation.
+    assert.throws(
+        () =>
+            compileSource(
+                `${setup} createRenderTargetTexture(engine, {format: engine.format, samples: 1, size: {width: 2 ** 32, height: 4}}); } void main();`,
+            ),
+        /A count of 4294967296 exceeds the 32-bit native count/,
+    );
+    assert.doesNotThrow(() =>
+        compileSource(
+            `${setup} createRenderTargetTexture(engine, {format: engine.format, samples: 1, size: {width: 2 ** 32 - 1, height: 4}}); } void main();`,
+        ),
+    );
+    // A surface stand-in is re-read at every build, which no native size is.
+    assert.throws(
+        () =>
+            compileSource(
+                `${setup} const half = { get width(): number { return 32; }, get height(): number { return 32; } };
+                createRenderTargetTexture(engine, {format: engine.format, samples: 1, size: {canvas: half}} as Parameters<typeof createRenderTargetTexture>[1]); } void main();`,
+            ),
+        /sized by a surface stand-in \(`size: \{ canvas \}`\) reads canvas\.width and canvas\.height again at every build/,
+    );
 });
 
 test("optional depth providers preserve conditional selection and argument effects", () => {
@@ -302,5 +324,46 @@ test("surface extent arithmetic matches the pin and sampled facades retain disti
         }
     `,
         { timeoutMs: 10000, expectedOutput: "" },
+    );
+});
+
+test("a render-target texture a try body assigns is read through its storage", (t) => {
+    const result = compileSource(`
+import {createEngine,createRenderTargetTexture,withSampledDepthTexture} from "@babylonjs/lite";
+const engine=await createEngine(new OffscreenCanvas(1,1));
+let sampled:ReturnType<typeof createRenderTargetTexture>;
+try{sampled=createRenderTargetTexture(engine,{dFormat:"depth24plus",samples:1,size:{width:4,height:4}},withSampledDepthTexture);}
+catch(error){throw new Error("sampled target");}
+let failed:ReturnType<typeof createRenderTargetTexture>;
+let caught=false;
+try{failed=createRenderTargetTexture(engine,{format:"rgba8unorm",samples:1,size:{width:Math.floor(performance.now()*0),height:4}});if(failed.depthTexture!==null)throw new Error("unreached");}
+catch(error){caught=true;}
+if(!caught||sampled.depthTexture===null)throw new Error("assigned target");
+globalThis.close();
+`);
+    assert.match(
+        result.cpp,
+        /std::optional<bbl::RenderTargetTexture> v_sampled\{\};/,
+    );
+    const tools = optionalNativeFixtureTools(false);
+    if (!tools) {
+        t.skip("Native fixture compiler unavailable.");
+        return;
+    }
+    runGeneratedProgram(
+        tools,
+        "render-target-texture-try",
+        `#include <bblite/pal_async_engine.hpp>
+namespace bbl::pal {
+std::shared_ptr<Engine> create_realm_engine(EngineOptions, const std::shared_ptr<OffscreenCanvas>&) { return std::make_shared<Engine>(); }
+double performance_milliseconds() { return 0; }
+}
+namespace bbl { Engine create_engine(EngineOptions) { return {}; } }
+${new RenderTargetLowerer(new LoweringContext()).lower().source}
+${result.cpp}`,
+        {
+            flags: ["/DBBLITE_WORKERS=1", "/DBBLITE_OFFSCREEN_SURFACES=1"],
+            timeoutMs: 10000,
+        },
     );
 });

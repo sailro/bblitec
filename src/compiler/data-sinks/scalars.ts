@@ -10,7 +10,7 @@ import {
 } from "../values/model.js";
 import { isHandleKind } from "../data-types/handles.js";
 import { absenceKind, declaredContextualType } from "../type-facts.js";
-import { hasNonNullAssertion, literalMember } from "../syntax.js";
+import { hasNonNullAssertion } from "../syntax.js";
 import { ownEntries } from "../object-statics.js";
 import { yieldsFreshObject } from "../fresh-records.js";
 import { unwrapObjectIdentity } from "../static-evaluator.js";
@@ -36,7 +36,7 @@ import {
     compileJsonRecordView,
     compileJsonTupleView,
     isPlainJsonRecord,
-    viewLiteral,
+    storeMembers,
 } from "../json-record-views.js";
 
 import type { DataSinkHost, DataSinkOperations } from "./contracts.js";
@@ -102,24 +102,51 @@ function expressionJson(
 }
 
 /**
- * A fresh plain object stored straight into a document slot is the document
- * itself: an owned object of its own keys, in creation order, each member
- * stored as a document value (a key a conditional spread wrote only while
- * it is own). Undefined for a record with methods or accessors, or one
- * other code can still reach as a compile-time record.
+ * A fresh plain object or array stored straight into a document slot is
+ * the document itself: an owned object of its own keys, in creation order
+ * (a key a conditional spread wrote only while it is own), or an owned
+ * array of its elements, each member stored as a document value. Undefined
+ * for a record with methods or accessors, or a value other code can still
+ * reach as a compile-time record or tuple.
  */
 function ownedDocument(
     lowerer: DataSinkHost,
-    record: Value,
+    value: Value,
     node: ts.Node,
 ): string | undefined {
-    if (!isPlainJsonRecord(record)) return undefined;
+    if (value.kind !== "tuple" && !isPlainJsonRecord(value)) return undefined;
     const converted = lowerer.convertedExpression(node);
     const expression =
         converted && unwrapObjectIdentity(lowerer.context.checker, converted);
     if (!expression || !yieldsFreshObject(lowerer.context.checker, expression))
         return undefined;
-    return recordDocumentSnapshot(lowerer, record, node);
+    return value.kind === "tuple"
+        ? tupleDocumentSnapshot(lowerer, value, node)
+        : recordDocumentSnapshot(lowerer, value, node);
+}
+
+/** A document array of a tuple's elements as they are now, keeping no alias. */
+function tupleDocumentSnapshot(
+    lowerer: DataSinkHost,
+    tuple: Value,
+    node: ts.Node,
+): string | undefined {
+    if (!tuple.tupleElements) return undefined;
+    const elements = storeMembers(
+        lowerer,
+        node,
+        tuple.tupleElements.map((value, slot) => ({ value, slot })),
+        (member) => member.slot,
+        (member) =>
+            lowerer.compileMemberForSink(
+                member.value,
+                { kind: "json" },
+                node,
+                member.slot,
+            ),
+    );
+    lowerer.context.reachJson();
+    return `bbl::js::JsonValue::from_array(bbl::js::JsonValue::Array{${elements.join(", ")}})`;
 }
 
 /**
@@ -135,21 +162,21 @@ export function recordDocumentSnapshot(
     if (!isPlainJsonRecord(record)) return undefined;
     const entries = ownEntries(lowerer.ownObjectContext(), record, node);
     if (!entries) return undefined;
-    const literal = viewLiteral(lowerer, node);
+    const values = storeMembers(
+        lowerer,
+        node,
+        entries,
+        (entry) => entry.key,
+        (entry) =>
+            lowerer.compileMemberForSink(
+                entry.value,
+                { kind: "json" },
+                node,
+                entry.key,
+            ),
+    );
     const stores = entries.map(({ key, presence }, index) => {
-        const value = lowerer.storeLiteralMember(
-            entries,
-            index,
-            (entry) => literal && literalMember(literal, entry.key),
-            (entry) =>
-                lowerer.compileMemberForSink(
-                    entry.value,
-                    { kind: "json" },
-                    node,
-                    entry.key,
-                ),
-        );
-        const stored = `own.emplace_back(${lowerer.context.cppString(key)}, ${value});`;
+        const stored = `own.emplace_back(${lowerer.context.cppString(key)}, ${values[index]!});`;
         return presence ? `if (${presence.ownCpp}) ${stored}` : stored;
     });
     lowerer.context.reachJson();
@@ -292,7 +319,10 @@ function valueJson(
         if (view !== undefined) return view;
     }
     if (value.kind === "tuple" && !value.cpp)
-        return compileJsonTupleView(lowerer, value, node);
+        return (
+            ownedDocument(lowerer, value, node) ??
+            compileJsonTupleView(lowerer, value, node)
+        );
     // A function a document holds is the callback its declared type stores,
     // boxed: a member call reads it back with that signature (`json_call`).
     if (value.kind === "callback") {
@@ -515,7 +545,8 @@ const boxedOpaqueSink = {
 
 /** A leaf only a value of its own kind converts to. */
 function sameKindSink<
-    K extends "symbol" | "bigint" | "i64array" | "u64array" | "gpu",
+    K extends
+        "symbol" | "bigint" | "prototype" | "i64array" | "u64array" | "gpu",
 >(kind: K): DataSinkOperations<K>[K] {
     return {
         expression: (type, lowerer, expression, unwrapped) =>
@@ -582,6 +613,7 @@ export const scalarsSinks: DataSinkOperations<
     | "number"
     | "symbol"
     | "bigint"
+    | "prototype"
     | "i64array"
     | "u64array"
     | "boolean"
@@ -803,6 +835,7 @@ export const scalarsSinks: DataSinkOperations<
     number: { expression: expressionNumber, value: valueNumber },
     symbol: sameKindSink("symbol"),
     bigint: sameKindSink("bigint"),
+    prototype: sameKindSink("prototype"),
     i64array: sameKindSink("i64array"),
     u64array: sameKindSink("u64array"),
     boolean: { expression: expressionBoolean, value: valueBoolean },

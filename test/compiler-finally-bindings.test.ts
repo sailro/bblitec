@@ -174,6 +174,39 @@ test(
 );
 
 test(
+    "hoisted finally reads and clears a holder its try stored try-local scalars in",
+    { skip: !nativeTools },
+    () => {
+        const result = compileSource(`
+        let resolving: [number, number] | null = null;
+        let saved: { n: number } | undefined;
+        let inferred;
+        let seen = 0;
+        function settle(x: number, y: number): number {
+            try {
+                const cx = x + 1, cy = y + 1;
+                resolving = [cx, cy];
+                saved = { n: cx };
+                return cx + cy;
+            } finally {
+                if (resolving && saved) seen = resolving[0] + resolving[1] + saved.n;
+                resolving = null;
+            }
+        }
+        if (settle(1, 2) !== 5 || resolving !== null || seen !== 7) throw new Error("typed holders");
+        try {
+            const n = Date.now() > 0 ? 2 : 1;
+            inferred = { n };
+        } finally {
+            seen = inferred.n;
+        }
+        if (seen !== 2) throw new Error("inferred holder");
+    `);
+        runNativeProgram("scalar-holders", result.cpp);
+    },
+);
+
+test(
     "static-loop finally runs complete nested cleanup and can override break with continue",
     { skip: !nativeTools },
     () => {

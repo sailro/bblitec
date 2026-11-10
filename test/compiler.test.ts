@@ -1991,7 +1991,7 @@ test("compares the value of an optional boolean from a dynamic record lookup", (
         function active(id: number): boolean {
             return defs[id]?.active === true;
         }
-        const missing = active(2);
+        const missing = active(Math.floor(performance.now()) % 3);
     `);
 
     assert.match(
@@ -5164,8 +5164,12 @@ test("materializes a tuple bound through an unknown parameter for Array.every", 
         finiteVector([dynamic, 2, 3]);
     `);
 
-    assert.match(result.cpp, /JsonValue::from_tuple_view\([^\n]+, 3\)/);
-    assert.match(result.cpp, /json_value\(v_dynamic\)/);
+    // A fresh array is the document's own: its elements stored once.
+    assert.match(
+        result.cpp,
+        /JsonValue::from_array\(bbl::js::JsonValue::Array\{bbl::js::json_value\(v_dynamic\), /,
+    );
+    assert.doesNotMatch(result.cpp, /from_tuple_view/);
     assert.match(result.cpp, /bool \w*_every_result_\d+ = true;/);
 });
 
@@ -5201,7 +5205,10 @@ test("specializes a generation-known read-only scalar parameter", () => {
         result.cpp,
         /\.read_property\("length"\)\.strict_equals\(v_fn\d+_expected\)/,
     );
-    assert.match(result.cpp, /\)\(v_bblite_dynamic_tuple_view_\d+, 3\.0\)/);
+    assert.match(
+        result.cpp,
+        /JsonValue::from_array\(bbl::js::JsonValue::Array\{[^\n]+\}\), 3\.0\)/,
+    );
 });
 
 test("lowers typed arrays with storage-exact reads and writes", () => {

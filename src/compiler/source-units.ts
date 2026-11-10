@@ -67,8 +67,13 @@ export function commonSourceDirectory(
     return root;
 }
 
+/** A source's path from `root`, spelled the same on every platform. */
+export function sourcePath(root: string, source: string): string {
+    return relative(root, resolve(source)).replaceAll("\\", "/");
+}
+
 export function sourceUnitStem(root: string, source: string): string {
-    const path = relative(root, resolve(source)).replaceAll("\\", "/");
+    const path = sourcePath(root, source);
     return path.slice(0, path.length - extname(path).length);
 }
 

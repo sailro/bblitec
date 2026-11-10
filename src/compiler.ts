@@ -100,6 +100,7 @@ import {
     storageDemandPlanningEnabled,
     StorageDemandPlanner,
 } from "./compiler/storage-demand-planner.js";
+import { moduleLevelCallee } from "./compiler/runtime-case-split.js";
 import { StorageDemand } from "./compiler/storage-demand.js";
 import { ReplayStorage } from "./compiler/replay-storage.js";
 import {
@@ -224,6 +225,7 @@ import {
     type DataType,
     type TypedArrayKind,
 } from "./compiler/data-types.js";
+import { metadataFieldsForKind } from "./compiler/values/metadata.js";
 import { engineFieldIdentities } from "./compiler/engine-field-identities.js";
 import {
     ExpressionLowerer,
@@ -304,6 +306,7 @@ import {
     callArgumentIsReadOnly,
     parameterIsReadOnly,
     parameterWrittenSlots,
+    readsIntactParameterObject,
 } from "./compiler/parameter-effects.js";
 import { promiseReactionOf } from "./compiler/promises.js";
 import { recordComponents } from "./compiler/record-components.js";
@@ -819,12 +822,13 @@ function lowerSourceApplication(
         // are always strict: a discarded plan runs between them, as far as
         // it can, after each restart while plans pay -- each demand a plan
         // adds saves a strict attempt as long as the last one. Costs are
-        // statement lowerings, so the schedule is the program's alone. After
-        // a plan that lowered more statements than the attempts it saved,
-        // strict attempts lower as many before the next one, twice as many
-        // after each further such plan: a survey whose plans stop paying
-        // spends ever less of its time planning, and the next plan that
-        // pays plans after every restart again.
+        // the time each took.
+        // After a plan that took longer than the attempts it saved, strict
+        // attempts run as long before the next one, twice as long after
+        // each further such plan: a survey whose plans stop paying spends
+        // ever less of its time planning, and the next plan that pays
+        // plans after every restart again. The schedule follows the clock,
+        // so two surveys of one program may plan after different restarts.
         let planning = false;
         let owed = 0;
         let unpaid = 0;
@@ -840,6 +844,7 @@ function lowerSourceApplication(
                 planning = addPlanned(planner) > 0;
                 continue;
             }
+            const started = performance.now();
             try {
                 return survey
                     ? survey.attempt(input.sourceFile.fileName, lower)
@@ -856,12 +861,10 @@ function lowerSourceApplication(
                     planning = true;
                     continue;
                 }
-                const strict = survey.statementsLowered(
-                    input.sourceFile.fileName,
-                );
+                const strict = performance.now() - started;
                 owed -= strict;
                 if (owed > 0) continue;
-                const planned = performance.now();
+                const began = performance.now();
                 const planner = new StorageDemandPlanner(
                     input.checker,
                     true,
@@ -874,14 +877,10 @@ function lowerSourceApplication(
                 }
                 for (const replay of planner.replays) acceptReplay(replay);
                 const added = addPlanned(planner);
-                survey.planned(
-                    added,
-                    performance.now() - planned,
-                    planner.ended(),
-                );
-                unpaid = added * strict > planner.statements ? 0 : unpaid + 1;
-                owed =
-                    unpaid === 0 ? 0 : planner.statements * 2 ** (unpaid - 1);
+                const spent = performance.now() - began;
+                survey.planned(added, spent, planner.ended());
+                unpaid = added * strict > spent ? 0 : unpaid + 1;
+                owed = unpaid === 0 ? 0 : spent * 2 ** (unpaid - 1);
             }
         }
     };
@@ -962,6 +961,11 @@ class Compiler implements LoweringServices {
         ts.VariableDeclaration,
         ts.Expression | false
     >();
+    /**
+     * `rereadsAlike` answers, by expression.
+     * @unjournaled A function of the program's syntax.
+     */
+    private readonly rereadAlike = new WeakMap<ts.Expression, boolean>();
     /** The scene composition records this compilation projects into its manifest. */
     public readonly sceneManifest: SceneManifestRecorder =
         new SceneManifestRecorder(this);
@@ -1319,6 +1323,7 @@ class Compiler implements LoweringServices {
                     dataType,
                     node,
                 ),
+            (value, name, node) => this.structNumber(value, name, node),
         );
     }
 
@@ -2519,7 +2524,8 @@ class Compiler implements LoweringServices {
      * inside the holder's value -- the stored value itself, or a member,
      * element or branch of a literal it builds -- whatever storage the
      * holder's type (declared or inferred) gave it. A value computed from
-     * them (`createCsgFromMesh(box)`) holds none of them.
+     * them (`createCsgFromMesh(box)`) holds none of them, and a scalar is
+     * copied into the holder.
      */
     public noteHeldNativeBindings(expression: ts.BinaryExpression): void {
         if (expression.operatorToken.kind !== ts.SyntaxKind.EqualsToken) return;
@@ -2529,7 +2535,13 @@ class Compiler implements LoweringServices {
         if (holders.length === 0) return;
         const held = heldIdentifiers(this.unwrap(expression.right), (node) =>
             this.unwrap(node),
-        ).flatMap((identifier) => this.identifierNativeBindings(identifier));
+        )
+            .filter((identifier) =>
+                typeCanCarryReference(
+                    this.checker.getTypeAtLocation(identifier),
+                ),
+            )
+            .flatMap((identifier) => this.identifierNativeBindings(identifier));
         if (held.length === 0) return;
         for (const holder of holders)
             this.heldNativeBindings.set(holder, [
@@ -3791,9 +3803,11 @@ class Compiler implements LoweringServices {
     }
 
     /**
-     * The number a named record's field holds, when its binding still holds
-     * the record it was declared with and no write in the program (through
-     * this type or any view of it) can have replaced the field.
+     * The number a named record's field holds: its initializer's, when the
+     * name is a static literal and that initializer re-reads alike; else the
+     * bound number, when its binding still holds the record it was declared
+     * with and no write in the program (through this type or any view of
+     * it) can have replaced the field.
      */
     public staticProperty(
         access: ts.PropertyAccessExpression,
@@ -3801,6 +3815,14 @@ class Compiler implements LoweringServices {
         // Resolving anything but a name may inline, and so emit, its calls.
         if (!ts.isIdentifier(access.expression)) return undefined;
         const target = this.resolveStaticExpression(access.expression);
+        if (ts.isObjectLiteralExpression(target)) {
+            const field = unlessRefused(() =>
+                this.objectProperty(target, access.name.text),
+            );
+            return field && this.rereadsAlike(field)
+                ? staticNumberValue(this, field)
+                : undefined;
+        }
         if (!ts.isIdentifier(target)) return undefined;
         const owner = this.bindings.lookupOptional(target);
         // Another closure may replace a shared cell's whole record.
@@ -3841,32 +3863,6 @@ class Compiler implements LoweringServices {
         expression: ts.Expression,
         precision: "float" | "double",
     ): string {
-        const unwrapped = this.unwrap(expression);
-        if (
-            ts.isObjectLiteralExpression(unwrapped) &&
-            unwrapped.properties.length === 1 &&
-            ts.isSpreadAssignment(unwrapped.properties[0]!)
-        ) {
-            return this.vec3FromRecord(
-                this.compileValue(unwrapped.properties[0].expression),
-                unwrapped.properties[0].expression,
-                precision,
-            );
-        }
-        if (
-            ts.isIdentifier(unwrapped) ||
-            ts.isElementAccessExpression(unwrapped) ||
-            ts.isPropertyAccessExpression(unwrapped)
-        ) {
-            const value = this.compileValue(unwrapped);
-            if (
-                (value.kind === "data" && value.dataType?.kind === "struct") ||
-                value.kind === "record"
-            ) {
-                return this.vec3FromRecord(value, unwrapped, precision);
-            }
-            return this.evaluator.compileVec3(expression, precision, value);
-        }
         return this.evaluator.compileVec3(expression, precision);
     }
 
@@ -3875,34 +3871,27 @@ class Compiler implements LoweringServices {
         node: ts.Node,
         precision: "float" | "double",
     ): string {
-        if (value.kind === "data" && value.dataType?.kind === "struct") {
-            const type = precision === "float" ? "bbl::Vec3" : "bbl::Vec3d";
-            const arrow = this.dataTypes.memberAccess(value.dataType.name);
-            const lanes = ["x", "y", "z"].map((name) => {
-                const field = this.dataTypes.structField(
-                    value.dataType!.kind === "struct"
-                        ? value.dataType!.name
-                        : "",
-                    name,
-                    node,
-                );
-                if (field.type.kind !== "number") {
-                    this.fail(
-                        node,
-                        `Vec3 data field '${name}' must be numeric.`,
-                    );
-                }
-                return this.castNumber(
-                    {
-                        kind: "number",
-                        cpp: `${value.cpp}${arrow}${field.name}`,
-                    },
-                    precision,
-                );
-            });
-            return `${type}{${lanes.join(", ")}}`;
-        }
         return this.evaluator.vec3FromRecord(value, node, precision);
+    }
+
+    /**
+     * A data struct's numeric field read where the struct stands;
+     * undefined when the field holds no number.
+     */
+    private structNumber(
+        value: Value,
+        name: string,
+        node: ts.Node,
+    ): Value | undefined {
+        if (value.dataType?.kind !== "struct") return undefined;
+        const struct = value.dataType.name;
+        const field = this.dataTypes.structField(struct, name, node);
+        return field.type.kind === "number"
+            ? {
+                  kind: "number",
+                  cpp: `${value.cpp}${this.dataTypes.memberAccess(struct)}${field.name}`,
+              }
+            : undefined;
     }
 
     /** One number Value at one sink's width — the rule, in one place. */
@@ -5037,7 +5026,7 @@ class Compiler implements LoweringServices {
             ts.isPropertyAccessExpression(expression) ||
             ts.isElementAccessExpression(expression)
         )
-            return this.moduleConstantText(expression);
+            return this.executedConstantText(expression);
         return ts.isCallExpression(expression)
             ? this.runGenerationBuilder(expression)
             : undefined;
@@ -5082,10 +5071,15 @@ class Compiler implements LoweringServices {
     }
 
     /**
-     * Required text from an unwritten module constant or its plain-data
-     * fields, evaluated by the same generation executor as its initializer.
+     * Required text from plain data generation knows, or from its fields:
+     * an unwritten module constant, evaluated by the same generation
+     * executor as its initializer, or the record a helper call returns,
+     * read in place or through the local `const` holding it
+     * (`settledCallInitializer`).
      */
-    private moduleConstantText(expression: ts.Expression): string | undefined {
+    private executedConstantText(
+        expression: ts.Expression,
+    ): string | undefined {
         const keys: string[] = [];
         let root = this.unwrap(expression);
         while (
@@ -5108,8 +5102,31 @@ class Compiler implements LoweringServices {
         const constant = ts.isIdentifier(root)
             ? this.moduleConstantDeclaration(root)
             : undefined;
-        if (!constant) return undefined;
-        let value: unknown = this.runModuleConstant(constant.declaration);
+        // A held result re-reads the call its declaration still evaluates;
+        // a call read in place is folded away, so it may write nothing.
+        const held =
+            !constant && ts.isIdentifier(root)
+                ? this.settledCallInitializer(root)
+                : undefined;
+        const call =
+            held ??
+            (ts.isCallExpression(root) && !root.questionDotToken
+                ? root
+                : undefined);
+        if (!constant && !call) return undefined;
+        const returned =
+            call &&
+            (held ||
+                !(
+                    this.evaluationOrder.writesStorage(call) ||
+                    this.evaluationOrder.hasModuleEffects(call)
+                ))
+                ? this.returnedLiteralText(call, keys)
+                : undefined;
+        if (returned !== undefined) return returned;
+        let value: unknown = constant
+            ? this.runModuleConstant(constant.declaration)
+            : this.executedCall(call!);
         for (const key of keys) {
             if (value === null || typeof value !== "object") return undefined;
             value = Object.getOwnPropertyDescriptor(value, key)?.value;
@@ -5117,6 +5134,34 @@ class Compiler implements LoweringServices {
         return typeof value === "string" || typeof value === "number"
             ? String(value)
             : undefined;
+    }
+
+    /**
+     * The text at `keys` of the record literal a helper call returns
+     * directly (`StaticEvaluator.resolveStaticLiteral`): each key a property
+     * of a literal, the last one's value folding as required text.
+     */
+    private returnedLiteralText(
+        call: ts.CallExpression,
+        keys: readonly string[],
+    ): string | undefined {
+        return unlessRefused(() =>
+            this.probeEmission(
+                () => {
+                    let literal = this.evaluator.resolveStaticLiteral(call);
+                    if (literal === this.unwrap(call)) return undefined;
+                    for (const key of keys) {
+                        const member = ts.isObjectLiteralExpression(literal)
+                            ? this.objectProperty(literal, key)
+                            : undefined;
+                        if (!member) return undefined;
+                        literal = this.evaluator.resolveStaticLiteral(member);
+                    }
+                    return this.evaluator.compileStringLiteral(literal);
+                },
+                () => false,
+            ),
+        );
     }
 
     /**
@@ -5568,31 +5613,17 @@ class Compiler implements LoweringServices {
     }
 
     /**
-     * The elements a const local's closed-helper initializer produces at
-     * generation (`const icons = plan(opts.icons)`); undefined when the
-     * call cannot run there or its result is no array.
+     * The elements a const local's closed-helper initializer produced
+     * (`const icons = plan(opts.icons)`), for a reader that knows nothing
+     * changes the array; undefined when a run at the read is not the
+     * declaration's (`rerunCallInitializer`), the call cannot run at
+     * generation or its result is no array.
      */
     public executedInitializerElements(
         identifier: ts.Identifier,
     ): readonly Value[] | undefined {
-        const declaration =
-            this.symbols.valueSymbol(identifier)?.valueDeclaration;
-        if (
-            !declaration ||
-            !ts.isVariableDeclaration(declaration) ||
-            !declaration.initializer ||
-            variableKind(declaration) !== "const"
-        )
-            return undefined;
-        const call = this.unwrap(declaration.initializer);
-        if (!ts.isCallExpression(call) || call.questionDotToken)
-            return undefined;
-        const executed = unlessRefused(() =>
-            this.probeEmission(
-                () => this.runGenerationCall(call)?.value,
-                () => false,
-            ),
-        );
+        const initializer = this.rerunCallInitializer(identifier);
+        const executed = initializer && this.executedCall(initializer.call);
         return Array.isArray(executed)
             ? executed.map((element: unknown) =>
                   jsonToValue(
@@ -5605,11 +5636,72 @@ class Compiler implements LoweringServices {
             : undefined;
     }
 
+    /**
+     * The helper call a `const` binding's initializer is, with its
+     * declaration, when running it at a later read calls what the
+     * declaration called: a module's own function, with arguments that
+     * re-read alike.
+     */
+    private rerunCallInitializer(
+        identifier: ts.Identifier,
+    ):
+        | { declaration: ts.VariableDeclaration; call: ts.CallExpression }
+        | undefined {
+        const declaration =
+            this.symbols.valueSymbol(identifier)?.valueDeclaration;
+        if (
+            !declaration ||
+            !ts.isVariableDeclaration(declaration) ||
+            !declaration.initializer ||
+            variableKind(declaration) !== "const"
+        )
+            return undefined;
+        const call = this.unwrap(declaration.initializer);
+        return ts.isCallExpression(call) &&
+            !call.questionDotToken &&
+            moduleLevelCallee(this.checker, call.expression) &&
+            call.arguments.every((argument) => this.rereadsAlike(argument))
+            ? { declaration, call }
+            : undefined;
+    }
+
+    /** What a closed-helper call returns when generation runs it, if it can. */
+    private executedCall(call: ts.CallExpression): unknown {
+        return unlessRefused(() =>
+            this.probeEmission(
+                () => this.runGenerationCall(call)?.value,
+                () => false,
+            ),
+        );
+    }
+
+    /**
+     * The helper call a local `const` holds the result of
+     * (`const sources = stageSources(lit)`), when evaluating it at a later
+     * read gives what the binding holds there: a run there is the
+     * declaration's (`rerunCallInitializer`) and nothing writes through the
+     * binding.
+     */
+    private settledCallInitializer(
+        identifier: ts.Identifier,
+    ): ts.CallExpression | undefined {
+        const initializer = this.rerunCallInitializer(identifier);
+        return initializer && this.unwrittenConst(initializer.declaration)
+            ? initializer.call
+            : undefined;
+    }
+
     public resolveStaticExpression(
         expression: ts.Expression,
         resolving: ReadonlySet<ts.Symbol> = new EmissionSet(),
     ): ts.Expression {
         return this.evaluator.resolveStaticExpression(expression, resolving);
+    }
+
+    public constantNameValue(name: ts.Identifier): Value | undefined {
+        return this.resolveStaticExpression(name) !== name
+            ? this.compileValue(name)
+            : undefined;
     }
 
     /** Read complete current snapshots through the ordinary property ownership rules. */
@@ -5734,9 +5826,8 @@ class Compiler implements LoweringServices {
      * A local `const` whose values generation does not all fold: its
      * initializer, re-read where a static descriptor list needs syntax.
      * Only when the re-read sees what the declaration saw: nothing writes
-     * through the binding, a call in it returns a literal, and its names are
-     * functions, consts nothing writes through, or parameter members their
-     * function only reads.
+     * through the binding and its initializer re-reads alike
+     * (`rereadsAlike`).
      */
     private stableLocalInitializer(
         identifier: ts.Identifier,
@@ -5752,14 +5843,38 @@ class Compiler implements LoweringServices {
             return undefined;
         const known = this.stableInitializers.get(declaration);
         if (known !== undefined) return known || undefined;
-        const constant = (named: ts.VariableDeclaration): boolean =>
-            variableKind(named) === "const" &&
-            !this.evaluator.isWrittenThrough(named);
+        const initializer =
+            this.unwrittenConst(declaration) &&
+            this.rereadsAlike(declaration.initializer)
+                ? declaration.initializer
+                : undefined;
+        this.stableInitializers.set(declaration, initializer ?? false);
+        return initializer;
+    }
+
+    /** A `const` binding nothing writes through. */
+    private unwrittenConst(declaration: ts.VariableDeclaration): boolean {
+        return (
+            variableKind(declaration) === "const" &&
+            !this.evaluator.isWrittenThrough(declaration)
+        );
+    }
+
+    /**
+     * Whether a later re-read of an expression sees what its first
+     * evaluation saw: a call in it returns a literal, and its names are
+     * functions, consts nothing writes through, or parameter members their
+     * function only reads.
+     */
+    private rereadsAlike(expression: ts.Expression): boolean {
+        const known = this.rereadAlike.get(expression);
+        if (known !== undefined) return known;
         const stableName = (name: ts.Identifier): boolean => {
             const named = this.symbols.valueSymbol(name)?.valueDeclaration;
             if (!named) return false;
             if (ts.isFunctionDeclaration(named)) return true;
-            if (ts.isVariableDeclaration(named)) return constant(named);
+            if (ts.isVariableDeclaration(named))
+                return this.unwrittenConst(named);
             if (
                 !ts.isParameter(named) ||
                 !ts.isIdentifier(named.name) ||
@@ -5809,12 +5924,9 @@ class Compiler implements LoweringServices {
                 return !isValueReference(node) || stableName(node);
             return !ts.forEachChild(node, (child) => !stable(child));
         };
-        const initializer =
-            constant(declaration) && stable(declaration.initializer)
-                ? declaration.initializer
-                : undefined;
-        this.stableInitializers.set(declaration, initializer ?? false);
-        return initializer;
+        const alike = stable(expression);
+        this.rereadAlike.set(expression, alike);
+        return alike;
     }
 
     /** The fold over required literals, which may read closed helpers. */
@@ -5826,6 +5938,40 @@ class Compiler implements LoweringServices {
             resolveStaticExpression: (node) =>
                 this.evaluator.resolveStaticLiteral(node),
         };
+    }
+
+    /**
+     * The literal a call's argument gave a member of a parameter's own
+     * object, where the read runs before anything in the function changes
+     * or keeps that object (`readsIntactParameterObject`): the argument's
+     * facts still describe it there, and nowhere after.
+     */
+    private argumentLiteralMember(expression: ts.Expression): unknown {
+        const keys: string[] = [];
+        let root: ts.Node = expression;
+        while (ts.isPropertyAccessExpression(root)) {
+            keys.unshift(root.name.text);
+            // A member the compiler projects is read where its source is.
+            root =
+                root.expression.pos < 0
+                    ? ts.getOriginalNode(root.expression)
+                    : root.expression;
+        }
+        if (
+            keys.length === 0 ||
+            !ts.isIdentifier(root) ||
+            !readsIntactParameterObject(
+                this.checker,
+                this.parameterObjects,
+                root,
+            )
+        )
+            return undefined;
+        const fact = this.bindings.currentRecordMember(
+            this.bindings.lookupOptional(root),
+            keys,
+        );
+        return fact && this.currentStaticLiteral(fact, expression);
     }
 
     /** Required descriptors may read closed helpers or unwritten module constants. */
@@ -5840,7 +5986,9 @@ class Compiler implements LoweringServices {
             ts.isElementAccessExpression(resolved)
         ) {
             const carried = this.compileValue(resolved);
-            value = this.currentStaticLiteral(carried, resolved);
+            value =
+                this.currentStaticLiteral(carried, resolved) ??
+                this.argumentLiteralMember(resolved);
             const local =
                 value === undefined && ts.isIdentifier(resolved)
                     ? this.stableLocalInitializer(resolved)
@@ -8437,18 +8585,24 @@ class Compiler implements LoweringServices {
         ) {
             writable(target).engineCpp = value.engineCpp;
         }
-        if (target.kind === "scene") {
-            for (const key of [
-                "sceneEnvironmentState",
-                "sceneTopologyState",
-                "sceneCamera",
-                "surfaceCanvas",
-                "msaaSamples",
-            ] as const) {
-                const metadata = value[key];
-                if (metadata === undefined) delete writable(target)[key];
-                else Object.assign(writable(target), { [key]: metadata });
-            }
+        // A scene's state, and the attachments a render-target texture
+        // declared (what its `.texture` read samples), ride the name.
+        const carried =
+            target.kind === "scene"
+                ? ([
+                      "sceneEnvironmentState",
+                      "sceneTopologyState",
+                      "sceneCamera",
+                      "surfaceCanvas",
+                      "msaaSamples",
+                  ] as const)
+                : target.kind === "render-target-texture"
+                  ? metadataFieldsForKind(target.kind)
+                  : [];
+        for (const key of carried) {
+            const metadata = value[key];
+            if (metadata === undefined) delete writable(target)[key];
+            else Object.assign(writable(target), { [key]: metadata });
         }
         // A declaration without an initializer is represented by optional
         // native storage, but assigning into that storage must still make the

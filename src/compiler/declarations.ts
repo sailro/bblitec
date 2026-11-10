@@ -739,15 +739,11 @@ export class DeclarationLowerer {
                       demanded,
                       undefined,
                   )
-                : (this.context.dataTypes.fromTsType(declaredType, name) ??
-                  (declaration?.type
-                      ? this.context.dataTypes.withDynamicJsonTypes(true, () =>
-                            this.context.dataTypes.fromTsType(
-                                declaredType,
-                                name,
-                            ),
-                        )
-                      : undefined));
+                : declaration?.type
+                  ? this.context.dataTypes.orDynamicJsonTypes(() =>
+                        this.context.dataTypes.fromTsType(declaredType, name),
+                    )
+                  : this.context.dataTypes.fromTsType(declaredType, name);
         // Only an assignment gives this binding a value.
         if (dataType)
             dataType = this.reboundBindingStorage(dataType, declaredType);
@@ -6310,8 +6306,12 @@ export class DeclarationLowerer {
             if (
                 !propertyValue &&
                 !value.moduleNamespace &&
-                nullability(this.context.checker.getTypeAtLocation(name))
-                    .undefined
+                this.context.propertyAccess.absentPropertyReadsUndefined(
+                    value,
+                    this.context.checker.getTypeAtLocation(element.parent),
+                    property,
+                    name,
+                )
             )
                 propertyValue = undefinedValue();
             if (!propertyValue) {

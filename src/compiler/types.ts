@@ -859,12 +859,13 @@ export interface ScenePbrMaterialManifest {
     /** Uniform-only factors; absent when their values are runtime expressions. */
     readonly metallicFactor?: number;
     readonly roughnessFactor?: number;
-    readonly directIntensity: number;
-    readonly environmentIntensity: number;
+    readonly directIntensity?: number;
+    readonly environmentIntensity?: number;
     readonly alpha: number;
     /** Explicit `alphaBlend: true`; alpha below one is derived separately. */
     readonly alphaBlend?: true;
-    readonly reflectance: number;
+    /** Uniform-only, as the factors above. */
+    readonly reflectance?: number;
     /** A non-default value for the pin's `occlusionStrength ?? 1.0`. */
     readonly occlusionStrength?: number;
     /** A non-default internal `_metallicF0Factor ?? 1.0` creation value. */
@@ -2748,8 +2749,8 @@ export interface ValueFields {
     classHoistedAssignment?: ts.BinaryExpression;
     /** The concrete native texture record produced by a texture factory. */
     textureStorage?: "file" | "pixels" | "solid" | "render" | "stored";
-    /** Borrowed 2D-array depth view returned by getCsmReceiverTexture. */
-    csmReceiverGeneratorIndex?: number;
+    /** Borrowed 2D-array depth view returned by getCsmReceiverTexture: its native value is the generator. */
+    csmReceiverTexture?: true;
     textureFile?: {
         /** Packaged source used only when source dimensions are reached. */
         readonly source?: string;

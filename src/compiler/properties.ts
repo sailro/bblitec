@@ -14,6 +14,7 @@
 // compile-time metadata rather than from a native field, and
 // `camera.target` synthesizes a three-component record. Those differ in
 // what they *do*, not in which field they name.
+import { AbsentRecordProperties } from "./absent-record-properties.js";
 import { readEngineRenderFunction } from "./engine-render-function.js";
 import { elementChildrenSnapshot, readByOneWalk } from "./element-children.js";
 import {
@@ -21,6 +22,7 @@ import {
     holdsOnly,
     arrayShape,
     isVoid,
+    nullability,
     unionMembers,
 } from "./type-facts.js";
 import ts from "typescript";
@@ -1360,6 +1362,22 @@ export const propertyRules: readonly PropertyRule[] = [
         record: ["lights", "shadow_generator"],
         carriesShadowGenerator: true,
     },
+    // The pin's public `ShadowGenerator` declares no member. These two are
+    // internals the native generator has no value for.
+    {
+        owner: "shadow-generator",
+        property: "_version",
+        unsupported:
+            "ShadowGenerator._version counts the pin's receiver-block publications; " +
+            "a native generator keeps no such counter.",
+    },
+    {
+        owner: "shadow-generator",
+        property: "_shadowTaskState",
+        unsupported:
+            "ShadowGenerator._shadowTaskState is the pin's task state; its static-cache " +
+            "refit gate is native cache state with no source value.",
+    },
     {
         owner: "gamepad",
         property: "index",
@@ -1635,6 +1653,17 @@ export const propertyRules: readonly PropertyRule[] = [
         feature: "mesh:geometry-access",
     },
     {
+        // world-matrix-state.ts bumps the version when a transform component
+        // changes value, on a new parent and with each ancestor's bump, and
+        // polls a provider parent on read. `mark_mesh_dirty` bumps on every
+        // write: the same change signal, a different number.
+        owner: "mesh",
+        property: "worldMatrixVersion",
+        unsupported:
+            "Mesh.worldMatrixVersion counts the pin's world-matrix invalidations; the native " +
+            "mesh counts every transform write, including one that changes nothing.",
+    },
+    {
         // cloneMeshNode shares this owner; setThinInstances updates its fields.
         owner: "mesh",
         property: "thinInstances",
@@ -1655,6 +1684,16 @@ export const propertyRules: readonly PropertyRule[] = [
         value: "number",
         helper: "bbl::thin_instance_count",
         feature: "mesh:thin-instances-dynamic",
+    },
+    {
+        // `ti._version` (`CsmRefitCaster` declares it): the pool's change
+        // counter, which every pinned thin-instance writer bumps.
+        owner: "thin-instance-pool",
+        property: "_version",
+        value: "number",
+        access: (pool) => `bbl::thin_instance_data(${pool}).version`,
+        impure: true,
+        feature: "mesh:thin-instances",
     },
     {
         owner: "thin-instance-pool",
@@ -2366,6 +2405,46 @@ export class PropertyAccessLowerer {
     }
 
     /**
+     * Whether a compile-time record that lacks `property` reads it as
+     * `undefined`, by a member, a keyed or a destructuring `read` of a
+     * record of `ownerType`. Object literals omit optional fields entirely,
+     * and the record keeps that absence as JavaScript's `undefined`. The
+     * read refuses only where the type requires the property: it is
+     * undefined where the type declares the property optional or requires
+     * no such property (an untyped value, a union one of whose arms lacks
+     * it), and where the read's own type admits an absent value. A class
+     * instance keeps its class's members, and every object
+     * Object.prototype's.
+     */
+    public absentPropertyReadsUndefined(
+        owner: Value,
+        ownerType: ts.Type,
+        property: string,
+        read: ts.Node,
+    ): boolean {
+        const readType = this.context.checker.getTypeAtLocation(read);
+        if (nullability(readType).undefined) return true;
+        const declaredProperty = this.context.checker
+            .getNonNullableType(ownerType)
+            .getProperty(property);
+        if (
+            declaredProperty !== undefined
+                ? (declaredProperty.flags & ts.SymbolFlags.Optional) !== 0
+                : !owner.classDeclaration &&
+                  AbsentRecordProperties.omittable(property)
+        )
+            return true;
+        const declared = this.context.dataLowerer.dataTypeAt(read);
+        return (
+            declared?.kind === "optional" ||
+            (declared?.kind === "function" &&
+                unionMembers(readType).some((member) =>
+                    holdsOnly(member, ["null", "undefined"]),
+                ))
+        );
+    }
+
+    /**
      * A read through an absent receiver, after the operands JavaScript
      * evaluates first: its TypeError, typed as the value `node` would have
      * produced. `member` is the key, when generation knows it.
@@ -2920,6 +2999,14 @@ export class PropertyAccessLowerer {
                     dataType: { kind: "number" },
                 };
             }
+            // A wheel delta is in CSS pixels (`dom_wheel_delta_y`):
+            // `WheelEvent.DOM_DELTA_PIXEL`, read off a checked payload.
+            if (property === "deltaMode")
+                return {
+                    kind: "number",
+                    cpp: `(static_cast<void>(${owner.cpp}.mouse_payload()), ${doubleLiteral(0)})`,
+                    dataType: { kind: "number" },
+                };
             this.context.fail(
                 nameSite,
                 `Platform mouse events do not expose '${property}'.`,
@@ -3782,34 +3869,17 @@ export class PropertyAccessLowerer {
                     this.refuseMethodValue(expression, classMethod);
                 const method = owner.recordMethods?.[property] ?? classMethod;
                 if (method) return recordMethodValue(owner, method);
-                const declared =
-                    this.context.dataLowerer.dataTypeAt(expression);
-                const declaredTsType =
-                    this.context.checker.getTypeAtLocation(expression);
-                const declaredMembers = unionMembers(declaredTsType);
-                const optionalProperty = this.context.checker
-                    .getNonNullableType(
+                if (
+                    this.absentPropertyReadsUndefined(
+                        owner,
                         this.context.checker.getTypeAtLocation(
                             expression.expression,
                         ),
+                        property,
+                        expression,
                     )
-                    .getProperty(property);
-                if (
-                    declared?.kind === "optional" ||
-                    (optionalProperty !== undefined &&
-                        (optionalProperty.flags & ts.SymbolFlags.Optional) !==
-                            0) ||
-                    (declared?.kind === "function" &&
-                        declaredMembers.some((member) =>
-                            holdsOnly(member, ["null", "undefined"]),
-                        ))
-                ) {
-                    // Object literals omit optional fields entirely. A
-                    // compile-time record preserves that absence as
-                    // JavaScript's `undefined`, which `??`, equality
-                    // guards, `typeof` and concatenation read.
+                )
                     return undefinedValue();
-                }
                 this.context.fail(
                     expression,
                     `Static record has no property '${property}' ` +
@@ -4229,11 +4299,10 @@ export class PropertyAccessLowerer {
         if (character) return character;
         const physics = readPhysicsProperty(this.context, owner, expression);
         if (physics) return physics;
-        const staticProperty = this.context.bindings.recordPropertiesAreCurrent(
+        const staticProperty = this.context.bindings.currentRecordMember(
             owner,
-        )
-            ? owner.recordProperties?.[expression.name.text]
-            : undefined;
+            [expression.name.text],
+        );
         if (
             staticProperty &&
             !(owner.kind === "data" && owner.dataType?.kind === "struct")

@@ -465,6 +465,48 @@ test("a survey's plan loses a write through this by its class and goes on", () =
     assert.equal(after.writes - before.writes, 0);
 });
 
+test("a survey's plan loses a write through an assignment's value by its target and goes on", () => {
+    // `(cache ??= {}).hits = ...` reads the lost binding and writes into
+    // what `cache` holds: the later read of `cache` waits for the next
+    // attempt, and the unrelated binding's demand is still collected.
+    const { checker, statements, context, declarationAt } = plannedStatements(`
+        let first = { gain: 1 };
+        let cache: { hits?: number } | undefined;
+        (cache ??= {}).hits = first.gain;
+        const read = cache?.hits;
+        let second = { level: 1 };
+    `);
+    const before = storagePlanningStatistics();
+    const planner = new StorageDemandPlanner(checker, true);
+    const binding = (index: number) => () => {
+        throw new DynamicBindingStorageRequired(
+            declarationAt(index),
+            undefined,
+        );
+    };
+    let lowered = 0;
+    planner.run(() => {
+        attemptPlanned(planner, context, statements[0]!, binding(0));
+        for (const index of [1, 2, 3])
+            attemptPlanned(planner, context, statements[index]!, () => {
+                lowered++;
+            });
+        attemptPlanned(planner, context, statements[4]!, binding(4));
+    });
+    const after = storagePlanningStatistics();
+    assert.deepEqual(
+        planner.demands.map((request) =>
+            request.kind === "dynamic"
+                ? request.declaration.name.getText()
+                : request.kind,
+        ),
+        ["first", "second"],
+    );
+    assert.equal(lowered, 1);
+    assert.equal(after.dependent - before.dependent, 2);
+    assert.equal(after.writes - before.writes, 0);
+});
+
 test("a survey's plan records a replay besides storage and goes on", () => {
     const { checker, statements, context, declarationAt } = plannedStatements(`
         const state = { query: "a" };
@@ -765,6 +807,48 @@ test("a fresh record of records stored into a document demands every member's st
     runGeneratedProgram(
         tools,
         "storage-demand-planner/document-snapshot-members",
+        strict.result.cpp,
+        {
+            expectedOutput: "",
+        },
+    );
+});
+
+test("a record of document arrays stored into a struct demands every element's document storage in one replay", (t) => {
+    // The returned literal stores a parsed document's arrays into a
+    // record's fields one after another; each element type joins the first
+    // field's document demand.
+    const source = `
+        interface Tint { seq: number; rgb: [number, number, number] }
+        interface Width { seq: number; w: number }
+        interface Height { key: string; h: number }
+        interface Save { v: number; tints?: Tint[]; widths?: Width[]; heights?: Height[] }
+        function normalize(d: Save): Save {
+            return { v: d.v, tints: d.tints ?? [], widths: d.widths ?? [], heights: d.heights ?? [] };
+        }
+        function total(save: Save): number {
+            let sum = save.v;
+            for (const row of save.tints ?? []) sum += row.seq + row.rgb[2];
+            for (const row of save.widths ?? []) sum += row.w;
+            for (const row of save.heights ?? []) sum += row.h + row.key.length;
+            return sum;
+        }
+        const save = normalize(JSON.parse('{"v":1,"tints":[{"seq":2,"rgb":[0,0,3]}],"heights":[{"key":"ab","h":4}]}') as Save);
+        if (total(save) !== 12) throw new Error(String(total(save)));
+        const text = JSON.stringify(save);
+        if (text !== '{"v":1,"tints":[{"seq":2,"rgb":[0,0,3]}],"widths":[],"heights":[{"key":"ab","h":4}]}') throw new Error(text);
+    `;
+    const strict = measured(false, () => compileSource(source));
+    // The three element types at once, then the compile.
+    assert.equal(strict.constructions, 2);
+    const tools = optionalNativeFixtureTools();
+    if (!tools) {
+        t.skip("Native fixture compiler unavailable.");
+        return;
+    }
+    runGeneratedProgram(
+        tools,
+        "storage-demand-planner/document-array-fields",
         strict.result.cpp,
         {
             expectedOutput: "",

@@ -1370,6 +1370,24 @@ const authoredInputs: readonly SceneInput[] = [
         },
     },
     {
+        // Shader materials a factory composes from the members of an options
+        // record its caller names (a boolean, a key only some rows write, a
+        // nested boolean): compiled once per outcome, selected at run time,
+        // then written by uniform name.
+        id: "regression-member-selected-material",
+        name: "Regression - Member Selected Material",
+        source: "examples/regression-member-selected-material.ts",
+        sourceOrigin: "bblitec-regression",
+        title: "Babylon Lite Native - Member Selected Material",
+        parity: {
+            maxFullMad: 0.001,
+            maxForegroundMad: 0.001,
+            backgroundColor: [26, 26, 38],
+            backgroundThreshold: 30,
+            nativeEnvironment: fixedCaptureEnvironment(),
+        },
+    },
+    {
         // Scene 214 with enableCsmStaticCache: quiet casters demote into
         // the static cache, and a caster moved every frame stays dynamic
         // and draws over the copied cache layers.

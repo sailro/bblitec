@@ -38,6 +38,7 @@ import {
 
 import type { DataSinkHost, DataSinkOperations } from "./contracts.js";
 import { ANY_KEY } from "../syntax.js";
+import { storeMembers } from "../json-record-views.js";
 import {
     arrayElementType,
     classInstanceDeclaration,
@@ -139,6 +140,7 @@ function expressionStruct(
         return `${lowerer.context.dataTypes.cppType(dataType)}{}`;
     }
     if (ts.isObjectLiteralExpression(unwrapped)) {
+        refuseForeignClassView(lowerer, expression);
         if (
             unwrapped.properties.some((property) =>
                 ts.isSpreadAssignment(property),
@@ -424,6 +426,7 @@ function valueStruct(
     }
     const sharedClass = lowerer.context.dataTypes.classStruct(dataType.name);
     if (sharedClass && value.kind === "record") {
+        refuseForeignClassView(lowerer, node, value.classDeclaration);
         // A probe declines on the refusal; a committed store replays shared.
         if (!lowerer.context.speculating)
             lowerer.context.dataTypes.requireSharedClass(
@@ -523,8 +526,12 @@ function valueStruct(
             fields,
             () => node,
         );
-        const aggregate = `bblscene::${dataType.name}${lowerer.context.dataTypes.isReferenceStruct(dataType.name) ? "Data" : ""}{${fields
-            .map((field) => {
+        const aggregate = `bblscene::${dataType.name}${lowerer.context.dataTypes.isReferenceStruct(dataType.name) ? "Data" : ""}{${storeMembers(
+            lowerer,
+            node,
+            fields,
+            (field) => field.sourceName,
+            (field) => {
                 const getter = value.recordGetters?.[field.sourceName];
                 const setter = value.recordSetters?.[field.sourceName];
                 if (getter || setter)
@@ -611,8 +618,8 @@ function valueStruct(
                     field,
                     stored,
                 );
-            })
-            .join(", ")}}`;
+            },
+        ).join(", ")}}`;
         if (self)
             return completeLiteralSelf(
                 lowerer.context,
@@ -696,8 +703,12 @@ function valueStruct(
             }),
             () => node,
         );
-        const aggregate = `bblscene::${dataType.name}${lowerer.context.dataTypes.isReferenceStruct(dataType.name) ? "Data" : ""}{${fields
-            .map((field) => {
+        const aggregate = `bblscene::${dataType.name}${lowerer.context.dataTypes.isReferenceStruct(dataType.name) ? "Data" : ""}{${storeMembers(
+            lowerer,
+            node,
+            fields,
+            (field) => field.sourceName,
+            (field) => {
                 const source = sourceFields.get(field.sourceName);
                 if (!source) {
                     if (
@@ -768,8 +779,8 @@ function valueStruct(
                     node,
                     field.sourceName,
                 );
-            })
-            .join(", ")}}`;
+            },
+        ).join(", ")}}`;
         return lowerer.context.dataTypes.isReferenceStruct(dataType.name)
             ? `bbl::js::make_ref<bblscene::${dataType.name}Data>(${aggregate})`
             : aggregate;
@@ -1032,11 +1043,41 @@ function refuseClassRecordCopy(
                   : "shared",
           )
         : "its record type has no checked source";
-    if (observed)
-        lowerer.context.fail(
-            node,
-            `A '${symbol.name}' instance stored as '${target ? checker.typeToString(target) : dataType.name}' would be a copy of the one object JavaScript keeps, and ${observed}.`,
-        );
+    if (!observed) return;
+    // The instance has every property the record type declares: stored
+    // as itself, there is no copy.
+    const view = lowerer.context.dataTypes.classViewDemand(
+        dataType.name,
+        declaration,
+    );
+    if (view) throw new NativeRecordStorageRequired(view);
+    lowerer.context.fail(
+        node,
+        `A '${symbol.name}' instance stored as '${target ? checker.typeToString(target) : dataType.name}' would be a copy of the one object JavaScript keeps, and ${observed}.`,
+    );
+}
+
+/**
+ * A record type stored as one class's instances (`classViewDemand`) holds
+ * only them: a literal or another class's instance stored as it would be
+ * a second kind of object under one layout.
+ */
+function refuseForeignClassView(
+    lowerer: DataSinkHost,
+    node: ts.Node,
+    instance?: ts.ClassLikeDeclaration,
+): void {
+    const dataTypes = lowerer.context.dataTypes;
+    if (!dataTypes.hasObjectViews) return;
+    const { type } = storedRecord(lowerer, node);
+    const viewed = type && dataTypes.classViewOf(type);
+    if (!viewed || (instance && dataTypes.sharesClassStruct(viewed, instance)))
+        return;
+    const name = viewed.name?.text ?? "class";
+    lowerer.context.fail(
+        node,
+        `'${lowerer.context.checker.typeToString(type)}' is stored as the '${name}' instances it holds; ${instance?.name ? `a '${instance.name.text}' instance` : "a record that is not one"} stored as it would be a copy of the one object JavaScript keeps.`,
+    );
 }
 
 /**
@@ -1123,16 +1164,21 @@ function valueEnummap(
                 `'${unknown}' is not a member of ${dataType.enumName}.`,
             );
         }
-        const compiled = new EmissionMap(
-            written.map((name) => [
-                name,
+        const stored = storeMembers(
+            lowerer,
+            node,
+            written,
+            (name) => name,
+            (name) =>
                 lowerer.compileMemberForSink(
                     properties[name]!,
                     dataType.element,
                     node,
                     name,
                 ),
-            ]),
+        );
+        const compiled = new EmissionMap(
+            written.map((name, index) => [name, stored[index]!]),
         );
         lowerer.context.dataTypes.observeEnumMapKeys(dataType, written, node);
         const reordered = members.some(

@@ -1,6 +1,8 @@
 import ts from "typescript";
 import { someAnalysisNode } from "./analysis-walk.js";
-import { CompileError } from "./compile-error.js";
+import { CompileError, unlessRefused } from "./compile-error.js";
+import { writable } from "./emission-transaction.js";
+import type { DataType } from "./data-types/model.js";
 import type { LoweringServices } from "./lowering-services.js";
 import { declaredSymbol, resolvedSymbol, sameExpression } from "./symbols.js";
 import { StorageDemand } from "./storage-demand.js";
@@ -16,8 +18,10 @@ import { ApplicationRealmRequired } from "./worker-modules.js";
 import type { Value } from "./types.js";
 import {
     functionOfDeclaration,
+    isModuleScopeFunction,
     isSuspensionPoint,
     isValueReference,
+    valueUse,
     writeSites,
 } from "./syntax.js";
 import {
@@ -31,6 +35,7 @@ import {
 type CaseSplitContext = Pick<
     LoweringServices,
     | "allocateTemporaryCppName"
+    | "bindings"
     | "checker"
     | "conditionOverrides"
     | "valueOverrides"
@@ -52,20 +57,25 @@ type CaseSplitContext = Pick<
 const MAX_SELECTORS = 4;
 /** More tests than this are not probed for the ones the call depends on. */
 const MAX_CANDIDATE_SELECTORS = 8;
+/** A member this deep below a record an argument names still selects. */
+const MAX_MEMBER_DEPTH = 2;
 
 /**
  * Compiles a local function call whose arguments pick between values with a
  * runtime test (`f({...(c ? a : {})})`), or pass a value of a few outcomes (a
- * boolean, an optional object present or absent), once per outcome when the
- * single compilation refuses: a callee that specializes on its argument (a
- * shader composed from options) then sees each outcome as a constant. The
+ * boolean, an optional object present or absent), itself or as a member of a
+ * record an argument names (`f(options)`), once per outcome when the single
+ * compilation refuses: a callee that specializes on its argument (a shader
+ * composed from options) then sees each outcome as a constant. The
  * test is read once, before the call, which is where JavaScript reads it
  * unless an argument evaluated earlier could change it; so every test is
  * free of writes, no argument assigns or constructs, and an argument's calls
  * go to module-level functions that receive none of the bindings the tests
  * read (such a function reaches a local binding only through its
  * arguments). With more than two tests, the call splits only on those whose
- * staying a runtime test, with every other test fixed, still refuses.
+ * staying a runtime test, with every other test fixed, still refuses; a call
+ * that depends on more than `MAX_SELECTORS`, or reads more than
+ * `MAX_CANDIDATE_SELECTORS`, keeps its refusal, which then says so.
  */
 export function compileWithRuntimeCaseSplit(
     context: CaseSplitContext,
@@ -81,11 +91,25 @@ export function compileWithRuntimeCaseSplit(
         // the runtime test forced; per outcome it may not be needed, so it
         // stands only when the split fails too.
         if (!refusesPerOutcome(error)) throw error;
-        // Which tests stay runtime ones is asked only of a call that refused.
-        const runtime = runtimeSelectors(context, tests);
+        // Which members of the records its arguments name select, and
+        // which tests stay runtime ones, is asked only of a call that
+        // refused. The tests keep the order the arguments spell them in.
+        const runtime = runtimeSelectors(
+            context,
+            [
+                ...tests.groups,
+                ...tests.records.flatMap((record) =>
+                    recordMemberSelectors(context, record),
+                ),
+            ].sort((left, right) => left.nodes[0]!.pos - right.nodes[0]!.pos),
+        );
         if (runtime === undefined) throw error;
+        if (runtime.variable.length > MAX_CANDIDATE_SELECTORS)
+            throw beyondSplit(error, runtime.variable, MAX_CANDIDATE_SELECTORS);
         const selectors = dependedSelectors(context, runtime, compile);
         if (selectors === undefined) throw error;
+        if (selectors.length > MAX_SELECTORS)
+            throw beyondSplit(error, selectors, MAX_SELECTORS);
         const split = context.probeEmission(
             () => {
                 try {
@@ -110,6 +134,29 @@ export function compileWithRuntimeCaseSplit(
     }
 }
 
+/**
+ * The refusal of a call a split could not reach: its own text, then the
+ * run-time tests that exceeded `limit`. A restart stands as it is.
+ */
+function beyondSplit(
+    error: unknown,
+    tests: readonly Selector[],
+    limit: number,
+): unknown {
+    if (!(error instanceof CompileError)) return error;
+    const names = tests.map((test) =>
+        [test.test.getText(), ...(test.member?.path ?? [])].join("."),
+    );
+    return new CompileError(
+        error.fileName,
+        error.line,
+        error.column,
+        `${error.detail} The call compiles once per outcome of at most ${limit} run-time tests; it reads ${tests.length}: ${names.join(", ")}.`,
+        error.reason,
+        error.subject,
+    );
+}
+
 /** A refusal, or a storage or realm restart one outcome may not need. */
 function refusesPerOutcome(error: unknown): boolean {
     return (
@@ -127,13 +174,43 @@ type Outcome = "truthy" | "falsy" | "absent";
  * `condition` is a selection's test; a `boolean` an argument value that is a
  * boolean; a `presence` an argument value that is an object or one absence
  * (`undefined` or `null`); an `optional-boolean` a boolean or one absence.
- * `outcomes` are the ones the value can take.
+ * `outcomes` are the ones the value can take. With `member`, the value is
+ * the member at that key path of the record `test` names, of that type;
+ * `present` is the storage of an object member where an arm found it.
  */
 interface Selector {
     kind: "condition" | "boolean" | "presence" | "optional-boolean";
     test: ts.Expression;
     nodes: readonly ts.Expression[];
     outcomes: readonly Outcome[];
+    member?: {
+        readonly path: readonly string[];
+        readonly type: ts.Type;
+        readonly present?: DataType | undefined;
+    };
+}
+
+/** A selector on a record's member. */
+type MemberSelector = Selector & Required<Pick<Selector, "member">>;
+
+function isMemberSelector(selector: Selector): selector is MemberSelector {
+    return selector.member !== undefined;
+}
+
+/** A record an argument names: every position naming it, and its type there. */
+interface RecordArgument {
+    nodes: ts.Identifier[];
+    type: ts.Type;
+}
+
+/**
+ * What a call's arguments select with: the tests they spell, and the
+ * records they name, whose members of a few outcomes are tests too
+ * (`recordMemberSelectors`).
+ */
+interface SelectorTests {
+    groups: readonly Selector[];
+    records: readonly RecordArgument[];
 }
 
 /** Every outcome a test of `kind` can take. */
@@ -178,19 +255,42 @@ function withOutcomes<T>(
         ...fixed.map((selector) => selector.outcomes[0]),
         ...variableOutcomes,
     ];
+    // A record takes every member forced in it before it stands for its name.
+    const records = new Map<ts.Expression, Value>();
     selectors.forEach((selector, index) => {
         const outcome = outcomes[index];
         if (outcome === undefined) return;
         for (const node of selector.nodes) {
             if (selector.kind === "condition")
                 context.conditionOverrides.set(node, outcome === "truthy");
+            else if (isMemberSelector(selector))
+                records.set(
+                    node,
+                    withForcedMember(
+                        context,
+                        selector,
+                        node,
+                        records.get(node) ?? context.compileValue(node),
+                        selector.member.path,
+                        outcome,
+                    ),
+                );
             else
                 context.valueOverrides.set(
                     node,
-                    forcedValue(context, selector, node, outcome),
+                    forcedValue(
+                        context,
+                        selector,
+                        node,
+                        context.checker.getTypeAtLocation(node),
+                        () => context.compileValue(node),
+                        outcome,
+                    ),
                 );
         }
     });
+    for (const [node, record] of records)
+        context.valueOverrides.set(node, record);
     try {
         return compile();
     } finally {
@@ -203,28 +303,29 @@ function withOutcomes<T>(
 }
 
 /**
- * The value an argument selector takes in one arm: the boolean, the
- * absence its type has, or the value itself, narrowed to present (the arm
- * runs only where its test found it).
+ * The value a selector's value, of `type`, takes in one arm: the boolean,
+ * the absence its type has, or the value `read` gives, narrowed to present
+ * (the arm runs only where its test found it).
  */
 function forcedValue(
     context: CaseSplitContext,
     selector: Selector,
     node: ts.Expression,
+    type: ts.Type,
+    read: () => Value,
     outcome: Outcome,
 ): Value {
     const absent = (): Value =>
-        nullability(context.checker.getTypeAtLocation(node)).null
-            ? nullValue()
-            : undefinedValue();
+        nullability(type).null ? nullValue() : undefinedValue();
     // A present object is truthy and present wherever the arm reads it.
     if (selector.kind === "presence")
         return outcome === "truthy"
             ? {
                   ...context.dataLowerer.narrowOptional(
-                      context.compileValue(node),
+                      read(),
                       node,
                       true,
+                      selector.member?.present,
                   ),
                   truthinessCpp: "true",
                   optionalFoundCpp: "true",
@@ -239,14 +340,71 @@ function forcedValue(
 }
 
 /**
- * Whether an argument value is one a split can force: a boolean, or an
+ * `record` with the member at `path` forced to a selector's outcome in one
+ * arm. A key a conditional spread wrote is own only where the arm found it.
+ */
+function withForcedMember(
+    context: CaseSplitContext,
+    selector: MemberSelector,
+    node: ts.Expression,
+    record: Value,
+    path: readonly string[],
+    outcome: Outcome,
+): Value {
+    const [key, ...below] = path;
+    const member =
+        key === undefined ? undefined : record.recordProperties?.[key];
+    if (key === undefined || !member) return record;
+    const properties = { ...record.recordProperties };
+    const forced: Value = { ...record };
+    writable(forced).recordProperties = properties;
+    if (
+        below.length === 0 &&
+        member.conditionalOwnKey &&
+        outcome === "absent"
+    ) {
+        delete properties[key];
+        if (record.recordOwnKeys)
+            writable(forced).recordOwnKeys = record.recordOwnKeys.filter(
+                (own) => own !== key,
+            );
+        return forced;
+    }
+    const value: Value = {
+        ...(below.length > 0
+            ? withForcedMember(context, selector, node, member, below, outcome)
+            : forcedValue(
+                  context,
+                  selector,
+                  node,
+                  selector.member.type,
+                  () => member,
+                  outcome,
+              )),
+    };
+    delete writable(value).conditionalOwnKey;
+    properties[key] = value;
+    return forced;
+}
+
+/** The value a selector's test reads: its expression's, or the record member's. */
+function selectorValue(
+    context: CaseSplitContext,
+    selector: Selector,
+): Value | undefined {
+    return context.bindings.currentRecordMember(
+        context.compileValue(selector.test),
+        selector.member?.path ?? [],
+    );
+}
+
+/**
+ * Whether a value of `type` is one a split can force: a boolean, or an
  * object or a boolean with one of `undefined` and `null`.
  */
-function argumentSelectorKind(
-    checker: ts.TypeChecker,
-    node: ts.Expression,
+function selectorKind(
+    type: ts.Type,
 ): Exclude<Selector["kind"], "condition"> | undefined {
-    const type = checker.getTypeAtLocation(node);
     if (holdsOnly(type, ["boolean"])) return "boolean";
     const absent = nullability(type);
     if (absent.null === absent.undefined || absent.void) return undefined;
@@ -291,39 +449,54 @@ function dependedSelectors(
             ),
         ),
     );
-    return depended.length > 0 && depended.length <= MAX_SELECTORS
-        ? depended
-        : undefined;
+    return depended.length > 0 ? depended : undefined;
 }
 
-/** A function declared at a module's top level, directly or through an import. */
-function moduleLevelCallee(
+/** A name calling a module's own function (`isModuleScopeFunction`), directly or through an import. */
+export function moduleLevelCallee(
     checker: ts.TypeChecker,
     callee: ts.Expression,
 ): boolean {
     if (!ts.isIdentifier(callee)) return false;
     const declaration = resolvedSymbol(checker, callee)?.valueDeclaration;
-    if (!declaration) return false;
-    if (ts.isFunctionDeclaration(declaration))
-        return ts.isSourceFile(declaration.parent);
     return (
-        ts.isVariableDeclaration(declaration) &&
-        functionOfDeclaration(declaration) !== undefined &&
-        ts.isVariableStatement(declaration.parent.parent) &&
-        ts.isSourceFile(declaration.parent.parent.parent)
+        declaration !== undefined &&
+        isModuleScopeFunction(
+            ts.isVariableDeclaration(declaration)
+                ? (functionOfDeclaration(declaration) ?? declaration)
+                : declaration,
+        )
     );
 }
 
 /**
  * The distinct tests a call's arguments select with, each with every node
- * spelling it, when the call can be split on them: no argument assigns,
- * constructs or suspends, its calls go to module-level functions handed
- * none of the bindings the tests read, and no test writes.
+ * spelling it, and the records they name, when the call can be split on
+ * them: no argument assigns, constructs or suspends, its calls go to
+ * module-level functions handed none of the bindings the tests read, and
+ * no test writes.
  */
 function selectorTests(
     context: CaseSplitContext,
     call: ts.CallExpression,
-): Selector[] | undefined {
+): SelectorTests | undefined {
+    const calls: ts.CallExpression[] = [];
+    const effects = (node: ts.Node): boolean => {
+        if (ts.isFunctionLike(node)) return false;
+        if (ts.isCallExpression(node)) {
+            if (!moduleLevelCallee(context.checker, node.expression))
+                return true;
+            calls.push(node);
+        } else if (
+            ts.isNewExpression(node) ||
+            ts.isTaggedTemplateExpression(node) ||
+            isSuspensionPoint(node, { yield: true }) ||
+            writeSites(node).length > 0
+        )
+            return true;
+        return ts.forEachChild(node, effects) ?? false;
+    };
+    if (call.arguments.some(effects)) return undefined;
     // Each distinct test with every place it appears.
     const groups: (Selector & { nodes: ts.Expression[] })[] = [];
     const addGroup = (kind: Selector["kind"], test: ts.Expression): void => {
@@ -341,47 +514,42 @@ function selectorTests(
                 outcomes: KIND_OUTCOMES[kind],
             });
     };
-    const calls: ts.CallExpression[] = [];
-    let effects = false;
+    const records: RecordArgument[] = [];
     // An argument value of a few outcomes, unless it is a literal (already
-    // a constant) or a selection inside it already splits it.
+    // a constant) or a selection inside it already splits it; else the
+    // record it names.
     const valuePosition = (node: ts.Expression): void => {
         if (
             node.kind === ts.SyntaxKind.TrueKeyword ||
             node.kind === ts.SyntaxKind.FalseKeyword
         )
             return;
-        const kind = argumentSelectorKind(context.checker, node);
-        if (kind && !containsSelection(node)) addGroup(kind, node);
+        const type = context.checker.getTypeAtLocation(node);
+        const kind = selectorKind(type);
+        if (kind) {
+            if (!containsSelection(node)) addGroup(kind, node);
+        } else if (ts.isIdentifier(node) && heldRecord(context, node)) {
+            const record = records.find((candidate) =>
+                sameExpression(context.checker, candidate.nodes[0]!, node),
+            );
+            if (record) record.nodes.push(node);
+            else records.push({ nodes: [node], type });
+        }
     };
     const visit = (node: ts.Node): void => {
-        if (effects || ts.isFunctionLike(node)) return;
-        if (ts.isCallExpression(node)) {
-            if (!moduleLevelCallee(context.checker, node.expression)) {
-                effects = true;
-                return;
-            }
-            calls.push(node);
-        } else if (
-            ts.isNewExpression(node) ||
-            ts.isTaggedTemplateExpression(node) ||
-            isSuspensionPoint(node, { yield: true }) ||
-            writeSites(node).length > 0
-        ) {
-            effects = true;
-            return;
-        }
+        if (ts.isFunctionLike(node)) return;
         if (ts.isConditionalExpression(node))
             addGroup("condition", node.condition);
         if (ts.isPropertyAssignment(node)) valuePosition(node.initializer);
         if (ts.isShorthandPropertyAssignment(node)) valuePosition(node.name);
+        if (ts.isSpreadAssignment(node)) valuePosition(node.expression);
         ts.forEachChild(node, visit);
     };
     call.arguments.forEach((argument) => {
         valuePosition(argument);
         visit(argument);
     });
-    if (effects || groups.length === 0) return undefined;
+    if (groups.length === 0 && records.length === 0) return undefined;
     // The bindings the tests read; no call in the arguments may receive one.
     const roots = new Set<ts.Symbol>();
     const binding = (node: ts.Node): node is ts.Identifier =>
@@ -393,9 +561,12 @@ function selectorTests(
         }
         ts.forEachChild(node, collect);
     };
-    for (const { test: condition } of groups) {
-        if (context.evaluationOrder.writesStorage(condition)) return undefined;
-        collect(condition);
+    for (const test of [
+        ...groups.map((group) => group.test),
+        ...records.map((record) => record.nodes[0]!),
+    ]) {
+        if (context.evaluationOrder.writesStorage(test)) return undefined;
+        collect(test);
     }
     const receivesRoot = (node: ts.Node): boolean =>
         (binding(node) &&
@@ -411,7 +582,80 @@ function selectorTests(
         (ts.forEachChild(node, receivesRoot) ?? false);
     if (calls.some((inner) => inner.arguments.some(receivesRoot)))
         return undefined;
-    return groups;
+    return { groups, records };
+}
+
+/** The compile-time record a name holds, while its facts are current. */
+function heldRecord(
+    context: CaseSplitContext,
+    name: ts.Identifier,
+): Value | undefined {
+    const held = context.bindings.lookupOptional(name);
+    return held?.kind === "record" &&
+        held.recordProperties &&
+        context.bindings.recordPropertiesAreCurrent(held)
+        ? held
+        : undefined;
+}
+
+/**
+ * The members of a few outcomes of the record an argument names, and of
+ * the records nested in it, as selectors.
+ */
+function recordMemberSelectors(
+    context: CaseSplitContext,
+    { nodes, type }: RecordArgument,
+): Selector[] {
+    const node = nodes[0]!;
+    const selectors: Selector[] = [];
+    const members = (
+        record: Value | undefined,
+        recordType: ts.Type,
+        path: readonly string[],
+    ): void => {
+        for (const [key, member] of Object.entries(
+            record?.recordProperties ?? {},
+        )) {
+            const property = context.checker.getPropertyOfType(recordType, key);
+            if (!property) continue;
+            const memberType = context.checker.getTypeOfSymbolAtLocation(
+                property,
+                node,
+            );
+            const kind = selectorKind(memberType);
+            const below = [...path, key];
+            if (kind)
+                selectors.push({
+                    kind,
+                    test: node,
+                    nodes,
+                    outcomes: KIND_OUTCOMES[kind],
+                    member: {
+                        path: below,
+                        type: memberType,
+                        present:
+                            kind === "presence"
+                                ? unlessRefused(() =>
+                                      context.dataTypes.fromTsType(
+                                          context.checker.getNonNullableType(
+                                              memberType,
+                                          ),
+                                          node,
+                                      ),
+                                  )
+                                : undefined,
+                    },
+                });
+            else if (
+                below.length < MAX_MEMBER_DEPTH &&
+                member.kind === "record" &&
+                context.bindings.recordPropertiesAreCurrent(member)
+            )
+                members(member, memberType, below);
+        }
+    };
+    members(heldRecord(context, node), type, []);
+    return selectors;
 }
 
 /** Whether an expression holds a selection a split reads as its own test. */
@@ -422,7 +666,7 @@ function containsSelection(node: ts.Node): boolean {
 }
 
 /**
- * The tests that stay runtime ones, when few enough to split on. A value
+ * The tests that stay runtime ones. A value
  * the callee would read from run-time storage is forced even where
  * generation knows its truth: then only the outcomes that truth allows
  * remain (a falsy optional boolean is `false` or absent).
@@ -433,19 +677,34 @@ function runtimeSelectors(
 ): RuntimeSelectors | undefined {
     const fixed: Selector[] = [];
     const variable: Selector[] = [];
+    // A record is read once for all of its members.
+    const read = new Map<ts.Expression, Value | undefined>();
+    const valueOf = (group: Selector): Value | undefined => {
+        if (!read.has(group.test))
+            read.set(
+                group.test,
+                context.probeEmission(
+                    () => context.compileValue(group.test),
+                    () => false,
+                ),
+            );
+        return context.bindings.currentRecordMember(
+            read.get(group.test),
+            group.member?.path ?? [],
+        );
+    };
     for (const group of groups) {
+        const value = group.kind === "condition" ? undefined : valueOf(group);
         const truth = knownCondition(
-            context.probeEmission(
-                () => context.conditions.compileCondition(group.test),
-                () => false,
-            ),
+            group.member
+                ? value && context.dataLowerer.truthinessCondition(value)
+                : context.probeEmission(
+                      () => context.conditions.compileCondition(group.test),
+                      () => false,
+                  ),
         );
         if (group.kind !== "condition") {
-            const value = context.probeEmission(
-                () => context.compileValue(group.test),
-                () => false,
-            );
-            if (staticArgument(value)) continue;
+            if (!value || staticArgument(value)) continue;
         } else if (truth !== undefined) continue;
         const outcomes =
             truth === undefined
@@ -458,8 +717,7 @@ function runtimeSelectors(
             outcomes,
         });
     }
-    return (fixed.length > 0 || variable.length > 0) &&
-        variable.length <= MAX_CANDIDATE_SELECTORS
+    return fixed.length > 0 || variable.length > 0
         ? { fixed, variable }
         : undefined;
 }
@@ -494,13 +752,23 @@ function splitCall(
     };
     const tests = selectors.map(
         (selector): { truth?: string; presence?: string } | undefined => {
-            if (selector.kind !== "optional-boolean")
+            if (selector.kind !== "optional-boolean" && !selector.member)
                 return {
                     truth: pin(
                         context.conditions.compileCondition(selector.test),
                     ),
                 };
-            const value = context.compileValue(selector.test);
+            const value = selectorValue(context, selector);
+            if (!value) return undefined;
+            if (selector.kind !== "optional-boolean") {
+                // A member's truth; an object's is its presence.
+                const read =
+                    (selector.kind === "presence"
+                        ? presenceCpp(value)
+                        : undefined) ??
+                    context.dataLowerer.truthinessCondition(value);
+                return read === undefined ? undefined : { truth: pin(read) };
+            }
             const present = presenceCpp(value);
             const truth = context.dataLowerer.truthinessCondition(
                 context.dataLowerer.narrowOptional(value, selector.test, true),
@@ -519,10 +787,13 @@ function splitCall(
     );
     if (tests.some((test) => test === undefined)) return undefined;
     const resultTsType = context.checker.getTypeAtLocation(call);
-    const resultType = isVoid(resultTsType)
+    // A call whose value goes nowhere merges none from its arms.
+    const valueless =
+        isVoid(resultTsType) || valueUse(call).kind === "discarded";
+    const resultType = valueless
         ? undefined
         : context.dataTypes.fromTsType(resultTsType, call);
-    if (resultType === undefined && !isVoid(resultTsType)) return undefined;
+    if (resultType === undefined && !valueless) return undefined;
     const result = resultType && {
         name: context.allocateTemporaryCppName("case_result"),
         type: resultType,

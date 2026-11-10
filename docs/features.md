@@ -17,10 +17,10 @@ Other thrown values are unsupported.
 
 | Area         | Admitted                                                                                                                                                              | Refuses                                                                                                                                                                                                                                                          |
 | ------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Modules      | Named/namespace imports, re-exports, local TS/JS, `?raw`, `namespace` bodies, literal `import()`, ordered initialization                                              | Runtime-selected modules, top-level await in lazy modules, a read `var` in lazily imported modules, writes through `N.member`, namespace/enum objects as values, dependencies on the entry                                                                         |
+| Modules      | Named/namespace imports, re-exports, local TS/JS, `?raw`, JSON files, `namespace` bodies, literal `import()`, ordered initialization                                  | Runtime-selected modules, top-level await in lazy modules, a read `var` in lazily imported modules, writes through `N.member`, namespace/enum objects as values, dependencies on the entry                                                                       |
 | Control flow | All statements, labels, switch fallthrough, try/catch/finally (also suspending), function-scoped `var`, for-in/of into existing targets and assignment patterns       | Cleanup across `startEngine`; labeled jumps out of statically unrolled loops; a `var` read while it may be undefined and its type excludes undefined; a `var` redeclaring a parameter                                                                            |
 | Functions    | Generics, defaults, rest, destructuring, recursion, `call`/`apply`/`bind`, function objects with properties, extra arguments ignored                                  | Unresolved type arguments, stored generic `this`, Arguments mutation, narrowing a stored function's signature, unions with several function arms, class method values (`c.m`, `c.m.bind(c)`), binding dynamic `this`                                             |
-| Classes      | Fields, accessors, private names, generics, local inheritance (`super`, abstract, `instanceof`), Error subclasses, static fields/blocks, generator methods, `#x in v` | Non-local bases, static accessors, private names redeclared in subclasses, inherited static writes through a subclass, generic or mixed-type fields in a stored hierarchy, an instance in an interface-typed element or field whose copy the program can observe |
+| Classes      | Fields, accessors, private names, generics, local inheritance (`super`, abstract, `instanceof`), Error subclasses, static fields/blocks, generator methods, `#x in v` | Non-local bases, static accessors, private names redeclared in subclasses, inherited static writes through a subclass, generic or mixed-type fields in a stored hierarchy, an observable copy in a record type of two classes' instances, or of one and a record |
 | Closures     | Shared mutable cells, TDZ, recursive groups                                                                                                                           | Captures without owned representation; borrowed input events escaping dispatch                                                                                                                                                                                   |
 | Data         | Records, tagged/structural unions, arrays, tuples, dictionaries, Map/Set, JSON documents, record accessors, `{}` identity tokens, phantom brands                      | Record conversions no single layout can hold; mutation through erased native views; identity comparison of unnamed literals                                                                                                                                      |
 | Async        | Promises, async functions, `all`/`allSettled`/`race`/`any` over tuples and sync iterables                                                                             | Custom thenables, async iterables in combinators, MessageChannel, runtime-sized resource construction                                                                                                                                                            |
@@ -44,10 +44,14 @@ Rules:
 - An unread `await` (`await x;`, `void await x`, a comma's left) of a non-thenable takes its turn and drops the value.
 - A stored class field that some constructions bind to one value and others leave absent keeps a presence slot.
 - A class instance built before anything stored one replays with its class shared from that construction; a field
-  holding a stored class is a slot. A stored record method nothing can read is stored empty when its body refuses.
+  holding a stored class is a slot. A record type (an interface, `Pick<C, K>`) storing one class's instances where the
+  program can observe a copy is stored as those instances.
+  A stored record method nothing can read is stored empty when its body refuses.
 - Generation-known positions fold through `const` literals, settled conditionals, spreads, parameterless literal-returning
   functions, closed `const` function literals, direct literal-returning helpers with known readonly scalar arguments,
   module `const`s run at generation, and an inlined call's argument for a parameter its body never rebinds.
+  Required text also reads a field of the record a module helper call returns, in place or through a local `const`
+  nothing writes through whose call arguments read the same later.
   A fold reaching the host, clock, `Math.random`
   or locale refuses; written constants require the
   initialization snapshot proof below.
@@ -65,13 +69,19 @@ Rules:
 - Static composition can spread unchanged literal array fields of stored records and generation-selected fresh array branches.
   Their lengths remain known when whole-program mutation analysis rules out array writes; identity comparisons are allowed.
 - `unknown[]` fields require finite source element layouts; object/class initializers and declaration-matched aliases contribute.
+- A record binding whose member is written by a run-time key or replaced takes native storage; its fields typed
+  `Record<string, unknown>` are documents.
 - Reached `Iterable<T>` parameters specialize to concrete collection storage, preserving iterator cursor identity.
 - A module `let` assigned only by unreachable functions keeps its initializer. Strict comparisons fold through `const`
   aliases, absent `??` lefts and generation-known booleans.
 - Literals handed to functions keep their facts unless a callee's write reaches a member they hold. Static descriptor
-  lists re-read a local `const` initializer whose names no visible write reaches.
-- A refusing local call whose arguments select by pure runtime tests compiles once per outcome (at most four tests) and
-  merges the results into native storage.
+  lists re-read a local `const` initializer whose names no visible write reaches. A parameter that took its own object
+  reads the lists its literal argument gave it until its function first writes, keeps or captures the object.
+- A refusing local call whose arguments select by pure runtime tests, in the call or as boolean or optional members
+  (two levels deep) of a record an argument names, compiles once per outcome and merges the results into native
+  storage; a discarded call merges none. At most four tests split, of at most eight read; past either, the refusal
+  names them. A shader material so merged resolves uniform, texture and storage-buffer names against its own variant
+  at run time.
 - Recursive groups evaluate a caller-independent default once at the root; other defaults refuse. A function a call
   passes counts as a call the callee may make: directly, as a literal in a record or array, or as a named async
   function there.
@@ -115,6 +125,10 @@ Rules:
 - Numeric typed-array and numeric-view indexed `??` reads preserve missing-slot presence and lazy fallbacks.
 - Typed-array iteration retains its buffer owner and yields numbers read when each element is visited.
 - Array `slice` on parsed documents and native array views copies outer slots and preserves nested identities.
+- `Object.getPrototypeOf` answers for records, dictionaries, arrays, strings, numbers, booleans and documents (by
+  run-time kind; TypeError on null/undefined), compared with `Object`/`Array`/`String`/`Number`/`Boolean.prototype` or
+  `null`; a class instance compares with `C.prototype` only. It refuses in a program that calls `Object.create`,
+  `setPrototypeOf` or names `__proto__`.
 
 ## Assets and I/O
 
@@ -176,6 +190,7 @@ cancel })` is a program source; `new Response(stream, { status, statusText, head
 - Device recovery rebuilds GPU resources from CPU owners; GPU-only storage buffers lose contents. Only the scene
   strategy recovers; a loss with sprite, text, effect or frame-graph contexts refuses with the pin's message.
 - Recovery registers before `startEngine` in the entry, anywhere in an application realm.
+- `startEngine` inside a block (a catch clause, a branch, the entry promise's rejection handler) selects a realm.
 - `engine._renderFn` (the pin's frame function) can be wrapped; a wrapper that never calls it ends the native run.
 - After `stopEngine` no frame renders: the canvas keeps its last image, which a pending capture reads.
 - GPU task timing refuses TAA, screen-space and pass-less copy tasks, and on SDL_GPU colour/post-process tasks in TAA builds.
@@ -214,6 +229,10 @@ Backends per platform: [backends](backends.md#backend-comparison). Commands: [An
 `enableGltfCameras` and `enableGltfCpuTangents` must precede loading. `updateTexture2DFromPixels` and
 `queue.writeTexture` write `createTexture2DFromPixels` textures; other sources, fractional or out-of-bounds regions, and
 texels a sprite atlas copied throw. Other runtime texture uploads and 3D textures are unsupported.
+
+`loadGltf(engine, await response.arrayBuffer())` loads the one packaged file the fetch serves (GLB or `data:` URIs), in
+an application realm too; bytes held in a binding refuse. `decodeAudioData` of such a read links that file's decoder
+alone.
 
 A function returning `loadGltf(engine, new Blob(...))` over closed data (typed arrays, `JSON.stringify`, `btoa`), its
 engine read nowhere else, runs at generation; its call loads the document it built, packaged.

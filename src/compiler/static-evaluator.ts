@@ -78,7 +78,12 @@ import {
     type MemberReader,
     libraryStaticMember,
 } from "./symbols.js";
-import { isDataTuple, tupleComponents, type DataType } from "./data-types.js";
+import {
+    isDataStruct,
+    isDataTuple,
+    tupleComponents,
+    type DataType,
+} from "./data-types.js";
 import {
     doubleCpp,
     doubleLiteral as cppDoubleLiteral,
@@ -105,6 +110,7 @@ import {
     isAnyTyped,
     isNullable,
     stringPlusOperands,
+    typeCanCarryReference,
     valueKindOf,
 } from "./type-facts.js";
 import { conditionComparison } from "./comparisons.js";
@@ -127,8 +133,8 @@ import {
     writeSites,
     expressionHasEffects,
     functionKind,
+    isModuleScopeFunction,
     regularExpressionParts,
-    type SupportedFunction,
     variableKind,
     jsonScalarLiteral,
     notJson,
@@ -147,24 +153,6 @@ import {
     mathMemberCall,
 } from "./math-intrinsics.js";
 import { knownCondition } from "./values/model.js";
-
-/**
- * The function a module-scope declaration names: a `function` or a `const`
- * arrow/function expression whose statement sits in the source file.
- */
-function isModuleScopeFunction(declaration: SupportedFunction): boolean {
-    if (ts.isFunctionDeclaration(declaration)) {
-        return ts.isSourceFile(declaration.parent);
-    }
-    const binding = declaration.parent;
-    return (
-        ts.isVariableDeclaration(binding) &&
-        ts.isVariableDeclarationList(binding.parent) &&
-        variableKind(binding.parent) === "const" &&
-        ts.isVariableStatement(binding.parent.parent) &&
-        ts.isSourceFile(binding.parent.parent.parent)
-    );
-}
 
 /** Whether a symbol names a module-scope `const` declared in the program. */
 function isModuleConstant(symbol: ts.Symbol): boolean {
@@ -324,6 +312,84 @@ const PURE_STRING_METHODS: ReadonlySet<string> = new Set([
     "trimStart",
 ]);
 
+/**
+ * A fixed-size numeric vector a sink builds, and the source forms it reads
+ * (`StaticEvaluator.compileVector`).
+ */
+interface VectorSink {
+    /** The vector's name: in refusals, and its native type's (`builtVector`). */
+    name: string;
+    /** The lane names in order; their count is the vector's size. */
+    lanes: readonly string[];
+    precision: "float" | "double";
+    /**
+     * Whether a record of the named lanes is this vector: always
+     * (`vector`), where the position's own type admits one (`colour`), or
+     * never, where the pin types a tuple only.
+     */
+    records?: "vector" | "colour";
+    /** The value kind a property already holding this vector has. */
+    native?: Value["kind"];
+}
+
+/** The refusal a source of none of a vector sink's forms takes. */
+function expectedVector(sink: VectorSink): string {
+    const lanes = sink.lanes.join(", ");
+    return `Expected a ${sink.name} array [${lanes}]${sink.records ? ` or object { ${lanes} }` : ""}.`;
+}
+
+/** The native vector a sink builds from its lanes, each already at the sink's width. */
+function builtVector(sink: VectorSink, lanes: readonly string[]): string {
+    return `bbl::${sink.name}${sink.precision === "double" ? "d" : ""}{${lanes.join(", ")}}`;
+}
+
+const VEC3_SINKS: Readonly<Record<VectorSink["precision"], VectorSink>> = {
+    float: {
+        name: "Vec3",
+        lanes: ["x", "y", "z"],
+        precision: "float",
+        records: "vector",
+    },
+    double: {
+        name: "Vec3",
+        lanes: ["x", "y", "z"],
+        precision: "double",
+        records: "vector",
+    },
+};
+
+const VEC2_SINK: VectorSink = {
+    name: "Vec2",
+    lanes: ["x", "y"],
+    precision: "float",
+};
+
+const VEC4_SINK: VectorSink = {
+    name: "Vec4",
+    lanes: ["x", "y", "z", "w"],
+    precision: "float",
+};
+
+const COLOR3_SINK: VectorSink = {
+    name: "Color3",
+    lanes: ["r", "g", "b"],
+    precision: "float",
+    records: "colour",
+};
+
+const COLOR4_SINK: VectorSink = {
+    name: "Color4",
+    lanes: ["r", "g", "b", "a"],
+    precision: "float",
+    records: "colour",
+    native: "color4",
+};
+
+/** Whether a value holds named lanes: a compile-time record or a data struct. */
+function holdsLanes(value: Value): boolean {
+    return value.kind === "record" || isDataStruct(value);
+}
+
 export class StaticEvaluator {
     public constructor(
         private readonly staticConstants: ReadonlyMap<ts.Symbol, ts.Expression>,
@@ -393,6 +459,15 @@ export class StaticEvaluator {
             dataType: DataType,
             node: ts.Node,
         ) => string,
+        /**
+         * `Compiler.structNumber`: a data struct's numeric field read where
+         * the struct stands; undefined when the field holds no number.
+         */
+        private readonly structNumber: (
+            value: Value,
+            name: string,
+            node: ts.Node,
+        ) => Value | undefined,
     ) {}
 
     /** @unjournaled A module constant's required text, fixed when first read: JS evaluates it once. */
@@ -426,6 +501,141 @@ export class StaticEvaluator {
         namedMember(this.checker, node);
 
     /**
+     * The native vector a sink builds from `expression`, read in the one
+     * order every vector sink shares: a property already holding the
+     * sink's native value, a copy of a record (`{ ...record }`), a record's
+     * named lanes, a data tuple's lanes, a compile-time tuple, an array
+     * literal (its tuple spreads expanded) and an object literal of the
+     * named lanes. A module constant passed by name is the literal it
+     * initializes to, so the binding is followed before any of them is
+     * matched.
+     */
+    private compileVector(expression: ts.Expression, sink: VectorSink): string {
+        const unwrapped = this.unwrap(this.resolveStaticExpression(expression));
+        if (sink.native && ts.isPropertyAccessExpression(unwrapped)) {
+            const property = this.resolveProperty(unwrapped);
+            if (property?.kind === sink.native) return property.cpp;
+        }
+        const copied =
+            sink.records &&
+            ts.isObjectLiteralExpression(unwrapped) &&
+            unwrapped.properties.length === 1 &&
+            ts.isSpreadAssignment(unwrapped.properties[0]!)
+                ? unwrapped.properties[0].expression
+                : undefined;
+        if (copied) {
+            this.requireLaneRecord(expression, unwrapped, sink);
+            return this.vectorFromRecord(
+                this.resolveValue(copied),
+                copied,
+                sink,
+            );
+        }
+        const size = sink.lanes.length;
+        const built = (lanes: readonly string[]): string =>
+            builtVector(sink, lanes);
+        const resolved = this.vectorValue(expression, unwrapped);
+        // A record reaching a vector sink is read lane by lane where it
+        // stands: a navmesh query's snapped point handed to the next query
+        // by its local, a clear colour a module constant holds.
+        if (sink.records && resolved && holdsLanes(resolved)) {
+            this.requireLaneRecord(expression, unwrapped, sink);
+            return this.vectorFromRecord(resolved, unwrapped, sink);
+        }
+        // A tuple local whose elements are computed is a data tuple rather
+        // than a compile-time one, so its lanes are read by index at the
+        // sink's own width rather than folded.
+        const data = this.dataTupleComponents(
+            unwrapped,
+            resolved,
+            sink.precision,
+            size,
+        );
+        if (data) return built(data);
+        const tuple =
+            this.tupleElements(unwrapped, size, resolved) ??
+            this.spreadTupleElements(unwrapped, size);
+        if (tuple) {
+            return built(
+                tuple.map((element) =>
+                    this.numberValue(element, unwrapped, sink.precision),
+                ),
+            );
+        }
+        if (
+            ts.isArrayLiteralExpression(unwrapped) &&
+            unwrapped.elements.length === size
+        ) {
+            return built(
+                unwrapped.elements.map((element) =>
+                    this.compileNumber(element, sink.precision),
+                ),
+            );
+        }
+        if (sink.records && ts.isObjectLiteralExpression(unwrapped)) {
+            this.requireLaneRecord(expression, unwrapped, sink);
+            return built(
+                sink.lanes.map((lane) =>
+                    this.requiredObjectNumber(unwrapped, lane, sink.precision),
+                ),
+            );
+        }
+        this.fail(unwrapped, expectedVector(sink));
+    }
+
+    /**
+     * A record of named channels is not a colour where the position's own
+     * type rules it out (`excludesObjectColour`, from the checker's
+     * contextual type at the use). Where the pin types a number tuple --
+     * every RGB option and field, `baseColorFactor` -- the browser would
+     * read the record as undefined channels, so it refuses.
+     */
+    private requireLaneRecord(
+        expression: ts.Expression,
+        record: ts.Node,
+        sink: VectorSink,
+    ): void {
+        if (
+            sink.records !== "colour" ||
+            !excludesObjectColour(this.checker.getContextualType(expression))
+        )
+            return;
+        const names = sink.lanes.join(", ");
+        this.fail(
+            record,
+            `This colour is the pin's [${names}] number tuple; a { ${names} } object is not the pinned API.`,
+        );
+    }
+
+    /**
+     * A native vector from a record's named lanes, each written at the
+     * sink's own width by `castNumber`: a data struct's fields read where
+     * they stand, a compile-time record's properties.
+     */
+    private vectorFromRecord(
+        value: Value,
+        node: ts.Node,
+        sink: VectorSink,
+    ): string {
+        const struct = isDataStruct(value);
+        const lanes = sink.lanes.map((name) => {
+            const lane = struct
+                ? this.structNumber(value, name, node)
+                : value.recordProperties?.[name];
+            if (!lane || (lane.kind !== "number" && !isJsonValue(lane))) {
+                this.fail(
+                    node,
+                    struct
+                        ? `${sink.name} data field '${name}' must be numeric.`
+                        : `${sink.name} record is missing numeric '${name}'.`,
+                );
+            }
+            return this.castNumber(lane, sink.precision);
+        });
+        return builtVector(sink, lanes);
+    }
+
+    /**
      * `precision` selects the native vector the components land in. The
      * camera is the one sink that asks for `double`: upstream keeps its
      * position and target as plain JavaScript numbers and rounds only at
@@ -435,233 +645,33 @@ export class StaticEvaluator {
     public compileVec3(
         expression: ts.Expression,
         precision: "float" | "double",
-        value?: Value,
     ): string {
-        const type = precision === "float" ? "bbl::Vec3" : "bbl::Vec3d";
-        // A vector written once as a module constant and passed by name is
-        // the same literal to a compile-time reader, so the binding is
-        // followed before the shapes below are matched -- the same
-        // resolution every other static sink already does.
-        const unwrapped = this.unwrap(this.resolveStaticExpression(expression));
-        // A record reaching a vector sink resolves the same three ways a
-        // tuple does, so it takes the same dispatch: a navmesh query's
-        // snapped point is handed to the next query by its local, and
-        // `raycast`'s hit point is reached through `result.hitPoint`. A
-        // non-record result leaves the literal branches below to run,
-        // which is what keeps the domain error the message a scene
-        // passing something else deserves.
-        const resolved = value ?? this.vectorValue(expression, unwrapped);
-        if (resolved?.kind === "record") {
-            return this.vec3FromRecord(resolved, unwrapped, precision);
-        }
-        // A `[number, number, number]` local whose elements are computed --
-        // scene 166 draws each component from a PRNG -- is a data tuple
-        // rather than a compile-time one, so its lanes are read by index at
-        // the sink's own width rather than folded.
-        const dataTuple = this.dataTupleComponents(
-            unwrapped,
-            resolved,
-            precision,
-        );
-        if (dataTuple) {
-            return `${type}{${dataTuple.join(", ")}}`;
-        }
-        const tuple = this.tupleElements(unwrapped, 3, resolved);
-        if (tuple) {
-            return `${type}{${tuple
-                .map((value) => this.numberValue(value, unwrapped, precision))
-                .join(", ")}}`;
-        }
-        if (
-            ts.isArrayLiteralExpression(unwrapped) &&
-            unwrapped.elements.length === 3
-        ) {
-            return `${type}{${unwrapped.elements
-                .map((element) => this.compileNumber(element, precision))
-                .join(", ")}}`;
-        }
-        if (ts.isObjectLiteralExpression(unwrapped)) {
-            return `${type}{${this.requiredObjectNumber(
-                unwrapped,
-                "x",
-                precision,
-            )}, ${this.requiredObjectNumber(
-                unwrapped,
-                "y",
-                precision,
-            )}, ${this.requiredObjectNumber(unwrapped, "z", precision)}}`;
-        }
-        this.fail(
-            unwrapped,
-            "Expected a Vec3 array [x, y, z] or object { x, y, z }.",
-        );
+        return this.compileVector(expression, VEC3_SINKS[precision]);
     }
 
-    /**
-     * A native vector from a record's x/y/z lanes, each written at the
-     * sink's own width by `castNumber`.
-     */
+    /** A native Vec3 from a record's x/y/z lanes (`vectorFromRecord`). */
     public vec3FromRecord(
         value: Value,
         node: ts.Node,
         precision: "float" | "double",
     ): string {
-        const type = precision === "float" ? "bbl::Vec3" : "bbl::Vec3d";
-        const lanes = ["x", "y", "z"].map((name) => {
-            const lane = value.recordProperties?.[name];
-            if (!lane || (lane.kind !== "number" && !isJsonValue(lane))) {
-                this.fail(node, `Vec3 record is missing numeric '${name}'.`);
-            }
-            return this.castNumber(lane, precision);
-        });
-        return `${type}{${lanes.join(", ")}}`;
+        return this.vectorFromRecord(value, node, VEC3_SINKS[precision]);
     }
 
     public compileVec2(expression: ts.Expression): string {
-        const unwrapped = this.unwrap(expression);
-        const resolved = this.vectorValue(expression, unwrapped);
-        const data = this.dataTupleComponents(unwrapped, resolved, "float", 2);
-        if (data) return `bbl::Vec2{${data.join(", ")}}`;
-        const tuple = this.tupleElements(unwrapped, 2, resolved);
-        if (tuple) {
-            return `bbl::Vec2{${tuple
-                .map((value) => this.numberValue(value, unwrapped, "float"))
-                .join(", ")}}`;
-        }
-        if (
-            ts.isArrayLiteralExpression(unwrapped) &&
-            unwrapped.elements.length === 2
-        ) {
-            return `bbl::Vec2{${unwrapped.elements
-                .map((element) => this.compileNumber(element, "float"))
-                .join(", ")}}`;
-        }
-        this.fail(unwrapped, "Expected a Vec2 array [x, y].");
+        return this.compileVector(expression, VEC2_SINK);
     }
 
     public compileVec4(expression: ts.Expression): string {
-        const unwrapped = this.unwrap(expression);
-        const resolved = this.vectorValue(expression, unwrapped);
-        const data = this.dataTupleComponents(unwrapped, resolved, "float", 4);
-        if (data) return `bbl::Vec4{${data.join(", ")}}`;
-        const tuple = this.tupleElements(unwrapped, 4, resolved);
-        if (tuple) {
-            return `bbl::Vec4{${tuple
-                .map((value) => this.numberValue(value, unwrapped, "float"))
-                .join(", ")}}`;
-        }
-        if (
-            ts.isArrayLiteralExpression(unwrapped) &&
-            unwrapped.elements.length === 4
-        ) {
-            return `bbl::Vec4{${unwrapped.elements
-                .map((element) => this.compileNumber(element, "float"))
-                .join(", ")}}`;
-        }
-        this.fail(unwrapped, "Expected a Vec4 array [x, y, z, w].");
+        return this.compileVector(expression, VEC4_SINK);
     }
 
     public compileColor3(expression: ts.Expression): string {
-        // Through the static resolver first, so a module-level constant
-        // holding the colour reads as the literal it initializes to -- the
-        // same step the Vec3 compiler beside this one already takes.
-        const unwrapped = this.unwrap(this.resolveStaticExpression(expression));
-        const resolved = this.vectorValue(expression, unwrapped);
-        const tuple = this.tupleElements(unwrapped, 3, resolved);
-        if (tuple) {
-            return `bbl::Color3{${tuple
-                .map((value) => this.numberValue(value, unwrapped, "float"))
-                .join(", ")}}`;
-        }
-        const data = this.dataTupleComponents(unwrapped, resolved, "float");
-        if (data) {
-            return `bbl::Color3{${data.join(", ")}}`;
-        }
-        const spreadTuple = this.spreadTupleElements(unwrapped, 3);
-        if (spreadTuple) {
-            return `bbl::Color3{${spreadTuple
-                .map((value) => this.numberValue(value, unwrapped, "float"))
-                .join(", ")}}`;
-        }
-        if (
-            ts.isArrayLiteralExpression(unwrapped) &&
-            unwrapped.elements.length === 3
-        ) {
-            return `bbl::Color3{${unwrapped.elements
-                .map((element) => this.compileNumber(element, "float"))
-                .join(", ")}}`;
-        }
-        if (ts.isObjectLiteralExpression(unwrapped)) {
-            this.requireObjectColour(expression, unwrapped, ["r", "g", "b"]);
-            return `bbl::Color3{${["r", "g", "b"]
-                .map((channel) =>
-                    this.requiredObjectNumber(unwrapped, channel, "float"),
-                )
-                .join(", ")}}`;
-        }
-        this.fail(unwrapped, "Expected a Color3 array [r, g, b].");
-    }
-
-    /**
-     * The one colour-shape decision: an object of named channels is not a
-     * colour where the position's own type rules it out
-     * (`excludesObjectColour`, from the checker's contextual type at the
-     * use). Where the pin types a number tuple -- every RGB option and
-     * field, `baseColorFactor` -- the browser would read the object as
-     * undefined channels, so it refuses.
-     */
-    private requireObjectColour(
-        expression: ts.Expression,
-        object: ts.ObjectLiteralExpression,
-        channels: readonly string[],
-    ): void {
-        if (!excludesObjectColour(this.checker.getContextualType(expression)))
-            return;
-        const names = channels.join(", ");
-        this.fail(
-            object,
-            `This colour is the pin's [${names}] number tuple; a { ${names} } object is not the pinned API.`,
-        );
+        return this.compileVector(expression, COLOR3_SINK);
     }
 
     public compileColor4(expression: ts.Expression): string {
-        // Through the static resolver first, so a module-level constant
-        // holding the colour reads as the literal it initializes to -- the
-        // same step the Vec3 compiler beside this one already takes.
-        const unwrapped = this.unwrap(this.resolveStaticExpression(expression));
-        if (ts.isPropertyAccessExpression(unwrapped)) {
-            const value = this.resolveProperty(unwrapped);
-            if (value?.kind === "color4") {
-                return value.cpp;
-            }
-        }
-        const tuple = this.tupleElements(unwrapped, 4);
-        if (tuple) {
-            return `bbl::Color4{${tuple
-                .map((value) => this.numberValue(value, unwrapped, "float"))
-                .join(", ")}}`;
-        }
-        if (
-            ts.isArrayLiteralExpression(unwrapped) &&
-            unwrapped.elements.length === 4
-        ) {
-            return `bbl::Color4{${unwrapped.elements
-                .map((element) => this.compileNumber(element, "float"))
-                .join(", ")}}`;
-        }
-        if (ts.isObjectLiteralExpression(unwrapped)) {
-            const channels = ["r", "g", "b", "a"];
-            this.requireObjectColour(expression, unwrapped, channels);
-            return `bbl::Color4{${channels
-                .map((channel) =>
-                    this.requiredObjectNumber(unwrapped, channel, "float"),
-                )
-                .join(", ")}}`;
-        }
-        this.fail(
-            unwrapped,
-            "Expected a Color4 array [r, g, b, a] or object { r, g, b, a }.",
-        );
+        return this.compileVector(expression, COLOR4_SINK);
     }
 
     public compileBoolean(expression: ts.Expression): string {
@@ -1552,6 +1562,12 @@ export class StaticEvaluator {
         }
         const folded = this.generationText(unwrapped);
         if (folded !== undefined) return folded;
+        if (ts.isConditionalExpression(unwrapped)) {
+            // A conditional pure conditions settle is the arm it selects;
+            // a condition with effects runs where the text is built.
+            const arm = this.selectedArm(unwrapped);
+            if (arm) return this.compileStringLiteral(arm);
+        }
         this.fail(
             unwrapped,
             "Expected a string literal.",
@@ -1768,6 +1784,13 @@ export class StaticEvaluator {
 
     private scanWritesThrough(declaration: ts.VariableDeclaration): boolean {
         if (!ts.isIdentifier(declaration.name)) return true;
+        // A scalar is copied wherever it goes: it holds no object to write.
+        if (
+            !typeCanCarryReference(
+                this.checker.getTypeAtLocation(declaration.name),
+            )
+        )
+            return false;
         // A name holding the object or a member of it: the binding, an
         // alias, a destructured or iterated leaf, a literal holding one.
         const holds = (

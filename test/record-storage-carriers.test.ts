@@ -250,6 +250,48 @@ check(
 `,
 );
 
+check(
+    "a mapped record of callbacks stores its template's signature in a runtime-grown list",
+    `
+    type Key='one'|'two';
+    type Settle=Record<Key,()=>void>;
+    interface Stamp {x:number;settle:Settle}
+    interface Brush {
+        register(name:string,fn:(stamp:Stamp)=>boolean):void;
+        stamp(x:number):boolean;
+        count():number;
+    }
+    function createBrush():Brush {
+        const handlers:{name:string;fn:(stamp:Stamp)=>boolean}[]=[];
+        let count=0;
+        const settle:Settle={one:()=>{count+=1;},two:()=>{count+=10;}};
+        return {
+            register(name,fn) {
+                if(handlers.some(handler=>handler.name===name)) throw new Error('duplicate '+name);
+                handlers.push({name,fn});
+            },
+            stamp(x) {
+                const stamp:Stamp={x,settle};
+                let acted=false;
+                for(const handler of handlers) if(handler.fn(stamp)) acted=true;
+                return acted;
+            },
+            count:()=>count,
+        };
+    }
+    if(Date.now()>0) {
+        const brush=createBrush();
+        brush.register('a',stamp=>{if(stamp.x>1) stamp.settle.one();return stamp.x>1;});
+        brush.register('b',stamp=>{stamp.settle.two();return false;});
+        let duplicate='';
+        try {brush.register('a',()=>true);} catch(error) {duplicate=error instanceof Error?error.message:String(error);}
+        if(duplicate!=='duplicate a') throw new Error('duplicate');
+        if(brush.stamp(1)||brush.count()!==10) throw new Error('miss');
+        if(!brush.stamp(2)||brush.count()!==21) throw new Error('hit');
+    }
+`,
+);
+
 test("scalar dictionaries cannot project incompatible payload types", () => {
     assert.throws(
         () =>

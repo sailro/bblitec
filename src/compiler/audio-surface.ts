@@ -191,16 +191,8 @@ export function audioTypeof(
     return result;
 }
 
-/** Prototype aliases preserve the same absent optional host capabilities. */
-export function audioPrototypeValue(
-    context: Pick<LoweringServices, "libraryGlobal">,
-    expression: ts.PropertyAccessExpression,
-): Value | undefined {
-    if (
-        expression.name.text !== "prototype" ||
-        context.libraryGlobal(expression.expression) !== "AudioContext"
-    )
-        return undefined;
+/** `AudioContext.prototype`: its aliases preserve the same absent optional host capabilities. */
+export function audioContextPrototype(): Value {
     return {
         kind: "record",
         cpp: "",

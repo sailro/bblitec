@@ -4,6 +4,7 @@ import { absenceOf, isAbsentValue } from "./values/model.js";
 import type { DataLowerer } from "./data-lowering.js";
 import type { LoweringServices } from "./lowering-services.js";
 import { optionalPresentCpp, optionalValueCpp, type Value } from "./types.js";
+import { packagedBodyRead } from "./static-fetch.js";
 import { ApplicationRealmRequired } from "./worker-modules.js";
 
 type HttpContext = Pick<LoweringServices, "unwrap" | "libraryGlobal">;
@@ -316,31 +317,51 @@ export function compileHttpResponseMethod(
     // constructor, without a fetch call having activated the promise realm.
     if (!lowerer.context.options.workers) throw new ApplicationRealmRequired();
     lowerer.context.expectArgumentCount(call, 0, 0);
-    if (method === "text") {
-        const result = lowerer.leafValue(
-            `bbl::pal::http_response_text(${owner.cpp})`,
-            {
-                kind: "promise",
-                result: { kind: "string" },
-            },
-        );
-        return owner.packagedBodySource &&
-            result.kind === "promise" &&
-            result.promiseResult
+    // A packaged response's read settles to a value that knows its file.
+    const packagedRead = (
+        result: Value,
+        settled: (value: Value, source: string) => Value,
+    ): Value =>
+        owner.packagedBodySource &&
+        result.kind === "promise" &&
+        result.promiseResult
             ? {
                   ...result,
-                  promiseResult: {
-                      ...result.promiseResult,
-                      packagedBodySource: owner.packagedBodySource,
-                  },
+                  promiseResult: settled(
+                      result.promiseResult,
+                      owner.packagedBodySource,
+                  ),
               }
             : result;
-    }
-    if (method === "arrayBuffer")
-        return lowerer.leafValue(
-            `bbl::pal::http_response_buffer(${owner.cpp})`,
-            { kind: "promise", result: { kind: "arraybuffer" } },
+    if (method === "text") {
+        return packagedRead(
+            lowerer.leafValue(`bbl::pal::http_response_text(${owner.cpp})`, {
+                kind: "promise",
+                result: { kind: "string" },
+            }),
+            (value, packagedBodySource) => ({ ...value, packagedBodySource }),
         );
+    }
+    if (method === "arrayBuffer") {
+        // A packaged response's fresh read is its file's bytes.
+        return packagedRead(
+            lowerer.leafValue(`bbl::pal::http_response_buffer(${owner.cpp})`, {
+                kind: "promise",
+                result: { kind: "arraybuffer" },
+            }),
+            (value, source) =>
+                value.kind === "data"
+                    ? {
+                          ...value,
+                          fetchedBytes: packagedBodyRead(
+                              lowerer.context,
+                              call,
+                              source,
+                          ),
+                      }
+                    : value,
+        );
+    }
     if (method === "json") {
         lowerer.context.reachFeature("data:json", call);
         return lowerer.leafValue(

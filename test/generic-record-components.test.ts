@@ -143,6 +143,55 @@ check(
 `,
 );
 
+check(
+    "union-arm-fields-join-their-record-types",
+    `
+    type FlagHost = { kind: "tower"; index: number } | { kind: "house"; hid: number } | { kind: "wall"; key: string } | { kind: "ground" };
+    type RopeHost = { kind: "tower"; index: number } | { kind: "house"; hid: number } | { kind: "ground" };
+    type Point = readonly [number, number, number];
+    interface FlagSpan { id?: number; a: Point; b: Point; sag: number; seed: number; hostA?: FlagHost; hostB?: FlagHost }
+    interface RopeSpan { a: Point; b: Point; sag: number; hostA?: RopeHost; hostB?: RopeHost; tint?: readonly [number, number, number] }
+    const flags: FlagSpan[] = [
+        { id: 1, a: [0, 0, 0], b: [1, 0, 0], sag: 0.5, seed: 7, hostA: { kind: "ground" }, hostB: { kind: "wall", key: "w" } },
+        { id: 2, a: [0, 1, 0], b: [1, 1, 0], sag: 0.6, seed: 8 },
+    ];
+    const ropes: RopeSpan[] = [{ a: [0, 0, 1], b: [1, 0, 1], sag: 0.7, hostA: { kind: "house", hid: 9 }, hostB: { kind: "ground" } }];
+    const all = [...flags, ...ropes];
+    let sag = 0;
+    for (const span of all) sag += span.sag + span.a[0] + span.b[0];
+    if (Math.abs(sag - 4.8) > 1e-9 || all[0] !== flags[0] || all[2] !== ropes[0]) throw new Error("spans");
+    if (all[0]!.hostA?.kind !== "ground" || all[2]!.hostA?.kind !== "house" || all[1]!.hostA !== undefined)
+        throw new Error("hosts");
+    const wall = flags[0]!.hostB;
+    if (wall?.kind !== "wall" || wall.key !== "w" || all[2]!.hostB !== ropes[0]!.hostB) throw new Error("arms");
+    `,
+);
+
+check(
+    "never-bound-type-parameters-store-their-constraint",
+    `
+    interface KeyHost { seq: number; save: { id: number } }
+    function hostForKey<Host extends KeyHost>(key: string, hosts: readonly Host[]): Host | undefined {
+        const value = Number(key);
+        if (Number.isNaN(value)) return undefined;
+        return hosts.find((host) => host.seq === value);
+    }
+    function orphanKeys<Host extends KeyHost>(keys: Iterable<string>, hosts: readonly Host[]): string[] {
+        const orphans: string[] = [];
+        for (const key of keys) {
+            if (hostForKey(key, hosts) === undefined) orphans.push(key);
+        }
+        return orphans;
+    }
+    const hosts = [{ seq: 1, save: { id: 10 }, label: "a" }, { seq: 2, save: { id: 20 }, label: "b" }];
+    const orphans = orphanKeys(["1", "x", "3"], hosts);
+    if (orphans.join() !== "x,3") throw new Error(orphans.join());
+    const found = hostForKey("2", hosts);
+    if (found !== hosts[1] || found?.label !== "b") throw new Error("found");
+    if (orphanKeys(["1"], []).join() !== "1" || hostForKey("1", []) !== undefined) throw new Error("empty");
+    `,
+);
+
 test("record components and replay keep source instantiations separate", () => {
     const { checker, sourceFile } = createCompilerProgram(
         `

@@ -20,7 +20,10 @@ import ts from "typescript";
 import { CompileError } from "./compile-error.js";
 import { declaredSymbol } from "./symbols.js";
 import { sourceLocation, syntaxKindName } from "../source-location.js";
-import { storageRequestSite } from "./replay-storage.js";
+import {
+    describeStorageRequests,
+    storageRequestSite,
+} from "./replay-storage.js";
 import { StorageDemand } from "./storage-demand.js";
 import {
     rootExpression,
@@ -112,14 +115,16 @@ function enclosingFunctionName(statement: ts.Statement): string {
 }
 
 /**
- * What stopped an attempt or a plan, and where: the site its storage
- * demand rose at, else the statement lowering then.
+ * What stopped an attempt or a plan, and where: what its storage demand
+ * asks for and the site it rose at, else the statement lowering then.
  */
 function describeStop(cause: unknown, lowering: ts.Node | undefined): string {
     const text =
-        cause instanceof Error
-            ? `${cause.constructor.name}: ${cause.message}`
-            : String(cause);
+        cause instanceof StorageDemand
+            ? `${cause.constructor.name}: ${describeStorageRequests(cause.requests)}`
+            : cause instanceof Error
+              ? `${cause.constructor.name}: ${cause.message}`
+              : String(cause);
     const demanded =
         cause instanceof StorageDemand
             ? cause.requests.map(storageRequestSite).find(Boolean)
@@ -208,11 +213,6 @@ export class SurveyCollector {
                     ? "the end of the program"
                     : describeStop(ended.cause, ended.statement)),
         );
-    }
-
-    /** The statements the last attempt of `realm` lowered. */
-    public statementsLowered(realm: string): number {
-        return this.realms.get(realm)?.attempted ?? 0;
     }
 
     /** Runs one realm's compile attempt, replacing the census a previous attempt of that realm left. */

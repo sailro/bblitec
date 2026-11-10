@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { compileSource } from "../src/compiler.js";
+import { CompileError, compileSource } from "../src/compiler.js";
 
 /**
  * Static option positions (shader-material lists and records) read a
@@ -174,4 +174,90 @@ const FOG_LANE: u32 = \${LANES.fog + 1}u;\`;
         compiled!.fragmentSource,
         /return vec4<f32>\(0\.8, 0\.5, 0\.3, 1\.0\);/,
     );
+});
+
+// A wrapper keeps its options beside the material it builds, and the program
+// compares such options by identity: the parameter takes the argument as its
+// own object. `before` runs ahead of the material.
+const wrappedMaterial = (before = ""): string => `
+    import { createBox, createEngine, createShaderMaterial, type ShaderMaterial } from "@babylonjs/lite";
+
+    const vertexSource = \`struct VertexOutput{@builtin(position) position:vec4<f32>,};
+@vertex fn mainVertex(input:VertexInput)->VertexOutput{var out:VertexOutput;out.position=shaderSystem.worldViewProjection*vec4<f32>(input.position,1.0);return out;}\`;
+    const fragmentSource = \`struct VertexOutput{@builtin(position) position:vec4<f32>,};
+@fragment fn mainFragment(input:VertexOutput)->@location(0) vec4<f32>{return shaderUniforms.uTint;}\`;
+    type MaskOptions = Parameters<typeof createShaderMaterial>[0];
+    interface Recipe {
+        readonly options: MaskOptions;
+        readonly bind?: (material: ShaderMaterial) => void;
+        readonly layout?: "mesh" | "thin-instances";
+    }
+    const recipes = new WeakMap<ShaderMaterial, Recipe>();
+    const kept: MaskOptions[] = [];
+    const sameRecipe = (a: Recipe, b: Recipe): boolean => a.options === b.options;
+    function retag(target: { attributes: string[] }): void {
+        target.attributes.push("normal");
+    }
+
+    function createMask(
+        options: MaskOptions,
+        bind?: (material: ShaderMaterial) => void,
+        extra?: Omit<Recipe, "options" | "bind">,
+    ): ShaderMaterial {
+        ${before}
+        const material = createShaderMaterial(options);
+        bind?.(material);
+        recipes.set(material, { options, ...(bind ? { bind } : {}), ...extra });
+        return material;
+    }
+
+    async function main() {
+        const engine = await createEngine({});
+        const material = createMask({
+            name: "mask",
+            vertexSource,
+            fragmentSource,
+            attributes: ["position"],
+            uniforms: ["worldViewProjection", { name: "uTint", type: "vec4<f32>", defaultValue: [0.25, 0.5, 0.75, 1] }],
+        });
+        const box = createBox(engine);
+        box.material = material;
+        if (!sameRecipe(recipes.get(material)!, recipes.get(material)!) || kept.length > 1) throw new Error("recipe");
+    }
+`;
+
+test("reads a stored argument's own object where nothing has yet changed or kept it", () => {
+    const { cpp, manifest } = compileSource(wrappedMaterial());
+    assert.match(cpp, /parameter_object/);
+    const [compiled] = manifest.customShaderPrograms;
+    assert.equal(compiled!.name, "mask");
+    assert.deepEqual(compiled!.attributes, ["position"]);
+    assert.deepEqual(compiled!.uniformDefaults, [
+        { name: "uTint", values: [0.25, 0.5, 0.75, 1] },
+    ]);
+});
+
+test("leaves a stored argument's object to the run time once something changed or kept it", () => {
+    // Kept before the read, or captured by a closure made before it: other
+    // code can reach the object, so its lists are the run time's.
+    for (const before of [
+        "kept.push(options);",
+        "const keep = (): number => kept.push(options); if (kept.length > 5) keep();",
+    ])
+        assert.throws(
+            () => compileSource(wrappedMaterial(before)),
+            /Expected a static array literal/,
+            before,
+        );
+    // A write through the object before the read never reads the literal.
+    for (const before of [
+        `(options as { attributes: string[] }).attributes = ["position", "normal"];`,
+        "retag(options as { attributes: string[] });",
+        `const tint = options.uniforms![1] as { defaultValue: number[] }; tint.defaultValue[0] = 1;`,
+    ])
+        assert.throws(
+            () => compileSource(wrappedMaterial(before)),
+            CompileError,
+            before,
+        );
 });

@@ -7,8 +7,7 @@ import {
     classBaseExpression,
     evaluationContainer,
     expressionMayRunCode,
-    rootExpression,
-    rootIdentifier,
+    referenceBases,
     statementDeclaredNames,
     unwrapExpression,
     writeSites,
@@ -206,10 +205,10 @@ function thisClass(node: ts.Node): ts.ClassLikeDeclaration | undefined {
 
 /**
  * What a rolled-back `statement` would have written: the bindings it
- * declares and the roots of the targets it assigns, updates or deletes,
- * and the classes whose `this` roots one (`this.x = ...`). Undefined when
- * a target is rooted elsewhere (`f().x = ...`): a later read could not be
- * told from the omitted write.
+ * declares and the bases (`referenceBases`) of the targets it assigns,
+ * updates or deletes, and the classes whose `this` roots one
+ * (`this.x = ...`). Undefined when a target is rooted elsewhere
+ * (`f().x = ...`): a later read could not be told from the omitted write.
  */
 function rolledBackWrites(
     statement: ts.Statement,
@@ -226,17 +225,21 @@ function rolledBackWrites(
                 node.name
             )
                 names.push(node.name);
-            for (const { target } of writeSites(node)) {
-                const root = rootIdentifier(target);
-                const owner =
-                    root === undefined &&
-                    rootExpression(target).kind === ts.SyntaxKind.ThisKeyword
-                        ? thisClass(target)
-                        : undefined;
-                if (root) names.push(root);
-                else if (owner) classes.push(owner);
-                else return true;
-            }
+            for (const { target } of writeSites(node))
+                for (const base of referenceBases(target)) {
+                    const owner =
+                        base.kind === ts.SyntaxKind.ThisKeyword
+                            ? thisClass(target)
+                            : undefined;
+                    if (ts.isIdentifier(base)) names.push(base);
+                    else if (owner) classes.push(owner);
+                    // A literal is a fresh object no other code holds.
+                    else if (
+                        !ts.isObjectLiteralExpression(base) &&
+                        !ts.isArrayLiteralExpression(base)
+                    )
+                        return true;
+                }
             return false;
         },
         { functions: "skip", types: "skip" },
@@ -292,8 +295,6 @@ export class StorageDemandPlanner {
     private lowering?: ts.Statement;
     /** @unjournaled What ended the plan's work: undefined while it runs or once it returned. */
     private stop: unknown;
-    /** @unjournaled The statements the plan lowered: its cost, in a survey's measure. */
-    private lowered = 0;
 
     /**
      * @unjournaled The replays besides storage (`replayable`) a survey's
@@ -313,11 +314,6 @@ export class StorageDemandPlanner {
         private readonly replayable?: (error: unknown) => error is Error,
     ) {
         this.collected = new ReplayStorage(checker);
-    }
-
-    /** The statements the plan lowered. */
-    public get statements(): number {
-        return this.lowered;
     }
 
     /** Whether lowering goes on past a demand that allows it (`demandOrPlan`). */
@@ -377,7 +373,6 @@ export class StorageDemandPlanner {
         lower: () => void,
     ): void {
         this.lowering = statement;
-        this.lowered++;
         if (this.demands.length >= 256)
             throw new PlanningStop("the 256 demands one plan collects");
         // Under a generic instantiation a statement reads the types the

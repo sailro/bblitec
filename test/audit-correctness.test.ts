@@ -1281,6 +1281,15 @@ test("material record fields refuse the wrong family through aliases and helpers
     `);
     assert.match(valid.cpp, /set_material_diffuse_color/);
     assert.match(valid.cpp, /\.direct_intensity = 2\.0f/);
+    // A composition input no write is composed for refuses by name.
+    assert.throws(
+        () =>
+            compileSource(`${preamble}
+        const pbr = createPbrMaterial({});
+        pbr.doubleSided = false;
+    `),
+        /A PBR material's doubleSided composes its double-sided shader arm and cull mode/,
+    );
 });
 
 test(

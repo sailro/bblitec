@@ -3,8 +3,10 @@ import test from "node:test";
 import ts from "typescript";
 import { createCompilerProgram } from "../src/compiler/program.js";
 import { parameterInput } from "../src/compiler/symbols.js";
+import { forEachAnalysisNode } from "../src/compiler/analysis-walk.js";
 import {
     argumentForParameter,
+    isModuleScopeFunction,
     parameterForArgument,
     positionalParameter,
     requiredParameterCount,
@@ -75,4 +77,31 @@ test("arguments bind parameters as JavaScript does", () => {
     assert.ok(rest !== "unknown" && rest?.rest);
     assert.equal(positionalParameter(calls[1]!, fn, 3), undefined);
     assert.equal(positionalParameter(calls[1]!, fn, 1)?.name.getText(), "b");
+});
+
+test("a module's own function is a statement or the literal its const holds", () => {
+    const { sourceFile } = createCompilerProgram(
+        `
+        function statement(): void {
+            function nested(): void {}
+            const local = (): void => {};
+            nested();
+            local();
+        }
+        const arrow = (): number => 1;
+        const asserted = (function (): number { return 2; }) as () => number;
+        let rebindable = (): number => 3;
+        const held = [(): number => 4];
+    `,
+        "input.ts",
+    );
+    const owned: string[] = [];
+    forEachAnalysisNode(sourceFile, (node) => {
+        if (!ts.isFunctionLike(node) || !isModuleScopeFunction(node)) return;
+        const binding = ts.isFunctionDeclaration(node)
+            ? node
+            : ts.findAncestor(node, ts.isVariableDeclaration);
+        owned.push(binding?.name?.getText() ?? "");
+    });
+    assert.deepEqual(owned, ["statement", "arrow", "asserted"]);
 });

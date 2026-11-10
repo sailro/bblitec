@@ -112,9 +112,9 @@ import {
 import {
     compileAudioMethodCall,
     compileAudioConstructor,
-    audioPrototypeValue,
     audioTypeof,
 } from "./audio-surface.js";
+import { compileLibraryPrototype } from "./prototype-values.js";
 import { compileVatMethodCall } from "./intrinsics/vat.js";
 import { compilePhysicsMethodCall } from "./physics-surface.js";
 import { compileCustomEventConstructor } from "./custom-events.js";
@@ -352,6 +352,7 @@ export interface ExpressionContext
             | "defineThis"
             | "resolveThisField"
             | "resolveStaticExpression"
+            | "constantNameValue"
             | "canvasSizeValue"
             | "propertyAccess"
             | "registerClassInstance"
@@ -1089,8 +1090,8 @@ export class ExpressionLowerer {
             const arrayFunction = arrayFunctionValue(this.context, unwrapped);
             if (arrayFunction) return arrayFunction;
             if (mathFunction) return mathFunction;
-            const audioPrototype = audioPrototypeValue(this.context, unwrapped);
-            if (audioPrototype) return audioPrototype;
+            const prototype = compileLibraryPrototype(this.context, unwrapped);
+            if (prototype) return prototype;
             const constant = enumMemberConstant(
                 this.context.checker,
                 unwrapped,
@@ -5569,6 +5570,17 @@ export class ExpressionLowerer {
                         ...undefinedValue(),
                         preserveUncheckedLookup: true,
                     };
+                if (
+                    this.context.propertyAccess.absentPropertyReadsUndefined(
+                        owner,
+                        this.context.checker.getTypeAtLocation(
+                            unwrapped.expression,
+                        ),
+                        property,
+                        unwrapped,
+                    )
+                )
+                    return undefinedValue();
                 this.context.fail(
                     unwrapped.argumentExpression,
                     `Compile-time record has no property '${property}'.`,
@@ -5620,11 +5632,10 @@ export class ExpressionLowerer {
             staticNumberValue(this.context, unwrapped.argumentExpression);
         if (staticIndex === undefined) {
             const elements = owner.tupleElements ?? [];
+            // An empty array has no element at any index.
             if (elements.length === 0) {
-                this.context.fail(
-                    unwrapped,
-                    "A runtime index cannot read an empty static tuple.",
-                );
+                this.context.emitDiscardedValue(selector);
+                return undefinedValue();
             }
             let selected = elements[0]!;
             for (let lane = 1; lane < elements.length; lane += 1) {
@@ -7847,6 +7858,10 @@ export class ExpressionLowerer {
         if (handlePush) {
             return handlePush;
         }
+        this.context.handleCollections.requireHandleTupleSearchStorage(
+            call,
+            member,
+        );
         const staticMethod =
             this.context.classLowerer.resolveStaticMethod(member);
         if (staticMethod) {
@@ -7883,7 +7898,8 @@ export class ExpressionLowerer {
             const awaited = unwrapExpression(callee.expression);
             const receiverValue = ts.isIdentifier(receiver)
                 ? (this.context.bindings.lookupOptional(receiver) ??
-                  this.compileModuleNamespace(receiver))
+                  this.compileModuleNamespace(receiver) ??
+                  this.context.constantNameValue(receiver))
                 : receiver.kind === ts.SyntaxKind.ThisKeyword
                   ? this.context.activeThis()
                   : voidReceiver(

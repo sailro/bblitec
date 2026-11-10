@@ -100,6 +100,7 @@ import {
     arrayElementType,
     declaredContextualType,
     isTypeReference,
+    presentMembers,
     slotHoldsOnlyNull,
     valueKindOf,
     callSignatures,
@@ -500,6 +501,29 @@ function arrayUsesOnlyRead(
     return !written;
 }
 
+/**
+ * A data method's owner named without a run-time binding in this scope: a
+ * module string, query bag or typed array is its value at the use site, a
+ * constant record its initializer's, and any other name a static container.
+ */
+function unboundOwner(
+    lowerer: DataLowerer,
+    owner: ts.Identifier,
+): Value | undefined {
+    const type = lowerer.dataTypeAt(owner);
+    if (
+        type?.kind === "string" ||
+        type?.kind === "search-params" ||
+        isTypedArrayType(type)
+    )
+        return lowerer.context.compileValue(owner);
+    return (
+        (type?.kind === "struct"
+            ? lowerer.context.constantNameValue(owner)
+            : undefined) ?? lowerer.compileStaticContainer(owner)
+    );
+}
+
 export function compileDataMethodCall(
     lowerer: DataLowerer,
     call: ts.CallExpression,
@@ -628,13 +652,7 @@ export function compileDataMethodCall(
             ? lowerer.context.compileValue(ownerExpression)
             : ts.isIdentifier(ownerExpression)
               ? (lowerer.context.bindings.lookupOptional(ownerExpression) ??
-                // A module string, query bag or typed array without a
-                // runtime binding in this scope is its value at the use site.
-                (["string", "search-params"].includes(
-                    lowerer.dataTypeAt(ownerExpression)?.kind ?? "",
-                ) || isTypedArrayType(lowerer.dataTypeAt(ownerExpression))
-                    ? lowerer.context.compileValue(ownerExpression)
-                    : lowerer.compileStaticContainer(ownerExpression)))
+                unboundOwner(lowerer, ownerExpression))
               : (ts.isPropertyAccessExpression(ownerExpression) ||
                       ts.isElementAccessExpression(ownerExpression)) &&
                   lowerer.plainDataOwnerChain(ownerExpression)
@@ -1251,9 +1269,14 @@ export function compileDataMethodCall(
     // snapshot and result-flattening mechanism used by property/DOM accesses.
     // An element read carries its presence beside a default
     // (`list[0]?.trim()`): the `?.` tests it, as JavaScript tests undefined.
+    // A parsed document is absent as null or undefined, which its own `?.`
+    // tests, or with the chain link before it.
     if (
         ts.isOptionalChain(callee.access) &&
         (owner.dataType?.kind === "optional" ||
+            (isJsonValue(owner) &&
+                (callee.access.questionDotToken !== undefined ||
+                    presenceFlagCpp(owner) !== undefined)) ||
             (callee.access.questionDotToken &&
                 ts.isElementAccessExpression(
                     lowerer.context.unwrap(callee.expression),
@@ -1373,8 +1396,15 @@ function compileKnownDataMethod(
         if (held) return held;
     }
     if (isJsonValue(narrowedOwner)) {
-        const declared = lowerer.dataTypeAt(callee.expression);
-        if (declared?.kind === "string" || declared?.kind === "enum") {
+        // The call reads the receiver it narrowed: a document the source
+        // types as a string, nullable or not, is that string here.
+        const present = presentMembers(
+            lowerer.context.checker.getTypeAtLocation(callee.expression),
+        );
+        if (
+            present.length > 0 &&
+            present.every((member) => valueKindOf(member) === "string")
+        ) {
             narrowedOwner = lowerer.leafValue(
                 `${narrowedOwner.cpp}.string_value()`,
                 { kind: "string" },

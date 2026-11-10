@@ -2082,6 +2082,19 @@ export class BindingScopes {
         );
     }
 
+    /** The member a key path reaches from `value` through record facts each still current. */
+    public currentRecordMember(
+        value: Value | undefined,
+        path: readonly string[],
+    ): Value | undefined {
+        for (const key of path)
+            value =
+                value && this.recordPropertiesAreCurrent(value)
+                    ? value.recordProperties?.[key]
+                    : undefined;
+        return value;
+    }
+
     /** An indexed view retains the source record's field-map identity. */
     public retainRecordPropertiesAlias(
         value: Value,
@@ -2645,7 +2658,15 @@ export class BindingScopes {
                   this.context.dataLowerer.leafValue(name, dataType),
                   value,
               );
-        return { ...receiver, cpp: name, nativeCaptures: [capture] };
+        // The binding owns the instance: its owned spelling is its name,
+        // not the expression it was read from.
+        const pinned = writable<Value>({
+            ...receiver,
+            cpp: name,
+            nativeCaptures: [capture],
+        });
+        delete pinned.ownedCpp;
+        return pinned;
     }
 
     /**

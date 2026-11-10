@@ -12,7 +12,8 @@ function program(body: string, call = "build(engine, {});"): string {
     return `
 import { createEngine, createShaderMaterial } from "@babylonjs/lite";
 import type { EngineContext } from "@babylonjs/lite";
-interface Options { range?: [number, number] }
+interface Options { range?: [number, number]; start?: number; full?: number }
+const DEFAULTS = { start: 0.15, full: 0.62 } as const;
 const VERTEX = \`${POSITION_VERTEX_WGSL}\`;
 function build(engine: EngineContext, opts: Options) {
     ${body}
@@ -42,6 +43,18 @@ test("a local const holds its initializer's folded number", () => {
     assert.equal(
         result.manifest.customShaderPrograms[0]?.vertexSource.split("\n")[0],
         "// 0.5000",
+    );
+});
+
+test("a static literal record's number field folds inside a Math call", () => {
+    const result = compileSource(
+        program(`
+    const start = opts.start ?? DEFAULTS.start;
+    const spread = Math.max(start + 0.05, opts.full ?? DEFAULTS.full);`),
+    );
+    assert.equal(
+        result.manifest.customShaderPrograms[0]?.vertexSource.split("\n")[0],
+        "// 0.6200",
     );
 });
 

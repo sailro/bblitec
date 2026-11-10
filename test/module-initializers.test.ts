@@ -232,6 +232,56 @@ test("read-only call arguments leave immutable imported records on the static pa
     );
 });
 
+test("a method of a module constant record without storage calls the function it holds", (t) => {
+    const directory = resolve("artifacts/module-constant-record-method");
+    mkdirSync(directory, { recursive: true });
+    writeFileSync(
+        join(directory, "parts.ts"),
+        `
+        export interface Counter { total: number }
+        export interface Part { readonly label: string; readonly sizes: readonly number[]; readonly apply: (counter: Counter, amount: number) => void }
+        function add(counter: Counter, amount: number): void { counter.total += amount; }
+        function sizes(): number[] { return [2, 3]; }
+        const IDLE: Part = { label: "idle", sizes: [], apply: () => {} };
+        export function part(active: boolean): Part {
+            if (!active) return IDLE;
+            return { label: "active", sizes: sizes(), apply: add };
+        }
+        const SHARED = part(true);
+        export function applyShared(counter: Counter): void { SHARED.apply(counter, 3); }
+    `,
+    );
+    // A factory's record, the stored record it returns and a literal: none
+    // has a runtime binding where its method is called.
+    const result = compileSource(
+        `
+        import { applyShared, part } from "./parts.js";
+        import type { Counter } from "./parts.js";
+        function double(counter: Counter, amount: number): void { counter.total += amount * 2; }
+        const ACTIVE = part(true);
+        const NONE = part(false);
+        const DIRECT = { label: "direct", apply: double };
+        function main(): void {
+            const counter: Counter = { total: 0 };
+            ACTIVE.apply(counter, 5);
+            NONE.apply(counter, 7);
+            DIRECT.apply(counter, 11);
+            applyShared(counter);
+            if (counter.total !== 30 || ACTIVE.sizes.length !== 2 || NONE.label !== "idle")
+                throw new Error("constant record methods " + counter.total);
+        }
+        main();
+    `,
+        { fileName: join(directory, "entry.ts") },
+    );
+    const tools = optionalNativeFixtureTools(false);
+    if (!tools) {
+        t.skip("Native fixture compiler unavailable.");
+        return;
+    }
+    runGeneratedProgram(tools, "module-constant-record-method", result.cpp);
+});
+
 test("initializer planning preserves throwing container and accessor operations", () => {
     const directory = resolve("artifacts/module-abrupt-initializers");
     mkdirSync(directory, { recursive: true });

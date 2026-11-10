@@ -62,3 +62,69 @@ test("suspending cleanup preserves and overrides abrupt completions", (t) => {
         expectedOutput: "",
     });
 });
+
+test("a finally after a suspending loop clears the state its body stored try-local scalars in", (t) => {
+    const tools = optionalNativeFixtureTools(false);
+    if (!tools) {
+        t.skip("Native fixture compiler unavailable.");
+        return;
+    }
+    const result = compileSource(`
+        interface PumpDeps<A> {active():boolean;resolve(x:number,y:number):Promise<A>;render(anchor:A,x:number,y:number):void}
+        interface Pump {move(x:number,y:number):void;refresh(x:number,y:number):void}
+        function createPump<A>(deps:PumpDeps<A>):Pump {
+            let inflight=false;
+            let pending:[number,number]|null=null;
+            let resolving:[number,number]|null=null;
+            const pump=async():Promise<void>=>{
+                if(inflight) return;
+                inflight=true;
+                try {
+                    while(pending&&deps.active()) {
+                        const [cx,cy]=pending;
+                        pending=null;
+                        resolving=[cx,cy];
+                        const anchor=await deps.resolve(cx,cy);
+                        resolving=null;
+                        if(!deps.active()) break;
+                        deps.render(anchor,cx,cy);
+                    }
+                } finally {
+                    resolving=null;
+                    inflight=false;
+                    if(pending&&deps.active()) void pump();
+                }
+            };
+            const enqueue=(x:number,y:number,force:boolean):void=>{
+                if(!deps.active()) return;
+                if(!force&&((resolving&&resolving[0]===x&&resolving[1]===y)||(pending&&pending[0]===x&&pending[1]===y))) return;
+                pending=[x,y];
+                void pump();
+            };
+            return {move:(x,y)=>enqueue(x,y,false),refresh:(x,y)=>enqueue(x,y,true)};
+        }
+        void(async()=>{
+            const log:string[]=[],calls:number[]=[];
+            let active=true;
+            const pump=createPump<number>({
+                active:()=>active,
+                resolve:(x,y)=>{calls.push(x);return Promise.resolve(x+y);},
+                render:(anchor,x,y)=>{log.push(anchor+':'+x+':'+y);},
+            });
+            pump.move(1,2);pump.move(1,2);pump.move(3,4);pump.move(5,6);
+            if(calls.length!==1) throw new Error('in flight');
+            for(let i=0;i<8;i++) await Promise.resolve();
+            if(log.join()!=='3:1:2,11:5:6'||calls.join()!=='1,5') throw new Error('catch up');
+            pump.move(7,8);
+            active=false;
+            for(let i=0;i<8;i++) await Promise.resolve();
+            if(log.length!==2||calls.length!==3) throw new Error('disarmed in flight');
+            globalThis.close();
+        })();
+    `);
+    runGeneratedProgram(tools, "async-cleanup-pump", result.cpp, {
+        flags: ["/DBBLITE_WORKERS=1"],
+        timeoutMs: 10000,
+        expectedOutput: "",
+    });
+});

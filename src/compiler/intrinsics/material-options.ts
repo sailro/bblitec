@@ -301,7 +301,11 @@ function requiredStaticFiniteNumber(
     return { cpp: context.compileNumber(expression, "float"), value };
 }
 
-/** Metallic/roughness factors are unconditional UBO lanes in the pin. */
+/**
+ * A scalar `_writeMaterialData` copies into its lane whatever it holds
+ * (the intensities, reflectance, metallic and roughness factors): no
+ * composition reads it, so a run-time value has no static one.
+ */
 function pbrUniformNumber(
     context: MaterialOptionContext,
     expression: ts.Expression | undefined,
@@ -591,17 +595,15 @@ export function compilePbrMaterialOptions(
         roughness,
         pinnedDefaultNumber("pbrRoughnessFactor"),
     );
-    const directOption = requiredStaticFiniteNumber(
+    const directOption = pbrUniformNumber(
         context,
         direct,
         pinnedDefaultNumber("pbrDirectIntensity"),
-        "PBR direct intensity",
     );
-    const environmentOption = requiredStaticFiniteNumber(
+    const environmentOption = pbrUniformNumber(
         context,
         environment,
         pinnedDefaultNumber("pbrEnvironmentIntensity"),
-        "PBR environment intensity",
     );
     const alphaOption = requiredStaticFiniteNumber(
         context,
@@ -616,11 +618,10 @@ export function compilePbrMaterialOptions(
         "PBR alphaBlend",
     );
     const alphaBlendCpp = staticAlphaBlend ? "true" : "false";
-    const reflectanceOption = requiredStaticFiniteNumber(
+    const reflectanceOption = pbrUniformNumber(
         context,
         reflectance,
         pinnedDefaultNumber("pbrReflectance"),
-        "PBR reflectance",
     );
     const staticOcclusionStrength = occlusionStrength
         ? staticNumberValue(context, occlusionStrength)
@@ -697,11 +698,17 @@ export function compilePbrMaterialOptions(
             ...(roughnessOption.value === undefined
                 ? {}
                 : { roughnessFactor: roughnessOption.value }),
-            directIntensity: directOption.value,
-            environmentIntensity: environmentOption.value,
+            ...(directOption.value === undefined
+                ? {}
+                : { directIntensity: directOption.value }),
+            ...(environmentOption.value === undefined
+                ? {}
+                : { environmentIntensity: environmentOption.value }),
             alpha: alphaOption.value,
             ...(staticAlphaBlend ? { alphaBlend: true } : {}),
-            reflectance: reflectanceOption.value,
+            ...(reflectanceOption.value === undefined
+                ? {}
+                : { reflectance: reflectanceOption.value }),
             ...(staticOcclusionStrength ===
             pinnedDefaultNumber("occlusionStrength")
                 ? {}

@@ -126,7 +126,7 @@ test("structural annotations retain unsupported native member refusals", () => {
             function run(engine: EngineContext): number { return new Reader().read(createBox(engine)); }
             const calls: Array<typeof run> = [run];
         `),
-        /not supported|Unsupported|not lowered|not implemented|requires/,
+        /Mesh\.worldMatrixVersion counts the pin's world-matrix invalidations/,
     );
 });
 
@@ -198,5 +198,42 @@ test("stored structural readers retain their parameter producer owner", () => {
             function run(engine: EngineContext): string { return readers[0]!(createBox(engine)); }
             const calls: Array<typeof run> = [run];
         `),
+    );
+});
+
+test("a record no layout stores is a view of the handles its list holds", () => {
+    const scene = (use: string): string => `
+        import {createBox, createEngine, createStandardMaterial, type MaterialPlugin, type Mesh} from "@babylonjs/lite";
+        interface Pluggable {plugins?:MaterialPlugin[]}
+        const engine=await createEngine(document.getElementById("renderCanvas") as HTMLCanvasElement);
+        const shared=createStandardMaterial();
+        const first=createBox(engine,{size:1}),second=createBox(engine,{size:1});
+        first.material=shared;
+        second.material=shared;
+        const seen:Pluggable[]=[];
+        const visit=(meshes:readonly Mesh[]):void=>{
+            for(const mesh of meshes) {
+                const material=(mesh as unknown as {material?:Pluggable}).material;
+                ${use}
+            }
+        };
+        visit([first,second,first]);
+        if(seen.length!==1) throw new Error("unique materials");`;
+    const searched = compileSource(
+        scene(
+            "if(!material||seen.includes(material)) continue;seen.push(material);",
+        ),
+    ).cpp;
+    assert.match(searched, /bbl::js::Array<bbl::MaterialHandle> v_seen = /);
+    assert.match(searched, /bbl::js::array_includes\(v_seen, /);
+    assert.match(searched, /v_seen\.push_back\(/);
+    const grown = compileSource(
+        scene("if(material&&Date.now()>0) seen.push(material);"),
+    ).cpp;
+    assert.match(grown, /bbl::js::Array<bbl::MaterialHandle> v_seen = /);
+    assert.match(grown, /v_seen\.push_back\(/);
+    assert.throws(
+        () => compileSource(scene("if(material&&Date.now()>0) seen.push({});")),
+        /A runtime-grown handle list requires native array storage/,
     );
 });
