@@ -10851,7 +10851,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         if (!dataType) {
             this.context.fail(
                 expression,
-                `new ${constructor} requires concrete data type arguments or a contextual container type.`,
+                `new ${constructor} requires concrete data type arguments or a contextual container type: ${this.context.dataTypes.unrepresentedPart(this.context.checker.getTypeAtLocation(expression), expression)}.`,
             );
         }
         if (dataType.kind !== constructedKind) {

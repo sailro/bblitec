@@ -3621,6 +3621,19 @@ test("a compile-time record lacking a property its type requires refuses the rea
     );
 });
 
+test("a type outside the data model refuses by the path to the part without a representation", () => {
+    assert.throws(
+        () =>
+            compileSource(`
+            interface Planner { plan(from: number): number; cache: WeakRef<object>; }
+            interface Scenario { name: string; planner: Planner; }
+            const owners = new Map<number, Scenario>();
+            console.log(owners.size);
+            `),
+        /new Map requires concrete data type arguments or a contextual container type: 'Map<number, Scenario>' > type argument 'Scenario' > property 'planner' of type 'Planner' > property 'cache' of type 'WeakRef<object>' > type argument 'object': no native representation/,
+    );
+});
+
 check(
     "object-destructuring-assignments-and-keyed-absence",
     `

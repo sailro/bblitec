@@ -7461,7 +7461,10 @@ export class UserFunctionLowerer {
         if (!type) {
             context.fail(
                 callNode,
-                `Function '${refusalName(ir)}' uses early value returns but its return type is outside the native data model.`,
+                `Function '${refusalName(ir)}' uses early value returns but its return type is outside the native data model` +
+                    (signature
+                        ? `: ${context.dataTypes.unrepresentedPart(this.checker.getReturnTypeOfSignature(signature), callNode)}.`
+                        : "."),
             );
         }
         return context.dataTypes.ownReturnedArray(type);

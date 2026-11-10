@@ -4233,10 +4233,83 @@ export class DataTypeRegistry {
         if (!mapped) {
             this.fail(
                 node,
-                `${role} type '${this.checker.typeToString(type)}' is outside the supported native-data subset.`,
+                `${role} type '${this.checker.typeToString(type)}' is outside the supported native-data subset: ${this.unrepresentedPart(type, node)}.`,
             );
         }
         return mapped;
+    }
+
+    /**
+     * Why `type` has no native data type, for a refusal: the path from it
+     * to the part that has none (a union's member, a type argument, a
+     * property), then what that part lacks. A union each of whose members
+     * has a data type lacks one layout holding them all.
+     */
+    public unrepresentedPart(type: ts.Type, node: ts.Node): string {
+        // A type whose own mapping throws says nothing of its parts.
+        const represented = (part: ts.Type): boolean | undefined => {
+            try {
+                return this.fromTsType(part, node) !== undefined;
+            } catch {
+                return undefined;
+            }
+        };
+        const path: string[] = [];
+        let current = type;
+        for (;;) {
+            const name = `'${this.checker.typeToString(current)}'`;
+            if (path.length === 0) path.push(name);
+            const members = presentMembers(current);
+            const single = members.length > 1 ? undefined : members[0];
+            if (
+                single &&
+                (single.flags & ts.TypeFlags.TypeParameter) !== 0 &&
+                !this.substituteTypeParameter(single)
+            )
+                return `${path.join(" > ")}: no call binds the type parameter here`;
+            // A function member is stored by its owner's rules, not its own.
+            const parts: [string, ts.Type][] =
+                members.length > 1
+                    ? members.map((member) => ["member", member])
+                    : single === undefined || path.length > 6
+                      ? []
+                      : [
+                            ...(isTypeReference(single)
+                                ? this.checker
+                                      .getTypeArguments(single)
+                                      .map((argument): [string, ts.Type] => [
+                                          "type argument",
+                                          argument,
+                                      ])
+                                : []),
+                            ...this.checker
+                                .getPropertiesOfType(single)
+                                .map((property): [string, ts.Type] => [
+                                    `property '${property.name}' of type`,
+                                    this.checker.getTypeOfSymbolAtLocation(
+                                        property,
+                                        node,
+                                    ),
+                                ])
+                                .filter(
+                                    ([, propertyType]) =>
+                                        callSignatures(
+                                            this.checker,
+                                            propertyType,
+                                            "present",
+                                        ).length === 0,
+                                ),
+                        ];
+            const part = parts.find(([, part]) => represented(part) === false);
+            if (!part)
+                return `${path.join(" > ")}: ${
+                    members.length > 1
+                        ? "no one layout holds every member"
+                        : "no native representation"
+                }`;
+            path.push(`${part[0]} '${this.checker.typeToString(part[1])}'`);
+            current = part[1];
+        }
     }
 
     /** A checked recursive boundary may retain a dynamic parsed value. Call sinks
