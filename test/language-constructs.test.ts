@@ -3651,6 +3651,17 @@ test("a run-time key selecting fields of different types refuses", () => {
 });
 
 check(
+    "record-read-by-a-key-of-an-unbound-type-parameter",
+    `
+    function lengths<K extends string>(names: Readonly<Record<K, string>>): string {
+        return (Object.keys(names) as K[]).map((key) => key + "=" + names[key].length).join(",");
+    }
+    const out = lengths({ reach: "stewardReach", pause: "pauseSeconds" });
+    if (out !== "reach=12,pause=12") throw new Error(out);
+`,
+);
+
+check(
     "optional-number-coerced-tells-null-from-undefined",
     `
     interface Rec { born: number; expires?: number | null; policy: "durable" | "fresh" }

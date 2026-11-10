@@ -431,6 +431,23 @@ export interface ExpressionContext
 }
 
 /** Whether an expression's value is an object spread's operand, directly or through the operators that yield it. */
+/**
+ * The one storage every property of a compile-time record holds; undefined
+ * where they differ or one has none.
+ */
+function onePropertyStorage(record: Value): DataType | undefined {
+    const stored = Object.values(record.recordProperties ?? {}).map(
+        valueDataType,
+    );
+    const first = stored[0];
+    return first &&
+        stored.every(
+            (type) => type !== undefined && dataTypesEqual(type, first),
+        )
+        ? first
+        : undefined;
+}
+
 function spreadsItsValue(expression: ts.Expression): boolean {
     return ts.isSpreadAssignment(
         outermostWrapper(expression, { branches: "objects" }).parent,
@@ -5349,13 +5366,13 @@ export class ExpressionLowerer {
                         "Dynamic compile-time record access requires a string or numeric key.",
                     );
                 }
-                const indexedType =
+                const checkedType =
                     this.context.dataLowerer.dataTypeAt(unwrapped);
                 // A record read as `Record<string, unknown>` by a key known
                 // only at run time reads a parsed view of the record: the
                 // property the key names, or undefined.
                 if (
-                    !indexedType &&
+                    !checkedType &&
                     (this.context.checker.getTypeAtLocation(unwrapped).flags &
                         (ts.TypeFlags.Unknown | ts.TypeFlags.Any)) !==
                         0 &&
@@ -5379,6 +5396,10 @@ export class ExpressionLowerer {
                         { kind: "json" },
                     );
                 }
+                // A read the checker types by a type parameter no call
+                // has bound here (`names[key]` over `Record<K, string>`)
+                // takes the one storage every property of the record holds.
+                const indexedType = checkedType ?? onePropertyStorage(owner);
                 if (!indexedType) {
                     this.context.fail(
                         unwrapped,
