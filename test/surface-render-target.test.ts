@@ -96,6 +96,19 @@ test("surface render targets retain sampled depth and validate descriptor owners
             ),
         /single-sample depth attachment/,
     );
+    // A static extent no 32-bit native extent holds refuses at generation.
+    assert.throws(
+        () =>
+            compileSource(
+                `${setup} createRenderTargetTexture(engine, {format: engine.format, samples: 1, size: {width: 2 ** 32, height: 4}}); } void main();`,
+            ),
+        /A count of 4294967296 exceeds the 32-bit native count/,
+    );
+    assert.doesNotThrow(() =>
+        compileSource(
+            `${setup} createRenderTargetTexture(engine, {format: engine.format, samples: 1, size: {width: 2 ** 32 - 1, height: 4}}); } void main();`,
+        ),
+    );
     // A surface stand-in is re-read at every build, which no native size is.
     assert.throws(
         () =>

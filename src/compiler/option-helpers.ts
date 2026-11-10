@@ -509,6 +509,13 @@ export function compilePositiveInteger(
     if (!Number.isInteger(value) || value <= 0) {
         context.fail(unwrapped, "Expected a positive integer literal.");
     }
+    // The literal is a 32-bit native count.
+    if (value > 0xffff_ffff) {
+        context.fail(
+            unwrapped,
+            `A count of ${value} exceeds the 32-bit native count (4294967295).`,
+        );
+    }
     return `${value}u`;
 }
 
