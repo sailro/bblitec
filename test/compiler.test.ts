@@ -7,7 +7,13 @@ import assert from "node:assert/strict";
 import { regexText } from "./regex.js";
 import { pinnedPackageSpecifiers } from "../src/capture-suite-reference.js";
 import { babylonPackages, isBabylonModule } from "../src/compiler/symbols.js";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+    mkdirSync,
+    mkdtempSync,
+    readFileSync,
+    rmSync,
+    writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test from "node:test";
@@ -3483,6 +3489,48 @@ test("defaults an absent nullable array element before nullish coalescing", () =
     assert.match(result.cpp, /platform_gamepads\(/);
     assert.match(result.cpp, /array_at_or_default\(v_\w*pads,/);
     assert.doesNotMatch(result.cpp, /array_index_checked\(v_\w*pads,/);
+});
+
+test("a gamepad source built before the engine reads the pads through the Window's engine", () => {
+    const directory = resolve("artifacts/gamepad-before-engine");
+    mkdirSync(directory, { recursive: true });
+    writeFileSync(join(directory, "worker.ts"), "self.close();");
+    const result = compileSource(
+        `
+        import { createEngine, createSceneContext, createFreeCamera, registerScene, startEngine, onBeforeRender } from "@babylonjs/lite";
+        const worker = new Worker(new URL("./worker.ts", import.meta.url), { type: "module" });
+        worker.terminate();
+        interface GamepadSource { getGamepads(): readonly (Gamepad | null)[] | null; isActive(): boolean }
+        function browserGamepadSource(): GamepadSource {
+            return {
+                getGamepads: () =>
+                    typeof navigator !== "undefined" && typeof navigator.getGamepads === "function" ? navigator.getGamepads() : null,
+                isActive: () => typeof document === "undefined" || document.visibilityState === "visible",
+            };
+        }
+        async function main(): Promise<void> {
+            const source = browserGamepadSource();
+            const canvas = document.getElementById("renderCanvas") as HTMLCanvasElement;
+            const engine = await createEngine(canvas);
+            const scene = createSceneContext(engine);
+            scene.camera = createFreeCamera([0, 1, -5], [0, 0, 0]);
+            let connected = 0;
+            onBeforeRender(scene, () => {
+                const pads = source.isActive() ? source.getGamepads() : null;
+                connected = 0;
+                for (const pad of pads ?? []) if (pad) connected++;
+            });
+            await registerScene(scene);
+            await startEngine(engine);
+        }
+        void main();
+    `,
+        { fileName: join(directory, "entry.ts") },
+    );
+    assert.match(
+        result.cpp,
+        /platform_gamepads\(bbl::pal::window_document_engine\(\)\)/,
+    );
 });
 
 test("preserves the optional first value of a temporary Map iterator", () => {
