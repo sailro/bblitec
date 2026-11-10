@@ -3500,12 +3500,18 @@ test("a gamepad source built before the engine reads the pads through the Window
         import { createEngine, createSceneContext, createFreeCamera, registerScene, startEngine, onBeforeRender } from "@babylonjs/lite";
         const worker = new Worker(new URL("./worker.ts", import.meta.url), { type: "module" });
         worker.terminate();
-        interface GamepadSource { getGamepads(): readonly (Gamepad | null)[] | null; isActive(): boolean }
+        interface GamepadSource { getGamepads(): readonly (Gamepad | null)[] | null; isActive(): boolean; standard(): number }
         function browserGamepadSource(): GamepadSource {
+            const getGamepads = (): readonly (Gamepad | null)[] | null =>
+                typeof navigator !== "undefined" && typeof navigator.getGamepads === "function" ? navigator.getGamepads() : null;
             return {
-                getGamepads: () =>
-                    typeof navigator !== "undefined" && typeof navigator.getGamepads === "function" ? navigator.getGamepads() : null,
+                getGamepads,
                 isActive: () => typeof document === "undefined" || document.visibilityState === "visible",
+                standard: () => {
+                    let count = 0;
+                    for (const pad of getGamepads() ?? []) if (pad && pad.connected && pad.mapping === "standard") count++;
+                    return count;
+                },
             };
         }
         async function main(): Promise<void> {
@@ -3517,7 +3523,7 @@ test("a gamepad source built before the engine reads the pads through the Window
             let connected = 0;
             onBeforeRender(scene, () => {
                 const pads = source.isActive() ? source.getGamepads() : null;
-                connected = 0;
+                connected = source.standard();
                 for (const pad of pads ?? []) if (pad) connected++;
             });
             await registerScene(scene);
@@ -3530,6 +3536,11 @@ test("a gamepad source built before the engine reads the pads through the Window
     assert.match(
         result.cpp,
         /platform_gamepads\(bbl::pal::window_document_engine\(\)\)/,
+    );
+    // A pad read where no engine exists yet is the Window's too.
+    assert.match(
+        result.cpp,
+        /gamepad_connected\(bbl::pal::window_document_engine\(\), /,
     );
 });
 

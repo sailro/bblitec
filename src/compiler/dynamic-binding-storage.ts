@@ -26,10 +26,7 @@ import {
 } from "./type-facts.js";
 import { isRebound } from "./binding-rebinds.js";
 import type { Value } from "./types.js";
-import {
-    NativeRecordStorageRequired,
-    type NativeRecordStorageDemand,
-} from "./native-record-storage.js";
+import type { NativeRecordStorageDemand } from "./native-record-storage.js";
 
 /** Storage choices survive replay; generated type names belong to one registry. */
 export type DynamicBindingStorage =
@@ -89,7 +86,7 @@ export interface DemandedStorageContext {
         | "fromStoredTsType"
         | "fromCallableRecordDemand"
         | "fromSharedReturnType"
-        | "nativeRecordViewDemand"
+        | "requireNativeRecordView"
         | "hasNativeRecordView"
         | "markStoredObjectReferences"
         | "nullableType"
@@ -193,14 +190,12 @@ export function demandedStorageType(
         const declared = dataTypes.fromStoredTsType(source, declaration);
         const target =
             declared?.kind === "optional" ? declared.inner : declared;
-        if (mapped && target?.kind === "struct") {
-            const demand = dataTypes.nativeRecordViewDemand(
+        if (mapped && target?.kind === "struct")
+            dataTypes.requireNativeRecordView(
                 target.name,
                 mapped,
                 storage.node,
             );
-            if (demand) throw new NativeRecordStorageRequired(demand);
-        }
         return mapped && heldAsBinding(context, declaration, source, mapped);
     }
     // A fresh authored record may share an annotation with an unrelated

@@ -195,6 +195,23 @@ export function documentEngine(
     return "bbl::pal::window_document_engine()";
 }
 
+/**
+ * The engine the Window's input state (its gamepads) is read through: the
+ * entry's, or, before any exists (an input source built ahead of
+ * `createEngine`), an application realm's Window engine, as its listeners
+ * use.
+ */
+export function windowInputEngine(
+    context: Parameters<typeof documentEngine>[0],
+    node: ts.Node,
+): string {
+    return (
+        (context.defaultEngine() === undefined
+            ? documentEngine(context, node)
+            : undefined) ?? context.requireDefaultEngine(node)
+    );
+}
+
 function windowIdentity(): Value {
     const cpp = "std::addressof(bbl::pal::window_document_engine())";
     return {

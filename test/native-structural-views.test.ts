@@ -1,5 +1,9 @@
 import assert from "node:assert/strict";
+import { mkdirSync, writeFileSync } from "node:fs";
+import { join, resolve } from "node:path";
 import test from "node:test";
+import { runInNewContext } from "node:vm";
+import ts from "typescript";
 import { compileSource } from "../src/compiler.js";
 import {
     optionalNativeFixtureTools,
@@ -114,6 +118,143 @@ int main() {
     assert(mouse.default_prevented);
 }
 `,
+    );
+});
+
+test("a structural interface over a host list's elements is a view of each native owner", async (t) => {
+    // The reader a test can feed plain objects: its interface is the part
+    // of a browser Gamepad it uses, and the browser's own list sinks into
+    // it element by element.
+    const source = `
+        import { createEngine } from "@babylonjs/lite";
+        interface PadSnapshot {
+            readonly index: number;
+            readonly mapping: string;
+            readonly connected?: boolean;
+            readonly axes: ArrayLike<number>;
+            readonly buttons: ArrayLike<{ readonly pressed: boolean; readonly value: number }>;
+        }
+        interface PadSource { getGamepads(): ArrayLike<PadSnapshot | null> | null | undefined }
+        interface PadFrame { connected: boolean; first: number; index: number; leftX: number; trigger: number; held: Uint8Array }
+        function createPadReader(source: PadSource): { poll(): PadFrame } {
+            const frame: PadFrame = { connected: false, first: -1, index: -1, leftX: 0, trigger: 0, held: new Uint8Array(3) };
+            const readList = (): ArrayLike<PadSnapshot | null> | null => {
+                try {
+                    return source.getGamepads() ?? null;
+                } catch {
+                    return null;
+                }
+            };
+            const isReadable = (pad: PadSnapshot | null | undefined): pad is PadSnapshot =>
+                !!pad && pad.connected !== false && pad.mapping === "standard";
+            const poll = (): PadFrame => {
+                const list = readList();
+                let first: PadSnapshot | null = null;
+                let pressing: PadSnapshot | null = null;
+                for (let slot = 0; list && slot < list.length; slot++) {
+                    const pad = list[slot];
+                    if (!isReadable(pad)) continue;
+                    first ??= pad;
+                    if (!pressing && pad.buttons[0]!.pressed) pressing = pad;
+                }
+                const next = pressing ?? first;
+                frame.connected = next !== null;
+                frame.first = first ? first.index : -1;
+                if (next) {
+                    frame.index = next.index;
+                    frame.leftX = next.axes[0] ?? 0;
+                    frame.trigger = next.buttons[2]!.value;
+                    for (let index = 0; index < 3; index++) {
+                        const button = index < next.buttons.length ? next.buttons[index] : undefined;
+                        frame.held[index] = button && button.pressed ? 1 : 0;
+                    }
+                }
+                return frame;
+            };
+            return { poll };
+        }
+        async function main() {
+            const engine = await createEngine({});
+            const reader = createPadReader({ getGamepads: () => navigator.getGamepads() });
+            const frame = reader.poll();
+            if (!frame.connected || frame.first !== 1 || frame.index !== 2) throw new Error("the pressing pad");
+            if (frame.leftX !== 0.25 || frame.trigger !== 0.5) throw new Error("axes and trigger travel");
+            if (frame.held[0] !== 1 || frame.held[1] !== 0 || frame.held[2] !== 1) throw new Error("held buttons");
+        }
+    `;
+    const pad = (index: number, connected: boolean, pressing: boolean) => ({
+        index,
+        mapping: "standard",
+        connected,
+        axes: [0.25, 0, 0, 0],
+        buttons: [
+            { pressed: pressing, value: pressing ? 1 : 0 },
+            { pressed: false, value: 0 },
+            { pressed: pressing, value: pressing ? 0.5 : 0 },
+        ],
+    });
+    await runInNewContext(
+        ts.transpileModule(
+            `${source}
+main();`,
+            {
+                compilerOptions: {
+                    target: ts.ScriptTarget.ES2022,
+                    module: ts.ModuleKind.CommonJS,
+                },
+            },
+        ).outputText,
+        {
+            exports: {},
+            require: () => ({ createEngine: () => ({}) }),
+            navigator: {
+                getGamepads: () => [
+                    null,
+                    pad(0, false, true),
+                    pad(1, true, false),
+                    pad(2, true, true),
+                ],
+            },
+            Uint8Array,
+        },
+    );
+
+    const result = compileSource(source);
+    const tools = optionalNativeFixtureTools(false);
+    if (!tools) return t.skip("The native fixture compiler is unavailable.");
+    const output = resolve("artifacts/native-structural-pads");
+    mkdirSync(output, { recursive: true });
+    writeFileSync(join(output, "program.hpp"), result.cpp);
+    runGeneratedProgram(
+        tools,
+        "native-structural-pads",
+        `
+        #define main generated_main
+        #include "program.hpp"
+        #undef main
+        #include <cassert>
+        namespace bbl {
+            Engine create_engine(EngineOptions) { return {}; }
+            js::Array<js::Nullable<GamepadHandle>> platform_gamepads(Engine&) {
+                return {std::nullopt, GamepadHandle{7u, 0u}, GamepadHandle{8u, 1u}, GamepadHandle{9u, 2u}};
+            }
+            bool gamepad_connected(Engine&, GamepadHandle pad) { return pad.instance_id != 7u; }
+            std::string gamepad_mapping(Engine&, GamepadHandle) { return "standard"; }
+            double gamepad_index(Engine&, GamepadHandle pad) { return pad.index; }
+            js::Array<double> gamepad_axes(Engine&, GamepadHandle) { return {0.25, 0.0, 0.0, 0.0}; }
+            js::Array<GamepadButtonHandle> gamepad_buttons(Engine&, GamepadHandle pad) {
+                return {GamepadButtonHandle{pad, 0u}, GamepadButtonHandle{pad, 1u}, GamepadButtonHandle{pad, 2u}};
+            }
+            bool gamepad_button_pressed(Engine&, GamepadButtonHandle button) {
+                return button.gamepad.instance_id != 8u && button.index != 1u;
+            }
+            double gamepad_button_value(Engine& engine, GamepadButtonHandle button) {
+                return !gamepad_button_pressed(engine, button) ? 0.0 : button.index == 2u ? 0.5 : 1.0;
+            }
+        }
+        int main() { assert(generated_main() == 0); }
+        `,
+        { timeoutMs: 10000 },
     );
 });
 

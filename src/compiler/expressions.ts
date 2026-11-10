@@ -1,4 +1,4 @@
-import { documentEngine, requireWindowHost } from "./window-events.js";
+import { requireWindowHost, windowInputEngine } from "./window-events.js";
 import { ApplicationRealmRequired } from "./worker-modules.js";
 import { requireObservedPromise } from "./promise-observations.js";
 import { compileGpuAdapterCall } from "./gpu-adapter.js";
@@ -3827,13 +3827,7 @@ export class ExpressionLowerer {
                     "getGamepads is lowered on the navigator global.",
                 );
             this.context.expectArgumentCount(call, 0, 0);
-            // Before any engine exists (an input source built ahead of
-            // `createEngine`), an application realm reads the pads through
-            // its Window's engine, as its listeners do.
-            const engine =
-                (this.context.defaultEngine() === undefined
-                    ? documentEngine(this.context, call)
-                    : undefined) ?? this.context.requireDefaultEngine(call);
+            const engine = windowInputEngine(this.context, call);
             this.context.reachFeature("input:gamepad", call);
             this.context.reachJsData();
             return {

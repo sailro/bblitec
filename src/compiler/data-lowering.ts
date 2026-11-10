@@ -658,6 +658,7 @@ interface DataLoweringContext extends Pick<
     | "callbacks"
     | "compileStringLiteral"
     | "emitDiscardedValue"
+    | "emitOptionalResourceAssignment"
     | "emitExpressionAsStatement"
     | "compileNumber"
     | "castNumber"
@@ -13107,14 +13108,12 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         if (isJsonValue(value)) this.requireDocumentRecord(dataType);
         if (dataType.kind === "enummap" && value.dataType?.kind === "struct")
             this.requireEnumMapBinding(expression, dataType);
-        if (dataType.kind === "struct" && isOpaqueReference(value.dataType)) {
-            const demand = this.context.dataTypes.nativeRecordViewDemand(
+        if (dataType.kind === "struct" && isOpaqueReference(value.dataType))
+            this.context.dataTypes.requireNativeRecordView(
                 dataType.name,
                 value.dataType!,
                 expression,
             );
-            if (demand) throw new NativeRecordStorageRequired(demand);
-        }
         this.context.fail(
             expression,
             `Expression does not produce the expected data ${JSON.stringify(dataType)} value; received ${value.kind} ${value.dataType ? JSON.stringify(value.dataType) : "without a data type"}.`,
@@ -16402,6 +16401,24 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         const bound = ts.isIdentifier(left)
             ? this.context.bindings.lookupOptional(left)
             : undefined;
+        // A nullable resource local holds an object or nothing, so `??=`
+        // and `||=` store where its slot is empty, as its plain assignment
+        // stores.
+        if (
+            bound?.optionalStorageCpp !== undefined &&
+            expression.operatorToken.kind !==
+                ts.SyntaxKind.AmpersandAmpersandEqualsToken
+        ) {
+            this.emitGuardedStore(
+                `!(${optionalPresentCpp(bound.optionalStorageCpp)})`,
+                () =>
+                    void this.context.emitOptionalResourceAssignment(
+                        expression,
+                        bound,
+                    ),
+            );
+            return result(bound);
+        }
         const target =
             bound &&
             (bound.kind === "number" ||

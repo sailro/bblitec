@@ -80,7 +80,9 @@ before implementing: a source refusal does not mean RmlUi lacks the feature.
   cancellation never reaches cameras or retained-UI defaults. Focus loss fires touchcancel.
 - Gamepads follow SDL's device events. `getGamepads()` reads none until a gamepad user gesture (a standard button, a
   trigger, or a stick past half its travel); then gamepadconnected fires at the Window for each connected pad, and
-  later for each new one. gamepaddisconnected fires for an announced pad's removal. Test passes drop gamepad input.
+  later for each new one. gamepaddisconnected fires for an announced pad's removal. Test passes drop gamepad input. A
+  pad reads `index`, `connected`, `mapping` (always "standard"), `axes` and `buttons` (`pressed`, `value`: a trigger's
+  travel, 1 for another button down); an interface declaring those members holds the pad itself.
 - An event's `target`/`currentTarget` narrowed by `instanceof` to an element is that retained element; writes through it
   lower as the element's own.
 - Dynamically created scripts are retained, never rendered: an external script fails to load (a task fires `error`

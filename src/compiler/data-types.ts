@@ -2290,6 +2290,41 @@ export class DataTypeRegistry {
         return symbol && this.checker.getDeclaredTypeOfSymbol(symbol);
     }
 
+    /**
+     * The part of a checked type that the native owner stored as `actual`
+     * is: the type itself, or the element of the list it is (a host list
+     * of owners sinks element by element).
+     */
+    private nativeOwnerType(
+        checked: ts.Type,
+        actual: DataType,
+        expression: ts.Expression,
+    ): ts.Type | undefined {
+        for (const part of presentMembers(checked)) {
+            const mapped = this.fromStoredTsType(part, expression);
+            // A DOM event target is the object itself, whatever its
+            // declared interface maps to.
+            if (
+                mapped &&
+                (dataTypesEqual(mapped, actual) ||
+                    actual.kind === "event-target" ||
+                    (actual.kind === "handle" &&
+                        (mapped.kind === "struct" ||
+                            (mapped.kind === "handle" &&
+                                mapped.handle === actual.handle))))
+            )
+                return part;
+            const element =
+                mapped?.kind === "vector" || mapped?.kind === "span"
+                    ? arrayElementType(this.checker, part)
+                    : undefined;
+            const owner =
+                element && this.nativeOwnerType(element, actual, expression);
+            if (owner) return owner;
+        }
+        return undefined;
+    }
+
     /** A checked structural projection retains the represented native owner. */
     public nativeRecordViewDemand(
         name: string,
@@ -2305,22 +2340,13 @@ export class DataTypeRegistry {
         )
             return undefined;
         const expression = unwrapExpression(node);
-        const checked = this.checker.getNonNullableType(
+        const checked = this.nativeOwnerType(
             this.checker.getTypeAtLocation(node),
+            actual,
+            expression,
         );
-        const mapped = this.fromStoredTsType(checked, expression);
-        // A DOM event target is the object itself, whatever its declared
-        // interface maps to.
         if (
-            !mapped ||
-            (!dataTypesEqual(mapped, actual) &&
-                actual.kind !== "event-target" &&
-                !(
-                    actual.kind === "handle" &&
-                    (mapped.kind === "struct" ||
-                        (mapped.kind === "handle" &&
-                            mapped.handle === actual.handle))
-                )) ||
+            !checked ||
             !this.checker.isTypeAssignableTo(
                 checked,
                 this.checker.getNonNullableType(source.type),
@@ -2331,6 +2357,16 @@ export class DataTypeRegistry {
             ...source,
             native: { type: checked, node: expression, storage: actual },
         };
+    }
+
+    /** Demands the view `nativeRecordViewDemand` finds; returns where there is none. */
+    public requireNativeRecordView(
+        name: string,
+        actual: DataType,
+        node: ts.Node,
+    ): void {
+        const demand = this.nativeRecordViewDemand(name, actual, node);
+        if (demand) throw new NativeRecordStorageRequired(demand);
     }
 
     /**

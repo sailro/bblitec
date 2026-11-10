@@ -3,7 +3,9 @@ import ts from "typescript";
 import {
     dataTypesEqual,
     doubleLiteral,
+    isNativeStructuralView,
     isUndefinedDataType,
+    presentDataType,
     type DataType,
 } from "../data-types.js";
 import {
@@ -492,6 +494,16 @@ function convertedElementsCopy(
     element: DataType,
     node: ts.Node,
 ): string {
+    // Native owners listed as the record type that views them are stored
+    // as the owners: no element converts.
+    const owner = presentDataType(element);
+    const record = presentDataType(dataType.element);
+    if (owner && record?.kind === "struct" && isNativeStructuralView(owner))
+        lowerer.context.dataTypes.requireNativeRecordView(
+            record.name,
+            owner,
+            node,
+        );
     const array = lowerer.convertedExpression(node);
     const unaliased = unaliasedValue(lowerer, value, node);
     const lent =

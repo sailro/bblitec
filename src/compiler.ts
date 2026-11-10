@@ -23,6 +23,7 @@ import {
 import {
     belongsToEntryEngine,
     isEngineScopedHandleKind,
+    isInputSnapshotHandleKind,
 } from "./compiler/data-types/handles.js";
 import {
     forEachAnalysisNode,
@@ -135,6 +136,7 @@ import {
     compileWindowIdentity,
     emitWindowLocationAssignment,
     nullableResourceEngine,
+    windowInputEngine,
 } from "./compiler/window-events.js";
 import { RuntimeSearchParamsRequired } from "./compiler/search-params.js";
 import { featureRequiresApplicationRealm } from "./feature-activation.js";
@@ -2339,6 +2341,7 @@ class Compiler implements LoweringServices {
             mappedHandle?.kind === "handle" &&
             (mappedHandle.handle === "ui-element" ||
                 mappedHandle.handle === "pointer-drag" ||
+                isInputSnapshotHandleKind(mappedHandle.handle) ||
                 (this.options.workers &&
                     mappedHandle.handle === "offscreen-canvas"))
         ) {
@@ -10197,6 +10200,9 @@ class Compiler implements LoweringServices {
             // A UI element no carrier names belongs to the Window document.
             if (value.kind === "ui-element")
                 return this.ui.documentEngine(node);
+            // So does a pad or one of its buttons to the Window's input.
+            if (value.kind === "gamepad" || value.kind === "gamepad-button")
+                return windowInputEngine(this, node);
             this.fail(
                 node,
                 `A ${value.kind} value is not associated with an engine.`,
