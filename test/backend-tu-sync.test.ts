@@ -248,7 +248,7 @@ test("diagnostic input resumes across renderer restarts", () => {
     assert.match(replay, /frame == last_frame_/);
     assert.match(
         replay,
-        /unsigned int& mouse_buttons_ = engine\.input_replay_mouse_buttons;/,
+        /unsigned int& held = engine\.input_replay_mouse_buttons;/,
     );
 });
 
