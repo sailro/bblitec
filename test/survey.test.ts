@@ -167,15 +167,18 @@ test("a survey leaves the census it has found at each restart", () => {
             partial: (found) => partial.push(found),
         },
     );
-    assert.equal(partial.length, 1);
-    assert.equal(partial[0]!.complete, false);
+    const restarts = partial.filter((found) =>
+        found.terminal?.startsWith("Survey still running: restart"),
+    );
+    assert.equal(restarts.length, 1);
+    assert.equal(restarts[0]!.complete, false);
     assert.match(
-        partial[0]!.terminal!,
+        restarts[0]!.terminal!,
         /^Survey still running: restart after attempt 1: /,
     );
     assert.ok(report.complete && report.refusals.length > 0);
     assert.deepEqual(
-        partial[0]!.refusals.map((refusal) => refusal.site.line),
+        restarts[0]!.refusals.map((refusal) => refusal.site.line),
         report.refusals.map((refusal) => refusal.site.line),
     );
 });
@@ -183,9 +186,13 @@ test("a survey leaves the census it has found at each restart", () => {
 test("a survey reports each plan's demands and what ended it", () => {
     // Three record types would each restart the program once; the plan
     // after the first restart meets the other two and lowers to the end.
+    // The plan also meets the refusal past them, which no attempt had
+    // reached when it ran.
     const lines: string[] = [];
+    const partial: SurveyReport[] = [];
     const { report } = surveySource(
         `
+        declare function unknownHostCall(): number;
         interface A { a: number }
         interface B { b: number }
         interface C { c: number }
@@ -198,18 +205,38 @@ test("a survey reports each plan's demands and what ended it", () => {
         second = b('{"b":2}');
         let third: C = { c: 1 };
         third = c('{"c":2}');
+        const frame = unknownHostCall();
         console.log(first.a + second.b + third.c);
     `,
         { fileName: resolve("survey-plan.ts") },
-        { report: (line) => lines.push(line), intervalMs: 0 },
+        {
+            report: (line) => lines.push(line),
+            intervalMs: 0,
+            partial: (found) => partial.push(found),
+        },
     );
     assert.equal(report.complete, true);
     const plans = lines.filter((line) => line.startsWith("Survey plan"));
     assert.equal(plans.length, 1, plans.join(" | "));
     assert.match(
         plans[0]!,
-        /^Survey plan after attempt 1: 2 demands added in \d+ s; ended by the end of the program$/,
+        /^Survey plan after attempt 1: 2 demands added in \d+ s; ended by the end of the program; \d+ statement lowerings, \d+ left, 1 refused$/,
     );
+    const planned = partial.find((found) =>
+        found.terminal?.startsWith("Survey still running: plan"),
+    );
+    assert.equal(planned?.refusals.length, 0);
+    assert.deepEqual(
+        planned?.plan?.refusals.map((refusal) => refusal.site.line),
+        [15],
+    );
+    // The attempt that lowers to the end meets it itself; its census is
+    // the strict attempts' alone.
+    assert.deepEqual(
+        report.refusals.map((refusal) => refusal.site.line),
+        [15],
+    );
+    assert.equal(report.plan, undefined);
 });
 
 test("a member call through a refused binding is a cascade of its declaration", () => {

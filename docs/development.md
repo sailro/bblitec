@@ -139,9 +139,10 @@ Commands follow `npm run scene --`. Targets are registry IDs, local TypeScript o
 `npm run scene -- survey <entry.ts>` writes `artifacts/survey/<directory>-<stem>/`: `census.json` (every refusal with
 site, message class, function and cascades; no tree) and `api/report.html` (referenced pinned declarations). The census
 is rewritten at each restart that went further than the last (`complete: false`), so a survey stopped early is still
-read. Group by shared capability and probe source shapes before implementing. The compiler's `--coverage
-<coverage.json>` (with `--out` or `--survey`) records statement-level retained, refused and rolled-back lowering; it
-does not prove native support.
+read; its `plan` is what the last plan between attempts met past their reach, provisional until an attempt lowers it.
+Group by shared capability and probe source shapes before implementing. The compiler's `--coverage <coverage.json>`
+(with `--out` or `--survey`) records statement-level retained, refused and rolled-back lowering; it does not prove
+native support.
 
 ### Required files
 

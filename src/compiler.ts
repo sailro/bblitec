@@ -880,7 +880,13 @@ function lowerSourceApplication(
                 for (const replay of planner.replays) acceptReplay(replay);
                 const added = addPlanned(planner);
                 const spent = performance.now() - began;
-                survey.planned(added, spent, planner.ended());
+                survey.planned(
+                    input.checker,
+                    added,
+                    spent,
+                    planner.ended(),
+                    planner.met,
+                );
                 unpaid = added * strict > spent ? 0 : unpaid + 1;
                 owed = unpaid === 0 ? 0 : spent * 2 ** (unpaid - 1);
             }

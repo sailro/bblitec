@@ -20,6 +20,7 @@ import {
     surveySource,
     compileSource,
 } from "./compiler.js";
+import type { SurveyReport } from "./compiler/survey.js";
 import {
     composeBillboardPickingShader,
     composeCloudPickingShader,
@@ -705,15 +706,20 @@ function writeSurvey(
     // A survey of a large entry runs for hours: it says where it is.
     // A survey stopped early is still read: each restart leaves the census
     // of the attempt that went furthest, which a restart nearer the start
-    // of the program does not replace.
-    let furthest = -1;
+    // of the program does not replace, beside what the last plan met.
+    let furthest: SurveyReport | undefined;
     const { report } = surveySource(source, compileOptions, {
         report: (line) => console.error(line),
         intervalMs: 5 * 60 * 1000,
         partial: (found) => {
-            if (found.statements.attempted < furthest) return;
-            furthest = found.statements.attempted;
-            writeJsonRecord(censusPath, found);
+            if (
+                !furthest ||
+                found.statements.attempted >= furthest.statements.attempted
+            )
+                furthest = found;
+            else if (found.plan) furthest = { ...furthest, plan: found.plan };
+            else return;
+            writeJsonRecord(censusPath, furthest);
         },
     });
     writeJsonRecord(censusPath, report);

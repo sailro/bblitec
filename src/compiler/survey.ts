@@ -25,6 +25,7 @@ import {
     storageRequestSite,
 } from "./replay-storage.js";
 import { StorageDemand } from "./storage-demand.js";
+import type { PlanCensus } from "./storage-demand-planner.js";
 import {
     rootExpression,
     sourceFunctionName,
@@ -73,6 +74,17 @@ export interface SurveyReport {
     statements: { attempted: number; refused: number };
     refusals: SurveyRefusal[];
     classes: SurveyClass[];
+    /**
+     * In the census a running survey leaves: what the last plan between
+     * attempts met, lowering past their reach -- the statements it lowered,
+     * those it left to the next attempt (they read what a demand or a
+     * refusal took away), and its refusals. Provisional: the storage a
+     * later attempt replays with may lower a statement differently.
+     */
+    plan?: {
+        statements: { attempted: number; left: number; refused: number };
+        refusals: SurveyRefusal[];
+    };
 }
 
 /** What a surveyed statement lowering needs from its context. */
@@ -164,6 +176,8 @@ export class SurveyCollector {
     private restart: string | undefined;
     /** @unjournaled The statement lowering began last: where a restart's demand rose. */
     private lowering: ts.Statement | undefined;
+    /** @unjournaled The last plan's census and the statements it left (`SurveyReport.plan`). */
+    private plan: { census: Attempt; left: number } | undefined;
 
     public constructor(private readonly progress?: SurveyProgress) {}
 
@@ -198,13 +212,36 @@ export class SurveyCollector {
      */
     public restarted(cause: unknown): void {
         this.restart = describeStop(cause, this.lowering);
-        this.progress?.report(
-            `Survey restart after attempt ${this.attempts}: ${this.restart}`,
-        );
-        this.progress?.partial?.({
+        const restart = `restart after attempt ${this.attempts}: ${this.restart}`;
+        this.progress?.report(`Survey ${restart}`);
+        this.leavePartial(restart);
+    }
+
+    /** Hands the census as it stands, marked incomplete, with what the last plan met. */
+    private leavePartial(running: string): void {
+        if (!this.progress?.partial) return;
+        const planned =
+            this.plan && SurveyCollector.refusalsOf([this.plan.census]);
+        this.progress.partial({
             ...this.report(),
             complete: false,
-            terminal: `Survey still running: restart after attempt ${this.attempts}: ${this.restart}`,
+            terminal: `Survey still running: ${running}`,
+            ...(this.plan && planned
+                ? {
+                      plan: {
+                          statements: {
+                              attempted: this.plan.census.attempted,
+                              left: this.plan.left,
+                              refused: planned.reduce(
+                                  (count, refusal) =>
+                                      count + refusal.occurrences,
+                                  0,
+                              ),
+                          },
+                          refusals: planned,
+                      },
+                  }
+                : {}),
         });
     }
 
@@ -213,16 +250,29 @@ export class SurveyCollector {
      * how long it lowered, and what ended it.
      */
     public planned(
+        checker: ts.TypeChecker,
         added: number,
         milliseconds: number,
         ended: { cause: unknown; statement?: ts.Statement },
+        met: PlanCensus,
     ): void {
+        const census: Attempt = {
+            attempted: met.lowered,
+            refusals: new Map(),
+            declarations: new Map(),
+        };
+        for (const { statement, error } of met.refused)
+            this.record(census, checker, statement, error);
+        this.plan = { census, left: met.left };
+        const ending = `plan after attempt ${this.attempts}: ${added} demands added in ${Math.round(milliseconds / 1000)} s; ended by ${
+            ended.cause === undefined
+                ? "the end of the program"
+                : describeStop(ended.cause, ended.statement)
+        }`;
         this.progress?.report(
-            `Survey plan after attempt ${this.attempts}: ${added} demands added in ${Math.round(milliseconds / 1000)} s; ended by ` +
-                (ended.cause === undefined
-                    ? "the end of the program"
-                    : describeStop(ended.cause, ended.statement)),
+            `Survey ${ending}; ${met.lowered} statement lowerings, ${met.left} left, ${met.refused.length} refused`,
         );
+        this.leavePartial(ending);
     }
 
     /** Runs one realm's compile attempt, replacing the census a previous attempt of that realm left. */
@@ -346,11 +396,10 @@ export class SurveyCollector {
         return symbol ? attempt.declarations.get(symbol) : undefined;
     }
 
-    public report(terminal?: Error): SurveyReport {
+    /** The refusals of `attempts` merged by message, in source order. */
+    private static refusalsOf(attempts: Iterable<Attempt>): SurveyRefusal[] {
         const merged = new Map<string, Census>();
-        let attempted = 0;
-        for (const attempt of this.realms.values()) {
-            attempted += attempt.attempted;
+        for (const attempt of attempts)
             for (const [key, census] of attempt.refusals) {
                 const existing = merged.get(key);
                 if (!existing) {
@@ -364,8 +413,7 @@ export class SurveyCollector {
                         existing.rolledBack.add(statement);
                 }
             }
-        }
-        const refusals = [...merged.values()]
+        return [...merged.values()]
             .map(({ rolledBack, ...refusal }): SurveyRefusal => ({
                 ...refusal,
                 statements: rolledBack.size,
@@ -376,6 +424,13 @@ export class SurveyCollector {
                     a.site.line - b.site.line ||
                     a.site.column - b.site.column,
             );
+    }
+
+    public report(terminal?: Error): SurveyReport {
+        let attempted = 0;
+        for (const attempt of this.realms.values())
+            attempted += attempt.attempted;
+        const refusals = SurveyCollector.refusalsOf(this.realms.values());
         const classes = new Map<string, SurveyClass>();
         for (const refusal of refusals) {
             const entry = classes.get(refusal.class) ?? {
