@@ -803,6 +803,16 @@ function valueProduct(
             )
             .join(", ")}}`;
     }
+    // A stored number tuple of the same arity gives each lane: a callback's
+    // `[key, value]` where a Map's entries are expected.
+    if (
+        value.dataType?.kind === "tuple" &&
+        value.dataType.arity === dataType.elements.length &&
+        dataType.elements.every((element) => element.kind === "number")
+    ) {
+        lowerer.context.reachJsData();
+        return `([&]() { const auto lanes = ${value.cpp}; return ${lowerer.context.dataTypes.cppType(dataType)}{${dataType.elements.map((_element, index) => `lanes[${index}]`).join(", ")}}; }())`;
+    }
     return value.dataType && dataTypesEqual(value.dataType, dataType)
         ? value.cpp
         : undefined;

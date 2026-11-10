@@ -3875,6 +3875,25 @@ check(
 `,
 );
 
+// A callback's `[key, value]` of two numbers is a stored number tuple; a
+// Map built from the mapped list takes each as an entry.
+check(
+    "map-built-from-number-entries-a-callback-returns",
+    `
+    interface HouseRun { houseIndex: number; run: number }
+    const flag = Math.random() >= 0;
+    const records: HouseRun[] = [{ houseIndex: flag ? 4 : 0, run: 0 }, { houseIndex: 6, run: 1 }];
+    const byIndex = new Map(records.map((house) => [house.houseIndex, house.houseIndex]));
+    if (byIndex.size !== 2 || byIndex.get(4) !== 4 || byIndex.get(6) !== 6 || byIndex.get(5) !== undefined) throw new Error("same");
+    const runOf = new Map(records.map((house) => [house.houseIndex, house.run] as const));
+    const named = new Map<string, HouseRun>(records.map((house) => ["h" + house.houseIndex, house]));
+    if (runOf.get(6) !== 1 || runOf.get(4) !== 0 || named.get("h4")!.run !== 0 || named.size !== 2) throw new Error("entries");
+    let sum = 0;
+    for (const [index, run] of runOf) sum += index * 10 + run;
+    if (sum !== 101) throw new Error("iterated " + sum);
+`,
+);
+
 // One arm names a single literal, another a set of them, both optional:
 // the field stores every arm's literals with the one empty state.
 check(
