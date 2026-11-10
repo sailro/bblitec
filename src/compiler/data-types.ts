@@ -7024,7 +7024,7 @@ export class DataTypeRegistry {
                     )
                         mapped = nullable;
                     // Arms storing string literals, some with that empty
-                    // state (`structure?: "house"` in one arm, another
+                    // state (`shape?: "box"` in one arm, another
                     // literal set in the next), store every arm's literals
                     // with it.
                     const present = literalStrings.filter(
