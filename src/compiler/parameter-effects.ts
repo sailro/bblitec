@@ -1351,44 +1351,112 @@ function parameterLeftIntact(
         return (
             effects.analyzable &&
             !effects.deferred &&
-            effects.uses.every((use) => {
-                switch (use.kind) {
-                    case "write":
-                    case "rebind":
-                    case "stored":
-                    case "returned":
-                    case "escaped":
-                        return false;
-                    case "method":
-                        return (
-                            readOnlyDataMethods.has(use.method) &&
-                            !storingDataMethods.has(use.method)
-                        );
-                    case "argument": {
-                        if (use.spread || ts.isNewExpression(use.call))
-                            return false;
-                        const target = callTarget(checker, use.call);
-                        return target.kind === "bodies"
-                            ? everyArgumentBody(
-                                  use.call,
-                                  target,
-                                  use.index,
-                                  parameterLeftIntact,
-                              )
-                            : target.kind === "library" &&
-                                  libraryArgumentEffect(
-                                      checker,
-                                      use.call,
-                                      use.index,
-                                  ) === "reads" &&
-                                  keptArguments(checker, use.call).length === 0;
-                    }
-                    default:
-                        return true;
-                }
-            })
+            effects.uses.every((use) => useLeavesIntact(checker, use))
         );
     });
+}
+
+/** Whether one use neither changes a parameter's object nor keeps it. */
+function useLeavesIntact(checker: ts.TypeChecker, use: ParameterUse): boolean {
+    switch (use.kind) {
+        case "write":
+        case "rebind":
+        case "stored":
+        case "returned":
+        case "escaped":
+            return false;
+        case "method":
+            return (
+                readOnlyDataMethods.has(use.method) &&
+                !storingDataMethods.has(use.method)
+            );
+        case "argument": {
+            if (use.spread || ts.isNewExpression(use.call)) return false;
+            const target = callTarget(checker, use.call);
+            return target.kind === "bodies"
+                ? everyArgumentBody(
+                      use.call,
+                      target,
+                      use.index,
+                      parameterLeftIntact,
+                  )
+                : target.kind === "library" &&
+                      libraryArgumentEffect(checker, use.call, use.index) ===
+                          "reads" &&
+                      keptArguments(checker, use.call).length === 0;
+        }
+        default:
+            return true;
+    }
+}
+
+/**
+ * Whether the objects a parameter binding holds are still as the call's
+ * argument gave them where `read` runs: `read` sits in the function's own
+ * body outside any loop, and every use that changes or keeps one of them
+ * (`parameterLeftIntact`'s) runs after it. A use before it in the source
+ * runs first, as may one in a hoisted function or in a closure created
+ * before it.
+ */
+function parameterIntactBefore(
+    checker: ts.TypeChecker,
+    fn: EffectFunction,
+    binding: ts.Identifier,
+    read: ts.Node,
+): boolean {
+    const effects = parameterEffects(checker, fn, binding);
+    if (
+        !effects.analyzable ||
+        effects.deferred ||
+        ts.findAncestor(
+            read,
+            (node) =>
+                ts.isFunctionLike(node) || ts.isIterationStatement(node, false),
+        ) !== fn
+    )
+        return false;
+    const runsAfter = (node: ts.Node): boolean =>
+        node.pos >= read.end || (node.pos <= read.pos && node.end >= read.end);
+    return effects.uses.every((use) => {
+        if (useLeavesIntact(checker, use)) return true;
+        if (!use.nested) return runsAfter(use.node);
+        // The closure holding the use, created in the function's own body.
+        let closure: ts.Node | undefined;
+        for (
+            let node: ts.Node | undefined = use.node;
+            node && node !== fn;
+            node = node.parent
+        )
+            if (ts.isFunctionLike(node)) closure = node;
+        return (
+            closure !== undefined &&
+            !ts.isFunctionDeclaration(closure) &&
+            closure.pos >= read.end
+        );
+    });
+}
+
+/**
+ * Whether `name` reads a parameter that took its own object (`objects`)
+ * where that object is still as the call's argument gave it
+ * (`parameterIntactBefore`): the argument's facts describe it there.
+ */
+export function readsIntactParameterObject(
+    checker: ts.TypeChecker,
+    objects: ReadonlySet<ts.ParameterDeclaration>,
+    name: ts.Node,
+): boolean {
+    const parameter = ts.isIdentifier(name)
+        ? declaredSymbol(checker, name)?.valueDeclaration
+        : undefined;
+    return (
+        parameter !== undefined &&
+        ts.isParameter(parameter) &&
+        ts.isIdentifier(parameter.name) &&
+        objects.has(parameter) &&
+        isEffectFunction(parameter.parent) &&
+        parameterIntactBefore(checker, parameter.parent, parameter.name, name)
+    );
 }
 
 const visiblyWrittenMemo = new PredicateMemo(false);

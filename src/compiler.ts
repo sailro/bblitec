@@ -306,6 +306,7 @@ import {
     callArgumentIsReadOnly,
     parameterIsReadOnly,
     parameterWrittenSlots,
+    readsIntactParameterObject,
 } from "./compiler/parameter-effects.js";
 import { promiseReactionOf } from "./compiler/promises.js";
 import { recordComponents } from "./compiler/record-components.js";
@@ -5951,6 +5952,42 @@ class Compiler implements LoweringServices {
         };
     }
 
+    /**
+     * The literal a call's argument gave a member of a parameter's own
+     * object, where the read runs before anything in the function changes
+     * or keeps that object (`readsIntactParameterObject`): the argument's
+     * facts still describe it there, and nowhere after.
+     */
+    private argumentLiteralMember(expression: ts.Expression): unknown {
+        const keys: string[] = [];
+        let root: ts.Node = expression;
+        while (ts.isPropertyAccessExpression(root)) {
+            keys.unshift(root.name.text);
+            // A member the compiler projects is read where its source is.
+            root =
+                root.expression.pos < 0
+                    ? ts.getOriginalNode(root.expression)
+                    : root.expression;
+        }
+        if (
+            keys.length === 0 ||
+            !ts.isIdentifier(root) ||
+            !readsIntactParameterObject(
+                this.checker,
+                this.parameterObjects,
+                root,
+            )
+        )
+            return undefined;
+        let fact = this.bindings.lookupOptional(root);
+        for (const key of keys)
+            fact =
+                fact && this.bindings.recordPropertiesAreCurrent(fact)
+                    ? fact.recordProperties?.[key]
+                    : undefined;
+        return fact && this.currentStaticLiteral(fact, expression);
+    }
+
     /** Required descriptors may read closed helpers or unwritten module constants. */
     public resolveStaticLiteral(expression: ts.Expression): ts.Expression {
         const resolved =
@@ -5963,7 +6000,9 @@ class Compiler implements LoweringServices {
             ts.isElementAccessExpression(resolved)
         ) {
             const carried = this.compileValue(resolved);
-            value = this.currentStaticLiteral(carried, resolved);
+            value =
+                this.currentStaticLiteral(carried, resolved) ??
+                this.argumentLiteralMember(resolved);
             const local =
                 value === undefined && ts.isIdentifier(resolved)
                     ? this.stableLocalInitializer(resolved)
