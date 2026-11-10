@@ -4,6 +4,7 @@ import { absenceOf, isAbsentValue } from "./values/model.js";
 import type { DataLowerer } from "./data-lowering.js";
 import type { LoweringServices } from "./lowering-services.js";
 import { optionalPresentCpp, optionalValueCpp, type Value } from "./types.js";
+import { packagedBodyRead } from "./static-fetch.js";
 import { ApplicationRealmRequired } from "./worker-modules.js";
 
 type HttpContext = Pick<LoweringServices, "unwrap" | "libraryGlobal">;
@@ -336,11 +337,28 @@ export function compileHttpResponseMethod(
               }
             : result;
     }
-    if (method === "arrayBuffer")
-        return lowerer.leafValue(
+    if (method === "arrayBuffer") {
+        const result = lowerer.leafValue(
             `bbl::pal::http_response_buffer(${owner.cpp})`,
             { kind: "promise", result: { kind: "arraybuffer" } },
         );
+        // A packaged response's fresh read is its file's bytes.
+        return owner.packagedBodySource &&
+            result.kind === "promise" &&
+            result.promiseResult?.kind === "data"
+            ? {
+                  ...result,
+                  promiseResult: {
+                      ...result.promiseResult,
+                      fetchedBytes: packagedBodyRead(
+                          lowerer.context,
+                          call,
+                          owner.packagedBodySource,
+                      ),
+                  },
+              }
+            : result;
+    }
     if (method === "json") {
         lowerer.context.reachFeature("data:json", call);
         return lowerer.leafValue(

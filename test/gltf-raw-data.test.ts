@@ -111,3 +111,66 @@ test("a public file's fetched bytes load from that file and add their root", () 
         [["gltf", resolve(app, "public/assets/model.gltf")]],
     );
 });
+
+test("an application realm's packaged response loads the file its bytes come from", () => {
+    // The realm fetches at run time; the response it owns still serves one
+    // packaged file, whose fresh read the loader packages as the document.
+    const app = resolve(output, "realm-app");
+    mkdirSync(resolve(app, "public/assets"), { recursive: true });
+    mkdirSync(resolve(app, "src/entry"), { recursive: true });
+    copyFileSync(
+        resolve(output, "embedded.gltf"),
+        resolve(app, "public/assets/model.gltf"),
+    );
+    const entry = (load: string): string => `
+        import { addToScene, createEngine, createSceneContext, loadGltf, registerScene, startEngine, type TransformNode } from "@babylonjs/lite";
+
+        async function main() {
+            const canvas = document.getElementById("renderCanvas") as HTMLCanvasElement;
+            const engine = await createEngine(canvas);
+            const scene = createSceneContext(engine);
+            const response = await fetch("/assets/model.gltf");
+            if (!response.ok) throw new Error("missing");
+            ${load}
+            addToScene(scene, loaded.entities[0] as TransformNode);
+            await registerScene(scene);
+            await startEngine(engine);
+            canvas.dataset.ready = "true";
+        }
+        void main().catch((error) => {
+            document.body.dataset.failure = String(error);
+        });
+    `;
+    const options = {
+        fileName: resolve(app, "src/entry/main.ts"),
+        publicDir: resolve(app, "public"),
+    };
+    const result = compileSource(
+        entry(
+            "const loaded = await loadGltf(engine, await response.arrayBuffer());",
+        ),
+        options,
+    );
+    assert.ok(result.manifest.features.includes("platform:window"));
+    assert.ok(
+        result.manifest.assets.some(
+            ({ kind, source }) =>
+                kind === "gltf" &&
+                resolve(app, "src/entry", source) ===
+                    resolve(app, "public/assets/model.gltf"),
+        ),
+    );
+    assert.match(result.cpp, /bbl::pal::fetch_packaged\(/);
+    assert.doesNotMatch(result.cpp, /http_response_buffer/);
+    // Bytes a binding holds can change before the load reads them.
+    assert.throws(
+        () =>
+            compileSource(
+                entry(
+                    "const bytes = await response.arrayBuffer(); const loaded = await loadGltf(engine, bytes);",
+                ),
+                options,
+            ),
+        /loadGltf raw data must be the arrayBuffer\(\) of a generation-time fetch response/,
+    );
+});

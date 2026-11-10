@@ -230,6 +230,10 @@ Backends per platform: [backends](backends.md#backend-comparison). Commands: [An
 `queue.writeTexture` write `createTexture2DFromPixels` textures; other sources, fractional or out-of-bounds regions, and
 texels a sprite atlas copied throw. Other runtime texture uploads and 3D textures are unsupported.
 
+`loadGltf(engine, await response.arrayBuffer())` loads the one packaged file the fetch serves (GLB or `data:` URIs), in
+an application realm too; bytes held in a binding refuse. `decodeAudioData` of such a read links that file's decoder
+alone.
+
 A function returning `loadGltf(engine, new Blob(...))` over closed data (typed arrays, `JSON.stringify`, `btoa`), its
 engine read nowhere else, runs at generation; its call loads the document it built, packaged.
 
