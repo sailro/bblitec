@@ -3122,6 +3122,24 @@ check(
 );
 
 check(
+    "a method returning this returns the receiver its call read once",
+    `
+    class Tally { count = 0; bump(): void { this.count++; } self(): Tally { return this; } }
+    let reads = 0;
+    const tallies = new Map<number, Tally>([[1, new Tally()]]);
+    function pick(key: number): Tally { reads++; return tallies.get(key)!; }
+    const same = tallies.get(1)!.self();
+    tallies.get(1)!.bump();
+    if (same !== tallies.get(1) || same.count !== 1) throw new Error("self");
+    const again = pick(1).self();
+    if (again !== same || reads !== 1) throw new Error("receiver read once");
+    interface Owner { tally: Tally }
+    const owners: Owner[] = [{ tally: same }];
+    if (owners[0]!.tally.self() !== same || owners[0]!.tally.self().count !== 1) throw new Error("field receiver");
+    `,
+);
+
+check(
     "a class handing out this is one object under its interface view",
     `
     interface Tool { activate(): void }

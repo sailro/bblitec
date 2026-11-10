@@ -2645,7 +2645,15 @@ export class BindingScopes {
                   this.context.dataLowerer.leafValue(name, dataType),
                   value,
               );
-        return { ...receiver, cpp: name, nativeCaptures: [capture] };
+        // The binding owns the instance: its owned spelling is its name,
+        // not the expression it was read from.
+        const pinned = writable<Value>({
+            ...receiver,
+            cpp: name,
+            nativeCaptures: [capture],
+        });
+        delete pinned.ownedCpp;
+        return pinned;
     }
 
     /**
