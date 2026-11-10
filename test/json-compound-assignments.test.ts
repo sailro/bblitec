@@ -162,3 +162,32 @@ check(
     if(assigned!==2||value.n!==9||calls!==1)throw new Error("assigned logical result");
 `,
 );
+
+check(
+    "names-holding-document-values",
+    `
+    const data = JSON.parse('{"n":5,"text":"x","numericText":"4","nil":null,"list":[1,2,3]}') as {
+        n: number; text: string; numericText: number; nil: number; missing: number; list: number[];
+    };
+    function tally(): string {
+        let n = data.n;
+        n += 3;
+        n -= 2;
+        n *= 4;
+        let text = data.text;
+        text += 2;
+        let numericText = data.numericText;
+        numericText += 3;
+        let nil = data.nil;
+        nil += 4;
+        let missing = data.missing;
+        missing -= 1;
+        let sum = data.n;
+        for (const item of data.list) sum += item;
+        const added = (n += 1);
+        return \`\${n}|\${text}|\${String(numericText)}|\${nil}|\${Number.isNaN(missing)}|\${sum}|\${added}|\${data.n}\`;
+    }
+    const out = tally();
+    if (out !== "25|x2|43|4|true|11|25|5") throw new Error(out);
+`,
+);

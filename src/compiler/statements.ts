@@ -4766,7 +4766,7 @@ export class StatementLowerer {
                     });
                 } else if (
                     (target.kind === "data" || target.kind === "promise") &&
-                    operator === "=" &&
+                    (operator === "=" || isJsonValue(target)) &&
                     context.dataLowerer.emitAssignment(unwrapped)
                 ) {
                     return;

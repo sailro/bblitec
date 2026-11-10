@@ -779,6 +779,20 @@ interface JsonAssignmentTarget {
     readonly key: string;
 }
 
+/** The document a dynamic compound assignment reads, and the statement storing its result. */
+interface JsonCompoundPlace {
+    readonly read: string;
+    store(next: string): string;
+}
+
+/** A document's property as the place of a compound assignment. */
+function jsonPropertyPlace(target: JsonAssignmentTarget): JsonCompoundPlace {
+    return {
+        read: `${target.owner}.read_property(${target.key})`,
+        store: (next) => `${target.owner}.set(${target.key}, ${next});`,
+    };
+}
+
 /** A Map/Record entry with a number value, absent until set. */
 interface EntryUpdatePlace {
     kind: "entry";
@@ -927,15 +941,11 @@ export class DataLowerer {
             if (!operator) return undefined;
             const left = this.context.unwrap(expression.left);
             return this.withStoreKeysHeld(expression, () => {
-                const target =
-                    ts.isPropertyAccessExpression(left) ||
-                    ts.isElementAccessExpression(left)
-                        ? this.jsonAssignmentTarget(left)
-                        : undefined;
-                return target
+                const place = this.jsonCompoundPlace(left);
+                return place
                     ? this.emitJsonCompoundAssignment(
                           expression,
-                          target,
+                          place,
                           operator,
                       )
                     : this.compileCompoundStoreValue(expression, left);
@@ -16518,10 +16528,32 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         return { owner: owner.cpp, key };
     }
 
-    /** Keep the selected owner, key and old primitive ahead of the right side. */
+    /**
+     * Where a compound assignment to a document stores: a document's
+     * property, or a name holding a document (a local a parsed number
+     * initialized).
+     */
+    private jsonCompoundPlace(
+        left: ts.Expression,
+    ): JsonCompoundPlace | undefined {
+        if (
+            ts.isPropertyAccessExpression(left) ||
+            ts.isElementAccessExpression(left)
+        ) {
+            const target = this.jsonAssignmentTarget(left);
+            return target && jsonPropertyPlace(target);
+        }
+        if (!ts.isIdentifier(left)) return undefined;
+        const held = this.context.bindings.lookupOptional(left);
+        return held && isJsonValue(held) && held.cpp
+            ? { read: held.cpp, store: (next) => `${held.cpp} = ${next};` }
+            : undefined;
+    }
+
+    /** Keep the selected place and old primitive ahead of the right side. */
     private emitJsonCompoundAssignment(
         expression: ts.BinaryExpression,
-        target: JsonAssignmentTarget,
+        place: JsonCompoundPlace,
         operator: string,
     ): Value {
         if (
@@ -16539,7 +16571,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             kind: "declaration",
             type: "const auto",
             name: previous,
-            initializer: `${target.owner}.read_property(${target.key})`,
+            initializer: place.read,
         });
         const right = this.context.allocateTemporaryCppName("compound_right");
         this.context.emit({
@@ -16575,10 +16607,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                     ? `(${previous}.is_string() || ${right}.is_string() ? bbl::js::json_value(${previous}.to_string() + ${right}.to_string()) : ${number})`
                     : number,
         });
-        this.context.emit({
-            kind: "expression",
-            code: `${target.owner}.set(${target.key}, ${next});`,
-        });
+        this.context.emit({ kind: "expression", code: place.store(next) });
         return this.leafValue(next, { kind: "json" });
     }
 
@@ -16760,6 +16789,12 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         if (ts.isIdentifier(left) && operator === "=") {
             return this.emitLocalDataAssignment(expression, left);
         }
+        if (ts.isIdentifier(left)) {
+            const place = this.jsonCompoundPlace(left);
+            if (!place) return false;
+            this.emitJsonCompoundAssignment(expression, place, operator);
+            return true;
+        }
         if (
             !ts.isPropertyAccessExpression(left) &&
             !ts.isElementAccessExpression(left)
@@ -16771,7 +16806,11 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         const json = this.jsonAssignmentTarget(left);
         if (json) {
             if (operator !== "=") {
-                this.emitJsonCompoundAssignment(expression, json, operator);
+                this.emitJsonCompoundAssignment(
+                    expression,
+                    jsonPropertyPlace(json),
+                    operator,
+                );
                 return true;
             }
             const value = this.compileForSink(expression.right, {
