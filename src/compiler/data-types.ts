@@ -7882,14 +7882,15 @@ export class DataTypeRegistry {
                 mapped: DataType | undefined;
                 callable: boolean;
             }): boolean => mapped !== undefined || !callable;
-            // A shape declaring the property only null or undefined holds
-            // it in the empty state of the storage the others give it.
+            // A shape declaring the property only null or undefined (an
+            // optional `reason?: undefined` too) holds it in the empty
+            // state of the storage the others give it.
             const nullish = ({
                 type,
                 mapped,
             }: (typeof values)[number]): boolean =>
                 (mapped === undefined ||
-                    mapped.kind === "undefined" ||
+                    isUndefinedDataType(mapped) ||
                     mapped.kind === "null") &&
                 presentMembers(type).length === 0;
             const valued = values.filter(
