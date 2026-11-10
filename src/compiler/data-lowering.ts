@@ -21469,9 +21469,11 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 cpp: `${iterable.cpp}.elements()`,
                 dataType: { kind: "span", element: dataType.element },
             };
-        // A parsed array spreads into a new array of scalar lanes, each
-        // element stored as the scalar sinks store a parsed value.
-        if (isJsonValue(iterable) && storesDocumentScalars(dataType.element))
+        // A parsed array spreads into a new array, each element stored as
+        // its element sink stores a parsed value; parsed records stay
+        // documents.
+        if (isJsonValue(iterable)) {
+            this.requireDocumentRecord(dataType.element);
             return {
                 ...this.leafValue(
                     this.documentElementsCopy(
@@ -21483,6 +21485,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 ),
                 freshSpread: true,
             };
+        }
         const iterated = this.iteratedElements(iterable);
         if (iterated && "lanes" in iterated) {
             return {
@@ -21588,9 +21591,6 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             };
         }
         if (!iterated || !dataTypesEqual(iterated.element, dataType.element)) {
-            // Parsed records keep their own fields and identity only as documents.
-            if (isJsonValue(iterable))
-                this.requireDocumentRecord(dataType.element);
             return this.context.fail(
                 spread,
                 `Array spread requires a native Set, Array, or readonly array with the same element type (source=${JSON.stringify((iterated?.range ?? iterable).dataType)}, element=${JSON.stringify(dataType.element)}).`,

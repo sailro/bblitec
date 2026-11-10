@@ -3894,6 +3894,26 @@ check(
 `,
 );
 
+// A parsed list of lists spread into a new array stores each inner list as
+// the array sink stores a parsed one.
+check(
+    "parsed-list-of-lists-spread-with-a-new-list",
+    `
+    interface State { issueNo: number; recent: readonly (readonly string[])[] }
+    function next(state: State, chosen: readonly { identity: string }[]): State {
+        const nextRecent = [...state.recent, chosen.map((c) => c.identity)].slice(-2);
+        return { issueNo: state.issueNo + 1, recent: nextRecent };
+    }
+    const flag = Math.random() >= 0;
+    const loaded = JSON.parse(flag ? '{"issueNo":3,"recent":[["a"],["b","c"]]}' : '{"issueNo":0,"recent":[]}') as State;
+    const after = next(loaded, [{ identity: "d" }, { identity: "e" }]);
+    if (after.issueNo !== 4 || after.recent.length !== 2 || after.recent[0]!.join() !== "b,c" || after.recent[1]!.join() !== "d,e") throw new Error("recent");
+    const seen = new Set<string>();
+    for (const ids of after.recent) for (const id of ids) seen.add(id);
+    if (seen.size !== 4 || JSON.stringify(after) !== '{"issueNo":4,"recent":[["b","c"],["d","e"]]}') throw new Error("kept " + JSON.stringify(after));
+`,
+);
+
 // `object | null` keeps any object for its identity: a record or, where
 // none is open, an array.
 check(
