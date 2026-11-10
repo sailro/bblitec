@@ -193,6 +193,37 @@ test("PBR metallic and roughness factors written on a held material are its reco
     assert.match(result.cpp, /\.roughness_factor = /);
 });
 
+test("PBR intensities and reflectance computed at run time are their record's lanes", () => {
+    // `_writeMaterialData` copies the three unconditionally and no
+    // composition reads them, so only a static value rides the manifest.
+    const options = (live: string): string => `
+        import { createEngine, createPbrMaterial } from "@babylonjs/lite";
+        const engine = await createEngine({});
+        const live = ${live};
+        const material = createPbrMaterial({
+            directIntensity: 1 + live, environmentIntensity: 0.2 + live, reflectance: 0.04 + live,
+        });
+    `;
+    const runtime = compileSource(options("Math.random()"));
+    assert.match(
+        runtime.cpp,
+        /\.direct_intensity = static_cast<float>\(\(1\.0 \+ v_live\)\), \.environment_intensity = static_cast<float>\(\(0\.2 \+ v_live\)\)/,
+    );
+    assert.match(
+        runtime.cpp,
+        /\.reflectance = static_cast<float>\(\(0\.04 \+ v_live\)\)/,
+    );
+    const computed = runtime.manifest.scenePbrMaterials[0]!;
+    assert.equal(computed.directIntensity, undefined);
+    assert.equal(computed.environmentIntensity, undefined);
+    assert.equal(computed.reflectance, undefined);
+    const fixed = compileSource(options("1")).manifest.scenePbrMaterials[0]!;
+    assert.deepEqual(
+        [fixed.directIntensity, fixed.environmentIntensity, fixed.reflectance],
+        [2, 1.2, 1.04],
+    );
+});
+
 test("velocity, motion pruning and live settings compose every reachable mode, each kept by key", async () => {
     const task = await composeSsaoTask({
         options: { radius: 0.6 },
