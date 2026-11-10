@@ -3807,6 +3807,34 @@ check(
 );
 
 check(
+    "string-or-function-parameter-narrowed-into-a-function-argument",
+    `
+    type Commit = () => void;
+    interface Homes { claim(v: number, homeId: number, routeKeyOrCommit?: string | Commit, commit?: Commit): string }
+    let commits = 0;
+    function doClaim(v: number, homeId: number, routeKey?: string, commit?: Commit): string {
+        commit?.();
+        return (routeKey ?? "none") + ":" + v + ":" + homeId;
+    }
+    function createHomes(): Homes {
+        return {
+            claim: (v, homeId, routeKeyOrCommit, commit) =>
+                doClaim(
+                    v,
+                    homeId,
+                    typeof routeKeyOrCommit === "string" ? routeKeyOrCommit : undefined,
+                    typeof routeKeyOrCommit === "function" ? routeKeyOrCommit : commit,
+                ),
+        };
+    }
+    const registry: Homes[] = [createHomes()];
+    const homes = registry[0]!;
+    const text = homes.claim(1, 2, "door") + "|" + homes.claim(3, 4, () => { commits++; }) + "|" + homes.claim(5, 6, undefined, () => { commits += 10; }) + "|" + homes.claim(7, 8);
+    if (text !== "door:1:2|none:3:4|none:5:6|none:7:8" || commits !== 11) throw new Error(text + commits);
+`,
+);
+
+check(
     "union-field-required-optional-and-absent-across-arms",
     `
     type Event = { kind: "birth"; where: number } | { kind: "death"; index: number; cause: number } | { kind: "debug"; index: number; cause?: number };

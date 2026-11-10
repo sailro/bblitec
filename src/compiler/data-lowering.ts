@@ -4545,6 +4545,14 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                     (member.kind === "string" && narrowed.kind === "enum")),
         );
         if (exact >= 0) return exact;
+        // A narrowing to a function (`typeof value === "function"`) leaves
+        // the union's one function member, whichever signature spells it.
+        if (narrowed?.kind === "function") {
+            const functions = type.members.flatMap((member, index) =>
+                member.kind === "function" ? [index] : [],
+            );
+            if (functions.length === 1) return functions[0]!;
+        }
         // A record held under another record type of the same storage (a
         // method's fresh literal read through its interface's `readonly`
         // fields) is that member.
