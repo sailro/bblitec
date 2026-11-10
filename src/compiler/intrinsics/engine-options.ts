@@ -211,6 +211,13 @@ function renderTargetSize(
             context.expectKind(surface, "engine", surfaceExpression);
             scale = context.compileNumber(scaleExpression, "double");
         } else {
+            // `resolveDirectRenderTargetSize`: an object with a `canvas`
+            // stands in for a surface, and every build reads its extents.
+            if (context.objectProperty(unwrappedSize, "canvas"))
+                context.fail(
+                    unwrappedSize,
+                    "A render target sized by a surface stand-in (`size: { canvas }`) reads canvas.width and canvas.height again at every build; a native target takes fixed extents, the engine's surface, or a surface and its scale.",
+                );
             validateObjectProperties(
                 context,
                 unwrappedSize,

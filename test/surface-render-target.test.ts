@@ -96,6 +96,15 @@ test("surface render targets retain sampled depth and validate descriptor owners
             ),
         /single-sample depth attachment/,
     );
+    // A surface stand-in is re-read at every build, which no native size is.
+    assert.throws(
+        () =>
+            compileSource(
+                `${setup} const half = { get width(): number { return 32; }, get height(): number { return 32; } };
+                createRenderTargetTexture(engine, {format: engine.format, samples: 1, size: {canvas: half}} as Parameters<typeof createRenderTargetTexture>[1]); } void main();`,
+            ),
+        /sized by a surface stand-in \(`size: \{ canvas \}`\) reads canvas\.width and canvas\.height again at every build/,
+    );
 });
 
 test("optional depth providers preserve conditional selection and argument effects", () => {
