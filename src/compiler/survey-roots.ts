@@ -227,16 +227,18 @@ function emitSurveyRoot(
     context.emit({ kind: "open", code: "{" });
     context.bindings.pushScope(context.allocateUserFunctionPrefix());
     try {
-        // A captured const holding a function literal holds that function,
-        // as the program's own binding does.
-        for (const { name, literal } of capturedFunctionLocals(
+        // A captured const holding a function holds what its initializer
+        // makes, as the program's own binding does.
+        for (const { name, initializer } of capturedFunctionLocals(
             context.checker,
             declaration,
         ))
             if (!context.bindings.lookupOptional(name)) {
                 const value =
-                    (literal &&
-                        unlessRefused(() => context.compileValue(literal))) ??
+                    (initializer &&
+                        unlessRefused(() =>
+                            context.compileValue(initializer),
+                        )) ??
                     site(name, name.text);
                 context.bindings.defineVariable(name, value);
             }
@@ -397,34 +399,46 @@ function withCalledTypeArguments(
     );
 }
 
-/** A captured name, with the function literal it is a `const` of. */
+/** A captured name, with the initializer of the function `const` it is. */
 interface CapturedLocal {
     name: ts.Identifier;
-    literal: ts.ArrowFunction | ts.FunctionExpression | undefined;
+    initializer: ts.Expression | undefined;
 }
 
 const capturedLocals = new WeakMap<ts.Node, CapturedLocal[]>();
 
-/** The function literal a `const` declared `local` holds, if any. */
-function constFunctionLiteral(
+/**
+ * The initializer of a `const` declared `local` that holds a function --
+ * a literal, a choice of literals (`traced ? <T>(...) => ... : ...`), a
+ * factory's result -- if any.
+ */
+function constFunctionInitializer(
+    checker: ts.TypeChecker,
     local: ts.Declaration,
-): ts.ArrowFunction | ts.FunctionExpression | undefined {
-    const literal =
-        ts.isVariableDeclaration(local) && variableKind(local) === "const"
-            ? functionOfDeclaration(local)
-            : undefined;
-    return literal &&
-        (ts.isArrowFunction(literal) || ts.isFunctionExpression(literal))
-        ? literal
+): ts.Expression | undefined {
+    if (
+        !ts.isVariableDeclaration(local) ||
+        variableKind(local) !== "const" ||
+        !local.initializer
+    )
+        return undefined;
+    const literal = functionOfDeclaration(local);
+    if (literal && ts.isExpression(literal)) return literal;
+    return callSignatures(
+        checker,
+        checker.getTypeAtLocation(local.name),
+        "exact",
+    ).length > 0
+        ? local.initializer
         : undefined;
 }
 
 /**
  * The variables and parameters of enclosing functions that `declaration`
  * reads, by their declared names: what a root binds besides its
- * parameters -- with, for a captured const holding a function literal,
- * those that literal reads. Those come first, so each binds before the
- * function that reads it. Kept per declaration: the program does not
+ * parameters -- with, for a captured const holding a function, those its
+ * initializer reads. Those come first, so each binds before the function
+ * that reads it. Kept per declaration: the program does not
  * change between passes.
  */
 function capturedFunctionLocals(
@@ -459,9 +473,9 @@ function capturedFunctionLocals(
                     !ts.findAncestor(local.parent, ts.isFunctionLike)
                 )
                     return;
-                const literal = constFunctionLiteral(local);
-                if (literal) scan(literal);
-                found.set(symbol, { name: local.name, literal });
+                const initializer = constFunctionInitializer(checker, local);
+                if (initializer) scan(initializer);
+                found.set(symbol, { name: local.name, initializer });
             },
             { types: "skip", names: "references" },
         );
