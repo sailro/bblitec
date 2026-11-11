@@ -631,11 +631,21 @@ interface NativeDeclarationPattern {
     readonly nameToken: number;
 }
 
-function declarationPatterns(
-    declarations: ReadonlyMap<string, NativeDeclaration>,
-): Map<string, NativeDeclarationPattern[]> {
+/** How to find each native declaration in emitted code, by declared name. */
+export type NativeDeclarationPatterns = ReadonlyMap<
+    string,
+    readonly NativeDeclarationPattern[]
+>;
+
+/**
+ * The patterns of `declarations`, tokenized once: a projection reads them
+ * for its body and for every native function it renders.
+ */
+export function nativeDeclarationPatterns(
+    declarations: ReadonlyMap<string, NativeDeclaration> | undefined,
+): NativeDeclarationPatterns {
     const patterns = new Map<string, NativeDeclarationPattern[]>();
-    for (const [code, declaration] of declarations) {
+    for (const [code, declaration] of declarations ?? []) {
         const tokens = [...cppTokens(code)];
         const nameToken = tokens.findIndex(
             (token) =>
@@ -657,7 +667,7 @@ function declarationPatterns(
 
 function declarationSpans(
     block: string,
-    patterns: ReadonlyMap<string, readonly NativeDeclarationPattern[]>,
+    patterns: NativeDeclarationPatterns,
 ): NativeDeclarationSpan[] {
     const tokens = [...cppTokens(block)];
     const spans: NativeDeclarationSpan[] = [];
@@ -706,11 +716,10 @@ function declarationSpans(
 
 function projectNativeDeclarations(
     body: string[],
-    declarations: ReadonlyMap<string, NativeDeclaration> | undefined,
+    patterns: NativeDeclarationPatterns,
     project: (block: string, span: NativeDeclarationSpan) => string,
 ): void {
-    if (!declarations?.size) return;
-    const patterns = declarationPatterns(declarations);
+    if (patterns.size === 0) return;
     for (const [index, block] of body.entries()) {
         const spans = declarationSpans(block, patterns);
         for (let spanIndex = spans.length - 1; spanIndex >= 0; spanIndex--)
@@ -722,11 +731,11 @@ function projectNativeDeclarations(
  * A live clock read remains in the entry and the PAL stage guard rejects it. */
 export function constructorEntryBody(
     body: readonly string[],
-    declarations?: ReadonlyMap<string, NativeDeclaration>,
+    patterns: NativeDeclarationPatterns,
 ): string[] {
     const result = [...body];
     const counts = nativeIdentifierCounts(body);
-    projectNativeDeclarations(result, declarations, (current, span) =>
+    projectNativeDeclarations(result, patterns, (current, span) =>
         span.declaration.discardIfUnused &&
         counts.get(span.declaration.name) === 1
             ? current.slice(0, span.lineStart) + current.slice(span.end)
@@ -737,7 +746,7 @@ export function constructorEntryBody(
 
 export function markUnreferencedLocals(
     body: string[],
-    declarations?: ReadonlyMap<string, NativeDeclaration>,
+    patterns: NativeDeclarationPatterns,
 ): void {
     // Initialized locals, and the empty `std::optional<...>` storage a
     // materialized module predeclares for a nullable resource: a browser-only
@@ -750,7 +759,7 @@ export function markUnreferencedLocals(
     // shape this pass exists for. Attributes precede the specifier, so the
     // insertion point is the same one.
     const counts = nativeIdentifierCounts(body);
-    projectNativeDeclarations(body, declarations, (block, span) => {
+    projectNativeDeclarations(body, patterns, (block, span) => {
         if (counts.get(span.declaration.name) !== 1) return block;
         if (span.declaration.discardIfUnused)
             return block.slice(0, span.lineStart) + block.slice(span.end);
@@ -850,12 +859,13 @@ export function renderMainCpp(projection: MainCppProjection): ApplicationCpp {
     } = projection;
     // The body is finished, so a local nothing referenced is now
     // decidable — mark those, and only those.
-    markUnreferencedLocals(projection.body, projection.nativeDeclarations);
+    const patterns = nativeDeclarationPatterns(projection.nativeDeclarations);
+    markUnreferencedLocals(projection.body, patterns);
     const body = projection.body;
     const nativeFunctions: readonly NativeFunctionDefinition[] =
         projection.nativeFunctions.map((fn) => {
             const lines = [...fn.lines];
-            markUnreferencedLocals(lines, projection.nativeDeclarations);
+            markUnreferencedLocals(lines, patterns);
             return { ...fn, lines };
         });
     const nativeFunctionPrototypes = nativeFunctions.flatMap((fn) =>
@@ -1227,9 +1237,9 @@ ${projection.deferredCapabilitiesReached ? "#include <bblite/deferred_capability
     if (projection.physicsDebugConstructionBody) {
         const construction = constructorEntryBody(
             projection.physicsDebugConstructionBody,
-            projection.nativeDeclarations,
+            patterns,
         );
-        markUnreferencedLocals(construction, projection.nativeDeclarations);
+        markUnreferencedLocals(construction, patterns);
         extraction = `\n#include <bblite/pal_physics_debug.hpp>\n#include <string_view>\n
 static void extract_physics_constructor_inputs(const char* output_path) {
     bbl::pal::PhysicsDebugExtractionScope extraction;

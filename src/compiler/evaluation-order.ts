@@ -983,11 +983,17 @@ export class EvaluationOrder {
      */
     public operandsToPin(operands: readonly ts.Node[]): boolean[] {
         const accesses = operands.map((operand) => this.access(operand));
-        return accesses.map((earlier, index) =>
-            accesses
-                .slice(index + 1)
-                .some((later) => conflicts(earlier, later)),
-        );
+        // `touches` distributes over a union of storages, so one union of
+        // every later access answers as each of them would: one pass from
+        // the right, linear in the operands.
+        const later = emptyAccess();
+        const pins: boolean[] = [];
+        for (let index = accesses.length - 1; index >= 0; index--) {
+            const earlier = accesses[index]!;
+            pins[index] = conflicts(earlier, later);
+            mergeAccess(later, earlier);
+        }
+        return pins;
     }
 
     /**
