@@ -613,6 +613,22 @@ test("a root's capture with no storage of its type stays unbound", () => {
     assert.deepEqual(read.cascade, reason.site);
 });
 
+test("a root's engine object no storage holds stands as its pinned base's handle", () => {
+    // An ArcRotateCamera has no storage of its own; a Camera is a handle.
+    const { report } = surveySource(
+        `
+        import { getCameraPosition, type ArcRotateCamera } from "@babylonjs/lite";
+        export function follow(camera: ArcRotateCamera): number {
+            const position = getCameraPosition(camera);
+            return position.x;
+        }
+        localStorage.setItem("ready", "1");
+    `,
+        { fileName: resolve("survey-root-camera.ts") },
+    );
+    assert.deepEqual(report.refusals, [], listed(report));
+});
+
 test("a root binds a captured const function literal and what it captures", () => {
     // `send` is rooted: `post` holds an arrow reading `health` and `limit`,
     // which the root binds as the program's own bindings would hold them.

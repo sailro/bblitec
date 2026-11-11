@@ -34,7 +34,9 @@ import {
     variableKind,
     type SupportedFunction,
 } from "./syntax.js";
-import { callSignatures, objectLikeType } from "./type-facts.js";
+import { pinnedHandleKind } from "./data-types.js";
+import type { HandleKind } from "./data-types/model.js";
+import { callSignatures, inheritsFrom, objectLikeType } from "./type-facts.js";
 import { callTypeArguments, mentionsTypeParameter } from "./type-arguments.js";
 import type { Value } from "./types.js";
 import type { UserFunctionContext } from "./user-functions.js";
@@ -207,6 +209,17 @@ function emitModuleRoot(
     );
 }
 
+/** The handle of the nearest pinned interface or class `type` extends that is one. */
+function pinnedBaseHandle(type: ts.Type): HandleKind | undefined {
+    let handle: HandleKind | undefined;
+    inheritsFrom(type, (candidate) => {
+        if (candidate === type) return false;
+        handle = pinnedHandleKind(candidate);
+        return handle !== undefined;
+    });
+    return handle;
+}
+
 /**
  * Empty storage of `type`, or -- for a record no native layout holds (one
  * with function members) -- the record a literal of that type would be:
@@ -232,13 +245,18 @@ function emptyValueOf(
             ? stored
             : context.dataTypes.fromTsType(type, node);
     });
-    const storage = emptyStorage(
-        context,
-        mapped && context.dataTypes.ownReadonlyArray(mapped, type),
-        label,
-    );
     const checker = context.checker;
     const record = checker.getNonNullableType(type);
+    // An engine object no storage holds (an ArcRotateCamera) stands as the
+    // empty handle of the nearest pinned type it extends (a Camera).
+    const handle = mapped ? undefined : pinnedBaseHandle(record);
+    const storage = emptyStorage(
+        context,
+        handle
+            ? { kind: "handle", handle }
+            : mapped && context.dataTypes.ownReadonlyArray(mapped, type),
+        label,
+    );
     if (
         storage ||
         depth >= 3 ||
