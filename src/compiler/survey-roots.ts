@@ -175,8 +175,11 @@ function emptyValueOf(
     depth = 0,
 ): Value | undefined {
     // A root's array is one its caller owns, which a borrowed view only
-    // lends a callee.
-    const mapped = context.dataTypes.fromTsType(type, node);
+    // lends a callee; the `unknown` values a type reaches are stored as
+    // documents, as a parsed value of it is.
+    const mapped = context.dataTypes.orDynamicJsonTypes(() =>
+        context.dataTypes.fromTsType(type, node),
+    );
     const storage = emptyStorage(
         context,
         mapped && context.dataTypes.ownReadonlyArray(mapped, type),
