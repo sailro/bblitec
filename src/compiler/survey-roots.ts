@@ -467,13 +467,36 @@ function genericCallsOf(
 
 /**
  * The type arguments a root of the generic `owner` lowers at: those of the
- * first call of it they bind no type parameter in; undefined when no call
- * does. Kept per function: the program does not change between passes.
+ * first call of it they bind no type parameter in; where no call does, each
+ * parameter's constraint, or `unknown` (a document) for one with none of its
+ * own. Kept per function: the program does not change between passes.
  */
 const calledSubstitutions = new WeakMap<
     ts.SignatureDeclaration,
-    ReadonlyMap<ts.Symbol, ts.Type> | null
+    ReadonlyMap<ts.Symbol, ts.Type>
 >();
+
+/** `calledSubstitutions` for a generic function no call binds. */
+function unboundTypeArguments(
+    checker: ts.TypeChecker,
+    owner: ts.SignatureDeclaration,
+): ReadonlyMap<ts.Symbol, ts.Type> {
+    const substitution = new Map<ts.Symbol, ts.Type>();
+    for (const parameter of owner.typeParameters ?? []) {
+        const symbol = checker.getSymbolAtLocation(parameter.name);
+        if (!symbol) continue;
+        const constraint = checker.getBaseConstraintOfType(
+            checker.getTypeAtLocation(parameter),
+        );
+        substitution.set(
+            symbol,
+            constraint && !mentionsTypeParameter(checker, constraint)
+                ? constraint
+                : checker.getUnknownType(),
+        );
+    }
+    return substitution;
+}
 
 /**
  * Runs `work` with the type arguments of the generic functions holding
@@ -497,10 +520,10 @@ function withCalledTypeArguments(
     const checker = context.checker;
     const substitutionOf = (
         owner: ts.SignatureDeclaration,
-    ): ReadonlyMap<ts.Symbol, ts.Type> | null => {
+    ): ReadonlyMap<ts.Symbol, ts.Type> => {
         const known = calledSubstitutions.get(owner);
-        if (known !== undefined) return known;
-        let found: ReadonlyMap<ts.Symbol, ts.Type> | null = null;
+        if (known) return known;
+        let found: ReadonlyMap<ts.Symbol, ts.Type> | undefined;
         for (const call of genericCallsOf(context, files).get(owner) ?? []) {
             const substitution = unlessRefused(() =>
                 callTypeArguments(checker, call, owner, (node, text) =>
@@ -517,13 +540,11 @@ function withCalledTypeArguments(
                 break;
             }
         }
+        found ??= unboundTypeArguments(checker, owner);
         calledSubstitutions.set(owner, found);
         return found;
     };
-    context.dataTypes.withTypeArgumentFrames(
-        generic.flatMap((owner) => substitutionOf(owner) ?? []),
-        work,
-    );
+    context.dataTypes.withTypeArgumentFrames(generic.map(substitutionOf), work);
 }
 
 /** A captured name, with the initializer of the function `const` it is. */
