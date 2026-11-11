@@ -4,7 +4,7 @@ import ts from "typescript";
 import { cachedBakeSync, moduleIdentity } from "../bake-cache.js";
 import { pageBase64Script } from "../browser-harness.js";
 import { imageCodecForFileName } from "../image-codec-manifest.js";
-import { findRepositoryRoot } from "../upstream-source.js";
+import { enclosingRepositoryRoot } from "../repository-root.js";
 import { transpileCommonJs } from "../typescript-transpile.js";
 import { forEachAnalysisNode } from "./analysis-walk.js";
 import { mathMemberIsImpure } from "./math-intrinsics.js";
@@ -314,11 +314,11 @@ export function bakeCanvasReadback(
         } else arguments_.push({ kind: "value", value: data });
     }
     const source = owner.getSourceFile();
-    const graph = closureModules(
-        source.fileName,
-        owner.name.text,
-        findRepositoryRoot(dirname(source.fileName)),
-    );
+    const root = enclosingRepositoryRoot(dirname(source.fileName));
+    const graph =
+        root === undefined
+            ? undefined
+            : closureModules(source.fileName, owner.name.text, root);
     if (!graph)
         return context.fail(
             call,

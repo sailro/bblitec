@@ -23,10 +23,8 @@ import type { LoweringServices } from "./lowering-services.js";
  * `URL.revokeObjectURL`; every other use fails at the value.
  */
 import ts from "typescript";
-import {
-    findRepositoryRoot,
-    repositoryRelativePath,
-} from "../upstream-source.js";
+import { repositoryRelativePath } from "../upstream-source.js";
+import { enclosingRepositoryRoot } from "../repository-root.js";
 import {
     containsValueNode,
     importsAreExecutable,
@@ -112,11 +110,12 @@ export function compileExecutedUrlFunctionCall(
         );
     }
     const sourceFile = declaration.getSourceFile();
-    const module = repositoryRelativePath(
-        findRepositoryRoot(sourceFile.fileName),
-        sourceFile.fileName,
-    );
-    if (module.startsWith("..")) {
+    const root = enclosingRepositoryRoot(sourceFile.fileName);
+    const module =
+        root === undefined
+            ? undefined
+            : repositoryRelativePath(root, sourceFile.fileName);
+    if (module === undefined || module.startsWith("..")) {
         context.fail(call, `'${name}' lives outside the repository.`);
     }
     context.browserTextureFunctions.add(name);
