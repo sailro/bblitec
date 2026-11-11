@@ -116,6 +116,21 @@ export function mergePbrStateWrites(
  * delegates, so the intrinsic context surface is unchanged while the
  * recording rules live here.
  */
+/**
+ * A PBR setter handed a material no scene-code record stands for: one
+ * of another family, or one that reached the call through storage. The
+ * intrinsic call refuses with it (`compileRegisteredIntrinsic`).
+ */
+export class UnresolvedScenePbrMaterial extends Error {
+    public constructor(setter: string) {
+        super(
+            `${setter} names no scene-code PBR material; only a value ` +
+                "createPbrMaterial produced, or a mesh one was assigned " +
+                "to, resolves which record to stamp.",
+        );
+    }
+}
+
 export class SceneMaterialRecorder {
     public readonly scenePbrMaterials: ScenePbrMaterialManifest[] =
         emissionArray([]);
@@ -346,13 +361,7 @@ export class SceneMaterialRecorder {
     ): Mutable<ScenePbrMaterialManifest> {
         const material =
             index === undefined ? undefined : this.scenePbrMaterials[index];
-        if (!material) {
-            throw new Error(
-                `${setter} names no scene-code PBR material; only a value ` +
-                    "createPbrMaterial produced, or a mesh one was assigned " +
-                    "to, resolves which record to stamp.",
-            );
-        }
+        if (!material) throw new UnresolvedScenePbrMaterial(setter);
         return writable(material);
     }
 
