@@ -484,6 +484,135 @@ test("a survey lowers the statements of a module the program never evaluates", (
     assert.equal(report.program.attempted, report.program.statements);
 });
 
+test("a survey lowers the statements a reached function's lowering left", () => {
+    // `params.has("debug")` is generation-known: the arm it leaves is a
+    // statement root, its loop's break bound to the block standing for the
+    // loop and its return leaving the root.
+    const { report } = surveySource(
+        `
+        let total = 0;
+        function step(params: URLSearchParams): number {
+            if (params.has("debug")) {
+                for (let i = 0; i < 3; i++) {
+                    total += i;
+                    if (total > 2) break;
+                }
+                return total;
+            }
+            total += 1;
+            return total;
+        }
+        step(new URLSearchParams(location.search));
+        localStorage.setItem("total", String(total));
+    `,
+        { fileName: resolve("survey-statement-roots.ts") },
+    );
+    assert.equal(report.complete, true);
+    assert.deepEqual(report.refusals, [], listed(report));
+    assert.ok(report.program);
+    assert.equal(report.program.attempted, report.program.statements);
+});
+
+test("a survey root leaves out a trailing parameter with a default", () => {
+    // The default `{}` leaves `pointProjection` unset, so the shader source
+    // the root composes is generation-known.
+    const { report } = surveySource(
+        `
+        import { createShaderMaterial, wgsl } from "@babylonjs/lite";
+        interface BatchOptions { pointProjection?: boolean }
+        export function makeMaterial(opts: BatchOptions = {}): unknown {
+            const projection = opts.pointProjection ? "fn project() {}" : "fn flat() {}";
+            return createShaderMaterial({
+                name: "batch",
+                vertexSource: wgsl\`\${projection + "\\n@vertex fn main() -> @builtin(position) vec4<f32> { return vec4<f32>(0.0); }"}\`,
+                attributes: ["position"],
+                fragmentSource: wgsl\`@fragment fn main() -> @location(0) vec4<f32> { return vec4<f32>(1.0); }\`,
+            });
+        }
+        localStorage.setItem("ready", "1");
+    `,
+        { fileName: resolve("survey-root-default.ts") },
+    );
+    assert.deepEqual(report.refusals, [], listed(report));
+});
+
+test("an evaluated module's total constants are tried; an ambient declaration is no statement", (t) => {
+    // `STRIDE` folds where it is read and `UNUSED` is never read: neither
+    // statement lowers, and both run as the evaluated module's folds.
+    const directory = mkdtempSync(join(tmpdir(), "bblite-total-constants-"));
+    t.after(() => rmSync(directory, { recursive: true, force: true }));
+    writeFileSync(
+        join(directory, "layout.ts"),
+        `
+        declare const __FLAG__: boolean | undefined;
+        export const STRIDE = 170;
+        export const UNUSED = 42;
+    `,
+    );
+    const { report } = surveySource(
+        `
+        import { STRIDE } from "./layout.js";
+        localStorage.setItem("stride", String(STRIDE * 2));
+    `,
+        { fileName: join(directory, "entry.ts") },
+    );
+    assert.ok(report.program);
+    assert.equal(report.program.statements, 3);
+    assert.equal(report.program.attempted, report.program.statements);
+});
+
+test("a root of a generic function no call binds lowers at its constraints", () => {
+    // `timed` is only stored, so no call binds its `T`: the root lowers at
+    // `unknown`, and `work` is a function returning a document.
+    const { report } = surveySource(
+        `
+        const timed = <T>(label: string, work: () => T): T => {
+            localStorage.setItem("label", label);
+            return work();
+        };
+        export const runner = { timed };
+        localStorage.setItem("ready", "1");
+    `,
+        { fileName: resolve("survey-unbound-generic.ts") },
+    );
+    assert.deepEqual(report.refusals, [], listed(report));
+    assert.ok(report.program);
+    assert.equal(report.program.attempted, report.program.statements);
+});
+
+test("a root's capture with no storage of its type stays unbound", () => {
+    // `track` is a generic function or nothing, which no storage holds: the
+    // inner root lowers its other statements, the one reading `track`
+    // cascades from it, and the reason rolls back no statement.
+    const { report } = surveySource(
+        `
+        interface Options { track?: <T>(label: string, work: () => T) => T }
+        export function outer(opts: Options): () => number {
+            const track = opts.track ? <T>(label: string, work: () => T): T => opts.track!(label, work) : undefined;
+            let total = 0;
+            return () => {
+                total += 1;
+                track?.("x", () => total);
+                return total;
+            };
+        }
+        localStorage.setItem("ready", "1");
+    `,
+        { fileName: resolve("survey-unbound-capture.ts") },
+    );
+    assert.ok(report.program);
+    assert.equal(report.program.attempted, report.program.statements);
+    const [reason, read] = report.refusals;
+    assert.ok(reason && read, listed(report));
+    assert.equal(
+        reason.message,
+        "A survey root's track has no native storage of its type.",
+    );
+    assert.equal(reason.statements, 0);
+    assert.equal(read.statement.line, 8);
+    assert.deepEqual(read.cascade, reason.site);
+});
+
 test("a root binds a captured const function literal and what it captures", () => {
     // `send` is rooted: `post` holds an arrow reading `health` and `limit`,
     // which the root binds as the program's own bindings would hold them.
