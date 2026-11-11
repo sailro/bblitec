@@ -1129,6 +1129,28 @@ test("ambient availability guards settle through imported helpers", async (t) =>
     await executeGeneratedAssertions(t, "ambient-typeof-module", result.cpp);
 });
 
+test("a loop over another module's constant set ranges over the set it constructs", async (t) => {
+    const cpp = compileModules(
+        resolve("artifacts/imported-constant-set"),
+        [
+            [
+                "kinds",
+                `export type Kind = "alpha" | "extra" | "beta" | "gamma" | "delta";
+                export const FLAGGED: ReadonlySet<Kind> = new Set<Kind>(["alpha", "extra", "beta", "gamma"]);
+                export function policy(kind: Kind): string { return FLAGGED.has(kind) ? "fresh" : "durable"; }`,
+            ],
+        ],
+        `import { FLAGGED, policy } from "./kinds.js";
+        (() => { if (policy("delta") !== "durable" || !FLAGGED.has("alpha")) throw new Error("has"); })();
+        (() => {
+            let fresh = "";
+            for (const kind of FLAGGED) if (policy(kind) === "fresh") fresh += kind[0];
+            if (fresh !== "aebg") throw new Error("fresh " + fresh);
+        })();`,
+    );
+    await executeGeneratedAssertions(t, "imported-constant-set", cpp);
+});
+
 check(
     "optional-container-method-continuations",
     `
@@ -3627,6 +3649,507 @@ test("a run-time key selecting fields of different types refuses", () => {
         /Dynamic struct keys must select fields with one common data type/,
     );
 });
+
+check(
+    "dictionary-copied-by-spread-where-a-closed-record-is-declared",
+    `
+    type Action = "jump" | "run";
+    type Profile = Record<Action, string>;
+    interface Preferences { scheme: string; shortcuts: { classic: Profile; wasd: Profile } }
+    const definitions: readonly { action: Action; keys: Record<"classic" | "wasd", string> }[] = [
+        { action: "jump", keys: { classic: "Space", wasd: "KeyJ" } },
+        { action: "run", keys: { classic: "Shift", wasd: "KeyR" } },
+    ];
+    function profile(scheme: "classic" | "wasd"): Profile {
+        return Object.fromEntries(definitions.map((definition) => [definition.action, definition.keys[scheme]])) as Profile;
+    }
+    function defaults(): Preferences {
+        return { scheme: "classic", shortcuts: { classic: profile("classic"), wasd: profile("wasd") } };
+    }
+    function clone(preferences: Preferences): Preferences {
+        return {
+            scheme: preferences.scheme,
+            shortcuts: { classic: { ...preferences.shortcuts.classic }, wasd: { ...preferences.shortcuts.wasd } },
+        };
+    }
+    const original = defaults();
+    const copy = clone(original);
+    copy.shortcuts.classic.jump = "Enter";
+    if (original.shortcuts.classic.jump !== "Space" || copy.shortcuts.classic.jump !== "Enter" || copy.shortcuts.wasd.run !== "KeyR")
+        throw new Error("clone " + original.shortcuts.classic.jump + copy.shortcuts.classic.jump + copy.shortcuts.wasd.run);
+`,
+);
+
+check(
+    "record-read-by-a-key-of-an-unbound-type-parameter",
+    `
+    function lengths<K extends string>(names: Readonly<Record<K, string>>): string {
+        return (Object.keys(names) as K[]).map((key) => key + "=" + names[key].length).join(",");
+    }
+    const out = lengths({ reach: "stewardReach", pause: "pauseSeconds" });
+    if (out !== "reach=12,pause=12") throw new Error(out);
+`,
+);
+
+check(
+    "optional-number-coerced-tells-null-from-undefined",
+    `
+    interface Rec { born: number; expires?: number | null; policy: "durable" | "fresh" }
+    function normalize(record: Rec): number | null {
+        const born = Math.max(0, Math.trunc(record.born));
+        return record.policy === "durable" ? null : Number.isFinite(record.expires) ? Math.max(1, Math.trunc(record.expires!)) : born + 1;
+    }
+    const records: Rec[] = [{ born: 2, policy: "fresh" }, { born: 3, expires: 7.5, policy: "fresh" }, { born: 1, expires: null, policy: "fresh" }, { born: 1, expires: 4, policy: "durable" }];
+    const out = records.map((record) => String(normalize(record))).join(",");
+    if (out !== "3,7,2,null") throw new Error(out);
+    const absent = records.map((record) => String(Math.trunc(record.expires!))).join(",");
+    if (absent !== "NaN,7,0,4") throw new Error(absent);
+`,
+);
+
+check(
+    "absent-value-asserted-present-and-passed-on",
+    `
+    function reach(packed: Float32Array, stride: number): number { const declared = Math.max(0, Math.trunc(packed[0] ?? 0)); return declared * stride; }
+    function penReach(enclosures: Float32Array, pen: number): number { return reach(enclosures, 2) + pen; }
+    function accessible(pen: number, enclosures?: Float32Array): boolean {
+        if (pen === 0) return true;
+        const r = penReach(enclosures!, pen);
+        return r > 1;
+    }
+    const free = Math.random() >= 0 ? 0 : 1;
+    if (!accessible(free)) throw new Error("unrestricted");
+    if (!accessible(1 - free, new Float32Array([3, 0]))) throw new Error("present");
+    let thrown = false;
+    try { accessible(1 - free); } catch (error) { thrown = error instanceof TypeError; }
+    if (!thrown) throw new Error("absent read");
+`,
+);
+
+// The record a name holds is its success arm; the test that selects the
+// arm is not settled at generation, so the other arm's read is lowered too.
+check(
+    "narrowed-arm-property-read-of-a-record-holding-the-other-arm",
+    `
+    type Removal<R> =
+        | { readonly removed: true; readonly effect: R; readonly settled: boolean }
+        | { readonly removed: false; readonly reason: "unknown" | "busy"; readonly settled: false };
+    interface Outcome { committed: boolean; removed?: number[]; refusal?: { owner: string; reason: string } }
+    const refusal = (owner: string, reason: "surface" | "no-change"): Outcome => ({ committed: false, refusal: { owner, reason } });
+    const outcomeFor = <R>(id: number, outcome: Removal<R>): Outcome => outcome.removed
+        ? { committed: true, removed: [id] }
+        : refusal("remove:" + outcome.reason, outcome.reason === "unknown" ? "surface" : "no-change");
+    const log: string[] = [];
+    function executors<R>(controller: { remove(id: number): Removal<R> }) {
+        return {
+            remove(id: number): Outcome {
+                const outcome = controller.remove(id);
+                if (!outcome.removed) return outcomeFor(id, outcome);
+                log.push("settled");
+                return outcomeFor(id, outcome);
+            },
+        };
+    }
+    const kept = executors({ remove: () => { log.push("remove"); return { removed: true, effect: true, settled: true }; } }).remove(7);
+    if (!kept.committed || kept.removed![0] !== 7 || log.join() !== "remove,settled") throw new Error("removed");
+    const busy = executors<boolean>({ remove: () => ({ removed: false, reason: "busy", settled: false }) }).remove(8);
+    if (busy.committed || busy.refusal!.owner !== "remove:busy" || busy.refusal!.reason !== "no-change") throw new Error("refused");
+`,
+);
+
+// The record stored closures share is materialized; its optional numbers
+// keep the values generation knows, which the static `??` fold selects.
+check(
+    "optional-number-of-a-materialized-record-with-a-default",
+    `
+    interface Spec { homeX: number; race?: number; surfaceId?: number; surfaceY?: number }
+    interface State { race: Int8Array; surfaceId: Int32Array; surfaceY: Float32Array; homeX: Float32Array }
+    function createState(count: number): State {
+        return { race: new Int8Array(count), surfaceId: new Int32Array(count), surfaceY: new Float32Array(count), homeX: new Float32Array(count) };
+    }
+    function addAt(state: State, i: number, spec: Spec): number {
+        state.homeX[i] = spec.homeX;
+        state.race[i] = spec.race ?? -1;
+        state.surfaceId[i] = spec.surfaceId ?? -1;
+        state.surfaceY[i] = spec.surfaceY ?? 0;
+        return i;
+    }
+    function sanitize(spec: Spec): Spec { return { ...spec, homeX: Number.isFinite(spec.homeX) ? spec.homeX : 0 }; }
+    function pack(specs: readonly Spec[]): Float32Array {
+        const out = new Float32Array(specs.length * 3);
+        for (let i = 0; i < specs.length; i++) {
+            const s = sanitize(specs[i]!);
+            out[i * 3] = s.homeX;
+            out[i * 3 + 1] = s.race ?? -1;
+            out[i * 3 + 2] = s.surfaceId ?? -1;
+        }
+        return out;
+    }
+    const spec: Spec = { homeX: 1, race: 2, surfaceId: 10002, surfaceY: 1.5 };
+    const tests: (() => void)[] = [];
+    tests.push(() => {
+        const packed = pack([spec]);
+        if (packed[1] !== 2 || packed[2] !== 10002) throw new Error("packed");
+    });
+    tests.push(() => {
+        const state = createState(1);
+        addAt(state, 0, spec);
+        if (state.race[0] !== 2 || state.surfaceId[0] !== 10002 || state.surfaceY[0] !== 1.5) throw new Error("restored");
+    });
+    tests.push(() => {
+        const state = createState(1);
+        const fresh = { ...spec, surfaceId: undefined, surfaceY: undefined };
+        addAt(state, 0, fresh);
+        if (state.race[0] !== 2 || state.surfaceId[0] !== -1 || state.surfaceY[0] !== 0) throw new Error("fresh");
+    });
+    for (const test of tests) test();
+`,
+);
+
+check(
+    "string-or-function-parameter-narrowed-into-a-function-argument",
+    `
+    type Commit = () => void;
+    interface Homes { claim(v: number, homeId: number, routeKeyOrCommit?: string | Commit, commit?: Commit): string }
+    let commits = 0;
+    function doClaim(v: number, homeId: number, routeKey?: string, commit?: Commit): string {
+        commit?.();
+        return (routeKey ?? "none") + ":" + v + ":" + homeId;
+    }
+    function createHomes(): Homes {
+        return {
+            claim: (v, homeId, routeKeyOrCommit, commit) =>
+                doClaim(
+                    v,
+                    homeId,
+                    typeof routeKeyOrCommit === "string" ? routeKeyOrCommit : undefined,
+                    typeof routeKeyOrCommit === "function" ? routeKeyOrCommit : commit,
+                ),
+        };
+    }
+    const registry: Homes[] = [createHomes()];
+    const homes = registry[0]!;
+    const text = homes.claim(1, 2, "tab") + "|" + homes.claim(3, 4, () => { commits++; }) + "|" + homes.claim(5, 6, undefined, () => { commits += 10; }) + "|" + homes.claim(7, 8);
+    if (text !== "tab:1:2|none:3:4|none:5:6|none:7:8" || commits !== 11) throw new Error(text + commits);
+`,
+);
+
+// A generic helper's `T & { id: number }` records are the instantiated
+// intersection's where its result is stored: one array, two names for its
+// element type.
+check(
+    "generic-intersection-array-stored-as-its-instantiation",
+    `
+    interface Migration<T extends { id?: number }, H extends { id?: number }> {
+        readonly posts: (T & { id: number })[];
+        readonly cells: (H & { id: number })[];
+        cellId(id: number): number | null;
+    }
+    function normalize<T extends { id?: number }>(input: readonly T[]): { items: Array<T & { id: number }>; nextId: number } {
+        let next = 1;
+        for (const item of input) if (item.id !== undefined) next = Math.max(next, item.id + 1);
+        const items = input.map((item) => ({ ...item, id: item.id ?? next++ }));
+        return { items, nextId: next };
+    }
+    function migrate<T extends { id?: number }, H extends { id?: number }>(v: number, rawPosts: readonly T[], rawCells: readonly H[]): Migration<T, H> {
+        const posts = normalize(rawPosts).items;
+        const cells = normalize(rawCells).items;
+        const cellId = (id: number): number | null => (v > 0 && cells.some((cell) => cell.id === id) ? id : null);
+        return { posts, cells, cellId };
+    }
+    interface Save { v?: number; posts?: { x: number; id?: number }[]; cells?: { cx: number; level?: number; edge?: "notched" | "plain"; id?: number }[] }
+    const kept: Migration<NonNullable<Save["posts"]>[number], NonNullable<Save["cells"]>[number]>[] = [];
+    function normalizeSave(save: Save): Save {
+        const ids = migrate(save.v ?? 0, save.posts ?? [], save.cells ?? []);
+        kept.push(ids);
+        const homes = [7, 9].flatMap((home) => { const id = ids.cellId(home); return id === null ? [] : [id]; });
+        return { ...save, v: homes.length, posts: ids.posts, cells: ids.cells.filter((cell) => ids.cellId(cell.id) !== null) };
+    }
+    const flag = Math.random() >= 0;
+    const out = normalizeSave({ v: flag ? 2 : 0, posts: [{ x: 1 }], cells: [{ cx: 1 }, { cx: 2, level: 3, id: 7 }] });
+    const text = (out.posts ?? []).map((post) => post.x + ":" + post.id).join() + "|" + (out.cells ?? []).map((cell) => cell.cx + ":" + cell.id + ":" + (cell.level ?? "-")).join();
+    if (text !== "1:1|1:8:-,2:7:3" || out.v !== 1) throw new Error(text);
+    // The stored result holds the same arrays.
+    kept[0]!.cells[0]!.cx = 5;
+    if (kept.length !== 1 || (out.cells ?? [])[0]!.cx !== 5 || kept[0]!.cellId(8) !== 8) throw new Error("kept");
+`,
+);
+
+// A callback's `[key, value]` of two numbers is a stored number tuple; a
+// Map built from the mapped list takes each as an entry.
+check(
+    "map-built-from-number-entries-a-callback-returns",
+    `
+    interface CellRun { cellIndex: number; run: number }
+    const flag = Math.random() >= 0;
+    const records: CellRun[] = [{ cellIndex: flag ? 4 : 0, run: 0 }, { cellIndex: 6, run: 1 }];
+    const byIndex = new Map(records.map((cell) => [cell.cellIndex, cell.cellIndex]));
+    if (byIndex.size !== 2 || byIndex.get(4) !== 4 || byIndex.get(6) !== 6 || byIndex.get(5) !== undefined) throw new Error("same");
+    const runOf = new Map(records.map((cell) => [cell.cellIndex, cell.run] as const));
+    const named = new Map<string, CellRun>(records.map((cell) => ["h" + cell.cellIndex, cell]));
+    if (runOf.get(6) !== 1 || runOf.get(4) !== 0 || named.get("h4")!.run !== 0 || named.size !== 2) throw new Error("entries");
+    let sum = 0;
+    for (const [index, run] of runOf) sum += index * 10 + run;
+    if (sum !== 101) throw new Error("iterated " + sum);
+`,
+);
+
+// A closure built above a destructuring pattern calls the names the
+// pattern declares, once they are initialized.
+check(
+    "closure-calling-names-a-later-pattern-declares",
+    `
+    const flag = Math.random() >= 0;
+    interface Boundary { cellRadius(index: number): number; postRadius(index: number): number; margin: number }
+    function makeBoundary(scale: number): Boundary {
+        return { cellRadius: (index) => index * scale, postRadius: (index) => index * scale + 1, margin: scale / 2 };
+    }
+    interface Align { read(index: number): number }
+    function makeAlign(deps: { radius: (index: number) => number; grounded: () => boolean }): Align {
+        return { read: (index) => (deps.grounded() ? deps.radius(index) : -1) };
+    }
+    function build(scale: number): number {
+        const align = makeAlign({ radius: (index) => postLimit(index) + cellRadius(index) + margin, grounded: () => ready });
+        const boundary = makeBoundary(scale);
+        const { cellRadius, postRadius: postLimit, margin } = boundary;
+        const ready = flag;
+        return align.read(2);
+    }
+    if (build(3) !== 14.5) throw new Error("returned record " + build(3));
+    function local(scale: number): number {
+        const align = makeAlign({ radius: (index) => twice(index) + offset, grounded: () => true });
+        const tools = { twice: (index: number): number => index * 2 * scale, offset: flag ? 1 : 0 };
+        const { twice, offset } = tools;
+        return align.read(3);
+    }
+    if (local(2) !== 13) throw new Error("literal record " + local(2));
+`,
+);
+
+// A parsed number list assigned to a declared number list is stored as the
+// list sink stores it.
+check(
+    "parsed-number-list-assigned-to-a-declared-number-list",
+    `
+    interface Point { position: number[]; look?: number[] }
+    interface Path { points: Point[]; lookAt?: number[] }
+    const flag = Math.random() >= 0;
+    const path = JSON.parse(flag ? '{"points":[{"position":[1,2,3]},{"position":[4,5,6],"look":[7,8,9]}],"lookAt":[10,11,12]}' : '{"points":[]}') as Path;
+    function aim(p: Path, index: number, locked: boolean): number {
+        const lookAt = locked ? p.lookAt : undefined;
+        let target: readonly number[];
+        if (lookAt) {
+            target = lookAt;
+        } else {
+            const point = p.points[index]!;
+            target = point.look ?? point.position;
+        }
+        return target[0]! + target[1]! + target[2]!;
+    }
+    if (aim(path, 0, true) !== 33 || aim(path, 0, false) !== 6 || aim(path, 1, false) !== 24) throw new Error("aim");
+`,
+);
+
+// A tagged record union whose arms hold points of two lengths, one of them
+// optional, beside arms with no point: one array stores the field.
+check(
+    "tagged-union-field-of-two-tuple-lengths-some-arms-lacking-it",
+    `
+    type Hit =
+        | { kind: "link"; span: number; point: [number, number] }
+        | { kind: "marker"; host: "post" | "cell"; index: number; point: [number, number, number] }
+        | { kind: "wall"; run: number; point?: [number, number, number] }
+        | { kind: "prop"; id: number };
+    const flag = Math.random() >= 0;
+    const late = { hits: (() => []) as () => readonly Hit[] };
+    if (late.hits().length !== 0) throw new Error("before");
+    late.hits = () => [
+        { kind: "link", span: 2, point: [1, 2] },
+        { kind: "marker", host: flag ? "cell" : "post", index: 4, point: [1, 2, 3] },
+        { kind: "wall", run: 6 },
+        { kind: "wall", run: 7, point: [8, 9, 10] },
+        { kind: "prop", id: 5 },
+    ];
+    let sum = 0;
+    let text = "";
+    for (const hit of late.hits()) {
+        if (hit.kind === "link") sum += hit.point[1] + hit.span + hit.point.length;
+        else if (hit.kind === "marker") { sum += hit.point[2] + hit.index + hit.point.length; text += hit.host; }
+        else if (hit.kind === "wall") sum += hit.run + (hit.point ? hit.point[2] : 100);
+        else sum += hit.id;
+    }
+    if (sum !== 144 || text !== "cell") throw new Error("sum " + sum + text);
+`,
+);
+
+// A `map` building empty records has no storage of its own: its array is
+// the one its place declares, each record its own.
+check(
+    "map-building-empty-records-for-a-declared-record-list",
+    `
+    interface Target { name?: string; bone?: number }
+    interface Request { asset: string; clips: string[]; targets: Target[] }
+    interface View { readonly asset: string; readonly targets: readonly Target[] }
+    function describe(view: View): string { return view.asset + ":" + view.targets.length + ":" + view.targets.map((t) => t.name ?? "any").join("|"); }
+    const flag = Math.random() >= 0;
+    const meshes = [{ skinned: flag }, { skinned: !flag }, { skinned: true }];
+    const skinned = meshes.filter((mesh) => mesh.skinned);
+    const request: Request = { asset: "assets/a.glb", clips: ["swim"], targets: skinned.map(() => ({})) };
+    if (request.targets.length !== 2 || request.targets[0]!.name !== undefined) throw new Error("targets");
+    request.targets[1]!.bone = 3;
+    if (request.targets[0]!.bone !== undefined || request.targets[1]!.bone !== 3) throw new Error("own records");
+    const named: View = { asset: "b", targets: skinned.map((_, index) => (index === 0 ? {} : { name: "n" + index })) };
+    if (describe(request) !== "assets/a.glb:2:any|any" || describe(named) !== "b:2:any|n1") throw new Error(describe(named));
+`,
+);
+
+// A function lowered at its call returns a `map` building empty lists as
+// the lists of records it declares, each list its own.
+check(
+    "early-return-of-a-map-building-empty-lists-in-a-function-lowered-at-its-call",
+    `
+    interface Crossing { at: number; height: number }
+    interface Save { paths?: { x1: number; x2: number }[] }
+    interface Carve { pathAt(x: number): number }
+    function crossings(runs: number[][], save: Save, carve: Carve, max: number): Crossing[][] {
+        const segs = (save.paths ?? []).map((p) => ({ x1: p.x1, x2: p.x2 }));
+        if (segs.length === 0) {
+            return runs.map(() => []);
+        }
+        return runs.map((run) => run.filter((at) => carve.pathAt(at) > 0 && segs.some((s) => s.x1 <= at && at <= s.x2)).map((at) => ({ at, height: max })));
+    }
+    const flag = Math.random() >= 0;
+    const runs = [[1, 5, 9], [2]];
+    const carve: Carve = { pathAt: (x) => x - 1 };
+    const none = crossings(runs, flag ? {} : { paths: [] }, carve, 2);
+    if (none.length !== 2 || none[0]!.length !== 0 || none[1]!.length !== 0) throw new Error("none");
+    none[1]!.push({ at: 7, height: 1 });
+    if (none[0]!.length !== 0 || none[1]![0]!.at !== 7) throw new Error("own lists");
+    const some = crossings(runs, { paths: [{ x1: 4, x2: 10 }] }, carve, 3);
+    if (some[0]!.length !== 2 || some[0]![1]!.at !== 9 || some[0]![0]!.height !== 3 || some[1]!.length !== 0) throw new Error("some");
+`,
+);
+
+// A parsed list of lists spread into a new array stores each inner list as
+// the array sink stores a parsed one.
+check(
+    "parsed-list-of-lists-spread-with-a-new-list",
+    `
+    interface State { issueNo: number; recent: readonly (readonly string[])[] }
+    function next(state: State, chosen: readonly { identity: string }[]): State {
+        const nextRecent = [...state.recent, chosen.map((c) => c.identity)].slice(-2);
+        return { issueNo: state.issueNo + 1, recent: nextRecent };
+    }
+    const flag = Math.random() >= 0;
+    const loaded = JSON.parse(flag ? '{"issueNo":3,"recent":[["a"],["b","c"]]}' : '{"issueNo":0,"recent":[]}') as State;
+    const after = next(loaded, [{ identity: "d" }, { identity: "e" }]);
+    if (after.issueNo !== 4 || after.recent.length !== 2 || after.recent[0]!.join() !== "b,c" || after.recent[1]!.join() !== "d,e") throw new Error("recent");
+    const seen = new Set<string>();
+    for (const ids of after.recent) for (const id of ids) seen.add(id);
+    if (seen.size !== 4 || JSON.stringify(after) !== '{"issueNo":4,"recent":[["b","c"],["d","e"]]}') throw new Error("kept " + JSON.stringify(after));
+`,
+);
+
+// `object | null` keeps any object for its identity: a record or, where
+// none is open, an array.
+check(
+    "object-kept-from-a-record-or-an-array-by-identity",
+    `
+    interface Lister { options(): readonly string[] }
+    let open: Lister | null = null;
+    let heldIn: object | null = null;
+    let log = "";
+    const flag = Math.random() >= 0;
+    const root: number[] | null = flag ? [1, 2] : null;
+    function handle(use: boolean): void {
+        const list = use ? open : null;
+        const area: object | null = list ?? root;
+        if (!area) { heldIn = null; log += "none,"; return; }
+        log += heldIn !== area ? "changed," : "same,";
+        heldIn = area;
+    }
+    handle(flag); handle(flag);
+    open = { options: () => ["a"] };
+    handle(flag); handle(flag); handle(!flag); handle(!flag);
+    if (log !== "changed,same,changed,same,changed,same,") throw new Error(log);
+`,
+);
+
+// One arm names a single literal, another a set of them, both optional:
+// the field stores every arm's literals with the one empty state.
+check(
+    "union-field-with-different-optional-literals-across-arms",
+    `
+    type Structure = "cell" | "post" | "wall";
+    interface Segment { structure?: Structure; run?: number }
+    type Source =
+        | { kind: "polygon"; index: number; structure?: "cell"; run?: number }
+        | { kind: "segment"; index: number; structure?: Segment["structure"]; run?: number }
+        | { kind: "blocker"; index: number }
+        | { kind: "gap" };
+    const flag = Math.random() >= 0;
+    const sources = new Map<string, readonly Source[]>();
+    const segments: Segment[] = [{ structure: flag ? "post" : "wall", run: 2 }, {}];
+    function trace(key: string, found: readonly Source[]): void { sources.set(key, found.slice()); }
+    trace("a", [{ kind: "polygon", index: 0, structure: "cell" }, { kind: "segment", index: 1, structure: segments[0]!.structure, run: segments[0]!.run }, { kind: "gap" }]);
+    trace("b", [{ kind: "segment", index: 2, structure: segments[1]!.structure }, { kind: "blocker", index: 3 }]);
+    const describe = (source: Source): string =>
+        source.kind === "polygon" || source.kind === "segment"
+            ? source.kind + ":" + source.index + ":" + (source.structure ?? "-") + ":" + (source.run ?? "-")
+            : source.kind === "blocker"
+              ? "blocker:" + source.index
+              : source.kind;
+    const out = (sources.get("a") ?? []).map(describe).join() + "|" + (sources.get("b") ?? []).map(describe).join();
+    if (out !== "polygon:0:cell:-,segment:1:post:2,gap|segment:2:-:-,blocker:3") throw new Error(out);
+    const posts = (sources.get("a") ?? []).filter((source) => source.kind === "segment" && source.structure === "post").length;
+    if (posts !== 1) throw new Error("posts " + posts);
+`,
+);
+
+check(
+    "union-field-required-optional-and-absent-across-arms",
+    `
+    type Event = { kind: "birth"; where: number } | { kind: "death"; index: number; cause: number } | { kind: "debug"; index: number; cause?: number };
+    function make(flag: number): Event {
+        if (flag === 0) return { kind: "birth", where: 1 };
+        if (flag === 1) return { kind: "death", index: 2, cause: 3 };
+        return { kind: "debug", index: 4 };
+    }
+    const made = [make(Math.random() >= 0 ? 1 : 0), make(2), make(0)];
+    let sum = 0;
+    for (const event of made) sum += event.kind === "death" ? event.cause : event.kind === "debug" ? (event.cause ?? 10) : event.where;
+    if (sum !== 14) throw new Error("sum " + sum);
+`,
+);
+
+check(
+    "list-grown-through-the-parameters-of-inlined-calls",
+    `
+    type Event = { kind: "birth"; where: number } | { kind: "death"; index: number; cause: number; id: number } | { kind: "debug"; index: number; cause?: number };
+    interface State { id: Int32Array; dead: Uint8Array }
+    function emitDeath(state: State, index: number, cause: number, events: Event[]): void {
+        state.dead[index] = 1;
+        events.push({ kind: "death", index, cause, id: state.id[index]! });
+    }
+    function stepLifecycle(state: State, events: Event[]): void {
+        for (let i = 0; i < state.id.length; i++) {
+            if (state.id[i]! > 1 && state.dead[i] === 0) emitDeath(state, i, 7, events);
+            else if (state.dead[i] === 0) events.push({ kind: "debug", index: i });
+        }
+    }
+    const make = (): State => ({ id: new Int32Array([1, 2, 3]), dead: new Uint8Array(3) });
+    const step = (state: State, events: Event[]): void => { stepLifecycle(state, events); };
+    const run = (): number => {
+        const state = make();
+        const events: Event[] = [];
+        for (let n = 0; n < 2; n++) step(state, events);
+        const debug = events.filter((event) => event.kind === "debug");
+        return events.length * 10 + debug.length;
+    };
+    const out = run();
+    if (out !== 42) throw new Error("run " + out);
+`,
+);
 
 check(
     "run-time-key-over-a-record-lacking-some-of-its-keys",
@@ -6374,6 +6897,31 @@ test("a JSON import is the one object its text parses to", async (t) => {
         "the JSON file is a recorded input",
     );
     await executeGeneratedAssertions(t, "json-import", result.cpp);
+});
+
+test("a JSON import no layout stores is the document it spells", async (t) => {
+    // Empty arrays and elements of mixed shapes: the literal's own type has
+    // no layout, so a binding that must be stored holds it as a document.
+    const result = compileSource(
+        `
+        import save from "./json-import-document.json";
+        interface Item { id: number; name?: string; tags?: string[] }
+        interface Rocks { drops: number[]; removed: number[] }
+        interface Save { version: number; items: Item[]; rocks: Rocks; meta: Record<string, unknown> | null }
+        function total(data: Save): number {
+            let sum = data.version + data.rocks.drops.length;
+            for (const item of data.items) sum += item.id + (item.tags?.length ?? 0);
+            return sum;
+        }
+        const held: Save[] = [];
+        held.push(save as Save);
+        held[0]!.rocks.drops.push(4);
+        const sum = total(held[0]!);
+        if (sum !== 8 || save.rocks.drops.length !== 1) throw new Error("json import document " + sum);
+    `,
+        { fileName: "test/fixtures/json-import-document.ts" },
+    );
+    await executeGeneratedAssertions(t, "json-import-document", result.cpp);
 });
 
 test("constant numeric tables support runtime indexing and static string projections", () => {

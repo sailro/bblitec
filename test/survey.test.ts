@@ -11,8 +11,19 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test from "node:test";
 import { jsonArray, jsonObject } from "./json.js";
+import ts from "typescript";
 import { compileSource, surveySource } from "../src/compiler.js";
-import { refusalClass, type SurveyReport } from "../src/compiler/survey.js";
+import { createCompilerProgram } from "../src/compiler/program.js";
+import {
+    ReplayStorage,
+    storageRequestKey,
+    type StorageRequest,
+} from "../src/compiler/replay-storage.js";
+import {
+    publishedSurvey,
+    refusalClass,
+    type SurveyReport,
+} from "../src/compiler/survey.js";
 import {
     getScene,
     registrySceneCompileOptions,
@@ -135,10 +146,10 @@ test("a survey's progress names each restart's cause, what it demands and where 
         lines.at(-1)!,
         /^Survey progress: attempt 2, .*; last restart: NativeRecordStorageRequired: .* at .*survey-restart\.ts:2$/,
     );
-    // Each restart is reported as it happens.
+    // Each restart is reported as it happens, naming the record it stores.
     assert.equal(
         lines.filter((line) =>
-            /^Survey restart after attempt 1: NativeRecordStorageRequired: record \(document\) at /.test(
+            /^Survey restart after attempt 1: NativeRecordStorageRequired: record \(Settings: document\) at /.test(
                 line,
             ),
         ).length,
@@ -146,12 +157,54 @@ test("a survey's progress names each restart's cause, what it demands and where 
     );
 });
 
+test("a survey leaves the census it has found at each restart", () => {
+    // The unsupported call refuses before the rebinding restarts the
+    // program: the census at that restart already holds it.
+    const partial: SurveyReport[] = [];
+    const { report } = surveySource(
+        `
+        declare function unknownHostCall(): number;
+        interface Settings { gain: number }
+        function parsed(text: string): Settings { return JSON.parse(text); }
+        const frame = unknownHostCall();
+        let active: Settings = { gain: 2 };
+        active = parsed('{"gain":3}');
+        console.log(active.gain);
+    `,
+        { fileName: resolve("survey-partial.ts") },
+        {
+            report: () => {},
+            intervalMs: 0,
+            partial: (found) => partial.push(found),
+        },
+    );
+    const restarts = partial.filter((found) =>
+        found.terminal?.startsWith("Survey still running: restart"),
+    );
+    assert.equal(restarts.length, 1);
+    assert.equal(restarts[0]!.complete, false);
+    assert.match(
+        restarts[0]!.terminal!,
+        /^Survey still running: restart after attempt 1: /,
+    );
+    assert.ok(report.complete && report.refusals.length > 0);
+    assert.deepEqual(
+        restarts[0]!.refusals.map((refusal) => refusal.site.line),
+        report.refusals.map((refusal) => refusal.site.line),
+    );
+});
+
 test("a survey reports each plan's demands and what ended it", () => {
     // Three record types would each restart the program once; the plan
     // after the first restart meets the other two and lowers to the end.
+    // The plan also meets the refusal past them, which no attempt had
+    // reached when it ran; the call whose body reads a record the plan
+    // lost is left to the next attempt, not refused.
     const lines: string[] = [];
+    const partial: SurveyReport[] = [];
     const { report } = surveySource(
         `
+        declare function unknownHostCall(): number;
         interface A { a: number }
         interface B { b: number }
         interface C { c: number }
@@ -164,18 +217,40 @@ test("a survey reports each plan's demands and what ended it", () => {
         second = b('{"b":2}');
         let third: C = { c: 1 };
         third = c('{"c":2}');
-        console.log(first.a + second.b + third.c);
+        function sum(): number { return first.a + second.b + third.c; }
+        const total = sum();
+        const frame = unknownHostCall();
+        console.log(total);
     `,
         { fileName: resolve("survey-plan.ts") },
-        { report: (line) => lines.push(line), intervalMs: 0 },
+        {
+            report: (line) => lines.push(line),
+            intervalMs: 0,
+            partial: (found) => partial.push(found),
+        },
     );
     assert.equal(report.complete, true);
     const plans = lines.filter((line) => line.startsWith("Survey plan"));
     assert.equal(plans.length, 1, plans.join(" | "));
     assert.match(
         plans[0]!,
-        /^Survey plan after attempt 1: 2 demands added in \d+ s; ended by the end of the program$/,
+        /^Survey plan after attempt 1: 2 demands added in \d+ s; ended by the end of the program; \d+ statement lowerings, \d+ left, 1 refused$/,
     );
+    const planned = partial.find((found) =>
+        found.terminal?.startsWith("Survey still running: plan"),
+    );
+    assert.equal(planned?.refusals.length, 0);
+    assert.deepEqual(
+        planned?.plan?.refusals.map((refusal) => refusal.site.line),
+        [17],
+    );
+    // The attempt that lowers to the end meets it itself; its census is
+    // the strict attempts' alone.
+    assert.deepEqual(
+        report.refusals.map((refusal) => refusal.site.line),
+        [17],
+    );
+    assert.equal(report.plan, undefined);
 });
 
 test("a member call through a refused binding is a cascade of its declaration", () => {
@@ -352,6 +427,114 @@ test("an error outside statement lowering ends the survey as incomplete", () => 
     const frames = report.terminalStack ?? [];
     assert.ok(frames.length > 0 && frames.length <= 12);
     assert.ok(frames.every((frame) => frame.startsWith("at ")));
+});
+
+test("a plan's demands are withdrawn from the replay storage as it stood", () => {
+    // A survey plan's demands are provisional: where the attempt replaying
+    // with them refuses before it lowers a statement, the storage is put
+    // back and the strict attempts go on.
+    const frontend = createCompilerProgram(
+        `interface Samples { values: ArrayLike<number> }
+         function read(samples: Samples): number { return samples.values.length; }
+         const held = read({ values: [1] });`,
+        resolve("survey-withdraw.ts"),
+    );
+    const [record, reader, statement] = frontend.sourceFile.statements;
+    assert.ok(record && ts.isInterfaceDeclaration(record));
+    assert.ok(reader && ts.isFunctionDeclaration(reader));
+    assert.ok(statement && ts.isVariableStatement(statement));
+    const slot = record.members[0];
+    const parameter = reader.parameters[0];
+    const binding = statement.declarationList.declarations[0];
+    assert.ok(slot && ts.isPropertySignature(slot) && parameter && binding);
+    const storage = new ReplayStorage(frontend.checker);
+    const before: StorageRequest[] = [
+        { kind: "numeric-slot", declaration: slot, numeric: "array" },
+        { kind: "enum-array", unions: ["a|b"] },
+    ];
+    const planned: StorageRequest[] = [
+        { kind: "numeric-slot", declaration: slot, numeric: "view" },
+        { kind: "parameter-object", declaration: parameter },
+        { kind: "dynamic", declaration: binding, storage: undefined },
+        { kind: "enum-array", unions: ["c|d"] },
+        { kind: "thrown-value", valueKind: "string" },
+    ];
+    for (const request of before) assert.equal(storage.add(request), true);
+    const withdraw = storage.snapshot();
+    for (const request of planned) assert.equal(storage.add(request), true);
+    for (const request of planned) assert.equal(storage.add(request), false);
+    withdraw();
+    // What it held before the plan stays; the plan's demands are new again.
+    for (const request of before) assert.equal(storage.add(request), false);
+    for (const request of planned) assert.equal(storage.add(request), true);
+    // A later plan asking the same thing at the same place is recognized.
+    assert.equal(
+        storageRequestKey({ kind: "parameter-object", declaration: parameter }),
+        storageRequestKey(planned[1]!),
+    );
+    assert.notEqual(
+        storageRequestKey(planned[0]!),
+        storageRequestKey(planned[1]!),
+    );
+    assert.equal(new Set(planned.map(storageRequestKey)).size, planned.length);
+});
+
+test("a survey ended outside statement lowering publishes its furthest attempt with what ended it", () => {
+    const census = (
+        attempted: number,
+        more: Partial<SurveyReport> = {},
+    ): SurveyReport => ({
+        schemaVersion: 1,
+        complete: false,
+        statements: { attempted, refused: 0 },
+        refusals: [],
+        classes: [],
+        ...more,
+    });
+    const plan = {
+        statements: { attempted: 40, left: 3, refused: 0 },
+        refusals: [],
+    };
+    const furthest = census(25, { terminal: "Survey still running", plan });
+    const ended = census(0, {
+        terminal: "a record layout refused",
+        terminalStack: ["at setup"],
+    });
+    assert.deepEqual(
+        publishedSurvey(ended, furthest),
+        census(25, {
+            plan,
+            terminal: "a record layout refused",
+            terminalStack: ["at setup"],
+        }),
+    );
+    // An attempt that ran to the end, or further, is its own census.
+    const complete = census(30, { complete: true });
+    assert.equal(publishedSurvey(complete, furthest), complete);
+    assert.equal(publishedSurvey(ended, undefined), ended);
+    assert.equal(publishedSurvey(census(25), furthest).plan, undefined);
+});
+
+test("a joined record layout names the two types that disagree on an accessor", () => {
+    // `Live.cx` is the getter its literal defines; a `Plain` stored as a
+    // `Live` joins the two types' layouts.
+    assert.throws(
+        () =>
+            compileSource(`
+                interface Plain { cx: number; cz: number }
+                interface Live { readonly cx: number; readonly cz: number }
+                const flag = Math.random() >= 0;
+                const live: Live = { get cx() { return flag ? 1 : 0; }, cz: 2 };
+                const plains: Plain[] = [{ cx: 3, cz: 4 }];
+                const all: Live[] = [live];
+                all.push(plains[0]!);
+                plains[0]!.cx = 9;
+                let total = 0;
+                for (const entry of all) total += entry.cx + entry.cz;
+                if (total !== 14) throw new Error("total " + total);
+            `),
+        /Property 'cx' is an accessor in 'Live' but not in 'Plain', and one layout \('Plain'\) stores both\./,
+    );
 });
 
 test("a site refusal decided after lowering is recorded against its statement", () => {

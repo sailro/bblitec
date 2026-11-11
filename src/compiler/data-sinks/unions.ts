@@ -1,5 +1,9 @@
 import ts from "typescript";
-import { dataTypesEqual, type DataType } from "../data-types.js";
+import {
+    dataTypesEqual,
+    soleMemberIndex,
+    type DataType,
+} from "../data-types.js";
 import type { Value } from "../types.js";
 import { valueDataType } from "../values/model.js";
 import { writable } from "../emission-transaction.js";
@@ -65,12 +69,12 @@ function unionValue(
         memberIndex < 0 &&
         ((value.kind === "callback" && value.callbackDeclaration) ||
             value.dataType?.kind === "function")
-    ) {
-        const functions = type.members.flatMap((member, index) =>
-            member.kind === "function" ? [index] : [],
-        );
-        if (functions.length === 1) memberIndex = functions[0]!;
-    }
+    )
+        memberIndex = soleMemberIndex(type, "function");
+    // A promise is the union's one promise arm, stored as that arm stores
+    // one (`T | Promise<T>` returning what an async call returned).
+    if (memberIndex < 0 && value.kind === "promise")
+        memberIndex = soleMemberIndex(type, "promise");
     // A record stored as the union's one record type converts through
     // the record sink, which decides how the two types share the object.
     const records = type.members.filter((member) => member.kind === "struct");

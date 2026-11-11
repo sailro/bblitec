@@ -3,7 +3,10 @@ import ts from "typescript";
 import {
     dataTypesEqual,
     doubleLiteral,
+    isNativeStructuralView,
     isUndefinedDataType,
+    presentDataType,
+    tupleComponents,
     type DataType,
 } from "../data-types.js";
 import {
@@ -492,6 +495,16 @@ function convertedElementsCopy(
     element: DataType,
     node: ts.Node,
 ): string {
+    // Native owners listed as the record type that views them are stored
+    // as the owners: no element converts.
+    const owner = presentDataType(element);
+    const record = presentDataType(dataType.element);
+    if (owner && record?.kind === "struct" && isNativeStructuralView(owner))
+        lowerer.context.dataTypes.requireNativeRecordView(
+            record.name,
+            owner,
+            node,
+        );
     const array = lowerer.convertedExpression(node);
     const unaliased = unaliasedValue(lowerer, value, node);
     const lent =
@@ -790,6 +803,16 @@ function valueProduct(
                 ),
             )
             .join(", ")}}`;
+    }
+    // A stored number tuple of the same arity gives each lane: a callback's
+    // `[key, value]` where a Map's entries are expected.
+    if (
+        value.dataType?.kind === "tuple" &&
+        value.dataType.arity === dataType.elements.length &&
+        dataType.elements.every((element) => element.kind === "number")
+    ) {
+        lowerer.context.reachJsData();
+        return `([&]() { const auto lanes = ${value.cpp}; return ${lowerer.context.dataTypes.cppType(dataType)}{${tupleComponents("lanes", dataType.elements.length, "double").join(", ")}}; }())`;
     }
     return value.dataType && dataTypesEqual(value.dataType, dataType)
         ? value.cpp

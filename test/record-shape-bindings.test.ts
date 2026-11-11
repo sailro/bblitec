@@ -183,6 +183,44 @@ test("merged record demands keep each join's own source", () => {
     assert.notEqual(of(a), of(c));
 });
 
+test("a joined record declaring a property only as optional undefined stores it in the others' empty state", () => {
+    // The shapes a function returning literals of a discriminated result
+    // infers: each arm's literal, and the other arm's `reason?: undefined`.
+    const frontend = createCompilerProgram(
+        `interface Refused { changed: false; reason: "unknown"; hostId?: undefined }
+         interface Changed { changed: true; hostId: number; reason?: undefined }
+         interface Declared { changed: false; reason: "unknown" | "invalid" }`,
+        resolve("record-optional-undefined.ts"),
+    );
+    const [refused, changed, declared] = frontend.sourceFile.statements.map(
+        (node) => {
+            assert.ok(ts.isInterfaceDeclaration(node));
+            return frontend.checker.getTypeAtLocation(node.name);
+        },
+    );
+    assert.ok(refused && changed && declared);
+    const node = frontend.sourceFile;
+    const registry = new DataTypeRegistry(
+        frontend.checker,
+        (_node, message) => {
+            throw new Error(message);
+        },
+        new ClassHierarchy(frontend.checker, frontend.program),
+    );
+    registry.prepareRecordComponents(
+        recordComponents(frontend.checker, [
+            { source: refused, target: changed, kind: "value" },
+            { source: refused, target: declared, kind: "value" },
+        ]),
+        [],
+        frontend.program,
+    );
+    const stored = registry.fromTsType(changed, node);
+    assert.equal(stored?.kind, "struct");
+    assert.deepEqual(registry.fromTsType(refused, node), stored);
+    assert.deepEqual(registry.fromTsType(declared, node), stored);
+});
+
 test("record demands replay in the dynamic JSON mode they were made in", () => {
     const frontend = createCompilerProgram(
         `interface Report { kind: string; error: unknown }`,

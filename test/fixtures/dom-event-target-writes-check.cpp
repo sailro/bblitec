@@ -28,6 +28,7 @@ int main() try {
             throw std::runtime_error(message);
     };
     check(SDL_Init(SDL_INIT_VIDEO), "SDL initialization");
+    dom_event_clock() = &pal::performance_milliseconds;
     SDL_Window* window =
         SDL_CreateWindow("DOM event target writes fixture", 640, 480, SDL_WINDOW_HIDDEN);
     check(window != nullptr, "Window creation");
@@ -48,6 +49,11 @@ int main() try {
               "a detached element is not connected");
         check(ui_get_attribute(engine, origin, "data-connected2") == "true",
               "a connected element is");
+        check(ui_get_attribute(engine, origin, "data-kept1") == "detached" &&
+                  ui_get_attribute(engine, origin, "data-kept2") == "attached",
+              "a node test kept in a name answers by its target");
+        check(ui_get_attribute(engine, origin, "data-panels") == "none,loading,button,",
+              "an absent element falls back to another that may be absent");
         check(ui_get_attribute(engine, origin, "data-cancelled") == "document",
               "the document received the detached target's event");
         check(ui_get_attribute(engine, origin, "data-downs") == "2",
@@ -56,8 +62,12 @@ int main() try {
               "a constructed event without a related target has none");
         check(ui_get_attribute(engine, origin, "data-related") == "previous",
               "a constructed event carries its related target");
-        check(ui_get_attribute(engine, origin, "data-client") == "3",
+        check(ui_get_attribute(engine, origin, "data-client") == "9",
               "an init typed as the platform dictionary sets its fields");
+        check(ui_get_attribute(engine, origin, "data-stamped") == "now",
+              "an event's time stamp is the clock when it was created");
+        check(ui_get_attribute(engine, origin, "data-tabled") == "move7,over,",
+              "a table of handlers registers each for its own event class");
 
         pal::UiRmlRuntime runtime(engine, window, 640, 480);
         const auto update = [&](double milliseconds) {

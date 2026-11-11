@@ -458,12 +458,11 @@ function valueStruct(
     }
     const represented = nativeStructuralViewType(value);
     if (represented) {
-        const demand = lowerer.context.dataTypes.nativeRecordViewDemand(
+        lowerer.context.dataTypes.requireNativeRecordView(
             dataType.name,
             represented,
             node,
         );
-        if (demand) throw new NativeRecordStorageRequired(demand);
         lowerer.context.fail(
             node,
             "A native object cannot be retained as a structural record without preserving its identity.",

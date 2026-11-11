@@ -50,6 +50,37 @@ test("AbortController signals abort once, in listener order, with DOMException r
     });
 });
 
+test("an omitted signal read through an optional chain is undefined", () => {
+    // `signal?.aborted` stops at the name generation knows absent: it reads
+    // no AbortSignal, so it is no browser state to answer.
+    const result = compileSource(`
+        interface Session { capture(id: number): boolean; active(): boolean }
+        function createSession(signal?: AbortSignal): Session {
+            let owned: number | null = null;
+            return {
+                capture(id: number): boolean {
+                    if (!Number.isFinite(id) || signal?.aborted) return false;
+                    owned = id;
+                    return true;
+                },
+                active: () => owned !== null && !signal?.aborted,
+            };
+        }
+        const free = createSession();
+        if (!free.capture(4) || !free.active() || free.capture(Number.NaN)) throw new Error("omitted signal");
+        const controller = new AbortController();
+        const sessions = [createSession(), createSession(controller.signal)];
+        if (!sessions[1]!.capture(1) || !sessions[1]!.active()) throw new Error("live signal");
+        controller.abort();
+        if (!sessions[0]!.capture(2) || sessions[1]!.capture(3) || sessions[1]!.active()) throw new Error("aborted signal");
+    `);
+    const tools = optionalNativeFixtureTools(false);
+    assert.ok(tools, "Native fixture compiler required");
+    runGeneratedProgram(tools, "abort-signals/omitted", result.cpp, {
+        expectedOutput: "",
+    });
+});
+
 test("abort listeners settle realm promises", () => {
     const result = compileSource(`
         async function waitFor(signal: AbortSignal): Promise<string> {

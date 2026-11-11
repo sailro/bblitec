@@ -205,6 +205,69 @@ test("a URL member a record takes from a spread call result keeps that member's 
     runPackagedProgram(t, directory, result);
 });
 
+test("a URL read through a built catalog's methods keeps the domain of the entries it holds", (t) => {
+    const directory = resolve("artifacts/packaged-fetch-catalog");
+    const publicDir = join(directory, "public");
+    mkdirSync(join(publicDir, "data"), { recursive: true });
+    writeFileSync(
+        join(publicDir, "data", "index.json"),
+        '{"files":["a.json","b.json","skip.json"]}',
+    );
+    writeFileSync(join(publicDir, "data", "a.json"), '{"name":"a"}');
+    writeFileSync(join(publicDir, "data", "b.json"), '{"name":"b"}');
+    writeFileSync(join(publicDir, "data", "skip.json"), '{"name":"skip"}');
+    // The entries are built in awaited async callbacks, kept in a Map
+    // constructed from them and handed out as a ReadonlyMap; the catalog's
+    // own methods read them back.
+    const result = compileSource(
+        `
+        interface Entry { id: string; url: string }
+        interface Catalog {
+            entries: readonly Entry[];
+            byId: ReadonlyMap<string, Entry>;
+            forKind(kind: string): readonly Entry[];
+            resolve(id: string | null): Entry;
+        }
+        async function loadCatalog(base: string): Promise<Catalog> {
+            const index = (await (await fetch(base + "/data/index.json")).json()) as { files?: string[] };
+            const listed = (index.files ?? []).filter((file) => file.endsWith(".json"));
+            const loaded = await Promise.all(listed.map(async (file): Promise<Entry | null> => {
+                const url = \`\${base}/data/\${file}\`;
+                if (file === "skip.json") return null;
+                return { id: file.replace(".json", ""), url };
+            }));
+            const entries = loaded.filter((entry): entry is Entry => !!entry);
+            const byId = new Map(entries.map((entry) => [entry.id, entry] as const));
+            const fallback = byId.get("a") ?? entries[0]!;
+            const forKind = (kind: string): readonly Entry[] => {
+                const matches = entries.filter((entry) => entry.id.startsWith(kind));
+                return matches.length ? matches : [fallback];
+            };
+            return {
+                entries,
+                byId,
+                forKind,
+                resolve(id) {
+                    const requested = id ? byId.get(id) : undefined;
+                    return requested ?? fallback;
+                },
+            };
+        }
+        async function nameAt(url: string): Promise<string> {
+            return ((await (await fetch(url)).json()) as { name: string }).name;
+        }
+        const catalog = await loadCatalog("");
+        const names = [await nameAt(catalog.resolve("b").url), await nameAt(catalog.resolve(null).url)];
+        const kinds = catalog.forKind("b").map((entry) => ({ id: entry.id, packageUrl: entry.url }));
+        for (const kind of kinds) names.push(await nameAt(kind.packageUrl));
+        if (names.join() !== "b,a,b" || catalog.entries.length !== 2) throw new Error(names.join());
+    `,
+        { fileName: join(directory, "entry.ts"), publicDir },
+    );
+    assert.equal(result.manifest.assets.length, 4);
+    runPackagedProgram(t, directory, result);
+});
+
 test("a runtime-selected KTX2 URL loads among its packaged containers", () => {
     const directory = resolve("artifacts/packaged-ktx2-selection");
     const publicDir = join(directory, "public");

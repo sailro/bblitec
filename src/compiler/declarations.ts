@@ -107,6 +107,9 @@ import {
     isBlockScopedVariable,
     functionOfDeclaration,
     keysMayMatch,
+    isTypeAssertion,
+    isExpressionWrapper,
+    wrappersUnder,
 } from "./syntax.js";
 import {
     commonResourceValue,
@@ -437,21 +440,32 @@ export class DeclarationLowerer {
         "hoisted" | { cppName: string; type: DataType }
     >();
 
+    /**
+     * The storage of a binding declared with `initializer`, or of a name a
+     * pattern declares (no initializer of its own).
+     */
     private lexicalBindingType(
         name: ts.Identifier,
-        initializer: ts.Expression,
+        initializer?: ts.Expression,
     ): DataType | undefined {
         // A deployment constant the checker leaves untyped (an
         // `import.meta.env` key its declarations omit) holds its folded value.
-        const deployed = browserDeploymentValue(this.context, initializer);
+        const deployed =
+            initializer && browserDeploymentValue(this.context, initializer);
         const held =
             ts.isVariableDeclaration(name.parent) &&
             heldClassInstanceType(this.context.checker, name.parent);
         const type =
             (held
-                ? this.context.dataTypes.fromStoredTsType(held, initializer)
+                ? this.context.dataTypes.fromStoredTsType(
+                      held,
+                      initializer ?? name,
+                  )
                 : this.context.dataLowerer.dataTypeAt(name)) ??
-            this.context.dataTypes.fromCheckedObjectInitializer(initializer) ??
+            (initializer &&
+                this.context.dataTypes.fromCheckedObjectInitializer(
+                    initializer,
+                )) ??
             this.context.dataTypes.fromStoredTsType(
                 this.context.checker.getTypeAtLocation(name),
                 name,
@@ -496,6 +510,41 @@ export class DeclarationLowerer {
         return cppName;
     }
 
+    /**
+     * Declares temporal-dead-zone storage of `type` for a name a closure
+     * reads before its declaration; a name with no owned data type is
+     * refused.
+     */
+    private declareForwardStorage(
+        name: ts.Identifier,
+        symbol: ts.Symbol,
+        type: DataType | undefined,
+        site: ts.Node,
+    ): void {
+        if (!type)
+            this.context.fail(
+                site,
+                "A stored closure reading a later binding requires an owned data type to preserve its temporal dead zone.",
+            );
+        this.forwardBindings.set(symbol, {
+            cppName: this.declareLexicalBinding(name, symbol, type),
+            type,
+        });
+    }
+
+    /** Fills temporal-dead-zone storage with the value its declaration gives it. */
+    private emitLexicalInitialization(
+        cppName: string,
+        type: DataType,
+        value: Value,
+        site: ts.Node,
+    ): void {
+        this.context.emit({
+            kind: "expression",
+            code: `${cppName}->initialize(${this.context.dataLowerer.compileKnownValueForSink(value, type, site)});`,
+        });
+    }
+
     private initializeLexicalBinding(
         declaration: ts.VariableDeclaration,
         cppName: string,
@@ -509,10 +558,7 @@ export class DeclarationLowerer {
             this.context.emitDiscardedValue(value);
             return;
         }
-        this.context.emit({
-            kind: "expression",
-            code: `${cppName}->initialize(${this.context.dataLowerer.compileKnownValueForSink(value, type, initializer)});`,
-        });
+        this.emitLexicalInitialization(cppName, type, value, initializer);
         if (
             type.kind === "string" &&
             value.staticString !== undefined &&
@@ -574,25 +620,56 @@ export class DeclarationLowerer {
                           declaration.initializer,
                       ),
               );
-        if (type) {
-            this.forwardBindings.set(symbol, {
-                cppName: this.declareLexicalBinding(
-                    declaration.name,
-                    symbol,
-                    type,
-                ),
+        if (type || initialization === "temporal-dead-zone")
+            return this.declareForwardStorage(
+                declaration.name,
+                symbol,
                 type,
-            });
-            return;
-        }
-        if (initialization === "temporal-dead-zone")
-            this.context.fail(
                 declaration,
-                "A stored closure reading a later binding requires an owned data type to preserve its temporal dead zone.",
             );
         if (!pure && !initializeAhead) return;
         this.emitVariableDeclaration(declaration);
         this.forwardBindings.set(symbol, "hoisted");
+    }
+
+    /**
+     * Makes a later destructured name a callback reads exist before the
+     * callback (`const { radius } = boundary`, read by a closure built
+     * above it): temporal-dead-zone storage of the name's own type, which
+     * the pattern fills where the source declares it
+     * (`initializeForwardPatternName`).
+     */
+    public hoistForwardPatternName(
+        name: ts.Identifier,
+        symbol: ts.Symbol,
+    ): void {
+        const mapped = this.context.dataTypes.withDynamicJsonTypes(true, () =>
+            this.lexicalBindingType(name),
+        );
+        this.declareForwardStorage(
+            name,
+            symbol,
+            mapped && this.context.dataTypes.markStoredObjectReferences(mapped),
+            name,
+        );
+    }
+
+    /** Fills a destructured name's temporal-dead-zone storage; false where the name has none. */
+    private initializeForwardPatternName(
+        name: ts.Identifier,
+        value: Value,
+    ): boolean {
+        const symbol = this.context.symbols.valueSymbol(name);
+        const forward = symbol ? this.forwardBindings.get(symbol) : undefined;
+        if (!symbol || !forward || forward === "hoisted") return false;
+        this.forwardBindings.delete(symbol);
+        this.emitLexicalInitialization(
+            forward.cppName,
+            forward.type,
+            value,
+            name,
+        );
+        return true;
     }
 
     /** A module's retained lexical home exists before its lazy evaluation. */
@@ -2566,11 +2643,22 @@ export class DeclarationLowerer {
                                 : {}),
                         }
                       : this.context.dataLowerer.dataTypeAt(site);
-            if (type?.kind !== "function")
+            if (type?.kind !== "function") {
+                const lacking =
+                    property &&
+                    this.context.dataTypes.unrepresentedSignaturePart(
+                        this.context.checker.getTypeOfSymbolAtLocation(
+                            property,
+                            name,
+                        ),
+                        name,
+                    );
                 this.context.fail(
                     site,
-                    "A mutable record method requires a concrete native function signature.",
+                    "A mutable record method requires a concrete native function signature" +
+                        (lacking ? `: ${lacking}.` : "."),
                 );
+            }
             const slot = emitSharedCell(
                 this.context,
                 this.context.allocateTemporaryCppName(`record_method_${key}`),
@@ -3284,6 +3372,39 @@ export class DeclarationLowerer {
             : undefined;
     }
 
+    /**
+     * Whether an array literal holds, at any depth of its array elements, a
+     * function asserted to a function type its own declaration is not
+     * assignable to (a handler of one event class stored as a listener of
+     * every event).
+     */
+    private holdsReassertedFunction(initializer: ts.Expression): boolean {
+        const checker = this.context.checker;
+        const list = unwrapExpression(initializer);
+        if (!ts.isArrayLiteralExpression(list)) return false;
+        return list.elements.some((element) => {
+            if (ts.isSpreadElement(element)) return false;
+            // Only an element under a wrapper can be asserted, and only a
+            // nested list holds more elements: a table of data is passed
+            // over an element at a time.
+            if (!isExpressionWrapper(element))
+                return (
+                    ts.isArrayLiteralExpression(element) &&
+                    this.holdsReassertedFunction(element)
+                );
+            if (this.holdsReassertedFunction(element)) return true;
+            const assertion = wrappersUnder(element).find(isTypeAssertion);
+            if (!assertion) return false;
+            const asserted = checker.getTypeAtLocation(assertion);
+            const own = checker.getTypeAtLocation(assertion.expression);
+            return (
+                callSignatures(checker, asserted, "present").length > 0 &&
+                callSignatures(checker, own, "present").length > 0 &&
+                !checker.isTypeAssignableTo(own, asserted)
+            );
+        });
+    }
+
     private emitAnnotatedDataDeclaration(
         declaration: ts.VariableDeclaration,
         cppName: string,
@@ -3299,6 +3420,17 @@ export class DeclarationLowerer {
         if (!declaration.initializer) {
             return false;
         }
+        // A never-written list holding a function asserted to a signature
+        // its declaration lacks (`onDown as EventListener`) has no storage
+        // as its annotation: it stays the compile-time list it is, as the
+        // same list without the annotation does.
+        if (
+            !this.context.dynamicBindings.has(declaration) &&
+            variableKind(declaration.parent) === "const" &&
+            this.holdsReassertedFunction(declaration.initializer) &&
+            !objectIsMutated()
+        )
+            return false;
         const createsObject =
             ts.isObjectLiteralExpression(
                 this.context.unwrap(declaration.initializer),
@@ -5749,6 +5881,20 @@ export class DeclarationLowerer {
             value,
             declaration.initializer,
         );
+        // A name with temporal-dead-zone storage is filled where a record's
+        // field binds it (`initializeForwardPatternName`); a pattern over
+        // any other value leaves it unfilled, and is refused.
+        for (const element of declaration.name.elements) {
+            const symbol = ts.isIdentifier(element.name)
+                ? this.context.symbols.valueSymbol(element.name)
+                : undefined;
+            const forward = symbol && this.forwardBindings.get(symbol);
+            if (forward && forward !== "hoisted")
+                this.context.fail(
+                    element.name,
+                    "A closure reading a later destructured name requires that name bound from a record's field.",
+                );
+        }
     }
 
     /**
@@ -5924,6 +6070,8 @@ export class DeclarationLowerer {
                     this.bindPattern(name, initialValue, element);
                     continue;
                 }
+                if (this.initializeForwardPatternName(name, initialValue))
+                    continue;
                 const cppName = this.context.bindings.cppIdentifier(name.text);
                 if (this.context.mutableCapturedParameter(name, initialValue)) {
                     this.context.bindings.bindParameterValue(
@@ -6329,6 +6477,8 @@ export class DeclarationLowerer {
                 this.bindPattern(name, propertyValue, element);
                 continue;
             }
+            if (this.initializeForwardPatternName(name, propertyValue))
+                continue;
             if (this.context.mutableCapturedParameter(name, propertyValue)) {
                 this.context.bindings.bindParameterValue(name, propertyValue);
                 continue;

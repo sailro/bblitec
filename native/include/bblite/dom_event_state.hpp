@@ -56,6 +56,8 @@ struct DomEventState {
     bool cancelable = true;
     bool composed = true;
     bool trusted = true;
+    /** `Event.timeStamp`: `performance.now()` when the event was created. */
+    double time_stamp = 0.0;
     double phase = 0;
     bool passive_listener = false;
     bool propagation_stopped = false;
@@ -75,6 +77,26 @@ struct DomEventState {
         return cancelable && !passive_listener;
     }
 };
+
+/** The clock a new event is stamped with (`Event.timeStamp`). */
+using DomEventClock = double (*)();
+
+/**
+ * The platform that owns `performance.now()` installs its clock here; an
+ * event created without one is stamped 0.
+ */
+inline DomEventClock& dom_event_clock() {
+    static DomEventClock clock = nullptr;
+    return clock;
+}
+
+/** The dispatch state of an event created now. */
+[[nodiscard]] inline std::shared_ptr<DomEventState> new_dom_event_state() {
+    auto state = std::make_shared<DomEventState>();
+    if (const DomEventClock clock = dom_event_clock())
+        state->time_stamp = clock();
+    return state;
+}
 
 template <typename Event> DomEventState& dom_event_state(const Event& event) {
     if (!event.dom)

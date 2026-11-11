@@ -234,7 +234,13 @@ test("camera compiler writes preserve the original owner, scalar snapshots and v
         const returned = returnedTarget(first);
         returned.z += 1;
         if (first.target.z !== 7) throw new Error("returned target alias lost");
-        setCameraLimits(first, { upperRadiusLimit: 6 });
+        // A limit reads undefined until one is set, then the value set.
+        const classicLower = first.lowerBetaLimit;
+        if (classicLower !== undefined || first.upperRadiusLimit !== undefined) throw new Error("limit before any is set");
+        setCameraLimits(first, { upperRadiusLimit: 6, lowerBetaLimit: 0.25 });
+        const lower = first.lowerBetaLimit;
+        if (lower === undefined || lower * 4 !== 1 || (first.upperRadiusLimit ?? 0) !== 6 || (first.upperBetaLimit ?? 9) !== 9 || second.lowerBetaLimit !== undefined)
+            throw new Error("limit read");
         const assigned = first.radius = 10;
         const postfix = first.radius++;
         const prefix = ++first.radius;

@@ -91,6 +91,7 @@ import {
     isEffectFunction,
     libraryWrittenArgument,
     parameterIsReadOnly,
+    parameterIsRebound,
     parameterOnlyRead,
 } from "./parameter-effects.js";
 import { nativeReturnTsType } from "./native-return-type.js";
@@ -167,6 +168,7 @@ import {
 } from "./type-arguments.js";
 import { emitSharedCell, sharedCellCpp } from "./shared-cells.js";
 import { isStaticMember } from "./class-members.js";
+import { returnsOnlyConstructedEvents } from "./uninitialized-handle.js";
 
 export interface CallbackInvocationOptions {
     coroutine?: true;
@@ -1545,6 +1547,7 @@ export interface UserFunctionContext
             | "reachesOnlyClosedEffects"
             | "requiresStaticDataIteration"
             | "probeEmission"
+            | "transaction"
             | "runGenerationFunction"
             | "conditions"
             | "withRecordScopes"
@@ -1673,11 +1676,14 @@ export class UserFunctionLowerer {
      * in that function's own body and reads that call's binding. The
      * argument is the call site's expression: it is returned only when it
      * names nothing the function declares and no invocation context, so it
-     * reads the same bindings from inside the body.
+     * reads the same bindings from inside the body. With `held` `"object"`
+     * the parameter may be written through: it is only never rebound, so
+     * the name still holds the argument's object.
      */
     public inlinedArgument(
         identifier: ts.Identifier,
         scopeOf: (identifier: ts.Identifier) => object | undefined,
+        held: "value" | "object" = "value",
     ): ts.Expression | undefined {
         const parameter = resolvedSymbol(
             this.checker,
@@ -1705,7 +1711,13 @@ export class UserFunctionLowerer {
             invocation.call.arguments
                 .slice(0, index + 1)
                 .some(ts.isSpreadElement) ||
-            !parameterIsReadOnly(this.checker, declaration, parameter.name)
+            (held === "object"
+                ? parameterIsRebound(this.checker, declaration, parameter.name)
+                : !parameterIsReadOnly(
+                      this.checker,
+                      declaration,
+                      parameter.name,
+                  ))
         )
             return undefined;
         const foreign = someAnalysisNode(
@@ -2214,6 +2226,16 @@ export class UserFunctionLowerer {
         node: ts.Node,
     ): DataType | undefined {
         const mapped = context.dataTypes.fromSharedReturnType(type, node);
+        // A function returning only events it constructed returns the event
+        // it owns, whatever DOM event interface declares its result.
+        if (
+            mapped?.kind === "borrowed-platform-event" &&
+            ts.isFunctionLike(node) &&
+            returnsOnlyConstructedEvents(node, this.checker, (expression) =>
+                libraryGlobal(this.checker, expression),
+            )
+        )
+            return { kind: "handle", handle: "dom-event" };
         return mapped?.kind === "struct" &&
             sourceTypeHasObservedIdentity(
                 this.checker,
@@ -6641,12 +6663,7 @@ export class UserFunctionLowerer {
             this.documentReturnStorage(returnType)
                 ? {
                       compileReturn: (expression, type) =>
-                          this.compileNativeReturnValue(
-                              context,
-                              context.compileValue(expression),
-                              type,
-                              expression,
-                          ),
+                          this.compileInlinedReturn(context, expression, type),
                   }
                 : {},
         );
@@ -6666,6 +6683,38 @@ export class UserFunctionLowerer {
                 : { kind: "void", cpp: "" },
             abrupt: terminated && !firstReturn(statements),
         };
+    }
+
+    /**
+     * The value an inlined function returns, stored as its return type: a
+     * parsed document demands dynamic return storage, and a value whose own
+     * storage the return type cannot keep (a `map` building empty lists,
+     * returned as lists of records) is lowered as that type, as a shared
+     * function's return is.
+     */
+    private compileInlinedReturn(
+        context: UserFunctionContext,
+        expression: ts.Expression,
+        type: DataType,
+    ): string {
+        let value: Value | undefined;
+        let stored = "";
+        try {
+            context.transaction(() => {
+                value = context.compileValue(expression);
+                stored = this.compileNativeReturnValue(
+                    context,
+                    value,
+                    type,
+                    expression,
+                );
+            });
+            return stored;
+        } catch (error) {
+            if (value === undefined || !(error instanceof CompileError))
+                throw error;
+            return context.dataLowerer.compileForSink(expression, type);
+        }
     }
 
     private compileNativeReturnValue(

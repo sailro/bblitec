@@ -71,6 +71,10 @@ Rules:
 - `unknown[]` fields require finite source element layouts; object/class initializers and declaration-matched aliases contribute.
 - A record binding whose member is written by a run-time key or replaced takes native storage; its fields typed
   `Record<string, unknown>` are documents.
+- A record type a parsed document is stored as is a document, with every record type the program reads out of it
+  (members, array elements, dictionary values).
+- A stored binding whose literal spells plain JSON that no layout holds (empty arrays, elements of mixed shapes: a
+  JSON import of saved data) is a document.
 - Reached `Iterable<T>` parameters specialize to concrete collection storage, preserving iterator cursor identity.
 - A module `let` assigned only by unreachable functions keeps its initializer. Strict comparisons fold through `const`
   aliases, absent `??` lefts and generation-known booleans.
@@ -135,8 +139,9 @@ Rules:
 - Reached URLs and base64 data become packaged assets. `--public-dir` maps deployment-relative assets,
   `--public-url` serves unmapped root-relative ones, `--site-url` sets the base (default `http://localhost/`);
   registry scenes use the pinned `lab/public`. Runtime asset URLs require a finite inferred local candidate set;
-  unknown keys and percent-encoded bodies refuse. Inference follows closed local Map registries, member and `push`
-  writes and array callback parameters.
+  unknown keys and percent-encoded bodies refuse. Inference follows closed local Map registries (`set` calls or
+  constructor entries), member and `push` writes, array callback parameters, awaited values, `Promise.all` and the
+  methods of a record a call built.
 - `fetch` (application realm): absolute HTTP(S), method, string headers, body, static cache mode, `keepalive`, `signal`; streamed
   `body` reader. Known asset fetches use packaged responses. A `typeof fetch` wrapper forwards its runtime `RequestInit`
   (signal, headers). Request objects, teeing and Headers iteration refuse.
@@ -204,6 +209,7 @@ cancel })` is a program source; `new Response(stream, { status, statusText, head
 
 - ArcRotate/Free cameras, orthographic projection, viewports and SDL controls are live; `attachControl` variants keep
   independent attachments.
+- ArcRotate limits read back as `setCameraLimits` wrote them, `undefined` until set.
 - Window realms: keys reach camera controls after a primary press on the canvas gives it focus.
 - Parented/geospatial cameras, high-precision matrices and floating origin refuse public matrix caches; later
   orthographic plane writes refuse.

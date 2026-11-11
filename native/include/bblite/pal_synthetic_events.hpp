@@ -25,6 +25,8 @@ public:
         PlatformMouseEvent event;
         Engine* owner = nullptr;
         std::weak_ptr<const int> owner_lifetime;
+        /** A constructed KeyboardEvent's keys; `event` then carries the DOM state they share. */
+        std::optional<PlatformKeyboardEvent> keyboard{};
     };
     OwnedDomEvent() = default;
     explicit OwnedDomEvent(PlatformMouseEvent event)
@@ -41,6 +43,18 @@ public:
         return payload_->event;
     }
     [[nodiscard]] const PlatformMouseEvent& mouse() const { return event().mouse_payload(); }
+    /** This event carrying a constructed KeyboardEvent's keys. */
+    [[nodiscard]] OwnedDomEvent with_keyboard(PlatformKeyboardEvent keyboard) const {
+        static_cast<void>(event());
+        keyboard.dom = dom;
+        payload_->keyboard = std::move(keyboard);
+        return *this;
+    }
+    /** The keys of a constructed KeyboardEvent, else null. */
+    [[nodiscard]] const PlatformKeyboardEvent* keyboard() const {
+        static_cast<void>(event());
+        return payload_->keyboard ? &*payload_->keyboard : nullptr;
+    }
     [[nodiscard]] js::BorrowedEvent borrowed_event() const {
         return js::BorrowedEvent(event()).retaining(payload_);
     }
@@ -96,12 +110,26 @@ require_event_options(js::JsonValue options, std::string_view event,
     return options;
 }
 
+/** The modifier keys an event's init dictionary gives. */
+inline void read_modifier_keys(PlatformModifierKeys& keys, const js::JsonValue& options) {
+    keys.shift_key = options.get("shiftKey").truthy();
+    keys.ctrl_key = options.get("ctrlKey").truthy();
+    keys.alt_key = options.get("altKey").truthy();
+    keys.meta_key = options.get("metaKey").truthy();
+}
+
+/** A string member of an event's init dictionary; one it does not give is the empty string. */
+[[nodiscard]] inline std::string init_text(const js::JsonValue& options, const char* name) {
+    const auto value = options.get(name);
+    return value.is_undefined() ? std::string{} : value.to_string();
+}
+
 [[nodiscard]] inline OwnedDomEvent synthetic_event_from_options(std::string type,
                                                                 OwnedDomEvent::Kind kind,
                                                                 const js::JsonValue& options) {
     PlatformMouseEvent event;
     event.payload_kind = kind;
-    event.dom = std::make_shared<DomEventState>();
+    event.dom = new_dom_event_state();
     event.dom->type = std::move(type);
     event.dom->trusted = false;
     event.dom->bubbles = options.get("bubbles").truthy();
@@ -126,15 +154,11 @@ require_event_options(js::JsonValue options, std::string_view event,
         event.screen_y = number("screenY");
         event.movement_x = js::to_int32(number("movementX"));
         event.movement_y = js::to_int32(number("movementY"));
-        event.shift_key = options.get("shiftKey").truthy();
-        event.ctrl_key = options.get("ctrlKey").truthy();
-        event.alt_key = options.get("altKey").truthy();
-        event.meta_key = options.get("metaKey").truthy();
+        read_modifier_keys(event, options);
     }
     if (kind == OwnedDomEvent::Kind::Pointer) {
         event.pointer_id = js::to_int32(number("pointerId"));
-        const auto pointer_type = options.get("pointerType");
-        event.pointer_type = pointer_type.is_undefined() ? "" : pointer_type.to_string();
+        event.pointer_type = init_text(options, "pointerType");
         event.is_primary = options.get("isPrimary").truthy();
         const auto pressure = number("pressure");
         if (!std::isfinite(pressure) || !std::isfinite(static_cast<float>(pressure)))
@@ -145,11 +169,25 @@ require_event_options(js::JsonValue options, std::string_view event,
         const auto data = options.get("data");
         if (!data.is_null() && !data.is_undefined())
             event.input_data = data.to_string();
-        const auto input_type = options.get("inputType");
-        event.input_type = input_type.is_undefined() ? "" : input_type.to_string();
+        event.input_type = init_text(options, "inputType");
         event.is_composing = options.get("isComposing").truthy();
     }
     return OwnedDomEvent(std::move(event));
+}
+
+/** `new KeyboardEvent(type, init)`: the base event with the keys its init dictionary gives. */
+[[nodiscard]] inline OwnedDomEvent
+synthetic_keyboard_event_from_options(std::string type, const js::JsonValue& options) {
+    PlatformKeyboardEvent keyboard;
+    keyboard.key = init_text(options, "key");
+    keyboard.code = init_text(options, "code");
+    const auto location = options.get("location");
+    keyboard.location = location.is_undefined() ? 0u : js::to_uint32(location.to_number());
+    keyboard.repeat = options.get("repeat").truthy();
+    keyboard.is_composing = options.get("isComposing").truthy();
+    read_modifier_keys(keyboard, options);
+    return synthetic_event_from_options(std::move(type), OwnedDomEvent::Kind::Event, options)
+        .with_keyboard(std::move(keyboard));
 }
 
 [[nodiscard]] inline bool dispatch_synthetic_event(Engine& engine, DomEventTarget target,
@@ -184,8 +222,12 @@ require_event_options(js::JsonValue options, std::string_view event,
                                                        "beforeinput",
                                                        "input",
                                                        "change"};
-    if (std::find(std::begin(represented), std::end(represented), event.dom->type) ==
-        std::end(represented))
+    // A constructed KeyboardEvent reaches the key listeners, any other event the pointer family's.
+    static constexpr std::string_view keys[] = {"keydown", "keyup"};
+    const PlatformKeyboardEvent* keyboard = event.keyboard();
+    if (keyboard ? std::find(std::begin(keys), std::end(keys), event.dom->type) == std::end(keys)
+                 : std::find(std::begin(represented), std::end(represented), event.dom->type) ==
+                       std::end(represented))
         throw std::runtime_error("Synthetic dispatch does not represent this event channel.");
     event.dom->trusted = false;
     event.set_owner(engine);
@@ -208,16 +250,17 @@ require_event_options(js::JsonValue options, std::string_view event,
         throw std::logic_error("Element dispatch requires retained UI.");
 #endif
     }
-    dom_input(engine).pointer.dispatch(
-        event.event(),
-        [](auto& callback, const auto& value) {
+    const auto invoke = [](auto& callback, const auto& value) {
 #if BBLITE_WORKERS
-            pal::EventLoop::current().dispatch_synchronous_callback([&] { callback(value); });
+        pal::EventLoop::current().dispatch_synchronous_callback([&] { callback(value); });
 #else
-            callback(value);
+        callback(value);
 #endif
-        },
-        &engine);
+    };
+    if (keyboard)
+        dom_input(engine).keyboard.dispatch(*keyboard, invoke, &engine);
+    else
+        dom_input(engine).pointer.dispatch(event.event(), invoke, &engine);
     return !event.is_default_prevented();
 }
 

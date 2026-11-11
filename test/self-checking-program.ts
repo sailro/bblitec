@@ -14,9 +14,29 @@ import {
 } from "./native-fixture.js";
 
 /**
- * Runs the transpiled module in a fresh VM context, its completion value
- * awaited, then the compiled program through `runGeneratedProgram` in
- * `artifacts/<name>`. Skips `t` when the fixture compiler is unavailable.
+ * Runs the transpiled source in a fresh VM context holding `sandbox`, its
+ * completion value awaited.
+ */
+export async function runTranspiled(
+    source: string,
+    sandbox: object = {},
+    module?: ts.ModuleKind,
+): Promise<void> {
+    await runInNewContext(
+        ts.transpileModule(source, {
+            compilerOptions: {
+                target: ts.ScriptTarget.ES2022,
+                ...(module === undefined ? {} : { module }),
+            },
+        }).outputText,
+        sandbox,
+    );
+}
+
+/**
+ * Runs the source in Node (`runTranspiled`), then the compiled program
+ * through `runGeneratedProgram` in `artifacts/<name>`. Skips `t` when the
+ * fixture compiler is unavailable.
  */
 export async function runSelfCheckingProgram(
     t: TestContext,
@@ -25,11 +45,7 @@ export async function runSelfCheckingProgram(
     options: GeneratedProgramOptions & { compile?: CompileOptions } = {},
 ): Promise<void> {
     const { compile, ...run } = options;
-    await runInNewContext(
-        ts.transpileModule(source, {
-            compilerOptions: { target: ts.ScriptTarget.ES2022 },
-        }).outputText,
-    );
+    await runTranspiled(source);
     const { cpp } = compileSource(source, compile);
     const tools = optionalNativeFixtureTools(false);
     if (!tools) {

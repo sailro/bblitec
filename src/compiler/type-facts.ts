@@ -4,6 +4,7 @@ import {
     unwrapExpression,
     wrappedParent,
     objectLiteralMembers,
+    optionalChainReceivers,
 } from "./syntax.js";
 import { presenceFlagCpp, type Value } from "./values/model.js";
 
@@ -159,6 +160,22 @@ function absentFlags(member: ts.Type): number {
     );
 }
 
+/**
+ * The name a record type is declared under: its alias's, or its own
+ * symbol's. Undefined for the anonymous type of a type literal or of an
+ * object literal.
+ */
+export function declaredRecordName(type: ts.Type): string | undefined {
+    return (
+        type.aliasSymbol?.name ??
+        (type.symbol &&
+        type.symbol.name !== "__type" &&
+        type.symbol.name !== "__object"
+            ? type.symbol.name
+            : undefined)
+    );
+}
+
 /** A union's members, or the type itself. */
 export function unionMembers(type: ts.Type): readonly ts.Type[] {
     return type.isUnion() ? type.types : [type];
@@ -227,6 +244,22 @@ export function absentValueKind(
     return absent.undefined ? "undefined" : undefined;
 }
 
+/** Whether a `?.` link of an optional chain has a receiver that may be nullish. */
+function shortCircuits(
+    checker: ts.TypeChecker,
+    chain: ts.OptionalChain,
+): boolean {
+    return optionalChainReceivers(chain).some((linked) => {
+        const receiver = checker.getTypeAtLocation(linked);
+        const { null: isNull, undefined: isUndefined } = nullability(receiver);
+        return (
+            isNull ||
+            isUndefined ||
+            (receiver.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) !== 0
+        );
+    });
+}
+
 /**
  * The one rule for which absent value `value`, read at `node`, is when it
  * is absent -- for strict comparisons, text and `typeof` alike. The native
@@ -238,35 +271,13 @@ export function absentValueKind(
  *   `undefined`, unless its values may be `null` too ("either");
  * - a type that admits only `undefined` is `undefined`, only `null` is
  *   `null`, both is "either"; an optional chain that can short-circuit (a `?.`
- *   receiver that may be nullish) admits `undefined`;
+ *   receiver that may be nullish) admits `undefined`, and so does one whose
+ *   type names neither: it is absent only where a receiver's storage is;
  * - a type that names neither leaves the representation to say: a
  *   presence flag marks a slot that is not there (`undefined`); otherwise
  *   "unconstrained" -- a comparison keeps its absence test, text spells
  *   what the optional holds, `typeof` answers "undefined".
  */
-/** Whether a `?.` link of an optional chain has a receiver that may be nullish. */
-function shortCircuits(
-    checker: ts.TypeChecker,
-    chain: ts.OptionalChain,
-): boolean {
-    for (
-        let link: ts.Expression = chain;
-        ts.isOptionalChain(link);
-        link = link.expression
-    ) {
-        if (ts.isNonNullChain(link) || !link.questionDotToken) continue;
-        const receiver = checker.getTypeAtLocation(link.expression);
-        const { null: isNull, undefined: isUndefined } = nullability(receiver);
-        if (
-            isNull ||
-            isUndefined ||
-            (receiver.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) !== 0
-        )
-            return true;
-    }
-    return false;
-}
-
 export function absenceKind(
     checker: ts.TypeChecker,
     value: Value,
@@ -275,9 +286,14 @@ export function absenceKind(
     if (value.slotFoundCpp) return { slotFoundCpp: value.slotFoundCpp };
     let absent = nullability(checker.getTypeAtLocation(node));
     // An optional chain that can short-circuit is undefined, whatever its
-    // type names; one whose `?.` receivers are all present cannot.
+    // type names; one whose `?.` receivers are all present cannot, so an
+    // absence its type does not name is a receiver's storage short-circuiting.
     const unwrapped = ts.isExpression(node) ? unwrapExpression(node) : node;
-    if (ts.isOptionalChain(unwrapped) && shortCircuits(checker, unwrapped))
+    if (
+        ts.isOptionalChain(unwrapped) &&
+        (shortCircuits(checker, unwrapped) ||
+            (!absent.null && !absent.undefined))
+    )
         absent = { ...absent, undefined: true };
     if (
         !absent.null &&

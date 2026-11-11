@@ -8,6 +8,7 @@ import ts from "typescript";
 import { bindingIsOnlyCalledDirectly } from "./binding-rebinds.js";
 import { schedulerOf } from "./schedulers.js";
 import { CompileError } from "./compile-error.js";
+import { isAbsentValue } from "./values/model.js";
 import {
     expressionMayRunCode,
     soleReturnedExpression,
@@ -460,6 +461,27 @@ export class NativeFunctionLowerer {
             // specialized inline; a namespace data function has neither the
             // entry engine binding nor JavaScript closure lifetime.
             // Iterator factories also retain their actual traced producer type.
+            return undefined;
+        }
+        if (
+            signature.parameters.some((parameter, index) => {
+                const argument = call.arguments[index];
+                const value =
+                    argument &&
+                    this.context.knownValueWithoutEvaluation(argument);
+                return (
+                    value !== undefined &&
+                    isAbsentValue(value) &&
+                    !dataTypesEqual(
+                        this.context.dataTypes.nullableType(parameter.type),
+                        parameter.type,
+                    )
+                );
+            })
+        ) {
+            // A value generation knows absent, passed where the parameter's
+            // storage holds none (`f(x!)`): the body runs with it inline, as
+            // JavaScript runs it, and throws where it first reads through it.
             return undefined;
         }
         if (

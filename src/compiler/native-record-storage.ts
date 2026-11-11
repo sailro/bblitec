@@ -1,10 +1,11 @@
 import { StorageDemand } from "./storage-demand.js";
 import type { CompileError } from "./compile-error.js";
 import type { StorageRequest } from "./replay-storage.js";
-import type ts from "typescript";
+import ts from "typescript";
 import type { InstantiatedRecord, RecordJoin } from "./record-components.js";
 import type { DataType } from "./data-types/model.js";
 import { dataTypesEqual } from "./data-types/operations.js";
+import { declaredRecordName } from "./type-facts.js";
 
 /** The source type and generic environment that produced a native record. */
 export interface NativeRecordStorageDemand {
@@ -96,7 +97,18 @@ const RECORD_STORAGE_FLAGS = [
     "bareCallable",
 ] as const;
 
-/** What a record demand asks for, for reports: its flags, joins and accessors. */
+/** The properties an anonymous record type's report name spells before it elides the rest. */
+const NAMED_SHAPE_PROPERTIES = 6;
+
+/** A record type's name for a report; an anonymous one is its shape's. */
+function recordTypeName(type: ts.Type): string {
+    const declared = declaredRecordName(type);
+    if (declared) return declared;
+    const names = type.getProperties().map((property) => property.name);
+    return `{ ${names.slice(0, NAMED_SHAPE_PROPERTIES).join(", ")}${names.length > NAMED_SHAPE_PROPERTIES ? ", ..." : ""} }`;
+}
+
+/** What a record demand asks for, for reports: its record, flags, joins and accessors. */
 export function describeRecordDemand(
     demand: NativeRecordStorageDemand,
 ): string {
@@ -104,10 +116,13 @@ export function describeRecordDemand(
     if (demand.dictionary) asked.push(`dictionary of ${demand.dictionary}`);
     if (demand.native) asked.push("native");
     if (demand.classView) asked.push("class view");
-    if (demand.joins?.length) asked.push(`${demand.joins.length} join(s)`);
+    for (const { source, target, kind } of demand.joins ?? [])
+        asked.push(
+            `${recordTypeName(source)} joins ${recordTypeName(target)}${kind === "value" ? "" : ` by ${kind}`}`,
+        );
     if (demand.accessors?.length)
         asked.push(`${demand.accessors.length} accessor(s)`);
-    return asked.join(", ") || "shared";
+    return `${recordTypeName(demand.type)}: ${asked.join(", ") || "shared"}`;
 }
 
 /**

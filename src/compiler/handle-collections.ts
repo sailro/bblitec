@@ -441,6 +441,7 @@ interface HandleCollectionsContext
             | "expectArgumentCount"
             | "reachFeature"
             | "probeEmission"
+            | "userFunctions"
         > {}
 
 /**
@@ -1814,10 +1815,7 @@ export class HandleCollections {
         }
         if (!compileTimeListKinds.includes(pushed.kind)) return undefined;
         if (this.context.isInRuntimeControlFlow()) {
-            const declaration = initializedVariableDeclaration(
-                this.context.checker,
-                owner,
-            );
+            const declaration = this.listDeclaration(owner);
             if (
                 declaration &&
                 demandedStorageType(
@@ -1863,6 +1861,31 @@ export class HandleCollections {
     }
 
     /**
+     * The initialized declaration a list name reads: its own, or the one
+     * the argument names where the name is a parameter an inlined call
+     * bound to it, through as many calls as handed the list down.
+     */
+    private listDeclaration(
+        name: ts.Identifier,
+    ): ts.VariableDeclaration | undefined {
+        for (let current = name; ;) {
+            const declaration = initializedVariableDeclaration(
+                this.context.checker,
+                current,
+            );
+            if (declaration) return declaration;
+            const argument = this.context.userFunctions.inlinedArgument(
+                current,
+                (identifier) => this.context.bindings.scopeOf(identifier),
+                "object",
+            );
+            const next = argument && this.context.unwrap(argument);
+            if (!next || !ts.isIdentifier(next)) return undefined;
+            current = next;
+        }
+    }
+
+    /**
      * `<local>.includes(<value>)`, or an index search, over a compile-time
      * list whose element type has no storage: the identity of a native
      * owner is its own, so the list holds that owner natively.
@@ -1879,7 +1902,7 @@ export class HandleCollections {
         if (tuple?.kind !== "tuple" || !tuple.tupleElements) return;
         // The searched value is only looked at: the search lowers it.
         this.requireElementView(
-            initializedVariableDeclaration(this.context.checker, owner),
+            this.listDeclaration(owner),
             () =>
                 this.context.probeEmission(
                     () => this.context.compileValue(argumentAt(call, 0)),

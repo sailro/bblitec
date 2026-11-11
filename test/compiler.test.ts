@@ -7,7 +7,13 @@ import assert from "node:assert/strict";
 import { regexText } from "./regex.js";
 import { pinnedPackageSpecifiers } from "../src/capture-suite-reference.js";
 import { babylonPackages, isBabylonModule } from "../src/compiler/symbols.js";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+    mkdirSync,
+    mkdtempSync,
+    readFileSync,
+    rmSync,
+    writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test from "node:test";
@@ -3485,6 +3491,94 @@ test("defaults an absent nullable array element before nullish coalescing", () =
     assert.doesNotMatch(result.cpp, /array_index_checked\(v_\w*pads,/);
 });
 
+test("a record or an element kept as an object is selected by the record's presence", () => {
+    // `list ?? root` under `object | null`: a record and an element, each
+    // stored as the document value the name keeps for its identity (the
+    // identities themselves run in `language-constructs.test.ts`).
+    const result = compileSource(`
+        import { createEngine } from "@babylonjs/lite";
+        const canvas = document.getElementById("renderCanvas") as HTMLCanvasElement;
+        await createEngine(canvas);
+        interface Lister { options(): readonly HTMLElement[]; entry(): HTMLElement | null }
+        const outer = document.createElement("div");
+        const inner = document.createElement("ul");
+        outer.appendChild(inner);
+        document.body.appendChild(outer);
+        let current: { inner: HTMLElement; lister: Lister } | null = null;
+        function listerIn(root: Node): Lister | null { return current && root.contains(current.inner) ? current.lister : null; }
+        let kept: object | null = null;
+        function handle(root: HTMLElement | null): void {
+            const list = root ? listerIn(root) : null;
+            const area: object | null = list ?? root;
+            kept = area;
+        }
+        handle(outer);
+        current = { inner, lister: { options: () => [inner], entry: () => null } };
+        handle(outer);
+        handle(null);
+        if (kept !== null) throw new Error("kept");
+    `);
+    assert.match(
+        result.cpp,
+        /_area = \(v_fn\d+_list\.is_null\(\) \|\| v_fn\d+_list\.is_undefined\(\) \? bbl::js::json_value\(bbl::dom_target_value\(/,
+    );
+});
+
+test("a gamepad source built before the engine reads the pads through the Window's engine", () => {
+    const directory = resolve("artifacts/gamepad-before-engine");
+    mkdirSync(directory, { recursive: true });
+    writeFileSync(join(directory, "worker.ts"), "self.close();");
+    const result = compileSource(
+        `
+        import { createEngine, createSceneContext, createFreeCamera, registerScene, startEngine, onBeforeRender } from "@babylonjs/lite";
+        const worker = new Worker(new URL("./worker.ts", import.meta.url), { type: "module" });
+        worker.terminate();
+        interface GamepadSource { getGamepads(): readonly (Gamepad | null)[] | null; isActive(): boolean; standard(): number }
+        function browserGamepadSource(): GamepadSource {
+            const getGamepads = (): readonly (Gamepad | null)[] | null =>
+                typeof navigator !== "undefined" && typeof navigator.getGamepads === "function" ? navigator.getGamepads() : null;
+            return {
+                getGamepads,
+                isActive: () => typeof document === "undefined" || (document.visibilityState === "visible" && document.hasFocus()),
+                standard: () => {
+                    let count = 0;
+                    for (const pad of getGamepads() ?? []) if (pad && pad.connected && pad.mapping === "standard") count++;
+                    return count;
+                },
+            };
+        }
+        async function main(): Promise<void> {
+            const source = browserGamepadSource();
+            const canvas = document.getElementById("renderCanvas") as HTMLCanvasElement;
+            const engine = await createEngine(canvas);
+            const scene = createSceneContext(engine);
+            scene.camera = createFreeCamera([0, 1, -5], [0, 0, 0]);
+            let connected = 0;
+            onBeforeRender(scene, () => {
+                const pads = source.isActive() ? source.getGamepads() : null;
+                connected = source.standard();
+                for (const pad of pads ?? []) if (pad) connected++;
+            });
+            await registerScene(scene);
+            await startEngine(engine);
+        }
+        void main();
+    `,
+        { fileName: join(directory, "entry.ts") },
+    );
+    assert.match(
+        result.cpp,
+        /platform_gamepads\(bbl::pal::window_document_engine\(\)\)/,
+    );
+    // The Window's input focus gates the source.
+    assert.match(result.cpp, /document_hidden.*bbl::document_has_focus\(\)/s);
+    // A pad read where no engine exists yet is the Window's too.
+    assert.match(
+        result.cpp,
+        /gamepad_connected\(bbl::pal::window_document_engine\(\), /,
+    );
+});
+
 test("preserves the optional first value of a temporary Map iterator", () => {
     const result = compileSource(`
         import { createBox, createEngine, startEngine } from "babylon-lite";
@@ -3817,6 +3911,17 @@ test("gives constructor-assigned resource fields distinct native storage", () =>
     assert.doesNotMatch(result.cpp, /auto&\s+(v_[A-Za-z0-9_]+)\s*=\s*\1;/);
     assert.match(result.cpp, /v_bblite_class_field_engine_/);
     assert.match(result.cpp, /v_bblite_class_field_scene_/);
+});
+
+test("a reassigned record method with no native signature names the part that has none", () => {
+    assert.throws(
+        () =>
+            compileSource(`
+                const late = { held: ((value: WeakRef<object>) => value.deref() !== undefined) as (value: WeakRef<object>) => boolean };
+                late.held = () => false;
+            `),
+        /A mutable record method requires a concrete native function signature: 'WeakRef<object>' > type argument 'object': no native representation\./,
+    );
 });
 
 test("rejects reassigning a resource-holding class field", () => {
@@ -17036,6 +17141,31 @@ test("retains Scene 118's nullable billboard pick record and all hit fields", ()
     assert.match(
         result.cpp,
         /const bbl::Vec3d eye = bbl::upstream::camera_position\(bbl::handle_at\(v_engine\.cameras, v_camera\)\); return bblscene::Vec3\{eye\.x, eye\.y, eye\.z\}/,
+    );
+});
+
+test("a loop reading the camera's position each pass may return from inside", () => {
+    // The read records no composition row: the loop runs as written.
+    const result = compileSource(`
+        import { createArcRotateCamera, createEngine, getCameraPosition } from "babylon-lite";
+        const engine = await createEngine({});
+        const camera = createArcRotateCamera(1, 1, 10, { x: 0, y: 0, z: 0 });
+        const floorAt = (x: number, z: number): number => Math.sin(x) + Math.cos(z);
+        function lift(): boolean {
+            for (let pass = 0; pass < 4; pass++) {
+                const eye = getCameraPosition(camera);
+                if (eye.y >= floorAt(eye.x, eye.z) + 0.5) return true;
+                const before = camera.beta;
+                camera.beta -= 0.1;
+                if (camera.beta === before) return false;
+            }
+            return false;
+        }
+        if (!lift() && camera.beta > 2) throw new Error("lift");
+    `);
+    assert.match(
+        result.cpp,
+        /for \(; v_fn[0-9]+_block[0-9]+_pass < 4; [^)]*\) \{[\s\S]*?bbl::upstream::camera_position\([\s\S]*?return true;/,
     );
 });
 

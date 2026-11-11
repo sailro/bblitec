@@ -701,11 +701,17 @@ function writeSurvey(
     censusPath: string,
     source: string,
     compileOptions: CompileOptions,
+    leaveCoverage: () => void,
 ): void {
-    // A survey of a large entry runs for hours: it says where it is.
+    // A survey of a large entry runs for hours: it says where it is, and
+    // leaves the census it keeps at each restart.
     const { report } = surveySource(source, compileOptions, {
         report: (line) => console.error(line),
         intervalMs: 5 * 60 * 1000,
+        partial: (found) => {
+            writeJsonRecord(censusPath, found);
+            leaveCoverage();
+        },
     });
     writeJsonRecord(censusPath, report);
     console.log(
@@ -727,13 +733,22 @@ function writeSurvey(
     }
 }
 
-function withCoverage<T>(path: string | undefined, lower: () => T): T {
-    if (!path) return lower();
+/**
+ * Runs `lower` under `--coverage`, writing what it observed when it ends.
+ * `leave` writes what stands so far: a survey calls it at each restart, so
+ * one stopped early still leaves its furthest attempt's coverage.
+ */
+function withCoverage<T>(
+    path: string | undefined,
+    lower: (leave: () => void) => T,
+): T {
+    if (!path) return lower(() => {});
     const coverage = new SourceCoverage();
+    const leave = (): void => writeJsonRecord(resolve(path), coverage.report());
     try {
-        return coverage.run(lower);
+        return coverage.run(() => lower(leave));
     } finally {
-        writeJsonRecord(resolve(path), coverage.report());
+        leave();
     }
 }
 
@@ -792,8 +807,8 @@ async function main(): Promise<void> {
     };
     if (options.target.kind === "survey") {
         const census = resolve(options.target.census);
-        withCoverage(options.coverage, () =>
-            writeSurvey(census, source, compileOptions),
+        withCoverage(options.coverage, (leave) =>
+            writeSurvey(census, source, compileOptions, leave),
         );
         return;
     }

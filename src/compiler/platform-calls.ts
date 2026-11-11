@@ -27,6 +27,8 @@ import { UiProjection } from "./ui-projection.js";
 import {
     computedStyleElement,
     documentEngine,
+    documentVisibilityAvailable,
+    isDocumentFocusCall,
     requireWindowHost,
     windowErrorEventValue,
 } from "./window-events.js";
@@ -153,6 +155,7 @@ interface PlatformCallContext
             | "expectSameEngine"
             | "fail"
             | "hasPresentationHost"
+            | "platformDocumentHidden"
             | "probeEmission"
             | "isCanvasElement"
             | "libraryGlobal"
@@ -790,6 +793,12 @@ export class PlatformCalls {
                 cpp: `bbl::exit_pointer_lock(${this.context.requireDefaultEngine(call)})`,
             };
         }
+        // The Window's input focus, where a document answers.
+        if (
+            isDocumentFocusCall(this.context, call) &&
+            documentVisibilityAvailable(this.context)
+        )
+            return { kind: "boolean", cpp: "bbl::document_has_focus()" };
         return undefined;
     }
 

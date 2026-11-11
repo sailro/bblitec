@@ -14,6 +14,7 @@
 // compile-time metadata rather than from a native field, and
 // `camera.target` synthesizes a three-component record. Those differ in
 // what they *do*, not in which field they name.
+import { EVENT_TYPE_MEMBER, foreignEventTypes } from "./dom-listeners.js";
 import { AbsentRecordProperties } from "./absent-record-properties.js";
 import { readEngineRenderFunction } from "./engine-render-function.js";
 import { elementChildrenSnapshot, readByOneWalk } from "./element-children.js";
@@ -37,7 +38,8 @@ import {
     isEffectTaskMethodName,
     reachEffectTaskMethod,
 } from "./effect-task-methods.js";
-import { doubleLiteral } from "../cpp-literals.js";
+import { doubleLiteral, snakeCase } from "../cpp-literals.js";
+import { CAMERA_LIMIT_PROPERTIES } from "./camera-setters.js";
 import {
     compositeScalarAccessors,
     compositeScalarFunction,
@@ -1007,6 +1009,19 @@ export const propertyRules: readonly PropertyRule[] = [
         value: "number",
         record: ["cameras", "wheel_precision"],
     },
+    // The limits `setCameraLimits` writes: absent until one is set.
+    ...CAMERA_LIMIT_PROPERTIES.map((property): PropertyRule => ({
+        owner: "camera",
+        property,
+        value: "data",
+        dataType: {
+            kind: "optional",
+            inner: { kind: "number" },
+            undefinedOnly: true,
+        },
+        record: ["cameras", snakeCase(property)],
+        nativeOptionalScalar: "double",
+    })),
     {
         owner: "camera",
         property: "panningSensibility",
@@ -1387,6 +1402,20 @@ export const propertyRules: readonly PropertyRule[] = [
     },
     {
         owner: "gamepad",
+        property: "connected",
+        value: "boolean",
+        helper: "bbl::gamepad_connected",
+        helperTakesEngine: true,
+    },
+    {
+        owner: "gamepad",
+        property: "mapping",
+        value: "string",
+        helper: "bbl::gamepad_mapping",
+        helperTakesEngine: true,
+    },
+    {
+        owner: "gamepad",
         property: "axes",
         value: "data",
         dataType: { kind: "vector", element: { kind: "number" } },
@@ -1411,6 +1440,13 @@ export const propertyRules: readonly PropertyRule[] = [
         property: "pressed",
         value: "boolean",
         helper: "bbl::gamepad_button_pressed",
+        helperTakesEngine: true,
+    },
+    {
+        owner: "gamepad-button",
+        property: "value",
+        value: "number",
+        helper: "bbl::gamepad_button_value",
         helperTakesEngine: true,
     },
     // A Touch snapshot (`bbl::DomTouch`); pageX/pageY read the client
@@ -1837,14 +1873,41 @@ export const propertyRules: readonly PropertyRule[] = [
  * other. Reads and writes now agree by construction.
  */
 export function cameraRecordField(property: string): string | undefined {
-    if (property === "worldMatrixVersion") return undefined;
-    const rule = propertyRules.find(
-        (candidate) =>
-            candidate.owner === "camera" &&
-            candidate.property === property &&
-            "record" in candidate,
-    );
-    return rule && "record" in rule ? rule.record?.[1] : undefined;
+    const stored = cameraRecordRule(property);
+    return stored && !stored.optional ? stored.field : undefined;
+}
+
+/** A camera property's native record field. */
+export interface CameraRecordField {
+    readonly field: string;
+    /** Absent until written (`std::optional`): a limit. */
+    readonly optional: boolean;
+}
+
+const CAMERA_RECORD_FIELDS: ReadonlyMap<string, CameraRecordField> = (() => {
+    const fields = new Map<string, CameraRecordField>();
+    for (const rule of propertyRules) {
+        const field = "record" in rule ? rule.record?.[1] : undefined;
+        if (
+            rule.owner !== "camera" ||
+            field === undefined ||
+            rule.property === "worldMatrixVersion"
+        )
+            continue;
+        const optional =
+            "nativeOptionalScalar" in rule &&
+            rule.nativeOptionalScalar !== undefined;
+        if (!fields.has(rule.property))
+            fields.set(rule.property, { field, optional });
+    }
+    return fields;
+})();
+
+/** The native record field a camera property stores into, with whether it may be absent. */
+export function cameraRecordRule(
+    property: string,
+): CameraRecordField | undefined {
+    return CAMERA_RECORD_FIELDS.get(property);
 }
 
 /** A primitive stored on the handle value itself has no resource setter. */
@@ -2276,6 +2339,11 @@ function touchEventMember(
         ? { kind: "boolean", cpp: `${payload}.${modifier}` }
         : undefined;
 }
+/** The numbers an event's dispatch state holds, by DOM member. */
+const DOM_EVENT_NUMBERS: ReadonlyMap<string, string> = new Map([
+    ["eventPhase", "phase"],
+    ["timeStamp", "time_stamp"],
+]);
 const DOM_EVENT_FLAGS = new EmissionMap<string, string>([
     ["bubbles", "bubbles"],
     ["cancelable", "cancelable"],
@@ -2412,9 +2480,11 @@ export class PropertyAccessLowerer {
      * read refuses only where the type requires the property: it is
      * undefined where the type declares the property optional or requires
      * no such property (an untyped value, a union one of whose arms lacks
-     * it), and where the read's own type admits an absent value. A class
-     * instance keeps its class's members, and every object
-     * Object.prototype's.
+     * it), and where the read's own type admits an absent value. A
+     * narrowing does not change which record a name holds: a name declared
+     * as a union one of whose arms lacks the property may hold that arm's
+     * record under a test generation does not settle. A class instance
+     * keeps its class's members, and every object Object.prototype's.
      */
     public absentPropertyReadsUndefined(
         owner: Value,
@@ -2432,6 +2502,24 @@ export class PropertyAccessLowerer {
                 ? (declaredProperty.flags & ts.SymbolFlags.Optional) !== 0
                 : !owner.classDeclaration &&
                   AbsentRecordProperties.omittable(property)
+        )
+            return true;
+        const named =
+            ts.isPropertyAccessExpression(read) ||
+            ts.isElementAccessExpression(read)
+                ? this.context.unwrap(read.expression)
+                : undefined;
+        const symbol =
+            named && ts.isIdentifier(named)
+                ? this.context.symbols.valueSymbol(named)
+                : undefined;
+        if (
+            symbol &&
+            !owner.classDeclaration &&
+            AbsentRecordProperties.omittable(property) &&
+            presentMembers(this.context.checker.getTypeOfSymbol(symbol)).some(
+                (arm) => !arm.getProperty(property),
+            )
         )
             return true;
         const declared = this.context.dataLowerer.dataTypeAt(read);
@@ -2943,6 +3031,12 @@ export class PropertyAccessLowerer {
                     readOnly: true,
                 };
             }
+            if (property === "location")
+                return {
+                    kind: "number",
+                    cpp: `static_cast<double>(${owner.cpp}.location)`,
+                    dataType: { kind: "number" },
+                };
             this.context.fail(
                 nameSite,
                 `Platform keyboard events do not expose '${property}'.`,
@@ -3158,15 +3252,21 @@ export class PropertyAccessLowerer {
                 };
             const declared = readProperty(this.context, owner, property, site);
             if (declared) return declared;
-            if (property === "type")
+            if (property === EVENT_TYPE_MEMBER)
                 return {
                     kind: "string",
                     cpp: `bbl::dom_event_state(${owner.cpp}).type`,
+                    // A listener's own event is of its family's kind.
+                    ...(owner.kind !== "custom-event" &&
+                    !owner.platformEventBase
+                        ? { excludedStrings: foreignEventTypes(owner.kind) }
+                        : {}),
                 };
-            if (property === "eventPhase")
+            const numberField = DOM_EVENT_NUMBERS.get(property);
+            if (numberField)
                 return {
                     kind: "number",
-                    cpp: `bbl::dom_event_state(${owner.cpp}).phase`,
+                    cpp: `bbl::dom_event_state(${owner.cpp}).${numberField}`,
                 };
             const booleanField = DOM_EVENT_FLAGS.get(property);
             if (booleanField)
@@ -3540,8 +3640,9 @@ export class PropertyAccessLowerer {
                 };
             if (property === "type")
                 return { kind: "string", cpp: `${owner.cpp}.dom->type` };
-            if (property === "eventPhase")
-                return { kind: "number", cpp: `${owner.cpp}.dom->phase` };
+            const number = DOM_EVENT_NUMBERS.get(property);
+            if (number)
+                return { kind: "number", cpp: `${owner.cpp}.dom->${number}` };
             const flag = DOM_EVENT_FLAGS.get(property);
             if (flag)
                 return { kind: "boolean", cpp: `${owner.cpp}.dom->${flag}` };

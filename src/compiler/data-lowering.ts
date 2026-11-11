@@ -219,6 +219,7 @@ import {
     type TypedArrayKind,
     callMember,
     isUiElementHandleType,
+    soleMemberIndex,
 } from "./data-types.js";
 import {
     commonResourceValue,
@@ -658,6 +659,7 @@ interface DataLoweringContext extends Pick<
     | "callbacks"
     | "compileStringLiteral"
     | "emitDiscardedValue"
+    | "emitOptionalResourceAssignment"
     | "emitExpressionAsStatement"
     | "compileNumber"
     | "castNumber"
@@ -4544,6 +4546,12 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                     (member.kind === "string" && narrowed.kind === "enum")),
         );
         if (exact >= 0) return exact;
+        // A narrowing to a function (`typeof value === "function"`) leaves
+        // the union's one function member, whichever signature spells it.
+        if (narrowed?.kind === "function") {
+            const sole = soleMemberIndex(type, "function");
+            if (sole >= 0) return sole;
+        }
         // A record held under another record type of the same storage (a
         // method's fresh literal read through its interface's `readonly`
         // fields) is that member.
@@ -4654,6 +4662,17 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             ),
             nativeCaptures: captures,
         };
+    }
+
+    /** `unionMemberRead` over a value held as a data union; undefined for any other value. */
+    public readThroughUnion(
+        owner: Value,
+        node: ts.Node,
+        read: (member: Value) => Value,
+    ): Value | undefined {
+        return owner.kind === "data" && owner.dataType?.kind === "union"
+            ? this.unionMemberRead(owner, owner.dataType.members, node, read)
+            : undefined;
     }
 
     /**
@@ -4961,6 +4980,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
 
     public compileNullishCoalesce(
         expression: ts.BinaryExpression,
+        sink?: DataType,
     ): Value | undefined {
         // The operator tests storage even when TypeScript still considers a
         // field narrowed across a helper that can have changed it.
@@ -5242,25 +5262,32 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                     fallbackLines,
                 );
             // Operands of two members of the operator's union type (a found
-            // record or a literal) are each stored as that union.
+            // record or a literal) are each stored as that union. Objects
+            // of two kinds kept where any object is (`object | null`,
+            // stored as a document value) are each stored as that document
+            // value.
             const union = this.dataTypeAt(expression);
-            if (
+            const stored =
                 left.kind === "data" &&
                 union?.kind === "union" &&
                 (fallback.kind !== left.kind ||
                     (fallback.dataType !== undefined &&
                         left.dataType !== undefined &&
                         !dataTypesEqual(fallback.dataType, left.dataType)))
-            ) {
+                    ? union
+                    : sink?.kind === "json" && fallback.kind !== left.kind
+                      ? sink
+                      : undefined;
+            if (stored) {
                 const { optionalFoundCpp: _found, ...present } = left;
                 const found = this.compileKnownValueForSink(
                     present,
-                    union,
+                    stored,
                     expression.left,
                 );
                 return this.leafValue(
-                    `(${leftFound} ? ${found} : ${fallbackArm(union, () => this.compileKnownValueForSink(fallback, union, expression.right))})`,
-                    union,
+                    `(${leftFound} ? ${found} : ${fallbackArm(stored, () => this.compileKnownValueForSink(fallback, stored, expression.right))})`,
+                    stored,
                 );
             }
             if (fallback.kind !== left.kind) {
@@ -5431,14 +5458,20 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 );
             }
             const rightType = this.dataTypeAt(expression.right);
+            const rightInner =
+                rightType?.kind === "optional"
+                    ? this.context.dataTypes.markStoredObjectReferences(
+                          rightType.inner,
+                      )
+                    : undefined;
             if (
                 rightType?.kind === "optional" &&
-                dataTypesEqual(
-                    this.context.dataTypes.markStoredObjectReferences(
-                        rightType.inner,
-                    ),
-                    inner,
-                )
+                rightInner &&
+                (dataTypesEqual(rightInner, inner) ||
+                    // One kind of resource, however each side names its engine.
+                    (rightInner.kind === "handle" &&
+                        inner.kind === "handle" &&
+                        rightInner.handle === inner.handle))
             ) {
                 // Only the fallback can remain nullish. Its absence metadata
                 // need not match the left operand's retained storage.
@@ -11912,7 +11945,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             if (folded !== unwrapped) {
                 return this.compileForSink(folded, dataType);
             }
-            const selected = this.compileNullishCoalesce(unwrapped);
+            const selected = this.compileNullishCoalesce(unwrapped, dataType);
             if (selected)
                 return this.compileKnownValueForSink(
                     selected,
@@ -13093,17 +13126,24 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 cpp: `${value.cpp}.asserted_instance<${this.context.dataTypes.cppType(dataType)}>()`,
                 dataType,
             };
+        // A parsed array is stored as the array sink stores it: parsed
+        // records stay documents, every other element converts.
+        if (isJsonValue(value) && dataType.kind === "vector")
+            return {
+                kind: "data",
+                cpp: this.compileKnownValueForSink(value, dataType, source),
+                dataType,
+                freshData: true,
+            };
         if (isJsonValue(value)) this.requireDocumentRecord(dataType);
         if (dataType.kind === "enummap" && value.dataType?.kind === "struct")
             this.requireEnumMapBinding(expression, dataType);
-        if (dataType.kind === "struct" && isOpaqueReference(value.dataType)) {
-            const demand = this.context.dataTypes.nativeRecordViewDemand(
+        if (dataType.kind === "struct" && isOpaqueReference(value.dataType))
+            this.context.dataTypes.requireNativeRecordView(
                 dataType.name,
                 value.dataType!,
                 expression,
             );
-            if (demand) throw new NativeRecordStorageRequired(demand);
-        }
         this.context.fail(
             expression,
             `Expression does not produce the expected data ${JSON.stringify(dataType)} value; received ${value.kind} ${value.dataType ? JSON.stringify(value.dataType) : "without a data type"}.`,
@@ -16391,6 +16431,24 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         const bound = ts.isIdentifier(left)
             ? this.context.bindings.lookupOptional(left)
             : undefined;
+        // A nullable resource local holds an object or nothing, so `??=`
+        // and `||=` store where its slot is empty, as its plain assignment
+        // stores.
+        if (
+            bound?.optionalStorageCpp !== undefined &&
+            expression.operatorToken.kind !==
+                ts.SyntaxKind.AmpersandAmpersandEqualsToken
+        ) {
+            this.emitGuardedStore(
+                `!(${optionalPresentCpp(bound.optionalStorageCpp)})`,
+                () =>
+                    void this.context.emitOptionalResourceAssignment(
+                        expression,
+                        bound,
+                    ),
+            );
+            return result(bound);
+        }
         const target =
             bound &&
             (bound.kind === "number" ||
@@ -18692,8 +18750,12 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
     public truthinessCondition(value: Value): string | undefined {
         if (isUndefinedDataType(value.dataType))
             return `(static_cast<void>(${value.cpp}), false)`;
+        // A promise is an object. One held in a name has nothing to run,
+        // so generation knows the test.
         if (value.kind === "promise")
-            return `(static_cast<void>(${value.cpp}), true)`;
+            return !value.impure && isCppPath(value.cpp)
+                ? "true"
+                : `(static_cast<void>(${value.cpp}), true)`;
         if (value.kind === "data" && value.dataType?.kind === "event-target")
             return "true";
         const primitive =
@@ -20730,11 +20792,20 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         };
     }
 
-    /** `new Set(...)`, `new Map(...)`: a fresh collection the loop ranges over. */
+    /**
+     * `new Set(...)`, `new Map(...)`: a fresh collection the loop ranges
+     * over. A module constant without storage is the collection it
+     * constructs, where the loop stands (`compileStaticContainer`).
+     */
     private constructedCollection(
         expression: ts.Expression,
     ): Value | undefined {
-        const constructed = this.context.unwrap(expression);
+        const named = this.context.unwrap(expression);
+        const constructed =
+            ts.isIdentifier(named) &&
+            !this.context.bindings.lookupOptional(named)
+                ? this.context.resolveStaticExpression(named)
+                : named;
         if (
             !ts.isNewExpression(constructed) ||
             !["Set", "Map", "Array"].includes(
@@ -21404,16 +21475,13 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 cpp: `${iterable.cpp}.elements()`,
                 dataType: { kind: "span", element: dataType.element },
             };
-        // A parsed array spreads into a new array of scalar lanes, each
-        // element stored as the scalar sinks store a parsed value.
-        if (isJsonValue(iterable) && storesDocumentScalars(dataType.element))
+        // A parsed array spreads into a new array, each element stored as
+        // its element sink stores a parsed value; parsed records stay
+        // documents.
+        if (isJsonValue(iterable))
             return {
                 ...this.leafValue(
-                    this.documentElementsCopy(
-                        iterable,
-                        dataType.element,
-                        spread,
-                    ),
+                    this.compileKnownValueForSink(iterable, dataType, spread),
                     dataType,
                 ),
                 freshSpread: true,
@@ -21523,9 +21591,6 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             };
         }
         if (!iterated || !dataTypesEqual(iterated.element, dataType.element)) {
-            // Parsed records keep their own fields and identity only as documents.
-            if (isJsonValue(iterable))
-                this.requireDocumentRecord(dataType.element);
             return this.context.fail(
                 spread,
                 `Array spread requires a native Set, Array, or readonly array with the same element type (source=${JSON.stringify((iterated?.range ?? iterable).dataType)}, element=${JSON.stringify(dataType.element)}).`,

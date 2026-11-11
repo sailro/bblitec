@@ -30,9 +30,10 @@ int main() try {
         auto& engine = pal::window_document_engine();
         check(generated_main() == 0, "program");
         const auto& log = ui_element(engine, ui_get_element_by_id(engine, "log")).text;
-        if (log != "123-1M5Name[a-z]+offinumericbdcCcheck")
+        if (log != "123-1M5Name[a-z]+offinumericbdcCchecktextcheckboxrangesubmitbuttonsubmit")
             std::fprintf(stderr, "log: %s\n", log.c_str());
-        check(log == "123-1M5Name[a-z]+offinumericbdcCcheck", "reflected reads");
+        check(log == "123-1M5Name[a-z]+offinumericbdcCchecktextcheckboxrangesubmitbuttonsubmit",
+              "reflected reads");
         const auto link = ui_create_element(engine, "a");
         check(!ui_get_draggable(engine, link), "a link without href");
         ui_set_attribute(engine, link, "href", "#top");

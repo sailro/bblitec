@@ -2598,11 +2598,16 @@ function arrayResultType(
         : inferred?.kind === "vector"
           ? inferred
           : undefined;
-    if (!result) return undefined;
     const contextual = lowerer.context.checker.getContextualType(call);
     const destination = contextual
         ? lowerer.context.dataTypes.fromTsType(contextual, call)
         : undefined;
+    // A call whose own type has no storage (its callback builds `{}`) is
+    // the array its place declares.
+    if (!result)
+        return destination?.kind === "vector" || destination?.kind === "span"
+            ? { kind: "vector", element: destination.element }
+            : undefined;
     return (destination?.kind === "vector" || destination?.kind === "span") &&
         destination.element.kind === "string" &&
         result.element.kind === "enum"

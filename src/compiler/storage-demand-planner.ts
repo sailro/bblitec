@@ -7,6 +7,7 @@ import {
     classBaseExpression,
     evaluationContainer,
     expressionMayRunCode,
+    reachedThroughName,
     referenceBases,
     statementDeclaredNames,
     unwrapExpression,
@@ -73,6 +74,13 @@ export function withStorageDemandPlanning<T>(allow: boolean, run: () => T): T {
 
 export function activeStorageDemandPlanner(): StorageDemandPlanner | undefined {
     return active;
+}
+
+/** What a survey's plan met (`StorageDemandPlanner.met`). */
+export interface PlanCensus {
+    lowered: number;
+    left: number;
+    readonly refused: { statement: ts.Statement; error: CompileError }[];
 }
 
 /** Ends a plan; the message says what ended it. */
@@ -304,6 +312,13 @@ export class StorageDemandPlanner {
     readonly replays: Error[] = [];
 
     /**
+     * @unjournaled What a survey's plan met where it lowered past the
+     * strict attempts' reach: the statements it lowered, those it left to
+     * the next attempt, and each one that refused.
+     */
+    readonly met: PlanCensus = { lowered: 0, left: 0, refused: [] };
+
+    /**
      * `survey`: whether the plan runs between a survey's strict attempts;
      * `replayable`: the replays besides storage that a survey's plan
      * records and goes on past, losing the statement that met one.
@@ -426,12 +441,14 @@ export class StorageDemandPlanner {
                 // A survey's plan leaves the statement to the next attempt
                 // and goes on with what does not read it.
                 statistics.dependent++;
+                this.met.left++;
                 this.lose(context.checker, statement);
                 return;
             }
             for (const node of checked)
                 this.dependencyChecks.set(node, this.lostGeneration);
         }
+        this.met.lowered++;
         try {
             context.transaction(lower);
         } catch (error) {
@@ -439,6 +456,14 @@ export class StorageDemandPlanner {
                 // A survey's strict attempt rolls the refused statement
                 // back and goes on: so does its plan.
                 statistics.refused++;
+                // A refusal at a name a rolled-back statement would have
+                // declared is that statement's loss, not this one's
+                // refusal: an attempt replaying its storage declares it.
+                const name = error.subject && reachedThroughName(error.subject);
+                const symbol = name && declaredSymbol(context.checker, name);
+                if (symbol && this.lostDeclarations.has(symbol))
+                    this.met.left++;
+                else this.met.refused.push({ statement, error });
                 this.lose(context.checker, statement);
                 return;
             }

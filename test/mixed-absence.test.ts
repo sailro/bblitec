@@ -3,7 +3,11 @@ import { execFileSync } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import test from "node:test";
+import ts from "typescript";
 import { compileSource } from "../src/compiler.js";
+import { createCompilerProgram } from "../src/compiler/program.js";
+import { absenceKind } from "../src/compiler/type-facts.js";
+import type { Value } from "../src/compiler/types.js";
 import {
     optionalNativeFixtureTools,
     runNativeFixtureCompiler,
@@ -55,5 +59,34 @@ test("mixed primitive absence retains null and undefined through fields, loops a
     assert.equal(
         execFileSync(executable, { encoding: "utf8", timeout: 10000 }),
         "",
+    );
+});
+
+test("an optional chain is undefined where it is absent, unless its type names null alone", () => {
+    // `input?.kind` over a receiver the checker calls present still tests
+    // the receiver's storage: its one absence is the chain's short-circuit.
+    const { checker, sourceFile } = createCompilerProgram(
+        `
+        interface Input { kind: "a" | "b"; label: string | null }
+        declare const present: Input;
+        declare const maybe: Input | null;
+        export const reads = [present?.kind, maybe?.kind, present?.label, present.kind];
+    `,
+        "absence-kind.ts",
+    );
+    const reads: ts.Expression[] = [];
+    const visit = (node: ts.Node): void => {
+        if (ts.isArrayLiteralExpression(node)) reads.push(...node.elements);
+        else ts.forEachChild(node, visit);
+    };
+    visit(sourceFile);
+    const slot: Value = {
+        kind: "data",
+        cpp: "slot",
+        dataType: { kind: "optional", inner: { kind: "string" } },
+    };
+    assert.deepEqual(
+        reads.map((read) => absenceKind(checker, slot, read)),
+        ["undefined", "undefined", "null", "unconstrained"],
     );
 });

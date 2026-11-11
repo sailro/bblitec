@@ -19,7 +19,7 @@ struct PlatformCustomEvent : PlatformEventFlags {
         std::weak_ptr<const int> owner_lifetime;
         void gc_trace(const js::TraceVisitor& visitor) const { visitor(detail); }
     };
-    PlatformCustomEvent() { dom = std::make_shared<DomEventState>(); }
+    PlatformCustomEvent() { dom = new_dom_event_state(); }
     std::shared_ptr<Payload> payload = js::make_gc_shared<Payload>();
 
     [[nodiscard]] js::JsonValue detail() const { return payload->detail; }

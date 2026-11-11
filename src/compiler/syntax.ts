@@ -155,6 +155,21 @@ export function isTypeAssertion(
     return ts.isAsExpression(node) || ts.isTypeAssertionExpression(node);
 }
 
+/**
+ * The receivers of an optional chain's `?.` links, outermost first: each
+ * expression a link reads its member or makes its call off. None for an
+ * expression that is no optional chain.
+ */
+export function optionalChainReceivers(
+    chain: ts.Expression,
+): readonly ts.Expression[] {
+    const receivers: ts.Expression[] = [];
+    for (let link = chain; ts.isOptionalChain(link); link = link.expression)
+        if (!ts.isNonNullChain(link) && link.questionDotToken)
+            receivers.push(link.expression);
+    return receivers;
+}
+
 /** The wrappers under an expression, outermost first, down to the value they wrap. */
 export function wrappersUnder(
     expression: ts.Expression,
@@ -748,6 +763,16 @@ export function directCallOf(
     return ts.isCallExpression(call) && call.expression === callee
         ? call
         : undefined;
+}
+
+/**
+ * The name a node is reached through: the root of its member, element and
+ * call chain (`splash.setProgress()` is reached through `splash`).
+ */
+export function reachedThroughName(node: ts.Node): ts.Identifier | undefined {
+    let root = ts.isExpression(node) ? rootExpression(node) : node;
+    while (ts.isCallExpression(root)) root = rootExpression(root.expression);
+    return ts.isIdentifier(root) ? root : undefined;
 }
 
 /** The identifier a property/element-access chain is rooted at, if any. */

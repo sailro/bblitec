@@ -23,6 +23,7 @@ import {
 import {
     belongsToEntryEngine,
     isEngineScopedHandleKind,
+    isInputSnapshotHandleKind,
 } from "./compiler/data-types/handles.js";
 import {
     forEachAnalysisNode,
@@ -102,7 +103,11 @@ import {
 } from "./compiler/storage-demand-planner.js";
 import { moduleLevelCallee } from "./compiler/runtime-case-split.js";
 import { StorageDemand } from "./compiler/storage-demand.js";
-import { ReplayStorage } from "./compiler/replay-storage.js";
+import {
+    ReplayStorage,
+    storageRequestKey,
+    type StorageRequest,
+} from "./compiler/replay-storage.js";
 import {
     NativeRecordDemandRefused,
     NativeRecordStorageRequired,
@@ -135,6 +140,7 @@ import {
     compileWindowIdentity,
     emitWindowLocationAssignment,
     nullableResourceEngine,
+    windowInputEngine,
 } from "./compiler/window-events.js";
 import { RuntimeSearchParamsRequired } from "./compiler/search-params.js";
 import { featureRequiresApplicationRealm } from "./feature-activation.js";
@@ -663,10 +669,10 @@ export function surveySource(
     return withSurvey(collector, () => {
         try {
             const result = compileSourceApplication(source, options);
-            return { report: collector.report(), result };
+            return { report: collector.published(), result };
         } catch (error) {
             if (!(error instanceof Error)) throw error;
-            return { report: collector.report(error) };
+            return { report: collector.published(error) };
         }
     });
 }
@@ -809,11 +815,16 @@ function lowerSourceApplication(
             } else return false;
             return true;
         };
-        const addPlanned = (planner: StorageDemandPlanner): number =>
+        // The demands of a plan a survey withdrew: a later plan leaves them
+        // to the strict attempts, which meet them in program order.
+        const withdrawn = new Set<string>();
+        const addPlanned = (planner: StorageDemandPlanner): StorageRequest[] =>
             planner.demands.filter(
                 (demand) =>
-                    !storage.joinsAlreadyHeld(demand) && storage.add(demand),
-            ).length;
+                    !withdrawn.has(storageRequestKey(demand)) &&
+                    !storage.joinsAlreadyHeld(demand) &&
+                    storage.add(demand),
+            );
         // Once a storage demand restarted the realm, every attempt outside a
         // survey is a plan: it goes on past the demands later statements do
         // not read, so one attempt meets a run of them, and a plan that
@@ -832,6 +843,23 @@ function lowerSourceApplication(
         let planning = false;
         let owed = 0;
         let unpaid = 0;
+        // A plan that did not pay: strict attempts run as long as it took
+        // before the next one, twice as long after each further such plan.
+        const owe = (spent: number): void => {
+            unpaid++;
+            owed = spent * 2 ** (unpaid - 1);
+        };
+        // A survey plan's demands are provisional (it met them past
+        // statements it rolled back): two of them may hold no one layout
+        // together. Until an attempt replaying with them lowers a
+        // statement, `restore` puts the storage back as it was.
+        let provisional:
+            | {
+                  restore: () => void;
+                  demands: readonly StorageRequest[];
+                  spent: number;
+              }
+            | undefined;
         for (;;) {
             if (planning) {
                 const planner = new StorageDemandPlanner(input.checker);
@@ -841,7 +869,7 @@ function lowerSourceApplication(
                 } catch (planningError) {
                     if (!acceptReplay(planningError)) throw planningError;
                 }
-                planning = addPlanned(planner) > 0;
+                planning = addPlanned(planner).length > 0;
                 continue;
             }
             const started = performance.now();
@@ -850,6 +878,21 @@ function lowerSourceApplication(
                     ? survey.attempt(input.sourceFile.fileName, lower)
                     : lower();
             } catch (error) {
+                if (
+                    provisional &&
+                    survey &&
+                    error instanceof CompileError &&
+                    survey.stoppedInSetup(input.sourceFile.fileName)
+                ) {
+                    provisional.restore();
+                    for (const demand of provisional.demands)
+                        withdrawn.add(storageRequestKey(demand));
+                    survey.withdrew(error);
+                    owe(provisional.spent);
+                    provisional = undefined;
+                    continue;
+                }
+                provisional = undefined;
                 if (!acceptReplay(error)) throw error;
                 survey?.restarted(error);
                 if (
@@ -876,11 +919,22 @@ function lowerSourceApplication(
                     if (!acceptReplay(planningError)) throw planningError;
                 }
                 for (const replay of planner.replays) acceptReplay(replay);
-                const added = addPlanned(planner);
+                const restore = storage.snapshot();
+                const demands = addPlanned(planner);
                 const spent = performance.now() - began;
-                survey.planned(added, spent, planner.ended());
-                unpaid = added * strict > spent ? 0 : unpaid + 1;
-                owed = unpaid === 0 ? 0 : spent * 2 ** (unpaid - 1);
+                survey.planned(
+                    input.checker,
+                    demands.length,
+                    spent,
+                    planner.ended(),
+                    planner.met,
+                );
+                if (demands.length > 0)
+                    provisional = { restore, demands, spent };
+                if (demands.length * strict > spent) {
+                    unpaid = 0;
+                    owed = 0;
+                } else owe(spent);
             }
         }
     };
@@ -1324,6 +1378,7 @@ class Compiler implements LoweringServices {
                     node,
                 ),
             (value, name, node) => this.structNumber(value, name, node),
+            this.absenceTags,
         );
     }
 
@@ -1515,6 +1570,7 @@ class Compiler implements LoweringServices {
                 ),
             ),
             this.ownedRecords.values(),
+            this.program,
         );
         // A demand no native object can hold stands refused: the replay
         // drops it, and a statement demanding it again refuses instead of
@@ -2337,6 +2393,7 @@ class Compiler implements LoweringServices {
             mappedHandle?.kind === "handle" &&
             (mappedHandle.handle === "ui-element" ||
                 mappedHandle.handle === "pointer-drag" ||
+                isInputSnapshotHandleKind(mappedHandle.handle) ||
                 (this.options.workers &&
                     mappedHandle.handle === "offscreen-canvas"))
         ) {
@@ -10195,6 +10252,9 @@ class Compiler implements LoweringServices {
             // A UI element no carrier names belongs to the Window document.
             if (value.kind === "ui-element")
                 return this.ui.documentEngine(node);
+            // So does a pad or one of its buttons to the Window's input.
+            if (value.kind === "gamepad" || value.kind === "gamepad-button")
+                return windowInputEngine(this, node);
             this.fail(
                 node,
                 `A ${value.kind} value is not associated with an engine.`,

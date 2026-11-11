@@ -485,6 +485,48 @@ test("deferred recursive callbacks and async record methods retain independent a
         true,
     ));
 
+test("a stored function returns an async call's promise as its value-or-promise result", (t) =>
+    nativeCheck(
+        t,
+        "value-or-promise-return",
+        `
+    type Outcome={ok:boolean;home:string};
+    type Executor=(action:string)=>Outcome|Promise<Outcome>;
+    const place=async(home:string):Promise<Outcome>=>{await Promise.resolve();return {ok:home==="post",home};};
+    const executors:Executor[]=[];
+    executors.push((action)=>{if(action==="bad")return {ok:false,home:""};return place(action);});
+    void(async()=>{
+        const quick=await executors[0]!("bad");const slow=await executors[0]!("post");
+        if(quick.ok||!slow.ok||slow.home!=="post")throw new Error("outcomes");
+        globalThis.close();
+    })();
+`,
+        true,
+    ));
+
+test("a thenable check tells a promise from the value it may be instead", (t) =>
+    nativeCheck(
+        t,
+        "thenable-check",
+        `
+    type Choice={id:number};
+    const seen:number[]=[];
+    function arrive(prepare:()=>Choice|Promise<Choice>):void{
+        const prepared=prepare();
+        if(prepared&&typeof (prepared as PromiseLike<Choice>).then==="function"){void Promise.resolve(prepared).then((choice)=>{seen.push(choice.id);});}
+        else seen.push((prepared as Choice).id*10);
+    }
+    void(async()=>{
+        arrive(()=>({id:1}));
+        arrive(async()=>({id:2}));
+        await Promise.resolve();await Promise.resolve();await Promise.resolve();
+        if(seen.join(",")!=="10,2")throw new Error("thenable "+seen.join(","));
+        globalThis.close();
+    })();
+`,
+        true,
+    ));
+
 test("value-or-promise unions await either arm in an asynchronous realm", (t) =>
     nativeCheck(
         t,

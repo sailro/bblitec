@@ -43,6 +43,8 @@
 
 namespace bbl {
 
+bool document_has_focus() { return pal::window_input_focus(); }
+
 #if BBLITE_HAS_GAMEPAD
 struct PlatformGamepadState {
     struct Gamepad {
@@ -151,6 +153,11 @@ bool is_standard_gamepad_button(SDL_GamepadButton button) {
     return false;
 }
 
+/** A raw SDL axis value on the Gamepad API's scale: -1 to 1. */
+double normalized_gamepad_axis(Sint16 raw) {
+    return std::clamp(static_cast<double>(raw) / 32767.0, -1.0, 1.0);
+}
+
 /** A gamepad user gesture: a standard button or trigger pressed, or a stick past half its travel. */
 bool is_gamepad_gesture(const SDL_Event& event) {
     if (event.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN)
@@ -160,7 +167,7 @@ bool is_gamepad_gesture(const SDL_Event& event) {
     const auto axis = static_cast<SDL_GamepadAxis>(event.gaxis.axis);
     if (axis == SDL_GAMEPAD_AXIS_LEFT_TRIGGER || axis == SDL_GAMEPAD_AXIS_RIGHT_TRIGGER)
         return event.gaxis.value > 0;
-    return std::abs(static_cast<double>(event.gaxis.value) / 32767.0) > 0.5;
+    return std::abs(normalized_gamepad_axis(event.gaxis.value)) > 0.5;
 }
 
 std::uint32_t gamepad_event_instance(const SDL_Event& event) {
@@ -241,6 +248,13 @@ js::Array<js::Nullable<GamepadHandle>> platform_gamepads(Engine& engine) {
 
 double gamepad_index(Engine&, GamepadHandle gamepad) { return static_cast<double>(gamepad.index); }
 
+bool gamepad_connected(Engine&, GamepadHandle handle) {
+    SDL_Gamepad* gamepad = opened_gamepad(handle);
+    return gamepad && SDL_GamepadConnected(gamepad);
+}
+
+std::string gamepad_mapping(Engine&, GamepadHandle) { return "standard"; }
+
 js::Array<double> gamepad_axes(Engine& engine, GamepadHandle handle) {
     std::array<double, 4> values{};
     SDL_Gamepad* gamepad = opened_gamepad(handle);
@@ -252,8 +266,7 @@ js::Array<double> gamepad_axes(Engine& engine, GamepadHandle handle) {
     };
     if (gamepad) {
         for (std::size_t index = 0; index < axes.size(); ++index) {
-            const double raw = static_cast<double>(SDL_GetGamepadAxis(gamepad, axes[index]));
-            values[index] = std::clamp(raw / 32767.0, -1.0, 1.0);
+            values[index] = normalized_gamepad_axis(SDL_GetGamepadAxis(gamepad, axes[index]));
         }
     }
     PlatformGamepadState::Gamepad* cached = cached_gamepad(engine, handle);
@@ -274,17 +287,22 @@ js::Array<GamepadButtonHandle> gamepad_buttons(Engine& engine, GamepadHandle gam
     return PlatformGamepadState::Gamepad(gamepad).buttons;
 }
 
-bool gamepad_button_pressed(Engine&, GamepadButtonHandle button) {
+double gamepad_button_value(Engine&, GamepadButtonHandle button) {
     SDL_Gamepad* gamepad = opened_gamepad(button.gamepad);
     if (!gamepad)
-        return false;
+        return 0.0;
     if (button.index == 6 || button.index == 7) {
         const SDL_GamepadAxis trigger =
             button.index == 6 ? SDL_GAMEPAD_AXIS_LEFT_TRIGGER : SDL_GAMEPAD_AXIS_RIGHT_TRIGGER;
-        return SDL_GetGamepadAxis(gamepad, trigger) > 0;
+        return std::max(normalized_gamepad_axis(SDL_GetGamepadAxis(gamepad, trigger)), 0.0);
     }
     const SDL_GamepadButton mapped = standard_gamepad_button(button.index);
-    return mapped != SDL_GAMEPAD_BUTTON_INVALID && SDL_GetGamepadButton(gamepad, mapped);
+    return mapped != SDL_GAMEPAD_BUTTON_INVALID && SDL_GetGamepadButton(gamepad, mapped) ? 1.0
+                                                                                         : 0.0;
+}
+
+bool gamepad_button_pressed(Engine& engine, GamepadButtonHandle button) {
+    return gamepad_button_value(engine, button) > 0.0;
 }
 #endif
 

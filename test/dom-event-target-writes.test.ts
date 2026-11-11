@@ -74,6 +74,41 @@ test("an event target narrowed to an element writes like the retained element it
         };
         origin.setAttribute("data-connected1", cancelPress(1));
         origin.setAttribute("data-connected2", cancelPress(2));
+        // The same test kept in a name is the target's own answer too.
+        const kept = (id: number): string => {
+            const downOn = read(id)?.target ?? pressedOn;
+            if (!downOn) return "none";
+            const detached = typeof Node !== "undefined" && downOn instanceof Node && !downOn.isConnected;
+            return detached ? "detached" : "attached";
+        };
+        origin.setAttribute("data-kept1", kept(1));
+        origin.setAttribute("data-kept2", kept(2));
+        // An element that may be absent falls back to another that may be.
+        interface Layer { panel: HTMLElement }
+        const stacks = new Map<Window, Layer[]>();
+        const topLayer = (stack: Layer[]): Layer | undefined => stack[stack.length - 1];
+        function topPanel(target: Window = window): HTMLElement | null {
+            const stack = stacks.get(target);
+            return stack ? topLayer(stack)?.panel ?? null : null;
+        }
+        function startScreen(): HTMLElement | null {
+            const splash = document.getElementById("loading");
+            return splash && splash.classList.contains("is-ready") ? splash : null;
+        }
+        let panels = "";
+        const focused = (): void => {
+            const panel = topPanel() ?? startScreen();
+            panels += panel === null ? "none," : panel.id + ",";
+        };
+        focused();
+        const splash = document.createElement("div");
+        splash.id = "loading";
+        splash.classList.add("is-ready");
+        document.body.appendChild(splash);
+        focused();
+        stacks.set(window, [{ panel: button }]);
+        focused();
+        origin.setAttribute("data-panels", panels);
         // A binding every branch gives a constructed event owns that event.
         let downs = 0;
         button.addEventListener("pointerdown", () => { downs++; });
@@ -104,6 +139,28 @@ test("an event target narrowed to an element writes like the retained element it
         });
         const plain: MouseEventInit = { bubbles: true, clientX: 3 };
         button.dispatchEvent(new MouseEvent("pointermove", plain));
+        // A table of handlers stored as listeners of every event registers
+        // each as the listener of its own event class.
+        let tabled = "";
+        function onTableMove(e: PointerEvent): void { tabled += "move" + e.clientX + ","; }
+        function onTableOver(e: PointerEvent): void { tabled += e.relatedTarget === previous ? "over," : "from,"; }
+        const table: [string, EventListener, AddEventListenerOptions?][] = [
+            ["pointermove", onTableMove as EventListener],
+            ["pointerover", onTableOver as EventListener, { passive: true }],
+        ];
+        for (const [type, handler, options] of table) button.addEventListener(type, handler, options);
+        // An event's time stamp is the clock's reading when it was created.
+        const before = performance.now();
+        let stamped = "none";
+        button.addEventListener("pointermove", (e) => {
+            stamped = e.timeStamp >= before && e.timeStamp <= performance.now() ? "now" : "off";
+        }, { once: true });
+        button.dispatchEvent(new MouseEvent("pointermove", { bubbles: true, clientX: 7 }));
+        origin.setAttribute("data-stamped", stamped);
+        hover(previous);
+        for (const [type, handler, options] of table) button.removeEventListener(type, handler, options);
+        button.dispatchEvent(new MouseEvent("pointermove", { bubbles: true, clientX: 9 }));
+        origin.setAttribute("data-tabled", tabled);
         globalThis.close();
     `);
     writeFileSync(join(directory, "program.hpp"), cpp);

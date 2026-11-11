@@ -79,9 +79,13 @@ export class SourceSiteRegistry {
 let active: SourceCoverage | undefined;
 let current: RealmCoverage | undefined;
 
-/** Opt-in observations; a storage replay replaces the preceding attempt of its realm. */
+/**
+ * Opt-in observations. A storage replay replaces the preceding attempt of
+ * its realm; an attempt that ends short of an earlier one leaves that one,
+ * so a compile stopped before it finished reports its furthest attempt.
+ */
 export class SourceCoverage {
-    /** @unjournaled Each realm replay replaces its observation attempt; retained sites journal separately. */
+    /** @unjournaled Each realm keeps one observation attempt; retained sites journal separately. */
     private readonly realms = new Map<string, RealmCoverage>();
 
     run<T>(work: () => T): T {
@@ -100,6 +104,8 @@ export class SourceCoverage {
 
     realm<T>(program: ts.Program, entry: string, work: () => T): T {
         const previous = current;
+        const key = resolve(entry);
+        const furthest = this.realms.get(key);
         const attempt: RealmCoverage = {
             program,
             observed: new Map(),
@@ -107,7 +113,7 @@ export class SourceCoverage {
             failures: 0,
             complete: false,
         };
-        this.realms.set(resolve(entry), attempt);
+        this.realms.set(key, attempt);
         current = attempt;
         try {
             const result = work();
@@ -116,6 +122,10 @@ export class SourceCoverage {
         } catch (error) {
             attempt.terminal =
                 error instanceof Error ? error.message : String(error);
+            if (furthest && furthest.retained.size > attempt.retained.size) {
+                furthest.terminal = attempt.terminal;
+                this.realms.set(key, furthest);
+            }
             throw error;
         } finally {
             current = previous;

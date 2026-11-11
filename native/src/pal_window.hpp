@@ -3,6 +3,7 @@
 
 #include <bblite/runtime.hpp>
 #include <bblite/pal_offscreen.hpp>
+#include <atomic>
 #include <cmath>
 #include <cstdio>
 #include <SDL3/SDL.h>
@@ -16,6 +17,15 @@
 #endif
 
 namespace bbl::pal {
+
+/**
+ * Whether the Window has input focus, kept from SDL's focus events: the
+ * thread that polls SDL writes it and a realm reads it.
+ */
+inline std::atomic<bool>& window_input_focus() {
+    static std::atomic<bool> focused{false};
+    return focused;
+}
 
 class SdlWindowRun;
 // SDL rendering is thread-affine. Keep this PAL-only context off the public,

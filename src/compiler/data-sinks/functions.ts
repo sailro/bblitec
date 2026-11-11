@@ -34,7 +34,13 @@ function expressionFunction(
                 bound.kind === "data" ||
                 bound.kind === "json-null")
         ) {
-            return lowerer.compileKnownValueForSink(bound, dataType, unwrapped);
+            // A name holding a function or something else (`string | F`)
+            // is the function where the checker's flow narrowed it.
+            return lowerer.compileKnownValueForSink(
+                lowerer.narrowOptional(bound, unwrapped),
+                dataType,
+                unwrapped,
+            );
         }
     }
     if (

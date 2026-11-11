@@ -195,6 +195,23 @@ export function documentEngine(
     return "bbl::pal::window_document_engine()";
 }
 
+/**
+ * The engine the Window's input state (its gamepads) is read through: the
+ * entry's, or, before any exists (an input source built ahead of
+ * `createEngine`), an application realm's Window engine, as its listeners
+ * use.
+ */
+export function windowInputEngine(
+    context: Parameters<typeof documentEngine>[0],
+    node: ts.Node,
+): string {
+    return (
+        (context.defaultEngine() === undefined
+            ? documentEngine(context, node)
+            : undefined) ?? context.requireDefaultEngine(node)
+    );
+}
+
 function windowIdentity(): Value {
     const cpp = "std::addressof(bbl::pal::window_document_engine())";
     return {
@@ -341,9 +358,28 @@ export function isDocumentVisibilityRead(
     );
 }
 
+/** `document.hasFocus()`. */
+export function isDocumentFocusCall(
+    context: Pick<LoweringServices, "unwrap" | "checker">,
+    expression: ts.Expression,
+): expression is ts.CallExpression {
+    const call = context.unwrap(expression);
+    return (
+        ts.isCallExpression(call) &&
+        call.arguments.length === 0 &&
+        isLibraryStatic(
+            context.checker,
+            call.expression,
+            "document",
+            "hasFocus",
+        )
+    );
+}
+
 /**
- * Whether a document answers visibility here: a visibility callback's
- * argument, a Window application's document or a created engine's.
+ * Whether a document answers visibility and focus here: a visibility
+ * callback's argument, a Window application's document or a created
+ * engine's.
  */
 export function documentVisibilityAvailable(
     context: Pick<

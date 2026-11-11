@@ -45,6 +45,7 @@ import {
 } from "./asset.js";
 import {
     compileCameraIntrinsic,
+    runtimeOnlyCameraIntrinsics,
     type CameraIntrinsicContext,
 } from "./camera.js";
 import {
@@ -164,6 +165,7 @@ interface IntrinsicContext
  * where the reason for it lives; this composes what they declare.
  */
 export const runtimeOnlyIntrinsics: ReadonlySet<string> = new EmissionSet([
+    ...runtimeOnlyCameraIntrinsics,
     ...runtimeOnlyClusteredLightIntrinsics,
     ...runtimeOnlyMeshIntrinsics,
     ...runtimeOnlyPickingIntrinsics,

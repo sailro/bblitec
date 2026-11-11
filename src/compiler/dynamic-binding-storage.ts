@@ -10,7 +10,13 @@ import {
 } from "./record-observations.js";
 import type { DataType, DataTypeRegistry } from "./data-types.js";
 import { declaredSymbol, resolvedSymbol } from "./symbols.js";
-import { outermostWrapper, unwrapExpression, variableKind } from "./syntax.js";
+import {
+    notJson,
+    outermostWrapper,
+    unwrapExpression,
+    variableKind,
+} from "./syntax.js";
+import { staticJsonValue } from "./option-helpers.js";
 import { onlyReadsFields } from "./constructed-fields.js";
 import {
     nullability,
@@ -21,10 +27,7 @@ import {
 } from "./type-facts.js";
 import { isRebound } from "./binding-rebinds.js";
 import type { Value } from "./types.js";
-import {
-    NativeRecordStorageRequired,
-    type NativeRecordStorageDemand,
-} from "./native-record-storage.js";
+import type { NativeRecordStorageDemand } from "./native-record-storage.js";
 
 /** Storage choices survive replay; generated type names belong to one registry. */
 export type DynamicBindingStorage =
@@ -84,7 +87,7 @@ export interface DemandedStorageContext {
         | "fromStoredTsType"
         | "fromCallableRecordDemand"
         | "fromSharedReturnType"
-        | "nativeRecordViewDemand"
+        | "requireNativeRecordView"
         | "hasNativeRecordView"
         | "markStoredObjectReferences"
         | "nullableType"
@@ -188,14 +191,12 @@ export function demandedStorageType(
         const declared = dataTypes.fromStoredTsType(source, declaration);
         const target =
             declared?.kind === "optional" ? declared.inner : declared;
-        if (mapped && target?.kind === "struct") {
-            const demand = dataTypes.nativeRecordViewDemand(
+        if (mapped && target?.kind === "struct")
+            dataTypes.requireNativeRecordView(
                 target.name,
                 mapped,
                 storage.node,
             );
-            if (demand) throw new NativeRecordStorageRequired(demand);
-        }
         return mapped && heldAsBinding(context, declaration, source, mapped);
     }
     // A fresh authored record may share an annotation with an unrelated
@@ -231,6 +232,16 @@ export function demandedStorageType(
         // A record's fields hold unknown values as documents.
         (storage === "source"
             ? dataTypes.withDynamicJsonTypes(true, stored)
+            : undefined) ??
+        // A literal of plain JSON values no layout stores (an empty array
+        // in it holds no element type, its arrays mix shapes) is the
+        // document it spells.
+        (initializer &&
+        staticJsonValue(
+            { resolveStaticExpression: (spelled) => unwrapExpression(spelled) },
+            initializer,
+        ) !== notJson
+            ? { kind: "json" as const }
             : undefined)
     );
 }

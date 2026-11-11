@@ -62,7 +62,7 @@ before implementing: a source refusal does not mean RmlUi lacks the feature.
 | Styles | cssText, static style fields, classList; getComputedStyle display/opacity/visibility/zIndex | `setProperty` priority, dynamic names, other computed properties |
 | Queries | Literal selectors, runtime text in quoted attribute values, unions of literal selectors, state pseudo-classes, `matches`, `closest`, ID lookup, `contains`, `instanceof` | `:scope`, pseudo-elements, other runtime selector text |
 | Pointer/keyboard | Mouse, multi-touch, touch events, pointer capture, click/dblclick, wheel, contextmenu, keys, `on<event>` properties | Coalesced events, Touch radius/rotation/stylus fields |
-| Events | transitionend, storage, file drags (first file), gamepadconnected/gamepaddisconnected, CustomEvent, constructed Event/MouseEvent/PointerEvent/InputEvent, `composedPath` | Element CustomEvent dispatch, authored drags, cross-document redispatch |
+| Events | transitionend, storage, file drags (first file), gamepadconnected/gamepaddisconnected, CustomEvent, constructed Event/MouseEvent/PointerEvent/InputEvent/KeyboardEvent (keydown and keyup reach the key listeners), `composedPath` | Element CustomEvent dispatch, authored drags, cross-document redispatch |
 | Forms | Focus/blur and the bubbling focusin/focusout after them, activeElement, `tabIndex`, text/password/checkbox/color/range inputs, textarea, select, output, details/summary | Full browser form behavior; `hidden=until-found` |
 
 - Selector structure is parsed at generation with the literal grammar. In a runtime attribute value, a line break
@@ -80,7 +80,10 @@ before implementing: a source refusal does not mean RmlUi lacks the feature.
   cancellation never reaches cameras or retained-UI defaults. Focus loss fires touchcancel.
 - Gamepads follow SDL's device events. `getGamepads()` reads none until a gamepad user gesture (a standard button, a
   trigger, or a stick past half its travel); then gamepadconnected fires at the Window for each connected pad, and
-  later for each new one. gamepaddisconnected fires for an announced pad's removal. Test passes drop gamepad input.
+  later for each new one. gamepaddisconnected fires for an announced pad's removal. Test passes drop gamepad input. A
+  pad reads `index`, `connected`, `mapping` (always "standard"), `axes` and `buttons` (`pressed`, `value`: a trigger's
+  travel, 1 for another button down); an interface declaring those members holds the pad itself.
+- `document.hasFocus()` is the window's input focus, from SDL's focus events.
 - An event's `target`/`currentTarget` narrowed by `instanceof` to an element is that retained element; writes through it
   lower as the element's own.
 - Dynamically created scripts are retained, never rendered: an external script fails to load (a task fires `error`
@@ -88,6 +91,9 @@ before implementing: a source refusal does not mean RmlUi lacks the feature.
 - `inputmode`, input `type` and inherited `spellcheck` choose the platform keyboard and autocorrection; labels activate
   their `for` or nested control.
 - Key events read `isComposing` inside an input method composition (SDL text editing until a commit or focus loss).
+  `location` is 1 or 2 for a left or right modifier, 3 for the numeric keypad.
+- A listener's event is of its family's kind, so `event.type` compared with another family's type is settled: one
+  function listening to key and pointer events lowers its `keydown` branch for the key family only.
 - Pointer capture (element, engine canvas or stored element) retargets the pointer's events, compatibility mouse
   events and hover until release, pointerup or pointercancel; touch presses capture implicitly. SDL holds a captured
   mouse beyond the window.

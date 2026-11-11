@@ -202,6 +202,8 @@ struct PlatformKeyboardEvent : PlatformEventFlags, PlatformModifierKeys {
     bool repeat = false;
     /** Inside an input method composition (`Engine::text_composing` when the key arrived). */
     bool is_composing = false;
+    /** `KeyboardEvent.location`: 0 standard, 1 and 2 a left and a right modifier, 3 the numeric keypad. */
+    std::uint32_t location = 0;
 };
 
 /** A storage notification delivered to a different Window sharing the storage area. */
@@ -6264,12 +6266,20 @@ template <typename Callback>
     };
 }
 
+/** `document.hasFocus()`: whether the Window has input focus (implemented by pal_sdl.cpp). */
+bool document_has_focus();
+
 /** SDL-backed browser Gamepad surface (implemented by pal_sdl.cpp). */
 js::Array<js::Nullable<GamepadHandle>> platform_gamepads(Engine& engine);
 double gamepad_index(Engine& engine, GamepadHandle gamepad);
+bool gamepad_connected(Engine& engine, GamepadHandle gamepad);
+/** "standard": every pad SDL opens as a gamepad is remapped to the standard layout. */
+std::string gamepad_mapping(Engine& engine, GamepadHandle gamepad);
 js::Array<double> gamepad_axes(Engine& engine, GamepadHandle gamepad);
 js::Array<GamepadButtonHandle> gamepad_buttons(Engine& engine, GamepadHandle gamepad);
 bool gamepad_button_pressed(Engine& engine, GamepadButtonHandle button);
+/** A trigger's travel in [0, 1]; 1 for any other button while it is down. */
+double gamepad_button_value(Engine& engine, GamepadButtonHandle button);
 
 /** Public PBR Texture2D slots backed by one material record. */
 enum class MaterialTextureSlot : std::uint8_t {

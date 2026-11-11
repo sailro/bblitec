@@ -6,6 +6,11 @@ import { domTargetIdentity } from "./dom-targets.js";
 import { jsonAbsenceCpp } from "./values/model.js";
 import { namedMember } from "./symbols.js";
 import { recordDocumentSnapshot } from "./data-sinks/scalars.js";
+import {
+    constructsSyntheticEvent,
+    isSyntheticEventClass,
+    SYNTHETIC_EVENT_OPTIONS as options,
+} from "./synthetic-event-classes.js";
 
 type Context = Pick<
     LoweringServices,
@@ -23,41 +28,15 @@ type Context = Pick<
     | "defaultEngine"
     | "options"
     | "cppString"
+    | "probeEmission"
 >;
-
-const options = {
-    Event: ["bubbles", "cancelable", "composed"],
-    MouseEvent: [
-        "button",
-        "buttons",
-        "clientX",
-        "clientY",
-        "screenX",
-        "screenY",
-        "movementX",
-        "movementY",
-        "ctrlKey",
-        "shiftKey",
-        "altKey",
-        "metaKey",
-        "relatedTarget",
-    ],
-    PointerEvent: ["pointerId", "pointerType", "isPrimary", "pressure"],
-    InputEvent: ["data", "inputType", "isComposing"],
-} as const;
 
 export function compileSyntheticEventConstructor(
     context: Omit<Context, "defaultEngine">,
     node: ts.NewExpression,
 ): Value | undefined {
     const name = context.libraryGlobal(node.expression);
-    if (
-        name !== "Event" &&
-        name !== "MouseEvent" &&
-        name !== "PointerEvent" &&
-        name !== "InputEvent"
-    )
-        return undefined;
+    if (!isSyntheticEventClass(name)) return undefined;
     const args = node.arguments ?? [];
     if (args.length < 1 || args.length > 2)
         context.fail(
@@ -155,11 +134,16 @@ export function compileSyntheticEventConstructor(
             initializer: `bbl::require_event_options(${compiled}, ${context.cppString(name)}, {${unrepresented.map((key) => context.cppString(key)).join(", ")}})`,
         });
     }
+    // A key event carries its keys beside the base event its listeners'
+    // family is dispatched with.
     const kind = name === "Event" ? "Event" : name.slice(0, -5);
     return {
         kind: "dom-event",
         dataType: { kind: "handle", handle: "dom-event" },
-        cpp: `bbl::synthetic_event_from_options(${type}, bbl::OwnedDomEvent::Kind::${kind}, ${init})`,
+        cpp:
+            name === "KeyboardEvent"
+                ? `bbl::synthetic_keyboard_event_from_options(${type}, ${init})`
+                : `bbl::synthetic_event_from_options(${type}, bbl::OwnedDomEvent::Kind::${kind}, ${init})`,
         impure: true,
     };
 }
@@ -178,45 +162,50 @@ export function compileSyntheticEventDispatch(
         context.fail(call, "dispatchEvent requires one event.");
     const type = context.dataLowerer.dataTypeAt(call.arguments[0]!);
     const expression = context.unwrap(call.arguments[0]!);
-    const constructed =
-        ts.isNewExpression(expression) &&
-        ["Event", "MouseEvent", "PointerEvent", "InputEvent"].includes(
-            context.libraryGlobal(expression.expression) ?? "",
-        );
+    const constructed = constructsSyntheticEvent(expression, (callee) =>
+        context.libraryGlobal(callee),
+    );
     const bound = ts.isIdentifier(expression)
         ? context.bindings.lookupOptional(expression)
         : undefined;
-    if (
-        !constructed &&
-        bound?.kind !== "dom-event" &&
-        !(type?.kind === "handle" && type.handle === "dom-event")
-    )
-        return undefined;
-    const owner = pinDetached(
-        context,
-        context.compileValue(callee.expression),
-        "dispatch_target",
-        callee.expression,
-    );
-    const { target, engine } =
-        owner.dataType?.kind === "event-target"
-            ? {
-                  target: `${owner.cpp}.target`,
-                  engine: `bbl::dom_target_owner(${owner.cpp})`,
-              }
-            : domTargetIdentity(context, owner, callee.expression);
-    const event = context.compileValue(call.arguments[0]!);
-    if (event.kind !== "dom-event")
-        context.fail(
-            call.arguments[0]!,
-            "Synthetic dispatch requires an owned event payload.",
+    const owned =
+        constructed ||
+        bound?.kind === "dom-event" ||
+        (type?.kind === "handle" && type.handle === "dom-event");
+    // A call may return the event it constructed (declared as the base
+    // `Event`): its result decides, and another dispatch takes the call
+    // where it is none.
+    if (!owned && !ts.isCallExpression(expression)) return undefined;
+    const dispatch = (): Value | undefined => {
+        const owner = pinDetached(
+            context,
+            context.compileValue(callee.expression),
+            "dispatch_target",
+            callee.expression,
         );
-    context.reachFeature("input:dom", call);
-    context.reachFeature("data:json", call);
-    return {
-        kind: "boolean",
-        dataType: { kind: "boolean" },
-        impure: true,
-        cpp: `bbl::dispatch_synthetic_event(${engine}, ${target}, ${event.cpp})`,
+        const { target, engine } =
+            owner.dataType?.kind === "event-target"
+                ? {
+                      target: `${owner.cpp}.target`,
+                      engine: `bbl::dom_target_owner(${owner.cpp})`,
+                  }
+                : domTargetIdentity(context, owner, callee.expression);
+        const event = context.compileValue(call.arguments[0]!);
+        if (event.kind !== "dom-event")
+            return owned
+                ? context.fail(
+                      call.arguments[0]!,
+                      "Synthetic dispatch requires an owned event payload.",
+                  )
+                : undefined;
+        context.reachFeature("input:dom", call);
+        context.reachFeature("data:json", call);
+        return {
+            kind: "boolean",
+            dataType: { kind: "boolean" },
+            impure: true,
+            cpp: `bbl::dispatch_synthetic_event(${engine}, ${target}, ${event.cpp})`,
+        };
     };
+    return owned ? dispatch() : context.probeEmission(dispatch);
 }

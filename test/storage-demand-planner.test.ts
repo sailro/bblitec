@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import test from "node:test";
+import test, { type TestContext } from "node:test";
 import ts from "typescript";
 import { compileSource, surveySource } from "../src/compiler.js";
 import { SourceCoverage } from "../src/compiler/source-coverage.js";
@@ -19,6 +19,7 @@ import {
     optionalNativeFixtureTools,
     runGeneratedProgram,
 } from "./native-fixture.js";
+import { runSelfCheckingProgram } from "./self-checking-program.js";
 
 const state = `
     interface State { read<T>(fn:()=>T):T; ready():boolean; }
@@ -27,6 +28,20 @@ const state = `
     saved.push(()=>state.ready());
     const state=make();
 `;
+
+/**
+ * A program compiled in one storage replay (two constructions), run
+ * natively against its own assertions.
+ */
+async function oneReplay(
+    t: TestContext,
+    name: string,
+    source: string,
+): Promise<void> {
+    const strict = measured(false, () => compileSource(source));
+    assert.equal(strict.constructions, 2);
+    await runSelfCheckingProgram(t, `storage-demand-planner/${name}`, source);
+}
 
 function measured<T>(enabled: boolean, run: () => T) {
     const before = storagePlanningStatistics();
@@ -886,4 +901,164 @@ test("a record of literal tables demands every table's object storage in one rep
             expectedOutput: "",
         },
     );
+});
+
+test("a record type read out of a document is a document with it, in one replay", async (t) => {
+    // Every type below is read out of the parsed save and stored as itself.
+    const source = `
+    interface Tab { open: boolean; label: string }
+    interface Flag { lit: boolean }
+    interface Group { name: string; tabs: Tab[]; main?: Tab; flags: Record<string, Flag> }
+    interface Owner { name: string; age: number }
+    interface Cell { groups: Group[]; owner: Owner }
+    interface Save { version: number; cell: Cell }
+    const text = '{"version":2,"cell":{"groups":[{"name":"hall","tabs":[{"open":true,"label":"front"}],"main":{"open":false,"label":"m"},"flags":{"a":{"lit":true}}}],"owner":{"name":"Ada","age":36}}}';
+    const saves: Save[] = [];
+    saves.push(JSON.parse(text) as Save);
+    const tabs: Tab[] = [];
+    const groups: Group[] = [];
+    const owners: Owner[] = [];
+    const flags: Flag[] = [];
+    const cells: Cell[] = [];
+    for (const save of saves) {
+        cells.push(save.cell);
+        owners.push(save.cell.owner);
+        for (const group of save.cell.groups) {
+            groups.push(group);
+            if (group.main) tabs.push(group.main);
+            for (const tab of group.tabs) tabs.push(tab);
+            for (const key of Object.keys(group.flags)) flags.push(group.flags[key]!);
+        }
+    }
+    // A literal of a type so stored is the same kind of object.
+    tabs.push({ open: true, label: "side" });
+    const out = cells.length + "|" + owners[0]!.name + "|" + groups[0]!.name + "|" + tabs.map((tab) => tab.label).join("+") + "|" + flags[0]!.lit;
+    if (out !== "1|Ada|hall|m+front+side|true") throw new Error(out);
+`;
+    await oneReplay(t, "read-closure", source);
+});
+
+test("a record copied out of a parsed document field by field is a document with it, in one replay", async (t) => {
+    // A migration rebuilds the save out of spreads and rests of its parsed
+    // records.
+    const source = `
+    interface Part { id: number; post: number; s?: number }
+    interface Tab { id: number; cell: number; purpose?: string }
+    interface Extra { x: number; lc?: number }
+    interface Save { version: number; parts: Part[]; tabs: Tab[]; extra: Extra[] }
+    const text = '{"version":3,"parts":[{"id":1,"post":2,"s":1},{"id":2,"post":3,"s":2}],"tabs":[{"id":4,"cell":1,"purpose":"bogus"},{"id":5,"cell":2}],"extra":[{"x":1.5,"lc":7}]}';
+    function migrate(d: Save): string {
+        const parts = d.parts.map((part) => {
+            const normalized = { ...part };
+            if (Math.abs((part.s ?? 1) - 1) <= 1e-9) delete normalized.s;
+            return normalized;
+        });
+        const tabs = d.tabs.map((tab) => {
+            const raw = (tab as Tab & { purpose?: unknown }).purpose;
+            if (raw === "entrance" || raw === undefined) return { ...tab };
+            const { purpose: _invalid, ...rest } = tab as Tab & { purpose?: unknown };
+            return rest as Tab;
+        });
+        const extra = d.extra.map(({ lc: _retired, ...kept }) => kept);
+        return parts.map((part) => part.id + ":" + (part.s ?? "-")).join() + "|" + tabs.map((tab) => tab.id + ":" + (tab.purpose ?? "-")).join() + "|" + extra.map((kept) => kept.x + ":" + ("lc" in kept ? "lc" : "-")).join();
+    }
+    const out = migrate(JSON.parse(text) as Save);
+    if (out !== "1:-,2:2|4:-,5:-|1.5:-") throw new Error(out);
+`;
+    await oneReplay(t, "copy-closure", source);
+});
+
+test("a document handed where another record type is declared makes that type a document, in one replay", async (t) => {
+    // The parameters' own record types keep the parsed records they are
+    // handed.
+    const source = `
+    interface Claim { t: number; h?: number; who: string }
+    interface Course { seq: number; v: number }
+    interface Step { id: number; courses?: Course[] }
+    interface Save { claims: Claim[]; steps: Step[] }
+    const text = '{"claims":[{"t":2,"h":7,"who":"ada"},{"t":3,"who":"bob"}],"steps":[{"id":1,"courses":[{"seq":1,"v":4},{"seq":2,"v":5}]},{"id":2}]}';
+    const homes: { t: number; h?: number }[] = [];
+    function keep(home: { t: number; h?: number }): number { homes.push(home); return home.h ?? home.t; }
+    const folded: { seq: number; v: number }[] = [];
+    function fold(courses: { seq: number; v: number }[] | undefined): number {
+        let total = 0;
+        for (const course of courses ?? []) { folded.push(course); total += course.v; }
+        return total;
+    }
+    function migrate(d: Save): string {
+        return d.claims.map((claim) => claim.who + keep(claim)).join() + "|" + d.steps.map((step) => step.id + ":" + fold(step.courses)).join();
+    }
+    const out = migrate(JSON.parse(text) as Save);
+    if (out !== "ada7,bob3|1:9,2:0" || homes.length !== 2 || homes[1]!.t !== 3 || folded.length !== 2 || folded[1]!.seq !== 2) throw new Error(out);
+`;
+    await oneReplay(t, "handed-closure", source);
+});
+
+test("an intersection over a parsed record arrived in that record's parse, in one replay", async (t) => {
+    // A generic helper returns `T & { id: number }` for each parsed record
+    // type it is given: the instantiated intersection, and the helper's own
+    // under that instantiation.
+    const source = `
+    interface Member { id?: number; name: string }
+    interface Extra { id?: number; x: number }
+    interface Save { members: Member[]; extra: Extra[] }
+    function numbered<T extends { id?: number }>(input: readonly T[], minimumNextId = 1): { items: Array<T & { id: number }>; nextId: number } {
+        const reserved = new Set<number>();
+        for (const item of input) if (Number.isSafeInteger(item.id) && item.id! > 0 && !reserved.has(item.id!)) reserved.add(item.id!);
+        const used = new Set<number>();
+        let replacement = minimumNextId;
+        for (const id of reserved) replacement = Math.max(replacement, id + 1);
+        const items = input.map((item) => {
+            let id = item.id;
+            if (!Number.isSafeInteger(id) || id! <= 0 || used.has(id!)) id = replacement++;
+            used.add(id!);
+            return { ...item, id: id! };
+        });
+        let nextId = minimumNextId;
+        for (const id of used) nextId = Math.max(nextId, id + 1);
+        return { items, nextId };
+    }
+    const text = '{"members":[{"id":4,"name":"ada"},{"name":"bob"},{"id":4,"name":"cy"}],"extra":[{"x":1.5},{"id":9,"x":2.5}]}';
+    function migrate(d: Save): string {
+        const members = numbered(d.members).items;
+        const extra = numbered(d.extra, 3);
+        return members.map((member) => member.name + member.id).join() + "|" + extra.items.map((kept) => kept.x + ":" + kept.id).join() + "|" + extra.nextId;
+    }
+    const out = migrate(JSON.parse(text) as Save);
+    if (out !== "ada4,bob5,cy6|1.5:10,2.5:9|11") throw new Error(out);
+`;
+    await oneReplay(t, "intersection-closure", source);
+});
+
+test("a record read out of an asserted parse is a document with everything read out of that parse", async (t) => {
+    // The save is only asserted and read; its first stored value is a group,
+    // far below it. The flags and owners are siblings of the group, and the
+    // helper's `T & { id: number }` holds an owner's own properties.
+    const source = `
+    interface Tab { open: boolean; label: string }
+    interface Flag { lit: boolean }
+    interface Group { name: string; tabs: Tab[]; main?: Tab; flags: Record<string, Flag> }
+    interface Owner { name: string; age: number }
+    interface Save { version: number; groups: Group[]; owners: Owner[]; flags: Flag[] }
+    const text = '{"version":2,"groups":[{"name":"hall","tabs":[{"open":true,"label":"front"}],"main":{"open":false,"label":"m"},"flags":{"a":{"lit":true}}}],"owners":[{"name":"Ada","age":36}],"flags":[{"lit":false}]}';
+    function withIds<T>(input: readonly T[]): Array<T & { id: number }> { return input.map((item, index) => ({ ...item, id: index + 1 })); }
+    function migrate(d: Partial<Save>): string {
+        const groups: Group[] = [];
+        for (const group of d.groups ?? []) groups.push(group);
+        const owners = withIds(d.owners ?? []);
+        const flags: Flag[] = [];
+        for (const flag of d.flags ?? []) flags.push(flag);
+        const tabs: Tab[] = [];
+        for (const group of groups) for (const tab of group.tabs) tabs.push(tab);
+        return groups[0]!.name + "|" + owners[0]!.name + owners[0]!.id + "|" + flags.length + "|" + tabs[0]!.label;
+    }
+    function parseSave(parsed: unknown): string {
+        if (!parsed || typeof parsed !== "object") return "";
+        const d = parsed as Partial<Save>;
+        return migrate(d);
+    }
+    const out = parseSave(JSON.parse(text));
+    if (out !== "hall|Ada1|1|front") throw new Error(out);
+`;
+    await oneReplay(t, "parse-roots", source);
 });

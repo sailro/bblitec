@@ -73,12 +73,20 @@ export interface NamedRead {
  *   and `structuredClone`;
  * - widened arrays: the element types of mutable arrays read where a
  *   mutable array of another element type is expected, and that type;
- * - assertions: the types `as`/`<T>` retype a value to, and whether the
+ * - assertions: the types `as`/`<T>` retype a value to, whether the
  *   operand was untyped (an assertion to `any` or `unknown` retypes nothing
- *   the open holders of the index do not already count);
+ *   the open holders of the index do not already count), and whether it
+ *   named no shape (untyped, or the `object` a `typeof` test leaves of it);
  * - property reads: each property name read as a value rather than called
  *   through, and the objects read wholesale or by a computed key (the
- *   reads that could take an object literal method's function value).
+ *   reads that could take an object literal method's function value);
+ * - copies: each object copied field by field into a new one -- a spread
+ *   into an object literal, the rest of an object pattern;
+ * - handed values: each value given where a type is declared for it -- an
+ *   argument, a returned value (an arrow's expression body too), the
+ *   initializer of a typed declaration, parameter or class field, a
+ *   property's value (a shorthand's name too), an array literal's element,
+ *   an assigned value.
  */
 export interface ProgramObservations {
     readonly writes: ReadonlyMap<ts.Type, readonly ObservedWrite[]>;
@@ -90,6 +98,7 @@ export interface ProgramObservations {
     readonly assertions: readonly {
         readonly asserted: ts.Type;
         readonly open: boolean;
+        readonly shapeless: boolean;
     }[];
     /**
      * Mutable arrays the program hands to a mutable array of another element
@@ -106,6 +115,13 @@ export interface ProgramObservations {
     readonly arrayLocalElements: ReadonlyMap<ts.Symbol, readonly ts.Type[]>;
     readonly namedReads: ReadonlyMap<string, readonly NamedRead[]>;
     readonly wholesaleReads: readonly ts.Node[];
+    /** Where `from`'s own fields are copied into the new object `into` names. */
+    readonly copies: readonly {
+        readonly from: ts.Node;
+        readonly into: ts.Node;
+    }[];
+    /** Values given where their contextual type declares another type for them. */
+    readonly handed: readonly ts.Expression[];
     /**
      * The first site that gives an object a prototype no literal or
      * constructor gives it: `Object.create`, `Object.setPrototypeOf`,
@@ -247,7 +263,11 @@ function observe(program: ts.Program): ProgramObservations {
     const identities = new Set<ts.Type>();
     const identityConsumers = new Map<ts.Node, Set<ts.Type>>();
     const enumerations = new Set<ts.Type>();
-    const assertions: { asserted: ts.Type; open: boolean }[] = [];
+    const assertions: {
+        asserted: ts.Type;
+        open: boolean;
+        shapeless: boolean;
+    }[] = [];
     const widenedArrays: {
         own: ts.Type;
         wide: ts.Type;
@@ -260,6 +280,20 @@ function observe(program: ts.Program): ProgramObservations {
     };
     const namedReads = new Map<string, NamedRead[]>();
     const wholesaleReads: ts.Node[] = [];
+    const copies: { from: ts.Node; into: ts.Node }[] = [];
+    const handed: ts.Expression[] = [];
+    // A literal or a function is created where it is given: it has no
+    // other type to bring.
+    const hand = (value: ts.Expression | undefined): void => {
+        if (
+            value &&
+            !ts.isLiteralExpression(value) &&
+            !ts.isFunctionLike(value) &&
+            !ts.isObjectLiteralExpression(value) &&
+            !ts.isArrayLiteralExpression(value)
+        )
+            handed.push(value);
+    };
     let foreignPrototype: ts.Node | undefined;
     const typeOf = (node: ts.Node): ts.Type => checker.getTypeAtLocation(node);
     let order = 0;
@@ -431,6 +465,28 @@ function observe(program: ts.Program): ProgramObservations {
             : yieldsNewArray(checker, unwrapped);
     };
     const visit = (node: ts.Node): void => {
+        if (ts.isCallExpression(node) || ts.isNewExpression(node))
+            node.arguments?.forEach(hand);
+        else if (ts.isReturnStatement(node)) hand(node.expression);
+        else if (ts.isArrowFunction(node) && !ts.isBlock(node.body))
+            hand(node.body);
+        else if (
+            (ts.isVariableDeclaration(node) ||
+                ts.isParameter(node) ||
+                ts.isPropertyDeclaration(node)) &&
+            node.type
+        )
+            hand(node.initializer);
+        else if (ts.isPropertyAssignment(node)) hand(node.initializer);
+        else if (ts.isShorthandPropertyAssignment(node)) hand(node.name);
+        else if (ts.isArrayLiteralExpression(node)) {
+            for (const element of node.elements)
+                if (!ts.isSpreadElement(element)) hand(element);
+        } else if (
+            ts.isBinaryExpression(node) &&
+            node.operatorToken.kind === ts.SyntaxKind.EqualsToken
+        )
+            hand(node.right);
         // A new array is created with the type it is read as.
         if (ts.isExpression(node) && !newArrayValue(node)) {
             const own = mutableElement(typeOf(node));
@@ -470,8 +526,16 @@ function observe(program: ts.Program): ProgramObservations {
             if (
                 !untyped(asserted) &&
                 (asserted.flags & ts.TypeFlags.Never) === 0
-            )
-                assertions.push({ asserted, open: untyped(typeOf(operand)) });
+            ) {
+                const from = typeOf(operand);
+                assertions.push({
+                    asserted,
+                    open: untyped(from),
+                    shapeless:
+                        untyped(from) ||
+                        (from.flags & ts.TypeFlags.NonPrimitive) !== 0,
+                });
+            }
         }
         // A function whose body the program does not hold may write any
         // object it is handed: an ambient declaration's, or the engine's
@@ -558,12 +622,18 @@ function observe(program: ts.Program): ProgramObservations {
         else if (ts.isSpreadAssignment(node)) {
             enumerated(node.expression);
             wholesaleReads.push(node.expression);
+            copies.push({ from: node.expression, into: node.parent });
         } else if (
             ts.isObjectBindingPattern(node) &&
             node.elements.some((element) => element.dotDotDotToken)
-        )
+        ) {
             enumerated(node);
-        else if (ts.isNewExpression(node)) {
+            copies.push({
+                from: node,
+                into: node.elements.find((element) => element.dotDotDotToken)!
+                    .name,
+            });
+        } else if (ts.isNewExpression(node)) {
             const name = libraryGlobal(checker, node.expression);
             if (name && KEYED_COLLECTIONS.has(name)) {
                 const keyOf = (keys: ts.Type): ts.Type | undefined => {
@@ -691,6 +761,8 @@ function observe(program: ts.Program): ProgramObservations {
         arrayLocalElements,
         namedReads,
         wholesaleReads,
+        copies,
+        handed,
         foreignPrototype,
     };
 }

@@ -91,6 +91,18 @@ export function storageRequestSite(
     }
 }
 
+/** What a request asks for and where, one text for every request that asks it there. */
+export function storageRequestKey(request: StorageRequest): string {
+    const site = storageRequestSite(request);
+    const where =
+        site === undefined
+            ? ""
+            : typeof site === "string"
+              ? site
+              : `${site.getSourceFile().fileName}:${site.getStart()}`;
+    return `${describeStorageRequests([request])}@${where}`;
+}
+
 /** What storage requests ask for, for reports: each kind once, a record's with what it demands. */
 export function describeStorageRequests(
     requests: readonly StorageRequest[],
@@ -183,6 +195,47 @@ export class ReplayStorage {
         demand: NativeRecordStorageDemand,
     ): CompileError | undefined {
         return this.refusedRecords.get(this.recordKey(demand));
+    }
+
+    /**
+     * What this storage holds now: the returned function puts it back,
+     * withdrawing every demand added since.
+     */
+    public snapshot(): () => void {
+        // Every container the storage holds is one of demands: none is
+        // listed, so a new one is covered. A Set held as a Map's value is
+        // copied with it.
+        const copied = (value: unknown): unknown =>
+            value instanceof Set ? new Set(value) : value;
+        const restores = Object.values(this).flatMap((held: unknown) => {
+            if (held instanceof GenericFunctionStorage)
+                return [held.snapshot()];
+            if (held instanceof Map) {
+                const entries = [...held].map(
+                    ([key, value]) => [key, copied(value)] as const,
+                );
+                return [
+                    () => {
+                        held.clear();
+                        for (const [key, value] of entries)
+                            held.set(key, copied(value));
+                    },
+                ];
+            }
+            if (held instanceof Set) {
+                const values = [...held];
+                return [
+                    () => {
+                        held.clear();
+                        for (const value of values) held.add(value);
+                    },
+                ];
+            }
+            return [];
+        });
+        return () => {
+            for (const restore of restores) restore();
+        };
     }
 
     /** Adds what `request` demands; false when this storage already holds it. */

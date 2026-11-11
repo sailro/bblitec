@@ -1718,14 +1718,15 @@ std::string ui_get_url_attribute(Engine& engine, UiElementHandle element, std::s
 
 std::string ui_get_enumerated_attribute(Engine& engine, UiElementHandle element,
                                         std::string_view name,
-                                        std::initializer_list<std::string_view> keywords) {
+                                        std::initializer_list<std::string_view> keywords,
+                                        std::string_view missing) {
     const UiElementRecord& record = ui_element(engine, element);
     const auto found = record.attributes.find(std::string(name));
     if (found != record.attributes.end())
         for (const std::string_view keyword : keywords)
             if (ascii_iequals(found->second, keyword))
                 return std::string(keyword);
-    return {};
+    return std::string(missing);
 }
 
 namespace {
