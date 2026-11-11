@@ -405,27 +405,43 @@ export class DeclarationLowerer {
             )
         )
             return true;
+        // A function a call retains, passed by name or as a member of an
+        // object literal (`create({ cancel: close })`), reads the binding
+        // when it runs.
+        const namedFunctions = (argument: ts.Expression): ts.Identifier[] => {
+            const value = this.context.unwrap(argument);
+            if (ts.isIdentifier(value)) return [value];
+            if (!ts.isObjectLiteralExpression(value)) return [];
+            return value.properties.flatMap((property) => {
+                if (ts.isShorthandPropertyAssignment(property))
+                    return [property.name];
+                if (!ts.isPropertyAssignment(property)) return [];
+                const member = this.context.unwrap(property.initializer);
+                return ts.isIdentifier(member) ? [member] : [];
+            });
+        };
         return someAnalysisNode(
             initializer,
             (node) =>
                 ts.isCallExpression(node) &&
-                node.arguments.some((argument, index) => {
-                    const value = this.context.unwrap(argument);
-                    if (!ts.isIdentifier(value)) return false;
-                    const callback = tryResolveFunctionDeclaration(
-                        this.context.checker,
-                        value,
-                    );
-                    return (
-                        !!callback?.body &&
+                node.arguments.some(
+                    (argument, index) =>
                         this.context.sharedClosures.callRetainsArgument(
                             node,
                             index,
                             true,
                         ) &&
-                        someAnalysisNode(callback.body, namesBinding)
-                    );
-                }),
+                        namedFunctions(argument).some((name) => {
+                            const callback = tryResolveFunctionDeclaration(
+                                this.context.checker,
+                                name,
+                            );
+                            return (
+                                !!callback?.body &&
+                                someAnalysisNode(callback.body, namesBinding)
+                            );
+                        }),
+                ),
         );
     }
 
