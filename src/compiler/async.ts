@@ -2710,11 +2710,19 @@ export class AsyncLowerer {
                     (property &&
                         (property.flags & ts.SymbolFlags.Optional) !== 0 &&
                         !field)
-                )
+                ) {
+                    const lacking =
+                        sourceType &&
+                        this.context.dataTypes.unrepresentedSignaturePart(
+                            sourceType,
+                            node,
+                        );
                     return this.context.fail(
                         node,
-                        `Asynchronous result property '${name}' has no owned representation.`,
+                        `Asynchronous result property '${name}' has no owned representation` +
+                            (lacking ? `: ${lacking}.` : "."),
                     );
+                }
                 // An array of resources the producer already holds keeps
                 // that storage: an owned copy would split its identity.
                 const held =

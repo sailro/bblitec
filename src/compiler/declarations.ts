@@ -2619,16 +2619,13 @@ export class DeclarationLowerer {
             const site = callback.callbackDeclaration ?? name;
             const parameters = callback.nativeCallbackParameterTypes;
             const property = ownerType.getProperty(key);
-            const declaredType =
+            const propertyType =
                 property &&
-                this.context.dataTypes.fromTsType(
-                    this.context.checker.getTypeOfSymbolAtLocation(
-                        property,
-                        name,
-                    ),
-                    name,
-                );
-            const type: DataType | undefined =
+                this.context.checker.getTypeOfSymbolAtLocation(property, name);
+            const declaredType =
+                propertyType &&
+                this.context.dataTypes.fromTsType(propertyType, name);
+            const known: DataType | undefined =
                 declaredType?.kind === "function"
                     ? declaredType
                     : parameters?.every(
@@ -2643,14 +2640,20 @@ export class DeclarationLowerer {
                                 : {}),
                         }
                       : this.context.dataLowerer.dataTypeAt(site);
+            // The slot is stored: a generic method no one signature holds is
+            // the family of the instantiations its calls reach.
+            const type =
+                known?.kind === "function" || !propertyType
+                    ? known
+                    : this.context.dataTypes.fromStoredTsType(
+                          propertyType,
+                          name,
+                      );
             if (type?.kind !== "function") {
                 const lacking =
-                    property &&
+                    propertyType &&
                     this.context.dataTypes.unrepresentedSignaturePart(
-                        this.context.checker.getTypeOfSymbolAtLocation(
-                            property,
-                            name,
-                        ),
+                        propertyType,
                         name,
                     );
                 this.context.fail(

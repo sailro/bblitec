@@ -2278,7 +2278,9 @@ export class DataTypeRegistry {
         const instance = this.classInstanceType(declaration);
         if (!source || !instance || this.isClassStruct(name)) return undefined;
         const view = this.checker.getNonNullableType(source.type);
-        return (view.flags & ts.TypeFlags.Object) !== 0 &&
+        // An intersection of object types (`Query & Pick<Store, "resolve">`)
+        // is a view as one object type is.
+        return objectLikeType(view) &&
             this.checker.getPropertiesOfType(view).length > 0 &&
             callSignatures(this.checker, view, "exact").length === 0 &&
             view.getConstructSignatures().length === 0 &&

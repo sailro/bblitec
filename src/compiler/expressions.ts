@@ -3084,9 +3084,19 @@ export class ExpressionLowerer {
                     (memberType &&
                         this.context.dataTypes.ownReturnedArray(memberType));
                 if (!inner) {
+                    const lacking =
+                        present.kind === "callback" &&
+                        present.callbackDeclaration &&
+                        this.context.dataTypes.unrepresentedSignaturePart(
+                            this.context.checker.getTypeAtLocation(
+                                present.callbackDeclaration,
+                            ),
+                            node,
+                        );
                     this.context.fail(
                         node,
-                        `Conditional record property '${name}' must have one native data type.`,
+                        `Conditional record property '${name}' must have one native data type` +
+                            (lacking ? `: ${lacking}.` : "."),
                     );
                 }
                 // The registry's nullable rule keeps a reference struct bare,
