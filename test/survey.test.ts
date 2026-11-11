@@ -629,6 +629,31 @@ test("a root's engine object no storage holds stands as its pinned base's handle
     assert.deepEqual(report.refusals, [], listed(report));
 });
 
+test("a root's captured nullable resource is its declaration's empty slot", () => {
+    // `upload` is never used, so it is a root of its own: `patchMesh` holds
+    // the empty mesh slot its null-initialized declaration binds, which
+    // `patchMesh!` reads as a mesh.
+    const { report } = surveySource(
+        `
+        import { createMeshFromData, updateMeshPositions, type EngineContext, type Mesh } from "@babylonjs/lite";
+        export function createGround(engine: EngineContext): void {
+            let patchMesh: Mesh | null = null;
+            const positions = new Float32Array(9);
+            const ensure = (): void => {
+                patchMesh ??= createMeshFromData(engine, "p", positions, new Float32Array(9), new Uint32Array([0, 1, 2]));
+            };
+            const upload = (): void => {
+                updateMeshPositions(engine, patchMesh!, positions, 0);
+            };
+            ensure();
+        }
+        localStorage.setItem("ready", "1");
+    `,
+        { fileName: resolve("survey-root-resource.ts") },
+    );
+    assert.deepEqual(report.refusals, [], listed(report));
+});
+
 test("a root binds a captured const function literal and what it captures", () => {
     // `send` is rooted: `post` holds an arrow reading `health` and `limit`,
     // which the root binds as the program's own bindings would hold them.

@@ -356,6 +356,23 @@ export class DeclarationLowerer {
         );
     }
 
+    /**
+     * Binds `name` as the empty slot of the nullable resource its declared
+     * type is (`Mesh | null`), as its declaration initialized to null does:
+     * false for any other type.
+     */
+    public bindAbsentResource(name: ts.Identifier): boolean {
+        const resource = this.context.nullableResourceKind(name);
+        if (!resource) return false;
+        this.bindOptionalResource(
+            name,
+            this.context.allocateTemporaryCppName(name.text),
+            resource,
+            false,
+        );
+        return true;
+    }
+
     private bindOptionalResource(
         name: ts.Identifier,
         cppName: string,

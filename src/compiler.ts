@@ -7262,6 +7262,7 @@ class Compiler implements LoweringServices {
         if (this.bindings.lookupOptional(name)) return;
         try {
             this.transaction(() => {
+                if (this.declarations.bindAbsentResource(name)) return;
                 const value = emptyStorage(
                     this,
                     this.dataLowerer.dataTypeAt(name),

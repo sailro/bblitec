@@ -65,6 +65,7 @@ export type SurveyRootContext = UserFunctionContext &
         | "emitDiscardedValue"
         | "moduleNamespaces"
         | "evaluationOrder"
+        | "declarations"
     > & { defaultEngineCpp: string | undefined };
 
 /**
@@ -412,6 +413,12 @@ function withRootBindings(
                     !context.bindings.lookupOptional(name) &&
                     !scopes.some((owner) => isDeclaredInside(name, owner))
                 ) {
+                    // A nullable resource is its declaration's empty slot.
+                    if (
+                        !initializer &&
+                        context.declarations.bindAbsentResource(name)
+                    )
+                        continue;
                     let value =
                         initializer &&
                         unlessRefused(() => context.compileValue(initializer));
