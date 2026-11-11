@@ -479,6 +479,12 @@ export interface LoweringServices {
      * later statements lower against it; nothing where its type has none.
      */
     bindEmptyStorage(name: ts.Identifier): void;
+    /**
+     * Runs a setup step that predeclares the storage `node` needs. In a
+     * survey its refusal is the census's, recorded against the statement
+     * holding `node`, and setup goes on; elsewhere it is the compile's.
+     */
+    predeclaring(node: ts.Node, work: () => void): void;
     /** The realm's engine local `name`: its storage type and how code reads it (a worker realm holds it shared). */
     realmEngine(name: string): { name: string; type: string; cpp: string };
     captureEmittedLines(

@@ -17,6 +17,7 @@ import {
 } from "./syntax.js";
 import type { Value } from "./types.js";
 import type { DataType } from "./data-types.js";
+import { presentDataType } from "./data-types/operations.js";
 import { undefinedOnly, holdsOnly, PRIMITIVE_KINDS } from "./type-facts.js";
 import { ownKeysKnown, undefinedValue } from "./values/model.js";
 import type { ClassHierarchy } from "./class-members.js";
@@ -124,10 +125,11 @@ interface ProvenUndefinedOptions {
     /** The value is awaited: a settled promise of `undefined` counts. */
     readonly awaited?: boolean;
     /**
-     * Hears each struct function field a completion calls through whose
-     * storage does not yet require the proof.
+     * A struct function field a completion calls through whose storage
+     * does not yet require the proof takes it: its stores then check it (a
+     * replay), rather than the proof failing.
      */
-    readonly unproven?: (field: DataType<"function">) => void;
+    readonly requireFieldProofs?: true;
 }
 
 /** A source-specialized callback retains the body behind an immutable alias. */
@@ -170,6 +172,10 @@ interface UndefinedContext {
             node: ts.Node,
             accessors?: "accessors",
         ): readonly { readonly sourceName: string; readonly type: DataType }[];
+        requireFunctionCompletion(
+            type: DataType<"function">,
+            completion: "undefined",
+        ): void;
     };
 }
 
@@ -177,7 +183,10 @@ interface UndefinedContext {
 function provenUndefinedValue(
     context: UndefinedContext,
     node: ts.Node,
-    { awaited: awaitedNode = false, unproven }: ProvenUndefinedOptions = {},
+    {
+        awaited: awaitedNode = false,
+        requireFieldProofs,
+    }: ProvenUndefinedOptions = {},
 ): boolean {
     const seen = new Set<ts.Node>();
     const visit = (source: ts.Node, awaited = false): boolean => {
@@ -276,12 +285,9 @@ function provenUndefinedValue(
             // A struct's function field stores only functions proven to
             // complete as its type requires; an absent optional struct
             // completes no call through it with a value.
-            const stored =
-                owner?.kind === "data" && owner.dataType?.kind === "optional"
-                    ? owner.dataType.inner
-                    : owner?.kind === "data"
-                      ? owner.dataType
-                      : undefined;
+            const stored = presentDataType(
+                owner?.kind === "data" ? owner.dataType : undefined,
+            );
             if (stored?.kind === "struct") {
                 const field = context.dataTypes
                     .structFields(stored.name, callee, "accessors")
@@ -292,7 +298,11 @@ function provenUndefinedValue(
                     (awaited && field.awaitedUndefinedCompletion === true)
                 )
                     return true;
-                unproven?.(field);
+                if (requireFieldProofs)
+                    context.dataTypes.requireFunctionCompletion(
+                        field,
+                        "undefined",
+                    );
                 return false;
             }
             if (

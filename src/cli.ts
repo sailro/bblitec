@@ -701,7 +701,7 @@ function writeSurvey(
     censusPath: string,
     source: string,
     compileOptions: CompileOptions,
-    target: { passes?: number; entryOnly?: true },
+    passes: number | undefined,
     leaveCoverage: () => void,
 ): void {
     // A survey of a large entry says where it is and leaves its census as
@@ -719,8 +719,7 @@ function writeSurvey(
                 leaveCoverage();
             },
         },
-        ...(target.passes ? { passLimit: target.passes } : {}),
-        ...(target.entryOnly ? { roots: false } : {}),
+        ...(passes ? { passLimit: passes } : {}),
     });
     writeJsonRecord(censusPath, report);
     console.log(
@@ -816,9 +815,9 @@ async function main(): Promise<void> {
     };
     if (options.target.kind === "survey") {
         const census = resolve(options.target.census);
-        const target = options.target;
+        const { passes } = options.target;
         withCoverage(options.coverage, (leave) =>
-            writeSurvey(census, source, compileOptions, target, leave),
+            writeSurvey(census, source, compileOptions, passes, leave),
         );
         return;
     }

@@ -11,7 +11,7 @@ import {
 import { metadataFieldsForKind } from "./values/metadata.js";
 import { isJsonValue } from "./json-bridge.js";
 import { activeSurvey } from "./survey.js";
-import { emptyStorage } from "./survey-roots.js";
+import { emptyStorage } from "./empty-storage.js";
 import {
     someAnalysisNode,
     forEachAnalysisNode,
@@ -5511,13 +5511,11 @@ export class UserFunctionLowerer {
                 `Stored function '${sourceFunctionName(declaration) ?? "(anonymous)"}' re-enters its own lowering; its storage cannot serve this use's signature.`,
             );
         }
-        // A struct function field it completes through takes the proof its
-        // stores then check (a replay), rather than refusing here.
-        const unproven = (field: DataType<"function">): void =>
-            context.dataTypes.requireFunctionCompletion(field, "undefined");
         if (
             dataType.undefinedCompletion &&
-            !hasProvenUndefinedCompletion(context, declaration, { unproven })
+            !hasProvenUndefinedCompletion(context, declaration, {
+                requireFieldProofs: true,
+            })
         )
             context.fail(
                 expression,
@@ -5527,7 +5525,7 @@ export class UserFunctionLowerer {
             dataType.awaitedUndefinedCompletion &&
             !hasProvenUndefinedCompletion(context, declaration, {
                 awaited: true,
-                unproven,
+                requireFieldProofs: true,
             })
         )
             context.fail(

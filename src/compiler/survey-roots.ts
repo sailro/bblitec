@@ -6,34 +6,31 @@
  * a root's emission is dropped.
  */
 import ts from "typescript";
-import { forEachAnalysisNode } from "./analysis-walk.js";
+import { forEachAnalysisNode, sourceFileNodes } from "./analysis-walk.js";
 import { isStaticMember } from "./class-members.js";
 import { unlessRefused } from "./compile-error.js";
-import type { DataType } from "./data-types/model.js";
+import { emptyStorage, type EmptyStorageContext } from "./empty-storage.js";
 import type { LoweringServices } from "./lowering-services.js";
 import { isProgramSourceFile } from "./program.js";
+import { isModuleInitializerStatement } from "./module-initializers.js";
 import type { SurveyCollector } from "./survey.js";
-import { declaredSymbol, resolvedSymbol } from "./symbols.js";
 import {
+    calledDeclaration,
+    declaredSymbol,
+    resolvedSymbol,
+} from "./symbols.js";
+import {
+    functionOfDeclaration,
     isDeclaredInside,
     isSupportedFunction,
     thisMember,
+    variableKind,
     type SupportedFunction,
 } from "./syntax.js";
 import { callSignatures, objectLikeType } from "./type-facts.js";
+import { callTypeArguments, mentionsTypeParameter } from "./type-arguments.js";
 import type { Value } from "./types.js";
 import type { UserFunctionContext } from "./user-functions.js";
-
-/** What a native local of empty storage needs from its compiler. */
-export type EmptyStorageContext = Pick<
-    LoweringServices,
-    | "allocateTemporaryCppName"
-    | "emit"
-    | "dataTypes"
-    | "dataLowerer"
-    | "requireDefaultEngine"
-    | "sourceFile"
->;
 
 /** What the survey roots need from their compiler. */
 export type SurveyRootContext = UserFunctionContext &
@@ -54,40 +51,18 @@ export type SurveyRootContext = UserFunctionContext &
         | "realmEngine"
         | "refusedDemand"
         | "bindEmptyStorage"
+        | "emitStatement"
+        | "compileValue"
+        | "emitDiscardedValue"
+        | "moduleNamespaces"
     > & { defaultEngineCpp: string | undefined };
 
 /**
- * A native local holding empty storage of `type`; undefined when it has
- * none. A resource no carrier names belongs to the entry's one engine,
- * when there is one.
- */
-export function emptyStorage(
-    context: EmptyStorageContext,
-    type: DataType | undefined,
-    label: string,
-): Value | undefined {
-    if (!type) return undefined;
-    const cpp = context.allocateTemporaryCppName(`empty_${label}`);
-    context.emit({
-        kind: "declaration",
-        type: context.dataTypes.cppType(type),
-        name: cpp,
-        initializer: "{}",
-    });
-    const value = context.dataLowerer.leafValue(cpp, type);
-    if (value.kind === "data" || value.engineCpp) return value;
-    const engineCpp = unlessRefused(() =>
-        context.requireDefaultEngine(context.sourceFile),
-    );
-    return engineCpp ? { ...value, engineCpp } : value;
-}
-
-/**
- * Lowers every function of the program's own sources that no lowering of
- * the survey's attempt began, outermost first, unless the survey lowers
- * only what the entry reaches; either way the census counts those sources.
- * A rolled-back entry statement can leave the entry's one engine
- * undeclared: the roots then hold one of their own while they lower.
+ * Lowers what no lowering of the survey's attempt began in the program's
+ * own sources: each module's top-level statements (module roots), then
+ * every function, outermost first. A rolled-back entry statement can leave
+ * the entry's one engine undeclared: the roots then hold one of their own
+ * while they lower.
  */
 export function emitSurveyRoots(
     context: SurveyRootContext,
@@ -95,7 +70,6 @@ export function emitSurveyRoots(
 ): void {
     const files = context.program.getSourceFiles().filter(isProgramSourceFile);
     survey.programSources(files);
-    if (!survey.lowersRoots) return;
     const enclosingEngine = context.defaultEngineCpp;
     if (!enclosingEngine) {
         const engine = context.realmEngine(
@@ -110,7 +84,12 @@ export function emitSurveyRoots(
         context.registerNativeBindingType(engine.name, engine.type);
         context.defaultEngineCpp = engine.cpp;
     }
+    // Module roots lower first, in one scope the function roots then lower
+    // in: a function reads the module bindings they declare. Nothing the
+    // roots emit reaches the program's body.
+    context.bindings.pushScope(context.allocateUserFunctionPrefix());
     try {
+        for (const file of files) emitModuleRoot(context, survey, file);
         for (const file of files) {
             const visit = (node: ts.Node): void => {
                 if (
@@ -123,7 +102,13 @@ export function emitSurveyRoots(
                     const [declaration, body] = [node, node.body];
                     survey.attemptRoot(context, body, () => {
                         context.captureEmittedStatements(() =>
-                            emitSurveyRoot(context, declaration, body),
+                            withCalledTypeArguments(
+                                context,
+                                files,
+                                declaration,
+                                () =>
+                                    emitSurveyRoot(context, declaration, body),
+                            ),
                         );
                     });
                 }
@@ -132,8 +117,48 @@ export function emitSurveyRoots(
             visit(file);
         }
     } finally {
+        context.bindings.popScope();
         context.defaultEngineCpp = enclosingEngine;
     }
+}
+
+/**
+ * Lowers the top-level statements of a module the program never evaluates
+ * (one nothing imports at run time), each its own attempt, in the roots'
+ * scope. A module the program evaluates lowers its own statements, folding
+ * a constant it only reads where it is read. Function declarations lower as
+ * roots of their own; classes, enums and namespaces stay with the module
+ * that declares them.
+ */
+function emitModuleRoot(
+    context: SurveyRootContext,
+    survey: SurveyCollector,
+    file: ts.SourceFile,
+): void {
+    if (context.moduleNamespaces.evaluates(file)) return;
+    const pending = file.statements.filter(
+        (statement) =>
+            isModuleInitializerStatement(statement, context.checker) &&
+            !ts.isClassDeclaration(statement) &&
+            !ts.isModuleDeclaration(statement) &&
+            survey.unbegun(statement),
+    );
+    if (pending.length === 0) return;
+    survey.inRoots(() =>
+        context.captureEmittedStatements(() => {
+            for (const statement of pending)
+                if (ts.isExportAssignment(statement)) {
+                    // `export default <value>` declares the module's
+                    // default binding: its value is what lowers.
+                    survey.touch(statement, false);
+                    survey.attemptStatement(context, statement, () =>
+                        context.emitDiscardedValue(
+                            context.compileValue(statement.expression),
+                        ),
+                    );
+                } else context.emitStatement(statement);
+        }),
+    );
 }
 
 /**
@@ -149,9 +174,12 @@ function emptyValueOf(
     label: string,
     depth = 0,
 ): Value | undefined {
+    // A root's array is one its caller owns, which a borrowed view only
+    // lends a callee.
+    const mapped = context.dataTypes.fromTsType(type, node);
     const storage = emptyStorage(
         context,
-        context.dataTypes.fromTsType(type, node),
+        mapped && context.dataTypes.ownReadonlyArray(mapped, type),
         label,
     );
     const checker = context.checker;
@@ -199,9 +227,19 @@ function emitSurveyRoot(
     context.emit({ kind: "open", code: "{" });
     context.bindings.pushScope(context.allocateUserFunctionPrefix());
     try {
-        for (const name of capturedFunctionLocals(context.checker, declaration))
-            if (!context.bindings.lookupOptional(name))
-                context.bindings.defineVariable(name, site(name, name.text));
+        // A captured const holding a function literal holds that function,
+        // as the program's own binding does.
+        for (const { name, literal } of capturedFunctionLocals(
+            context.checker,
+            declaration,
+        ))
+            if (!context.bindings.lookupOptional(name)) {
+                const value =
+                    (literal &&
+                        unlessRefused(() => context.compileValue(literal))) ??
+                    site(name, name.text);
+                context.bindings.defineVariable(name, value);
+            }
         // A static member's `this` is its class, which no instance holds.
         const member = thisMember(body);
         const owner =
@@ -248,45 +286,187 @@ function emitSurveyRoot(
     }
 }
 
-const capturedLocals = new WeakMap<ts.Node, ts.Identifier[]>();
+const genericCalls = new WeakMap<
+    ts.Program,
+    Map<ts.SignatureDeclaration, ts.CallExpression[]>
+>();
+
+/**
+ * The calls of the program's own generic functions, by the function each
+ * resolves to: a root of one lowers at the type arguments a call binds.
+ * Built once per program in one walk, resolving only calls whose callee
+ * names one of them.
+ */
+function genericCallsOf(
+    context: SurveyRootContext,
+    files: readonly ts.SourceFile[],
+): Map<ts.SignatureDeclaration, ts.CallExpression[]> {
+    const known = genericCalls.get(context.program);
+    if (known) return known;
+    const checker = context.checker;
+    const generic = new Set<ts.Node>();
+    const candidates: ts.CallExpression[] = [];
+    for (const file of files)
+        for (const node of sourceFileNodes(file)) {
+            if (ts.isFunctionLike(node) && node.typeParameters?.length)
+                generic.add(node);
+            else if (ts.isCallExpression(node)) candidates.push(node);
+        }
+    const calls = new Map<ts.SignatureDeclaration, ts.CallExpression[]>();
+    for (const call of candidates) {
+        const named = resolvedSymbol(
+            checker,
+            call.expression,
+        )?.declarations?.some((declaration) => {
+            const literal = ts.isVariableDeclaration(declaration)
+                ? functionOfDeclaration(declaration)
+                : undefined;
+            return (
+                generic.has(declaration) ||
+                (literal !== undefined && generic.has(literal))
+            );
+        });
+        const declaration = named && calledDeclaration(checker, call);
+        if (!declaration || !generic.has(declaration)) continue;
+        const known = calls.get(declaration);
+        if (known) known.push(call);
+        else calls.set(declaration, [call]);
+    }
+    genericCalls.set(context.program, calls);
+    return calls;
+}
+
+/**
+ * The type arguments a root of the generic `owner` lowers at: those of the
+ * first call of it they bind no type parameter in; undefined when no call
+ * does. Kept per function: the program does not change between passes.
+ */
+const calledSubstitutions = new WeakMap<
+    ts.SignatureDeclaration,
+    ReadonlyMap<ts.Symbol, ts.Type> | null
+>();
+
+/**
+ * Runs `work` with the type arguments of the generic functions holding
+ * `declaration`, itself included, in force, outermost first: for each, the
+ * type arguments of a call of it in the program (`calledSubstitutions`).
+ */
+function withCalledTypeArguments(
+    context: SurveyRootContext,
+    files: readonly ts.SourceFile[],
+    declaration: SupportedFunction,
+    work: () => void,
+): void {
+    const generic: ts.SignatureDeclaration[] = [];
+    for (let node: ts.Node | undefined = declaration; node; node = node.parent)
+        if (ts.isFunctionLike(node) && node.typeParameters?.length)
+            generic.unshift(node);
+    if (generic.length === 0) {
+        work();
+        return;
+    }
+    const checker = context.checker;
+    const substitutionOf = (
+        owner: ts.SignatureDeclaration,
+    ): ReadonlyMap<ts.Symbol, ts.Type> | null => {
+        const known = calledSubstitutions.get(owner);
+        if (known !== undefined) return known;
+        let found: ReadonlyMap<ts.Symbol, ts.Type> | null = null;
+        for (const call of genericCallsOf(context, files).get(owner) ?? []) {
+            const substitution = unlessRefused(() =>
+                callTypeArguments(checker, call, owner, (node, text) =>
+                    context.fail(node, text),
+                ),
+            );
+            if (
+                substitution &&
+                [...substitution.values()].every(
+                    (type) => !mentionsTypeParameter(checker, type),
+                )
+            ) {
+                found = substitution;
+                break;
+            }
+        }
+        calledSubstitutions.set(owner, found);
+        return found;
+    };
+    context.dataTypes.withTypeArgumentFrames(
+        generic.flatMap((owner) => substitutionOf(owner) ?? []),
+        work,
+    );
+}
+
+/** A captured name, with the function literal it is a `const` of. */
+interface CapturedLocal {
+    name: ts.Identifier;
+    literal: ts.ArrowFunction | ts.FunctionExpression | undefined;
+}
+
+const capturedLocals = new WeakMap<ts.Node, CapturedLocal[]>();
+
+/** The function literal a `const` declared `local` holds, if any. */
+function constFunctionLiteral(
+    local: ts.Declaration,
+): ts.ArrowFunction | ts.FunctionExpression | undefined {
+    const literal =
+        ts.isVariableDeclaration(local) && variableKind(local) === "const"
+            ? functionOfDeclaration(local)
+            : undefined;
+    return literal &&
+        (ts.isArrowFunction(literal) || ts.isFunctionExpression(literal))
+        ? literal
+        : undefined;
+}
 
 /**
  * The variables and parameters of enclosing functions that `declaration`
  * reads, by their declared names: what a root binds besides its
- * parameters. Kept per declaration: the program does not change between
- * passes.
+ * parameters -- with, for a captured const holding a function literal,
+ * those that literal reads. Those come first, so each binds before the
+ * function that reads it. Kept per declaration: the program does not
+ * change between passes.
  */
 function capturedFunctionLocals(
     checker: ts.TypeChecker,
     declaration: ts.Node,
-): ts.Identifier[] {
+): CapturedLocal[] {
     const known = capturedLocals.get(declaration);
     if (known) return known;
-    const found = new Map<ts.Symbol, ts.Identifier>();
-    forEachAnalysisNode(
-        declaration,
-        (node) => {
-            if (!ts.isIdentifier(node)) return;
-            const symbol = resolvedSymbol(checker, node);
-            const local = symbol?.valueDeclaration;
-            if (
-                !symbol ||
-                !local ||
-                found.has(symbol) ||
-                !(
-                    ts.isVariableDeclaration(local) ||
-                    ts.isParameter(local) ||
-                    ts.isBindingElement(local)
-                ) ||
-                !ts.isIdentifier(local.name) ||
-                isDeclaredInside(local, declaration) ||
-                !ts.findAncestor(local.parent, ts.isFunctionLike)
-            )
-                return;
-            found.set(symbol, local.name);
-        },
-        { types: "skip", names: "references" },
-    );
+    const found = new Map<ts.Symbol, CapturedLocal>();
+    const scanned = new Set<ts.Node>();
+    const scan = (scope: ts.Node): void => {
+        if (scanned.has(scope)) return;
+        scanned.add(scope);
+        forEachAnalysisNode(
+            scope,
+            (node) => {
+                if (!ts.isIdentifier(node)) return;
+                const symbol = resolvedSymbol(checker, node);
+                const local = symbol?.valueDeclaration;
+                if (
+                    !symbol ||
+                    !local ||
+                    found.has(symbol) ||
+                    !(
+                        ts.isVariableDeclaration(local) ||
+                        ts.isParameter(local) ||
+                        ts.isBindingElement(local)
+                    ) ||
+                    !ts.isIdentifier(local.name) ||
+                    isDeclaredInside(local, scope) ||
+                    isDeclaredInside(local, declaration) ||
+                    !ts.findAncestor(local.parent, ts.isFunctionLike)
+                )
+                    return;
+                const literal = constFunctionLiteral(local);
+                if (literal) scan(literal);
+                found.set(symbol, { name: local.name, literal });
+            },
+            { types: "skip", names: "references" },
+        );
+    };
+    scan(declaration);
     const locals = [...found.values()];
     capturedLocals.set(declaration, locals);
     return locals;

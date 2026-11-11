@@ -1815,11 +1815,7 @@ export class AsyncLowerer {
                     // takes the proof its stores then check (a replay).
                     else if (!cleanup)
                         hasProvenUndefinedCompletion(context, declaration, {
-                            unproven: (field) =>
-                                context.dataTypes.requireFunctionCompletion(
-                                    field,
-                                    "undefined",
-                                ),
+                            requireFieldProofs: true,
                         });
                     context.fail(
                         callback,

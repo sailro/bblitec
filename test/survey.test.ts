@@ -384,34 +384,177 @@ test("a survey lowers every function the program never reached as a root", () =>
     assert.equal(report.program.attempted, report.program.statements);
 });
 
-test("a survey without roots lowers only what the entry reaches", () => {
-    // `unused` is never called: without roots its refusal is not met, and
-    // the program census counts only the statements the entry reached.
+test("a root held by its own storage demand lowers in the same pass", () => {
+    // `Counter.add` reads `this`, whose class must be shared: the pass takes
+    // that demand at the root and lowers the root again with it.
     const { report } = surveySource(
         `
         let total = 0;
-        export function unused(name: string): number {
-            total += new FinalizationRegistry<string>(() => {}).unregister({ name }) ? 1 : 0;
-            return total;
+        class Counter {
+            private value = 0;
+            add(step: number): void {
+                this.value += step;
+                total += new FinalizationRegistry<string>(() => {}).unregister(this) ? this.value : 0;
+            }
         }
-        function used(step: number): void {
-            total += new FinalizationRegistry<string>(() => {}).unregister({ step }) ? step : 0;
-        }
-        used(2);
+        export const counter = new Counter();
         localStorage.setItem("total", String(total));
     `,
-        { fileName: resolve("survey-entry-only.ts") },
-        { roots: false },
+        { fileName: resolve("survey-root-demand.ts") },
+        { passLimit: 1 },
     );
-    assert.equal(report.complete, true);
     assert.deepEqual(
         report.refusals.map((refusal) => refusal.statement.function),
-        ["used"],
+        ["Counter.add"],
         listed(report),
     );
-    assert.equal(report.statements.rooted, 0);
+});
+
+test("a generic root lowers at the type arguments a call in the program binds", () => {
+    // `sum` is rooted before `unused`, which calls it: its `T` is the
+    // call's element type, so the refusal inside it is found.
+    const { report } = surveySource(
+        `
+        let total = 0;
+        function sum<T extends { id: number }>(items: readonly T[]): number {
+            let found = 0;
+            for (const item of items) found += item.id;
+            total += new FinalizationRegistry<string>(() => {}).unregister({ found }) ? 1 : 0;
+            return found;
+        }
+        export function unused(): number {
+            return sum([{ id: 1, name: "a" }]);
+        }
+        localStorage.setItem("total", String(total));
+    `,
+        { fileName: resolve("survey-generic-root.ts") },
+    );
+    assert.equal(report.complete, true, report.terminal);
+    assert.ok(
+        report.refusals.some(
+            (refusal) =>
+                refusal.statement.function === "sum" &&
+                refusal.message === "Unsupported constructor expression.",
+        ),
+        listed(report),
+    );
+    assert.ok(
+        report.refusals.every(
+            (refusal) => !refusal.message.startsWith("A survey root's"),
+        ),
+        listed(report),
+    );
+});
+
+test("a survey lowers the statements of a module the program never evaluates", (t) => {
+    // The entry imports only a type from `tools.ts`, so nothing runs that
+    // module: its statements lower as module roots, before the function
+    // roots, so `reset` writes the `count` they declared.
+    const directory = mkdtempSync(join(tmpdir(), "bblite-module-roots-"));
+    t.after(() => rmSync(directory, { recursive: true, force: true }));
+    writeFileSync(
+        join(directory, "tools.ts"),
+        `
+        export interface Tool { name: string }
+        let count = 0;
+        const REGISTRY = new FinalizationRegistry<string>(() => {});
+        export function reset(): void {
+            count = 0;
+        }
+    `,
+    );
+    const { report } = surveySource(
+        `
+        import type { Tool } from "./tools.js";
+        const tool: Tool = { name: "saw" };
+        localStorage.setItem("tool", tool.name);
+    `,
+        { fileName: join(directory, "entry.ts") },
+    );
+    assert.equal(report.complete, true, report.terminal);
+    assert.deepEqual(
+        report.refusals.map((refusal) => [
+            refusal.statement.line,
+            refusal.message,
+        ]),
+        [[4, "Unsupported constructor expression."]],
+        listed(report),
+    );
     assert.ok(report.program);
-    assert.ok(report.program.attempted < report.program.statements);
+    assert.equal(report.program.attempted, report.program.statements);
+});
+
+test("a root binds a captured const function literal and what it captures", () => {
+    // `send` is rooted: `post` holds an arrow reading `health` and `limit`,
+    // which the root binds as the program's own bindings would hold them.
+    const { report } = surveySource(
+        `
+        type Post = (message: { kind: string; payload: unknown }) => void;
+        let sent = 0;
+        export function createHost(limit: number): { send(kind: string): void } {
+            const health = { failures: 0 };
+            const post: Post = (message) => { if (health.failures > limit) return; sent += message.kind.length; };
+            function send(kind: string): void {
+                post({ kind, payload: null });
+                sent += 1;
+            }
+            return { send };
+        }
+        localStorage.setItem("sent", String(sent));
+    `,
+        { fileName: resolve("survey-root-literal.ts") },
+    );
+    assert.equal(report.complete, true, report.terminal);
+    assert.deepEqual(report.refusals, [], listed(report));
+    assert.ok(report.program);
+    assert.equal(report.program.attempted, report.program.statements);
+});
+
+test("a root's array parameter is an array its caller owns", () => {
+    // Capturing `items` in a stored closure keeps the array's identity:
+    // a borrowed view could not, an owned array can.
+    const { report } = surveySource(
+        `
+        let total = 0;
+        const later: Array<() => number> = [];
+        export function keep(items: readonly number[]): void {
+            later.push(() => items.length);
+            total += items.length;
+        }
+        localStorage.setItem("total", String(total + later.length));
+    `,
+        { fileName: resolve("survey-root-array.ts") },
+    );
+    assert.equal(report.complete, true, report.terminal);
+    assert.ok(
+        report.refusals.every(
+            (refusal) => !refusal.message.startsWith("A borrowed array view"),
+        ),
+        listed(report),
+    );
+});
+
+test("the program census lists the functions holding statements no lowering tried", () => {
+    // A constructor is not a root: its statements stay untried, listed by
+    // the constructor that holds them.
+    const { report } = surveySource(
+        `
+        let total = 0;
+        export class Box {
+            constructor(size: number) {
+                total += size;
+                total *= 2;
+            }
+        }
+        localStorage.setItem("total", String(total));
+    `,
+        { fileName: resolve("survey-untried.ts") },
+    );
+    assert.ok(report.program);
+    assert.deepEqual(
+        report.program.untried.map((entry) => [entry.kind, entry.statements]),
+        [["Constructor", 2]],
+    );
 });
 
 test("a survey lowers the statements a rolled-back compound statement holds", () => {

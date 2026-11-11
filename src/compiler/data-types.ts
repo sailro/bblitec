@@ -84,6 +84,7 @@ import {
 } from "./emission-transaction.js";
 import {
     NativeRecordStorageRequired,
+    refusingRecordDemand,
     type NativeRecordStorageDemand,
 } from "./native-record-storage.js";
 import { AbsentRecordProperties } from "./absent-record-properties.js";
@@ -2112,13 +2113,18 @@ export class DataTypeRegistry {
         this.recordComponents = components;
         const joins = new Map<ts.Type, RecordJoin[]>();
         for (const demand of demands) {
+            // A demand no native object can hold stands refused.
             if (demand.dictionaryConflict)
-                this.fail(
-                    demand.node,
-                    "A record has conflicting scalar dictionary storage demands.",
+                refusingRecordDemand(demand, () =>
+                    this.fail(
+                        demand.node,
+                        "A record has conflicting scalar dictionary storage demands.",
+                    ),
                 );
             if (demand.nativeConflict)
-                this.fail(demand.node, CONFLICTING_RECORD_VIEWS);
+                refusingRecordDemand(demand, () =>
+                    this.fail(demand.node, CONFLICTING_RECORD_VIEWS),
+                );
             if (demand.proxy)
                 this.withRecordDemand(demand, () =>
                     this.proxyRecords.add(this.structIdentity(demand.type)),
@@ -2194,7 +2200,9 @@ export class DataTypeRegistry {
                         demand.dictionary ||
                         (previous && !sameObjectView(previous, view))
                     )
-                        this.fail(demand.node, CONFLICTING_RECORD_VIEWS);
+                        refusingRecordDemand(demand, () =>
+                            this.fail(demand.node, CONFLICTING_RECORD_VIEWS),
+                        );
                     this.objectViews.set(identity, view);
                 });
             for (const join of demand.joins ?? []) {
@@ -3452,17 +3460,9 @@ export class DataTypeRegistry {
         demand: NativeRecordStorageDemand,
         work: () => T,
     ): T {
-        const apply = (index: number): T => {
-            if (index < demand.frames.length) {
-                return this.withTypeArguments(demand.frames[index], () =>
-                    apply(index + 1),
-                );
-            }
-            return work();
-        };
         return this.withDynamicJsonTypes(
             demand.dynamicJsonStorage === true,
-            () => apply(0),
+            () => this.withTypeArgumentFrames(demand.frames, work),
         );
     }
 
@@ -5882,16 +5882,12 @@ export class DataTypeRegistry {
                 );
         });
         const frames = [...demand.frames, arguments_];
-        const apply = (index: number): T =>
-            index === frames.length
-                ? work()
-                : this.withTypeArguments(frames[index], () => apply(index + 1));
         const previous = this.genericFunctionAncestors;
         this.genericFunctionAncestors = [...demand.ancestors, demand.family];
         try {
             return this.withDynamicJsonTypes(
                 demand.dynamicJsonStorage === true,
-                () => apply(0),
+                () => this.withTypeArgumentFrames(frames, work),
             );
         } finally {
             this.genericFunctionAncestors = previous;
@@ -7395,6 +7391,19 @@ export class DataTypeRegistry {
     }
 
     /** Runs `work` with a generic call's instantiation in force above the receiver's. */
+    /** {@link withTypeArguments} for each of `frames`, outermost first. */
+    public withTypeArgumentFrames<T>(
+        frames: readonly (ReadonlyMap<ts.Symbol, ts.Type> | undefined)[],
+        work: () => T,
+        index = 0,
+    ): T {
+        return index === frames.length
+            ? work()
+            : this.withTypeArguments(frames[index], () =>
+                  this.withTypeArgumentFrames(frames, work, index + 1),
+              );
+    }
+
     public withTypeArguments<T>(
         substitution: ReadonlyMap<ts.Symbol, ts.Type> | undefined,
         work: () => T,
