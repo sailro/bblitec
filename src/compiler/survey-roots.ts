@@ -483,7 +483,7 @@ function unboundTypeArguments(
 ): ReadonlyMap<ts.Symbol, ts.Type> {
     const substitution = new Map<ts.Symbol, ts.Type>();
     for (const parameter of owner.typeParameters ?? []) {
-        const symbol = checker.getSymbolAtLocation(parameter.name);
+        const symbol = declaredSymbol(checker, parameter.name);
         if (!symbol) continue;
         const constraint = checker.getBaseConstraintOfType(
             checker.getTypeAtLocation(parameter),
