@@ -74,6 +74,28 @@ function isTotalDefinition(expression: ts.Expression): boolean {
     return false;
 }
 
+/**
+ * Whether `statement` is a `const` whose every initializer evaluates totally
+ * and purely: reading one folds its value, so running the statement does
+ * nothing a read does not.
+ */
+export function isTotalConstStatement(
+    statement: ts.Statement,
+    evaluationOrder: { isPureExpression(expression: ts.Expression): boolean },
+): boolean {
+    return (
+        ts.isVariableStatement(statement) &&
+        variableKind(statement.declarationList) === "const" &&
+        statement.declarationList.declarations.every(
+            (declaration) =>
+                ts.isIdentifier(declaration.name) &&
+                declaration.initializer !== undefined &&
+                isTotalDefinition(declaration.initializer) &&
+                evaluationOrder.isPureExpression(declaration.initializer),
+        )
+    );
+}
+
 /** Finite module identities transport independently of their live export bindings. */
 export class ModuleNamespaces {
     /** @unjournaled Immutable source graph, independent of emission and bindings. */
@@ -539,16 +561,9 @@ export class ModuleNamespaces {
                 )
                     continue;
                 if (
-                    ts.isVariableStatement(statement) &&
-                    variableKind(statement.declarationList) === "const" &&
-                    statement.declarationList.declarations.every(
-                        (declaration) =>
-                            ts.isIdentifier(declaration.name) &&
-                            declaration.initializer &&
-                            isTotalDefinition(declaration.initializer) &&
-                            this.context.evaluationOrder.isPureExpression(
-                                declaration.initializer,
-                            ),
+                    isTotalConstStatement(
+                        statement,
+                        this.context.evaluationOrder,
                     )
                 )
                     continue;

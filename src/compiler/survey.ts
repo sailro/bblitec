@@ -263,11 +263,20 @@ interface Attempt {
 /**
  * A statement the census counts: any but a block, which only groups the
  * statements it holds, and declarations that lower to nothing (interfaces,
- * type aliases, imports, exports).
+ * type aliases, imports, exports, ambient declarations).
  */
 export function surveyedStatement(node: ts.Node): node is ts.Statement {
     return (
         ts.isStatement(node) &&
+        !(
+            ts.canHaveModifiers(node) &&
+            ts
+                .getModifiers(node)
+                ?.some(
+                    (modifier) =>
+                        modifier.kind === ts.SyntaxKind.DeclareKeyword,
+                )
+        ) &&
         !ts.isBlock(node) &&
         !ts.isInterfaceDeclaration(node) &&
         !ts.isTypeAliasDeclaration(node) &&

@@ -14,6 +14,7 @@ import { emptyStorage, type EmptyStorageContext } from "./empty-storage.js";
 import type { LoweringServices } from "./lowering-services.js";
 import { isProgramSourceFile } from "./program.js";
 import { isModuleInitializerStatement } from "./module-initializers.js";
+import { isTotalConstStatement } from "./module-namespaces.js";
 import {
     heldStatements,
     isBodyReturn,
@@ -61,6 +62,7 @@ export type SurveyRootContext = UserFunctionContext &
         | "compileValue"
         | "emitDiscardedValue"
         | "moduleNamespaces"
+        | "evaluationOrder"
     > & { defaultEngineCpp: string | undefined };
 
 /**
@@ -164,7 +166,16 @@ function emitModuleRoot(
     survey: SurveyCollector,
     file: ts.SourceFile,
 ): void {
-    if (context.moduleNamespaces.evaluates(file)) return;
+    if (context.moduleNamespaces.evaluates(file)) {
+        // Its total constants run as the folds of their reads.
+        for (const statement of file.statements)
+            if (
+                survey.unbegun(statement) &&
+                isTotalConstStatement(statement, context.evaluationOrder)
+            )
+                survey.touch(statement, false);
+        return;
+    }
     const pending = file.statements.filter(
         (statement) =>
             isModuleInitializerStatement(statement, context.checker) &&
