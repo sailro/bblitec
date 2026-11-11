@@ -210,6 +210,12 @@ interface SurveyDemand {
     statements: number;
     /** Those statements, as `file:line`, in the order rolled back. */
     rolledBackAt: string[];
+    /**
+     * The storage held the demand before this pass took any: raised again,
+     * it does not settle by replay, and in a pass that took none it is the
+     * statement's failure.
+     */
+    held?: true;
 }
 
 /** One compile attempt (a pass) of one realm; the realm's next pass replaces it. */
@@ -238,12 +244,12 @@ interface Attempt {
     /** The statements a lowering of this attempt began outside a probe. */
     distinct: Set<ts.Statement>;
     /**
-     * The storage demands it took at once (`SurveyCollector.attempt`): what
-     * it lowered before one can stand on storage the demand changed (a
-     * layout already built), so a next pass lowers everything with them,
-     * and the census is exact once a pass takes none.
+     * The storage demands it took at once (`SurveyCollector.attempt`), by
+     * what they ask for: what it lowered before one can stand on storage
+     * the demand changed (a layout already built), so a next pass lowers
+     * everything with them, and the census is exact once a pass takes none.
      */
-    taken: number;
+    taken: Set<string>;
     /**
      * Those a probe began: journaled, so a probe that rolls back takes
      * its statements away and a committed one keeps them.
@@ -693,7 +699,7 @@ export class SurveyCollector {
             slowest: [],
             distinct: new Set(),
             probed: new EmissionSet(),
-            taken: 0,
+            taken: new Set(),
         };
         this.realms.set(realm, attempt);
         this.current = attempt;
@@ -749,18 +755,20 @@ export class SurveyCollector {
                     taken = met as Error;
                     continue;
                 }
-                const refused = applied || refusal;
+                const refused =
+                    applied instanceof CompileError ? applied : refusal;
                 // A refusal once this pass took a demand for the statement
                 // can come of storage lowered before the demand (a layout
                 // already built): the next pass lowers it afresh. A demand
                 // its application refused is refused all the same.
-                if (refused && (!taken || applied))
+                if (refused && (!taken || applied instanceof CompileError))
                     this.record(attempt, context.checker, statement, refused);
                 else
                     this.demanded(
                         attempt,
                         statement,
                         refused ? taken! : (met as Error),
+                        applied === "held",
                     );
                 break;
             }
@@ -793,15 +801,20 @@ export class SurveyCollector {
      * once (true), or the refusal applying it raised; false for a demand
      * already held and any other replay.
      */
-    private applied(attempt: Attempt, met: unknown): boolean | CompileError {
+    private applied(
+        attempt: Attempt,
+        met: unknown,
+    ): boolean | "held" | CompileError {
         if (!(met instanceof StorageDemand) || !this.apply) return false;
+        const key = replayText(met);
         try {
-            if (!this.apply(met)) return false;
+            if (!this.apply(met))
+                return attempt.taken.has(key) ? false : "held";
         } catch (error) {
             if (error instanceof CompileError) return error;
             throw error;
         }
-        attempt.taken++;
+        attempt.taken.add(key);
         return true;
     }
 
@@ -861,6 +874,7 @@ export class SurveyCollector {
         attempt: Attempt,
         statement: ts.Statement,
         replay: Error,
+        held = false,
     ): void {
         attempt.replays.push(replay);
         const described = replayText(replay);
@@ -877,12 +891,13 @@ export class SurveyCollector {
             };
             attempt.demands.set(key, census);
         }
+        if (held) census.held = true;
         census.rolledBack.add(statement);
     }
 
     /** The demands the realm's last pass took: a next pass lowers everything with them. */
     public taken(realm: string): number {
-        return this.realms.get(realm)?.taken ?? 0;
+        return this.realms.get(realm)?.taken.size ?? 0;
     }
 
     /** The replays the realm's last pass met at its statements. */
