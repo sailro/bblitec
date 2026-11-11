@@ -21553,13 +21553,15 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         }
         // Lanes of another scalar spelling, records seen through the
         // target's record type (projected as a readonly view's elements
-        // are), or engine-owned resources stored as plain handles convert
-        // one by one.
+        // are), engine-owned resources stored as plain handles, or handles
+        // the target's handle holds (meshes as scene nodes) convert one by
+        // one.
         if (
             iterated &&
             sourceElement &&
             !dataTypesEqual(sourceElement, dataType.element) &&
-            (sameHandle ||
+            ((sourceElement.kind === "handle" &&
+                dataType.element.kind === "handle") ||
                 (["string", "enum"].includes(sourceElement.kind) &&
                     ["string", "enum"].includes(dataType.element.kind)) ||
                 (sourceElement.kind === "struct" &&
