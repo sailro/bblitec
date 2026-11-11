@@ -6341,6 +6341,61 @@ check(
 );
 
 check(
+    "typed-array-or-number-array-parameter",
+    `
+    interface Field {
+        restore(levels: Uint8Array | readonly number[]): boolean;
+        readonly total: number;
+    }
+    function createField(): Field {
+        const level = new Uint8Array(4);
+        let total = 0;
+        return {
+            restore(levels) {
+                let changed = false;
+                for (let i = 0; i < level.length; i++) {
+                    const v = Math.min(3, levels[i] ?? 0);
+                    if (level[i] !== v) { level[i] = v; changed = true; }
+                }
+                total += levels.length;
+                return changed;
+            },
+            get total() { return total; },
+        };
+    }
+    const fields: Field[] = [createField()];
+    const field = fields[0]!;
+    if (!field.restore(new Uint8Array([1, 2, 9])) || field.restore([1, 2, 3]) || field.total !== 6) throw new Error("union reads");
+`,
+);
+
+check(
+    "stored-number-formats-at-run-time",
+    `
+    interface Saved { ax: number; yaw: number }
+    const saved = JSON.parse('{"ax":1.235,"yaw":0.5}') as Saved;
+    const rounded = [+saved.ax.toFixed(2), +saved.yaw.toFixed(3)];
+    if (rounded.join() !== "1.24,0.5" || saved.yaw.toFixed(1) !== "0.5") throw new Error("formatted " + rounded.join());
+`,
+);
+
+check(
+    "stored-generic-runner-of-a-void-edit",
+    `
+    type Runner = <T>(operation: () => T | Promise<T>) => Promise<T | null>;
+    const late = { runWorldEdit: (async <T>(operation: () => T | Promise<T>): Promise<T | null> => await operation()) as Runner };
+    let total = 0;
+    async function edits(): Promise<void> {
+        const counted = await late.runWorldEdit(() => 2);
+        const done = await late.runWorldEdit(() => { total += 10; });
+        total += counted ?? 0;
+        if (done !== undefined || total !== 12) throw new Error("void edit " + total);
+    }
+    void edits();
+`,
+);
+
+check(
     "typed-array-bytes-per-element",
     `
     const sizes = [Int8Array.BYTES_PER_ELEMENT, Uint8Array.BYTES_PER_ELEMENT, Uint8ClampedArray.BYTES_PER_ELEMENT, Int16Array.BYTES_PER_ELEMENT, Uint16Array.BYTES_PER_ELEMENT, Int32Array.BYTES_PER_ELEMENT, Uint32Array.BYTES_PER_ELEMENT, Float32Array.BYTES_PER_ELEMENT, Float64Array.BYTES_PER_ELEMENT, BigInt64Array.BYTES_PER_ELEMENT, BigUint64Array.BYTES_PER_ELEMENT];
