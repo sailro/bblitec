@@ -167,7 +167,7 @@ test("a rolled-back declaration stops planning at its dependent read", () => {
     assert.equal(planned.constructions, baseline.constructions);
 });
 
-test("survey and coverage publish only fresh strict attempts after planning refusal", () => {
+test("a survey runs no plan: its census and coverage do not depend on planning", () => {
     const source =
         state +
         `
@@ -184,10 +184,13 @@ test("survey and coverage publish only fresh strict attempts after planning refu
     const planned = measured(true, () =>
         plannedCoverage.run(() => surveySource(source)),
     );
-    assert.deepEqual(planned.result.report, baseline.result.report);
+    // Everything but the lowering times, which are measured.
+    const { slowest: _plannedTimes, ...plannedReport } = planned.result.report;
+    const { slowest: _baselineTimes, ...baselineReport } =
+        baseline.result.report;
+    assert.deepEqual(plannedReport, baselineReport);
     assert.deepEqual(plannedCoverage.report(), baselineCoverage.report());
-    assert.equal(planned.planning, 1);
-    assert.equal(planned.refused, 1);
+    assert.equal(planned.planning, 0);
     assert.ok(
         planned.result.report.refusals.every(
             (refusal) => !refusal.message.includes("chosen"),
@@ -329,9 +332,9 @@ function attemptPlanned(
     planner.attemptStatement(context, statement, lower);
 }
 
-test("a survey's plan goes on past a dependent demand, skipping what reads it", () => {
-    // Each record `let` demands dynamic storage; the statements reading one
-    // wait for the next attempt, and the unrelated one is still collected.
+test("a plan ends at a demand whose change later statements may read", () => {
+    // Each record `let` demands dynamic storage, an ownership change the
+    // next statements may read: the plan ends at the first.
     const { checker, statements, context } = plannedStatements(`
         let first = { gain: 1 };
         first = { gain: 2 };
@@ -339,9 +342,9 @@ test("a survey's plan goes on past a dependent demand, skipping what reads it", 
         let second = { level: 1 };
         second = { level: 2 };
     `);
-    const plan = (survey: boolean) => {
+    const plan = () => {
         const before = storagePlanningStatistics();
-        const planner = new StorageDemandPlanner(checker, survey);
+        const planner = new StorageDemandPlanner(checker);
         planner.run(() => {
             for (const statement of statements)
                 attemptPlanned(planner, context, statement, () => {
@@ -367,21 +370,16 @@ test("a survey's plan goes on past a dependent demand, skipping what reads it", 
             writes: after.writes - before.writes,
         };
     };
-    assert.deepEqual(plan(false), {
+    assert.deepEqual(plan(), {
         demands: ["first"],
         dependent: 0,
         writes: 1,
     });
-    assert.deepEqual(plan(true), {
-        demands: ["first", "second"],
-        dependent: 3,
-        writes: 0,
-    });
 });
 
-test("a survey's plan loses a generic signature's statement and goes on", () => {
-    // A destructured generic call's demand is not independent: an ordinary
-    // plan ends there, a survey's loses the statement's names.
+test("a plan ends at a destructured generic call's signature", () => {
+    // A destructured generic call's demand is not independent: the plan
+    // ends there.
     const { checker, statements, context, declarationAt } = plannedStatements(`
         function pair<T>(value: T): [T, T] { return [value, value]; }
         const [left, right] = pair(1);
@@ -389,9 +387,9 @@ test("a survey's plan loses a generic signature's statement and goes on", () => 
         let other = { gain: 1 };
     `);
     const call = declarationAt(1).initializer as ts.CallExpression;
-    const plan = (survey: boolean) => {
+    const plan = () => {
         const before = storagePlanningStatistics();
-        const planner = new StorageDemandPlanner(checker, survey);
+        const planner = new StorageDemandPlanner(checker);
         let lowered = 0;
         planner.run(() => {
             attemptPlanned(planner, context, statements[1]!, () => {
@@ -419,143 +417,15 @@ test("a survey's plan loses a generic signature's statement and goes on", () => 
             writes: after.writes - before.writes,
         };
     };
-    assert.deepEqual(plan(false), {
+    assert.deepEqual(plan(), {
         demands: ["generic"],
         lowered: 0,
         writes: 1,
     });
-    assert.deepEqual(plan(true), {
-        demands: ["generic", "dynamic"],
-        lowered: 0,
-        writes: 0,
-    });
 });
 
-test("a survey's plan loses a write through this by its class and goes on", () => {
-    // The method statement reads the lost binding and writes through
-    // `this`: the class's other reads of `this` wait for the next attempt,
-    // and the unrelated binding's demand is still collected.
-    const { checker, statements, context, declarationAt } = plannedStatements(`
-        let first = { gain: 1 };
-        class Counter {
-            total = 0;
-            add(): void { this.total += first.gain; }
-            read(): number { return this.total; }
-        }
-        let second = { level: 1 };
-    `);
-    const counter = statements[1] as ts.ClassDeclaration;
-    const body = (name: string) =>
-        (
-            counter.members.find(
-                (member) => member.name?.getText() === name,
-            ) as ts.MethodDeclaration
-        ).body!.statements[0]!;
-    const before = storagePlanningStatistics();
-    const planner = new StorageDemandPlanner(checker, true);
-    const binding = (index: number) => () => {
-        throw new DynamicBindingStorageRequired(
-            declarationAt(index),
-            undefined,
-        );
-    };
-    let lowered = 0;
-    planner.run(() => {
-        attemptPlanned(planner, context, statements[0]!, binding(0));
-        for (const name of ["add", "read"])
-            attemptPlanned(planner, context, body(name), () => lowered++);
-        attemptPlanned(planner, context, statements[2]!, binding(2));
-    });
-    const after = storagePlanningStatistics();
-    assert.deepEqual(
-        planner.demands.map((request) =>
-            request.kind === "dynamic"
-                ? request.declaration.name.getText()
-                : request.kind,
-        ),
-        ["first", "second"],
-    );
-    assert.equal(lowered, 0);
-    assert.equal(after.dependent - before.dependent, 2);
-    assert.equal(after.writes - before.writes, 0);
-});
-
-test("a survey's plan loses a write through an assignment's value by its target and goes on", () => {
-    // `(cache ??= {}).hits = ...` reads the lost binding and writes into
-    // what `cache` holds: the later read of `cache` waits for the next
-    // attempt, and the unrelated binding's demand is still collected.
-    const { checker, statements, context, declarationAt } = plannedStatements(`
-        let first = { gain: 1 };
-        let cache: { hits?: number } | undefined;
-        (cache ??= {}).hits = first.gain;
-        const read = cache?.hits;
-        let second = { level: 1 };
-    `);
-    const before = storagePlanningStatistics();
-    const planner = new StorageDemandPlanner(checker, true);
-    const binding = (index: number) => () => {
-        throw new DynamicBindingStorageRequired(
-            declarationAt(index),
-            undefined,
-        );
-    };
-    let lowered = 0;
-    planner.run(() => {
-        attemptPlanned(planner, context, statements[0]!, binding(0));
-        for (const index of [1, 2, 3])
-            attemptPlanned(planner, context, statements[index]!, () => {
-                lowered++;
-            });
-        attemptPlanned(planner, context, statements[4]!, binding(4));
-    });
-    const after = storagePlanningStatistics();
-    assert.deepEqual(
-        planner.demands.map((request) =>
-            request.kind === "dynamic"
-                ? request.declaration.name.getText()
-                : request.kind,
-        ),
-        ["first", "second"],
-    );
-    assert.equal(lowered, 1);
-    assert.equal(after.dependent - before.dependent, 2);
-    assert.equal(after.writes - before.writes, 0);
-});
-
-test("a survey's plan records a replay besides storage and goes on", () => {
-    const { checker, statements, context, declarationAt } = plannedStatements(`
-        const state = { query: "a" };
-        let other = { gain: 1 };
-    `);
-    class QueryReplay extends Error {}
-    const planner = new StorageDemandPlanner(
-        checker,
-        true,
-        (error): error is Error => error instanceof QueryReplay,
-    );
-    planner.run(() => {
-        attemptPlanned(planner, context, statements[0]!, () => {
-            throw new QueryReplay("query state");
-        });
-        attemptPlanned(planner, context, statements[1]!, () => {
-            throw new DynamicBindingStorageRequired(
-                declarationAt(1),
-                undefined,
-            );
-        });
-    });
-    assert.deepEqual(
-        planner.replays.map((replay) => replay.message),
-        ["query state"],
-    );
-    assert.deepEqual(
-        planner.demands.map((request) => request.kind),
-        ["dynamic"],
-    );
-});
-
-test("a survey's plan forgets a function's lost locals when its body starts again", () => {
-    // The first activation loses `seen`, so its read waits; the second
+test("a plan forgets a function's lost locals when its body starts again", () => {
+    // The first activation loses `seen` and ends before its read; the second
     // activation declares it afresh and its read lowers.
     const { checker, statements, context, declarationAt } = plannedStatements(`
         function count(items: number[]): number {
@@ -564,22 +434,15 @@ test("a survey's plan forgets a function's lost locals when its body starts agai
         }
     `);
     const body = (statements[0] as ts.FunctionDeclaration).body!.statements;
-    const planner = new StorageDemandPlanner(checker, true);
+    const planner = new StorageDemandPlanner(checker);
     const declaration = declarationAt(0, body);
     const lowered: number[] = [];
     planner.run(() => {
-        for (const activation of [1, 2]) {
-            attemptPlanned(planner, context, body[0]!, () => {
-                if (activation === 1)
-                    throw new DynamicBindingStorageRequired(
-                        declaration,
-                        undefined,
-                    );
-            });
-            attemptPlanned(planner, context, body[1]!, () =>
-                lowered.push(activation),
-            );
-        }
+        attemptPlanned(planner, context, body[0]!, () => {
+            throw new AbsenceTagStorageRequired(declaration);
+        });
+        attemptPlanned(planner, context, body[0]!, () => {});
+        attemptPlanned(planner, context, body[1]!, () => lowered.push(2));
     });
     assert.deepEqual(lowered, [2]);
 });
@@ -587,16 +450,16 @@ test("a survey's plan forgets a function's lost locals when its body starts agai
 test("past a rolled-back statement a plan collects only demands of a key", () => {
     // The first statement's absence tag rolls it back. Strict lowering would
     // go on inside it and could meet the binding demand there first, with
-    // that site's storage: only a survey's plan collects it here.
+    // that site's storage: the plan departs instead of collecting it.
     const { checker, statements, context, declarationAt } = plannedStatements(`
         const tagged: string | null | undefined = undefined;
         const other: string | null | undefined = null;
         let bound = { gain: 1 };
     `);
     const declaration = (index: number) => declarationAt(index);
-    const plan = (survey: boolean) => {
+    const plan = () => {
         const before = storagePlanningStatistics();
-        const planner = new StorageDemandPlanner(checker, survey);
+        const planner = new StorageDemandPlanner(checker);
         const demands = [
             new AbsenceTagStorageRequired(declaration(0)),
             new AbsenceTagStorageRequired(declaration(1)),
@@ -613,13 +476,9 @@ test("past a rolled-back statement a plan collects only demands of a key", () =>
             departed: storagePlanningStatistics().departed - before.departed,
         };
     };
-    assert.deepEqual(plan(false), {
+    assert.deepEqual(plan(), {
         demands: ["absence-tag", "absence-tag"],
         departed: 1,
-    });
-    assert.deepEqual(plan(true), {
-        demands: ["absence-tag", "absence-tag", "dynamic"],
-        departed: 0,
     });
 });
 
@@ -655,10 +514,9 @@ test("a demand lowering can go on past is planned, one kind per plan", () => {
     );
 });
 
-test("a survey's plan meets a demand lowering can go on past as its statement's", () => {
-    // Lowering on past the parameter's copy would end a plan at the next
-    // statement's demand; a survey's plan loses the parameter's function
-    // and collects the unrelated binding's demand too.
+test("a plan that went on past a demand ends at the next statement's demand of another kind", () => {
+    // Lowering on past the parameter's copy, the next statement's demand
+    // may follow from it: the plan ends there.
     const { checker, statements, context, declarationAt } = plannedStatements(`
         function keep(first: { value: number }) {}
         keep({ value: 1 });
@@ -666,9 +524,9 @@ test("a survey's plan meets a demand lowering can go on past as its statement's"
     `);
     const first = (statements[0] as ts.FunctionDeclaration).parameters[0]!;
     const other = declarationAt(2);
-    const plan = (survey: boolean) => {
+    const plan = () => {
         const before = storagePlanningStatistics();
-        const planner = new StorageDemandPlanner(checker, survey);
+        const planner = new StorageDemandPlanner(checker);
         planner.run(() => {
             attemptPlanned(planner, context, statements[1]!, () =>
                 demandOrPlan(new ParameterObjectStorageRequired(first)),
@@ -682,13 +540,9 @@ test("a survey's plan meets a demand lowering can go on past as its statement's"
             writes: storagePlanningStatistics().writes - before.writes,
         };
     };
-    assert.deepEqual(plan(false), {
+    assert.deepEqual(plan(), {
         demands: ["parameter-object"],
         writes: 1,
-    });
-    assert.deepEqual(plan(true), {
-        demands: ["parameter-object", "dynamic"],
-        writes: 0,
     });
 });
 

@@ -474,6 +474,13 @@ export interface LoweringServices {
     transaction(work: () => void): void;
     /** The refusal a storage demand stands for once its replay refused it (`NativeRecordDemandRefused`). */
     refusedDemand(error: unknown): CompileError | undefined;
+    /**
+     * Binds an unbound `name` to empty storage of its declared type, so later
+     * statements lower against it; false when its type has no storage.
+     */
+    bindEmptyStorage(name: ts.Identifier): boolean;
+    /** A native local holding empty storage of `type`; undefined when it has none. */
+    emptyStorage(type: DataType | undefined, label: string): Value | undefined;
     captureEmittedLines(
         emitBody: () => void,
         options?: { functionBody?: true },

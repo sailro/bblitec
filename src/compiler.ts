@@ -85,7 +85,9 @@ import {
 } from "./compiler/source-trace.js";
 import {
     activeSurvey,
+    capturedFunctionLocals,
     SurveyCollector,
+    SurveyPassLimit,
     type SurveyProgress,
     withSurvey,
     type SurveyReport,
@@ -103,11 +105,7 @@ import {
 } from "./compiler/storage-demand-planner.js";
 import { moduleLevelCallee } from "./compiler/runtime-case-split.js";
 import { StorageDemand } from "./compiler/storage-demand.js";
-import {
-    ReplayStorage,
-    storageRequestKey,
-    type StorageRequest,
-} from "./compiler/replay-storage.js";
+import { ReplayStorage } from "./compiler/replay-storage.js";
 import {
     NativeRecordDemandRefused,
     NativeRecordStorageRequired,
@@ -339,10 +337,13 @@ import {
     containsSuspension,
     functionKind,
     isSupportedFunction,
+    type SupportedFunction,
+    thisClass,
     variableKind,
     referenceBases,
     keysMayMatch,
 } from "./compiler/syntax.js";
+import { isInstalledPackageFile } from "./typescript-library-files.js";
 import { CompileError, unlessRefused } from "./compiler/compile-error.js";
 import { isEffectTaskMethodName } from "./compiler/effect-task-methods.js";
 import {
@@ -664,13 +665,20 @@ export function surveySource(
     source: string,
     options: CompileOptions = {},
     progress?: SurveyProgress,
+    passLimit?: number,
 ): SurveyOutcome {
-    const collector = new SurveyCollector(progress);
+    const collector = new SurveyCollector(
+        progress,
+        isReplayBesidesStorage,
+        passLimit,
+    );
     return withSurvey(collector, () => {
         try {
             const result = compileSourceApplication(source, options);
             return { report: collector.published(), result };
         } catch (error) {
+            if (error instanceof SurveyPassLimit)
+                return { report: collector.published() };
             if (!(error instanceof Error)) throw error;
             return { report: collector.published(error) };
         }
@@ -815,51 +823,46 @@ function lowerSourceApplication(
             } else return false;
             return true;
         };
-        // The demands of a plan a survey withdrew: a later plan leaves them
-        // to the strict attempts, which meet them in program order.
-        const withdrawn = new Set<string>();
-        const addPlanned = (planner: StorageDemandPlanner): StorageRequest[] =>
+        const addPlanned = (planner: StorageDemandPlanner): number =>
             planner.demands.filter(
                 (demand) =>
-                    !withdrawn.has(storageRequestKey(demand)) &&
-                    !storage.joinsAlreadyHeld(demand) &&
-                    storage.add(demand),
-            );
-        // Once a storage demand restarted the realm, every attempt outside a
-        // survey is a plan: it goes on past the demands later statements do
-        // not read, so one attempt meets a run of them, and a plan that
-        // lowered every statement is the compile. A plan that adds no demand
-        // leaves the next attempt to strict lowering. A survey's attempts
-        // are always strict: a discarded plan runs between them, as far as
-        // it can, after each restart while plans pay -- each demand a plan
-        // adds saves a strict attempt as long as the last one. Costs are
-        // the time each took.
-        // After a plan that took longer than the attempts it saved, strict
-        // attempts run as long before the next one, twice as long after
-        // each further such plan: a survey whose plans stop paying spends
-        // ever less of its time planning, and the next plan that pays
-        // plans after every restart again. The schedule follows the clock,
-        // so two surveys of one program may plan after different restarts.
+                    !storage.joinsAlreadyHeld(demand) && storage.add(demand),
+            ).length;
+        // A survey lowers every statement in each pass: a replay (a storage
+        // demand, a lazy module's activation) rolls its statement back as a
+        // refusal does, and the next pass replays with what this one met,
+        // until a pass meets nothing new. A replay raised while the program
+        // settles, every statement lowered, ends the pass with the others; one
+        // raised in an attempt's setup restarts it.
+        if (survey)
+            for (;;) {
+                const realm = input.sourceFile.fileName;
+                let result: CompileResult | undefined;
+                let added = 0;
+                try {
+                    result = survey.attempt(realm, lower);
+                } catch (error) {
+                    const replay =
+                        error instanceof StorageDemand ||
+                        isReplayBesidesStorage(error);
+                    if (!acceptReplay(error)) throw error;
+                    if (!replay || !survey.settling(realm)) {
+                        survey.restarted(error);
+                        continue;
+                    }
+                    added++;
+                }
+                added += survey.replaysOf(realm).filter(acceptReplay).length;
+                if (survey.passEnded(added)) continue;
+                if (result) return result;
+                throw new SurveyPassLimit();
+            }
+        // Once a storage demand restarted the realm, every attempt is a
+        // plan: it goes on past the demands later statements do not read, so
+        // one attempt meets a run of them, and a plan that lowered every
+        // statement is the compile. A plan that adds no demand leaves the
+        // next attempt to strict lowering.
         let planning = false;
-        let owed = 0;
-        let unpaid = 0;
-        // A plan that did not pay: strict attempts run as long as it took
-        // before the next one, twice as long after each further such plan.
-        const owe = (spent: number): void => {
-            unpaid++;
-            owed = spent * 2 ** (unpaid - 1);
-        };
-        // A survey plan's demands are provisional (it met them past
-        // statements it rolled back): two of them may hold no one layout
-        // together. Until an attempt replaying with them lowers a
-        // statement, `restore` puts the storage back as it was.
-        let provisional:
-            | {
-                  restore: () => void;
-                  demands: readonly StorageRequest[];
-                  spent: number;
-              }
-            | undefined;
         for (;;) {
             if (planning) {
                 const planner = new StorageDemandPlanner(input.checker);
@@ -869,72 +872,16 @@ function lowerSourceApplication(
                 } catch (planningError) {
                     if (!acceptReplay(planningError)) throw planningError;
                 }
-                planning = addPlanned(planner).length > 0;
+                planning = addPlanned(planner) > 0;
                 continue;
             }
-            const started = performance.now();
             try {
-                return survey
-                    ? survey.attempt(input.sourceFile.fileName, lower)
-                    : lower();
+                return lower();
             } catch (error) {
-                if (
-                    provisional &&
-                    survey &&
-                    error instanceof CompileError &&
-                    survey.stoppedInSetup(input.sourceFile.fileName)
-                ) {
-                    provisional.restore();
-                    for (const demand of provisional.demands)
-                        withdrawn.add(storageRequestKey(demand));
-                    survey.withdrew(error);
-                    owe(provisional.spent);
-                    provisional = undefined;
-                    continue;
-                }
-                provisional = undefined;
                 if (!acceptReplay(error)) throw error;
-                survey?.restarted(error);
-                if (
-                    !(error instanceof StorageDemand) ||
-                    !storageDemandPlanningEnabled()
-                )
-                    continue;
-                if (!survey) {
-                    planning = true;
-                    continue;
-                }
-                const strict = performance.now() - started;
-                owed -= strict;
-                if (owed > 0) continue;
-                const began = performance.now();
-                const planner = new StorageDemandPlanner(
-                    input.checker,
-                    true,
-                    isReplayBesidesStorage,
-                );
-                try {
-                    planner.run(() => newCompiler(planner).compile());
-                } catch (planningError) {
-                    if (!acceptReplay(planningError)) throw planningError;
-                }
-                for (const replay of planner.replays) acceptReplay(replay);
-                const restore = storage.snapshot();
-                const demands = addPlanned(planner);
-                const spent = performance.now() - began;
-                survey.planned(
-                    input.checker,
-                    demands.length,
-                    spent,
-                    planner.ended(),
-                    planner.met,
-                );
-                if (demands.length > 0)
-                    provisional = { restore, demands, spent };
-                if (demands.length * strict > spent) {
-                    unpaid = 0;
-                    owed = 0;
-                } else owe(spent);
+                planning =
+                    error instanceof StorageDemand &&
+                    storageDemandPlanningEnabled();
             }
         }
     };
@@ -1405,6 +1352,8 @@ class Compiler implements LoweringServices {
         this.emitEntryModuleState(entry);
         this.moduleNamespaces.defineInitializers();
         this.emitEntryBody(entry);
+        this.emitSurveyRoots();
+        activeSurvey()?.settle();
         if (!this.options.pageStartup?.length) this.emitNativeHostUi();
         this.finalizeSceneRegistration();
         this.admissions.enforceDeferredAdmissions();
@@ -7293,6 +7242,210 @@ class Compiler implements LoweringServices {
         return error instanceof NativeRecordStorageRequired
             ? this.replayStorage.refusedRecord(error.demand)
             : undefined;
+    }
+
+    public bindEmptyStorage(name: ts.Identifier): boolean {
+        if (this.bindings.lookupOptional(name)) return false;
+        let bound = false;
+        try {
+            this.transaction(() => {
+                const value = this.emptyStorage(
+                    this.dataLowerer.dataTypeAt(name),
+                    name.text,
+                );
+                if (!value) return;
+                this.bindings.defineVariable(name, value);
+                bound = true;
+            });
+        } catch (error) {
+            if (
+                !(error instanceof CompileError) &&
+                !(error instanceof StorageDemand)
+            )
+                throw error;
+        }
+        return bound;
+    }
+
+    public emptyStorage(
+        type: DataType | undefined,
+        label: string,
+    ): Value | undefined {
+        if (!type) return undefined;
+        const cpp = this.allocateTemporaryCppName(`empty_${label}`);
+        this.emit({
+            kind: "declaration",
+            type: this.dataTypes.cppType(type),
+            name: cpp,
+            initializer: "{}",
+        });
+        const value = this.dataLowerer.leafValue(cpp, type);
+        if (value.kind === "data" || value.engineCpp) return value;
+        // A resource no carrier names belongs to the entry's one engine,
+        // when there is one.
+        try {
+            return {
+                ...value,
+                engineCpp: this.requireDefaultEngine(this.sourceFile),
+            };
+        } catch (error) {
+            if (!(error instanceof CompileError)) throw error;
+            return value;
+        }
+    }
+
+    /**
+     * In a survey, every function of the program's own sources that no
+     * lowering of this attempt began is lowered once as a root, in a block
+     * of its own, outermost first: its parameters, its `this` and what it
+     * captures from enclosing functions hold empty storage of their types.
+     */
+    private emitSurveyRoots(): void {
+        const survey = activeSurvey();
+        if (!survey || this.options.workers?.namespace) return;
+        const files = this.program
+            .getSourceFiles()
+            .filter(
+                (file) =>
+                    !file.isDeclarationFile &&
+                    !isInstalledPackageFile(file.fileName),
+            );
+        survey.programSources(files);
+        for (const file of files) {
+            const visit = (node: ts.Node): void => {
+                if (
+                    isSupportedFunction(node) &&
+                    node.body &&
+                    ts.isBlock(node.body) &&
+                    node.body.statements.length > 0 &&
+                    survey.untouched(node.body)
+                )
+                    // A survey writes no tree: a root's emission is
+                    // dropped, so the program's body keeps its size.
+                    survey.attemptRoot(this, node.body, () => {
+                        this.captureEmittedStatements(() =>
+                            this.emitSurveyRoot(node),
+                        );
+                    });
+                ts.forEachChild(node, visit);
+            };
+            visit(file);
+        }
+    }
+
+    /**
+     * Empty storage of `type`, or -- for a record no native layout holds
+     * (one with function members) -- the record a literal of that type
+     * would be: each member, `depth` levels down, empty storage of its own
+     * type, a member with none left out. Undefined for anything else.
+     */
+    private emptyValueOf(
+        type: ts.Type,
+        node: ts.Node,
+        label: string,
+        depth = 0,
+    ): Value | undefined {
+        const storage = this.emptyStorage(
+            this.dataTypes.fromTsType(type, node),
+            label,
+        );
+        const record = this.checker.getNonNullableType(type);
+        if (
+            storage ||
+            depth >= 3 ||
+            (record.flags & ts.TypeFlags.Object) === 0 ||
+            this.checker.isArrayType(record) ||
+            this.checker.isTupleType(record) ||
+            record.getCallSignatures().length > 0
+        )
+            return storage;
+        const recordProperties: Record<string, Value> = {};
+        for (const property of this.checker.getPropertiesOfType(record)) {
+            try {
+                const value = this.emptyValueOf(
+                    this.checker.getTypeOfSymbolAtLocation(property, node),
+                    node,
+                    `${label}_${property.name}`,
+                    depth + 1,
+                );
+                if (value) recordProperties[property.name] = value;
+            } catch (error) {
+                if (!(error instanceof CompileError)) throw error;
+            }
+        }
+        return { kind: "record", cpp: "", recordProperties };
+    }
+
+    private emitSurveyRoot(declaration: SupportedFunction): void {
+        const site = (
+            node: ts.Node,
+            label: string,
+            type = this.checker.getTypeAtLocation(node),
+        ): Value => {
+            const value = this.emptyValueOf(type, node, label);
+            if (!value)
+                this.fail(
+                    node,
+                    `A survey root's ${label} has no native storage of its type.`,
+                );
+            return value;
+        };
+        this.emit({ kind: "open", code: "{" });
+        this.bindings.pushScope(this.allocateUserFunctionPrefix());
+        try {
+            for (const name of capturedFunctionLocals(
+                this.checker,
+                declaration,
+            ))
+                if (!this.bindings.lookupOptional(name))
+                    this.bindings.defineVariable(name, site(name, name.text));
+            // A static member's `this` is its class, which no instance holds.
+            const owner =
+                declaration.body &&
+                !(
+                    ts.isMethodDeclaration(declaration) &&
+                    declaration.modifiers?.some(
+                        (modifier) =>
+                            modifier.kind === ts.SyntaxKind.StaticKeyword,
+                    )
+                )
+                    ? thisClass(declaration.body)
+                    : undefined;
+            // An instance a root holds is stored: the class is shared from
+            // its first construction (a demand the next pass replays with).
+            if (owner) this.dataTypes.requireSharedClass(owner);
+            const ownerSymbol =
+                owner?.name && this.checker.getSymbolAtLocation(owner.name);
+            const stored =
+                owner &&
+                ownerSymbol &&
+                site(
+                    owner,
+                    "this",
+                    this.checker.getDeclaredTypeOfSymbol(ownerSymbol),
+                );
+            // Methods read a stored instance through its class's receiver.
+            const instance =
+                stored && (this.classLowerer.hydrate(stored, owner) ?? stored);
+            const arguments_ = declaration.parameters.map((parameter) =>
+                site(
+                    parameter,
+                    ts.isIdentifier(parameter.name)
+                        ? parameter.name.text
+                        : "parameter",
+                ),
+            );
+            this.withThis(instance, () =>
+                this.userFunctions.compileSurveyRoot(
+                    this,
+                    declaration,
+                    arguments_,
+                ),
+            );
+        } finally {
+            this.bindings.popScope();
+            this.emit({ kind: "close", code: "}" });
+        }
     }
 
     private emissionTransaction<T>(

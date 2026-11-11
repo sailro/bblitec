@@ -138,6 +138,7 @@ interface StatementLoweringContext extends Pick<
     | "speculating"
     | "transaction"
     | "refusedDemand"
+    | "bindEmptyStorage"
     | "checker"
     | "symbols"
     | "dataTypes"
@@ -991,7 +992,9 @@ export class StatementLowerer {
         // read of that binding would count as a gap of its own.
         const planner = activeStorageDemandPlanner();
         planner?.beginActivation(statement);
-        const recovery = planner ?? activeSurvey();
+        const survey = activeSurvey();
+        survey?.touch(statement, context.speculating);
+        const recovery = planner ?? survey;
         if (
             recovery === undefined ||
             context.speculating ||
@@ -1000,8 +1003,11 @@ export class StatementLowerer {
             this.lowerStatement(context, statement);
             return;
         }
-        recovery.attemptStatement(context, statement, () =>
-            this.lowerStatement(context, statement),
+        recovery.attemptStatement(
+            context,
+            statement,
+            () => this.lowerStatement(context, statement),
+            (nested) => this.emit(context, nested),
         );
     }
 

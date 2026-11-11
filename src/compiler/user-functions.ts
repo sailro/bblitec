@@ -10,6 +10,7 @@ import {
 } from "./types.js";
 import { metadataFieldsForKind } from "./values/metadata.js";
 import { isJsonValue } from "./json-bridge.js";
+import { activeSurvey } from "./survey.js";
 import {
     someAnalysisNode,
     forEachAnalysisNode,
@@ -1521,6 +1522,8 @@ export interface UserFunctionContext
         Pick<
             LoweringServices,
             | "absenceTags"
+            | "emptyStorage"
+            | "speculating"
             | "classLowerer"
             | "callbacks"
             | "evaluationOrder"
@@ -1979,6 +1982,61 @@ export class UserFunctionLowerer {
         );
     }
 
+    /**
+     * A survey lowers each function's body in full once per attempt: a later
+     * plain call, its arguments already lowered, returns empty storage of the
+     * declared result (nothing when discarded), so every statement lowers
+     * about once. Undefined when the call lowers its body: the first one, a
+     * callback invocation, or a result whose type has no storage.
+     */
+    private repeatedSurveyCall(
+        context: UserFunctionContext,
+        ir: UserFunctionIr,
+        discardReturn: boolean,
+        body: CallbackInvocationOptions | undefined,
+    ): Value | undefined {
+        const survey = activeSurvey();
+        if (
+            !survey ||
+            !survey.loweredBefore(ir.declaration, context.speculating) ||
+            body
+        )
+            return undefined;
+        const signature = this.checker.getSignatureFromDeclaration(
+            ir.declaration,
+        );
+        const returned =
+            signature && this.checker.getReturnTypeOfSignature(signature);
+        if (
+            discardReturn ||
+            !returned ||
+            (returned.flags & ts.TypeFlags.Void) !== 0
+        )
+            return { kind: "void", cpp: "" };
+        return context.emptyStorage(
+            context.dataTypes.fromTsType(returned, ir.declaration),
+            "result",
+        );
+    }
+
+    /**
+     * Lowers `declaration`'s body once with `arguments_` for its parameters,
+     * its result discarded: a function the program never reached, which a
+     * survey lowers as a root.
+     */
+    public compileSurveyRoot(
+        context: UserFunctionContext,
+        declaration: SupportedFunction,
+        arguments_: readonly Value[],
+    ): void {
+        const ir = this.irFor(
+            declaration,
+            sourceFunctionName(declaration) ?? "root",
+            (node, message) => context.fail(node, message),
+        );
+        this.lower(context, ir, arguments_, declaration, true);
+    }
+
     public compileSharedMethod(
         context: UserFunctionContext,
         declaration: ts.MethodDeclaration,
@@ -2317,6 +2375,13 @@ export class UserFunctionLowerer {
             !returned ||
             (returnType && !context.dataTypes.carriesFunction(returnType))
         ) {
+            const repeated = this.repeatedSurveyCall(
+                context,
+                ir,
+                false,
+                undefined,
+            );
+            if (repeated) return repeated;
             const group = this.reachedRecursiveGroup(context, ir.declaration);
             let result = this.lowerRecursiveGroup(
                 context,
@@ -6433,6 +6498,13 @@ export class UserFunctionLowerer {
     ): Value {
         if (!body?.generator && isGeneratorFunction(ir.declaration))
             return this.lowerGenerator(context, ir, arguments_, callNode);
+        const repeated = this.repeatedSurveyCall(
+            context,
+            ir,
+            discardReturn,
+            body,
+        );
+        if (repeated) return repeated;
         // A function re-entered through a callback its caller passed lowers
         // again at another call site; re-entering a call site that is still
         // being lowered is recursion inlining cannot bound.

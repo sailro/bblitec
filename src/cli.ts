@@ -701,28 +701,38 @@ function writeSurvey(
     censusPath: string,
     source: string,
     compileOptions: CompileOptions,
+    passes: number | undefined,
     leaveCoverage: () => void,
 ): void {
-    // A survey of a large entry runs for hours: it says where it is, and
-    // leaves the census it keeps at each restart.
-    const { report } = surveySource(source, compileOptions, {
-        report: (line) => console.error(line),
-        intervalMs: 5 * 60 * 1000,
-        partial: (found) => {
-            writeJsonRecord(censusPath, found);
-            leaveCoverage();
+    // A survey of a large entry says where it is and leaves its census as
+    // it goes, and its far larger coverage every ten minutes: one stopped
+    // early is still read.
+    let coverageLeftAt = Date.now();
+    const { report } = surveySource(
+        source,
+        compileOptions,
+        {
+            report: (line) => console.error(line),
+            intervalMs: 60 * 1000,
+            census: (census) => {
+                writeJsonRecord(censusPath, census);
+                if (Date.now() - coverageLeftAt < 10 * 60 * 1000) return;
+                coverageLeftAt = Date.now();
+                leaveCoverage();
+            },
         },
-    });
+        passes,
+    );
     writeJsonRecord(censusPath, report);
     console.log(
-        `Survey: ${report.statements.attempted} statement lowerings, ${report.statements.refused} refused ` +
+        `Survey: ${report.statements.attempted} statement lowerings (${report.statements.rooted} in roots), ${report.statements.refused} refused ` +
             `(${report.refusals.length} sites, ${report.classes.length} classes) -> ${censusPath}`,
     );
     for (const entry of report.classes.slice(0, 12)) {
         const cascades =
             entry.cascades > 0 ? `, ${entry.cascades} cascade(s)` : "";
         console.log(
-            `  ${entry.sites} site(s)${cascades}, ${entry.occurrences} lowering(s): ${entry.class}`,
+            `  ${entry.sites} site(s)${cascades}, ${entry.occurrences} lowering(s), ${entry.rootOccurrences} in roots: ${entry.class}`,
         );
     }
     if (!report.complete) {
@@ -807,8 +817,9 @@ async function main(): Promise<void> {
     };
     if (options.target.kind === "survey") {
         const census = resolve(options.target.census);
+        const { passes } = options.target;
         withCoverage(options.coverage, (leave) =>
-            writeSurvey(census, source, compileOptions, leave),
+            writeSurvey(census, source, compileOptions, passes, leave),
         );
         return;
     }

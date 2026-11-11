@@ -312,18 +312,6 @@ export class GenericFunctionStorage {
         return [...(this.demands.get(family) ?? [])];
     }
 
-    /** The demands held now; the returned function puts them back (`ReplayStorage.snapshot`). */
-    public snapshot(): () => void {
-        const held = [...this.demands].map(
-            ([family, demands]) => [family, [...demands]] as const,
-        );
-        return () => {
-            this.demands.clear();
-            for (const [family, demands] of held)
-                this.demands.set(family, [...demands]);
-        };
-    }
-
     public add(demand: GenericFunctionDemand): boolean {
         const family = this.demands.get(demand.family) ?? [];
         if (family.some((known) => sameGenericFunctionSignature(known, demand)))
