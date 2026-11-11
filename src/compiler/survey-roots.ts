@@ -287,14 +287,21 @@ function emitSurveyRoot(
     body: ts.Block,
 ): void {
     withRootBindings(context, [declaration], body, (site) => {
-        const arguments_ = declaration.parameters.map((parameter) =>
-            site(
-                parameter,
-                ts.isIdentifier(parameter.name)
-                    ? parameter.name.text
-                    : "parameter",
-            ),
-        );
+        // A trailing parameter with a default is left out, as a call
+        // leaving it out does: what the default holds reaches the body.
+        let passed = declaration.parameters.length;
+        while (passed > 0 && declaration.parameters[passed - 1]!.initializer)
+            passed--;
+        const arguments_ = declaration.parameters
+            .slice(0, passed)
+            .map((parameter) =>
+                site(
+                    parameter,
+                    ts.isIdentifier(parameter.name)
+                        ? parameter.name.text
+                        : "parameter",
+                ),
+            );
         context.userFunctions.compileSurveyRoot(
             context,
             declaration,
