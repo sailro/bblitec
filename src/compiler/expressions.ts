@@ -246,6 +246,7 @@ import { readFrozenParticleElement } from "./particle-buffer.js";
 import { pickedMeshHandle } from "./properties.js";
 import {
     absenceKind,
+    holdsOnly,
     isNullable,
     nullability,
     valueKindOf,
@@ -2138,9 +2139,9 @@ export class ExpressionLowerer {
         // field) is read as one.
         return value.kind === "data" &&
             value.dataType?.kind !== "number" &&
-            (this.context.checker.getTypeAtLocation(expression).flags &
-                ts.TypeFlags.NumberLike) !==
-                0
+            holdsOnly(this.context.checker.getTypeAtLocation(expression), [
+                "number",
+            ])
             ? {
                   kind: "number",
                   cpp: this.context.dataLowerer.compileKnownValueForSink(
