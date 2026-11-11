@@ -1353,7 +1353,7 @@ class Compiler implements LoweringServices {
         this.emitEntryBody(entry);
         const survey = activeSurvey();
         if (survey && !this.options.workers?.namespace)
-            emitSurveyRoots(this, survey);
+            survey.rollingBack(() => emitSurveyRoots(this, survey));
         survey?.settle();
         if (!this.options.pageStartup?.length) this.emitNativeHostUi();
         this.finalizeSceneRegistration();
@@ -7908,6 +7908,13 @@ class Compiler implements LoweringServices {
             }
         for (const owner of this.realmEngineCaptures.get(name) ?? [])
             this.useNativeBinding(owner);
+    }
+
+    public emitUnderJumpOwners<T>(
+        holders: readonly ts.Node[],
+        emitBody: () => T,
+    ): T {
+        return this.statements.emitUnderJumpOwners(this, holders, emitBody);
     }
 
     public emitInlinedBody<T>(

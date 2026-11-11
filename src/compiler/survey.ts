@@ -30,7 +30,8 @@ import {
     storageRequestSite,
 } from "./replay-storage.js";
 import { StorageDemand } from "./storage-demand.js";
-import { EmissionSet } from "./emission-transaction.js";
+import { EmissionSet, EmissionTransaction } from "./emission-transaction.js";
+import { keepingCoverage } from "./source-coverage.js";
 import {
     bindingNameIdentifiers,
     reachedThroughName,
@@ -255,6 +256,8 @@ interface Attempt {
      * its statements away and a committed one keeps them.
      */
     probed: EmissionSet<ts.Statement>;
+    /** Those the roots' committed probes began, which the roots' rollback takes from `probed`. */
+    rootProbes: Set<ts.Statement>;
 }
 
 /**
@@ -274,10 +277,24 @@ export function surveyedStatement(node: ts.Node): node is ts.Statement {
 }
 
 /**
+ * Whether `statement` is a `return` of a function's own body: it lowers as
+ * the function's result, not as a statement of its own, so the lowering of
+ * its function tries it.
+ */
+export function isBodyReturn(statement: ts.Statement): boolean {
+    const body = statement.parent;
+    return (
+        ts.isReturnStatement(statement) &&
+        ts.isBlock(body) &&
+        ts.isFunctionLike(body.parent)
+    );
+}
+
+/**
  * The statements a compound statement runs, and the names its header binds
  * for them: none for a simple statement or a declaration.
  */
-function heldStatements(statement: ts.Statement): {
+export function heldStatements(statement: ts.Statement): {
     names: ts.Identifier[];
     statements: ts.Statement[];
 } {
@@ -532,17 +549,34 @@ export class SurveyCollector {
     }
 
     /**
-     * Lowers a function the program never reached as a root (`lower`),
-     * recorded against its body's first statement; what it reaches counts
-     * as a root's.
+     * Lowers code the program never reached as a root (`lower`), recorded
+     * against its first statement; what it reaches counts as a root's.
      */
     public attemptRoot(
         context: StatementContext,
-        body: ts.Block,
+        first: ts.Statement,
         lower: () => void,
     ): void {
-        this.inRoots(() =>
-            this.attemptStatement(context, body.statements[0]!, lower),
+        this.inRoots(() => this.attemptStatement(context, first, lower));
+    }
+
+    /**
+     * Runs the survey roots (`work`) with what they reach -- a feature, a
+     * layout, a registration, none of them the program's -- rolled back,
+     * keeping the statements their committed probes began and the sites
+     * they lowered. The storage demands they meet stay in the replay
+     * storage the next pass lowers with.
+     */
+    public rollingBack(work: () => void): void {
+        new EmissionTransaction().run(
+            () => {
+                keepingCoverage(work);
+                const attempt = this.current;
+                if (attempt)
+                    for (const statement of attempt.probed)
+                        attempt.rootProbes.add(statement);
+            },
+            () => false,
         );
     }
 
@@ -605,9 +639,8 @@ export class SurveyCollector {
                 return holding.has(statement) || lowered.has(statement);
             const body = statement.parent;
             return (
-                ts.isReturnStatement(statement) &&
+                isBodyReturn(statement) &&
                 ts.isBlock(body) &&
-                ts.isFunctionLike(body.parent) &&
                 (lowered.has(body.parent) ||
                     body.statements.some((sibling) => begun.has(sibling)))
             );
@@ -699,6 +732,7 @@ export class SurveyCollector {
             slowest: [],
             distinct: new Set(),
             probed: new EmissionSet(),
+            rootProbes: new Set(),
             taken: new Set(),
         };
         this.realms.set(realm, attempt);
@@ -1014,6 +1048,7 @@ export class SurveyCollector {
             rooted += attempt.rooted;
             for (const statement of attempt.distinct) begun.add(statement);
             for (const statement of attempt.probed) begun.add(statement);
+            for (const statement of attempt.rootProbes) begun.add(statement);
             for (const { rolledBack, ...demand } of attempt.demands.values()) {
                 for (const statement of rolledBack) demanded.add(statement);
                 demands.push({ ...demand, ...rolledBackCensus(rolledBack) });

@@ -81,8 +81,10 @@ Paths are relative to `generated/<id>/`.
   holds are lowered on their own. Each pass lowers every statement; the next replays with what it met, until one meets
   nothing new (or `--survey-passes` stops it). After the entry, every function of the program's own sources that no
   lowering reached is lowered once as a root: its parameters, `this` and captures hold empty storage, a record no native
-  layout holds is a record of empty members. A body is lowered in full once per pass; later calls take empty storage of
-  their result.
+  layout holds is a record of empty members. Then each run of statements no lowering began inside a reached function
+  (an arm a generation-known condition left, what follows an exit) is lowered the same way, under the loops, switches
+  and labels holding it. A body is lowered in full once per pass; later calls take empty storage of their result. What
+  the roots reach is rolled back: only the storage demands they meet carry into the next pass.
 - A feature marked `applicationRealm` (`feature-activation.ts`) replays the whole program in the application realm
   from `reachFeature`; explicit `ApplicationRealmRequired` throws remain only for conditional shapes.
 - Erasure never drops an API `dom-lowerings.ts` lists, and an erased method call needs a receiver `isBrowserOwner`

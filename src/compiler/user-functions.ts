@@ -1576,6 +1576,7 @@ export interface UserFunctionContext
             | "leaveRuntimeControlFlow"
             | "emitNativeCallbackStorage"
             | "emitInlinedBody"
+            | "emitUnderJumpOwners"
             | "beginNativeFunctionBody"
             | "endNativeFunctionBody"
             | "registerNativeBinding"
@@ -2045,6 +2046,32 @@ export class UserFunctionLowerer {
             (node, message) => context.fail(node, message),
         );
         this.lower(context, ir, arguments_, declaration, true);
+    }
+
+    /**
+     * Lowers `statements` of a function's body -- ones no lowering began (an
+     * arm its generation-known condition left, what follows an exit) -- in
+     * a body of their own, their names already bound: a return leaves it,
+     * its value discarded, and a jump the construct it binds to.
+     */
+    public compileSurveyStatements(
+        context: UserFunctionContext,
+        statements: readonly ts.Statement[],
+    ): void {
+        const holders: ts.Node[] = [];
+        for (
+            let node = statements[0]!.parent;
+            !ts.isFunctionLike(node);
+            node = node.parent
+        )
+            holders.unshift(node);
+        this.emitValueLambdaResult(
+            context,
+            statements,
+            undefined,
+            true,
+            holders,
+        );
     }
 
     public compileSharedMethod(
@@ -6719,11 +6746,17 @@ export class UserFunctionLowerer {
         ).value;
     }
 
+    /**
+     * `statements` in an immediately invoked native lambda returning
+     * `returnType`, lowered under the constructs `holders` names
+     * (`emitUnderJumpOwners`).
+     */
     private emitValueLambdaResult(
         context: UserFunctionContext,
         statements: readonly ts.Statement[],
         returnType: DataType | undefined,
         discardReturn: boolean,
+        holders: readonly ts.Node[] = [],
     ): { value: Value; abrupt: boolean } {
         if (returnType?.kind === "struct")
             context.dataTypes.markStoredObjectReferences(returnType);
@@ -6744,7 +6777,9 @@ export class UserFunctionLowerer {
         );
         let terminated: boolean;
         try {
-            terminated = emitReachableStatements(context, statements);
+            terminated = context.emitUnderJumpOwners(holders, () =>
+                emitReachableStatements(context, statements),
+            );
             if (!terminated) context.emitFallOffEnd();
         } finally {
             context.endNativeFunctionBody();

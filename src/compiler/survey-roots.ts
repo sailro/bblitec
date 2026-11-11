@@ -2,8 +2,9 @@
  * Survey roots: after the entry, every function of the program's own
  * sources that no lowering of the attempt began is lowered once on its own,
  * its parameters, `this` and the locals it captures from enclosing
- * functions holding empty storage of their types. A survey writes no tree:
- * a root's emission is dropped.
+ * functions holding empty storage of their types; then, in each function,
+ * the statements no lowering began (statement roots), the names they read
+ * holding the same. A survey writes no tree: a root's emission is dropped.
  */
 import ts from "typescript";
 import { forEachAnalysisNode, sourceFileNodes } from "./analysis-walk.js";
@@ -13,7 +14,11 @@ import { emptyStorage, type EmptyStorageContext } from "./empty-storage.js";
 import type { LoweringServices } from "./lowering-services.js";
 import { isProgramSourceFile } from "./program.js";
 import { isModuleInitializerStatement } from "./module-initializers.js";
-import type { SurveyCollector } from "./survey.js";
+import {
+    heldStatements,
+    isBodyReturn,
+    type SurveyCollector,
+} from "./survey.js";
 import {
     calledDeclaration,
     declaredSymbol,
@@ -22,6 +27,7 @@ import {
 import {
     functionOfDeclaration,
     isDeclaredInside,
+    isGeneratorFunction,
     isSupportedFunction,
     thisMember,
     variableKind,
@@ -59,8 +65,9 @@ export type SurveyRootContext = UserFunctionContext &
 
 /**
  * Lowers what no lowering of the survey's attempt began in the program's
- * own sources: each module's top-level statements (module roots), then
- * every function, outermost first. A rolled-back entry statement can leave
+ * own sources: each module's top-level statements (module roots), every
+ * function, outermost first, then the statements of each function its
+ * lowerings left (statement roots). A rolled-back entry statement can leave
  * the entry's one engine undeclared: the roots then hold one of their own
  * while they lower.
  */
@@ -100,7 +107,7 @@ export function emitSurveyRoots(
                     survey.untouched(node.body)
                 ) {
                     const [declaration, body] = [node, node.body];
-                    survey.attemptRoot(context, body, () => {
+                    survey.attemptRoot(context, body.statements[0]!, () => {
                         context.captureEmittedStatements(() =>
                             withCalledTypeArguments(
                                 context,
@@ -116,6 +123,28 @@ export function emitSurveyRoots(
             };
             visit(file);
         }
+        for (const file of files)
+            for (const node of sourceFileNodes(file))
+                if (
+                    isSupportedFunction(node) &&
+                    node.body &&
+                    ts.isBlock(node.body) &&
+                    !isGeneratorFunction(node) &&
+                    !survey.untouched(node.body)
+                )
+                    for (const run of unbegunRuns(survey, node.body)) {
+                        const declaration = node;
+                        survey.attemptRoot(context, run[0]!, () => {
+                            context.captureEmittedStatements(() =>
+                                withCalledTypeArguments(
+                                    context,
+                                    files,
+                                    declaration,
+                                    () => emitStatementRoot(context, run),
+                                ),
+                            );
+                        });
+                    }
     } finally {
         context.bindings.popScope();
         context.defaultEngineCpp = enclosingEngine;
@@ -212,16 +241,99 @@ function emptyValueOf(
     return { kind: "record", cpp: "", recordProperties };
 }
 
+/**
+ * The runs of consecutive statements of `body` -- and of the statements a
+ * begun statement of it holds, nested functions aside -- that no lowering
+ * of the attempt began: an arm a generation-known condition left, what
+ * follows an exit. Each run is outermost, in source order. The body's own
+ * `return` is its function's result, which the function's lowering tried.
+ */
+function unbegunRuns(
+    survey: SurveyCollector,
+    body: ts.Block,
+): ts.Statement[][] {
+    const runs: ts.Statement[][] = [];
+    const visit = (statements: readonly ts.Statement[]): void => {
+        let run: ts.Statement[] = [];
+        for (const statement of statements) {
+            // A block holds statements; its own lowering marks none begun.
+            if (
+                !ts.isBlock(statement) &&
+                survey.unbegun(statement) &&
+                !isBodyReturn(statement)
+            ) {
+                run.push(statement);
+                continue;
+            }
+            if (run.length > 0) runs.push(run);
+            run = [];
+            const held = heldStatements(statement).statements;
+            if (ts.isBlock(statement) || ts.isSwitchStatement(statement))
+                visit(held);
+            else for (const nested of held) visit([nested]);
+        }
+        if (run.length > 0) runs.push(run);
+    };
+    visit(body.statements);
+    return runs;
+}
+
+/** Empty storage of a node's type for a root, or the refusal that it has none. */
+type RootSite = (node: ts.Node, label: string, type?: ts.Type) => Value;
+
 function emitSurveyRoot(
     context: SurveyRootContext,
     declaration: SupportedFunction,
     body: ts.Block,
 ): void {
-    const site = (
-        node: ts.Node,
-        label: string,
+    withRootBindings(context, [declaration], body, (site) => {
+        const arguments_ = declaration.parameters.map((parameter) =>
+            site(
+                parameter,
+                ts.isIdentifier(parameter.name)
+                    ? parameter.name.text
+                    : "parameter",
+            ),
+        );
+        context.userFunctions.compileSurveyRoot(
+            context,
+            declaration,
+            arguments_,
+        );
+    });
+}
+
+/**
+ * Lowers `run`, statements of a function no lowering began, every name
+ * they read from outside them bound as a root binds a captured local.
+ */
+function emitStatementRoot(
+    context: SurveyRootContext,
+    run: readonly ts.Statement[],
+): void {
+    withRootBindings(context, run, run[0]!, () =>
+        context.userFunctions.compileSurveyStatements(context, run),
+    );
+}
+
+/**
+ * Runs `work` in a scope of its own, holding what lowering `scopes` reads
+ * from enclosing functions -- each local empty storage of its type, a
+ * const holding a function what its initializer makes, as the program's
+ * own binding does -- with `this` the instance the member holding `at`
+ * reads.
+ */
+function withRootBindings(
+    context: SurveyRootContext,
+    scopes: readonly ts.Node[],
+    at: ts.Node,
+    work: (site: RootSite) => void,
+): void {
+    const site: RootSite = (
+        node,
+        label,
         type = context.checker.getTypeAtLocation(node),
-    ): Value =>
+    ) =>
         emptyValueOf(context, type, node, label) ??
         context.fail(
             node,
@@ -230,23 +342,25 @@ function emitSurveyRoot(
     context.emit({ kind: "open", code: "{" });
     context.bindings.pushScope(context.allocateUserFunctionPrefix());
     try {
-        // A captured const holding a function holds what its initializer
-        // makes, as the program's own binding does.
-        for (const { name, initializer } of capturedFunctionLocals(
-            context.checker,
-            declaration,
-        ))
-            if (!context.bindings.lookupOptional(name)) {
-                const value =
-                    (initializer &&
-                        unlessRefused(() =>
-                            context.compileValue(initializer),
-                        )) ??
-                    site(name, name.text);
-                context.bindings.defineVariable(name, value);
-            }
+        for (const scope of scopes)
+            for (const { name, initializer } of capturedFunctionLocals(
+                context.checker,
+                scope,
+            ))
+                if (
+                    !context.bindings.lookupOptional(name) &&
+                    !scopes.some((owner) => isDeclaredInside(name, owner))
+                ) {
+                    const value =
+                        (initializer &&
+                            unlessRefused(() =>
+                                context.compileValue(initializer),
+                            )) ??
+                        site(name, name.text);
+                    context.bindings.defineVariable(name, value);
+                }
         // A static member's `this` is its class, which no instance holds.
-        const member = thisMember(body);
+        const member = thisMember(at);
         const owner =
             member &&
             ts.isClassLike(member.parent) &&
@@ -270,21 +384,7 @@ function emitSurveyRoot(
         // Methods read a stored instance through its class's receiver.
         const instance =
             stored && (context.classLowerer.hydrate(stored, owner) ?? stored);
-        const arguments_ = declaration.parameters.map((parameter) =>
-            site(
-                parameter,
-                ts.isIdentifier(parameter.name)
-                    ? parameter.name.text
-                    : "parameter",
-            ),
-        );
-        context.withThis(instance, () =>
-            context.userFunctions.compileSurveyRoot(
-                context,
-                declaration,
-                arguments_,
-            ),
-        );
+        context.withThis(instance, () => work(site));
     } finally {
         context.bindings.popScope();
         context.emit({ kind: "close", code: "}" });

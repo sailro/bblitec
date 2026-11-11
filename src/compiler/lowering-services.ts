@@ -534,6 +534,8 @@ export interface LoweringServices {
         returns: "break" | "label" | undefined,
         emitBody: () => T,
     ): T;
+    /** `StatementLowerer.emitUnderJumpOwners`. */
+    emitUnderJumpOwners<T>(holders: readonly ts.Node[], emitBody: () => T): T;
     trackResourceLoopEarlyReturn(condition: ts.Expression): void;
     activeNativeReturnType(): DataType | "void" | undefined;
     activeNativeCoroutine(): boolean;

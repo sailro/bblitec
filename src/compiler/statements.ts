@@ -1012,26 +1012,40 @@ export class StatementLowerer {
         );
     }
 
-    /**
-     * A statement that a rolled-back compound statement held, lowered on its
-     * own by a survey. Under a loop or a switch it lowers in a block a native
-     * break leaves, standing for the construct its jumps bind; under a label,
-     * before the label's exit.
-     */
+    /** A statement that a rolled-back compound statement held, lowered on its own by a survey. */
     private emitHeld(
         context: StatementLoweringContext,
         holder: ts.Statement,
         nested: ts.Statement,
     ): void {
-        const lower = (): void => this.emit(context, nested);
+        this.emitUnderJumpOwners(context, [holder], () =>
+            this.emit(context, nested),
+        );
+    }
+
+    /**
+     * Runs `emitBody` for statements a survey lowers apart from the
+     * constructs holding them (`holders`, outermost first): under each loop
+     * or switch, in a block a native break leaves, standing for the
+     * construct its jumps bind; under each label, before the label's exit.
+     */
+    public emitUnderJumpOwners<T>(
+        context: StatementLoweringContext,
+        holders: readonly ts.Node[],
+        emitBody: () => T,
+    ): T {
+        const [holder, ...inner] = holders;
+        if (!holder) return emitBody();
+        const lower = (): T =>
+            this.emitUnderJumpOwners(context, inner, emitBody);
         if (ts.isLabeledStatement(holder))
-            this.emitInlinedBody(context, holder, "label", lower);
-        else if (
+            return this.emitInlinedBody(context, holder, "label", lower);
+        if (
             ts.isIterationStatement(holder, false) ||
             ts.isSwitchStatement(holder)
         )
-            this.emitInlinedBody(context, holder, "break", lower);
-        else lower();
+            return this.emitInlinedBody(context, holder, "break", lower);
+        return lower();
     }
 
     private lowerStatement(
