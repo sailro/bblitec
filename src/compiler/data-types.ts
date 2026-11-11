@@ -4315,7 +4315,23 @@ export class DataTypeRegistry {
         // through the intersection arm of `fromNonNullableType` instead.
         // Beside several present members, `void` marks a result nobody is
         // meant to read, which names no storage.
-        const present = presentMembers(type);
+        // A type parameter bound to void or undefined (`T | null` at T =
+        // void) is an undefined value; nothing but `null` and one is what a
+        // dynamic value tells apart.
+        const present = presentMembers(type).filter((member) => {
+            const voided =
+                (this.resolveTypeParameter(member).flags &
+                    ts.TypeFlags.VoidLike) !==
+                0;
+            absent.undefined ||= voided;
+            return !voided;
+        });
+        if (
+            present.length === 0 &&
+            absent.null &&
+            (absent.undefined || absent.void)
+        )
+            return { kind: "json" };
         const inner =
             present.length === 1
                 ? this.fromTsType(present[0]!, node)
