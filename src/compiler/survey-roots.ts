@@ -9,7 +9,7 @@
 import ts from "typescript";
 import { forEachAnalysisNode, sourceFileNodes } from "./analysis-walk.js";
 import { isStaticMember } from "./class-members.js";
-import { unlessRefused } from "./compile-error.js";
+import { CompileError, unlessRefused } from "./compile-error.js";
 import { emptyStorage, type EmptyStorageContext } from "./empty-storage.js";
 import type { LoweringServices } from "./lowering-services.js";
 import { isProgramSourceFile } from "./program.js";
@@ -116,7 +116,12 @@ export function emitSurveyRoots(
                                 files,
                                 declaration,
                                 () =>
-                                    emitSurveyRoot(context, declaration, body),
+                                    emitSurveyRoot(
+                                        context,
+                                        survey,
+                                        declaration,
+                                        body,
+                                    ),
                             ),
                         );
                     });
@@ -142,7 +147,8 @@ export function emitSurveyRoots(
                                     context,
                                     files,
                                     declaration,
-                                    () => emitStatementRoot(context, run),
+                                    () =>
+                                        emitStatementRoot(context, survey, run),
                                 ),
                             );
                         });
@@ -300,31 +306,41 @@ type RootSite = (node: ts.Node, label: string, type?: ts.Type) => Value;
 
 function emitSurveyRoot(
     context: SurveyRootContext,
+    survey: SurveyCollector,
     declaration: SupportedFunction,
     body: ts.Block,
 ): void {
-    withRootBindings(context, [declaration], body, (site) => {
-        // A trailing parameter with a default is left out, as a call
-        // leaving it out does: what the default holds reaches the body.
-        let passed = declaration.parameters.length;
-        while (passed > 0 && declaration.parameters[passed - 1]!.initializer)
-            passed--;
-        const arguments_ = declaration.parameters
-            .slice(0, passed)
-            .map((parameter) =>
-                site(
-                    parameter,
-                    ts.isIdentifier(parameter.name)
-                        ? parameter.name.text
-                        : "parameter",
-                ),
+    withRootBindings(
+        context,
+        survey,
+        [declaration],
+        body.statements[0]!,
+        (site) => {
+            // A trailing parameter with a default is left out, as a call
+            // leaving it out does: what the default holds reaches the body.
+            let passed = declaration.parameters.length;
+            while (
+                passed > 0 &&
+                declaration.parameters[passed - 1]!.initializer
+            )
+                passed--;
+            const arguments_ = declaration.parameters
+                .slice(0, passed)
+                .map((parameter) =>
+                    site(
+                        parameter,
+                        ts.isIdentifier(parameter.name)
+                            ? parameter.name.text
+                            : "parameter",
+                    ),
+                );
+            context.userFunctions.compileSurveyRoot(
+                context,
+                declaration,
+                arguments_,
             );
-        context.userFunctions.compileSurveyRoot(
-            context,
-            declaration,
-            arguments_,
-        );
-    });
+        },
+    );
 }
 
 /**
@@ -333,9 +349,10 @@ function emitSurveyRoot(
  */
 function emitStatementRoot(
     context: SurveyRootContext,
+    survey: SurveyCollector,
     run: readonly ts.Statement[],
 ): void {
-    withRootBindings(context, run, run[0]!, () =>
+    withRootBindings(context, survey, run, run[0]!, () =>
         context.userFunctions.compileSurveyStatements(context, run),
     );
 }
@@ -344,13 +361,15 @@ function emitStatementRoot(
  * Runs `work` in a scope of its own, holding what lowering `scopes` reads
  * from enclosing functions -- each local empty storage of its type, a
  * const holding a function what its initializer makes, as the program's
- * own binding does -- with `this` the instance the member holding `at`
- * reads.
+ * own binding does; one with no storage of its type stays unbound, the
+ * statements reading it refused (`unboundCapture`) -- with `this` the
+ * instance the member holding `first`, the root's first statement, reads.
  */
 function withRootBindings(
     context: SurveyRootContext,
+    survey: SurveyCollector,
     scopes: readonly ts.Node[],
-    at: ts.Node,
+    first: ts.Statement,
     work: (site: RootSite) => void,
 ): void {
     const site: RootSite = (
@@ -375,16 +394,25 @@ function withRootBindings(
                     !context.bindings.lookupOptional(name) &&
                     !scopes.some((owner) => isDeclaredInside(name, owner))
                 ) {
-                    const value =
-                        (initializer &&
-                            unlessRefused(() =>
-                                context.compileValue(initializer),
-                            )) ??
-                        site(name, name.text);
+                    let value =
+                        initializer &&
+                        unlessRefused(() => context.compileValue(initializer));
+                    try {
+                        value ??= site(name, name.text);
+                    } catch (error) {
+                        if (!(error instanceof CompileError)) throw error;
+                        survey.unboundCapture(
+                            context.checker,
+                            first,
+                            name,
+                            error,
+                        );
+                        continue;
+                    }
                     context.bindings.defineVariable(name, value);
                 }
         // A static member's `this` is its class, which no instance holds.
-        const member = thisMember(at);
+        const member = thisMember(first);
         const owner =
             member &&
             ts.isClassLike(member.parent) &&

@@ -5788,52 +5788,16 @@ export class DataTypeRegistry {
             declaration,
             fields,
         });
-        for (const demand of this.storage.genericFunctions.get(family)) {
-            // A call's callee type is the declaration as its receiver's type
-            // arguments instantiate it: a method of `Adapter<unknown>` returns
-            // what they make of its declared result, which no frame of the
-            // caller binds. A callee with type parameters of its own is bound
-            // by the demand.
-            const callee = ts.isCallExpression(demand.site)
-                ? callSignatures(
-                      this.checker,
-                      this.checker.getTypeAtLocation(demand.site.expression),
-                      "exact",
-                  )
-                : [];
-            const instantiated =
-                callee.length === 1 &&
-                callee[0]!.declaration === declaration &&
-                !callee[0]!.typeParameters?.length
-                    ? callee[0]
-                    : undefined;
-            const type = this.withGenericFunctionArguments(
-                declaration,
-                demand,
-                () =>
-                    // An optional method's declared type also admits undefined.
-                    this.fromFunctionType(
-                        this.checker.getNonNullableType(
-                            this.checker.getTypeAtLocation(declaration),
-                        ),
-                        node,
-                        false,
-                        demand.parameters,
-                        instantiated,
-                        demand.restArguments,
-                    ),
-            );
-            if (type?.kind !== "function" || type.generic)
-                this.fail(
-                    node,
-                    "Stored generic function instantiation requires a fully represented native signature.",
-                );
+        for (const demand of this.storage.genericFunctions.get(family))
             fields.push({
                 name: `call_${fields.length}`,
-                type: { ...type, identity: true },
+                type: this.genericFunctionInstantiation(
+                    declaration,
+                    demand,
+                    node,
+                ),
                 demand,
             });
-        }
         this.registerStructDefinition(`generic:${family}`, {
             name,
             fields: fields.map((field) => ({
@@ -5843,6 +5807,54 @@ export class DataTypeRegistry {
             })),
         });
         return { kind: "function", parameters: [], generic: name };
+    }
+
+    /** The native signature `demand` instantiates a stored generic function at. */
+    private genericFunctionInstantiation(
+        declaration: ts.SignatureDeclaration,
+        demand: GenericFunctionDemand,
+        node: ts.Node,
+    ): DataType<"function"> {
+        // A call's callee type is the declaration as its receiver's type
+        // arguments instantiate it: a method of `Adapter<unknown>` returns
+        // what they make of its declared result, which no frame of the
+        // caller binds. A callee with type parameters of its own is bound
+        // by the demand.
+        const callee = ts.isCallExpression(demand.site)
+            ? callSignatures(
+                  this.checker,
+                  this.checker.getTypeAtLocation(demand.site.expression),
+                  "exact",
+              )
+            : [];
+        const instantiated =
+            callee.length === 1 &&
+            callee[0]!.declaration === declaration &&
+            !callee[0]!.typeParameters?.length
+                ? callee[0]
+                : undefined;
+        const type = this.withGenericFunctionArguments(
+            declaration,
+            demand,
+            () =>
+                // An optional method's declared type also admits undefined.
+                this.fromFunctionType(
+                    this.checker.getNonNullableType(
+                        this.checker.getTypeAtLocation(declaration),
+                    ),
+                    node,
+                    false,
+                    demand.parameters,
+                    instantiated,
+                    demand.restArguments,
+                ),
+        );
+        if (type?.kind !== "function" || type.generic)
+            this.fail(
+                node,
+                "Stored generic function instantiation requires a fully represented native signature.",
+            );
+        return { ...type, identity: true };
     }
 
     public genericFunctionFields(
@@ -6095,13 +6107,36 @@ export class DataTypeRegistry {
      * replay would never reach a represented field, so it refuses instead.
      */
     private representedGenericFunctionField(
-        generic: { family: string; fields: readonly GenericFunctionField[] },
+        generic: {
+            family: string;
+            declaration: ts.SignatureDeclaration;
+            fields: readonly GenericFunctionField[];
+        },
         demand: GenericFunctionDemand,
     ): GenericFunctionField {
         const field = generic.fields.find((field) =>
             sameGenericFunctionSignature(field.demand, demand),
         );
         if (field) return field;
+        // A signature the storage took after the family was built -- in an
+        // attempt that takes demands at once (a survey pass, a discarded
+        // plan), whose emission is not kept -- instantiates on its own, so
+        // the attempt lowers past the call and meets the family's other
+        // calls; the next attempt builds the family with it.
+        if (
+            this.storage.genericFunctions
+                .get(generic.family)
+                .some((known) => sameGenericFunctionSignature(known, demand))
+        )
+            return {
+                name: `call_${generic.fields.length}`,
+                type: this.genericFunctionInstantiation(
+                    generic.declaration,
+                    demand,
+                    demand.site,
+                ),
+                demand,
+            };
         if (
             divergentGenericFunctionDemand(
                 this.checker,

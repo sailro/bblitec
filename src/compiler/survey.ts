@@ -987,12 +987,51 @@ export class SurveyCollector {
         this.record(this.current, checker, statement, error);
     }
 
+    /**
+     * A root's capture (`name`) with no storage of its type: the root goes
+     * on without it, `error` is counted at the root's `first` statement
+     * without rolling one back, and the statements reading the capture
+     * cascade from it.
+     */
+    public unboundCapture(
+        checker: ts.TypeChecker,
+        first: ts.Statement,
+        name: ts.Identifier,
+        error: CompileError,
+    ): void {
+        const attempt = this.current;
+        if (!attempt) throw error;
+        const census = this.counted(attempt, checker, first, error);
+        const symbol = declaredSymbol(checker, name);
+        if (symbol && !attempt.declarations.has(symbol))
+            attempt.declarations.set(symbol, census.site);
+    }
+
     private record(
         attempt: Attempt,
         checker: ts.TypeChecker,
         statement: ts.Statement,
         error: CompileError,
     ): void {
+        const census = this.counted(attempt, checker, statement, error);
+        if (census.rolledBack.has(statement)) return;
+        census.rolledBack.add(statement);
+        // Every statement this refusal rolled back loses its declarations,
+        // whichever caller reached the site first.
+        for (const name of statementDeclaredNames(statement)) {
+            const symbol = declaredSymbol(checker, name);
+            if (symbol && !attempt.declarations.has(symbol))
+                attempt.declarations.set(symbol, census.site);
+        }
+    }
+
+    /** The census entry of `error`, made at `statement`, with one more occurrence. */
+    private counted(
+        attempt: Attempt,
+        checker: ts.TypeChecker,
+        statement: ts.Statement,
+        error: CompileError,
+    ): Census {
         let census = attempt.refusals.get(error.message);
         if (!census) {
             census = {
@@ -1015,15 +1054,7 @@ export class SurveyCollector {
         }
         census.occurrences++;
         if (this.inRoot) census.rootOccurrences++;
-        if (census.rolledBack.has(statement)) return;
-        census.rolledBack.add(statement);
-        // Every statement this refusal rolled back loses its declarations,
-        // whichever caller reached the site first.
-        for (const name of statementDeclaredNames(statement)) {
-            const symbol = declaredSymbol(checker, name);
-            if (symbol && !attempt.declarations.has(symbol))
-                attempt.declarations.set(symbol, census.site);
-        }
+        return census;
     }
 
     /**
