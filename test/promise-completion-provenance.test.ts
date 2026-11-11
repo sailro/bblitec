@@ -253,9 +253,51 @@ test("a reaction completing with a Babylon Lite function typed void settles unde
     assert.match(result.cpp, /run_window_application/);
     assert.match(result.cpp, /\.then\(bbl::js::make_closure\([^\n]*-> void \{/);
     assert.match(result.cpp, /bbl::add_to_scene\(v_\w*scene, /);
-    // A source method typed void may still return what its annotation erased.
-    assert.throws(
-        () => compileSource(source("(mesh) => hooks.added(mesh)")),
-        /Promise reaction with a void result requires a proven undefined completion/,
+    // A source method typed void completes as the functions its field
+    // stores: the field takes the proof, which its one store meets.
+    assert.match(
+        compileSource(source("(mesh) => hooks.added(mesh)")).cpp,
+        /run_window_application/,
     );
+});
+
+test("a reaction completing through a stored record's method takes the proof at the record's stores", () => {
+    // The record is held by a const, or by a nullable module binding the
+    // program assigns later and the reaction calls through `?.`.
+    const source = (member: string, reaction: string) => `
+        interface Finisher { finished(): void; failed(error: unknown): void }
+        let count = 0;
+        function createFinisher(): Finisher {
+            return { finished: ${member}, failed(error: unknown) { console.error(error); } };
+        }
+        let finisher: Finisher | null = null;
+        const required: Finisher = createFinisher();
+        async function main(): Promise<void> {
+            finisher = createFinisher();
+            await Promise.resolve();
+        }
+        main().then(${reaction}, (error: unknown) => { finisher?.failed(error); });
+        localStorage.setItem("count", String(count));
+    `;
+    for (const reaction of [
+        "() => finisher?.finished()",
+        "() => required.finished()",
+    ]) {
+        assert.match(
+            compileSource(source("() => { count++; }", reaction)).cpp,
+            /\.then\(/,
+        );
+        // A store whose function settles a promise behind its void typing
+        // refuses where it stores.
+        assert.throws(
+            () =>
+                compileSource(
+                    source(
+                        "(() => Promise.resolve(3)) as () => void",
+                        reaction,
+                    ),
+                ),
+            /A stored callback requires a proven undefined completion/,
+        );
+    }
 });

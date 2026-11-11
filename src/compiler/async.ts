@@ -1811,6 +1811,16 @@ export class AsyncLowerer {
                             stored.dataType,
                             cleanup ? "nonthenable" : "undefined",
                         );
+                    // A struct function field the reaction completes through
+                    // takes the proof its stores then check (a replay).
+                    else if (!cleanup)
+                        hasProvenUndefinedCompletion(context, declaration, {
+                            unproven: (field) =>
+                                context.dataTypes.requireFunctionCompletion(
+                                    field,
+                                    "undefined",
+                                ),
+                        });
                     context.fail(
                         callback,
                         "Promise reaction with a void result requires a proven undefined completion.",

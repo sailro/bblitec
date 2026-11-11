@@ -274,10 +274,17 @@ function provenUndefinedValue(
             const name = accessed.name;
             const owner = context.bindings.lookupOptional(receiver);
             // A struct's function field stores only functions proven to
-            // complete as its type requires.
-            if (owner?.kind === "data" && owner.dataType?.kind === "struct") {
+            // complete as its type requires; an absent optional struct
+            // completes no call through it with a value.
+            const stored =
+                owner?.kind === "data" && owner.dataType?.kind === "optional"
+                    ? owner.dataType.inner
+                    : owner?.kind === "data"
+                      ? owner.dataType
+                      : undefined;
+            if (stored?.kind === "struct") {
                 const field = context.dataTypes
-                    .structFields(owner.dataType.name, callee, "accessors")
+                    .structFields(stored.name, callee, "accessors")
                     .find((candidate) => candidate.sourceName === name)?.type;
                 if (field?.kind !== "function") return false;
                 if (
