@@ -613,8 +613,9 @@ function constFunctionInitializer(
  * The variables and parameters of enclosing functions that `declaration`
  * reads, by their declared names: what a root binds besides its
  * parameters -- with, for a captured const holding a function, those its
- * initializer reads. Those come first, so each binds before the function
- * that reads it. Kept per declaration: the program does not
+ * initializer reads, and for a function an enclosing function declares,
+ * those its body reads. Those come first, so each binds before the
+ * function that reads it. Kept per declaration: the program does not
  * change between passes.
  */
 function capturedFunctionLocals(
@@ -634,6 +635,18 @@ function capturedFunctionLocals(
                 if (!ts.isIdentifier(node)) return;
                 const symbol = resolvedSymbol(checker, node);
                 const local = symbol?.valueDeclaration;
+                // A function an enclosing function declares lowers at its
+                // calls, reading what it captures there.
+                if (
+                    local &&
+                    ts.isFunctionDeclaration(local) &&
+                    local.body &&
+                    !isDeclaredInside(local, declaration) &&
+                    ts.findAncestor(local.parent, ts.isFunctionLike)
+                ) {
+                    scan(local.body);
+                    return;
+                }
                 if (
                     !symbol ||
                     !local ||
