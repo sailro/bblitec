@@ -21,7 +21,6 @@ import {
 import { EmissionSet } from "../emission-transaction.js";
 import ts from "typescript";
 import { CompileError } from "../compile-error.js";
-import { UnresolvedScenePbrMaterial } from "../scene-materials.js";
 import { compileCharacterIntrinsic } from "./character-controller.js";
 import {
     compileUniformBufferIntrinsic,
@@ -322,15 +321,12 @@ export function compileRegisteredIntrinsic(
         try {
             value = compile(context, importedName, call);
         } catch (error) {
-            const unresolved = error instanceof UnresolvedScenePbrMaterial;
-            if (error instanceof CompileError || unresolved)
+            if (error instanceof CompileError)
                 routeObserver?.({
                     name: importedName,
                     lowerer: compile.name,
                     outcome: "refused",
                 });
-            // A setter's material no scene record stands for refuses here.
-            if (unresolved) context.fail(call, error.message);
             throw error;
         }
         if (value) {

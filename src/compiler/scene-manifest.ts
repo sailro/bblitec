@@ -849,7 +849,7 @@ export class SceneManifestRecorder {
         return this.sceneMaterials.scenePbrMaterials;
     }
 
-    public recordScenePbrNoColorView(sourceIndex: number | undefined): number {
+    public recordScenePbrNoColorView(sourceIndex: number): number {
         this.sceneMaterialGltfAssetsBefore.push(this.currentGltfAssetCount());
         return this.sceneMaterials.recordScenePbrNoColorView(sourceIndex);
     }
@@ -865,27 +865,27 @@ export class SceneManifestRecorder {
             .reduce((count, asset) => count + (asset.containerCount ?? 0), 0);
     }
 
-    public recordScenePbrUnlit(index: number | undefined): void {
+    public recordScenePbrUnlit(index: number): void {
         this.sceneMaterials.recordScenePbrUnlit(index);
     }
 
-    public recordScenePbrSkybox(index: number | undefined): void {
+    public recordScenePbrSkybox(index: number): void {
         this.sceneMaterials.recordScenePbrSkybox(index);
     }
 
-    public recordScenePbrGammaAlbedo(index: number | undefined): void {
+    public recordScenePbrGammaAlbedo(index: number): void {
         this.sceneMaterials.recordScenePbrGammaAlbedo(index);
     }
 
     public recordScenePbrAlphaCutoff(
-        index: number | undefined,
+        index: number,
         cutoff: number,
     ): Readonly<ScenePbrMaterialManifest> {
         return this.sceneMaterials.recordScenePbrAlphaCutoff(index, cutoff);
     }
 
     public recordScenePbrShadowOnly(
-        index: number | undefined,
+        index: number,
         options: NonNullable<ScenePbrMaterialManifest["shadowOnly"]>,
     ): void {
         this.sceneMaterials.recordScenePbrShadowOnly(index, options);
@@ -893,7 +893,7 @@ export class SceneManifestRecorder {
 
     public recordScenePbrPlugins(
         plugins: readonly MaterialPluginManifest[],
-        index: number | undefined,
+        index: number,
     ): void {
         this.sceneMaterials.recordScenePbrPlugins(plugins, index);
     }
@@ -955,35 +955,35 @@ export class SceneManifestRecorder {
 
     public recordScenePbrSheen(
         sheen: ScenePbrSheenManifest,
-        index: number | undefined,
+        index: number,
     ): void {
         this.sceneMaterials.recordScenePbrSheen(sheen, index);
     }
 
     public recordScenePbrClearCoat(
         clearCoat: ScenePbrClearCoatManifest,
-        index: number | undefined,
+        index: number,
     ): void {
         this.sceneMaterials.recordScenePbrClearCoat(clearCoat, index);
     }
 
     public recordScenePbrEmissive(
         color: readonly [number, number, number] | undefined,
-        index: number | undefined,
+        index: number,
     ): void {
         this.sceneMaterials.recordScenePbrEmissive(color, index);
     }
 
     public recordScenePbrIridescence(
         iridescence: ScenePbrIridescenceManifest,
-        index: number | undefined,
+        index: number,
     ): void {
         this.sceneMaterials.recordScenePbrIridescence(iridescence, index);
     }
 
     public recordScenePbrLightmap(
         lightmap: ScenePbrLightmapManifest,
-        index: number | undefined,
+        index: number,
     ): void {
         this.sceneMaterials.recordScenePbrLightmap(lightmap, index);
     }
@@ -1057,21 +1057,21 @@ export class SceneManifestRecorder {
 
     public recordScenePbrSubsurface(
         subsurface: ScenePbrSubsurfaceManifest,
-        index: number | undefined,
+        index: number,
     ): void {
         this.sceneMaterials.recordScenePbrSubsurface(subsurface, index);
     }
 
     public recordScenePbrAnisotropy(
         anisotropy: ScenePbrAnisotropyManifest,
-        index: number | undefined,
+        index: number,
     ): void {
         this.sceneMaterials.recordScenePbrAnisotropy(anisotropy, index);
     }
 
     public recordScenePbrMetallicReflectance(
         reflectance: ScenePbrMetallicReflectanceManifest,
-        index: number | undefined,
+        index: number,
     ): void {
         this.sceneMaterials.recordScenePbrMetallicReflectance(
             reflectance,

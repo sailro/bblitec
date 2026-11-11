@@ -959,9 +959,31 @@ function compileCreateNoColorMaterialView(
         cpp: `bbl::create_pbr_no_color_material_view(${engineCpp}, ${source.cpp})`,
         engineCpp,
         scenePbrMaterialIndex: context.sceneManifest.recordScenePbrNoColorView(
-            source.scenePbrMaterialIndex,
+            scenePbrMaterialAt(context, call, source),
         ),
     };
+}
+
+/**
+ * The scene-code PBR material record `material` stands for, which a setter
+ * stamps: a value createPbrMaterial produced, or one a mesh's material was
+ * assigned to. Any other material -- of another family, or one that reached
+ * the call through storage -- refuses at `call`.
+ */
+function scenePbrMaterialAt(
+    context: MaterialIntrinsicContext,
+    call: ts.CallExpression,
+    material: Value,
+): number {
+    const index = material.scenePbrMaterialIndex;
+    if (index === undefined)
+        context.fail(
+            call,
+            `${call.expression.getText()} names no scene-code PBR material; only a value ` +
+                "createPbrMaterial produced, or a mesh one was assigned " +
+                "to, resolves which record to stamp.",
+        );
+    return index;
 }
 
 function compileSetStandardLightmapTexture(
@@ -1499,7 +1521,7 @@ function compileSetPbrEmissive(
     bindings.set("emissive_factor", color);
     context.sceneManifest.recordScenePbrEmissive(
         channels,
-        material.scenePbrMaterialIndex,
+        scenePbrMaterialAt(context, call, material),
     );
     context.reachFeature("material:emissive", call);
     return {
@@ -1523,7 +1545,7 @@ function compileSetPbrGammaAlbedo(
     const material = context.compileValue(argumentAt(call, 0));
     context.expectKind(material, "material", argumentAt(call, 0));
     context.sceneManifest.recordScenePbrGammaAlbedo(
-        material.scenePbrMaterialIndex,
+        scenePbrMaterialAt(context, call, material),
     );
     context.reachFeature("material:pbr-gamma-albedo", call);
     return {
@@ -1563,7 +1585,7 @@ function compileSetPbrAlphaCutoff(
             "setPbrAlphaCutoff's cutoff must be a finite number.",
         );
     const entry = context.sceneManifest.recordScenePbrAlphaCutoff(
-        material.scenePbrMaterialIndex,
+        scenePbrMaterialAt(context, call, material),
         cutoff,
     );
     // The record keeps one authored alpha mode, blend or mask: a blended
@@ -1620,7 +1642,7 @@ function compileSetShadowOnly(
         ? compileStaticNumber(context, falloffValue, "Shadow-only falloff")
         : 1;
     context.sceneManifest.recordScenePbrShadowOnly(
-        material.scenePbrMaterialIndex,
+        scenePbrMaterialAt(context, call, material),
         {
             color,
             opacity,
@@ -1673,7 +1695,7 @@ function compileSetPbrUnlit(
         );
     } else {
         context.sceneManifest.recordScenePbrUnlit(
-            material.scenePbrMaterialIndex,
+            scenePbrMaterialAt(context, call, material),
         );
     }
     return {
@@ -1699,7 +1721,9 @@ function compileSetPbrSkybox(
     context.reachFeature("material:pbr", call);
     // The pin's setter registers the skybox extension alone; the composed
     // variant carries the arm, and no transmission unit is reached.
-    context.sceneManifest.recordScenePbrSkybox(material.scenePbrMaterialIndex);
+    context.sceneManifest.recordScenePbrSkybox(
+        scenePbrMaterialAt(context, call, material),
+    );
     return {
         kind: "void",
         cpp:
@@ -1736,7 +1760,7 @@ function compileSetPbrMetallicReflectance(
     }
     context.sceneManifest.recordScenePbrMetallicReflectance(
         reflectance.manifest,
-        material.scenePbrMaterialIndex,
+        scenePbrMaterialAt(context, call, material),
     );
     context.reachFeature("material:metallic-reflectance", call);
     const engine = context.requireEngine(material, call);
@@ -1767,7 +1791,7 @@ function compileSetPbrSubsurface(
     }
     context.sceneManifest.recordScenePbrSubsurface(
         subsurface.manifest,
-        material.scenePbrMaterialIndex,
+        scenePbrMaterialAt(context, call, material),
     );
     return {
         kind: "void",
@@ -1800,7 +1824,7 @@ function compileSetPbrClearCoat(
     );
     context.sceneManifest.recordScenePbrClearCoat(
         clearCoat.manifest,
-        material.scenePbrMaterialIndex,
+        scenePbrMaterialAt(context, call, material),
     );
     context.reachFeature("material:clearcoat", call);
     // `useF0Remap` is not a reached option, so a scene-code coat
@@ -1837,7 +1861,7 @@ function compileSetPbrIridescence(
     );
     context.sceneManifest.recordScenePbrIridescence(
         iridescence.manifest,
-        material.scenePbrMaterialIndex,
+        scenePbrMaterialAt(context, call, material),
     );
     context.reachFeature("material:iridescence", call);
     return {
@@ -2008,7 +2032,7 @@ function compileSetPbrLightmap(
     } else {
         context.sceneManifest.recordScenePbrLightmap(
             lightmap,
-            material.scenePbrMaterialIndex,
+            scenePbrMaterialAt(context, call, material),
         );
     }
     return {
@@ -2041,7 +2065,7 @@ function compileSetPbrAnisotropy(
     );
     context.sceneManifest.recordScenePbrAnisotropy(
         anisotropy.manifest,
-        material.scenePbrMaterialIndex,
+        scenePbrMaterialAt(context, call, material),
     );
     context.reachFeature("material:anisotropy", call);
     return {
@@ -2117,7 +2141,7 @@ function compileSetPbrSheen(
     );
     context.sceneManifest.recordScenePbrSheen(
         sheen.manifest,
-        material.scenePbrMaterialIndex,
+        scenePbrMaterialAt(context, call, material),
     );
     const engine = context.requireEngine(material, call);
     context.reachFeature("material:sheen", call);
