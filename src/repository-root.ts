@@ -17,19 +17,24 @@ export function compilerDistSource(): string {
 }
 
 export function findRepositoryRoot(start = process.cwd()): string {
-    let current = resolve(start);
-    while (true) {
+    const root = enclosingRepositoryRoot(start);
+    if (root === undefined)
+        throw new Error(
+            `Unable to locate the bblitec repository from '${start}'.`,
+        );
+    return root;
+}
+
+/** The bblitec checkout `start` lies in; undefined outside every checkout. */
+export function enclosingRepositoryRoot(start: string): string | undefined {
+    for (let current = resolve(start); ;) {
         if (
             existsSync(join(current, "upstream", "babylon-lite.json")) &&
             existsSync(join(current, "package.json"))
         )
             return current;
         const parent = dirname(current);
-        if (parent === current) {
-            throw new Error(
-                `Unable to locate the bblitec repository from '${start}'.`,
-            );
-        }
+        if (parent === current) return undefined;
         current = parent;
     }
 }

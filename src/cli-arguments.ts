@@ -6,7 +6,8 @@ import type { CompileOptions } from "./compiler/types.js";
 
 /** What a run produces: a generated tree, or a survey's census in its place. */
 export type CliTarget =
-    { kind: "generate"; output: string } | { kind: "survey"; census: string };
+    | { kind: "generate"; output: string }
+    | { kind: "survey"; census: string; passes?: number };
 
 export interface CliOptions {
     input: string;
@@ -58,6 +59,7 @@ const OPTION_FLAGS: ReadonlyArray<{ flag: string; value?: string }> = [
     { flag: "--id-diagnostics" },
     { flag: "--source-profile", value: "<function,...>" },
     { flag: "--coverage", value: "<coverage.json>" },
+    { flag: "--survey-passes", value: "<count>" },
     { flag: "--deferred-capabilities", value: "runtime-throw" },
     { flag: "--condition", value: "<name>" },
 ];
@@ -105,6 +107,7 @@ export function parseArguments(arguments_: readonly string[]): CliOptions {
     let idDiagnostics = false;
     let sourceProfile: string[] | undefined;
     let coverage: string | undefined;
+    let surveyPasses: number | undefined;
     let deferredCapabilities: CompileOptions["deferredCapabilities"];
     const conditions: string[] = [];
 
@@ -125,6 +128,10 @@ export function parseArguments(arguments_: readonly string[]): CliOptions {
             case "--coverage":
                 if (!value || value.startsWith("--")) usage();
                 coverage = value;
+                index += 1;
+                break;
+            case "--survey-passes":
+                surveyPasses = parsePositiveInteger(value, flag);
                 index += 1;
                 break;
             case "--deferred-capabilities":
@@ -226,7 +233,11 @@ export function parseArguments(arguments_: readonly string[]): CliOptions {
     }
 
     const target: CliTarget = survey
-        ? { kind: "survey", census: survey }
+        ? {
+              kind: "survey",
+              census: survey,
+              ...(surveyPasses ? { passes: surveyPasses } : {}),
+          }
         : output
           ? { kind: "generate", output }
           : usage();

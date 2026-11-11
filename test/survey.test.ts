@@ -11,14 +11,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test from "node:test";
 import { jsonArray, jsonObject } from "./json.js";
-import ts from "typescript";
 import { compileSource, surveySource } from "../src/compiler.js";
-import { createCompilerProgram } from "../src/compiler/program.js";
-import {
-    ReplayStorage,
-    storageRequestKey,
-    type StorageRequest,
-} from "../src/compiler/replay-storage.js";
 import {
     publishedSurvey,
     refusalClass,
@@ -127,11 +120,11 @@ test("a survey reports its progress and the statement it lowers", () => {
     );
 });
 
-test("a survey's progress names each restart's cause, what it demands and where its demand rose", () => {
-    // Rebinding a literal record to a parsed one restarts the program with
-    // document storage for the record type (line 2).
+test("a survey pass rolls back a storage demand's statement and the next pass replays with it", () => {
+    // Rebinding a literal record to a parsed one demands document storage
+    // for the record type (line 2) at the assignment (line 5).
     const lines: string[] = [];
-    surveySource(
+    const { report } = surveySource(
         `
         interface Settings { gain: number }
         function parsed(text: string): Settings { return JSON.parse(text); }
@@ -142,69 +135,22 @@ test("a survey's progress names each restart's cause, what it demands and where 
         { fileName: resolve("survey-restart.ts") },
         { report: (line) => lines.push(line), intervalMs: 0 },
     );
-    assert.match(
-        lines.at(-1)!,
-        /^Survey progress: attempt 2, .*; last restart: NativeRecordStorageRequired: .* at .*survey-restart\.ts:2$/,
-    );
-    // Each restart is reported as it happens, naming the record it stores.
-    assert.equal(
-        lines.filter((line) =>
-            /^Survey restart after attempt 1: NativeRecordStorageRequired: record \(Settings: document\) at /.test(
-                line,
-            ),
-        ).length,
-        1,
-    );
-});
-
-test("a survey leaves the census it has found at each restart", () => {
-    // The unsupported call refuses before the rebinding restarts the
-    // program: the census at that restart already holds it.
-    const partial: SurveyReport[] = [];
-    const { report } = surveySource(
-        `
-        declare function unknownHostCall(): number;
-        interface Settings { gain: number }
-        function parsed(text: string): Settings { return JSON.parse(text); }
-        const frame = unknownHostCall();
-        let active: Settings = { gain: 2 };
-        active = parsed('{"gain":3}');
-        console.log(active.gain);
-    `,
-        { fileName: resolve("survey-partial.ts") },
-        {
-            report: () => {},
-            intervalMs: 0,
-            partial: (found) => partial.push(found),
-        },
-    );
-    const restarts = partial.filter((found) =>
-        found.terminal?.startsWith("Survey still running: restart"),
-    );
-    assert.equal(restarts.length, 1);
-    assert.equal(restarts[0]!.complete, false);
-    assert.match(
-        restarts[0]!.terminal!,
-        /^Survey still running: restart after attempt 1: /,
-    );
-    assert.ok(report.complete && report.refusals.length > 0);
     assert.deepEqual(
-        restarts[0]!.refusals.map((refusal) => refusal.site.line),
-        report.refusals.map((refusal) => refusal.site.line),
+        lines.filter((line) => line.startsWith("Survey pass")),
+        ["Survey pass 1: 1 demand added for the next pass"],
     );
+    assert.match(lines.at(-1)!, /^Survey progress: attempt 2, /);
+    // The last pass lowered every statement with the demand held.
+    assert.equal(report.complete, true);
+    assert.deepEqual(report.demands, []);
+    assert.equal(report.statements.demanded, 0);
 });
 
-test("a survey reports each plan's demands and what ended it", () => {
-    // Three record types would each restart the program once; the plan
-    // after the first restart meets the other two and lowers to the end.
-    // The plan also meets the refusal past them, which no attempt had
-    // reached when it ran; the call whose body reads a record the plan
-    // lost is left to the next attempt, not refused.
+test("one survey pass meets every independent demand", () => {
+    // Three record types each demand document storage: the first pass
+    // meets all three at their statements, the second lowers with them.
     const lines: string[] = [];
-    const partial: SurveyReport[] = [];
-    const { report } = surveySource(
-        `
-        declare function unknownHostCall(): number;
+    const source = `
         interface A { a: number }
         interface B { b: number }
         interface C { c: number }
@@ -217,40 +163,29 @@ test("a survey reports each plan's demands and what ended it", () => {
         second = b('{"b":2}');
         let third: C = { c: 1 };
         third = c('{"c":2}');
-        function sum(): number { return first.a + second.b + third.c; }
-        const total = sum();
-        const frame = unknownHostCall();
-        console.log(total);
-    `,
+        console.log(first.a + second.b + third.c);
+    `;
+    const { report } = surveySource(
+        source,
         { fileName: resolve("survey-plan.ts") },
-        {
-            report: (line) => lines.push(line),
-            intervalMs: 0,
-            partial: (found) => partial.push(found),
-        },
+        { report: (line) => lines.push(line), intervalMs: 0 },
     );
     assert.equal(report.complete, true);
-    const plans = lines.filter((line) => line.startsWith("Survey plan"));
-    assert.equal(plans.length, 1, plans.join(" | "));
-    assert.match(
-        plans[0]!,
-        /^Survey plan after attempt 1: 2 demands added in \d+ s; ended by the end of the program; \d+ statement lowerings, \d+ left, 1 refused$/,
-    );
-    const planned = partial.find((found) =>
-        found.terminal?.startsWith("Survey still running: plan"),
-    );
-    assert.equal(planned?.refusals.length, 0);
     assert.deepEqual(
-        planned?.plan?.refusals.map((refusal) => refusal.site.line),
-        [17],
+        lines.filter((line) => line.startsWith("Survey pass")),
+        ["Survey pass 1: 3 demands added for the next pass"],
     );
-    // The attempt that lowers to the end meets it itself; its census is
-    // the strict attempts' alone.
-    assert.deepEqual(
-        report.refusals.map((refusal) => refusal.site.line),
-        [17],
-    );
-    assert.equal(report.plan, undefined);
+    assert.equal(report.statements.demanded, 0);
+    assert.equal(report.passes, 2);
+    // A pass limit of one ends there, the three demands left in the census.
+    const capped = surveySource(
+        source,
+        { fileName: resolve("survey-plan.ts") },
+        undefined,
+        1,
+    ).report;
+    assert.equal(capped.passes, 1);
+    assert.equal(capped.statements.demanded, 3);
 });
 
 test("a member call through a refused binding is a cascade of its declaration", () => {
@@ -304,8 +239,9 @@ test("a member call through a refused binding is a cascade of its declaration", 
 
 test("a refused value return is the calling statement's refusal", () => {
     // `pick` refuses inside its return; the survey must not hand `chosen` a
-    // hole, so each declaration that calls it refuses at the one site inside
-    // `pick`, and the reads reach that site again through the initializers.
+    // hole, so its declaration refuses at the one site inside `pick`. The
+    // survey lowers `pick`'s body once: the later call takes empty storage
+    // of its result.
     const { report } = surveySource(
         `
         function pick(name: string): number {
@@ -326,16 +262,22 @@ test("a refused value return is the calling statement's refusal", () => {
     assert.equal(declaration.statement.line, 6);
     assert.equal(declaration.statement.kind, "VariableStatement");
     assert.equal(declaration.site.line, 4);
-    assert.equal(declaration.occurrences, 4);
-    assert.equal(declaration.statements, 4);
+    assert.equal(declaration.occurrences, 1);
+    assert.equal(declaration.statements, 1);
     assert.equal(declaration.cascade, undefined);
-    // Each calling statement also visits the successful local declaration.
-    assert.deepEqual(report.statements, { attempted: 8, refused: 4 });
+    assert.deepEqual(report.statements, {
+        attempted: 5,
+        distinct: 5,
+        rooted: 0,
+        refused: 1,
+        distinctRefused: 1,
+        demanded: 0,
+    });
 });
 
-test("a record whose native initializer refused refuses where it is stored", () => {
-    // The binding's storage demand was met, but its initializer refused, so
-    // the store that demanded it refuses too instead of ending the survey.
+test("a refused declaration keeps its binding, so later statements lower against it", () => {
+    // The initializer refuses at its own statement; the store reads the
+    // binding kept with empty storage of its type instead of cascading.
     const { report } = surveySource(
         `
         // A number array stored as a wider element type is a copy the
@@ -355,14 +297,311 @@ test("a record whose native initializer refused refuses where it is stored", () 
     );
     assert.equal(report.complete, true);
     assert.equal(report.terminal, undefined);
+    assert.deepEqual(
+        report.refusals.map((refusal) => [
+            refusal.statement.line,
+            refusal.message,
+        ]),
+        [
+            [
+                7,
+                "An array stored as an array of another element type is a copy, and the program changes the elements of such arrays; JavaScript keeps one array.",
+            ],
+        ],
+        listed(report),
+    );
+});
+
+test("a survey lowers every function the program never reached as a root", () => {
+    // Nothing calls `unused`, `Counter.add` or `inner`: each is lowered once
+    // on its own, its parameters, `this` and captured locals holding empty
+    // storage of their types, so the refusal inside each is found.
+    const { report } = surveySource(
+        `
+        let total = 0;
+        export function unused(name: string, scale: number): number {
+            const sum = name.length * scale;
+            total += new FinalizationRegistry<string>(() => {}).unregister({ name }) ? sum : 0;
+            return sum;
+        }
+        export function outer(start: number): () => number {
+            let count = start;
+            function inner(step: number): number {
+                count += step;
+                total += new FinalizationRegistry<string>(() => {}).unregister({ count }) ? 1 : 0;
+                return count;
+            }
+            return () => 0;
+        }
+        class Counter {
+            private value = 0;
+            add(step: number): void {
+                this.value += step;
+                total += new FinalizationRegistry<string>(() => {}).unregister(this) ? this.value : 0;
+            }
+        }
+        export const counter = new Counter();
+        localStorage.setItem("total", String(total));
+    `,
+        { fileName: resolve("survey-roots.ts") },
+    );
+    assert.equal(report.complete, true);
+    assert.deepEqual(
+        report.refusals.map((refusal) => [
+            refusal.statement.function,
+            refusal.statement.line,
+            refusal.message,
+        ]),
+        [
+            ["unused", 5, "Unsupported constructor expression."],
+            ["inner", 12, "Unsupported constructor expression."],
+            ["Counter.add", 21, "Unsupported constructor expression."],
+        ],
+        listed(report),
+    );
+    assert.ok(
+        report.refusals.every(
+            (refusal) => refusal.rootOccurrences === refusal.occurrences,
+        ),
+    );
+    assert.equal(report.statements.demanded, 0);
+    // Every statement of the program was attempted.
+    assert.ok(report.program);
+    assert.equal(report.program.attempted, report.program.statements);
+});
+
+test("a survey lowers the statements a rolled-back compound statement holds", () => {
+    // The `if` condition and the loop's iterable refuse; each body is still
+    // lowered on its own, the loop variable holding empty storage, so the
+    // refusal inside the loop is found too.
+    const { report } = surveySource(
+        `
+        let total = 0;
+        const registry = new FinalizationRegistry<string>(() => {});
+        if (registry.unregister({})) {
+            total += 1;
+            total *= 2;
+        }
+        for (const value of registry.entries()) {
+            total += value.length;
+            total += new FinalizationRegistry<string>(() => {}).unregister({ value }) ? 1 : 0;
+            if (total > 9) break;
+        }
+        localStorage.setItem("total", String(total));
+    `,
+        { fileName: resolve("survey-held.ts") },
+    );
+    assert.equal(report.complete, true);
+    assert.ok(report.program);
+    assert.equal(report.program.attempted, report.program.statements);
     assert.ok(
         report.refusals.some(
             (refusal) =>
-                refusal.site.line === 8 &&
-                refusal.message ===
-                    "Record 'facts' has no native object: its initializer could not be stored natively.",
+                refusal.statement.line === 10 && refusal.rootOccurrences > 0,
         ),
         listed(report),
+    );
+    // The loop's own break binds the block that stands for the loop.
+    assert.ok(
+        report.refusals.every(
+            (refusal) => refusal.message !== "A jump has no active target.",
+        ),
+        listed(report),
+    );
+});
+
+test("a survey root's resources belong to the entry's engine, declared for roots when none is", () => {
+    // No statement creates an engine: the roots hold one of their own, so
+    // the mesh a root receives is associated with it.
+    const { report } = surveySource(
+        `
+        import type { Mesh } from "@babylonjs/lite";
+        let tinted = 0;
+        export function tint(mesh: Mesh): void {
+            const material = mesh.material;
+            tinted += material ? 1 : 0;
+        }
+        localStorage.setItem("tinted", String(tinted));
+    `,
+        { fileName: resolve("survey-root-engine.ts") },
+    );
+    assert.equal(report.complete, true);
+    assert.deepEqual(report.refusals, [], listed(report));
+});
+
+test("a survey root of an async function runs as its activation", () => {
+    // Its awaits lower inside the activation a call would start; what the
+    // survey meets is the fetch of a run-time URL, not the await.
+    const { report } = surveySource(
+        `
+        let total = 0;
+        export async function fetchLength(url: string): Promise<number> {
+            const response = await fetch(url);
+            const text = await response.text();
+            total += text.length;
+            return text.length;
+        }
+        localStorage.setItem("total", String(total));
+    `,
+        { fileName: resolve("survey-root-async.ts") },
+    );
+    assert.equal(report.complete, true);
+    assert.ok(
+        report.refusals.every(
+            (refusal) =>
+                refusal.message !==
+                "This await needs an asynchronous realm activation.",
+        ),
+        listed(report),
+    );
+});
+
+test("a survey root's record parameter no native layout holds is a record of its members", () => {
+    // `Deps` holds a method, so no native layout stores it: the root binds
+    // the record a literal of that type would be, each member empty storage.
+    const { report } = surveySource(
+        `
+        interface Deps { count: number; label: string; notify(text: string): void }
+        let total = 0;
+        export function step(deps: Deps, scale: number): number {
+            const next = deps.count * scale;
+            total += next + deps.label.length;
+            deps.notify("stepped");
+            return next;
+        }
+        localStorage.setItem("total", String(total));
+    `,
+        { fileName: resolve("survey-root-record.ts") },
+    );
+    assert.equal(report.complete, true);
+    assert.deepEqual(report.refusals, [], listed(report));
+    assert.ok(report.program);
+    assert.equal(report.program.attempted, report.program.statements);
+});
+
+test("a generation-time bake in a program outside the repository refuses at its site", () => {
+    // A zero-argument module producer runs at generation from the checkout
+    // the program lies in; outside every checkout its call refuses, and the
+    // survey goes on.
+    const directory = mkdtempSync(join(tmpdir(), "bblite-outside-"));
+    try {
+        writeFileSync(
+            join(directory, "pixels.ts"),
+            "export function checker(): Uint8Array { return new Uint8Array(16).fill(255); }\n",
+        );
+        const { report } = surveySource(
+            `
+            import { createEngine, createTexture2DFromPixels } from "@babylonjs/lite";
+            import { checker } from "./pixels.js";
+            const canvas = document.getElementById("renderCanvas") as HTMLCanvasElement;
+            const engine = await createEngine(canvas);
+            const texture = createTexture2DFromPixels(engine, checker(), 2, 2);
+            localStorage.setItem("width", String(texture ? 2 : 0));
+        `,
+            { fileName: join(directory, "main.ts") },
+        );
+        assert.equal(report.complete, true, report.terminal);
+        assert.ok(
+            report.refusals.some(
+                (refusal) =>
+                    refusal.statement.line === 6 &&
+                    refusal.message ===
+                        "'checker' runs at generation, which needs the program inside the bblitec repository.",
+            ),
+            listed(report),
+        );
+    } finally {
+        rmSync(directory, { recursive: true, force: true });
+    }
+});
+
+test("a survey leaves its census as it goes", () => {
+    // Each progress line hands out the census as it stands, marked
+    // incomplete; the refusal is in it before the survey ends.
+    const left: SurveyReport[] = [];
+    const { report } = surveySource(
+        `
+        let total = 0;
+        total += new FinalizationRegistry<string>(() => {}).unregister({}) ? 1 : 0;
+        localStorage.setItem("total", String(total));
+    `,
+        { fileName: resolve("survey-left.ts") },
+        {
+            report: () => {},
+            intervalMs: 0,
+            census: (found) => left.push(found),
+        },
+    );
+    assert.equal(report.complete, true);
+    const last = left.at(-1);
+    assert.ok(last);
+    assert.equal(last.complete, false);
+    assert.match(
+        last.terminal ?? "",
+        /^Survey still running: Survey progress: /,
+    );
+    assert.equal(last.refusals.length, report.refusals.length);
+});
+
+test("a survey ended outside statement lowering publishes its last full pass with what ended it", () => {
+    const census = (
+        attempted: number,
+        more: Partial<SurveyReport> = {},
+    ): SurveyReport => ({
+        schemaVersion: 1,
+        complete: false,
+        statements: {
+            attempted,
+            distinct: attempted,
+            rooted: 0,
+            refused: 0,
+            distinctRefused: 0,
+            demanded: 0,
+        },
+        refusals: [],
+        classes: [],
+        demands: [],
+        passes: 1,
+        slowest: [],
+        ...more,
+    });
+    const furthest = census(25, { terminal: "Survey still running" });
+    const ended = census(0, {
+        terminal: "a record layout refused",
+        terminalStack: ["at setup"],
+    });
+    assert.deepEqual(
+        publishedSurvey(ended, furthest),
+        census(25, {
+            terminal: "a record layout refused",
+            terminalStack: ["at setup"],
+        }),
+    );
+    // An attempt that ran to the end, or further, is its own census.
+    const complete = census(30, { complete: true });
+    assert.equal(publishedSurvey(complete, furthest), complete);
+    assert.equal(publishedSurvey(ended, undefined), ended);
+});
+
+test("a joined record layout names the two types that disagree on an accessor", () => {
+    // `Live.cx` is the getter its literal defines; a `Plain` stored as a
+    // `Live` joins the two types' layouts.
+    assert.throws(
+        () =>
+            compileSource(`
+                interface Plain { cx: number; cz: number }
+                interface Live { readonly cx: number; readonly cz: number }
+                const flag = Math.random() >= 0;
+                const live: Live = { get cx() { return flag ? 1 : 0; }, cz: 2 };
+                const plains: Plain[] = [{ cx: 3, cz: 4 }];
+                const all: Live[] = [live];
+                all.push(plains[0]!);
+                plains[0]!.cx = 9;
+                let total = 0;
+                for (const entry of all) total += entry.cx + entry.cz;
+                if (total !== 14) throw new Error("total " + total);
+            `),
+        /Property 'cx' is an accessor in 'Live' but not in 'Plain', and one layout \('Plain'\) stores both\./,
     );
 });
 
@@ -427,114 +666,6 @@ test("an error outside statement lowering ends the survey as incomplete", () => 
     const frames = report.terminalStack ?? [];
     assert.ok(frames.length > 0 && frames.length <= 12);
     assert.ok(frames.every((frame) => frame.startsWith("at ")));
-});
-
-test("a plan's demands are withdrawn from the replay storage as it stood", () => {
-    // A survey plan's demands are provisional: where the attempt replaying
-    // with them refuses before it lowers a statement, the storage is put
-    // back and the strict attempts go on.
-    const frontend = createCompilerProgram(
-        `interface Samples { values: ArrayLike<number> }
-         function read(samples: Samples): number { return samples.values.length; }
-         const held = read({ values: [1] });`,
-        resolve("survey-withdraw.ts"),
-    );
-    const [record, reader, statement] = frontend.sourceFile.statements;
-    assert.ok(record && ts.isInterfaceDeclaration(record));
-    assert.ok(reader && ts.isFunctionDeclaration(reader));
-    assert.ok(statement && ts.isVariableStatement(statement));
-    const slot = record.members[0];
-    const parameter = reader.parameters[0];
-    const binding = statement.declarationList.declarations[0];
-    assert.ok(slot && ts.isPropertySignature(slot) && parameter && binding);
-    const storage = new ReplayStorage(frontend.checker);
-    const before: StorageRequest[] = [
-        { kind: "numeric-slot", declaration: slot, numeric: "array" },
-        { kind: "enum-array", unions: ["a|b"] },
-    ];
-    const planned: StorageRequest[] = [
-        { kind: "numeric-slot", declaration: slot, numeric: "view" },
-        { kind: "parameter-object", declaration: parameter },
-        { kind: "dynamic", declaration: binding, storage: undefined },
-        { kind: "enum-array", unions: ["c|d"] },
-        { kind: "thrown-value", valueKind: "string" },
-    ];
-    for (const request of before) assert.equal(storage.add(request), true);
-    const withdraw = storage.snapshot();
-    for (const request of planned) assert.equal(storage.add(request), true);
-    for (const request of planned) assert.equal(storage.add(request), false);
-    withdraw();
-    // What it held before the plan stays; the plan's demands are new again.
-    for (const request of before) assert.equal(storage.add(request), false);
-    for (const request of planned) assert.equal(storage.add(request), true);
-    // A later plan asking the same thing at the same place is recognized.
-    assert.equal(
-        storageRequestKey({ kind: "parameter-object", declaration: parameter }),
-        storageRequestKey(planned[1]!),
-    );
-    assert.notEqual(
-        storageRequestKey(planned[0]!),
-        storageRequestKey(planned[1]!),
-    );
-    assert.equal(new Set(planned.map(storageRequestKey)).size, planned.length);
-});
-
-test("a survey ended outside statement lowering publishes its furthest attempt with what ended it", () => {
-    const census = (
-        attempted: number,
-        more: Partial<SurveyReport> = {},
-    ): SurveyReport => ({
-        schemaVersion: 1,
-        complete: false,
-        statements: { attempted, refused: 0 },
-        refusals: [],
-        classes: [],
-        ...more,
-    });
-    const plan = {
-        statements: { attempted: 40, left: 3, refused: 0 },
-        refusals: [],
-    };
-    const furthest = census(25, { terminal: "Survey still running", plan });
-    const ended = census(0, {
-        terminal: "a record layout refused",
-        terminalStack: ["at setup"],
-    });
-    assert.deepEqual(
-        publishedSurvey(ended, furthest),
-        census(25, {
-            plan,
-            terminal: "a record layout refused",
-            terminalStack: ["at setup"],
-        }),
-    );
-    // An attempt that ran to the end, or further, is its own census.
-    const complete = census(30, { complete: true });
-    assert.equal(publishedSurvey(complete, furthest), complete);
-    assert.equal(publishedSurvey(ended, undefined), ended);
-    assert.equal(publishedSurvey(census(25), furthest).plan, undefined);
-});
-
-test("a joined record layout names the two types that disagree on an accessor", () => {
-    // `Live.cx` is the getter its literal defines; a `Plain` stored as a
-    // `Live` joins the two types' layouts.
-    assert.throws(
-        () =>
-            compileSource(`
-                interface Plain { cx: number; cz: number }
-                interface Live { readonly cx: number; readonly cz: number }
-                const flag = Math.random() >= 0;
-                const live: Live = { get cx() { return flag ? 1 : 0; }, cz: 2 };
-                const plains: Plain[] = [{ cx: 3, cz: 4 }];
-                const all: Live[] = [live];
-                all.push(plains[0]!);
-                plains[0]!.cx = 9;
-                let total = 0;
-                for (const entry of all) total += entry.cx + entry.cz;
-                if (total !== 14) throw new Error("total " + total);
-            `),
-        /Property 'cx' is an accessor in 'Live' but not in 'Plain', and one layout \('Plain'\) stores both\./,
-    );
 });
 
 test("a site refusal decided after lowering is recorded against its statement", () => {
@@ -619,7 +750,7 @@ test("the CLI writes the census in place of a tree and reports completion in its
     assert.equal(complete.status, 0, complete.stderr);
     assert.match(
         complete.stdout,
-        /Survey: \d+ statement lowerings, 3 refused \(3 sites, 3 classes\)/,
+        /Survey: \d+ statement lowerings \(\d+ in roots\), 3 refused \(3 sites, 3 classes\)/,
     );
     const report = jsonObject(JSON.parse(readFileSync(census, "utf8")));
     assert.equal(report.schemaVersion, 1);

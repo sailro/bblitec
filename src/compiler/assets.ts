@@ -20,6 +20,7 @@ import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
 import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import { findRepositoryRoot, readUpstreamPin } from "../upstream-source.js";
+import { enclosingRepositoryRoot } from "../repository-root.js";
 import { pinnedLabPublicUrl } from "../pinned-lab-public.js";
 import { pinnedLabPublicAsset } from "../pinned-lab-materializers.js";
 import {
@@ -437,7 +438,15 @@ function executedModuleReference(
     if (!ts.isIdentifier(unwrapped)) return undefined;
     const reference = context.symbols.moduleExportReference(unwrapped);
     if (!reference) return undefined;
-    const root = findRepositoryRoot(dirname(resolve(context.options.fileName)));
+    // A bake runs the module from the checkout the program lies in.
+    const root = enclosingRepositoryRoot(
+        dirname(resolve(context.options.fileName)),
+    );
+    if (root === undefined)
+        context.fail(
+            unwrapped,
+            `'${unwrapped.text}' runs at generation, which needs the program inside the bblitec repository.`,
+        );
     return {
         module: relative(root, reference.modulePath).split(sep).join("/"),
         exportName: reference.exportName,
@@ -447,7 +456,7 @@ function executedModuleReference(
 /** What `executedModuleReference` reads; the asset registry is a superset. */
 export interface ExecutedModuleReferenceContext extends Pick<
     LoweringServices,
-    "symbols" | "options" | "unwrap"
+    "symbols" | "options" | "unwrap" | "fail"
 > {}
 
 /**

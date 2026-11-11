@@ -138,6 +138,7 @@ interface StatementLoweringContext extends Pick<
     | "speculating"
     | "transaction"
     | "refusedDemand"
+    | "bindEmptyStorage"
     | "checker"
     | "symbols"
     | "dataTypes"
@@ -914,19 +915,20 @@ export class StatementLowerer {
     }
 
     /**
-     * An inlined function body whose bare early returns leave it: a
-     * `do {} while (false)` they break out of, or, when one stands inside a
-     * loop or switch, a scope with a label after it.
+     * Code whose jumps to `owner` leave it -- an inlined function body's
+     * bare early returns, or a held statement's jumps to the compound
+     * statement it stood in (`emitHeld`): a `do {} while (false)` they break
+     * out of, or a scope with a label after it.
      */
     public emitInlinedBody<T>(
         context: StatementLoweringContext,
-        declaration: ts.SignatureDeclaration,
+        owner: ts.Node,
         returns: "break" | "label",
         emitBody: () => T,
     ): T {
         const wrapper = returns === "break";
         const target = jumpTarget(
-            declaration,
+            owner,
             wrapper
                 ? { breakable: true }
                 : { exit: this.jumpLabel(context, "inline_return") },
@@ -991,7 +993,9 @@ export class StatementLowerer {
         // read of that binding would count as a gap of its own.
         const planner = activeStorageDemandPlanner();
         planner?.beginActivation(statement);
-        const recovery = planner ?? activeSurvey();
+        const survey = activeSurvey();
+        survey?.touch(statement, context.speculating);
+        const recovery = planner ?? survey;
         if (
             recovery === undefined ||
             context.speculating ||
@@ -1000,9 +1004,34 @@ export class StatementLowerer {
             this.lowerStatement(context, statement);
             return;
         }
-        recovery.attemptStatement(context, statement, () =>
-            this.lowerStatement(context, statement),
+        recovery.attemptStatement(
+            context,
+            statement,
+            () => this.lowerStatement(context, statement),
+            (nested) => this.emitHeld(context, statement, nested),
         );
+    }
+
+    /**
+     * A statement that a rolled-back compound statement held, lowered on its
+     * own by a survey. Under a loop or a switch it lowers in a block a native
+     * break leaves, standing for the construct its jumps bind; under a label,
+     * before the label's exit.
+     */
+    private emitHeld(
+        context: StatementLoweringContext,
+        holder: ts.Statement,
+        nested: ts.Statement,
+    ): void {
+        const lower = (): void => this.emit(context, nested);
+        if (ts.isLabeledStatement(holder))
+            this.emitInlinedBody(context, holder, "label", lower);
+        else if (
+            ts.isIterationStatement(holder, false) ||
+            ts.isSwitchStatement(holder)
+        )
+            this.emitInlinedBody(context, holder, "break", lower);
+        else lower();
     }
 
     private lowerStatement(

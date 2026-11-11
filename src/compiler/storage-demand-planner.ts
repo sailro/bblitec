@@ -7,9 +7,9 @@ import {
     classBaseExpression,
     evaluationContainer,
     expressionMayRunCode,
-    reachedThroughName,
     referenceBases,
     statementDeclaredNames,
+    thisClass,
     unwrapExpression,
     writeSites,
 } from "./syntax.js";
@@ -76,13 +76,6 @@ export function activeStorageDemandPlanner(): StorageDemandPlanner | undefined {
     return active;
 }
 
-/** What a survey's plan met (`StorageDemandPlanner.met`). */
-export interface PlanCensus {
-    lowered: number;
-    left: number;
-    readonly refused: { statement: ts.Statement; error: CompileError }[];
-}
-
 /** Ends a plan; the message says what ended it. */
 class PlanningStop extends Error {}
 class PlanningDependency extends Error {}
@@ -91,13 +84,10 @@ class PlanningWrite extends Error {}
 /**
  * Raises `demand` at a site lowering can go on past (a record join stored
  * as a copy, a resource stored without its engine owner, a parameter's
- * record copied): a planning attempt records it there and goes on. A
- * survey's plan meets it as its statement's demand instead: it loses what
- * the demand changes and goes on with the statements that do not read it,
- * where lowering on with the copy would end the plan at the next demand.
+ * record copied): a planning attempt records it there and goes on.
  */
 export function demandOrPlan(demand: StorageDemand): void {
-    if (!active?.goesOnPastDemands) throw demand;
+    if (!active) throw demand;
     active.planDemand(demand.request);
 }
 
@@ -197,21 +187,6 @@ function functionBodyOf(
 }
 
 /**
- * The class whose instance a `this` keyword reads (its constructor, in a
- * static member): the class of the nearest member that binds `this`.
- */
-function thisClass(node: ts.Node): ts.ClassLikeDeclaration | undefined {
-    const member = ts.findAncestor(
-        node.parent,
-        (ancestor) =>
-            (ts.isFunctionLike(ancestor) && !ts.isArrowFunction(ancestor)) ||
-            ts.isPropertyDeclaration(ancestor) ||
-            ts.isClassStaticBlockDeclaration(ancestor),
-    );
-    return member && ts.isClassLike(member.parent) ? member.parent : undefined;
-}
-
-/**
  * What a rolled-back `statement` would have written: the bindings it
  * declares and the bases (`referenceBases`) of the targets it assigns,
  * updates or deletes, and the classes whose `this` roots one
@@ -261,11 +236,9 @@ function rolledBackWrites(
  * Its compiler reads frozen seed demands; new demands are applied only to a fresh
  * compiler. A demand rolls back its statement, whose written names are
  * lost to later statements, except one lowering goes on past
- * (`demandOrPlan`) outside a survey. Ordinary refusals
- * end discovery, including lost-binding cascades, except in a survey, whose
- * strict attempts roll the refused statement back too. Past a rolled-back statement, which may have
- * met a demand first at its own site, a plan collects only demands of a key
- * (`demandsKeyOnly`); a survey's collects every demand.
+ * (`demandOrPlan`). Refusals and lost-binding reads end discovery. Past a
+ * rolled-back statement, which may have met a demand first at its own
+ * site, a plan collects only demands of a key (`demandsKeyOnly`).
  */
 export class StorageDemandPlanner {
     /** @unjournaled Demands must survive the statements they roll back. */
@@ -281,7 +254,7 @@ export class StorageDemandPlanner {
     private readonly lostLocals = new Map<ts.Node, Set<ts.Symbol>>();
     /** @unjournaled Classes whose instances a planning rollback wrote through `this`. */
     private readonly lostClasses = new Set<ts.ClassLikeDeclaration>();
-    /** @unjournaled Record types whose storage a survey's plan changed, one array per change. */
+    /** @unjournaled Record types whose instances a planning rollback wrote through `this`, one array per change. */
     private lostTypes: readonly ts.Type[] = [];
     /** @unjournaled Whether a holder type can be one of them, reset with each new one. */
     private readonly lostTypeReads = new Map<ts.Type, boolean>();
@@ -299,41 +272,9 @@ export class StorageDemandPlanner {
      * so only that kind is collected.
      */
     private wentOn?: StorageRequest["kind"];
-    /** @unjournaled The statement the plan began lowering last: where it ended. */
-    private lowering?: ts.Statement;
-    /** @unjournaled What ended the plan's work: undefined while it runs or once it returned. */
-    private stop: unknown;
 
-    /**
-     * @unjournaled The replays besides storage (`replayable`) a survey's
-     * plan met: the compile applies them after the plan, as a strict
-     * attempt's restart would.
-     */
-    readonly replays: Error[] = [];
-
-    /**
-     * @unjournaled What a survey's plan met where it lowered past the
-     * strict attempts' reach: the statements it lowered, those it left to
-     * the next attempt, and each one that refused.
-     */
-    readonly met: PlanCensus = { lowered: 0, left: 0, refused: [] };
-
-    /**
-     * `survey`: whether the plan runs between a survey's strict attempts;
-     * `replayable`: the replays besides storage that a survey's plan
-     * records and goes on past, losing the statement that met one.
-     */
-    public constructor(
-        checker: ts.TypeChecker,
-        private readonly survey = false,
-        private readonly replayable?: (error: unknown) => error is Error,
-    ) {
+    public constructor(checker: ts.TypeChecker) {
         this.collected = new ReplayStorage(checker);
-    }
-
-    /** Whether lowering goes on past a demand that allows it (`demandOrPlan`). */
-    public get goesOnPastDemands(): boolean {
-        return !this.survey;
     }
 
     /** A demand lowering goes on without (`demandOrPlan`). */
@@ -365,7 +306,6 @@ export class StorageDemandPlanner {
         try {
             return work();
         } catch (error) {
-            this.stop = error;
             if (error instanceof StorageDemand) {
                 if (this.wentOn) return undefined;
                 if (this.metAtStrictSite(error.requests))
@@ -387,7 +327,6 @@ export class StorageDemandPlanner {
         statement: ts.Statement,
         lower: () => void,
     ): void {
-        this.lowering = statement;
         if (this.demands.length >= 256)
             throw new PlanningStop("the 256 demands one plan collects");
         // Under a generic instantiation a statement reads the types the
@@ -433,45 +372,16 @@ export class StorageDemandPlanner {
                 },
                 { types: "skip", names: "references" },
             );
-            if (dependent) {
-                if (!this.survey)
-                    throw new PlanningDependency(
-                        "a statement reads what a rolled-back one lost",
-                    );
-                // A survey's plan leaves the statement to the next attempt
-                // and goes on with what does not read it.
-                statistics.dependent++;
-                this.met.left++;
-                this.lose(context.checker, statement);
-                return;
-            }
+            if (dependent)
+                throw new PlanningDependency(
+                    "a statement reads what a rolled-back one lost",
+                );
             for (const node of checked)
                 this.dependencyChecks.set(node, this.lostGeneration);
         }
-        this.met.lowered++;
         try {
             context.transaction(lower);
         } catch (error) {
-            if (error instanceof CompileError && this.survey) {
-                // A survey's strict attempt rolls the refused statement
-                // back and goes on: so does its plan.
-                statistics.refused++;
-                // A refusal at a name a rolled-back statement would have
-                // declared is that statement's loss, not this one's
-                // refusal: an attempt replaying its storage declares it.
-                const name = error.subject && reachedThroughName(error.subject);
-                const symbol = name && declaredSymbol(context.checker, name);
-                if (symbol && this.lostDeclarations.has(symbol))
-                    this.met.left++;
-                else this.met.refused.push({ statement, error });
-                this.lose(context.checker, statement);
-                return;
-            }
-            if (this.survey && this.replayable?.(error)) {
-                this.replays.push(error);
-                this.lose(context.checker, statement);
-                return;
-            }
             if (!(error instanceof StorageDemand)) throw error;
             if (this.wentOn)
                 throw new PlanningWrite(
@@ -479,18 +389,9 @@ export class StorageDemandPlanner {
                 );
             this.requireStrictSite(error.requests);
             for (const request of error.requests) this.collect(request);
-            // An ownership change can reach what later statements read. A
-            // survey's plan loses what it changes and goes on; another
+            // An ownership change can reach what later statements read: the
             // plan ends.
-            if (
-                !independentDemand(context, statement, error) &&
-                !(
-                    this.survey &&
-                    error.requests.every((request) =>
-                        this.loseDemanded(context, request),
-                    )
-                )
-            )
+            if (!independentDemand(context, statement, error))
                 throw new PlanningWrite(
                     `a demand of kind ${error.request.kind} whose change later statements may read`,
                 );
@@ -498,48 +399,7 @@ export class StorageDemandPlanner {
         }
     }
 
-    /**
-     * Loses what a dependent demand changes the storage of: a binding,
-     * parameter or class (and the function that declares it, which its
-     * callers lower), or a record type. A generic signature's storage is
-     * its family's, whose every later call meets the demand again and is
-     * lost in turn: only the statement is. False for another request.
-     */
-    private loseDemanded(
-        context: StatementContext,
-        request: StorageRequest,
-    ): boolean {
-        if (request.kind === "generic") return true;
-        if (request.kind === "record") {
-            this.loseType(request.demand.type);
-            return true;
-        }
-        if (
-            request.kind !== "dynamic" &&
-            request.kind !== "parameter-object" &&
-            request.kind !== "shared-class"
-        )
-            return false;
-        const names = request.declaration.name
-            ? bindingNameIdentifiers(request.declaration.name)
-            : [];
-        const owner = ts.findAncestor(
-            request.declaration.parent,
-            ts.isFunctionLike,
-        );
-        const ownerName =
-            owner &&
-            (ts.isFunctionDeclaration(owner) || ts.isMethodDeclaration(owner))
-                ? owner.name
-                : owner && ts.isVariableDeclaration(owner.parent)
-                  ? owner.parent.name
-                  : undefined;
-        if (ownerName && ts.isIdentifier(ownerName)) names.push(ownerName);
-        for (const name of names) this.loseName(context.checker, name);
-        return true;
-    }
-
-    /** Whether a reference's value can be a record of a type a survey's plan lost. */
+    /** Whether a reference's value can be a record of a type the plan lost. */
     private readsLostType(
         context: StatementContext,
         reference: ts.Identifier,
@@ -565,9 +425,7 @@ export class StorageDemandPlanner {
 
     /** Whether strict lowering would meet `requests` as this plan did. */
     private metAtStrictSite(requests: readonly StorageRequest[]): boolean {
-        return (
-            this.survey || !this.rolledBack || requests.every(demandsKeyOnly)
-        );
+        return !this.rolledBack || requests.every(demandsKeyOnly);
     }
 
     /** Ends a plan whose demands strict lowering could meet elsewhere first. */
@@ -577,14 +435,6 @@ export class StorageDemandPlanner {
         throw new PlanningStop(
             "a demand strict lowering could meet elsewhere first",
         );
-    }
-
-    /** What ended the plan and the statement it lowered then; no cause when its work returned. */
-    public ended(): { cause: unknown; statement?: ts.Statement } {
-        return {
-            cause: this.stop,
-            ...(this.lowering ? { statement: this.lowering } : {}),
-        };
     }
 
     /** Loses what a rolled-back statement would have written. */

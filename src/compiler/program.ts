@@ -227,6 +227,11 @@ export interface CompilerProgram {
     startupFiles?: ts.SourceFile[];
 }
 
+/** Whether `file` is one of the program's own sources: neither declarations nor an installed package. */
+export function isProgramSourceFile(file: ts.SourceFile): boolean {
+    return !file.isDeclarationFile && !isInstalledPackageFile(file.fileName);
+}
+
 /**
  * Whether a program's own files import a pinned export that compiles as
  * program code (`pinned-program-sources.ts`).
@@ -236,8 +241,7 @@ function importsPinnedProgramSource(program: ts.Program): boolean {
         .getSourceFiles()
         .some(
             (file) =>
-                !file.isDeclarationFile &&
-                !isInstalledPackageFile(file.fileName) &&
+                isProgramSourceFile(file) &&
                 file.statements.some(
                     (statement) =>
                         (ts.isImportDeclaration(statement) ||

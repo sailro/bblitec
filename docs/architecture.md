@@ -74,8 +74,15 @@ Paths are relative to `generated/<id>/`.
 
 ## Lowering invariants
 
-- Storage demands trigger a discarded discovery pass, repeated to a fixed point, before strict emission. Coverage and
-  surveys keep only strict attempts.
+- Storage demands trigger a discarded discovery pass, repeated to a fixed point, before strict emission. Coverage keeps
+  only strict attempts.
+- A survey never restarts at a statement: a refusal, storage demand or other replay rolls back only that statement, whose
+  declared variables stay bound to empty storage of their types, and the statements a rolled-back compound statement
+  holds are lowered on their own. Each pass lowers every statement; the next replays with what it met, until one meets
+  nothing new (or `--survey-passes` stops it). After the entry, every function of the program's own sources that no
+  lowering reached is lowered once as a root: its parameters, `this` and captures hold empty storage, a record no native
+  layout holds is a record of empty members. A body is lowered in full once per pass; later calls take empty storage of
+  their result.
 - A feature marked `applicationRealm` (`feature-activation.ts`) replays the whole program in the application realm
   from `reachFeature`; explicit `ApplicationRealmRequired` throws remain only for conditional shapes.
 - Erasure never drops an API `dom-lowerings.ts` lists, and an erased method call needs a receiver `isBrowserOwner`

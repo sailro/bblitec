@@ -6,6 +6,7 @@ import { compileSource } from "../src/compiler.js";
 import {
     constructorEntryBody,
     markUnreferencedLocals,
+    nativeDeclarationPatterns,
 } from "../src/compiler/output-projection.js";
 import type { NativeDeclaration } from "../src/compiler/native-declarations.js";
 import { LoweringContext } from "../src/lowering/context.js";
@@ -92,7 +93,7 @@ test("constructor projection omits only direct unread clock initializers", () =>
                 "double unused = bbl::pal::performance_milliseconds();",
                 "auto mesh = create_mesh();",
             ],
-            declarations,
+            nativeDeclarationPatterns(declarations),
         ),
         ["", "auto mesh = create_mesh();"],
     );
@@ -106,12 +107,14 @@ test("constructor projection omits only direct unread clock initializers", () =>
                 "double clock = bbl::pal::performance_milliseconds();",
                 "mesh.radius = clock;",
             ],
-            new Map([
-                [
-                    `double ${usedClock.name} = ${usedClock.initializer};`,
-                    usedClock,
-                ],
-            ]),
+            nativeDeclarationPatterns(
+                new Map([
+                    [
+                        `double ${usedClock.name} = ${usedClock.initializer};`,
+                        usedClock,
+                    ],
+                ]),
+            ),
         ),
         [
             "double clock = bbl::pal::performance_milliseconds();",
@@ -130,7 +133,10 @@ test("constructor projection omits only direct unread clock initializers", () =>
         };
         const body = [`double ${name} = ${initializer};`];
         assert.deepEqual(
-            constructorEntryBody(body, new Map([[body[0]!, declaration]])),
+            constructorEntryBody(
+                body,
+                nativeDeclarationPatterns(new Map([[body[0]!, declaration]])),
+            ),
             body,
         );
     }
@@ -174,7 +180,7 @@ test("structured declaration projection handles multiline templates, optionals a
         "double erased_clock = bbl::pal::performance_milliseconds(\n    );",
         clock,
     );
-    markUnreferencedLocals(body, declarations);
+    markUnreferencedLocals(body, nativeDeclarationPatterns(declarations));
     assert.match(body[0]!, /^\[\[maybe_unused\]\] auto template_value/);
     assert.match(body[1]!, /^\s*\[\[maybe_unused\]\] std::optional/);
     assert.doesNotMatch(body[2]!, /erased_clock/);

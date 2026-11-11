@@ -19,8 +19,30 @@ const reflectiveObjectMethods = new Set([
     "values",
 ]);
 
-const cache = new WeakMap<ts.Program, Map<string, boolean>>();
-const readCache = new WeakMap<ts.Program, Map<string, boolean>>();
+/**
+ * Where a program can observe a property by its name, gathered in one walk
+ * over its sources: the names it reads, those only a plain write
+ * (`owner.name = value`) names, whether some read takes every name (a rest
+ * or run-time key in a pattern), and the values whose types decide for the
+ * rest (a run-time key, a spread, `for...in`, a reflective call).
+ */
+interface PropertyObservations {
+    readonly names: ReadonlySet<string>;
+    readonly written: ReadonlySet<string>;
+    readonly everyName: boolean;
+    readonly carriers: readonly {
+        readonly parts: readonly ts.Type[];
+        /** A run-time key of number type, which only reaches numeric names. */
+        readonly numericKey: boolean;
+    }[];
+    /** Answers per name, as asked: whether it is never observed, and never read. */
+    readonly answers: {
+        observed: Map<string, boolean>;
+        read: Map<string, boolean>;
+    };
+}
+
+const observationsCache = new WeakMap<ts.Program, PropertyObservations>();
 
 /**
  * Whether no reached source can observe a property named `name`: nothing
@@ -35,7 +57,7 @@ export function propertyNeverObserved(
     checker: ts.TypeChecker,
     name: string,
 ): boolean {
-    return unobserved(program, checker, name, cache, false);
+    return unobserved(program, checker, name, false);
 }
 
 /**
@@ -47,103 +69,119 @@ export function propertyNeverRead(
     checker: ts.TypeChecker,
     name: string,
 ): boolean {
-    return unobserved(program, checker, name, readCache, true);
+    return unobserved(program, checker, name, true);
 }
 
 function unobserved(
     program: ts.Program,
     checker: ts.TypeChecker,
     name: string,
-    caches: WeakMap<ts.Program, Map<string, boolean>>,
     writesUnread: boolean,
 ): boolean {
-    let names = caches.get(program);
-    if (!names) {
-        names = new Map();
-        caches.set(program, names);
+    let observations = observationsCache.get(program);
+    if (!observations) {
+        observations = observePropertyNames(program, checker);
+        observationsCache.set(program, observations);
     }
-    const known = names.get(name);
+    const answers = writesUnread
+        ? observations.answers.read
+        : observations.answers.observed;
+    const known = answers.get(name);
     if (known !== undefined) return known;
     const numericName = String(Number(name)) === name;
-    const carries = (expression: ts.Expression): boolean => {
-        const type = checker.getTypeAtLocation(expression);
-        const parts = unionMembers(type);
-        return parts.some(
-            (part) =>
-                (part.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) !==
-                    0 || part.getProperty(name) !== undefined,
+    const unread =
+        !observations.everyName &&
+        !observations.names.has(name) &&
+        (writesUnread || !observations.written.has(name)) &&
+        !observations.carriers.some(
+            ({ parts, numericKey }) =>
+                !(numericKey && !numericName) && carriesName(parts, name),
         );
+    answers.set(name, unread);
+    return unread;
+}
+
+/** Whether a value of one of `parts` may hold a property named `name`. */
+function carriesName(parts: readonly ts.Type[], name: string): boolean {
+    return parts.some(
+        (part) =>
+            (part.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) !== 0 ||
+            part.getProperty(name) !== undefined,
+    );
+}
+
+function observePropertyNames(
+    program: ts.Program,
+    checker: ts.TypeChecker,
+): PropertyObservations {
+    const names = new Set<string>();
+    const written = new Set<string>();
+    let everyName = false;
+    const carriers: { parts: readonly ts.Type[]; numericKey: boolean }[] = [];
+    const carrier = (expression: ts.Expression, numericKey = false): void => {
+        carriers.push({
+            parts: unionMembers(checker.getTypeAtLocation(expression)),
+            numericKey,
+        });
     };
     // A destructuring reads the keys it names; a rest or a run-time key, any.
-    const readsName = (slots: readonly { read: PatternRead }[]): boolean =>
-        slots.some(
-            ({ read }) =>
-                read.kind !== "member" ||
-                read.key === undefined ||
-                read.key === name,
-        );
-    const assignmentPatternReads = (pattern: ts.Expression): boolean => {
+    const readSlots = (slots: readonly { read: PatternRead }[]): void => {
+        for (const { read } of slots)
+            if (read.kind !== "member" || read.key === undefined)
+                everyName = true;
+            else names.add(read.key);
+    };
+    const assignmentPattern = (pattern: ts.Expression): void => {
         const target = unwrapExpression(pattern);
         if (ts.isObjectLiteralExpression(target)) {
             const slots = patternSlots(target);
-            return (
-                readsName(slots) ||
-                slots.some((slot) => assignmentPatternReads(slot.target))
-            );
-        }
-        return (
-            ts.isArrayLiteralExpression(target) &&
-            patternSlots(target).some((slot) =>
-                assignmentPatternReads(slot.target),
-            )
-        );
+            readSlots(slots);
+            for (const slot of slots) assignmentPattern(slot.target);
+        } else if (ts.isArrayLiteralExpression(target))
+            for (const slot of patternSlots(target))
+                assignmentPattern(slot.target);
     };
-    const observes = (node: ts.Node): boolean => {
-        if (
-            ts.isPropertyAccessExpression(node) &&
-            node.name.text === name &&
-            !(
-                writesUnread &&
-                ts.isBinaryExpression(node.parent) &&
-                node.parent.left === node &&
-                node.parent.operatorToken.kind === ts.SyntaxKind.EqualsToken
-            )
-        )
-            return true;
+    const visit = (node: ts.Node): void => {
+        if (ts.isPropertyAccessExpression(node))
+            (ts.isBinaryExpression(node.parent) &&
+            node.parent.left === node &&
+            node.parent.operatorToken.kind === ts.SyntaxKind.EqualsToken
+                ? written
+                : names
+            ).add(node.name.text);
         if (ts.isElementAccessExpression(node)) {
-            // A key only the run time knows may be this one, unless it is a
-            // number and no number converts to this name.
+            // A key only the run time knows may be any name, unless it is a
+            // number and the name converts to no number.
             const key = staticAccessKey(checker, node);
-            if (
-                (key === undefined || key === name) &&
-                !(
-                    key === undefined &&
-                    !numericName &&
+            if (key === undefined)
+                carrier(
+                    node.expression,
                     valueKindOf(
                         checker.getTypeAtLocation(node.argumentExpression),
-                    ) === "number"
-                ) &&
-                carries(node.expression)
+                    ) === "number",
+                );
+            else if (
+                carriesName(
+                    unionMembers(checker.getTypeAtLocation(node.expression)),
+                    key,
+                )
             )
-                return true;
+                names.add(key);
         }
-        if (ts.isObjectBindingPattern(node) && readsName(patternSlots(node)))
-            return true;
+        if (ts.isObjectBindingPattern(node)) readSlots(patternSlots(node));
         if (
-            (isAssignmentExpression(node) &&
-                node.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
-                assignmentPatternReads(node.left)) ||
-            ((ts.isForOfStatement(node) || ts.isForInStatement(node)) &&
-                !ts.isVariableDeclarationList(node.initializer) &&
-                assignmentPatternReads(node.initializer))
+            isAssignmentExpression(node) &&
+            node.operatorToken.kind === ts.SyntaxKind.EqualsToken
         )
-            return true;
+            assignmentPattern(node.left);
         if (
-            (ts.isSpreadAssignment(node) || ts.isSpreadElement(node)) &&
-            carries(node.expression)
+            (ts.isForOfStatement(node) || ts.isForInStatement(node)) &&
+            !ts.isVariableDeclarationList(node.initializer)
         )
-            return true;
-        if (ts.isForInStatement(node) && carries(node.expression)) return true;
+            assignmentPattern(node.initializer);
+        if (ts.isSpreadAssignment(node) || ts.isSpreadElement(node))
+            carrier(node.expression);
+        if (ts.isForInStatement(node)) carrier(node.expression);
         if (ts.isCallExpression(node)) {
             const callee = libraryStaticMember(checker, node.expression);
             const reflective =
@@ -152,20 +190,20 @@ function unobserved(
                     reflectiveObjectMethods.has(callee.name)) ||
                     (callee.owner === "JSON" && callee.name === "stringify") ||
                     (callee.owner === "Reflect" && callee.name !== "apply"));
-            if (reflective && node.arguments.some(carries)) return true;
+            if (reflective)
+                for (const argument of node.arguments) carrier(argument);
         }
-        return (
-            ts.forEachChild(node, (child) =>
-                observes(child) ? true : undefined,
-            ) === true
-        );
+        ts.forEachChild(node, visit);
     };
-    const unread = program
-        .getSourceFiles()
-        .filter((file) => !file.isDeclarationFile)
-        .every((file) => !observes(file));
-    names.set(name, unread);
-    return unread;
+    for (const file of program.getSourceFiles())
+        if (!file.isDeclarationFile) visit(file);
+    return {
+        names,
+        written,
+        everyName,
+        carriers,
+        answers: { observed: new Map(), read: new Map() },
+    };
 }
 
 /**

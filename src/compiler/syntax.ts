@@ -2295,6 +2295,29 @@ export type SupportedFunction =
     | ts.ArrowFunction
     | ts.MethodDeclaration;
 
+/**
+ * The nearest node binding the `this` keyword `node` reads: a function
+ * other than an arrow, a property declaration or a class static block.
+ */
+export function thisMember(node: ts.Node): ts.Node | undefined {
+    return ts.findAncestor(
+        node.parent,
+        (ancestor) =>
+            (ts.isFunctionLike(ancestor) && !ts.isArrowFunction(ancestor)) ||
+            ts.isPropertyDeclaration(ancestor) ||
+            ts.isClassStaticBlockDeclaration(ancestor),
+    );
+}
+
+/**
+ * The class whose instance a `this` keyword reads (its constructor, in a
+ * static member): the class of `thisMember`.
+ */
+export function thisClass(node: ts.Node): ts.ClassLikeDeclaration | undefined {
+    const member = thisMember(node);
+    return member && ts.isClassLike(member.parent) ? member.parent : undefined;
+}
+
 /** The four declaration shapes this compiler inlines, as one narrowing. */
 export function isSupportedFunction(
     node: ts.Node | undefined,
