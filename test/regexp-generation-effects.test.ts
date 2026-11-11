@@ -161,3 +161,13 @@ test("RegExp call effects refuse state, mutation, escaped methods and coercion",
         false,
     );
 });
+
+test("a primitive member read elsewhere in the program keeps a RegExp call read-only", () => {
+    // Reading a constructor's `name` (a string) passes no prototype on: the
+    // builder still runs at generation.
+    const checked = prepare(`${builders}
+        export function kind(value: { constructor: Function }): string {
+            return value.constructor?.name ?? "";
+        }`);
+    assert.equal(checked.execute("first", "ok"), "first:ok");
+});

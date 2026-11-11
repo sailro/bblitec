@@ -18,8 +18,9 @@ import {
     equalityOperator,
     variableKind,
     isMemberAccess,
+    writeSiteOf,
 } from "./syntax.js";
-import { holdsOnly } from "./type-facts.js";
+import { holdsOnly, PRIMITIVE_KINDS } from "./type-facts.js";
 
 /** Immutable checked-source facts, independent of emission and its rollbacks. */
 interface RegExpEffects {
@@ -226,6 +227,15 @@ function onlyObserved(
     if (
         ts.isBinaryExpression(parent) &&
         equalityOperator(parent.operatorToken.kind) !== undefined
+    )
+        return true;
+    // A member read that only holds primitives (a function's `name` or
+    // `length`) passes no prototype on.
+    if (
+        isMemberAccess(parent) &&
+        parent.expression === expression &&
+        writeSiteOf(parent) === undefined &&
+        holdsOnly(checker.getTypeAtLocation(parent), PRIMITIVE_KINDS)
     )
         return true;
     if (
