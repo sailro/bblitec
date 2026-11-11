@@ -2123,11 +2123,32 @@ export class ExpressionLowerer {
      */
     private numberMethodReceiver(expression: ts.Expression): Value {
         const value = this.compileValue(expression);
-        return value.kind === "data" &&
+        if (
+            value.kind === "data" &&
             value.preserveUncheckedLookup &&
             value.dataType?.kind === "optional" &&
             value.dataType.inner.kind === "number"
-            ? this.context.dataLowerer.narrowOptional(value, expression, true)
+        )
+            return this.context.dataLowerer.narrowOptional(
+                value,
+                expression,
+                true,
+            );
+        // A number a document or another storage holds (a parsed save's
+        // field) is read as one.
+        return value.kind === "data" &&
+            value.dataType?.kind !== "number" &&
+            (this.context.checker.getTypeAtLocation(expression).flags &
+                ts.TypeFlags.NumberLike) !==
+                0
+            ? {
+                  kind: "number",
+                  cpp: this.context.dataLowerer.compileKnownValueForSink(
+                      value,
+                      { kind: "number" },
+                      expression,
+                  ),
+              }
             : value;
     }
 
