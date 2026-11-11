@@ -8,6 +8,7 @@ export type HandleKind =
     | AudioHandleKind
     | "engine"
     | "asset"
+    | "effect-wrapper"
     | "gpu-device"
     | "gpu-texture"
     | "gpu-texture-view"

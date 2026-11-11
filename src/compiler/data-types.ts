@@ -299,6 +299,7 @@ const pinnedHandleTypes: Record<string, HandleKind> = {
     GlyphRun: "text-run",
     PickingInfo: "picking-info",
     Mesh: "mesh",
+    EffectWrapper: "effect-wrapper",
     AnimationGroup: "animation-group",
     VatBakeResult: "vat-bake",
     // A container's declared KHR_interactivity graphs and the runtimes

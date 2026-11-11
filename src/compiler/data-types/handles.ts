@@ -38,6 +38,7 @@ const handleCppTypes: Record<HandleKind, string> = {
     "worker-media-query": "std::shared_ptr<bbl::pal::MediaQueryList>",
     "worker-mutation-observer": "std::shared_ptr<bbl::pal::MutationObserver>",
     mesh: "bbl::MeshHandle",
+    "effect-wrapper": "bbl::EffectWrapperHandle",
     "animation-group": "bbl::AnimationGroupHandle",
     "vat-bake": "bbl::VatBake",
     "flow-graph": "bbl::FlowGraphHandle",
@@ -128,6 +129,7 @@ export function handleCppType(kind: HandleKind): string {
 const engineScopedHandleKinds = new Set<HandleKind>([
     "asset",
     "mesh",
+    "effect-wrapper",
     "thin-instance-pool",
     "material",
     "camera",
