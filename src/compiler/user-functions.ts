@@ -2029,6 +2029,15 @@ export class UserFunctionLowerer {
         declaration: SupportedFunction,
         arguments_: readonly Value[],
     ): void {
+        // An async function runs as its activation, as a call would run it.
+        if (
+            context.asyncActivations.compileAsyncCall(
+                declaration,
+                arguments_,
+                declaration,
+            )
+        )
+            return;
         const ir = this.irFor(
             declaration,
             sourceFunctionName(declaration) ?? "root",

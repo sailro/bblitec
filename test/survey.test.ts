@@ -410,6 +410,52 @@ test("a survey lowers the statements a rolled-back compound statement holds", ()
     );
 });
 
+test("a survey root's resources belong to the entry's engine, declared for roots when none is", () => {
+    // No statement creates an engine: the roots hold one of their own, so
+    // the mesh a root receives is associated with it.
+    const { report } = surveySource(
+        `
+        import type { Mesh } from "@babylonjs/lite";
+        let tinted = 0;
+        export function tint(mesh: Mesh): void {
+            const material = mesh.material;
+            tinted += material ? 1 : 0;
+        }
+        localStorage.setItem("tinted", String(tinted));
+    `,
+        { fileName: resolve("survey-root-engine.ts") },
+    );
+    assert.equal(report.complete, true);
+    assert.deepEqual(report.refusals, [], listed(report));
+});
+
+test("a survey root of an async function runs as its activation", () => {
+    // Its awaits lower inside the activation a call would start; what the
+    // survey meets is the fetch of a run-time URL, not the await.
+    const { report } = surveySource(
+        `
+        let total = 0;
+        export async function fetchLength(url: string): Promise<number> {
+            const response = await fetch(url);
+            const text = await response.text();
+            total += text.length;
+            return text.length;
+        }
+        localStorage.setItem("total", String(total));
+    `,
+        { fileName: resolve("survey-root-async.ts") },
+    );
+    assert.equal(report.complete, true);
+    assert.ok(
+        report.refusals.every(
+            (refusal) =>
+                refusal.message !==
+                "This await needs an asynchronous realm activation.",
+        ),
+        listed(report),
+    );
+});
+
 test("a survey root's record parameter no native layout holds is a record of its members", () => {
     // `Deps` holds a method, so no native layout stores it: the root binds
     // the record a literal of that type would be, each member empty storage.

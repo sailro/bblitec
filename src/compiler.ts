@@ -7311,6 +7311,25 @@ class Compiler implements LoweringServices {
                     !isInstalledPackageFile(file.fileName),
             );
         survey.programSources(files);
+        // A rolled-back entry statement can leave the entry's one engine
+        // undeclared: roots then hold one of their own, which the resources
+        // they build or receive belong to.
+        if (!this.defaultEngineCpp) {
+            const engine = this.allocateTemporaryCppName("survey_engine");
+            const type = this.options.workers
+                ? "std::shared_ptr<bbl::Engine>"
+                : "bbl::Engine";
+            this.emit({
+                kind: "declaration",
+                type,
+                name: engine,
+                initializer: "{}",
+            });
+            this.registerNativeBindingType(engine, type);
+            this.defaultEngineCpp = this.options.workers
+                ? `(*${engine})`
+                : engine;
+        }
         for (const file of files) {
             const visit = (node: ts.Node): void => {
                 if (
