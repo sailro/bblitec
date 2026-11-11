@@ -232,8 +232,6 @@ interface Attempt {
         string,
         Omit<SurveyDemand, "rolledBackAt"> & { rolledBack: Set<ts.Statement> }
     >;
-    /** Every statement a lowering of this attempt began, probes included. */
-    touched: Set<ts.Statement>;
     /** The functions whose bodies this attempt lowered outside a probe. */
     lowered: Set<ts.Node>;
     /** The statement lowerings inside survey roots. */
@@ -600,10 +598,17 @@ export class SurveyCollector {
         }
     }
 
-    /** Whether no lowering of this attempt began `statement`, inside a probe or not. */
+    /**
+     * Whether no lowering of this attempt began `statement` but in a probe
+     * that rolled back: the census's untried statement, which a root tries.
+     */
     public unbegun(statement: ts.Statement): boolean {
         const attempt = this.current;
-        return attempt !== undefined && !attempt.touched.has(statement);
+        return (
+            attempt !== undefined &&
+            !attempt.distinct.has(statement) &&
+            !attempt.probed.has(statement)
+        );
     }
 
     /** Lists the program's own sources' statements once, for `SurveyReport.program`. */
@@ -699,7 +704,6 @@ export class SurveyCollector {
     public touch(statement: ts.Statement, speculating: boolean): void {
         const attempt = this.current;
         if (!attempt) return;
-        attempt.touched.add(statement);
         (speculating ? attempt.probed : attempt.distinct).add(statement);
     }
 
@@ -734,7 +738,6 @@ export class SurveyCollector {
             declarations: new Map(),
             replays: [],
             demands: new Map(),
-            touched: new Set(),
             lowered: new Set(),
             rooted: 0,
             settling: false,
