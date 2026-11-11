@@ -1178,6 +1178,20 @@ export const propertyRules: readonly PropertyRule[] = [
         record: ["meshes", "receives_shadows"],
     },
     {
+        // The flag the `pickable` assignment writes, undefined until one does.
+        owner: "mesh",
+        property: "pickable",
+        feature: "mesh:pickable",
+        value: "data",
+        dataType: {
+            kind: "optional",
+            inner: { kind: "boolean" },
+            undefinedOnly: true,
+        },
+        record: ["meshes", "pickable.source_value()"],
+        helperReturnsFreshData: true,
+    },
+    {
         owner: "mesh",
         property: "renderOnTop",
         value: "boolean",

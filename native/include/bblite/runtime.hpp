@@ -2753,7 +2753,10 @@ inline void release_geometry_storage(ModelGeometry& geometry) {
  * `composeTrsLocalMatrix`. The field names match `MeshRecord` for that
  * reason: one emitted composition serves both.
  */
-/** Source optional flag with the renderer's `visible !== false` projection. */
+/**
+ * A source `boolean | undefined` flag whose projection is `!== false`: a
+ * node's `visible`, a mesh's `pickable`.
+ */
 struct MeshVisibility {
     std::optional<bool> value;
     MeshVisibility() = default;
@@ -3052,10 +3055,11 @@ struct MeshRecord {
     // through the subtree at set time so the render path and the camera
     // bounds only test one boolean.
     MeshVisibility visible;
-    // mesh.ts `pickable?: boolean`, undefined = pickable. Read only by the
-    // generated `pick_candidate`, which both backends' pick passes ask; no
-    // draw path consults it, because a non-pickable mesh still renders.
-    bool pickable = true;
+    // mesh.ts `pickable?: boolean`, undefined = pickable. Projected only by
+    // the generated `pick_candidate`, which both backends' pick passes ask;
+    // no draw path consults it, because a non-pickable mesh still renders.
+    // A program reads its source value.
+    MeshVisibility pickable;
     std::vector<std::array<float, 16>> bone_matrices;
     /**
      * Moves with every rewrite of `bone_matrices`; both backends upload

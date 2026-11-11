@@ -2345,7 +2345,7 @@ std::array<float, 16> mesh_world_eye_relative(
 ${
     options.picking
         ? `// src/picking/gpu-picker.ts: mesh.pickable !== false, where an
-// unwritten flag is pickable -- which the record's default-true lane is.
+// unwritten flag is pickable -- which the record's flag projects.
 bool pick_candidate(const MeshRecord& mesh) {
     return mesh.pickable;
 }
