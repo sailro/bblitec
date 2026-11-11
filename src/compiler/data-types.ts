@@ -9673,6 +9673,18 @@ export class DataTypeRegistry {
         );
     }
 
+    /** Whether a value of `type` holds a generic function's family. */
+    public carriesGenericFunction(type: DataType): boolean {
+        return containsDataKind(
+            type,
+            "function",
+            (name) => this.structFieldTypes(name),
+            false,
+            new Set(),
+            (part) => part.kind === "function" && part.generic !== undefined,
+        );
+    }
+
     /** Iterator frames cannot currently describe every suspended local edge to the cycle collector. */
     public carriesOpaqueIterator(type: DataType): boolean {
         return containsDataKind(

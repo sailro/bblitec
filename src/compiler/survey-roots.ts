@@ -203,13 +203,18 @@ function emptyValueOf(
     label: string,
     depth = 0,
 ): Value | undefined {
-    // A root's value is stored as a parameter stores its argument (a
-    // generic function as its family); its array is one its caller owns,
-    // which a borrowed view only lends a callee; the `unknown` values a
-    // type reaches are stored as documents, as a parsed value of it is.
-    const mapped = context.dataTypes.orDynamicJsonTypes(() =>
-        context.dataTypes.fromStoredTsType(type, node),
-    );
+    // A root's value is stored as a parameter stores its argument, but for
+    // one holding a generic function: its family would demand a signature
+    // at each call the roots lower, which storage built by then meets one a
+    // pass. Its array is one its caller owns, which a borrowed view only
+    // lends a callee; the `unknown` values a type reaches are stored as
+    // documents, as a parsed value of it is.
+    const mapped = context.dataTypes.orDynamicJsonTypes(() => {
+        const stored = context.dataTypes.fromStoredTsType(type, node);
+        return stored && !context.dataTypes.carriesGenericFunction(stored)
+            ? stored
+            : context.dataTypes.fromTsType(type, node);
+    });
     const storage = emptyStorage(
         context,
         mapped && context.dataTypes.ownReadonlyArray(mapped, type),
