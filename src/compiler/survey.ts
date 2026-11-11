@@ -75,6 +75,8 @@ interface SurveyRefusal {
     rootOccurrences: number;
     /** How many distinct statements those lowerings rolled back. */
     statements: number;
+    /** Those statements, as `file:line`, in the order rolled back. */
+    rolledBackAt: string[];
 }
 
 interface SurveyClass {
@@ -163,7 +165,7 @@ interface StatementContext {
 }
 
 /** A refusal while it is being counted: the statements it rolled back, by node. */
-interface Census extends SurveyRefusal {
+interface Census extends Omit<SurveyRefusal, "rolledBackAt"> {
     rolledBack: Set<ts.Statement>;
 }
 
@@ -187,6 +189,8 @@ interface SurveyDemand {
     statement: SurveyStatement;
     /** How many distinct statements it rolled back. */
     statements: number;
+    /** Those statements, as `file:line`, in the order rolled back. */
+    rolledBackAt: string[];
 }
 
 /** One compile attempt (a pass) of one realm; the realm's next pass replaces it. */
@@ -198,7 +202,11 @@ interface Attempt {
     /** The replays (storage demands among them) this pass met at statements, for the next pass. */
     replays: Error[];
     /** Those demands by description, with the statements they rolled back. */
-    demands: Map<string, SurveyDemand & { rolledBack: Set<ts.Statement> }>;
+    /** By what the demand asks for and where it rose. */
+    demands: Map<
+        string,
+        Omit<SurveyDemand, "rolledBackAt"> & { rolledBack: Set<ts.Statement> }
+    >;
     /** Every statement a lowering of this attempt began, probes included. */
     touched: Set<ts.Statement>;
     /** The functions whose bodies this attempt lowered outside a probe. */
@@ -331,13 +339,17 @@ function replayText(replay: Error): string {
         : `${replay.constructor.name}: ${replay.message}`;
 }
 
+/** `node` as `file:line`. */
+function nodeSite(node: ts.Node): string {
+    const location = sourceLocation(node);
+    return `${location.file.fileName}:${location.line}`;
+}
+
 /** Where a storage demand rose: a node as `file:line`, or a signature site. */
 function replaySite(replay: unknown): string | undefined {
     if (!(replay instanceof StorageDemand)) return undefined;
     const site = replay.requests.map(storageRequestSite).find(Boolean);
-    if (typeof site !== "object") return site;
-    const location = sourceLocation(site);
-    return `${location.file.fileName}:${location.line}`;
+    return typeof site === "object" ? nodeSite(site) : site;
 }
 
 /** What restarted an attempt, and where its storage demand rose. */
@@ -701,9 +713,10 @@ export class SurveyCollector {
     ): void {
         attempt.replays.push(replay);
         const described = replayText(replay);
-        let census = attempt.demands.get(described);
+        const site = replaySite(replay);
+        const key = `${described} at ${site ?? ""}`;
+        let census = attempt.demands.get(key);
         if (!census) {
-            const site = replaySite(replay);
             census = {
                 demand: described,
                 ...(site ? { site } : {}),
@@ -711,7 +724,7 @@ export class SurveyCollector {
                 statements: 0,
                 rolledBack: new Set(),
             };
-            attempt.demands.set(described, census);
+            attempt.demands.set(key, census);
         }
         census.rolledBack.add(statement);
     }
@@ -832,7 +845,11 @@ export class SurveyCollector {
             for (const statement of attempt.probed) begun.add(statement);
             for (const { rolledBack, ...demand } of attempt.demands.values()) {
                 for (const statement of rolledBack) demanded.add(statement);
-                demands.push({ ...demand, statements: rolledBack.size });
+                demands.push({
+                    ...demand,
+                    statements: rolledBack.size,
+                    rolledBackAt: [...rolledBack].map(nodeSite),
+                });
             }
             attempted += attempt.attempted;
             for (const [key, census] of attempt.refusals) {
@@ -857,6 +874,7 @@ export class SurveyCollector {
             .map(({ rolledBack, ...refusal }): SurveyRefusal => ({
                 ...refusal,
                 statements: rolledBack.size,
+                rolledBackAt: [...rolledBack].map(nodeSite),
             }))
             .sort(
                 (a, b) =>

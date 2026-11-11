@@ -72,6 +72,10 @@ test("a survey records every refusal it reaches and continues past each", () => 
     assert.equal(inheritance.statement.kind, "ExpressionStatement");
     assert.equal(inheritance.statement.function, "first");
     assert.equal(inheritance.cascade, undefined);
+    assert.deepEqual(
+        inheritance.rolledBackAt.map((site) => site.split(":").at(-1)),
+        ["6"],
+    );
     const unsupported = report.refusals.find(
         (refusal) => refusal.message === "Unsupported constructor expression.",
     );
@@ -186,6 +190,17 @@ test("one survey pass meets every independent demand", () => {
     ).report;
     assert.equal(capped.passes, 1);
     assert.equal(capped.statements.demanded, 3);
+    // Each demand names the assignment it rolled back.
+    assert.deepEqual(
+        capped.demands
+            .flatMap((demand) =>
+                demand.rolledBackAt.map((site) =>
+                    Number(site.split(":").at(-1)),
+                ),
+            )
+            .sort((a, b) => a - b),
+        [9, 11, 13],
+    );
 });
 
 test("a member call through a refused binding is a cascade of its declaration", () => {
@@ -427,6 +442,30 @@ test("a survey root's resources belong to the entry's engine, declared for roots
     );
     assert.equal(report.complete, true);
     assert.deepEqual(report.refusals, [], listed(report));
+});
+
+test("a PBR setter on a material no scene record stands for refuses at its call", () => {
+    // A root's material is empty storage that no createPbrMaterial made:
+    // the setter refuses at its call and the survey goes on past it.
+    const { report } = surveySource(
+        `
+        import { setPbrUnlit } from "@babylonjs/lite";
+        let stamped = 0;
+        export function flatten(material: Parameters<typeof setPbrUnlit>[0]): void {
+            setPbrUnlit(material);
+            stamped += 1;
+        }
+        localStorage.setItem("stamped", String(stamped));
+    `,
+        { fileName: resolve("survey-root-pbr-setter.ts") },
+    );
+    assert.equal(report.complete, true, report.terminal);
+    assert.deepEqual(
+        report.refusals.map((refusal) => refusal.message),
+        [
+            "setPbrUnlit names no scene-code PBR material; only a value createPbrMaterial produced, or a mesh one was assigned to, resolves which record to stamp.",
+        ],
+    );
 });
 
 test("a survey root of an async function runs as its activation", () => {
