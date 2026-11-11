@@ -170,12 +170,13 @@ function onlyObserved(
     const parent = expression.parent;
     // Another builtin constructor's prototype is not on a RegExp's lookup
     // path for `test`/`exec` (RegExp.prototype owns both), whatever code
-    // does with it (`GPUAdapter.prototype.requestDevice = ...`).
+    // does with it (`GPUAdapter.prototype.requestDevice = ...`), cast or not.
+    const access = ts.isExpression(value) ? unwrapExpression(value) : value;
     const constructorName =
-        ts.isPropertyAccessExpression(expression) &&
-        expression.name.text === "prototype" &&
-        ts.isIdentifier(unwrapExpression(expression.expression))
-            ? (unwrapExpression(expression.expression) as ts.Identifier)
+        ts.isPropertyAccessExpression(access) &&
+        access.name.text === "prototype" &&
+        ts.isIdentifier(unwrapExpression(access.expression))
+            ? (unwrapExpression(access.expression) as ts.Identifier)
             : undefined;
     const owner =
         constructorName &&

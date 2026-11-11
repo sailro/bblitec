@@ -171,3 +171,14 @@ test("a primitive member read elsewhere in the program keeps a RegExp call read-
         }`);
     assert.equal(checked.execute("first", "ok"), "first:ok");
 });
+
+test("a cast builtin prototype elsewhere in the program keeps a RegExp call read-only", () => {
+    // `AudioContext.prototype as ...` names a builtin constructor's own
+    // prototype, which no RegExp lookup reaches, cast or not.
+    const checked = prepare(`${builders}
+        export const sinks =
+            typeof AudioContext === "undefined"
+                ? null
+                : (AudioContext.prototype as AudioContext & { setSinkId?: unknown });`);
+    assert.equal(checked.execute("first", "ok"), "first:ok");
+});
