@@ -2081,6 +2081,8 @@ export class AsyncLowerer {
         if (value.kind === "scene") return "bbl::Scene";
         if (value.kind === "environment-textures")
             return "std::shared_ptr<const bbl::EnvironmentState>";
+        // `createNavigationPluginAsync`'s plugin is the toolset's handle.
+        if (value.kind === "navigation") return "bbl::pal::NavigationHandle";
         return this.context.fail(
             node,
             `Promise result '${value.kind}' has no owned asynchronous representation.`,
