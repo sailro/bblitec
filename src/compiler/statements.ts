@@ -1007,8 +1007,41 @@ export class StatementLowerer {
             context,
             statement,
             () => this.lowerStatement(context, statement),
-            (nested) => this.emit(context, nested),
+            (nested) => this.emitHeld(context, statement, nested),
         );
+    }
+
+    /**
+     * A statement that a rolled-back compound statement held, lowered on its
+     * own by a survey. Under a loop or a switch it lowers in a block a native
+     * break leaves, standing for the construct its jumps bind; under a label,
+     * before the label's exit.
+     */
+    private emitHeld(
+        context: StatementLoweringContext,
+        holder: ts.Statement,
+        nested: ts.Statement,
+    ): void {
+        if (ts.isLabeledStatement(holder)) {
+            const target = jumpTarget(holder, {
+                exit: this.jumpLabel(context, `label_${holder.label.text}`),
+            });
+            this.withJumpTarget(target, () => this.emit(context, nested));
+            this.placeLabel(context, target.exit);
+            return;
+        }
+        if (
+            !ts.isIterationStatement(holder, false) &&
+            !ts.isSwitchStatement(holder)
+        ) {
+            this.emit(context, nested);
+            return;
+        }
+        context.emit({ kind: "open", code: "do {" });
+        this.withJumpTarget(jumpTarget(holder, { breakable: true }), () =>
+            this.emit(context, nested),
+        );
+        context.emit({ kind: "close", code: "} while (false);" });
     }
 
     private lowerStatement(

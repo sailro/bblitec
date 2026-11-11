@@ -385,6 +385,7 @@ test("a survey lowers the statements a rolled-back compound statement holds", ()
         for (const value of registry.entries()) {
             total += value.length;
             total += new FinalizationRegistry<string>(() => {}).unregister({ value }) ? 1 : 0;
+            if (total > 9) break;
         }
         localStorage.setItem("total", String(total));
     `,
@@ -397,6 +398,13 @@ test("a survey lowers the statements a rolled-back compound statement holds", ()
         report.refusals.some(
             (refusal) =>
                 refusal.statement.line === 10 && refusal.rootOccurrences > 0,
+        ),
+        listed(report),
+    );
+    // The loop's own break binds the block that stands for the loop.
+    assert.ok(
+        report.refusals.every(
+            (refusal) => refusal.message !== "A jump has no active target.",
         ),
         listed(report),
     );
