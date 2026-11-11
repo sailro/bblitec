@@ -23,7 +23,7 @@
  */
 import ts from "typescript";
 import { CompileError } from "./compile-error.js";
-import { declaredSymbol, resolvedSymbol } from "./symbols.js";
+import { declaredSymbol } from "./symbols.js";
 import { sourceLocation, syntaxKindName } from "../source-location.js";
 import {
     describeStorageRequests,
@@ -44,6 +44,20 @@ interface SurveySite {
     column: number;
 }
 
+/** A statement of the census: where it is, its kind and the function holding it. */
+interface SurveyStatement {
+    file: string;
+    line: number;
+    kind: string;
+    function: string;
+}
+
+/** The program's own sources and the statements they hold (`surveyedStatement`). */
+interface SurveyProgram {
+    files: number;
+    statements: readonly ts.Statement[];
+}
+
 interface SurveyRefusal {
     /** Where the refusal was raised, as `fail` reported it. */
     site: SurveySite;
@@ -52,7 +66,7 @@ interface SurveyRefusal {
     /** The message with quoted names, numbers and parenthesised detail elided. */
     class: string;
     /** The first statement rolled back for this refusal. */
-    statement: { file: string; line: number; kind: string; function: string };
+    statement: SurveyStatement;
     /** The refused statement that would have declared the binding this refusal names. */
     cascade?: SurveySite;
     /** How many lowerings reached this site with this message. */
@@ -145,7 +159,7 @@ interface StatementContext {
     readonly checker: ts.TypeChecker;
     transaction(work: () => void): void;
     refusedDemand(error: unknown): CompileError | undefined;
-    bindEmptyStorage(name: ts.Identifier): boolean;
+    bindEmptyStorage(name: ts.Identifier): void;
 }
 
 /** A refusal while it is being counted: the statements it rolled back, by node. */
@@ -155,7 +169,7 @@ interface Census extends SurveyRefusal {
 
 /** How long a statement's own lowering took, its nested statements' excluded. */
 interface SurveyTiming {
-    statement: { file: string; line: number; kind: string; function: string };
+    statement: SurveyStatement;
     selfMs: number;
     /** Its nested statements included. */
     totalMs: number;
@@ -170,7 +184,7 @@ interface SurveyDemand {
     demand: string;
     /** Where it rose: the declaration it retypes or the node a record demand rose at. */
     site?: string;
-    statement: { file: string; line: number; kind: string; function: string };
+    statement: SurveyStatement;
     /** How many distinct statements it rolled back. */
     statements: number;
 }
@@ -202,38 +216,6 @@ interface Attempt {
      * its statements away and a committed one keeps them.
      */
     probed: EmissionSet<ts.Statement>;
-}
-
-/**
- * The variables and parameters of enclosing functions that `declaration`
- * reads, by their declared names: what a survey root binds besides its
- * parameters.
- */
-export function capturedFunctionLocals(
-    checker: ts.TypeChecker,
-    declaration: ts.Node,
-): ts.Identifier[] {
-    const found = new Map<ts.Symbol, ts.Identifier>();
-    const visit = (node: ts.Node): void => {
-        if (ts.isIdentifier(node)) {
-            const symbol = resolvedSymbol(checker, node);
-            const local = symbol?.valueDeclaration;
-            if (
-                symbol &&
-                local &&
-                (ts.isVariableDeclaration(local) ||
-                    ts.isParameter(local) ||
-                    ts.isBindingElement(local)) &&
-                ts.isIdentifier(local.name) &&
-                !ts.findAncestor(local, (owner) => owner === declaration) &&
-                ts.findAncestor(local.parent, ts.isFunctionLike)
-            )
-                found.set(symbol, local.name);
-        }
-        ts.forEachChild(node, visit);
-    };
-    visit(declaration);
-    return [...found.values()];
 }
 
 /**
@@ -331,27 +313,42 @@ function enclosingFunctionName(statement: ts.Statement): string {
         : "<module>";
 }
 
-/**
- * What stopped an attempt or a plan, and where: what its storage demand
- * asks for and the site it rose at, else the statement lowering then.
- */
-function describeStop(cause: unknown, lowering: ts.Node | undefined): string {
+/** `statement` as the census names it. */
+function censusStatement(statement: ts.Statement): SurveyStatement {
+    const location = sourceLocation(statement);
+    return {
+        file: location.file.fileName,
+        line: location.line,
+        kind: syntaxKindName(statement.kind),
+        function: enclosingFunctionName(statement),
+    };
+}
+
+/** What a replay asks for: a storage demand's requests, else the replay itself. */
+function replayText(replay: Error): string {
+    return replay instanceof StorageDemand
+        ? describeStorageRequests(replay.requests)
+        : `${replay.constructor.name}: ${replay.message}`;
+}
+
+/** Where a storage demand rose: a node as `file:line`, or a signature site. */
+function replaySite(replay: unknown): string | undefined {
+    if (!(replay instanceof StorageDemand)) return undefined;
+    const site = replay.requests.map(storageRequestSite).find(Boolean);
+    if (typeof site !== "object") return site;
+    const location = sourceLocation(site);
+    return `${location.file.fileName}:${location.line}`;
+}
+
+/** What restarted an attempt, and where its storage demand rose. */
+function describeStop(cause: unknown): string {
     const text =
         cause instanceof StorageDemand
-            ? `${cause.constructor.name}: ${describeStorageRequests(cause.requests)}`
+            ? `${cause.constructor.name}: ${replayText(cause)}`
             : cause instanceof Error
-              ? `${cause.constructor.name}: ${cause.message}`
+              ? replayText(cause)
               : String(cause);
-    const demanded =
-        cause instanceof StorageDemand
-            ? cause.requests.map(storageRequestSite).find(Boolean)
-            : undefined;
-    const node = typeof demanded === "object" ? demanded : lowering;
-    const site =
-        typeof demanded === "string"
-            ? demanded
-            : node &&
-              `${sourceLocation(node).file.fileName}:${sourceLocation(node).line}`;
+    const site = replaySite(cause);
     return (
         text.replace(/\s+/g, " ").slice(0, 160) + (site ? ` at ${site}` : "")
     );
@@ -380,14 +377,12 @@ export class SurveyCollector {
     private attempts = 0;
     /** @unjournaled What ended the last attempt that restarted, and where. */
     private restart: string | undefined;
-    /** @unjournaled The statement lowering began last: where a restart's demand rose. */
-    private lowering: ts.Statement | undefined;
     /** @unjournaled Whether a survey root is lowering: its context is empty storage. */
     private inRoot = false;
     /** @unjournaled The statement lowering now: when it began, and its nested statements' time. */
     private timing: { started: number; nested: number } | undefined;
-    /** @unjournaled The program's own sources (`SurveyReport.program`). */
-    private programFiles: readonly ts.SourceFile[] = [];
+    /** @unjournaled The program's own sources and their statements (`SurveyReport.program`). */
+    private program: SurveyProgram | undefined;
 
     /** @unjournaled The passes that ran to their end. */
     private passes = 0;
@@ -415,38 +410,28 @@ export class SurveyCollector {
         const now = Date.now();
         if (now - this.reportedAt < this.progress.intervalMs) return;
         this.reportedAt = now;
-        let attempted = 0;
-        const refused = new Set<ts.Statement>();
-        for (const attempt of this.realms.values()) {
-            attempted += attempt.attempted;
-            for (const census of attempt.refusals.values())
-                for (const rolledBack of census.rolledBack)
-                    refused.add(rolledBack);
-        }
-        const location = sourceLocation(statement);
+        const census = this.report();
+        const lowering = censusStatement(statement);
         const line =
-            `Survey progress: attempt ${this.attempts}, ${attempted} statement lowerings, ${refused.size} refused; lowering ` +
-            `${location.file.fileName}:${location.line} (${enclosingFunctionName(statement)})` +
+            `Survey progress: attempt ${this.attempts}, ${census.statements.attempted} statement lowerings, ` +
+            `${census.statements.distinctRefused} refused; lowering ${lowering.file}:${lowering.line} (${lowering.function})` +
             (this.restart ? `; last restart: ${this.restart}` : "");
         this.progress.report(line);
-        this.leaveCensus(line);
+        this.leaveCensus(line, census);
     }
 
-    /** Hands out the census as it stands, marked incomplete with what is running. */
-    private leaveCensus(running: string): void {
+    /** Hands out `census`, marked incomplete with what is running. */
+    private leaveCensus(running: string, census: SurveyReport): void {
         this.progress?.census?.({
-            ...this.report(),
+            ...census,
             complete: false,
             terminal: `Survey still running: ${running}`,
         });
     }
 
-    /**
-     * Records what ended an attempt that restarts the program: where its
-     * storage demand rose, else the statement lowering then.
-     */
+    /** Records what ended an attempt that restarts the program, and where its storage demand rose. */
     public restarted(cause: unknown): void {
-        this.restart = describeStop(cause, this.lowering);
+        this.restart = describeStop(cause);
         this.progress?.report(
             `Survey restart after attempt ${this.attempts}: ${this.restart}`,
         );
@@ -483,59 +468,60 @@ export class SurveyCollector {
         }
     }
 
-    /** Counts the program's own sources, whose every function the survey lowers. */
+    /** Lists the program's own sources' statements once, for `SurveyReport.program`. */
     public programSources(files: readonly ts.SourceFile[]): void {
-        this.programFiles = files;
+        if (this.program) return;
+        const statements: ts.Statement[] = [];
+        const visit = (node: ts.Node): void => {
+            if (surveyedStatement(node)) statements.push(node);
+            ts.forEachChild(node, visit);
+        };
+        for (const file of files) visit(file);
+        this.program = { files: files.length, statements };
     }
 
-    /** `SurveyReport.program`, from the statements and functions the realms' last passes lowered. */
-    private programReport(): NonNullable<SurveyReport["program"]> {
-        const distinct = new Set<ts.Node>();
+    /**
+     * `SurveyReport.program`, from the statements the realms' last passes
+     * began and the functions they lowered: a declaration counts when
+     * something inside it did, a body's `return` when its function did.
+     */
+    private programReport(
+        program: SurveyProgram,
+        begun: ReadonlySet<ts.Node>,
+    ): NonNullable<SurveyReport["program"]> {
         const lowered = new Set<ts.Node>();
-        for (const attempt of this.realms.values()) {
-            for (const statement of attempt.distinct) distinct.add(statement);
-            for (const statement of attempt.probed) distinct.add(statement);
+        for (const attempt of this.realms.values())
             for (const declaration of attempt.lowered) lowered.add(declaration);
-        }
-        const functionLowered = (node: ts.Node): boolean =>
-            lowered.has(node) ||
-            (ts.isFunctionLike(node) &&
-                "body" in node &&
-                node.body !== undefined &&
-                ts.isBlock(node.body) &&
-                node.body.statements.some((statement) =>
-                    distinct.has(statement),
-                ));
-        let statements = 0;
-        let attempted = 0;
-        // Whether anything in `node` lowered.
-        const visit = (node: ts.Node): boolean => {
-            let inside = lowered.has(node);
-            ts.forEachChild(node, (child) => {
-                if (visit(child)) inside = true;
-            });
-            if (!surveyedStatement(node)) return inside || distinct.has(node);
-            statements++;
-            const owner = ts.isBlock(node.parent)
-                ? node.parent.parent
-                : undefined;
+        // The nodes something begun or lowered lies inside.
+        const holding = new Set<ts.Node>();
+        for (const node of [...begun, ...lowered])
+            for (
+                let parent = node.parent;
+                parent && !holding.has(parent);
+                parent = parent.parent
+            )
+                holding.add(parent);
+        const attempted = program.statements.filter((statement) => {
+            if (begun.has(statement)) return true;
             if (
-                distinct.has(node) ||
-                ((ts.isFunctionDeclaration(node) ||
-                    ts.isClassDeclaration(node)) &&
-                    inside) ||
-                (ts.isReturnStatement(node) &&
-                    owner !== undefined &&
-                    ts.isFunctionLike(owner) &&
-                    functionLowered(owner))
-            ) {
-                attempted++;
-                return true;
-            }
-            return inside;
+                ts.isFunctionDeclaration(statement) ||
+                ts.isClassDeclaration(statement)
+            )
+                return holding.has(statement) || lowered.has(statement);
+            const body = statement.parent;
+            return (
+                ts.isReturnStatement(statement) &&
+                ts.isBlock(body) &&
+                ts.isFunctionLike(body.parent) &&
+                (lowered.has(body.parent) ||
+                    body.statements.some((sibling) => begun.has(sibling)))
+            );
+        }).length;
+        return {
+            files: program.files,
+            statements: program.statements.length,
+            attempted,
         };
-        for (const file of this.programFiles) visit(file);
-        return { files: this.programFiles.length, statements, attempted };
     }
 
     /** Notes that the current attempt lowered every statement it will. */
@@ -609,7 +595,6 @@ export class SurveyCollector {
         }
         attempt.attempted++;
         if (this.inRoot) attempt.rooted++;
-        this.lowering = statement;
         this.reportProgress(statement);
         const timing = { started: performance.now(), nested: 0 };
         const enclosing = this.timing;
@@ -700,14 +685,8 @@ export class SurveyCollector {
             selfMs <= slowest[slowest.length - 1]!.selfMs
         )
             return;
-        const location = sourceLocation(statement);
         slowest.push({
-            statement: {
-                file: location.file.fileName,
-                line: location.line,
-                kind: syntaxKindName(statement.kind),
-                function: enclosingFunctionName(statement),
-            },
+            statement: censusStatement(statement),
             selfMs: Math.round(selfMs),
             totalMs: Math.round(totalMs),
         });
@@ -721,33 +700,14 @@ export class SurveyCollector {
         replay: Error,
     ): void {
         attempt.replays.push(replay);
-        const described =
-            replay instanceof StorageDemand
-                ? describeStorageRequests(replay.requests)
-                : `${replay.constructor.name}: ${replay.message}`;
+        const described = replayText(replay);
         let census = attempt.demands.get(described);
         if (!census) {
-            const location = sourceLocation(statement);
-            const site =
-                replay instanceof StorageDemand
-                    ? replay.requests.map(storageRequestSite).find(Boolean)
-                    : undefined;
+            const site = replaySite(replay);
             census = {
                 demand: described,
-                ...(site
-                    ? {
-                          site:
-                              typeof site === "string"
-                                  ? site
-                                  : `${sourceLocation(site).file.fileName}:${sourceLocation(site).line}`,
-                      }
-                    : {}),
-                statement: {
-                    file: location.file.fileName,
-                    line: location.line,
-                    kind: syntaxKindName(statement.kind),
-                    function: enclosingFunctionName(statement),
-                },
+                ...(site ? { site } : {}),
+                statement: censusStatement(statement),
                 statements: 0,
                 rolledBack: new Set(),
             };
@@ -761,7 +721,6 @@ export class SurveyCollector {
         return this.realms.get(realm)?.replays ?? [];
     }
 
-    /** Reports a pass that met demands: the next pass replays with the `added` ones. */
     /**
      * Ends a pass that `added` demands for the next one: whether the next
      * runs. A pass that added none is the last, as is the one that reaches
@@ -769,7 +728,8 @@ export class SurveyCollector {
      */
     public passEnded(added: number): boolean {
         this.passes++;
-        this.furthest = this.report();
+        const census = this.report();
+        this.furthest = census;
         if (added === 0) return false;
         const demands = `${added} demand${added === 1 ? "" : "s"}`;
         if (this.passLimit !== undefined && this.passes >= this.passLimit) {
@@ -780,7 +740,7 @@ export class SurveyCollector {
         }
         const line = `Survey pass ${this.passes}: ${demands} added for the next pass`;
         this.progress?.report(line);
-        this.leaveCensus(line);
+        this.leaveCensus(line, census);
         return true;
     }
 
@@ -805,7 +765,6 @@ export class SurveyCollector {
     ): void {
         let census = attempt.refusals.get(error.message);
         if (!census) {
-            const location = sourceLocation(statement);
             census = {
                 site: {
                     file: error.fileName,
@@ -814,12 +773,7 @@ export class SurveyCollector {
                 },
                 message: error.detail,
                 class: refusalClass(error.detail),
-                statement: {
-                    file: location.file.fileName,
-                    line: location.line,
-                    kind: syntaxKindName(statement.kind),
-                    function: enclosingFunctionName(statement),
-                },
+                statement: censusStatement(statement),
                 occurrences: 0,
                 rootOccurrences: 0,
                 statements: 0,
@@ -870,11 +824,12 @@ export class SurveyCollector {
         const demands: SurveyDemand[] = [];
         let attempted = 0;
         let rooted = 0;
-        const distinct = new Set<ts.Statement>();
+        // The statements a lowering began, a declined probe's aside.
+        const begun = new Set<ts.Statement>();
         for (const attempt of this.realms.values()) {
             rooted += attempt.rooted;
-            for (const statement of attempt.distinct) distinct.add(statement);
-            for (const statement of attempt.probed) distinct.add(statement);
+            for (const statement of attempt.distinct) begun.add(statement);
+            for (const statement of attempt.probed) begun.add(statement);
             for (const { rolledBack, ...demand } of attempt.demands.values()) {
                 for (const statement of rolledBack) demanded.add(statement);
                 demands.push({ ...demand, statements: rolledBack.size });
@@ -895,6 +850,9 @@ export class SurveyCollector {
                 }
             }
         }
+        const refused = new Set<ts.Statement>();
+        for (const census of merged.values())
+            for (const statement of census.rolledBack) refused.add(statement);
         const refusals = [...merged.values()]
             .map(({ rolledBack, ...refusal }): SurveyRefusal => ({
                 ...refusal,
@@ -937,21 +895,17 @@ export class SurveyCollector {
                   }),
             statements: {
                 attempted,
-                distinct: distinct.size,
+                distinct: begun.size,
                 rooted,
                 refused: refusals.reduce(
                     (count, refusal) => count + refusal.occurrences,
                     0,
                 ),
-                distinctRefused: new Set(
-                    [...merged.values()].flatMap((census) => [
-                        ...census.rolledBack,
-                    ]),
-                ).size,
+                distinctRefused: refused.size,
                 demanded: demanded.size,
             },
-            ...(this.programFiles.length > 0
-                ? { program: this.programReport() }
+            ...(this.program
+                ? { program: this.programReport(this.program, begun) }
                 : {}),
             refusals,
             classes: [...classes.values()].sort(

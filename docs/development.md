@@ -138,7 +138,7 @@ Commands follow `npm run scene --`. Targets are registry IDs, local TypeScript o
 
 `npm run scene -- survey <entry.ts>` writes `artifacts/survey/<directory>-<stem>/`: `census.json` (every refusal with site,
 message class, function and cascades, the storage demands the last pass met, the program's statements attempted, and the
-50 statements slowest to lower; no tree) and `api/report.html` (referenced pinned declarations). A survey lowers every
+statements slowest to lower; no tree) and `api/report.html` (referenced pinned declarations). A survey lowers every
 function of the program's own sources ([survey invariants](architecture.md#lowering-invariants));
 `bblitec <entry> --survey <census.json>` rewrites the census as it goes (`complete: false`), and `--survey-passes <n>` caps
 the passes: one attempts every statement. Group by shared capability and probe source shapes before implementing. The

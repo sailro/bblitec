@@ -83,9 +83,9 @@ import {
     traceSourceProgram,
     traceSourceNode,
 } from "./compiler/source-trace.js";
+import { emitSurveyRoots, emptyStorage } from "./compiler/survey-roots.js";
 import {
     activeSurvey,
-    capturedFunctionLocals,
     SurveyCollector,
     SurveyPassLimit,
     type SurveyProgress,
@@ -280,7 +280,6 @@ import {
     namedMember,
     libraryStaticMember,
     isLibraryStatic,
-    declaredSymbol,
 } from "./compiler/symbols.js";
 import {
     isNullable,
@@ -338,13 +337,10 @@ import {
     containsSuspension,
     functionKind,
     isSupportedFunction,
-    type SupportedFunction,
-    thisClass,
     variableKind,
     referenceBases,
     keysMayMatch,
 } from "./compiler/syntax.js";
-import { isInstalledPackageFile } from "./typescript-library-files.js";
 import { CompileError, unlessRefused } from "./compiler/compile-error.js";
 import { isEffectTaskMethodName } from "./compiler/effect-task-methods.js";
 import {
@@ -843,11 +839,9 @@ function lowerSourceApplication(
                 try {
                     result = survey.attempt(realm, lower);
                 } catch (error) {
-                    const replay =
-                        error instanceof StorageDemand ||
-                        isReplayBesidesStorage(error);
+                    // Only a replay is accepted.
                     if (!acceptReplay(error)) throw error;
-                    if (!replay || !survey.settling(realm)) {
+                    if (!survey.settling(realm)) {
                         survey.restarted(error);
                         continue;
                     }
@@ -1353,8 +1347,10 @@ class Compiler implements LoweringServices {
         this.emitEntryModuleState(entry);
         this.moduleNamespaces.defineInitializers();
         this.emitEntryBody(entry);
-        this.emitSurveyRoots();
-        activeSurvey()?.settle();
+        const survey = activeSurvey();
+        if (survey && !this.options.workers?.namespace)
+            emitSurveyRoots(this, survey);
+        survey?.settle();
         if (!this.options.pageStartup?.length) this.emitNativeHostUi();
         this.finalizeSceneRegistration();
         this.admissions.enforceDeferredAdmissions();
@@ -4737,12 +4733,8 @@ class Compiler implements LoweringServices {
             name: cppName,
             initializer: `${this.options.workers ? "bbl::pal::create_realm_engine" : "bbl::create_engine"}(${engineOptionsCpp}${canvasArgument})`,
         });
-        this.registerNativeBindingType(
-            cppName,
-            this.options.workers
-                ? "std::shared_ptr<bbl::Engine>"
-                : "bbl::Engine",
-        );
+        const engine = this.realmEngine(cppName);
+        this.registerNativeBindingType(cppName, engine.type);
         // The pin's createEngine resizes its surface once, and every frame
         // head and cap write runs the same resize: a DOM canvas's backing
         // store has this one writer.
@@ -4764,7 +4756,7 @@ class Compiler implements LoweringServices {
                     (frame) => frame.kind === "native",
                 ).length,
             };
-        const engineCpp = this.options.workers ? `(*${cppName})` : cppName;
+        const engineCpp = engine.cpp;
         this.defaultEngineCpp = engineCpp;
         for (const lookup of this.pendingHostUiLookups) {
             writable(lookup).engineCpp = engineCpp;
@@ -7245,18 +7237,16 @@ class Compiler implements LoweringServices {
             : undefined;
     }
 
-    public bindEmptyStorage(name: ts.Identifier): boolean {
-        if (this.bindings.lookupOptional(name)) return false;
-        let bound = false;
+    public bindEmptyStorage(name: ts.Identifier): void {
+        if (this.bindings.lookupOptional(name)) return;
         try {
             this.transaction(() => {
-                const value = this.emptyStorage(
+                const value = emptyStorage(
+                    this,
                     this.dataLowerer.dataTypeAt(name),
                     name.text,
                 );
-                if (!value) return;
-                this.bindings.defineVariable(name, value);
-                bound = true;
+                if (value) this.bindings.defineVariable(name, value);
             });
         } catch (error) {
             if (
@@ -7265,207 +7255,16 @@ class Compiler implements LoweringServices {
             )
                 throw error;
         }
-        return bound;
     }
 
-    public emptyStorage(
-        type: DataType | undefined,
-        label: string,
-    ): Value | undefined {
-        if (!type) return undefined;
-        const cpp = this.allocateTemporaryCppName(`empty_${label}`);
-        this.emit({
-            kind: "declaration",
-            type: this.dataTypes.cppType(type),
-            name: cpp,
-            initializer: "{}",
-        });
-        const value = this.dataLowerer.leafValue(cpp, type);
-        if (value.kind === "data" || value.engineCpp) return value;
-        // A resource no carrier names belongs to the entry's one engine,
-        // when there is one.
-        try {
-            return {
-                ...value,
-                engineCpp: this.requireDefaultEngine(this.sourceFile),
-            };
-        } catch (error) {
-            if (!(error instanceof CompileError)) throw error;
-            return value;
-        }
-    }
-
-    /**
-     * In a survey, every function of the program's own sources that no
-     * lowering of this attempt began is lowered once as a root, in a block
-     * of its own, outermost first: its parameters, its `this` and what it
-     * captures from enclosing functions hold empty storage of their types.
-     */
-    private emitSurveyRoots(): void {
-        const survey = activeSurvey();
-        if (!survey || this.options.workers?.namespace) return;
-        const files = this.program
-            .getSourceFiles()
-            .filter(
-                (file) =>
-                    !file.isDeclarationFile &&
-                    !isInstalledPackageFile(file.fileName),
-            );
-        survey.programSources(files);
-        // A rolled-back entry statement can leave the entry's one engine
-        // undeclared: roots then hold one of their own, which the resources
-        // they build or receive belong to.
-        if (!this.defaultEngineCpp) {
-            const engine = this.allocateTemporaryCppName("survey_engine");
-            const type = this.options.workers
-                ? "std::shared_ptr<bbl::Engine>"
-                : "bbl::Engine";
-            this.emit({
-                kind: "declaration",
-                type,
-                name: engine,
-                initializer: "{}",
-            });
-            this.registerNativeBindingType(engine, type);
-            this.defaultEngineCpp = this.options.workers
-                ? `(*${engine})`
-                : engine;
-        }
-        for (const file of files) {
-            const visit = (node: ts.Node): void => {
-                if (
-                    isSupportedFunction(node) &&
-                    node.body &&
-                    ts.isBlock(node.body) &&
-                    node.body.statements.length > 0 &&
-                    survey.untouched(node.body)
-                )
-                    // A survey writes no tree: a root's emission is
-                    // dropped, so the program's body keeps its size.
-                    survey.attemptRoot(this, node.body, () => {
-                        this.captureEmittedStatements(() =>
-                            this.emitSurveyRoot(node),
-                        );
-                    });
-                ts.forEachChild(node, visit);
-            };
-            visit(file);
-        }
-    }
-
-    /**
-     * Empty storage of `type`, or -- for a record no native layout holds
-     * (one with function members) -- the record a literal of that type
-     * would be: each member, `depth` levels down, empty storage of its own
-     * type, a member with none left out. Undefined for anything else.
-     */
-    private emptyValueOf(
-        type: ts.Type,
-        node: ts.Node,
-        label: string,
-        depth = 0,
-    ): Value | undefined {
-        const storage = this.emptyStorage(
-            this.dataTypes.fromTsType(type, node),
-            label,
-        );
-        const record = this.checker.getNonNullableType(type);
-        if (
-            storage ||
-            depth >= 3 ||
-            (record.flags & ts.TypeFlags.Object) === 0 ||
-            this.checker.isArrayType(record) ||
-            this.checker.isTupleType(record) ||
-            callSignatures(this.checker, record, "exact").length > 0
-        )
-            return storage;
-        const recordProperties: Record<string, Value> = {};
-        for (const property of this.checker.getPropertiesOfType(record)) {
-            try {
-                const value = this.emptyValueOf(
-                    this.checker.getTypeOfSymbolAtLocation(property, node),
-                    node,
-                    `${label}_${property.name}`,
-                    depth + 1,
-                );
-                if (value) recordProperties[property.name] = value;
-            } catch (error) {
-                if (!(error instanceof CompileError)) throw error;
-            }
-        }
-        return { kind: "record", cpp: "", recordProperties };
-    }
-
-    private emitSurveyRoot(declaration: SupportedFunction): void {
-        const site = (
-            node: ts.Node,
-            label: string,
-            type = this.checker.getTypeAtLocation(node),
-        ): Value => {
-            const value = this.emptyValueOf(type, node, label);
-            if (!value)
-                this.fail(
-                    node,
-                    `A survey root's ${label} has no native storage of its type.`,
-                );
-            return value;
-        };
-        this.emit({ kind: "open", code: "{" });
-        this.bindings.pushScope(this.allocateUserFunctionPrefix());
-        try {
-            for (const name of capturedFunctionLocals(
-                this.checker,
-                declaration,
-            ))
-                if (!this.bindings.lookupOptional(name))
-                    this.bindings.defineVariable(name, site(name, name.text));
-            // A static member's `this` is its class, which no instance holds.
-            const owner =
-                declaration.body &&
-                !(
-                    ts.isMethodDeclaration(declaration) &&
-                    declaration.modifiers?.some(
-                        (modifier) =>
-                            modifier.kind === ts.SyntaxKind.StaticKeyword,
-                    )
-                )
-                    ? thisClass(declaration.body)
-                    : undefined;
-            // An instance a root holds is stored: the class is shared from
-            // its first construction (a demand the next pass replays with).
-            if (owner) this.dataTypes.requireSharedClass(owner);
-            const ownerSymbol =
-                owner?.name && declaredSymbol(this.checker, owner.name);
-            const stored =
-                owner &&
-                ownerSymbol &&
-                site(
-                    owner,
-                    "this",
-                    this.checker.getDeclaredTypeOfSymbol(ownerSymbol),
-                );
-            // Methods read a stored instance through its class's receiver.
-            const instance =
-                stored && (this.classLowerer.hydrate(stored, owner) ?? stored);
-            const arguments_ = declaration.parameters.map((parameter) =>
-                site(
-                    parameter,
-                    ts.isIdentifier(parameter.name)
-                        ? parameter.name.text
-                        : "parameter",
-                ),
-            );
-            this.withThis(instance, () =>
-                this.userFunctions.compileSurveyRoot(
-                    this,
-                    declaration,
-                    arguments_,
-                ),
-            );
-        } finally {
-            this.bindings.popScope();
-            this.emit({ kind: "close", code: "}" });
-        }
+    public realmEngine(name: string): {
+        name: string;
+        type: string;
+        cpp: string;
+    } {
+        return this.options.workers
+            ? { name, type: "std::shared_ptr<bbl::Engine>", cpp: `(*${name})` }
+            : { name, type: "bbl::Engine", cpp: name };
     }
 
     private emissionTransaction<T>(

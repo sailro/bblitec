@@ -2296,17 +2296,25 @@ export type SupportedFunction =
     | ts.MethodDeclaration;
 
 /**
- * The class whose instance a `this` keyword reads (its constructor, in a
- * static member): the class of the nearest member that binds `this`.
+ * The nearest node binding the `this` keyword `node` reads: a function
+ * other than an arrow, a property declaration or a class static block.
  */
-export function thisClass(node: ts.Node): ts.ClassLikeDeclaration | undefined {
-    const member = ts.findAncestor(
+export function thisMember(node: ts.Node): ts.Node | undefined {
+    return ts.findAncestor(
         node.parent,
         (ancestor) =>
             (ts.isFunctionLike(ancestor) && !ts.isArrowFunction(ancestor)) ||
             ts.isPropertyDeclaration(ancestor) ||
             ts.isClassStaticBlockDeclaration(ancestor),
     );
+}
+
+/**
+ * The class whose instance a `this` keyword reads (its constructor, in a
+ * static member): the class of `thisMember`.
+ */
+export function thisClass(node: ts.Node): ts.ClassLikeDeclaration | undefined {
+    const member = thisMember(node);
     return member && ts.isClassLike(member.parent) ? member.parent : undefined;
 }
 

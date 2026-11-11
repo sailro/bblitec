@@ -21,24 +21,28 @@ const reflectiveObjectMethods = new Set([
 
 /**
  * Where a program can observe a property by its name, gathered in one walk
- * over its sources: the names it reads, whether some read takes every name
- * (a rest or run-time key in a pattern), and the values whose types decide
- * for the rest (a run-time key, a spread, `for...in`, a reflective call).
+ * over its sources: the names it reads, those only a plain write
+ * (`owner.name = value`) names, whether some read takes every name (a rest
+ * or run-time key in a pattern), and the values whose types decide for the
+ * rest (a run-time key, a spread, `for...in`, a reflective call).
  */
 interface PropertyObservations {
     readonly names: ReadonlySet<string>;
+    readonly written: ReadonlySet<string>;
     readonly everyName: boolean;
     readonly carriers: readonly {
         readonly parts: readonly ts.Type[];
         /** A run-time key of number type, which only reaches numeric names. */
         readonly numericKey: boolean;
     }[];
-    /** Answers per name, as asked. */
-    readonly answers: Map<string, boolean>;
+    /** Answers per name, as asked: whether it is never observed, and never read. */
+    readonly answers: {
+        observed: Map<string, boolean>;
+        read: Map<string, boolean>;
+    };
 }
 
 const observationsCache = new WeakMap<ts.Program, PropertyObservations>();
-const readObservationsCache = new WeakMap<ts.Program, PropertyObservations>();
 
 /**
  * Whether no reached source can observe a property named `name`: nothing
@@ -53,7 +57,7 @@ export function propertyNeverObserved(
     checker: ts.TypeChecker,
     name: string,
 ): boolean {
-    return unobserved(program, checker, name, observationsCache, false);
+    return unobserved(program, checker, name, false);
 }
 
 /**
@@ -65,47 +69,53 @@ export function propertyNeverRead(
     checker: ts.TypeChecker,
     name: string,
 ): boolean {
-    return unobserved(program, checker, name, readObservationsCache, true);
+    return unobserved(program, checker, name, true);
 }
 
 function unobserved(
     program: ts.Program,
     checker: ts.TypeChecker,
     name: string,
-    caches: WeakMap<ts.Program, PropertyObservations>,
     writesUnread: boolean,
 ): boolean {
-    let observations = caches.get(program);
+    let observations = observationsCache.get(program);
     if (!observations) {
-        observations = observePropertyNames(program, checker, writesUnread);
-        caches.set(program, observations);
+        observations = observePropertyNames(program, checker);
+        observationsCache.set(program, observations);
     }
-    const known = observations.answers.get(name);
+    const answers = writesUnread
+        ? observations.answers.read
+        : observations.answers.observed;
+    const known = answers.get(name);
     if (known !== undefined) return known;
     const numericName = String(Number(name)) === name;
     const unread =
         !observations.everyName &&
         !observations.names.has(name) &&
+        (writesUnread || !observations.written.has(name)) &&
         !observations.carriers.some(
             ({ parts, numericKey }) =>
-                !(numericKey && !numericName) &&
-                parts.some(
-                    (part) =>
-                        (part.flags &
-                            (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) !==
-                            0 || part.getProperty(name) !== undefined,
-                ),
+                !(numericKey && !numericName) && carriesName(parts, name),
         );
-    observations.answers.set(name, unread);
+    answers.set(name, unread);
     return unread;
+}
+
+/** Whether a value of one of `parts` may hold a property named `name`. */
+function carriesName(parts: readonly ts.Type[], name: string): boolean {
+    return parts.some(
+        (part) =>
+            (part.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) !== 0 ||
+            part.getProperty(name) !== undefined,
+    );
 }
 
 function observePropertyNames(
     program: ts.Program,
     checker: ts.TypeChecker,
-    writesUnread: boolean,
 ): PropertyObservations {
     const names = new Set<string>();
+    const written = new Set<string>();
     let everyName = false;
     const carriers: { parts: readonly ts.Type[]; numericKey: boolean }[] = [];
     const carrier = (expression: ts.Expression, numericKey = false): void => {
@@ -132,16 +142,13 @@ function observePropertyNames(
                 assignmentPattern(slot.target);
     };
     const visit = (node: ts.Node): void => {
-        if (
-            ts.isPropertyAccessExpression(node) &&
-            !(
-                writesUnread &&
-                ts.isBinaryExpression(node.parent) &&
-                node.parent.left === node &&
-                node.parent.operatorToken.kind === ts.SyntaxKind.EqualsToken
-            )
-        )
-            names.add(node.name.text);
+        if (ts.isPropertyAccessExpression(node))
+            (ts.isBinaryExpression(node.parent) &&
+            node.parent.left === node &&
+            node.parent.operatorToken.kind === ts.SyntaxKind.EqualsToken
+                ? written
+                : names
+            ).add(node.name.text);
         if (ts.isElementAccessExpression(node)) {
             // A key only the run time knows may be any name, unless it is a
             // number and the name converts to no number.
@@ -154,11 +161,9 @@ function observePropertyNames(
                     ) === "number",
                 );
             else if (
-                unionMembers(checker.getTypeAtLocation(node.expression)).some(
-                    (part) =>
-                        (part.flags &
-                            (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) !==
-                            0 || part.getProperty(key) !== undefined,
+                carriesName(
+                    unionMembers(checker.getTypeAtLocation(node.expression)),
+                    key,
                 )
             )
                 names.add(key);
@@ -192,7 +197,13 @@ function observePropertyNames(
     };
     for (const file of program.getSourceFiles())
         if (!file.isDeclarationFile) visit(file);
-    return { names, everyName, carriers, answers: new Map() };
+    return {
+        names,
+        written,
+        everyName,
+        carriers,
+        answers: { observed: new Map(), read: new Map() },
+    };
 }
 
 /**

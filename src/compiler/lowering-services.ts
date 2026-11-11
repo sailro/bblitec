@@ -475,12 +475,12 @@ export interface LoweringServices {
     /** The refusal a storage demand stands for once its replay refused it (`NativeRecordDemandRefused`). */
     refusedDemand(error: unknown): CompileError | undefined;
     /**
-     * Binds an unbound `name` to empty storage of its declared type, so later
-     * statements lower against it; false when its type has no storage.
+     * Binds an unbound `name` to empty storage of its declared type, so
+     * later statements lower against it; nothing where its type has none.
      */
-    bindEmptyStorage(name: ts.Identifier): boolean;
-    /** A native local holding empty storage of `type`; undefined when it has none. */
-    emptyStorage(type: DataType | undefined, label: string): Value | undefined;
+    bindEmptyStorage(name: ts.Identifier): void;
+    /** The realm's engine local `name`: its storage type and how code reads it (a worker realm holds it shared). */
+    realmEngine(name: string): { name: string; type: string; cpp: string };
     captureEmittedLines(
         emitBody: () => void,
         options?: { functionBody?: true },

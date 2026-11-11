@@ -915,19 +915,20 @@ export class StatementLowerer {
     }
 
     /**
-     * An inlined function body whose bare early returns leave it: a
-     * `do {} while (false)` they break out of, or, when one stands inside a
-     * loop or switch, a scope with a label after it.
+     * Code whose jumps to `owner` leave it -- an inlined function body's
+     * bare early returns, or a held statement's jumps to the compound
+     * statement it stood in (`emitHeld`): a `do {} while (false)` they break
+     * out of, or a scope with a label after it.
      */
     public emitInlinedBody<T>(
         context: StatementLoweringContext,
-        declaration: ts.SignatureDeclaration,
+        owner: ts.Node,
         returns: "break" | "label",
         emitBody: () => T,
     ): T {
         const wrapper = returns === "break";
         const target = jumpTarget(
-            declaration,
+            owner,
             wrapper
                 ? { breakable: true }
                 : { exit: this.jumpLabel(context, "inline_return") },
@@ -1022,26 +1023,15 @@ export class StatementLowerer {
         holder: ts.Statement,
         nested: ts.Statement,
     ): void {
-        if (ts.isLabeledStatement(holder)) {
-            const target = jumpTarget(holder, {
-                exit: this.jumpLabel(context, `label_${holder.label.text}`),
-            });
-            this.withJumpTarget(target, () => this.emit(context, nested));
-            this.placeLabel(context, target.exit);
-            return;
-        }
-        if (
-            !ts.isIterationStatement(holder, false) &&
-            !ts.isSwitchStatement(holder)
-        ) {
-            this.emit(context, nested);
-            return;
-        }
-        context.emit({ kind: "open", code: "do {" });
-        this.withJumpTarget(jumpTarget(holder, { breakable: true }), () =>
-            this.emit(context, nested),
-        );
-        context.emit({ kind: "close", code: "} while (false);" });
+        const lower = (): void => this.emit(context, nested);
+        if (ts.isLabeledStatement(holder))
+            this.emitInlinedBody(context, holder, "label", lower);
+        else if (
+            ts.isIterationStatement(holder, false) ||
+            ts.isSwitchStatement(holder)
+        )
+            this.emitInlinedBody(context, holder, "break", lower);
+        else lower();
     }
 
     private lowerStatement(

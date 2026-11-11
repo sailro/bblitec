@@ -11,6 +11,7 @@ import {
 import { metadataFieldsForKind } from "./values/metadata.js";
 import { isJsonValue } from "./json-bridge.js";
 import { activeSurvey } from "./survey.js";
+import { emptyStorage } from "./survey-roots.js";
 import {
     someAnalysisNode,
     forEachAnalysisNode,
@@ -1523,7 +1524,8 @@ export interface UserFunctionContext
         Pick<
             LoweringServices,
             | "absenceTags"
-            | "emptyStorage"
+            | "requireDefaultEngine"
+            | "sourceFile"
             | "speculating"
             | "classLowerer"
             | "callbacks"
@@ -1993,13 +1995,14 @@ export class UserFunctionLowerer {
     private repeatedSurveyCall(
         context: UserFunctionContext,
         ir: UserFunctionIr,
-        discardReturn: boolean,
-        body: CallbackInvocationOptions | undefined,
+        discardReturn = false,
+        body?: CallbackInvocationOptions,
     ): Value | undefined {
-        const survey = activeSurvey();
         if (
-            !survey ||
-            !survey.loweredBefore(ir.declaration, context.speculating) ||
+            !activeSurvey()?.loweredBefore(
+                ir.declaration,
+                context.speculating,
+            ) ||
             body
         )
             return undefined;
@@ -2010,7 +2013,8 @@ export class UserFunctionLowerer {
             signature && this.checker.getReturnTypeOfSignature(signature);
         if (discardReturn || !returned || isVoid(returned))
             return { kind: "void", cpp: "" };
-        return context.emptyStorage(
+        return emptyStorage(
+            context,
             context.dataTypes.fromTsType(returned, ir.declaration),
             "result",
         );
@@ -2381,12 +2385,7 @@ export class UserFunctionLowerer {
             !returned ||
             (returnType && !context.dataTypes.carriesFunction(returnType))
         ) {
-            const repeated = this.repeatedSurveyCall(
-                context,
-                ir,
-                false,
-                undefined,
-            );
+            const repeated = this.repeatedSurveyCall(context, ir);
             if (repeated) return repeated;
             const group = this.reachedRecursiveGroup(context, ir.declaration);
             let result = this.lowerRecursiveGroup(
