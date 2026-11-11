@@ -280,6 +280,7 @@ import {
     namedMember,
     libraryStaticMember,
     isLibraryStatic,
+    declaredSymbol,
 } from "./compiler/symbols.js";
 import {
     isNullable,
@@ -7375,7 +7376,7 @@ class Compiler implements LoweringServices {
             (record.flags & ts.TypeFlags.Object) === 0 ||
             this.checker.isArrayType(record) ||
             this.checker.isTupleType(record) ||
-            record.getCallSignatures().length > 0
+            callSignatures(this.checker, record, "exact").length > 0
         )
             return storage;
         const recordProperties: Record<string, Value> = {};
@@ -7434,7 +7435,7 @@ class Compiler implements LoweringServices {
             // its first construction (a demand the next pass replays with).
             if (owner) this.dataTypes.requireSharedClass(owner);
             const ownerSymbol =
-                owner?.name && this.checker.getSymbolAtLocation(owner.name);
+                owner?.name && declaredSymbol(this.checker, owner.name);
             const stored =
                 owner &&
                 ownerSymbol &&

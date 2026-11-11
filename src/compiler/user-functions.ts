@@ -43,6 +43,7 @@ import {
     holdsOnly,
     isNullable,
     holdsNoPayload,
+    isVoid,
     valueKindOf,
     unionMembers,
     boundedTupleElements,
@@ -2007,11 +2008,7 @@ export class UserFunctionLowerer {
         );
         const returned =
             signature && this.checker.getReturnTypeOfSignature(signature);
-        if (
-            discardReturn ||
-            !returned ||
-            (returned.flags & ts.TypeFlags.Void) !== 0
-        )
+        if (discardReturn || !returned || isVoid(returned))
             return { kind: "void", cpp: "" };
         return context.emptyStorage(
             context.dataTypes.fromTsType(returned, ir.declaration),
