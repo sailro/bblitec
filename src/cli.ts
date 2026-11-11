@@ -701,17 +701,15 @@ function writeSurvey(
     censusPath: string,
     source: string,
     compileOptions: CompileOptions,
-    passes: number | undefined,
+    target: { passes?: number; entryOnly?: true },
     leaveCoverage: () => void,
 ): void {
     // A survey of a large entry says where it is and leaves its census as
     // it goes, and its far larger coverage every ten minutes: one stopped
     // early is still read.
     let coverageLeftAt = Date.now();
-    const { report } = surveySource(
-        source,
-        compileOptions,
-        {
+    const { report } = surveySource(source, compileOptions, {
+        progress: {
             report: (line) => console.error(line),
             intervalMs: 60 * 1000,
             census: (census) => {
@@ -721,8 +719,9 @@ function writeSurvey(
                 leaveCoverage();
             },
         },
-        passes,
-    );
+        ...(target.passes ? { passLimit: target.passes } : {}),
+        ...(target.entryOnly ? { roots: false } : {}),
+    });
     writeJsonRecord(censusPath, report);
     console.log(
         `Survey: ${report.statements.attempted} statement lowerings (${report.statements.rooted} in roots), ${report.statements.refused} refused ` +
@@ -817,9 +816,9 @@ async function main(): Promise<void> {
     };
     if (options.target.kind === "survey") {
         const census = resolve(options.target.census);
-        const { passes } = options.target;
+        const target = options.target;
         withCoverage(options.coverage, (leave) =>
-            writeSurvey(census, source, compileOptions, passes, leave),
+            writeSurvey(census, source, compileOptions, target, leave),
         );
         return;
     }

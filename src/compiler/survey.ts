@@ -366,6 +366,17 @@ function describeStop(cause: unknown): string {
     );
 }
 
+/**
+ * How a survey runs: what it reports as it goes, the most passes it runs,
+ * and whether it lowers roots -- without them it lowers only what the
+ * entry reaches, and its census is that flow's.
+ */
+export interface SurveySettings {
+    readonly progress?: SurveyProgress;
+    readonly passLimit?: number;
+    readonly roots?: boolean;
+}
+
 /** How a survey reports while it runs: a line at most every `intervalMs`. */
 export interface SurveyProgress {
     readonly report: (line: string) => void;
@@ -401,17 +412,24 @@ export class SurveyCollector {
     /** @unjournaled The census of the last pass that ran to its end (`publishedSurvey`). */
     private furthest: SurveyReport | undefined;
 
+    private readonly progress: SurveyProgress | undefined;
+    private readonly passLimit: number | undefined;
+    /** Whether the survey lowers the functions no lowering reached as roots. */
+    public readonly lowersRoots: boolean;
+
     /**
      * `replayable`: the replays besides storage a compile applies before its
      * next attempt (a lazy module's activation, runtime query state), which
-     * a pass meets at a statement as it meets a storage demand;
-     * `passLimit`: the most passes the survey runs.
+     * a pass meets at a statement as it meets a storage demand.
      */
     public constructor(
-        private readonly progress?: SurveyProgress,
+        settings: SurveySettings = {},
         private readonly replayable?: (error: unknown) => error is Error,
-        private readonly passLimit?: number,
-    ) {}
+    ) {
+        this.progress = settings.progress;
+        this.passLimit = settings.passLimit;
+        this.lowersRoots = settings.roots ?? true;
+    }
 
     /**
      * A progress line once `intervalMs` passed: the lowerings and refused

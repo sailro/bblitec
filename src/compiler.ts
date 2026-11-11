@@ -88,7 +88,7 @@ import {
     activeSurvey,
     SurveyCollector,
     SurveyPassLimit,
-    type SurveyProgress,
+    type SurveySettings,
     withSurvey,
     type SurveyReport,
 } from "./compiler/survey.js";
@@ -661,14 +661,9 @@ interface SurveyOutcome {
 export function surveySource(
     source: string,
     options: CompileOptions = {},
-    progress?: SurveyProgress,
-    passLimit?: number,
+    settings: SurveySettings = {},
 ): SurveyOutcome {
-    const collector = new SurveyCollector(
-        progress,
-        isReplayBesidesStorage,
-        passLimit,
-    );
+    const collector = new SurveyCollector(settings, isReplayBesidesStorage);
     return withSurvey(collector, () => {
         try {
             const result = compileSourceApplication(source, options);

@@ -84,9 +84,10 @@ export function emptyStorage(
 
 /**
  * Lowers every function of the program's own sources that no lowering of
- * the survey's attempt began, outermost first. A rolled-back entry
- * statement can leave the entry's one engine undeclared: the roots then
- * hold one of their own while they lower.
+ * the survey's attempt began, outermost first, unless the survey lowers
+ * only what the entry reaches; either way the census counts those sources.
+ * A rolled-back entry statement can leave the entry's one engine
+ * undeclared: the roots then hold one of their own while they lower.
  */
 export function emitSurveyRoots(
     context: SurveyRootContext,
@@ -94,6 +95,7 @@ export function emitSurveyRoots(
 ): void {
     const files = context.program.getSourceFiles().filter(isProgramSourceFile);
     survey.programSources(files);
+    if (!survey.lowersRoots) return;
     const enclosingEngine = context.defaultEngineCpp;
     if (!enclosingEngine) {
         const engine = context.realmEngine(

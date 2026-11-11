@@ -110,7 +110,7 @@ test("a survey reports its progress and the statement it lowers", () => {
     const { report } = surveySource(
         refusing,
         { fileName: resolve("survey-progress.ts") },
-        { report: (line) => lines.push(line), intervalMs: 0 },
+        { progress: { report: (line) => lines.push(line), intervalMs: 0 } },
     );
     assert.equal(lines.length, report.statements.attempted);
     // The last line counts every refusal recorded before that statement.
@@ -137,7 +137,7 @@ test("a survey pass rolls back a storage demand's statement and the next pass re
         console.log(active.gain);
     `,
         { fileName: resolve("survey-restart.ts") },
-        { report: (line) => lines.push(line), intervalMs: 0 },
+        { progress: { report: (line) => lines.push(line), intervalMs: 0 } },
     );
     assert.deepEqual(
         lines.filter((line) => line.startsWith("Survey pass")),
@@ -172,7 +172,7 @@ test("one survey pass meets every independent demand", () => {
     const { report } = surveySource(
         source,
         { fileName: resolve("survey-plan.ts") },
-        { report: (line) => lines.push(line), intervalMs: 0 },
+        { progress: { report: (line) => lines.push(line), intervalMs: 0 } },
     );
     assert.equal(report.complete, true);
     assert.deepEqual(
@@ -185,8 +185,7 @@ test("one survey pass meets every independent demand", () => {
     const capped = surveySource(
         source,
         { fileName: resolve("survey-plan.ts") },
-        undefined,
-        1,
+        { passLimit: 1 },
     ).report;
     assert.equal(capped.passes, 1);
     assert.equal(capped.statements.demanded, 3);
@@ -385,6 +384,36 @@ test("a survey lowers every function the program never reached as a root", () =>
     assert.equal(report.program.attempted, report.program.statements);
 });
 
+test("a survey without roots lowers only what the entry reaches", () => {
+    // `unused` is never called: without roots its refusal is not met, and
+    // the program census counts only the statements the entry reached.
+    const { report } = surveySource(
+        `
+        let total = 0;
+        export function unused(name: string): number {
+            total += new FinalizationRegistry<string>(() => {}).unregister({ name }) ? 1 : 0;
+            return total;
+        }
+        function used(step: number): void {
+            total += new FinalizationRegistry<string>(() => {}).unregister({ step }) ? step : 0;
+        }
+        used(2);
+        localStorage.setItem("total", String(total));
+    `,
+        { fileName: resolve("survey-entry-only.ts") },
+        { roots: false },
+    );
+    assert.equal(report.complete, true);
+    assert.deepEqual(
+        report.refusals.map((refusal) => refusal.statement.function),
+        ["used"],
+        listed(report),
+    );
+    assert.equal(report.statements.rooted, 0);
+    assert.ok(report.program);
+    assert.ok(report.program.attempted < report.program.statements);
+});
+
 test("a survey lowers the statements a rolled-back compound statement holds", () => {
     // The `if` condition and the loop's iterable refuse; each body is still
     // lowered on its own, the loop variable holding empty storage, so the
@@ -566,9 +595,11 @@ test("a survey leaves its census as it goes", () => {
     `,
         { fileName: resolve("survey-left.ts") },
         {
-            report: () => {},
-            intervalMs: 0,
-            census: (found) => left.push(found),
+            progress: {
+                report: () => {},
+                intervalMs: 0,
+                census: (found) => left.push(found),
+            },
         },
     );
     assert.equal(report.complete, true);

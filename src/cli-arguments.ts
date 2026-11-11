@@ -7,7 +7,7 @@ import type { CompileOptions } from "./compiler/types.js";
 /** What a run produces: a generated tree, or a survey's census in its place. */
 export type CliTarget =
     | { kind: "generate"; output: string }
-    | { kind: "survey"; census: string; passes?: number };
+    | { kind: "survey"; census: string; passes?: number; entryOnly?: true };
 
 export interface CliOptions {
     input: string;
@@ -60,6 +60,7 @@ const OPTION_FLAGS: ReadonlyArray<{ flag: string; value?: string }> = [
     { flag: "--source-profile", value: "<function,...>" },
     { flag: "--coverage", value: "<coverage.json>" },
     { flag: "--survey-passes", value: "<count>" },
+    { flag: "--survey-entry-only" },
     { flag: "--deferred-capabilities", value: "runtime-throw" },
     { flag: "--condition", value: "<name>" },
 ];
@@ -108,6 +109,7 @@ export function parseArguments(arguments_: readonly string[]): CliOptions {
     let sourceProfile: string[] | undefined;
     let coverage: string | undefined;
     let surveyPasses: number | undefined;
+    let surveyEntryOnly = false;
     let deferredCapabilities: CompileOptions["deferredCapabilities"];
     const conditions: string[] = [];
 
@@ -133,6 +135,9 @@ export function parseArguments(arguments_: readonly string[]): CliOptions {
             case "--survey-passes":
                 surveyPasses = parsePositiveInteger(value, flag);
                 index += 1;
+                break;
+            case "--survey-entry-only":
+                surveyEntryOnly = true;
                 break;
             case "--deferred-capabilities":
                 if (value !== "runtime-throw")
@@ -237,6 +242,7 @@ export function parseArguments(arguments_: readonly string[]): CliOptions {
               kind: "survey",
               census: survey,
               ...(surveyPasses ? { passes: surveyPasses } : {}),
+              ...(surveyEntryOnly ? { entryOnly: true as const } : {}),
           }
         : output
           ? { kind: "generate", output }
