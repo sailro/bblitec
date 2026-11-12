@@ -4195,11 +4195,13 @@ export class DataTypeRegistry {
                 holdsRecordStorage(fieldStorage(own))
             )
                 continue;
+            const message = `A retained record union requires one shared layout preserving its original fields and storage kinds: '${this.checker.typeToString(member)}' records stored as '${union.name}' would lose '${property.name}'.`;
+            // A union storing its members' common fields stores every
+            // member's on a replay (`requireArmFields`).
+            if (!field)
+                this.requireArmFields(union.name, property.name, node, message);
             if (!held || !joined || !dataTypesEqual(joined, held))
-                this.fail(
-                    node,
-                    `A retained record union requires one shared layout preserving its original fields and storage kinds: '${this.checker.typeToString(member)}' records stored as '${union.name}' would lose '${property.name}'.`,
-                );
+                this.fail(node, message);
         }
     }
 
