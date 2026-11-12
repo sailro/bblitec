@@ -6386,6 +6386,50 @@ check(
 );
 
 check(
+    "stored-callback-returns-an-object-by-identity",
+    `
+    interface Frame { halfX: number }
+    interface MotionTarget {
+        readonly handle: number;
+        readonly readRenderFrame?: (out: Frame) => boolean;
+        readonly publicationToken?: () => object | null;
+    }
+    interface PlacementTarget {
+        readonly motionId: number;
+        readonly readRenderFrame: (out: Frame) => boolean;
+    }
+    const frame: Frame = { halfX: 1 };
+    const first = { id: 1 };
+    const second = { id: 2 };
+    let current: object = first;
+    let retained: MotionTarget | null = null;
+    let placement: PlacementTarget | null = null;
+    let releaseToken: object | null = null;
+    const activeTarget = (): MotionTarget | PlacementTarget | null => placement ?? retained;
+    let log = "";
+    function write(): void {
+        const active = activeTarget();
+        if (!active) return;
+        if ("motionId" in active) {
+            if (active.readRenderFrame(frame)) log += "p" + active.motionId;
+        } else {
+            log += "m" + active.handle;
+            if (active.readRenderFrame) active.readRenderFrame(frame);
+        }
+        if (retained && active === retained && retained.publicationToken?.() !== releaseToken) log += "!";
+    }
+    retained = { handle: 1, publicationToken: () => current };
+    releaseToken = retained.publicationToken?.() ?? null;
+    write();
+    current = second;
+    write();
+    placement = { motionId: 3, readRenderFrame: (out) => out.halfX > 0 };
+    write();
+    if (log !== "m1m1!p3") throw new Error("log " + log);
+`,
+);
+
+check(
     "narrower-string-union-callback-slot",
     `
     type BuildingKind = "house" | "tower" | "mill" | "well";

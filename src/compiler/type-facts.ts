@@ -524,6 +524,19 @@ export function isVoid(type: ts.Type): boolean {
 }
 
 /**
+ * Whether a slot of this type is typed `object` (`null` and `undefined`
+ * aside): it holds any non-primitive value, as a dynamic value whose
+ * records keep their identity.
+ */
+export function holdsObjectKeyword(type: ts.Type): boolean {
+    const present = presentMembers(type);
+    return (
+        present.length === 1 &&
+        (present[0]!.flags & ts.TypeFlags.NonPrimitive) !== 0
+    );
+}
+
+/**
  * Whether a slot of this type holds no payload: `void` or `never`. Such a
  * parameter only fills a position; its argument is erased.
  */

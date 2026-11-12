@@ -161,6 +161,7 @@ import {
     fixedTupleElements,
     signatureParameterTypes,
     declaredRecordName,
+    holdsObjectKeyword,
 } from "./type-facts.js";
 import { nativeReturnTsType } from "./native-return-type.js";
 import {
@@ -5572,7 +5573,8 @@ export class DataTypeRegistry {
                                 ? undefined
                                 : actualSignature,
                         )
-                      : ((this.dynamicJsonStorage
+                      : ((this.dynamicJsonStorage ||
+                        holdsObjectKeyword(parameterType)
                             ? this.dynamicJsonType(parameterType)
                             : undefined) ??
                         this.fromStoredTsType(parameterType, location) ??
@@ -5671,7 +5673,7 @@ export class DataTypeRegistry {
             ? this.checker.getNonNullableType(resultType)
             : resultType;
         const mappedPresent = presentResult
-            ? ((this.dynamicJsonStorage
+            ? ((this.dynamicJsonStorage || holdsObjectKeyword(presentResult)
                   ? this.dynamicJsonType(presentResult)
                   : undefined) ??
               this.fromStoredTsType(presentResult, node) ??
@@ -7752,7 +7754,7 @@ export class DataTypeRegistry {
                 ((resolved.flags & ts.TypeFlags.Unknown) !== 0 ||
                     (!this.checker.isArrayLikeType(present) &&
                         this.dynamicJsonType(present) !== undefined))) ||
-            (present.flags & ts.TypeFlags.NonPrimitive) !== 0
+            holdsObjectKeyword(present)
         )
             return { kind: "json" };
         if (!undefinedOnly(resolved)) {
