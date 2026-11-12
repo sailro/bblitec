@@ -7613,6 +7613,7 @@ MeshHandle create_plane(Engine& engine, PlaneOptions options);
 MeshHandle create_sphere(Engine& engine, SphereOptions options);
 MeshData create_box_data(double width, double height, double depth);
 MeshData create_sphere_data(SphereOptions options);
+MeshData create_cylinder_data(CylinderOptions options);
 void attach_morph_target(Engine& engine, MeshHandle mesh, const std::vector<float>& positions,
                          const std::vector<float>& normals, double vertex_count, float weight);
 void set_morph_target_weights(Engine& engine, MeshHandle mesh, const std::vector<float>& weights);

@@ -2703,33 +2703,43 @@ function compileCreateMeshesFromCsg(
     );
 }
 
-function compileCreateBoxData(
+function compileCreateMeshData(
     context: MeshIntrinsicContext,
     call: ts.CallExpression,
-    importedName: "createBoxData" | "createSphereData",
+    importedName: "createBoxData" | "createSphereData" | "createCylinderData",
 ): Value | undefined {
     context.expectArgumentCount(call, 0, 1);
-    const box = importedName === "createBoxData";
-    const options = box
-        ? call.arguments[0]
-            ? context.intrinsicOptions.compileBoxOptions(
-                  call.arguments[0],
-                  "double",
-              )
-            : ["1.0", "1.0", "1.0"]
-        : call.arguments[0]
-          ? context.intrinsicOptions.compileSphereOptions(call.arguments[0])
-          : ["32u", "1.0", "1.0", "1.0"];
-    const temporary = context.allocateTemporaryCppName(
-        box ? "box_data" : "sphere_data",
-    );
-    context.emit(
-        `bbl::MeshData ${temporary} = ` +
-            (box
-                ? `bbl::create_box_data(${options.join(", ")});`
-                : `bbl::create_sphere_data(bbl::SphereOptions{${options.join(", ")}});`),
-    );
-    context.reachFeature(box ? "mesh:box" : "mesh:sphere", call);
+    const options = call.arguments[0];
+    const [label, data, feature] =
+        importedName === "createBoxData"
+            ? [
+                  "box_data",
+                  `bbl::create_box_data(${(options
+                      ? context.intrinsicOptions.compileBoxOptions(
+                            options,
+                            "double",
+                        )
+                      : ["1.0", "1.0", "1.0"]
+                  ).join(", ")})`,
+                  "mesh:box" as const,
+              ]
+            : importedName === "createSphereData"
+              ? [
+                    "sphere_data",
+                    `bbl::create_sphere_data(bbl::SphereOptions{${(options
+                        ? context.intrinsicOptions.compileSphereOptions(options)
+                        : ["32u", "1.0", "1.0", "1.0"]
+                    ).join(", ")}})`,
+                    "mesh:sphere" as const,
+                ]
+              : [
+                    "cylinder_data",
+                    `bbl::create_cylinder_data(${cylinderOptionsCpp(context, options)})`,
+                    "mesh:cylinder" as const,
+                ];
+    const temporary = context.allocateTemporaryCppName(label);
+    context.emit(`bbl::MeshData ${temporary} = ${data};`);
+    context.reachFeature(feature, call);
     context.reachJsData();
     // A data result owns JavaScript typed arrays. Materialize each
     // stream once so aliases of a returned property share storage.
@@ -2749,22 +2759,26 @@ function compileCreateBoxData(
             dataType: { kind: indices ? "u32array" : "f32array" },
         };
     }
+    // A cylinder's data is the four arrays alone, as the pin returns it.
     return {
         kind: "record",
         cpp: "",
-        recordProperties: {
-            ...recordProperties,
-            vertexCount: {
-                kind: "number",
-                cpp: `static_cast<double>(${temporary}.vertex_count)`,
-                dataType: { kind: "number" },
-            },
-            indexCount: {
-                kind: "number",
-                cpp: `static_cast<double>(${temporary}.index_count)`,
-                dataType: { kind: "number" },
-            },
-        },
+        recordProperties:
+            importedName === "createCylinderData"
+                ? recordProperties
+                : {
+                      ...recordProperties,
+                      vertexCount: {
+                          kind: "number",
+                          cpp: `static_cast<double>(${temporary}.vertex_count)`,
+                          dataType: { kind: "number" },
+                      },
+                      indexCount: {
+                          kind: "number",
+                          cpp: `static_cast<double>(${temporary}.index_count)`,
+                          dataType: { kind: "number" },
+                      },
+                  },
     };
 }
 
@@ -3141,9 +3155,6 @@ function compileCreateCylinder(
     context: MeshIntrinsicContext,
     call: ts.CallExpression,
 ): Value | undefined {
-    // The pinned option set, with `diameter` resolved here because
-    // the emitted record carries the two ends the builder actually
-    // reads. Each default is the factory's own `??` value.
     const sceneMeshIndex = context.sceneManifest.recordSceneMesh("from-data", {
         hasUv2: false,
         hasTangents: false,
@@ -3152,6 +3163,25 @@ function compileCreateCylinder(
     context.expectArgumentCount(call, 1, 2);
     const engine = context.compileValue(argumentAt(call, 0));
     context.expectKind(engine, "engine", argumentAt(call, 0));
+    const options = cylinderOptionsCpp(context, call.arguments[1]);
+    context.reachFeature("mesh:cylinder", call);
+    return {
+        kind: "mesh",
+        sceneMeshIndex,
+        cpp: `bbl::create_cylinder(${engine.cpp}, ${options})`,
+        engineCpp: engine.engineCpp ?? engine.cpp,
+    };
+}
+
+/**
+ * The native `CylinderOptions` record of the pinned option set, with
+ * `diameter` resolved here because the record carries the two ends the
+ * builder actually reads. Each default is the factory's own `??` value.
+ */
+function cylinderOptionsCpp(
+    context: MeshIntrinsicContext,
+    optionsArgument: ts.Expression | undefined,
+): string {
     const cylinderDefault = (local: string): string =>
         doubleLiteral(
             pinnedMeshOptionDefault(
@@ -3176,8 +3206,8 @@ function compileCreateCylinder(
         tessellation: cylinderDefault("tessellation"),
         subdivisions: cylinderDefault("subdivisions"),
     };
-    if (call.arguments[1]) {
-        const options = context.expectObjectLiteral(call.arguments[1]);
+    if (optionsArgument) {
+        const options = context.expectObjectLiteral(optionsArgument);
         validateObjectProperties(
             context,
             options,
@@ -3211,18 +3241,9 @@ function compileCreateCylinder(
             topIsZero = `(${context.compileNumber(top, "double")} == 0.0)`;
         }
     }
-    context.reachFeature("mesh:cylinder", call);
-    return {
-        kind: "mesh",
-        sceneMeshIndex,
-        cpp:
-            `bbl::create_cylinder(${engine.cpp}, ` +
-            `bbl::CylinderOptions{` +
-            `${emitted
-                .map((name) => cylinderResolved[name])
-                .join(", ")}, ${topIsZero}})`,
-        engineCpp: engine.engineCpp ?? engine.cpp,
-    };
+    return `bbl::CylinderOptions{${emitted
+        .map((name) => cylinderResolved[name])
+        .join(", ")}, ${topIsZero}}`;
 }
 
 function compileCreateCapsule(
@@ -3642,12 +3663,18 @@ const meshIntrinsicHandlers = new EmissionMap<
     ["createMeshesFromCsg", compileCreateMeshesFromCsg],
     [
         "createBoxData",
-        (context, call) => compileCreateBoxData(context, call, "createBoxData"),
+        (context, call) =>
+            compileCreateMeshData(context, call, "createBoxData"),
     ],
     [
         "createSphereData",
         (context, call) =>
-            compileCreateBoxData(context, call, "createSphereData"),
+            compileCreateMeshData(context, call, "createSphereData"),
+    ],
+    [
+        "createCylinderData",
+        (context, call) =>
+            compileCreateMeshData(context, call, "createCylinderData"),
     ],
     ["createMorphTargets", compileCreateMorphTargets],
     ["setMorphTargetWeights", compileSetMorphTargetWeights],
