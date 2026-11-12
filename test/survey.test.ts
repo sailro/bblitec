@@ -708,6 +708,27 @@ test("an object literal's method root reads this as the record holding it", () =
     assert.deepEqual(report.refusals, [], listed(report));
 });
 
+test("a survey root's value typed object is dynamic, as such a binding is", () => {
+    // `lease` and each method's `token` are typed `object`: their root
+    // values are dynamic values, as the binding's own storage is.
+    const { report } = surveySource(
+        `
+        export function createGate(): { open(token: object): boolean; close(token: object): void } {
+            let lease: object | null = null;
+            return {
+                open(token) { if (lease !== null && lease !== token) return false; lease = token; return true; },
+                close(token) { if (lease === token) lease = null; },
+            };
+        }
+        localStorage.setItem("ready", "1");
+    `,
+        { fileName: resolve("survey-object-root.ts") },
+    );
+    assert.ok(report.program);
+    assert.equal(report.program.attempted, report.program.statements);
+    assert.deepEqual(report.refusals, [], listed(report));
+});
+
 test("a generic method instantiating its own interface ends the survey's mapping", () => {
     // `map` returns a `Pair` again: binding its receiver's arguments would
     // unfold `Pair<B, A>` into `Pair<A, B>` without end. The survey ends with

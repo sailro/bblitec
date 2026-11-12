@@ -42,6 +42,7 @@ import { pinnedHandleKind } from "./data-types.js";
 import type { HandleKind } from "./data-types/model.js";
 import {
     callSignatures,
+    holdsObjectKeyword,
     holdsOnly,
     inheritsFrom,
     objectLikeType,
@@ -284,12 +285,17 @@ function emptyValueOf(
     // pass. Its array is one its caller owns, which a borrowed view only
     // lends a callee; the `unknown` values a type reaches are stored as
     // documents, as a parsed value of it is.
-    const mapped = context.dataTypes.orDynamicJsonTypes(() => {
-        const stored = context.dataTypes.fromStoredTsType(type, node);
-        return stored && !context.dataTypes.carriesGenericFunction(stored)
-            ? stored
-            : context.dataTypes.fromTsType(type, node);
-    });
+    // A value typed `object` is dynamic, as such a binding is.
+    const mapped =
+        context.dataTypes.orDynamicJsonTypes(() => {
+            const stored = context.dataTypes.fromStoredTsType(type, node);
+            return stored && !context.dataTypes.carriesGenericFunction(stored)
+                ? stored
+                : context.dataTypes.fromTsType(type, node);
+        }) ??
+        (holdsObjectKeyword(type)
+            ? context.dataTypes.dynamicJsonType(type)
+            : undefined);
     const checker = context.checker;
     const record = checker.getNonNullableType(type);
     // An engine object no storage holds (an ArcRotateCamera) stands as the

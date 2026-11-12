@@ -18330,3 +18330,24 @@ check(
     if (owns !== 2) throw new Error("owns " + owns);
 `,
 );
+
+check(
+    "an-array-of-object-elements-keeps-their-identity",
+    `
+    interface Subject { x: number; radius: number; body?: object; bodies?: readonly object[] }
+    interface Creature { x: number; mesh: { id: number } }
+    const creatures: Creature[] = [{ x: 1, mesh: { id: 4 } }, { x: 2, mesh: { id: 5 } }];
+    function subjectOf(index: number): Subject | null {
+        const creature = creatures[index];
+        if (!creature) return null;
+        if (creature.x > 1) return { x: creature.x, radius: 1, bodies: creatures.map((each) => each.mesh) };
+        return { x: creature.x, radius: 2, body: creature.mesh };
+    }
+    const first = subjectOf(0);
+    const pair = subjectOf(1);
+    if (!first || first.body !== creatures[0]!.mesh || first.bodies !== undefined) throw new Error("first");
+    if (!pair?.bodies || pair.bodies.length !== 2 || pair.bodies[1] !== creatures[1]!.mesh) throw new Error("pair");
+    if (pair.bodies.indexOf(creatures[0]!.mesh) !== 0 || pair.bodies.includes({ id: 4 })) throw new Error("identity");
+    if (subjectOf(5) !== null) throw new Error("none");
+`,
+);

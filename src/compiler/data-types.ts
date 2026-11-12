@@ -4567,14 +4567,17 @@ export class DataTypeRegistry {
                                         node,
                                     ),
                                 ])
+                                // A field typed `object` holds dynamic
+                                // values (`fromRecordFieldType`).
                                 .filter(
                                     ([, propertyType]) =>
-                                        stored ||
-                                        callSignatures(
-                                            this.checker,
-                                            propertyType,
-                                            "present",
-                                        ).length === 0,
+                                        !holdsObjectKeyword(propertyType) &&
+                                        (stored ||
+                                            callSignatures(
+                                                this.checker,
+                                                propertyType,
+                                                "present",
+                                            ).length === 0),
                                 ),
                             ...this.checker
                                 .getIndexInfosOfType(single)
@@ -9534,7 +9537,11 @@ export class DataTypeRegistry {
         elementType: ts.Type,
         node: ts.Node,
     ): DataType | undefined {
-        const mapped = this.fromStoredTsType(elementType, node);
+        // An element typed `object` holds dynamic values, as a field so
+        // typed does (`fromRecordFieldType`).
+        const mapped: DataType | undefined = holdsObjectKeyword(elementType)
+            ? { kind: "json" }
+            : this.fromStoredTsType(elementType, node);
         return (
             mapped &&
             markIdentityFunctions(
