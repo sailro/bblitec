@@ -137,6 +137,7 @@ import {
     symbolFieldName,
     staticPropertyKey,
     libraryName,
+    namedMember,
 } from "./symbols.js";
 import {
     arrayElementType,
@@ -5900,26 +5901,32 @@ export class DataTypeRegistry {
             !callee[0]!.typeParameters?.length
                 ? callee[0]
                 : undefined;
-        const type = this.withGenericFunctionArguments(
-            declaration,
-            demand,
-            () =>
-                // An optional method's declared type also admits undefined.
-                this.fromFunctionType(
-                    this.checker.getNonNullableType(
-                        this.checker.getTypeAtLocation(declaration),
-                    ),
-                    node,
-                    false,
-                    demand.parameters,
-                    instantiated,
-                    demand.restArguments,
+        // A method of a generic interface or class reads the type
+        // parameters its receiver's type arguments bind.
+        const bound: GenericFunctionDemand = {
+            ...demand,
+            frames: [
+                ...demand.frames,
+                this.receiverTypeArguments(declaration, demand.site),
+            ],
+        };
+        const type = this.withGenericFunctionArguments(declaration, bound, () =>
+            // An optional method's declared type also admits undefined.
+            this.fromFunctionType(
+                this.checker.getNonNullableType(
+                    this.checker.getTypeAtLocation(declaration),
                 ),
+                node,
+                false,
+                demand.parameters,
+                instantiated,
+                demand.restArguments,
+            ),
         );
         if (type?.kind !== "function" || type.generic) {
             const lacking = this.withGenericFunctionArguments(
                 declaration,
-                demand,
+                bound,
                 () =>
                     this.unrepresentedSignaturePart(
                         this.checker.getNonNullableType(
@@ -5986,6 +5993,44 @@ export class DataTypeRegistry {
     }
 
     /** Bind an implementation's parameters by position, independent of its interface's symbols. */
+    /**
+     * The type arguments a method call's receiver binds to the type
+     * parameters of the generic interface or class declaring `declaration`
+     * (`deps.constrain(choice)` on a `Deps<Choice>`); none elsewhere.
+     */
+    private receiverTypeArguments(
+        declaration: ts.SignatureDeclaration,
+        site: ts.Node,
+    ): ReadonlyMap<ts.Symbol, ts.Type> {
+        const frame = new Map<ts.Symbol, ts.Type>();
+        const owner = declaration.parent;
+        const member = ts.isCallExpression(site)
+            ? namedMember(this.checker, site.expression)
+            : undefined;
+        if (
+            !member ||
+            !(ts.isInterfaceDeclaration(owner) || ts.isClassLike(owner)) ||
+            !owner.typeParameters?.length
+        )
+            return frame;
+        const receiver = this.checker.getNonNullableType(
+            this.checker.getTypeAtLocation(member.expression),
+        );
+        if (
+            !isTypeReference(receiver) ||
+            receiver.target.symbol !==
+                this.checker.getTypeAtLocation(owner).symbol
+        )
+            return frame;
+        const arguments_ = this.checker.getTypeArguments(receiver);
+        owner.typeParameters.forEach((parameter, index) => {
+            const symbol = this.checker.getTypeAtLocation(parameter).symbol;
+            const argument = arguments_[index];
+            if (symbol && argument) frame.set(symbol, argument);
+        });
+        return frame;
+    }
+
     public withGenericFunctionArguments<T>(
         declaration: ts.SignatureDeclaration,
         demand: GenericFunctionDemand,

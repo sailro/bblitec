@@ -6385,6 +6385,31 @@ check(
 `,
 );
 
+check(
+    "stored-generic-method-of-a-generic-receiver",
+    `
+    interface Plan { id: string; scale: number }
+    interface Seat { x: number; z: number }
+    interface Ground extends Seat { onDeck: boolean }
+    interface Deps<Choice> {
+        constrain<T extends Seat>(kind: string, choice: Choice, point: T): T | null;
+    }
+    const all: Deps<Plan>[] = [
+        { constrain: (kind, choice, point) => (kind === "rock" && choice.scale > 2 ? null : point) },
+        { constrain: (_kind, choice, point) => (choice.id === "b" ? null : point) },
+    ];
+    let placed = 0;
+    for (const deps of all) {
+        const ground: Ground = { x: 1, z: 2, onDeck: false };
+        const bounded = deps.constrain("tree", { id: "a", scale: 3 }, ground);
+        if (bounded) placed += bounded.x + (bounded.onDeck ? 10 : 0);
+        const seat = deps.constrain("rock", { id: "b", scale: 3 }, { x: 5, z: 7 });
+        if (seat) placed += seat.z;
+    }
+    if (placed !== 2) throw new Error("placed " + placed);
+`,
+);
+
 checkInRealm(
     "instanceof-promise-tells-a-value-or-promise-result-apart",
     `

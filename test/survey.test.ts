@@ -612,6 +612,35 @@ test("a refused statement returning from a root's body leaves the rest of the bo
     );
 });
 
+test("a stored generic method reads the type arguments its receiver binds", () => {
+    // `constrain` is generic in `T` and reads `Choice`, a parameter of
+    // `Deps`: the root's `deps: Deps<Choice>` binds it to the factory's own
+    // `Choice`, which the root holds at its constraint.
+    const { report } = surveySource(
+        `
+        interface Plan { id: string; scale: number }
+        interface Seat { x: number; z: number }
+        interface Ground extends Seat { onDeck: boolean }
+        interface Deps<Choice> {
+            constrain<T extends Seat>(kind: string, choice: Choice, point: T): T | null;
+            weight(choice: Choice): number;
+        }
+        export function createTools<Choice extends Plan = Plan>(deps: Deps<Choice>) {
+            return (kind: string, choice: Choice, point: Ground): number => {
+                const bounded = deps.constrain(kind, choice, point);
+                const moved = deps.constrain(kind, choice, { ...point, x: point.x + 1 });
+                return (bounded ? bounded.x : 0) + (moved ? moved.z : 0) + deps.weight(choice);
+            };
+        }
+        localStorage.setItem("ready", "1");
+    `,
+        { fileName: resolve("survey-receiver-type-arguments.ts") },
+    );
+    assert.ok(report.program);
+    assert.equal(report.program.attempted, report.program.statements);
+    assert.deepEqual(report.refusals, [], listed(report));
+});
+
 test("a root of a generic function no call binds lowers at its constraints", () => {
     // `timed` is only stored, so no call binds its `T`: the root lowers at
     // `unknown`, and `work` is a function returning a document.
