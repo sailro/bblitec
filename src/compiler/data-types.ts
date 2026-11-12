@@ -1839,7 +1839,12 @@ export class DataTypeRegistry {
      */
     private readonly unstoredLayoutProperties = new Map<
         ts.Type,
-        { readonly name: string; readonly type: ts.Type }
+        {
+            readonly name: string;
+            readonly type: ts.Type;
+            /** Why no storage holds it where each part has one. */
+            readonly reason?: string;
+        }
     >();
 
     /**
@@ -4538,6 +4543,8 @@ export class DataTypeRegistry {
                     ? (this.unstoredLayoutProperties.get(current) ??
                       (single && this.unstoredLayoutProperties.get(single)))
                     : undefined;
+            if (unstored?.reason)
+                return `${path.join(" > ")} > layout property '${unstored.name}': ${unstored.reason}`;
             if (unstored && unstored.type !== current) {
                 path.push(
                     `layout property '${unstored.name}' of type '${this.checker.typeToString(unstored.type)}'`,
@@ -7346,6 +7353,11 @@ export class DataTypeRegistry {
                                           shared,
                                           node,
                                       ),
+                            ...(unstored < 0
+                                ? {
+                                      reason: `its arms store it as ${candidates.map((candidate) => JSON.stringify(candidate)).join(", ")}`,
+                                  }
+                                : {}),
                         });
                         return grouped ? undefined : null;
                     }
