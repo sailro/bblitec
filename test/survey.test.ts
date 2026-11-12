@@ -686,7 +686,7 @@ test("a root's capture with no storage of its type stays unbound", () => {
     assert.ok(reason && read, listed(report));
     assert.equal(
         reason.message,
-        "A survey root's track has no native storage of its type ('(<T>(label: string, work: () => T) => T) | undefined' > '() => T': no native representation).",
+        "A survey root's track has no native storage of its type ('(<T>(label: string, work: () => T) => T) | undefined' > '() => T' > 'T': no call binds the type parameter here).",
     );
     assert.equal(reason.statements, 0);
     assert.equal(read.statement.line, 8);
@@ -761,7 +761,7 @@ test("a root's parameter with no storage of its type stays unbound", () => {
             [
                 4,
                 0,
-                "A survey root's track has no native storage of its type ('(<T>(label: string, work: () => T) => T) | undefined' > '() => T': no native representation).",
+                "A survey root's track has no native storage of its type ('(<T>(label: string, work: () => T) => T) | undefined' > '() => T' > 'T': no call binds the type parameter here).",
             ],
             [5, 1, "Unknown or unsupported variable 'track'."],
         ],

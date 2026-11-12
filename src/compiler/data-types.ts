@@ -4590,12 +4590,13 @@ export class DataTypeRegistry {
             ...signatureParameterTypes(this.checker, signature, node),
             this.checker.getReturnTypeOfSignature(signature),
         ];
+        // A signature stores its parameters and result (`fromFunctionType`).
         const lacking = parts.find(
             (part) =>
                 (part.flags & ts.TypeFlags.VoidLike) === 0 &&
-                this.represented(part, node) !== true,
+                this.represented(part, node, true) !== true,
         );
-        return lacking && this.unrepresentedPart(lacking, node);
+        return lacking && this.unrepresentedPart(lacking, node, true);
     }
 
     /** A checked recursive boundary may retain a dynamic parsed value. Call sinks
