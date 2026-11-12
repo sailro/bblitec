@@ -28,6 +28,8 @@ export interface CameraIntrinsicContext
             | "checker"
             | "bindings"
             | "reachJsData"
+            | "reachJson"
+            | "cppString"
             | "allocateTemporaryCppName"
             | "emit"
             | "dataLowerer"
@@ -393,6 +395,29 @@ export function compileCameraIntrinsic(
                 context.checker.getTypeAtLocation(call),
                 call,
             );
+            // A record type the program also holds as documents (a parsed
+            // position shares it) receives a fresh document of the lanes.
+            if (resultType?.kind === "json") {
+                const engine = context.requireEngine(camera, call);
+                context.reachJson();
+                const lanes = ["x", "y", "z"]
+                    .map(
+                        (lane) =>
+                            `own.emplace_back(${context.cppString(lane)}, bbl::js::json_value(eye.${lane}));`,
+                    )
+                    .join(" ");
+                return {
+                    kind: "data",
+                    cpp:
+                        `([&]() -> bbl::js::JsonValue { ` +
+                        `const bbl::Vec3d eye = bbl::upstream::camera_position(` +
+                        `${recordAt(`${engine}.cameras`, camera.cpp)}); ` +
+                        `bbl::js::JsonValue::Object own; ${lanes} ` +
+                        `return bbl::js::JsonValue::from_object(std::move(own)); }())`,
+                    dataType: resultType,
+                    engineCpp: engine,
+                };
+            }
             if (resultType?.kind !== "struct") {
                 context.fail(
                     call,

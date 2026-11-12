@@ -17144,6 +17144,25 @@ test("retains Scene 118's nullable billboard pick record and all hit fields", ()
     );
 });
 
+test("a camera position whose record type is a document is a fresh document of its lanes", () => {
+    // A parsed position shares the `{ x, y, z }` record type, which then
+    // stores documents: the camera's position is one, read off the same
+    // composition of the pin's body.
+    const result = compileSource(`
+        import { createArcRotateCamera, createEngine, getCameraPosition } from "babylon-lite";
+        const engine = await createEngine({});
+        const camera = createArcRotateCamera(1, 1, 10, { x: 0, y: 0, z: 0 });
+        let saved: { x: number; y: number; z: number } = JSON.parse('{"x":1,"y":2,"z":3}') as { x: number; y: number; z: number };
+        const eye = getCameraPosition(camera);
+        if (eye.y > 100) saved = eye;
+        if (saved.x !== 1 || !(eye.y > -100)) throw new Error("eye");
+    `);
+    assert.match(
+        result.cpp,
+        /const bbl::Vec3d eye = bbl::upstream::camera_position\(bbl::handle_at\(v_engine\.cameras, v_camera\)\); bbl::js::JsonValue::Object own; own\.emplace_back\("x", bbl::js::json_value\(eye\.x\)\);/,
+    );
+});
+
 test("a loop reading the camera's position each pass may return from inside", () => {
     // The read records no composition row: the loop runs as written.
     const result = compileSource(`
