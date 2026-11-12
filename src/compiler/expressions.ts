@@ -3502,12 +3502,15 @@ export class ExpressionLowerer {
                 `${trueFound ?? "true"} : ` +
                 `${falseFound ?? "true"})`;
         }
-        if (whenTrue.staticNumber !== whenFalse.staticNumber) {
-            delete writable(conditional).staticNumber;
-        }
-        if (whenTrue.staticString !== whenFalse.staticString) {
-            delete writable(conditional).staticString;
-        }
+        // A generation-known scalar is the selection's only where both arms
+        // know the same one: `x === undefined ? false : true` knows none.
+        for (const fact of [
+            "staticNumber",
+            "staticString",
+            "staticBoolean",
+        ] as const)
+            if (whenTrue[fact] !== whenFalse[fact])
+                delete writable(conditional)[fact];
         if (whenTrue.spriteDepthMode !== whenFalse.spriteDepthMode) {
             delete writable(conditional).spriteDepthMode;
         }

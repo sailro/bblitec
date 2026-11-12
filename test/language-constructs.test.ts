@@ -6386,6 +6386,24 @@ check(
 );
 
 check(
+    "a-conditional-of-two-boolean-literals-knows-neither",
+    `
+    const present = (x: number | undefined): boolean => (x === undefined ? false : true);
+    const checks: ((x: number | undefined) => boolean)[] = [present];
+    let trues = 0;
+    for (const check of checks) {
+        if (check(4)) trues++;
+        if (check(undefined)) trues++;
+    }
+    const read = (): number | undefined => (trues > 0 ? 3 : undefined);
+    const x = read();
+    const ok = x === undefined ? false : true;
+    const text = String(ok);
+    if (trues !== 1 || text !== "true") throw new Error("trues " + trues + " text " + text);
+`,
+);
+
+check(
     "getter-and-data-property-share-one-accessor-slot",
     `
     interface Plain { cx: number; cz: number }
