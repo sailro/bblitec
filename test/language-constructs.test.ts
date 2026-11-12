@@ -18557,3 +18557,34 @@ check(
     if (listed !== "2:2:undefined") throw new Error(listed);
 `,
 );
+
+check(
+    "a-record-or-an-array-of-records-is-a-union-of-the-two",
+    `
+    interface Ignore { readonly mesh: number; readonly instance?: number }
+    interface Options { ignore?: Ignore | readonly Ignore[]; detailed?: boolean }
+    interface Context { mesh: number }
+    const footprints = new WeakMap<Context, Ignore | readonly Ignore[]>();
+    function ignored(ignore: Ignore | readonly Ignore[] | undefined): number[] {
+        if (!ignore) return [];
+        const list: readonly Ignore[] = Array.isArray(ignore) ? ignore : [ignore as Ignore];
+        return list.map((entry) => entry.mesh * 10 + (entry.instance ?? 0));
+    }
+    function project(ignore: Ignore | readonly Ignore[]): number {
+        if (!Array.isArray(ignore)) return (ignore as Ignore).mesh;
+        const source = ignore as readonly Ignore[];
+        let total = 0;
+        for (let i = 0; i < source.length; i++) total += source[i]!.mesh;
+        return total;
+    }
+    const pick = (options?: Options): string => ignored(options?.ignore).join(",");
+    const gate = new Float32Array([1]);
+    const ctx: Context = { mesh: 4 };
+    footprints.set(ctx, gate[0]! > 0 ? [{ mesh: 1 }, { mesh: 2, instance: 3 }] : { mesh: 9 });
+    const single = pick({ ignore: { mesh: 5, instance: 1 } });
+    const many = pick({ ignore: footprints.get(ctx) });
+    const none = pick();
+    const projected = project(footprints.get(ctx)!) * 100 + project({ mesh: 7 });
+    if (single !== "51" || many !== "10,23" || none !== "" || projected !== 307) throw new Error(single + "|" + many + "|" + none + "|" + projected);
+`,
+);

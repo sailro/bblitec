@@ -174,11 +174,14 @@ function expressionStruct(
                 expression,
             );
         }
+        // A union holding the record as one arm (`entry as Ignore` beside
+        // an `Ignore[]` arm) is that arm, selected where it is stored.
         if (
             known.kind === "data" &&
             (known.dataType?.kind === "struct" ||
                 known.dataType?.kind === "error" ||
-                known.dataType?.kind === "map")
+                known.dataType?.kind === "map" ||
+                known.dataType?.kind === "union")
         ) {
             lowerer.markEscaped(known);
             return lowerer.compileKnownValueForSink(known, dataType, unwrapped);

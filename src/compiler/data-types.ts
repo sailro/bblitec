@@ -6522,18 +6522,15 @@ export class DataTypeRegistry {
         if (signature) return signature;
         const settled = this.fromValueOrPromiseUnion(type, node);
         if (settled) return settled;
+        const arrayMember = (member: ts.Type): boolean =>
+            this.checker.isTupleType(member) ||
+            this.checker.isArrayType(member) ||
+            (declaredInDefaultLibrary(member.symbol) &&
+                libraryName(member) === "ReadonlyArray");
         // Tuple alternatives with different lengths still share array storage.
         // Ask the checker for their indexed element union instead of treating
         // length and the array methods as fields of a common record.
-        if (
-            members.every(
-                (member) =>
-                    this.checker.isTupleType(member) ||
-                    this.checker.isArrayType(member) ||
-                    (declaredInDefaultLibrary(member.symbol) &&
-                        libraryName(member) === "ReadonlyArray"),
-            )
-        ) {
+        if (members.every(arrayMember)) {
             if (this.arrayUnionsInProgress.has(type)) return undefined;
             this.arrayUnionsInProgress.add(type);
             try {
@@ -6568,6 +6565,11 @@ export class DataTypeRegistry {
         // not hold takes the component's layout (`layoutUnion`).
         if (this.recordComponentOf(type) && !this.layoutUnion(type, node))
             return this.fromStructType(type, node);
+        // An array beside records (`Ignore | readonly Ignore[]`) is an arm of
+        // its own, which `Array.isArray` tells apart: no common-field record
+        // holds both.
+        if (members.some(arrayMember))
+            return this.fromMixedUnion(type, node, "arrays");
         // A tagged union whose arm field cannot map has no representation: the
         // common-field struct would hide that field and refuse at the literal
         // that spells it, far from the cause.
@@ -6751,6 +6753,7 @@ export class DataTypeRegistry {
     private fromMixedUnion(
         type: ts.UnionType,
         node: ts.Node,
+        arrays?: "arrays",
     ): DataType | undefined {
         // A pair of one callable and one other member.
         const callablePair = (): boolean =>
@@ -6769,6 +6772,7 @@ export class DataTypeRegistry {
                     0,
             ) &&
             !callablePair() &&
+            !arrays &&
             !type.types.every(binaryLibraryClass) &&
             !type.types.every(
                 (member) => this.nativeHandleKind(member) !== undefined,
