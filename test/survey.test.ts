@@ -587,6 +587,31 @@ test("an evaluated module's constant no read folds lowers as a root", (t) => {
     assert.deepEqual(report.refusals, [], listed(report));
 });
 
+test("a refused statement returning from a root's body leaves the rest of the body tried", () => {
+    // The root's call refuses at `a === b`, a statement returning a value:
+    // the statement root then lowers the body, whose returns go nowhere,
+    // and the statements after the refused one are tried.
+    const { report } = surveySource(
+        `
+        export const sameTuple = (a?: ArrayLike<number>, b?: ArrayLike<number>): boolean => {
+            if (a === b) return true;
+            if (!a || !b || a.length !== b.length) return false;
+            for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
+            return true;
+        };
+        localStorage.setItem("ready", "1");
+    `,
+        { fileName: resolve("survey-refused-return.ts") },
+    );
+    assert.ok(report.program);
+    assert.equal(report.program.attempted, report.program.statements);
+    assert.deepEqual(
+        report.refusals.map((refusal) => refusal.statement.line),
+        [3],
+        listed(report),
+    );
+});
+
 test("a root of a generic function no call binds lowers at its constraints", () => {
     // `timed` is only stored, so no call binds its `T`: the root lowers at
     // `unknown`, and `work` is a function returning a document.

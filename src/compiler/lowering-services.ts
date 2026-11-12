@@ -539,6 +539,7 @@ export interface LoweringServices {
     trackResourceLoopEarlyReturn(condition: ts.Expression): void;
     activeNativeReturnType(): DataType | "void" | undefined;
     activeNativeCoroutine(): boolean;
+    activeNativeReturnDiscarded(): boolean;
     emitNativeReturn(statement: ts.ReturnStatement): void;
     emitFallOffEnd(): void;
     emitNativeYield(expression: ts.YieldExpression): void;

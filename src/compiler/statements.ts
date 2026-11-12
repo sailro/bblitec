@@ -163,6 +163,7 @@ interface StatementLoweringContext extends Pick<
     | "registerNativeBindingType"
     | "activeNativeReturnType"
     | "activeNativeCoroutine"
+    | "activeNativeReturnDiscarded"
     | "prefersNativeDataIteration"
     | "trackResourceLoopEarlyReturn"
     | "isRuntimeResourceConstruction"
@@ -990,7 +991,9 @@ export class StatementLowerer {
         // that returns a value feeds it to the call that lowered the body,
         // so its refusal is the caller's statement to record: swallowing it
         // would hand the caller a binding with no value, and every later
-        // read of that binding would count as a gap of its own.
+        // read of that binding would count as a gap of its own. A survey
+        // records it as the statement's own where the body discards what it
+        // returns (a void callback, a survey root): no binding receives it.
         const planner = activeStorageDemandPlanner();
         planner?.beginActivation(statement);
         const survey = activeSurvey();
@@ -999,7 +1002,9 @@ export class StatementLowerer {
         if (
             recovery === undefined ||
             context.speculating ||
-            firstReturn([statement], { valued: true })
+            (firstReturn([statement], { valued: true }) &&
+                (recovery === planner ||
+                    !context.activeNativeReturnDiscarded()))
         ) {
             this.lowerStatement(context, statement);
             return;

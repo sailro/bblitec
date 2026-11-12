@@ -8028,6 +8028,16 @@ class Compiler implements LoweringServices {
         return top?.kind === "native" && top.coroutine === true;
     }
 
+    /** Whether the innermost native body discards a returned value (a contextually void callback). */
+    public activeNativeReturnDiscarded(): boolean {
+        const top = this.returnFrames.at(-1);
+        return (
+            top?.kind === "native" &&
+            top.type === "void" &&
+            top.contextualVoid === true
+        );
+    }
+
     /** Whether an expression's type is a Promise (every present member). */
     private isPromiseTyped(expression: ts.Expression): boolean {
         const members = presentMembers(
