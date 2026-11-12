@@ -7340,7 +7340,7 @@ export class UserFunctionLowerer {
         const leadingStatements = trailingReturn
             ? body.statements.slice(0, -1)
             : body.statements;
-        const needsValueLambda =
+        let needsValueLambda =
             this.containsValueReturn(leadingStatements) ||
             someAnalysisNode(
                 body,
@@ -7357,20 +7357,21 @@ export class UserFunctionLowerer {
                         )),
                 { functions: "skip" },
             );
+        let earlyReturns = needsValueLambda
+            ? "none"
+            : this.classifyEarlyReturns(leadingStatements, fail);
+        // A bare early return beside a final value return returns undefined:
+        // the call lowers through the native lambda, as an earlier value
+        // return does.
+        if (earlyReturns === "wrapper" && trailingReturn?.expression) {
+            needsValueLambda = true;
+            earlyReturns = "none";
+        }
         const statements = needsValueLambda
             ? body.statements
             : leadingStatements;
-        const earlyReturns = needsValueLambda
-            ? "none"
-            : this.classifyEarlyReturns(statements, fail);
         const needsWrapper = earlyReturns === "wrapper";
         const needsLocalNative = earlyReturns === "native";
-        if (needsWrapper && trailingReturn?.expression) {
-            fail(
-                trailingReturn,
-                "Inlined functions cannot combine a bare early return with a final return value.",
-            );
-        }
         const ir: UserFunctionIr = {
             declaration,
             name:

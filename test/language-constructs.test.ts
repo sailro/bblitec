@@ -18711,3 +18711,23 @@ check(
     if (seen.size !== 2 || !seen.has(a) || seen.has({ n: 1 }) || flushed !== 2 || uploaded !== 3) throw new Error("set " + seen.size + " " + flushed);
 `,
 );
+
+check(
+    "a-bare-early-return-beside-a-final-value-return-returns-undefined",
+    `
+    const gate = new Float32Array([1, 0]);
+    let applied = 0;
+    const apply = (): boolean => { applied++; return true; };
+    const set = (id: number): number | undefined => {
+        if (gate[1]! > 0 || id < 0) {
+            apply();
+            return;
+        }
+        const request = id * 2;
+        return request + (apply() ? 1 : 0);
+    };
+    const skipped = set(-1);
+    const kept = set(3);
+    if (skipped !== undefined || kept !== 7 || applied !== 2) throw new Error("set " + String(skipped) + " " + String(kept));
+`,
+);
