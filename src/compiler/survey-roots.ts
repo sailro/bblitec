@@ -99,35 +99,38 @@ export function emitSurveyRoots(
     // Module roots lower first, in one scope the function roots then lower
     // in: a function reads the module bindings they declare. Nothing the
     // roots emit reaches the program's body.
+    // A root of `declaration`'s code is recorded against its first
+    // statement, lowers at the type arguments a call binds, and its
+    // emission is dropped.
+    const root = (
+        first: ts.Statement,
+        declaration: SupportedFunction,
+        lower: () => void,
+    ): void =>
+        survey.attemptRoot(context, first, () => {
+            context.captureEmittedStatements(() =>
+                withCalledTypeArguments(context, files, declaration, lower),
+            );
+        });
+    const bodied = (
+        node: ts.Node,
+    ): node is SupportedFunction & {
+        body: ts.Block;
+    } => isSupportedFunction(node) && !!node.body && ts.isBlock(node.body);
     context.bindings.pushScope(context.allocateUserFunctionPrefix());
     try {
         for (const file of files) emitModuleRoot(context, survey, file);
         for (const file of files) {
             const visit = (node: ts.Node): void => {
                 if (
-                    isSupportedFunction(node) &&
-                    node.body &&
-                    ts.isBlock(node.body) &&
+                    bodied(node) &&
                     node.body.statements.length > 0 &&
                     survey.untouched(node.body)
                 ) {
                     const [declaration, body] = [node, node.body];
-                    survey.attemptRoot(context, body.statements[0]!, () => {
-                        context.captureEmittedStatements(() =>
-                            withCalledTypeArguments(
-                                context,
-                                files,
-                                declaration,
-                                () =>
-                                    emitSurveyRoot(
-                                        context,
-                                        survey,
-                                        declaration,
-                                        body,
-                                    ),
-                            ),
-                        );
-                    });
+                    root(body.statements[0]!, declaration, () =>
+                        emitSurveyRoot(context, survey, declaration, body),
+                    );
                 }
                 ts.forEachChild(node, visit);
             };
@@ -136,26 +139,14 @@ export function emitSurveyRoots(
         for (const file of files)
             for (const node of sourceFileNodes(file))
                 if (
-                    isSupportedFunction(node) &&
-                    node.body &&
-                    ts.isBlock(node.body) &&
+                    bodied(node) &&
                     !isGeneratorFunction(node) &&
                     !survey.untouched(node.body)
                 )
-                    for (const run of unbegunRuns(survey, node.body)) {
-                        const declaration = node;
-                        survey.attemptRoot(context, run[0]!, () => {
-                            context.captureEmittedStatements(() =>
-                                withCalledTypeArguments(
-                                    context,
-                                    files,
-                                    declaration,
-                                    () =>
-                                        emitStatementRoot(context, survey, run),
-                                ),
-                            );
-                        });
-                    }
+                    for (const run of unbegunRuns(survey, node.body))
+                        root(run[0]!, node, () =>
+                            emitStatementRoot(context, survey, run),
+                        );
     } finally {
         context.bindings.popScope();
         context.defaultEngineCpp = enclosingEngine;
