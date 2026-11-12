@@ -12609,6 +12609,24 @@ test("lowers every Canvas2D clearRect shape; the PAL clears the draws exactly", 
     );
 });
 
+test("reads the window size bare or through globalThis as through window", () => {
+    const result = compileSource(`
+        import { createEngine } from "@babylonjs/lite";
+
+        async function main(): Promise<void> {
+            await createEngine({});
+            const canvas = document.createElement("canvas");
+            canvas.width = typeof innerWidth === "number" ? innerWidth : 0;
+            canvas.height = globalThis.innerHeight;
+            document.body.appendChild(canvas);
+        }
+
+        void main();
+    `);
+    assert.match(result.cpp, /static_cast<double>\([^;]*\.options\.width\)/);
+    assert.match(result.cpp, /static_cast<double>\([^;]*\.options\.height\)/);
+});
+
 test("refuses retained UI under the standalone effect and frame-graph drivers", () => {
     // NA-26: those two loops render no UiRenderFrame on either backend, so
     // the combination refuses at generation instead of silently dropping

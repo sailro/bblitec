@@ -97,6 +97,47 @@ export function readMediaQueryProperty(
     };
 }
 
+/** The window size dimension `innerWidth` or `innerHeight` reads, bare or as a member of the global object. */
+export function windowViewportDimension(
+    context: Pick<LoweringServices, "libraryGlobal">,
+    node: ts.Expression,
+): "width" | "height" | undefined {
+    const name = context.libraryGlobal(node);
+    return name === "innerWidth"
+        ? "width"
+        : name === "innerHeight"
+          ? "height"
+          : undefined;
+}
+
+/**
+ * A read of the window's size: the Window host's viewport where the program
+ * runs in realms, else the default engine's surface size.
+ */
+export function windowViewportValue(
+    context: Pick<
+        LoweringServices,
+        "libraryGlobal" | "options" | "reachFeature" | "fail"
+    > &
+        Pick<CanvasContext, "requireDefaultEngine">,
+    node: ts.Expression,
+): Value | undefined {
+    const dimension = windowViewportDimension(context, node);
+    if (!dimension) return undefined;
+    if (!context.options.workers)
+        return {
+            kind: "number",
+            cpp: `static_cast<double>(${context.requireDefaultEngine(node)}.options.${dimension})`,
+            dataType: { kind: "number" },
+        };
+    requireWindowHost(context, node);
+    return {
+        kind: "number",
+        cpp: `bbl::pal::window_viewport_size().${dimension}`,
+        dataType: { kind: "number" },
+    };
+}
+
 export function compileCanvasValue(
     context: CanvasContext,
     expression: ts.Expression,
@@ -177,20 +218,6 @@ export function compileCanvasValue(
     ) {
         requireWindowHost(context, node);
         return { kind: "boolean", cpp: "true", staticBoolean: true };
-    }
-    if (
-        ts.isPropertyAccessExpression(node) &&
-        ["innerWidth", "innerHeight"].includes(node.name.text) &&
-        ["globalThis", "window"].includes(
-            context.libraryGlobal(node.expression) ?? "",
-        )
-    ) {
-        requireWindowHost(context, node);
-        return {
-            kind: "number",
-            cpp: `bbl::pal::window_viewport_size().${node.name.text === "innerWidth" ? "width" : "height"}`,
-            dataType: { kind: "number" },
-        };
     }
     if (ts.isTypeOfExpression(node)) {
         const member = namedMember(

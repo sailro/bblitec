@@ -3523,21 +3523,6 @@ export class PropertyAccessLowerer {
                       cpp: `std::string(${documentHidden} ? "hidden" : "visible")`,
                       dataType: { kind: "string" },
                   };
-        if (
-            this.context.libraryGlobal(ownerExpression) === "window" &&
-            (expression.name.text === "innerWidth" ||
-                expression.name.text === "innerHeight")
-        ) {
-            const property =
-                expression.name.text === "innerWidth" ? "width" : "height";
-            return {
-                kind: "number",
-                cpp:
-                    `static_cast<double>(${this.context.requireDefaultEngine(expression)}` +
-                    `.options.${property})`,
-                dataType: { kind: "number" },
-            };
-        }
         if (ownerExpression.kind === ts.SyntaxKind.ThisKeyword) {
             // Field reads resolve through the instance record the
             // constructor built.

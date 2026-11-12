@@ -3,6 +3,7 @@ import { ApplicationRealmRequired } from "./worker-modules.js";
 import { requireObservedPromise } from "./promise-observations.js";
 import { compileGpuAdapterCall } from "./gpu-adapter.js";
 import { hostAccessorValue } from "./host-globals.js";
+import { windowViewportValue } from "./canvas.js";
 import { mayCompileDataMethodCall } from "./data-methods.js";
 import { compileBoundCollectionMethod } from "./collection-functions.js";
 import { EmissionMap, writable } from "./emission-transaction.js";
@@ -753,6 +754,8 @@ export class ExpressionLowerer {
                 requireWindowHost(this.context, unwrapped);
             return accessor;
         }
+        const viewport = windowViewportValue(this.context, unwrapped);
+        if (viewport) return viewport;
         const environment = browserEnvironmentValue(this.context, unwrapped);
         if (environment) return environment;
         const http = compileHttpFunction(this.context, unwrapped);

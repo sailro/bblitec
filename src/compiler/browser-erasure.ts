@@ -4,6 +4,7 @@ import {
 } from "./deferred-capabilities.js";
 import { hasDomLowering } from "./dom-lowerings.js";
 import { hostAccessorValue } from "./host-globals.js";
+import { windowViewportDimension } from "./canvas.js";
 import { gpuValue } from "./gpu-value.js";
 import {
     emissionArray,
@@ -1458,12 +1459,7 @@ export class BrowserErasure {
         if (this.context.canvasSizeProperty(unwrapped)) {
             return false;
         }
-        if (
-            ts.isPropertyAccessExpression(unwrapped) &&
-            (unwrapped.name.text === "innerWidth" ||
-                unwrapped.name.text === "innerHeight") &&
-            this.context.libraryGlobal(unwrapped.expression) === "window"
-        ) {
+        if (windowViewportDimension(this.context, unwrapped)) {
             return false;
         }
         if (
