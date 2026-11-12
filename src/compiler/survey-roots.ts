@@ -668,8 +668,8 @@ type GenericOwner = ts.SignatureDeclaration | ts.ClassLikeDeclaration;
 /**
  * The type arguments a root of the generic `owner` lowers at: those of the
  * first call of it (a construction of a class) they bind no type parameter
- * in; where none does, each parameter's constraint, or `unknown` (a
- * document) for one with none of its own. Kept per owner: the program does
+ * in; where none does, each parameter's default or constraint, or `unknown`
+ * (a document) for one with neither. Kept per owner: the program does
  * not change between passes.
  */
 const calledSubstitutions = new WeakMap<
@@ -745,15 +745,18 @@ function unboundTypeArguments(
     for (const parameter of owner.typeParameters ?? []) {
         const symbol = declaredSymbol(checker, parameter.name);
         if (!symbol) continue;
-        const constraint = checker.getBaseConstraintOfType(
-            checker.getTypeAtLocation(parameter),
+        // A parameter's default is the argument an unbound use takes, as
+        // the checker gives it; else its constraint.
+        const declared = checker.getTypeAtLocation(parameter);
+        const bound = [
+            checker.getDefaultFromTypeParameter(declared),
+            checker.getBaseConstraintOfType(declared),
+        ].find(
+            (candidate) =>
+                candidate !== undefined &&
+                !mentionsTypeParameter(checker, candidate),
         );
-        substitution.set(
-            symbol,
-            constraint && !mentionsTypeParameter(checker, constraint)
-                ? constraint
-                : checker.getUnknownType(),
-        );
+        substitution.set(symbol, bound ?? checker.getUnknownType());
     }
     return substitution;
 }

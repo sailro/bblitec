@@ -817,6 +817,29 @@ test("an async factory's root results in the record its signature declares", () 
     assert.deepEqual(report.refusals, [], listed(report));
 });
 
+test("a generic class no construction binds lowers its roots at a type parameter's default", () => {
+    // Nothing constructs `Queue`: its roots read `this` at `T`'s default,
+    // the argument an unbound use takes, whose fields its initializers
+    // declare.
+    const { report } = surveySource(
+        `
+        interface Request { key: string; priority: boolean }
+        export class Queue<T = Request> {
+            readonly #pending: T[] = [];
+            #current: T | null = null;
+            get current(): T | null { return this.#current; }
+            get pendingCount(): number { return this.#pending.length; }
+            push(item: T): void { if (this.#current === null) this.#current = item; else this.#pending.push(item); }
+        }
+        localStorage.setItem("ready", "1");
+    `,
+        { fileName: resolve("survey-default-type-argument.ts") },
+    );
+    assert.ok(report.program);
+    assert.equal(report.program.attempted, report.program.statements);
+    assert.deepEqual(report.refusals, [], listed(report));
+});
+
 test("a generic method instantiating its own interface ends the survey's mapping", () => {
     // `map` returns a `Pair` again: binding its receiver's arguments would
     // unfold `Pair<B, A>` into `Pair<A, B>` without end. The survey ends with
