@@ -1218,11 +1218,15 @@ export function resolveFunctionDeclaration(
  */
 function tupleRestLanes(
     checker: ts.TypeChecker,
+    dataTypes: TypeParameterResolver,
     declaration: ts.SignatureDeclaration,
 ): readonly unknown[] | undefined {
     const last = declaration.parameters.at(-1);
     if (!last?.dotDotDotToken) return undefined;
-    const type = checker.getTypeAtLocation(last);
+    // A generic rest (`...args: Args`) is the tuple its type argument names.
+    const type = dataTypes.resolveTypeParameter(
+        checker.getTypeAtLocation(last),
+    );
     return (
         fixedTupleElements(checker, type) ??
         (restOnlyForwarded(checker, last, declaration)
@@ -1234,13 +1238,17 @@ function tupleRestLanes(
 /** Whether a function literal's final parameter is a rest parameter of tuple lanes (`tupleRestLanes`). */
 export function hasTupleRestLanes(
     checker: ts.TypeChecker,
+    dataTypes: TypeParameterResolver,
     declaration: ts.Node,
 ): boolean {
     return (
         isSupportedFunction(declaration) &&
-        tupleRestLanes(checker, declaration) !== undefined
+        tupleRestLanes(checker, dataTypes, declaration) !== undefined
     );
 }
+
+/** The type arguments in force (`DataTypeRegistry.resolveTypeParameter`). */
+type TypeParameterResolver = Pick<DataTypeRegistry, "resolveTypeParameter">;
 
 /**
  * Resolve only a function this lowerer could call directly, without turning a
@@ -5672,7 +5680,8 @@ export class UserFunctionLowerer {
         const restParameter = runtimeParameters.at(-1);
         const restLanes =
             dataType.restParameter === undefined
-                ? tupleRestLanes(this.checker, declaration)?.length
+                ? tupleRestLanes(this.checker, context.dataTypes, declaration)
+                      ?.length
                 : undefined;
         const tupleRest =
             restLanes !== undefined &&
@@ -5683,7 +5692,9 @@ export class UserFunctionLowerer {
         if (
             !tupleRest &&
             restParameter?.declaration.dotDotDotToken &&
-            this.checker.isTupleType(restParameter.type) &&
+            this.checker.isTupleType(
+                context.dataTypes.resolveTypeParameter(restParameter.type),
+            ) &&
             dataType.parameters.length !== runtimeParameters.length
         )
             context.fail(

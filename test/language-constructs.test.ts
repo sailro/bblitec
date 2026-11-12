@@ -18489,3 +18489,32 @@ checkInRealm(
     });
 `,
 );
+
+check(
+    "a-generic-wrapper-forwards-its-tuple-rest-parameter-as-lanes",
+    `
+    const rows = new Map<string, number>();
+    const gate = new Float32Array([1]);
+    const measure = <Args extends unknown[], Result>(label: string, work: (...args: Args) => Result): ((...args: Args) => Result) => {
+        if (gate[0]! < 0) return work;
+        return (...args: Args): Result => {
+            try {
+                return work(...args);
+            } finally {
+                rows.set(label, (rows.get(label) ?? 0) + 1);
+            }
+        };
+    };
+    interface Point { x: number; y: number }
+    const dig = measure("dig", (x: number, z: number): boolean => x + z > 2);
+    const addWindow = measure("window", (index: number, mount: "wall" | "gable", point: Point): number => index + point.x + (mount === "wall" ? 1 : 2));
+    const plant = measure("plant", (x: number, z: number, plan?: { kind: string }): string => (plan?.kind ?? "none") + (x + z));
+    const total = (dig(1, 3) ? 10 : 0) + addWindow(2, "gable", { x: 3, y: 0 });
+    type Brush = (ground: readonly [number, number] | null, from?: readonly [number, number]) => { accepted: boolean };
+    const makeDot = (limit: number): Brush => (ground, from) => ({ accepted: !!ground && ground[0] < limit && (from === undefined || from[0] < limit) });
+    const restore = measure("restore", makeDot(5));
+    if (!restore([1, 2]).accepted || restore([1, 2], [9, 9]).accepted || restore(null).accepted) throw new Error("restore");
+    if (plant(1, 2) !== "none3" || plant(2, 2, { kind: "oak" }) !== "oak4") throw new Error("plant");
+    if (total !== 17 || rows.get("dig") !== 1 || rows.get("window") !== 1 || rows.get("plant") !== 2 || rows.get("restore") !== 3) throw new Error("total " + total);
+`,
+);

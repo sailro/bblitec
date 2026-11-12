@@ -63,7 +63,11 @@ function expressionFunction(
             nativeType?.kind === "function" &&
             nativeType.restParameter !== undefined &&
             dataType.restParameter === undefined &&
-            !hasTupleRestLanes(lowerer.context.checker, unwrapped)
+            !hasTupleRestLanes(
+                lowerer.context.checker,
+                lowerer.context.dataTypes,
+                unwrapped,
+            )
         ) {
             const cpp = lowerer.context.compileStoredDataFunction(
                 unwrapped,
@@ -561,6 +565,7 @@ function valueFunction(
             dataType.restParameter === undefined &&
             !hasTupleRestLanes(
                 lowerer.context.checker,
+                lowerer.context.dataTypes,
                 value.callbackDeclaration,
             )
         ) {
