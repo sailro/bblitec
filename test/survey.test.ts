@@ -729,6 +729,30 @@ test("a survey root's value typed object is dynamic, as such a binding is", () =
     assert.deepEqual(report.refusals, [], listed(report));
 });
 
+test("a generic class's method roots lower at a construction's type arguments", () => {
+    // `BuildCache` is constructed at two type arguments; `retain` is never
+    // called. Each method's root reads `this` as the instance the first
+    // construction builds, whose fields its initializers declare.
+    const { report } = surveySource(
+        `
+        export class BuildCache<T> {
+            private readonly builds = new Map<number, { key: string; value: T }>();
+            begin(seq: number): T | undefined { const build = this.builds.get(seq); return build ? build.value : undefined; }
+            commit(seq: number, key: string, value: T): void { this.builds.set(seq, { key, value }); }
+            retain(live: Set<number>): void { for (const seq of this.builds.keys()) if (!live.has(seq)) this.builds.delete(seq); }
+        }
+        const timber = new BuildCache<{ membership: string }>();
+        const railing = new BuildCache<{ audit: number[] | null }>();
+        timber.commit(1, "a", { membership: "m" });
+        localStorage.setItem("ready", (timber.begin(1)?.membership ?? "") + String(railing.begin(2) === undefined));
+    `,
+        { fileName: resolve("survey-generic-class.ts") },
+    );
+    assert.ok(report.program);
+    assert.equal(report.program.attempted, report.program.statements);
+    assert.deepEqual(report.refusals, [], listed(report));
+});
+
 test("a generic method instantiating its own interface ends the survey's mapping", () => {
     // `map` returns a `Pair` again: binding its receiver's arguments would
     // unfold `Pair<B, A>` into `Pair<A, B>` without end. The survey ends with

@@ -45,6 +45,7 @@ import {
     holdsObjectKeyword,
     holdsOnly,
     inheritsFrom,
+    isTypeReference,
     objectLikeType,
 } from "./type-facts.js";
 import { callTypeArguments, mentionsTypeParameter } from "./type-arguments.js";
@@ -662,21 +663,84 @@ function staticArgument(
     return undefined;
 }
 
+/** A generic function or class whose type parameters a root binds. */
+type GenericOwner = ts.SignatureDeclaration | ts.ClassLikeDeclaration;
+
 /**
  * The type arguments a root of the generic `owner` lowers at: those of the
- * first call of it they bind no type parameter in; where no call does, each
- * parameter's constraint, or `unknown` (a document) for one with none of its
- * own. Kept per function: the program does not change between passes.
+ * first call of it (a construction of a class) they bind no type parameter
+ * in; where none does, each parameter's constraint, or `unknown` (a
+ * document) for one with none of its own. Kept per owner: the program does
+ * not change between passes.
  */
 const calledSubstitutions = new WeakMap<
-    ts.SignatureDeclaration,
+    GenericOwner,
     ReadonlyMap<ts.Symbol, ts.Type>
 >();
 
-/** `calledSubstitutions` for a generic function no call binds. */
+const constructions = new WeakMap<
+    ts.Program,
+    Map<ts.Declaration, ts.NewExpression[]>
+>();
+
+/** The program's constructions, by the declaration each names. Built once. */
+function constructionsOf(
+    context: SurveyRootContext,
+    files: readonly ts.SourceFile[],
+): Map<ts.Declaration, ts.NewExpression[]> {
+    const known = constructions.get(context.program);
+    if (known) return known;
+    const found = new Map<ts.Declaration, ts.NewExpression[]>();
+    for (const file of files)
+        for (const node of sourceFileNodes(file))
+            if (ts.isNewExpression(node))
+                for (const declaration of resolvedSymbol(
+                    context.checker,
+                    node.expression,
+                )?.declarations ?? []) {
+                    const list = found.get(declaration);
+                    if (list) list.push(node);
+                    else found.set(declaration, [node]);
+                }
+    constructions.set(context.program, found);
+    return found;
+}
+
+/**
+ * The type arguments of the first construction of the generic class
+ * `owner` (its instance type's) that bind no type parameter, or undefined.
+ */
+function constructedTypeArguments(
+    context: SurveyRootContext,
+    files: readonly ts.SourceFile[],
+    owner: ts.ClassLikeDeclaration,
+): ReadonlyMap<ts.Symbol, ts.Type> | undefined {
+    const checker = context.checker;
+    const parameters = owner.typeParameters ?? [];
+    for (const node of constructionsOf(context, files).get(owner) ?? []) {
+        const instance = checker.getTypeAtLocation(node);
+        const bound = isTypeReference(instance)
+            ? checker.getTypeArguments(instance)
+            : [];
+        if (
+            bound.length < parameters.length ||
+            bound.some((type) => mentionsTypeParameter(checker, type))
+        )
+            continue;
+        const substitution = new Map<ts.Symbol, ts.Type>();
+        parameters.forEach((parameter, index) => {
+            const symbol = declaredSymbol(checker, parameter.name);
+            if (symbol) substitution.set(symbol, bound[index]!);
+        });
+        return substitution;
+    }
+    return undefined;
+}
+
+/** `calledSubstitutions` for a generic function or class no call binds. */
 function unboundTypeArguments(
     checker: ts.TypeChecker,
-    owner: ts.SignatureDeclaration,
+    owner: GenericOwner,
 ): ReadonlyMap<ts.Symbol, ts.Type> {
     const substitution = new Map<ts.Symbol, ts.Type>();
     for (const parameter of owner.typeParameters ?? []) {
@@ -706,21 +770,22 @@ function withCalledTypeArguments(
     declaration: ts.SignatureDeclaration,
     work: () => void,
 ): void {
-    const generic: ts.SignatureDeclaration[] = [];
+    const generic: GenericOwner[] = [];
     for (let node: ts.Node | undefined = declaration; node; node = node.parent)
-        if (ts.isFunctionLike(node) && node.typeParameters?.length)
+        if (
+            (ts.isFunctionLike(node) || ts.isClassLike(node)) &&
+            node.typeParameters?.length
+        )
             generic.unshift(node);
     if (generic.length === 0) {
         work();
         return;
     }
     const checker = context.checker;
-    const substitutionOf = (
+    // A function's first call binding every type parameter.
+    const called = (
         owner: ts.SignatureDeclaration,
-    ): ReadonlyMap<ts.Symbol, ts.Type> => {
-        const known = calledSubstitutions.get(owner);
-        if (known) return known;
-        let found: ReadonlyMap<ts.Symbol, ts.Type> | undefined;
+    ): ReadonlyMap<ts.Symbol, ts.Type> | undefined => {
         for (const call of rootedCallsOf(context, files).get(owner) ?? []) {
             const substitution = unlessRefused(() =>
                 callTypeArguments(checker, call, owner, (node, text) =>
@@ -732,12 +797,20 @@ function withCalledTypeArguments(
                 [...substitution.values()].every(
                     (type) => !mentionsTypeParameter(checker, type),
                 )
-            ) {
-                found = substitution;
-                break;
-            }
+            )
+                return substitution;
         }
-        found ??= unboundTypeArguments(checker, owner);
+        return undefined;
+    };
+    const substitutionOf = (
+        owner: GenericOwner,
+    ): ReadonlyMap<ts.Symbol, ts.Type> => {
+        const known = calledSubstitutions.get(owner);
+        if (known) return known;
+        const found =
+            (ts.isClassLike(owner)
+                ? constructedTypeArguments(context, files, owner)
+                : called(owner)) ?? unboundTypeArguments(checker, owner);
         calledSubstitutions.set(owner, found);
         return found;
     };
