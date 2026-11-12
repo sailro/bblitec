@@ -9052,6 +9052,19 @@ export class DataTypeRegistry {
         return this.referenceStructNames.has(name);
     }
 
+    /**
+     * Records of `name` stored by reference, as a comparison of their
+     * identity needs: undefined where no source decides their storage.
+     */
+    public referenceRecordDemand(
+        name: string,
+    ): NativeRecordStorageDemand | undefined {
+        const source = this.nativeRecordSources.get(name);
+        return source && !this.isClassStruct(name)
+            ? { ...source, stored: true }
+            : undefined;
+    }
+
     /** How a record of the struct reaches its fields: through its reference, or in place. */
     public memberAccess(name: string): "->" | "." {
         return this.isReferenceStruct(name) ? "->" : ".";

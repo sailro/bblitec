@@ -237,6 +237,7 @@ import {
 import {
     compileJsonStrictComparison,
     compileJsonElementRead,
+    documentHoldsRecord,
     compileJsonPropertyKey,
     isJsonValue,
     isJsonRootedExpression,
@@ -20214,6 +20215,46 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                         { kind: "json" },
                         node,
                     );
+                // A record compared with a document compares by identity.
+                const held = (
+                    document: { cpp: string; dataType: DataType },
+                    node: ts.Expression,
+                    record: Value,
+                ): string | undefined => {
+                    const compare = documentHoldsRecord(
+                        this.context.dataTypes,
+                        boxed(document, node),
+                        record,
+                    );
+                    return compare && `${negated ? "!" : ""}${compare}`;
+                };
+                const leftRecord = this.leafValue(
+                    leftValue.cpp,
+                    leftValue.dataType,
+                );
+                if (rightValue?.dataType.kind === "json") {
+                    const compare = held(rightValue, right, leftRecord);
+                    if (compare) return compare;
+                }
+                if (leftValue.dataType.kind === "json") {
+                    const compare = rightValue
+                        ? held(
+                              leftValue,
+                              left,
+                              this.leafValue(
+                                  rightValue.cpp,
+                                  rightValue.dataType,
+                              ),
+                          )
+                        : this.context.probeEmission(() =>
+                              held(
+                                  leftValue,
+                                  left,
+                                  this.context.compileValue(right),
+                              ),
+                          );
+                    if (compare) return compare;
+                }
                 return dynamicEquality(
                     boxed(leftValue, left),
                     rightValue

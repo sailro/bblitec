@@ -599,6 +599,11 @@ public:
         return left.strict_equals(right);
     }
 
+    /** The native object this value boxes; null for a document or a primitive. */
+    [[nodiscard]] const void* native_identity() const {
+        return kind_ == Kind::object && native_ ? native_->identity() : nullptr;
+    }
+
     /** SameValueZero, the key equality of Map and Set: NaN is one key. */
     [[nodiscard]] bool same_value_zero(const JsonValue& other) const {
         return strict_equals(other) || (kind_ == Kind::number && other.kind_ == Kind::number &&
@@ -1220,6 +1225,12 @@ template <typename T> [[nodiscard]] JsonValue json_value(const Map<std::string, 
 template <typename... T> [[nodiscard]] JsonValue json_value(const std::variant<T...>& value);
 template <typename T> [[nodiscard]] JsonValue json_value(const Ref<T>& value) {
     return value ? JsonValue::from_native(value) : JsonValue::null_value();
+}
+
+/** `value === object` for a record stored by reference: whether `value` boxes that very record. */
+template <typename T>
+[[nodiscard]] bool json_holds_object(const JsonValue& value, const Ref<T>& object) {
+    return object && value.native_identity() == static_cast<const void*>(object.get());
 }
 
 template <typename T> [[nodiscard]] JsonValue json_value(const std::optional<T>& value) {

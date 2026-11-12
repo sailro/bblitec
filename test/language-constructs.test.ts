@@ -18632,3 +18632,18 @@ check(
     if (held !== "k1:2:1" || none !== null) throw new Error(held);
 `,
 );
+
+check(
+    "a-parsed-element-compared-with-a-record-compares-its-identity",
+    `
+    interface Rec { x: number; mbase: Float32Array }
+    const gate = new Float32Array([1]);
+    const rec: Rec = { x: gate[0]!, mbase: new Float32Array([2]) };
+    const recs: Rec[] = [rec];
+    const docs = JSON.parse("[0, 1, {}]") as unknown[];
+    let matches = 0;
+    for (const doc of docs) if (doc === rec) matches++;
+    const differs = docs[2] !== rec;
+    if (matches !== 0 || !differs || recs[0]!.mbase[0] !== 2 || recs[0] !== rec) throw new Error("identity " + matches);
+`,
+);
