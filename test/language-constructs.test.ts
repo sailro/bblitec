@@ -18351,3 +18351,20 @@ check(
     if (subjectOf(5) !== null) throw new Error("none");
 `,
 );
+
+check(
+    "a-generic-function-reads-a-read-only-record-of-its-type-argument",
+    `
+    interface State { wall?: string; tint?: [number, number, number] }
+    interface House extends State { id: number }
+    interface Deps<S extends State> { read(id: number): Readonly<S> | undefined; copy(record: Readonly<S>): S }
+    function plan<S extends State>(deps: Deps<S>, id: number): S | null {
+        const current = id > 0 ? deps.read(id) : undefined;
+        return current ? deps.copy(current) : null;
+    }
+    const houses: House[] = [{ id: 1, wall: "stone", tint: [1, 0.5, 0] }];
+    const copied = plan<House>({ read: (id) => houses.find((house) => house.id === id), copy: (house) => ({ ...house }) }, 1);
+    if (!copied || copied === houses[0] || copied.wall !== "stone" || copied.tint?.[1] !== 0.5) throw new Error("plan");
+    if (plan<House>({ read: () => undefined, copy: (house) => ({ ...house }) }, 0) !== null) throw new Error("none");
+`,
+);

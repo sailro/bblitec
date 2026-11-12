@@ -753,6 +753,26 @@ test("a generic class's method roots lower at a construction's type arguments", 
     assert.deepEqual(report.refusals, [], listed(report));
 });
 
+test("a generic root reads a read-only record of its type argument", () => {
+    // No call binds `S`: the root lowers at its constraint, and `read`'s
+    // `Readonly<S>` result is the record `S` names there.
+    const { report } = surveySource(
+        `
+        interface State { wall?: string; tint?: [number, number, number] }
+        export interface Deps<S extends State> { read(id: number): Readonly<S> | undefined; copy(record: Readonly<S>): S }
+        export function createCommand<S extends State>(deps: Deps<S>): { plan(id: number): S | null } {
+            const read = (id: number) => (Number.isSafeInteger(id) && id > 0 ? deps.read(id) : undefined);
+            return { plan(id) { const current = read(id); return current ? deps.copy(current) : null; } };
+        }
+        localStorage.setItem("ready", "1");
+    `,
+        { fileName: resolve("survey-readonly-argument.ts") },
+    );
+    assert.ok(report.program);
+    assert.equal(report.program.attempted, report.program.statements);
+    assert.deepEqual(report.refusals, [], listed(report));
+});
+
 test("a generic method instantiating its own interface ends the survey's mapping", () => {
     // `map` returns a `Pair` again: binding its receiver's arguments would
     // unfold `Pair<B, A>` into `Pair<A, B>` without end. The survey ends with

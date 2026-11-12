@@ -4353,9 +4353,12 @@ export class DataTypeRegistry {
             libraryName(type.aliasSymbol) === "Readonly"
                 ? type.aliasTypeArguments?.[0]
                 : undefined;
+        // A read-only record is the record it wraps (`fromRecordType`): under
+        // a substitution, the one its type argument names there.
         if (
             readonlyTarget &&
-            this.proxyRecords.has(this.structIdentity(readonlyTarget))
+            (this.proxyRecords.has(this.structIdentity(readonlyTarget)) ||
+                this.mentionsSubstitution(readonlyTarget))
         )
             return this.fromTsType(readonlyTarget, node);
         const module = type.getSymbol()?.declarations?.find(ts.isSourceFile);
