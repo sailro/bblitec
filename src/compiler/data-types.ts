@@ -2937,18 +2937,23 @@ export class DataTypeRegistry {
      * or setter defines it, or it belongs to a record view.
      */
     public isAccessorProperty(property: ts.Symbol, owner: ts.Type): boolean {
-        return (
-            (property.declarations ?? []).some(
+        const accessor = (symbol: ts.Symbol | undefined): boolean =>
+            (symbol?.declarations ?? []).some(
                 (declaration) =>
                     this.getterProperties.has(declaration) ||
                     this.setterProperties.has(declaration),
-            ) ||
-            this.recordViews.has(
-                this.structIdentity(this.checker.getNonNullableType(owner)),
-            ) ||
-            this.proxyRecords.has(
-                this.structIdentity(this.checker.getNonNullableType(owner)),
-            )
+            );
+        const record = this.checker.getNonNullableType(owner);
+        return (
+            accessor(property) ||
+            // A data property shares the accessor slot of the layout its
+            // record joins (`fromStructTypeInner`).
+            (this.recordComponentOf(record)?.shapes.some((shape) =>
+                accessor(shape.getProperty(property.name)),
+            ) ??
+                false) ||
+            this.recordViews.has(this.structIdentity(record)) ||
+            this.proxyRecords.has(this.structIdentity(record))
         );
     }
 
@@ -8005,7 +8010,6 @@ export class DataTypeRegistry {
             };
         };
         for (const [name, declared] of layout.properties) {
-            const property = declared[0]!.symbol;
             const values = declared.map(valueOf);
             // A function an object literal declares is stored only in a
             // stored position (`fromStoredTsType`); elsewhere a component
@@ -8126,20 +8130,16 @@ export class DataTypeRegistry {
                 taggedDeclaration,
                 untagged,
             );
-            const accessor = this.propertyAccessor(property, view || proxy);
-            const other = declared.find(
-                ({ symbol }) =>
-                    this.propertyAccessor(symbol, view || proxy) !== accessor,
+            // A property one member declares as an accessor and another as
+            // data is one accessor slot: it holds a data property's value
+            // inline, and a write to a getter-only slot throws, as it does
+            // in JavaScript (`bbl::js::Accessor`).
+            const accessors = declared.map(({ symbol }) =>
+                this.propertyAccessor(symbol, view || proxy),
             );
-            if (other) {
-                const [slot, plain] = accessor
-                    ? [declared[0]!.owner, other.owner]
-                    : [other.owner, declared[0]!.owner];
-                this.fail(
-                    node,
-                    `Property '${name}' is an accessor in '${this.checker.typeToString(slot)}' but not in '${this.checker.typeToString(plain)}', and one layout ('${provisionalName}') stores both.`,
-                );
-            }
+            const accessor = accessors.includes("get-set")
+                ? "get-set"
+                : accessors.find((kind) => kind !== undefined);
             fields.push({
                 sourceName: name,
                 name: sanitizeIdentifier(

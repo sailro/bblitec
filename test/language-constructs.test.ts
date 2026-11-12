@@ -6386,6 +6386,25 @@ check(
 );
 
 check(
+    "getter-and-data-property-share-one-accessor-slot",
+    `
+    interface Plain { cx: number; cz: number }
+    interface Live { readonly cx: number; readonly cz: number }
+    const flag = Math.random() >= 0;
+    let reads = 0;
+    const live: Live = { get cx() { reads++; return flag ? 1 : 0; }, cz: 2 };
+    const plains: Plain[] = [{ cx: 3, cz: 4 }];
+    const all: Live[] = [live];
+    all.push(plains[0]!);
+    plains[0]!.cx = 9;
+    let total = 0;
+    for (const entry of all) total += entry.cx + entry.cz;
+    if (total !== 16) throw new Error("total " + total);
+    if (reads !== 1) throw new Error("reads " + reads);
+`,
+);
+
+check(
     "stored-callback-returns-an-object-by-identity",
     `
     interface Frame { halfX: number }

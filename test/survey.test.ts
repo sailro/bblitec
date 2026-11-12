@@ -1071,28 +1071,6 @@ test("a survey ended outside statement lowering publishes its last full pass wit
     assert.equal(publishedSurvey(ended, undefined), ended);
 });
 
-test("a joined record layout names the two types that disagree on an accessor", () => {
-    // `Live.cx` is the getter its literal defines; a `Plain` stored as a
-    // `Live` joins the two types' layouts.
-    assert.throws(
-        () =>
-            compileSource(`
-                interface Plain { cx: number; cz: number }
-                interface Live { readonly cx: number; readonly cz: number }
-                const flag = Math.random() >= 0;
-                const live: Live = { get cx() { return flag ? 1 : 0; }, cz: 2 };
-                const plains: Plain[] = [{ cx: 3, cz: 4 }];
-                const all: Live[] = [live];
-                all.push(plains[0]!);
-                plains[0]!.cx = 9;
-                let total = 0;
-                for (const entry of all) total += entry.cx + entry.cz;
-                if (total !== 14) throw new Error("total " + total);
-            `),
-        /Property 'cx' is an accessor in 'Live' but not in 'Plain', and one layout \('Plain'\) stores both\./,
-    );
-});
-
 test("a survey names a class member's refusal by its qualified name", () => {
     // The census, refusals and `--source-profile` share one function name.
     const { report } = surveySource(
