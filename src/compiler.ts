@@ -2305,6 +2305,7 @@ class Compiler implements LoweringServices {
         const pinned = pinnedHandleKind(member);
         switch (pinned) {
             case "mesh":
+            case "scene-node":
             case "sprite-layer":
             case "navigation":
             case "navigation-obstacle":

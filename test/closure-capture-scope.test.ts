@@ -210,6 +210,46 @@ test(
 );
 
 test(
+    "a nullable scene node a recursive closure assigns is optional node storage",
+    { skip: !tools },
+    () => {
+        // `TransformNode` is the pin's `SceneNode`: a `| null` name of it is
+        // optional native storage, as a mesh's is, so the closure's write
+        // has a slot to fill.
+        const result = compileSource(`
+        import { createEngine, createTransformNode, startEngine, type TransformNode } from "@babylonjs/lite";
+        async function main(canvas: HTMLCanvasElement): Promise<void> {
+            const engine = await createEngine(canvas);
+            const root = createTransformNode("root");
+            const wanted = localStorage.getItem("wanted") ?? "root";
+            let openingRoot: TransformNode | null = null;
+            const findRoot = (n: TransformNode): void => {
+                if (openingRoot) return;
+                if (n.name === wanted) { openingRoot = n; return; }
+                for (const c of n.children as TransformNode[]) findRoot(c);
+            };
+            findRoot(root);
+            localStorage.setItem("found", openingRoot ? (openingRoot as TransformNode).name : "none");
+            await startEngine(engine);
+        }
+        main(document.createElement("canvas"));
+    `);
+        const output = resolve("artifacts/closure-capture-scope-node-check");
+        mkdirSync(output, { recursive: true });
+        const source = join(output, "check.cpp");
+        writeFileSync(source, result.cpp);
+        runNativeFixtureCompiler(tools!, [
+            "/c",
+            "/DBBLITE_HAS_UI=1",
+            "/DBBLITE_WORKERS=1",
+            "/DBBLITE_OFFSCREEN_SURFACES=1",
+            `/Fo:${output}\\`,
+            source,
+        ]);
+    },
+);
+
+test(
     "frame timers retain local cells and rebind shared storage buffers",
     { skip: !tools },
     () => {
