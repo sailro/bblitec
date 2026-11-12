@@ -49,15 +49,16 @@ test(
     },
 );
 
-test("recursive mixed array aliases refuse instead of recursing during type mapping", () => {
-    assert.throws(
-        () =>
-            compileSource(`
+test("recursive mixed array aliases are documents instead of recursing during type mapping", () => {
+    // Scalars and arrays of the alias itself nest to any depth, as a JSON
+    // value does.
+    const result = compileSource(`
         type Nested = string | Nested[];
         const values = new Map<string, Nested>();
-    `),
-        /requires concrete data type/,
-    );
+        values.set("tree", ["a", ["b", ["c"]]]);
+        if (JSON.stringify(values.get("tree")) !== '["a",["b",["c"]]]') throw new Error("nested");
+    `);
+    assert.match(result.cpp, /bbl::js::Map<std::string, bbl::js::JsonValue> v_values/);
 });
 
 test("pinned shader recipe types include mixed options and WebGPU peer declarations", () => {

@@ -6749,6 +6749,8 @@ export class DataTypeRegistry {
      * array or its resolver).
      */
     private readonly mixedUnionsInProgress = new EmissionSet<ts.Type>();
+    /** Mixed unions reached again through their own arrays: documents. */
+    private readonly selfNestedUnions = new EmissionSet<ts.Type>();
 
     private fromMixedUnion(
         type: ts.UnionType,
@@ -6779,7 +6781,15 @@ export class DataTypeRegistry {
             )
         )
             return undefined;
-        if (this.mixedUnionsInProgress.has(type)) return undefined;
+        // Scalars and arrays of the union itself (`type Part = number |
+        // readonly Part[]`) nest to any depth, as a JSON value does: the
+        // union is a document.
+        if (this.mixedUnionsInProgress.has(type)) {
+            if (!type.types.every((member) => this.documentMember(member)))
+                return undefined;
+            this.selfNestedUnions.add(type);
+            return { kind: "json" };
+        }
         this.mixedUnionsInProgress.add(type);
         try {
             const members: DataType[] = [];
@@ -6793,6 +6803,7 @@ export class DataTypeRegistry {
                 if (!members.some((member) => dataTypesEqual(member, retained)))
                     members.push(retained);
             }
+            if (this.selfNestedUnions.has(type)) return { kind: "json" };
             members.sort((left, right) =>
                 this.typeKey(left).localeCompare(this.typeKey(right)),
             );
@@ -6802,6 +6813,23 @@ export class DataTypeRegistry {
         } finally {
             this.mixedUnionsInProgress.delete(type);
         }
+    }
+
+    /** A primitive, an absence or an array: what a JSON value nests. */
+    private documentMember(member: ts.Type): boolean {
+        return (
+            (member.flags &
+                (ts.TypeFlags.StringLike |
+                    ts.TypeFlags.NumberLike |
+                    ts.TypeFlags.BooleanLike |
+                    ts.TypeFlags.Null |
+                    ts.TypeFlags.Undefined)) !==
+                0 ||
+            this.checker.isArrayType(member) ||
+            this.checker.isTupleType(member) ||
+            (declaredInDefaultLibrary(member.symbol) &&
+                libraryName(member) === "ReadonlyArray")
+        );
     }
 
     /**

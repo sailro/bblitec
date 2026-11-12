@@ -18588,3 +18588,23 @@ check(
     if (single !== "51" || many !== "10,23" || none !== "" || projected !== 307) throw new Error(single + "|" + many + "|" + none + "|" + projected);
 `,
 );
+
+check(
+    "a-union-of-scalars-and-arrays-of-itself-is-a-document",
+    `
+    type Part = string | number | boolean | null | undefined | readonly Part[];
+    const quantized = (value: number): number => Math.round((Number.isFinite(value) ? value : 0) * 10000);
+    function normalized(part: Part): Part {
+        if (typeof part === "number") return quantized(part);
+        if (Array.isArray(part)) return part.map(normalized);
+        return part;
+    }
+    function signature(parts: readonly Part[]): string {
+        return JSON.stringify(parts.map(normalized));
+    }
+    const gate = new Float32Array([0.5, 2]);
+    const parts: Part[] = ["door", gate[0]!, [1.23456, true, null, ["x", gate[1]!]], undefined];
+    const text = signature(parts);
+    if (text !== '["door",5000,[12346,true,null,["x",20000]],null]') throw new Error(text);
+`,
+);
