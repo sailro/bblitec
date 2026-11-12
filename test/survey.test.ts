@@ -794,6 +794,29 @@ test("a generic root over an object-bound type parameter reads its callbacks", (
     assert.deepEqual(report.refusals, [], listed(report));
 });
 
+test("an async factory's root results in the record its signature declares", () => {
+    // No call reaches `createField`: its root runs the activation at its own
+    // declaration, whose returned record is stored as `Field`, as a call's
+    // result would be.
+    const { report } = surveySource(
+        `
+        interface Field { items: number[]; winter: number; setWinter(season: number): void; count(): number }
+        export async function createField(seed: number): Promise<Field> {
+            const items: number[] = [];
+            await Promise.resolve();
+            for (let i = 0; i < seed; i++) items.push(i);
+            let winter = 0;
+            return { items, winter: 0, setWinter: (season: number): void => { winter = season; }, count() { return items.length + winter; } };
+        }
+        localStorage.setItem("ready", "1");
+    `,
+        { fileName: resolve("survey-async-factory.ts") },
+    );
+    assert.ok(report.program);
+    assert.equal(report.program.attempted, report.program.statements);
+    assert.deepEqual(report.refusals, [], listed(report));
+});
+
 test("a generic method instantiating its own interface ends the survey's mapping", () => {
     // `map` returns a `Pair` again: binding its receiver's arguments would
     // unfold `Pair<B, A>` into `Pair<A, B>` without end. The survey ends with

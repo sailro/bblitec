@@ -837,10 +837,19 @@ export class AsyncLowerer {
                                             signature,
                                         ),
                                     );
+                                // An activation run at its own declaration
+                                // (a survey root) results as its signature
+                                // declares, as a call of it would.
                                 result.value = this.ownResult(
                                     result.value,
                                     node,
-                                    context.checker.getTypeAtLocation(node),
+                                    node === declaration && signature
+                                        ? context.checker.getReturnTypeOfSignature(
+                                              signature,
+                                          )
+                                        : context.checker.getTypeAtLocation(
+                                              node,
+                                          ),
                                 );
                                 if (
                                     result.value.kind === "void" &&
