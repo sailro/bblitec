@@ -4167,6 +4167,11 @@ export class DataTypeRegistry {
                   : undefined;
         const leftElement = array(left);
         const rightElement = array(right);
+        // An empty tuple holds no element of its own.
+        if (left.kind === "tuple" && left.arity === 0 && rightElement)
+            return { kind: "vector", element: rightElement };
+        if (right.kind === "tuple" && right.arity === 0 && leftElement)
+            return { kind: "vector", element: leftElement };
         return leftElement &&
             rightElement &&
             dataTypesEqual(leftElement, rightElement) &&
@@ -7553,9 +7558,10 @@ export class DataTypeRegistry {
         const lanes = boundedTupleElements(this.checker, reference);
         if (!lanes) return undefined;
         const elements = lanes.map((lane) => lane.type);
-        if (elements.length === 0) {
-            return undefined;
-        }
+        // An empty tuple (`[] as const`) is an array of no elements: a
+        // zero-length numeric tuple, which any array storage of a joined
+        // layout holds (`joinedStorage`).
+        if (elements.length === 0) return { kind: "tuple", arity: 0 };
         // The shared element layout can represent fields such as null in one
         // arm even when that arm has no useful standalone record storage.
         if (

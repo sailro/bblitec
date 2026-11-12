@@ -18382,3 +18382,24 @@ check(
     if (firstOf(readers[0]!, b) !== a || firstOf(readers[1]!, b) !== b) throw new Error("first");
 `,
 );
+
+check(
+    "an-empty-tuple-is-an-array-of-no-elements",
+    `
+    interface Moved { created?: readonly number[] }
+    type Outcome = ({ committed: true } & Moved) | { committed: false; reason: string };
+    const gate = new Float32Array([2, 0]);
+    let held = { committed: true, created: [] } as const;
+    if (gate[0]! > 1) held = { committed: true, created: [] } as const;
+    if (held.created.length !== 0 || !Array.isArray(held.created)) throw new Error("empty");
+    if (JSON.stringify(held) !== '{"committed":true,"created":[]}') throw new Error("json " + JSON.stringify(held));
+    const outcomes: Outcome[] = [];
+    outcomes.push(held, { committed: true, created: [gate[0]!, 3] }, { committed: false, reason: "no" });
+    let total = 0;
+    for (const outcome of outcomes) {
+        if (!outcome.committed) { total += outcome.reason.length; continue; }
+        for (const id of outcome.created ?? []) total += id;
+    }
+    if (total !== 7) throw new Error("total " + total);
+`,
+);
