@@ -1633,3 +1633,29 @@ test("a repeated survey call's readonly array result is storage its caller owns"
     assert.equal(report.program.attempted, report.program.statements);
     assert.deepEqual(report.refusals, [], listed(report));
 });
+
+test("a survey root runs a derived constructor no construction reached", () => {
+    // The constructor body is a root's body: its base call keeps nothing the
+    // rolled-back root reads, so it evaluates its arguments and the body
+    // goes on.
+    const { report } = surveySource(
+        `
+        export class PathAbortError extends Error {
+            constructor() {
+                super("bake aborted");
+            }
+        }
+        export class Named extends Error {
+            constructor(readonly code: number) {
+                super("code " + code);
+                this.name = "Named";
+            }
+        }
+        localStorage.setItem("ready", "1");
+    `,
+        { fileName: resolve("survey-derived-constructor.ts") },
+    );
+    assert.ok(report.program);
+    assert.equal(report.program.attempted, report.program.statements);
+    assert.deepEqual(report.refusals, [], listed(report));
+});

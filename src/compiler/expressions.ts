@@ -280,6 +280,7 @@ import { someAnalysisNode } from "./analysis-walk.js";
 import { renderClosure, type NativeExpression } from "./closure-captures.js";
 import { compileWithRuntimeCaseSplit } from "./runtime-case-split.js";
 import { numberToStringCpp } from "../cpp-expressions.js";
+import { activeSurvey } from "./survey.js";
 
 /** The global URI and base64 codecs, each a runtime function of its argument's ToString. */
 const URI_FUNCTIONS: ReadonlyMap<string, string> = new EmissionMap([
@@ -3766,6 +3767,16 @@ export class ExpressionLowerer {
         if (deferred) return deferred;
         const target = this.context.unwrap(call.expression);
         if (target.kind === ts.SyntaxKind.SuperKeyword) {
+            // A survey lowers a derived constructor no construction reached
+            // as a root's body: its base call keeps nothing the rolled-back
+            // root reads, its arguments evaluated in order.
+            if (activeSurvey()) {
+                for (const argument of call.arguments)
+                    this.context.emitDiscardedValue(
+                        this.context.compileValue(argument),
+                    );
+                return { kind: "void", cpp: "" };
+            }
             this.context.fail(
                 call,
                 "super(...) is lowered as a top-level statement of a derived " +
