@@ -678,6 +678,36 @@ test("a survey tries the bodies of accessors and constructors no lowering reache
     assert.deepEqual(report.refusals, [], listed(report));
 });
 
+test("an object literal's method root reads this as the record holding it", () => {
+    // `createMover`'s record is returned but its methods never called: each
+    // method body lowers as a root, `this.prepareBegin` a call through the
+    // record of the type its `this` reads.
+    const { report } = surveySource(
+        `
+        export interface Mover { carryBegin(id: number): boolean; prepareBegin(id: number): (() => void) | null }
+        export function createMover(saved: Set<number>): Mover {
+            const carried = new Set<number>();
+            return {
+                carryBegin(id) {
+                    const begin = this.prepareBegin(id);
+                    if (!begin) return false;
+                    begin();
+                    return true;
+                },
+                prepareBegin(id) {
+                    if (!saved.has(id)) return null;
+                    return () => { carried.add(id); };
+                },
+            };
+        }
+    `,
+        { fileName: resolve("survey-literal-this.ts") },
+    );
+    assert.ok(report.program);
+    assert.equal(report.program.attempted, report.program.statements);
+    assert.deepEqual(report.refusals, [], listed(report));
+});
+
 test("a generic method instantiating its own interface ends the survey's mapping", () => {
     // `map` returns a `Pair` again: binding its receiver's arguments would
     // unfold `Pair<B, A>` into `Pair<A, B>` without end. The survey ends with

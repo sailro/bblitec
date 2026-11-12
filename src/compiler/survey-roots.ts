@@ -7,7 +7,11 @@
  * holding the same. A survey writes no tree: a root's emission is dropped.
  */
 import ts from "typescript";
-import { forEachAnalysisNode, sourceFileNodes } from "./analysis-walk.js";
+import {
+    findAnalysisNode,
+    forEachAnalysisNode,
+    sourceFileNodes,
+} from "./analysis-walk.js";
 import { isStaticMember } from "./class-members.js";
 import { CompileError, unlessRefused } from "./compile-error.js";
 import { emptyStorage, type EmptyStorageContext } from "./empty-storage.js";
@@ -539,9 +543,23 @@ function withRootBindings(
                 "this",
                 context.checker.getDeclaredTypeOfSymbol(ownerSymbol),
             );
+        // An object literal's method reads `this` as the record holding it,
+        // stored as the type the checker gives the `this` it reads.
+        const literalThis =
+            member &&
+            ts.isObjectLiteralExpression(member.parent) &&
+            findAnalysisNode(
+                member,
+                (node) =>
+                    node.kind === ts.SyntaxKind.ThisKeyword &&
+                    thisMember(node) === member,
+            );
         // Methods read a stored instance through its class's receiver.
-        const instance =
-            stored && (context.classLowerer.hydrate(stored, owner) ?? stored);
+        const instance = stored
+            ? (context.classLowerer.hydrate(stored, owner) ?? stored)
+            : literalThis
+              ? site(literalThis, "this")
+              : undefined;
         context.withThis(instance, () => work(site, bound));
     } finally {
         context.bindings.popScope();
