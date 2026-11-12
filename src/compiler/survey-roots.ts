@@ -314,6 +314,12 @@ function unbegunRuns(
 /** Empty storage of a node's type for a root, or the refusal that it has none. */
 type RootSite = (node: ts.Node, label: string, type?: ts.Type) => Value;
 
+/**
+ * `RootSite` for a name the root may leave unbound: undefined, the reason
+ * counted (`unboundCapture`), where its type has no storage.
+ */
+type RootName = (name: ts.Identifier, node: ts.Node) => Value | undefined;
+
 function emitSurveyRoot(
     context: SurveyRootContext,
     survey: SurveyCollector,
@@ -325,7 +331,7 @@ function emitSurveyRoot(
         survey,
         [declaration],
         body.statements[0]!,
-        (site) => {
+        (site, bound) => {
             // A trailing parameter with a default is left out, as a call
             // leaving it out does: what the default holds reaches the body.
             let passed = declaration.parameters.length;
@@ -335,23 +341,10 @@ function emitSurveyRoot(
             )
                 passed--;
             const parameters = declaration.parameters.slice(0, passed);
-            const arguments_ = parameters.map(
-                (parameter): Value | undefined => {
-                    if (!ts.isIdentifier(parameter.name))
-                        return site(parameter, "parameter");
-                    try {
-                        return site(parameter, parameter.name.text);
-                    } catch (error) {
-                        if (!(error instanceof CompileError)) throw error;
-                        survey.unboundCapture(
-                            context.checker,
-                            body.statements[0]!,
-                            parameter.name,
-                            error,
-                        );
-                        return undefined;
-                    }
-                },
+            const arguments_ = parameters.map((parameter) =>
+                ts.isIdentifier(parameter.name)
+                    ? bound(parameter.name, parameter)
+                    : site(parameter, "parameter"),
             );
             if (arguments_.every((value) => value !== undefined)) {
                 context.userFunctions.compileSurveyRoot(
@@ -411,7 +404,7 @@ function withRootBindings(
     survey: SurveyCollector,
     scopes: readonly ts.Node[],
     first: ts.Statement,
-    work: (site: RootSite) => void,
+    work: (site: RootSite, bound: RootName) => void,
 ): void {
     const site: RootSite = (
         node,
@@ -423,6 +416,15 @@ function withRootBindings(
             node,
             `A survey root's ${label} has no native storage of its type.`,
         );
+    const bound: RootName = (name, node) => {
+        try {
+            return site(node, name.text);
+        } catch (error) {
+            if (!(error instanceof CompileError)) throw error;
+            survey.unboundCapture(context.checker, first, name, error);
+            return undefined;
+        }
+    };
     context.emit({ kind: "open", code: "{" });
     context.bindings.pushScope(context.allocateUserFunctionPrefix());
     try {
@@ -441,22 +443,13 @@ function withRootBindings(
                         context.declarations.bindAbsentResource(name)
                     )
                         continue;
-                    let value =
-                        initializer &&
-                        unlessRefused(() => context.compileValue(initializer));
-                    try {
-                        value ??= site(name, name.text);
-                    } catch (error) {
-                        if (!(error instanceof CompileError)) throw error;
-                        survey.unboundCapture(
-                            context.checker,
-                            first,
-                            name,
-                            error,
-                        );
-                        continue;
-                    }
-                    context.bindings.defineVariable(name, value);
+                    const value =
+                        (initializer &&
+                            unlessRefused(() =>
+                                context.compileValue(initializer),
+                            )) ??
+                        bound(name, name);
+                    if (value) context.bindings.defineVariable(name, value);
                 }
         // A static member's `this` is its class, which no instance holds.
         const member = thisMember(first);
@@ -483,7 +476,7 @@ function withRootBindings(
         // Methods read a stored instance through its class's receiver.
         const instance =
             stored && (context.classLowerer.hydrate(stored, owner) ?? stored);
-        context.withThis(instance, () => work(site));
+        context.withThis(instance, () => work(site, bound));
     } finally {
         context.bindings.popScope();
         context.emit({ kind: "close", code: "}" });
