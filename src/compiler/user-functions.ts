@@ -2022,9 +2022,11 @@ export class UserFunctionLowerer {
             signature && this.checker.getReturnTypeOfSignature(signature);
         if (discardReturn || !returned || isVoid(returned))
             return { kind: "void", cpp: "" };
+        // A returned array keeps its storage, a readonly one too.
+        const result = context.dataTypes.fromTsType(returned, ir.declaration);
         return emptyStorage(
             context,
-            context.dataTypes.fromTsType(returned, ir.declaration),
+            result && context.dataTypes.ownReturnedArray(result),
             "result",
         );
     }

@@ -1598,3 +1598,38 @@ test("the CLI writes the census in place of a tree and reports completion in its
         false,
     );
 });
+
+test("a repeated survey call's readonly array result is storage its caller owns", () => {
+    // The survey lowers `chainFor` once (the module's own call); later calls
+    // return empty storage of its result. A returned array keeps its
+    // storage, a readonly one too, so the cache holds it as its caller does.
+    const { report } = surveySource(
+        `
+        interface Sample { c: number; y: number }
+        function profileSamples(rise: number, segments: number): Sample[] {
+            const out: Sample[] = [];
+            for (let i = 0; i <= segments; i++) out.push({ c: i, y: rise - i });
+            return out;
+        }
+        function chainFor(rise: number, round: number): readonly Sample[] { return profileSamples(rise, round > 0 ? 4 : 0); }
+        const first = chainFor(2, 1);
+        let chainKey = Number.NaN;
+        let chainValue: readonly Sample[] | null = null;
+        function cachedChain(rise: number, round: number): readonly Sample[] {
+            if (chainValue !== null && rise === chainKey) return chainValue;
+            const chain = chainFor(rise, round);
+            chainKey = rise;
+            chainValue = chain;
+            return chain;
+        }
+        export function geometry(rise: number, round: number) {
+            return { rise, chain: round > 0 ? cachedChain(rise, round) : null };
+        }
+        localStorage.setItem("ready", String(first.length));
+    `,
+        { fileName: resolve("survey-repeated-array.ts") },
+    );
+    assert.ok(report.program);
+    assert.equal(report.program.attempted, report.program.statements);
+    assert.deepEqual(report.refusals, [], listed(report));
+});
