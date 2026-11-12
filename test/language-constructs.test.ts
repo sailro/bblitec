@@ -6404,6 +6404,26 @@ check(
 );
 
 check(
+    "stored-callback-of-a-boolean-or-void-parameter",
+    `
+    let count = 0;
+    const committed = (accepted: void | boolean): boolean => {
+        if (accepted === false) return false;
+        count++;
+        return accepted === undefined ? false : true;
+    };
+    const handlers: ((accepted: void | boolean) => boolean)[] = [committed];
+    let trues = 0;
+    for (const handler of handlers) {
+        if (handler(true)) trues++;
+        if (handler(undefined)) trues++;
+        if (handler(false)) trues++;
+    }
+    if (count !== 2 || trues !== 1) throw new Error("count " + count + " trues " + trues);
+`,
+);
+
+check(
     "getter-and-data-property-share-one-accessor-slot",
     `
     interface Plain { cx: number; cz: number }

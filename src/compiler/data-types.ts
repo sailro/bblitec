@@ -162,6 +162,7 @@ import {
     signatureParameterTypes,
     declaredRecordName,
     holdsObjectKeyword,
+    valueKindOf,
 } from "./type-facts.js";
 import { nativeReturnTsType } from "./native-return-type.js";
 import {
@@ -4350,15 +4351,21 @@ export class DataTypeRegistry {
             (absent.undefined || absent.void)
         )
             return { kind: "json" };
+        // The checker spells `boolean` as its two literals: one present type.
+        const booleanOnly =
+            present.length === 2 &&
+            present.every((member) => valueKindOf(member) === "boolean");
         const inner =
             present.length === 1
                 ? this.fromTsType(present[0]!, node)
-                : absent.void
-                  ? undefined
-                  : this.fromNonNullableType(
-                        this.checker.getNonNullableType(type),
-                        node,
-                    );
+                : booleanOnly
+                  ? { kind: "boolean" as const }
+                  : absent.void
+                    ? undefined
+                    : this.fromNonNullableType(
+                          this.checker.getNonNullableType(type),
+                          node,
+                      );
         // One optional flag cannot distinguish the two JavaScript absence values.
         // Primitive dynamic storage carries both tags and keeps ordinary scalar sinks.
         if (
