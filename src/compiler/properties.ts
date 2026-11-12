@@ -76,6 +76,7 @@ import { renderClosure } from "./closure-captures.js";
 import {
     borrowedPlatformEventKind,
     handleCppType,
+    isPinnedEngineObjectKind,
     touchListDataType,
     typedArrayBytesPerElement,
     type DataType,
@@ -141,6 +142,7 @@ import {
     type Value,
     type ValueKind,
     recordMethodValue,
+    staticStringValue,
 } from "./types.js";
 import type { UiProjection } from "./ui-projection.js";
 import {
@@ -4393,6 +4395,25 @@ export class PropertyAccessLowerer {
             expression,
         );
         if (exported) return exported;
+        // An engine object the pinned package makes is an object literal:
+        // its constructor is `Object`, whose name is "Object".
+        const engineObject =
+            owner.kind === "data" && owner.dataType?.kind === "handle"
+                ? owner.dataType.handle
+                : owner.kind;
+        if (
+            expression.name.text === "constructor" &&
+            isPinnedEngineObjectKind(engineObject)
+        )
+            return {
+                kind: "record",
+                cpp: "",
+                recordProperties: {
+                    name: staticStringValue("Object", (text) =>
+                        this.context.cppString(text),
+                    ),
+                },
+            };
         // A retained element's own reads, an optional chain's link included.
         const element =
             owner.kind === "ui-element"

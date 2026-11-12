@@ -651,6 +651,20 @@ export function pinnedHandleKind(type: ts.Type): HandleKind | undefined {
     return pinnedHandle(type, false);
 }
 
+/**
+ * The kinds of the engine objects the pinned package declares. The package
+ * makes each as an object literal (or `Object.create` of one) and declares
+ * no class of its own (`test/pinned-engine-objects.test.ts`).
+ */
+const pinnedEngineObjectKinds: ReadonlySet<string> = new Set(
+    Object.values(pinnedHandleTypes),
+);
+
+/** Whether a value of `kind` is an engine object the pinned package makes. */
+export function isPinnedEngineObjectKind(kind: string): boolean {
+    return pinnedEngineObjectKinds.has(kind);
+}
+
 /** Effect analysis also reads the exact implementation files registered by the pin. */
 export function pinnedSourceHandleKind(type: ts.Type): HandleKind | undefined {
     return pinnedHandle(type, true);
