@@ -678,6 +678,25 @@ test("a survey tries the bodies of accessors and constructors no lowering reache
     assert.deepEqual(report.refusals, [], listed(report));
 });
 
+test("a generic method instantiating its own interface ends the survey's mapping", () => {
+    // `map` returns a `Pair` again: binding its receiver's arguments would
+    // unfold `Pair<B, A>` into `Pair<A, B>` without end. The survey ends with
+    // the method's refusal instead of exhausting the stack.
+    const { report } = surveySource(
+        `
+        interface Pair<A, B> { swap(): Pair<B, A>; first(): A; map<T>(f: (a: A) => T): Pair<T, B> }
+        export function use<A, B>(pair: Pair<A, B>, other: Pair<B, A>): number {
+            const swapped = pair.swap();
+            const mapped = other.map((b) => [b]);
+            return (swapped.first() === other.first() ? 1 : 0) + (mapped ? 1 : 0);
+        }
+        localStorage.setItem("ready", "1");
+    `,
+        { fileName: resolve("survey-self-instantiating-method.ts") },
+    );
+    assert.equal(report.complete, true, listed(report));
+});
+
 test("a root of a generic function no call binds lowers at its constraints", () => {
     // `timed` is only stored, so no call binds its `T`: the root lowers at
     // `unknown`, and `work` is a function returning a document.

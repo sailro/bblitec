@@ -4463,6 +4463,7 @@ export class DataTypeRegistry {
         type: ts.Type,
         node: ts.Node,
         stored = false,
+        explaining = new Set<ts.Type>(),
     ): string {
         const represented = (part: ts.Type): boolean | undefined =>
             this.represented(part, node, stored);
@@ -4528,7 +4529,7 @@ export class DataTypeRegistry {
                 !part &&
                 stored &&
                 single &&
-                this.unrepresentedSignaturePart(single, node);
+                this.unrepresentedSignaturePart(single, node, explaining);
             if (signature) return `${path.join(" > ")} > ${signature}`;
             // A record whose layout (its component's, a union's) holds a
             // property no storage holds: that property is the part.
@@ -4585,7 +4586,11 @@ export class DataTypeRegistry {
     public unrepresentedSignaturePart(
         type: ts.Type,
         node: ts.Node,
+        explaining = new Set<ts.Type>(),
     ): string | undefined {
+        // A recursive signature (`(next: Visitor) => void`) is explained once.
+        if (explaining.has(type)) return undefined;
+        explaining.add(type);
         const signature = callSignatures(this.checker, type, "present")[0];
         if (!signature) return undefined;
         const parts = [
@@ -4598,7 +4603,9 @@ export class DataTypeRegistry {
                 (part.flags & ts.TypeFlags.VoidLike) === 0 &&
                 this.represented(part, node, true) !== true,
         );
-        return lacking && this.unrepresentedPart(lacking, node, true);
+        return (
+            lacking && this.unrepresentedPart(lacking, node, true, explaining)
+        );
     }
 
     /** A checked recursive boundary may retain a dynamic parsed value. Call sinks
@@ -5910,7 +5917,11 @@ export class DataTypeRegistry {
             ...demand,
             frames: [
                 ...demand.frames,
-                this.receiverTypeArguments(declaration, demand.site),
+                this.receiverTypeArguments(
+                    declaration,
+                    demand.site,
+                    demand.frames,
+                ),
             ],
         };
         const type = this.withGenericFunctionArguments(declaration, bound, () =>
@@ -6004,6 +6015,7 @@ export class DataTypeRegistry {
     private receiverTypeArguments(
         declaration: ts.SignatureDeclaration,
         site: ts.Node,
+        frames: GenericFunctionDemand["frames"],
     ): ReadonlyMap<ts.Symbol, ts.Type> {
         const frame = new Map<ts.Symbol, ts.Type>();
         const owner = declaration.parent;
@@ -6019,17 +6031,37 @@ export class DataTypeRegistry {
         const receiver = this.checker.getNonNullableType(
             this.checker.getTypeAtLocation(member.expression),
         );
+        const ownerSymbol = this.checker.getTypeAtLocation(owner).symbol;
+        // A method whose signature instantiates its own interface again
+        // (`swap(): Pair<B, A>`) would unfold the receiver's instantiations
+        // without end: it stays bound by its own type parameters alone.
+        const instantiatesOwner = (node: ts.Node): boolean =>
+            (ts.isTypeReferenceNode(node) &&
+                resolvedSymbol(this.checker, node.typeName) === ownerSymbol) ||
+            ts.forEachChild(node, instantiatesOwner) === true;
         if (
             !isTypeReference(receiver) ||
-            receiver.target.symbol !==
-                this.checker.getTypeAtLocation(owner).symbol
+            receiver.target.symbol !== ownerSymbol ||
+            instantiatesOwner(declaration)
         )
             return frame;
-        const arguments_ = this.checker.getTypeArguments(receiver);
+        // Each argument as the demand's frames resolve it: a parameter it
+        // leaves unbound binds nothing, so the frame adds no cycle between
+        // type parameters.
+        const arguments_ = this.withTypeArgumentFrames(frames, () =>
+            this.checker
+                .getTypeArguments(receiver)
+                .map((argument) => this.resolveTypeParameter(argument)),
+        );
         owner.typeParameters.forEach((parameter, index) => {
             const symbol = this.checker.getTypeAtLocation(parameter).symbol;
             const argument = arguments_[index];
-            if (symbol && argument) frame.set(symbol, argument);
+            if (
+                symbol &&
+                argument &&
+                (argument.flags & ts.TypeFlags.TypeParameter) === 0
+            )
+                frame.set(symbol, argument);
         });
         return frame;
     }
