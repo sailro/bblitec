@@ -6385,6 +6385,34 @@ check(
 `,
 );
 
+checkInRealm(
+    "instanceof-promise-tells-a-value-or-promise-result-apart",
+    `
+    const setters: ((id: string) => boolean | Promise<boolean>)[] = [
+        (id) => id.length > 1,
+        (id) => Promise.resolve(id.length > 2),
+    ];
+    let log = "";
+    const accepted = (ok: boolean): boolean => {
+        log += ok ? "y" : "n";
+        return ok;
+    };
+    let pending = 0;
+    for (const set of setters) {
+        const result = set("abc");
+        if (result instanceof Promise) {
+            pending++;
+            void result.then(accepted);
+        } else accepted(result);
+    }
+    if (pending !== 1 || log !== "y") throw new Error("pending " + pending + " log " + log);
+    setTimeout(() => {
+        if (log !== "yy") throw new Error("settled log " + log);
+        globalThis.close();
+    }, 0);
+`,
+);
+
 check(
     "a-conditional-of-two-boolean-literals-knows-neither",
     `

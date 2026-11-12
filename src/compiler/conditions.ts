@@ -298,6 +298,24 @@ export class ConditionLowerer {
     }
 
     /**
+     * `value instanceof Promise` outside an application realm, where a
+     * promise is stored as the value it settles to: that storage cannot say
+     * it held one, so the program lowers in the realm, which keeps promises
+     * apart from their values.
+     */
+    private requirePromisesApart(test: ts.BinaryExpression): void {
+        if (
+            !this.context.options.workers &&
+            ts.isIdentifier(test.right) &&
+            this.context.libraryGlobal(test.right) === "Promise" &&
+            unionMembers(
+                this.context.checker.getTypeAtLocation(test.left),
+            ).some((member) => libraryName(member) === "Promise")
+        )
+            throw new ApplicationRealmRequired();
+    }
+
+    /**
      * `value instanceof Map` (and Set, WeakMap, WeakSet): whether the
      * storage holding the value is that collection. A union answers by the
      * member it holds, an optional by its presence; a dictionary, a parsed
@@ -599,6 +617,7 @@ export class ConditionLowerer {
                 ),
             );
             if (left && primitive(left)) {
+                this.requirePromisesApart(unwrapped);
                 this.context.emitDiscardedValue(left);
                 return "false";
             }
@@ -743,6 +762,25 @@ export class ConditionLowerer {
                                 "instance_candidate",
                             ).cpp,
                         );
+                    // A value-or-promise union holds a promise in its
+                    // promise members.
+                    if (
+                        type?.kind === "union" &&
+                        type.members.some((member) => member.kind === "promise")
+                    ) {
+                        const held = this.context.bindings.pinValueToTemporary(
+                            value,
+                            "instance_candidate",
+                        ).cpp;
+                        return `(${type.members
+                            .flatMap((member, index) =>
+                                member.kind === "promise"
+                                    ? [`(${held}).index() == ${index}`]
+                                    : [],
+                            )
+                            .join(" || ")})`;
+                    }
+                    this.requirePromisesApart(unwrapped);
                 }
                 const collection = COLLECTION_CLASSES.get(global);
                 if (collection)
