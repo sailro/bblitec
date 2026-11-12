@@ -107,6 +107,7 @@ interface AsyncContext extends Pick<
     | "compileBrowserTextureFunctionCall"
     | "compileExecutedGltfFunctionCall"
     | "compileCallbackWithValues"
+    | "withCallbackScopes"
     | "captureManagedClosureLines"
     | "withOwnedCallbackBody"
     | "asyncActivations"
@@ -1733,6 +1734,12 @@ export class AsyncLowerer {
                 ts.TypeFlags.Never) !==
                 0;
         let stored: Value | undefined;
+        // A function value whose source the program holds (`hooks.failed`,
+        // a record's arrow) runs as that literal does, in the scopes it
+        // closed over, as a call through the value does.
+        let known:
+            | { value: Value; target: ts.ArrowFunction | ts.FunctionExpression }
+            | undefined;
         if (
             !reportingOnly &&
             (evaluated ||
@@ -1744,27 +1751,41 @@ export class AsyncLowerer {
             const value = evaluated ?? context.compileValue(callback);
             const type =
                 value.dataType ?? context.dataLowerer.dataTypeAt(callback);
-            if (type?.kind !== "function")
+            const source = value.callbackDeclaration;
+            if (
+                type?.kind !== "function" &&
+                value.kind === "callback" &&
+                !value.cpp &&
+                source &&
+                (ts.isArrowFunction(source) ||
+                    ts.isFunctionExpression(source)) &&
+                !isAsyncFunction(source)
+            )
+                known = { value, target: source };
+            else if (type?.kind !== "function")
                 return context.fail(
                     callback,
                     "Promise reactions require a compiled function value.",
                 );
-            const name = context.allocateTemporaryCppName("promise_callback");
-            const cpp = context.dataLowerer.compileKnownValueForSink(
-                value,
-                type,
-                callback,
-            );
-            context.emit({
-                kind: "declaration",
-                type: "auto",
-                name,
-                initializer: cpp,
-            });
-            stored = {
-                ...context.dataLowerer.leafValue(name, type),
-                nativeCaptures: [context.registerNativeBinding(name)],
-            };
+            else {
+                const name =
+                    context.allocateTemporaryCppName("promise_callback");
+                const cpp = context.dataLowerer.compileKnownValueForSink(
+                    value,
+                    type,
+                    callback,
+                );
+                context.emit({
+                    kind: "declaration",
+                    type: "auto",
+                    name,
+                    initializer: cpp,
+                });
+                stored = {
+                    ...context.dataLowerer.leafValue(name, type),
+                    nativeCaptures: [context.registerNativeBinding(name)],
+                };
+            }
         }
         const name = context.allocateTemporaryCppName("promise_argument");
         // A settled value is passed by const reference, an exception by value.
@@ -1800,13 +1821,21 @@ export class AsyncLowerer {
                             inputs,
                             node,
                         )
-                      : asynchronous
-                        ? this.activate(inline, declaration, inputs, node)
-                        : context.compileCallbackWithValues(
-                              inline!,
-                              inputs,
-                              node,
-                          );
+                      : known
+                        ? context.withCallbackScopes(known.value, () =>
+                              context.compileCallbackWithValues(
+                                  known!.target,
+                                  inputs,
+                                  node,
+                              ),
+                          )
+                        : asynchronous
+                          ? this.activate(inline, declaration, inputs, node)
+                          : context.compileCallbackWithValues(
+                                inline!,
+                                inputs,
+                                node,
+                            );
                 if (signature)
                     result.value = this.normalizeUndefined(
                         result.value,
@@ -1820,7 +1849,17 @@ export class AsyncLowerer {
                           (stored.dataType.undefinedCompletion ||
                               (cleanup &&
                                   stored.dataType.nonThenableCompletion))
-                        : undefinedCompletion || nonThenableCompletion);
+                        : known
+                          ? hasProvenUndefinedCompletion(
+                                context,
+                                known.target,
+                            ) ||
+                            (cleanup &&
+                                hasNonThenableCompletion(
+                                    context.checker,
+                                    known.target,
+                                ))
+                          : undefinedCompletion || nonThenableCompletion);
                 if (
                     !neverReturns &&
                     result.value.kind === "void" &&

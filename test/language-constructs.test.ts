@@ -18731,3 +18731,30 @@ check(
     if (skipped !== undefined || kept !== 7 || applied !== 2) throw new Error("set " + String(skipped) + " " + String(kept));
 `,
 );
+
+checkInRealm(
+    "a-promise-reaction-given-as-a-record-function-runs-it",
+    `
+    interface Hooks { failed(error: unknown): void; isFailed(): boolean }
+    let failures = 0;
+    const gate = new Float32Array([1]);
+    function mount(hooks: Hooks) {
+        const pending = new Set<Promise<void>>();
+        let changed = false;
+        const flush = (value: number): void => {
+            if (hooks.isFailed()) return;
+            const task = (value > 0 ? Promise.resolve(true) : Promise.reject(new Error("refused"))).then((accepted) => { changed ||= accepted; });
+            pending.add(task);
+            void task.catch(hooks.failed).finally(() => pending.delete(task));
+        };
+        return { flush, settled: () => pending.size === 0 && changed };
+    }
+    const slider = mount({ failed: () => { failures++; }, isFailed: () => gate[0]! < 0 });
+    slider.flush(1);
+    slider.flush(-1);
+    setTimeout(() => {
+        if (!slider.settled() || failures !== 1) throw new Error("settled " + failures);
+        globalThis.close();
+    }, 0);
+`,
+);
