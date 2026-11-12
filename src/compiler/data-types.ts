@@ -5325,7 +5325,13 @@ export class DataTypeRegistry {
             ) {
                 const [elementType] = this.checker.getTypeArguments(reference);
                 if (!elementType) return undefined;
-                const element = this.fromStoredTsType(elementType, node);
+                // An element typed `object` holds dynamic values, as an
+                // array's does (`arrayStoredElement`).
+                const element: DataType | undefined =
+                    symbolName !== "WeakSet" &&
+                    this.holdsObjectValue(elementType)
+                        ? { kind: "json" }
+                        : this.fromStoredTsType(elementType, node);
                 if (
                     symbolName === "WeakSet" &&
                     element?.kind === "borrowed-platform-event"

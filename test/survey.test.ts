@@ -1659,3 +1659,25 @@ test("a survey root runs a derived constructor no construction reached", () => {
     assert.equal(report.program.attempted, report.program.statements);
     assert.deepEqual(report.refusals, [], listed(report));
 });
+
+test("a generic class's method roots keep a set of its object type parameter", () => {
+    // No construction binds `T`: the roots lower at its constraint, and a
+    // set of `object` holds dynamic values, as an array of them does.
+    const { report } = surveySource(
+        `
+        export class UploadBatch<T extends object> {
+            private readonly dirty = new Set<T>();
+            mark(material: T): void { this.dirty.add(material); }
+            flush(upload: (material: T) => void): void {
+                for (const material of this.dirty) upload(material);
+                this.dirty.clear();
+            }
+        }
+        localStorage.setItem("ready", "1");
+    `,
+        { fileName: resolve("survey-generic-batch.ts") },
+    );
+    assert.ok(report.program);
+    assert.equal(report.program.attempted, report.program.statements);
+    assert.deepEqual(report.refusals, [], listed(report));
+});

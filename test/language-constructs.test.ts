@@ -18682,3 +18682,32 @@ check(
     if (!(total > 9 && total < 11) || missed[1] !== 0.9) throw new Error("tints " + total);
 `,
 );
+
+check(
+    "a-set-of-objects-keeps-each-object-once-by-identity",
+    `
+    class UploadBatch<T extends object> {
+        private readonly dirty = new Set<T>();
+        mark(material: T): void { this.dirty.add(material); }
+        flush(upload: (material: T) => void): number {
+            let count = 0;
+            for (const material of this.dirty) { upload(material); count++; }
+            this.dirty.clear();
+            return count;
+        }
+    }
+    const seen = new Set<object>();
+    const a = { n: 1 };
+    const b = { n: 2 };
+    seen.add(a);
+    seen.add(a);
+    seen.add(b);
+    const batch = new UploadBatch<{ n: number }>();
+    batch.mark(a);
+    batch.mark(a);
+    batch.mark(b);
+    let uploaded = 0;
+    const flushed = batch.flush((material) => { uploaded += material.n; });
+    if (seen.size !== 2 || !seen.has(a) || seen.has({ n: 1 }) || flushed !== 2 || uploaded !== 3) throw new Error("set " + seen.size + " " + flushed);
+`,
+);
