@@ -91,6 +91,19 @@ export function compileSearchParamsMethod(
         !context.options.runtimeSearchParams
     )
         throw new RuntimeSearchParamsRequired();
+    if (method === "entries" || method === "keys" || method === "values") {
+        context.expectArgumentCount(call, 0, 0);
+        const string = { kind: "string" } as const;
+        const element =
+            method === "entries"
+                ? context.dataTypes.tupleStorage([string, string])
+                : string;
+        context.reachJsData();
+        return lowerer.leafValue(
+            `bbl::js::search_params_iterator<${context.dataTypes.cppType(element)}, bbl::js::MapPart::${method}>(${owner.cpp})`,
+            { kind: "iterator", element, traced: true },
+        );
+    }
     const native = NATIVE_METHODS.get(method);
     if (!native)
         return context.fail(

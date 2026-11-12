@@ -7494,6 +7494,25 @@ check(
 );
 
 check(
+    "query-iterators-walk-the-live-list",
+    `
+    const params = new URLSearchParams("a=1&b=two" + (Date.now() > 0 ? "&a=3" : ""));
+    const keep = new Set(["b"]);
+    const parts = [...params.entries()].filter(([k]) => !keep.has(k)).map(([k, v]) => k + "=" + v);
+    if (parts.join(",") !== "a=1,a=3") throw new Error("entries " + parts.join(","));
+    const keys = [...params.keys()].join(",");
+    const values = [...params.values()].join(",");
+    if (keys !== "a,b,a" || values !== "1,two,3") throw new Error("parts " + keys + " " + values);
+    let walked = "";
+    for (const [k, v] of params.entries()) {
+        walked += k + v;
+        if (k === "a" && v === "1") params.delete("b");
+    }
+    if (walked !== "a1a3") throw new Error("live " + walked);
+`,
+);
+
+check(
     "query-helpers-with-parameters",
     `
     const qs = new URLSearchParams(location.search);

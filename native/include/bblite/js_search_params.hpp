@@ -279,6 +279,12 @@ public:
                 return value;
         return std::nullopt;
     }
+    /** The current list's entry at `index`, or null past its end: one iterator step. */
+    [[nodiscard]] const std::pair<std::string, std::string>* entry_at(std::size_t index) const {
+        if (!entries_)
+            throw std::runtime_error("URLSearchParams receiver is absent.");
+        return index < entries_->entries.size() ? &entries_->entries[index] : nullptr;
+    }
     bool has(const std::string& key) const { return get(key).has_value(); }
     bool has(const std::string& key, const std::string& value) const {
         if (!entries_)
@@ -345,4 +351,30 @@ private:
             entries_->update(to_string());
     }
 };
+
+/** A URLSearchParams iterator: an index into the list as it is at each step. */
+template <typename Yield, MapPart Part> struct SearchParamsCursor {
+    SearchParams params;
+    std::size_t index = 0;
+    Nullable<Yield> operator()() {
+        const auto* entry = params.entry_at(index);
+        if (!entry)
+            return {};
+        ++index;
+        if constexpr (Part == MapPart::keys)
+            return Nullable<Yield>::yielded(entry->first);
+        else if constexpr (Part == MapPart::values)
+            return Nullable<Yield>::yielded(entry->second);
+        else
+            return Nullable<Yield>::yielded(Yield{entry->first, entry->second});
+    }
+    void gc_trace(const TraceVisitor& visitor) const { visitor(params); }
+};
+
+template <typename Yield, MapPart Part>
+[[nodiscard]] Iterator<Yield> search_params_iterator(const SearchParams& params) {
+    if (!params)
+        throw std::runtime_error("URLSearchParams receiver is absent.");
+    return Iterator<Yield>(SearchParamsCursor<Yield, Part>{params, 0});
+}
 } // namespace bbl::js
