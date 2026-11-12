@@ -3485,7 +3485,7 @@ export class DeclarationLowerer {
                 if (!type)
                     this.context.fail(
                         declaration,
-                        "Demanded binding no longer has a native storage representation.",
+                        `Demanded binding no longer has a native storage representation: ${this.context.dataTypes.unrepresentedPart(this.context.checker.getTypeAtLocation(declaration.name), declaration, true)}.`,
                     );
                 // Retained readonly arrays own their initializer just like
                 // returned arrays; a span would outlive a temporary projection.

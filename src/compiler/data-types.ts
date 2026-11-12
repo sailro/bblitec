@@ -3465,7 +3465,7 @@ export class DataTypeRegistry {
             if (type?.kind !== "struct")
                 this.fail(
                     demand.node,
-                    "Demanded record no longer has a native object representation.",
+                    `Demanded record no longer has a native object representation: ${this.unrepresentedPart(demand.type, demand.node, true)}.`,
                 );
             this.markStoredObjectReferences(type);
         });
@@ -4431,11 +4431,17 @@ export class DataTypeRegistry {
      * to the part that has none (a union's member, a type argument, a
      * property, an index signature's value), then what that part lacks. A
      * union each of whose members has a data type lacks one layout holding
-     * them all.
+     * them all. A `stored` type is explained as a stored position maps it:
+     * its function members too, down to the parameter or result of one
+     * that has no native signature.
      */
-    public unrepresentedPart(type: ts.Type, node: ts.Node): string {
+    public unrepresentedPart(
+        type: ts.Type,
+        node: ts.Node,
+        stored = false,
+    ): string {
         const represented = (part: ts.Type): boolean | undefined =>
-            this.represented(part, node);
+            this.represented(part, node, stored);
         const path = [`'${this.checker.typeToString(type)}'`];
         let current = type;
         for (;;) {
@@ -4473,6 +4479,7 @@ export class DataTypeRegistry {
                                 ])
                                 .filter(
                                     ([, propertyType]) =>
+                                        stored ||
                                         callSignatures(
                                             this.checker,
                                             propertyType,
@@ -4487,6 +4494,12 @@ export class DataTypeRegistry {
                                 ]),
                         ];
             const part = parts.find(([, part]) => represented(part) === false);
+            const signature =
+                !part &&
+                stored &&
+                single &&
+                this.unrepresentedSignaturePart(single, node);
+            if (signature) return `${path.join(" > ")} > ${signature}`;
             if (!part)
                 return `${path.join(" > ")}: ${
                     members.length > 1
@@ -4502,9 +4515,17 @@ export class DataTypeRegistry {
      * Whether `part` has a native data type; undefined where its own
      * mapping refuses or demands storage, which says nothing of its parts.
      */
-    private represented(part: ts.Type, node: ts.Node): boolean | undefined {
+    private represented(
+        part: ts.Type,
+        node: ts.Node,
+        stored = false,
+    ): boolean | undefined {
         try {
-            return this.fromTsType(part, node) !== undefined;
+            return (
+                (stored
+                    ? this.fromStoredTsType(part, node)
+                    : this.fromTsType(part, node)) !== undefined
+            );
         } catch (error) {
             if (error instanceof CompileError || error instanceof StorageDemand)
                 return undefined;
