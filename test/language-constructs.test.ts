@@ -18518,3 +18518,23 @@ check(
     if (total !== 17 || rows.get("dig") !== 1 || rows.get("window") !== 1 || rows.get("plant") !== 2 || rows.get("restore") !== 3) throw new Error("total " + total);
 `,
 );
+
+checkInRealm(
+    "a-promise-all-lane-of-undefined-is-undefined",
+    `
+    interface Pkg { name: string; size: number }
+    const gate = new Float32Array([1, 0]);
+    async function loadPkg(name: string): Promise<Pkg> { await Promise.resolve(); return { name, size: name.length }; }
+    async function settle(): Promise<void> { await Promise.resolve(); }
+    interface Opts { bodyUrl: string; brickUrl?: string }
+    async function loadAssets(opts: Opts): Promise<string> {
+        const [body, brick, done] = await Promise.all([loadPkg(opts.bodyUrl), opts.brickUrl ? loadPkg(opts.brickUrl) : undefined, settle()]);
+        return body.name + ":" + (brick ? brick.name : "none") + ":" + String(done);
+    }
+    const withBrick: Opts = gate[0]! > 0 ? { bodyUrl: "wall", brickUrl: "brick" } : { bodyUrl: "x" };
+    void Promise.all([loadAssets(withBrick), loadAssets({ bodyUrl: "slab" })]).then((names) => {
+        if (names.join(",") !== "wall:brick:undefined,slab:none:undefined") throw new Error(names.join(","));
+        globalThis.close();
+    });
+`,
+);

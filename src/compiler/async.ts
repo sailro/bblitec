@@ -1556,11 +1556,13 @@ export class AsyncLowerer {
                       () => context.compileValue(input),
                   );
         const settlements: ReturnType<AsyncLowerer["settledHandlers"]>[] = [];
+        const sources: ts.Node[] = [];
         const pin = (
             value: Value,
             source: ts.Node,
             expected?: ts.Type,
         ): Value => {
+            sources.push(source);
             const promise = this.pinArgument(
                 this.asPromise(value, source, { source: expected }),
                 "all_input",
@@ -1651,7 +1653,15 @@ export class AsyncLowerer {
                 ? `bbl::js::promise_all_settled_tuple(${inputs}, std::tuple{${settlements.map((value) => value.fulfilled).join(", ")}}, std::tuple{${settlements.map((value) => value.rejected).join(", ")}})`
                 : `bbl::js::promise_all_tuple(${inputs})`,
             promiseType: this.cppType(result, call),
-            promiseResult: result,
+            // A void fulfillment is undefined in the aggregate.
+            promiseResult: {
+                ...result,
+                tupleElements: result.tupleElements!.map((lane, index) =>
+                    lane.kind === "void"
+                        ? undefinedFromVoid(context, sources[index]!)
+                        : lane,
+                ),
+            },
             nativeCaptures: promises.flatMap(
                 (value) => value.nativeCaptures ?? [],
             ),
@@ -2104,8 +2114,13 @@ export class AsyncLowerer {
         cpp: string,
         binding: NativeCaptureBinding,
     ): Value {
-        // An erased browser value has no run-time state: it settles to itself.
-        if (source.kind === "browser") return source;
+        // An erased browser value has no run-time state: it settles to
+        // itself, as an aggregate's `undefined` lane does.
+        if (
+            source.kind === "browser" ||
+            (source.kind === "json-null" && absenceOf(source) === "undefined")
+        )
+            return source;
         const { ownedCpp, ...value } = source;
         if (value.dataType?.kind === "handle" && value.dataType.ownedEngine) {
             const owned = {
