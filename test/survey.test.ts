@@ -722,6 +722,36 @@ test("an overload signature is no statement; an evaluated module's default expor
     assert.equal(report.program.attempted, report.program.statements);
 });
 
+test("a root's call at an unbound type refuses alone, not the stored generic family", () => {
+    // `edit`'s root calls `runEdit` at `U`, which no call binds: that
+    // instantiation has no native signature. The family the program's own
+    // `authorities` store keeps its other instantiation, and only the
+    // root's call refuses.
+    const { report } = surveySource(
+        `
+        interface Authority { runEdit<T>(operation: () => T): T | null; failed(): boolean }
+        const createAuthority = (): Authority => {
+            let failures = 0;
+            return {
+                runEdit<T>(operation: () => T): T | null { try { return operation(); } catch { failures++; return null; } },
+                failed: () => failures > 0,
+            };
+        };
+        const authorities: Authority[] = [createAuthority()];
+        let total = 0;
+        for (const authority of authorities) total += authority.runEdit(() => 3) ?? 0;
+        export function edit<U>(auth: Authority, make: () => U): U | null { return auth.runEdit(make); }
+        localStorage.setItem("total", String(total));
+    `,
+        { fileName: resolve("survey-generic-family-root.ts") },
+    );
+    assert.deepEqual(
+        report.refusals.map((refusal) => refusal.statement.line),
+        [13],
+        listed(report),
+    );
+});
+
 test("a root of a generic function no call binds lowers at its constraints", () => {
     // `timed` is only stored, so no call binds its `T`: the root lowers at
     // `unknown`, and `work` is a function returning a document.

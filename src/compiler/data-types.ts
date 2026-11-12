@@ -16,7 +16,7 @@ import {
     intersectedParts,
 } from "./document-read-closure.js";
 import { StorageDemand } from "./storage-demand.js";
-import { CompileError } from "./compile-error.js";
+import { CompileError, unlessRefused } from "./compile-error.js";
 import { UNINHABITED_DOM_OBJECTS } from "./data-types/model.js";
 import { ERROR_CLASS_FIELDS, ERROR_CONSTRUCTORS } from "./error-values.js";
 import { functionSignatureSite } from "./function-storage-flow.js";
@@ -5917,16 +5917,17 @@ export class DataTypeRegistry {
             declaration,
             fields,
         });
-        for (const demand of this.storage.genericFunctions.get(family))
-            fields.push({
-                name: `call_${fields.length}`,
-                type: this.genericFunctionInstantiation(
-                    declaration,
-                    demand,
-                    node,
-                ),
-                demand,
-            });
+        for (const demand of this.storage.genericFunctions.get(family)) {
+            // A signature no native type holds (a survey root's call at a
+            // type parameter no call binds) refuses at its own call, which
+            // instantiates it on its own (`representedGenericFunctionField`);
+            // the family stores every other.
+            const type = unlessRefused(() =>
+                this.genericFunctionInstantiation(declaration, demand, node),
+            );
+            if (type)
+                fields.push({ name: `call_${fields.length}`, type, demand });
+        }
         this.registerStructDefinition(`generic:${family}`, {
             name,
             fields: fields.map((field) => ({
