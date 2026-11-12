@@ -4544,6 +4544,10 @@ export class DataTypeRegistry {
             const unstored =
                 !part && path.length <= 6
                     ? (this.unstoredLayoutProperties.get(current) ??
+                      // `T | null`'s present union is the one mapped.
+                      this.unstoredLayoutProperties.get(
+                          this.checker.getNonNullableType(current),
+                      ) ??
                       (single && this.unstoredLayoutProperties.get(single)))
                     : undefined;
             if (unstored?.reason)
