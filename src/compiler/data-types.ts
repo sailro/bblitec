@@ -1831,6 +1831,14 @@ export class DataTypeRegistry {
         [];
     /** @unjournaled The object type each phantom brand's assertions brand, from source alone. */
     private readonly brandSources = new Map<string, ts.Type | null>();
+    /**
+     * @unjournaled Diagnostics only: the layout property a record type's
+     * mapping found no storage for, which `unrepresentedPart` explains.
+     */
+    private readonly unstoredLayoutProperties = new Map<
+        ts.Type,
+        { readonly name: string; readonly type: ts.Type }
+    >();
 
     /**
      * A phantom brand (`Readonly<{ readonly [brand]: true }>` over a
@@ -4506,6 +4514,20 @@ export class DataTypeRegistry {
                 single &&
                 this.unrepresentedSignaturePart(single, node);
             if (signature) return `${path.join(" > ")} > ${signature}`;
+            // A record whose layout (its component's, a union's) holds a
+            // property no storage holds: that property is the part.
+            const unstored =
+                !part && path.length <= 6
+                    ? (this.unstoredLayoutProperties.get(current) ??
+                      (single && this.unstoredLayoutProperties.get(single)))
+                    : undefined;
+            if (unstored && unstored.type !== current) {
+                path.push(
+                    `layout property '${unstored.name}' of type '${this.checker.typeToString(unstored.type)}'`,
+                );
+                current = unstored.type;
+                continue;
+            }
             if (!part)
                 return `${path.join(" > ")}: ${
                     members.length > 1
@@ -8052,6 +8074,10 @@ export class DataTypeRegistry {
                 valued.length > 0 && nullish(value);
             const mappedValue = (valued[0] ?? values.find(storing))?.mapped;
             if (!mappedValue) {
+                this.unstoredLayoutProperties.set(type, {
+                    name,
+                    type: values[0]!.type,
+                });
                 return undefined;
             }
             // One layout stores the property once: every member declaring it
