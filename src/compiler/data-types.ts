@@ -35,6 +35,7 @@ import {
     isUndefinedDataType,
     isOpaqueReference,
     isNativeStructuralView,
+    isScalarDataType,
     sharesStorageKind,
     tracedEdgeCondition,
     recordTraceConditions,
@@ -2914,11 +2915,21 @@ export class DataTypeRegistry {
         for (const value of values) {
             if (!storing(value)) continue;
             const stored = value.mapped && storage(value.mapped);
-            if (stored?.kind !== "function" || stored.generic) return undefined;
+            // A shape may declare it a plain value (`count: number` beside
+            // a `count(): number` method): its own arm of the slot.
+            if (
+                !stored ||
+                (stored.kind === "function" && stored.generic) ||
+                (stored.kind !== "function" && !isScalarDataType(stored))
+            )
+                return undefined;
             if (!members.some((member) => this.joinedStorage(member, stored)))
                 members.push(stored);
         }
-        return members.length > 1 ? { kind: "union", members } : undefined;
+        return members.length > 1 &&
+            members.some((member) => member.kind === "function")
+            ? { kind: "union", members }
+            : undefined;
     }
 
     /** Synthetic own-presence slots alone do not change a method's receiver. */

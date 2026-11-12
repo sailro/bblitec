@@ -1488,15 +1488,17 @@ function compileKnownDataMethod(
                 (functionType?.kind === "optional" &&
                     functionType.inner.kind === "union")) &&
             dataType?.kind !== "optional" &&
-            !field.accessor
+            !field.accessorReceiver
         ) {
             const referenceReceiver =
                 lowerer.context.dataTypes.isReferenceStruct(recordType.name);
             const receiver =
                 lowerer.context.allocateTemporaryCppName("callback_receiver");
+            // An accessor slot (a getter beside the method one shape
+            // declares) holds the arms behind its getter.
             const member = lowerer.unionFunctionMember(
                 lowerer.leafValue(
-                    `${receiver}${lowerer.context.dataTypes.memberAccess(recordType.name)}${field.name}`,
+                    `${receiver}${lowerer.context.dataTypes.memberAccess(recordType.name)}${field.name}${field.accessor ? ".get()" : ""}`,
                     functionType,
                 ),
                 callee.access,

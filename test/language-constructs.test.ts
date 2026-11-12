@@ -18416,3 +18416,26 @@ check(
     if (value !== 5 || nothing !== undefined || edits !== 1) throw new Error("run " + value + " " + nothing + " " + edits);
 `,
 );
+
+check(
+    "one-layout-holds-a-field-one-shape-declares-a-method",
+    `
+    interface Brick { readonly count: number; reupload(): void; bricks: number }
+    interface Solid { count(): number; reupload(): void; solid: boolean }
+    let uploads = 0;
+    let live = 3;
+    const gate = new Float32Array([5]);
+    const brick: Brick = { get count() { return live; }, reupload: () => { uploads++; }, bricks: 3 };
+    const solid: Solid = { count: () => gate[0]!, reupload: () => { uploads += 10; }, solid: true };
+    const touched = new Set<{ reupload(): void }>();
+    touched.add(brick);
+    touched.add(solid);
+    touched.add(brick);
+    for (const batch of touched) batch.reupload();
+    const bricks: Brick[] = [brick];
+    const solids: Solid[] = [solid];
+    live = 4;
+    const total = bricks[0]!.count + solids[0]!.count();
+    if (uploads !== 11 || total !== 9 || typeof solid.count !== "function") throw new Error("uploads " + uploads + " total " + total);
+`,
+);
