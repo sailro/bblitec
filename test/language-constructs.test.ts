@@ -18647,3 +18647,22 @@ check(
     if (matches !== 0 || !differs || recs[0]!.mbase[0] !== 2 || recs[0] !== rec) throw new Error("identity " + matches);
 `,
 );
+
+check(
+    "a-conditionally-spread-key-is-own-only-where-its-arm-wrote-it",
+    `
+    interface Rect { kind: "rect"; cx: number; halfW: number; grow?: number }
+    interface Circle { kind: "circle"; x: number; radius: number; grow?: number }
+    type Boundary = Rect | Circle;
+    interface Body { cx: number; halfW: number }
+    const gate = new Float32Array([0.5, 0]);
+    const rectBoundary = (fp: Body, grow = 0): Rect => ({ kind: "rect", cx: fp.cx, halfW: fp.halfW, ...(grow !== 0 ? { grow } : {}) });
+    function bodyWidth(body: Body): number { return body.halfW * 2; }
+    function reach(b: Boundary): number { return (b.kind === "rect" ? b.halfW : b.radius) + (b.grow ?? 0); }
+    const grown = rectBoundary({ cx: 0, halfW: 1 }, gate[0]!);
+    const plain = rectBoundary({ cx: 0, halfW: 2 }, gate[1]!);
+    const hosts: Boundary[] = [grown, plain, { kind: "circle", x: 0, radius: 3 }];
+    const total = hosts.reduce((sum, host) => sum + reach(host), 0) + bodyWidth(grown) + bodyWidth(plain);
+    if (total !== 12.5 || !("grow" in grown) || "grow" in plain || Object.keys(plain).length !== 3) throw new Error("total " + total);
+`,
+);

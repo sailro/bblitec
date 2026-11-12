@@ -347,6 +347,13 @@ function requireCopiedOwnUndefinedFields(
             ) === "stored"
         )
             continue;
+        // A key a conditional spread wrote is own only while it holds a
+        // value, as in a copy of the struct's own type.
+        if (
+            value.kind === "record" &&
+            value.recordProperties?.[field.sourceName]?.conditionalOwnKey
+        )
+            continue;
         const properties = members.flatMap((member) => {
             const property = lowerer.context.checker.getPropertyOfType(
                 member,
