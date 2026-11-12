@@ -6652,7 +6652,19 @@ export class UserFunctionLowerer {
                     (value) => value !== undefined,
                 );
                 if (specialized) return specialized;
-                const returnType = discardReturn
+                // A call instantiating the result at `void` (`<T>(work: () =>
+                // T): T` running a void work) returns no value: its returns
+                // run their expressions and leave.
+                const loweredResult = this.loweredSignature(ir, callNode);
+                const discarded =
+                    discardReturn ||
+                    (loweredResult !== undefined &&
+                        isVoid(
+                            this.checker.getReturnTypeOfSignature(
+                                loweredResult,
+                            ),
+                        ));
+                const returnType = discarded
                     ? undefined
                     : this.valueLambdaReturnType(
                           context,
@@ -6667,7 +6679,7 @@ export class UserFunctionLowerer {
                                 context,
                                 ir.statements,
                                 returnType,
-                                discardReturn,
+                                discarded,
                             ),
                         );
                     } catch (error) {
@@ -6678,14 +6690,14 @@ export class UserFunctionLowerer {
                         context,
                         ir.statements,
                         { kind: "json" },
-                        discardReturn,
+                        discarded,
                     );
                 }
                 return this.emitValueLambda(
                     context,
                     ir.statements,
                     returnType,
-                    discardReturn,
+                    discarded,
                 );
             }
             // Bare early returns break out of a wrapper around the body; ones
@@ -7544,21 +7556,30 @@ export class UserFunctionLowerer {
         return found;
     }
 
+    /**
+     * The signature a call of `ir` lowers at: a direct generic call carries
+     * its instantiated result. Callback lowering may instead name the
+     * enclosing collection call, whose signature belongs to the collection
+     * method, not this function.
+     */
+    private loweredSignature(
+        ir: UserFunctionIr,
+        callNode: ts.Node,
+    ): ts.Signature | undefined {
+        return ir.declaration.typeParameters?.length &&
+            ts.isCallExpression(callNode) &&
+            calledDeclaration(this.checker, callNode) === ir.declaration
+            ? this.checker.getResolvedSignature(callNode)
+            : this.checker.getSignatureFromDeclaration(ir.declaration);
+    }
+
     private valueLambdaReturnType(
         context: UserFunctionContext,
         ir: UserFunctionIr,
         callNode: ts.Node,
         expectedResult?: DataType,
     ): DataType {
-        // A direct generic call carries its instantiated result. Callback
-        // lowering may instead name the enclosing collection call, whose
-        // signature belongs to the collection method, not this function.
-        const signature =
-            ir.declaration.typeParameters?.length &&
-            ts.isCallExpression(callNode) &&
-            calledDeclaration(this.checker, callNode) === ir.declaration
-                ? this.checker.getResolvedSignature(callNode)
-                : this.checker.getSignatureFromDeclaration(ir.declaration);
+        const signature = this.loweredSignature(ir, callNode);
         let type = signature
             ? context.dataTypes.fromTsType(
                   this.checker.getReturnTypeOfSignature(signature),

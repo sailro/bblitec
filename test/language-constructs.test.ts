@@ -6386,6 +6386,33 @@ check(
 );
 
 check(
+    "generic-wrapper-with-early-returns-at-a-void-result",
+    `
+    const rows = Math.random() >= 0 ? new Map<string, number>() : null;
+    let uploads = 0;
+    const record = (label: string, elapsed: number): void => {
+        rows?.set(label, elapsed);
+    };
+    const track = <T>(label: string, work: () => T): T => {
+        if (!rows) return work();
+        const started = Date.now();
+        try {
+            return work();
+        } finally {
+            record(label, Date.now() - started);
+        }
+    };
+    const upload = (): void => {
+        uploads++;
+    };
+    track("carve", () => upload());
+    const welded = track("weld", () => uploads * 2);
+    track("mark", () => upload());
+    if (uploads !== 2 || welded !== 2 || rows?.size !== 3) throw new Error("uploads " + uploads + " welded " + welded);
+`,
+);
+
+check(
     "stored-generic-method-of-a-generic-receiver",
     `
     interface Plan { id: string; scale: number }
