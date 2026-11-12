@@ -449,7 +449,7 @@ function withRootBindings(
         emptyValueOf(context, type, node, label) ??
         context.fail(
             node,
-            `A survey root's ${label} has no native storage of its type.`,
+            `A survey root's ${label} has no native storage of its type (${context.dataTypes.unrepresentedPart(type, node, true)}).`,
         );
     const bound: RootName = (name, node) => {
         try {
