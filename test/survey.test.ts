@@ -773,6 +773,27 @@ test("a generic root reads a read-only record of its type argument", () => {
     assert.deepEqual(report.refusals, [], listed(report));
 });
 
+test("a generic root over an object-bound type parameter reads its callbacks", () => {
+    // No call binds `T extends object`: the root lowers at `object`, so
+    // `read`'s `T | undefined` result is a dynamic value, as `object` is.
+    const { report } = surveySource(
+        `
+        export function createChange(signal?: AbortSignal) {
+            return function change<T extends object, R>(read: () => T | undefined, publish: (record: T) => R, refused: R): R {
+                const record = read();
+                if (signal?.aborted || !record) return refused;
+                return publish(record);
+            };
+        }
+        localStorage.setItem("ready", "1");
+    `,
+        { fileName: resolve("survey-object-bound.ts") },
+    );
+    assert.ok(report.program);
+    assert.equal(report.program.attempted, report.program.statements);
+    assert.deepEqual(report.refusals, [], listed(report));
+});
+
 test("a generic method instantiating its own interface ends the survey's mapping", () => {
     // `map` returns a `Pair` again: binding its receiver's arguments would
     // unfold `Pair<B, A>` into `Pair<A, B>` without end. The survey ends with

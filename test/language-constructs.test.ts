@@ -18368,3 +18368,17 @@ check(
     if (plan<House>({ read: () => undefined, copy: (house) => ({ ...house }) }, 0) !== null) throw new Error("none");
 `,
 );
+
+check(
+    "a-generic-function-over-an-object-bound-type-reads-its-callbacks",
+    `
+    function firstOf<T extends object>(read: () => T | undefined, fallback: T): T {
+        const found = read();
+        return found ?? fallback;
+    }
+    const a = { x: 1 };
+    const b = { x: 2 };
+    const readers: (() => { x: number } | undefined)[] = [() => a, () => undefined];
+    if (firstOf(readers[0]!, b) !== a || firstOf(readers[1]!, b) !== b) throw new Error("first");
+`,
+);

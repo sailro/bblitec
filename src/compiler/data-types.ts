@@ -4574,7 +4574,7 @@ export class DataTypeRegistry {
                                 // values (`fromRecordFieldType`).
                                 .filter(
                                     ([, propertyType]) =>
-                                        !holdsObjectKeyword(propertyType) &&
+                                        !this.holdsObjectValue(propertyType) &&
                                         (stored ||
                                             callSignatures(
                                                 this.checker,
@@ -4685,18 +4685,26 @@ export class DataTypeRegistry {
         const substituted = this.substituteTypeParameter(type);
         if (substituted) return this.dynamicJsonType(substituted);
         if ((type.flags & ts.TypeFlags.Unknown) !== 0) return { kind: "json" };
-        if (
-            (this.checker.getNonNullableType(type).flags &
-                ts.TypeFlags.NonPrimitive) !==
-            0
-        )
-            return { kind: "json" };
+        if (this.holdsObjectValue(type)) return { kind: "json" };
         const element = this.checker.isArrayType(type)
             ? this.checker.getIndexTypeOfType(type, ts.IndexKind.Number)
             : this.checker.getIndexTypeOfType(type, ts.IndexKind.String);
         return element && (element.flags & ts.TypeFlags.Unknown) !== 0
             ? { kind: "json" }
             : undefined;
+    }
+
+    /**
+     * Whether a slot of `type` is typed `object` (`holdsObjectKeyword`)
+     * once the active substitution binds the type parameter it names: a
+     * `T | undefined` at `T extends object`.
+     */
+    public holdsObjectValue(type: ts.Type): boolean {
+        const present = presentMembers(type);
+        return (
+            present.length === 1 &&
+            holdsObjectKeyword(this.resolveTypeParameter(present[0]!))
+        );
     }
 
     @journaled private accessor dynamicJsonStorage = false;
@@ -5718,7 +5726,7 @@ export class DataTypeRegistry {
                                 : actualSignature,
                         )
                       : ((this.dynamicJsonStorage ||
-                        holdsObjectKeyword(parameterType)
+                        this.holdsObjectValue(parameterType)
                             ? this.dynamicJsonType(parameterType)
                             : undefined) ??
                         this.fromStoredTsType(parameterType, location) ??
@@ -5817,7 +5825,7 @@ export class DataTypeRegistry {
             ? this.checker.getNonNullableType(resultType)
             : resultType;
         const mappedPresent = presentResult
-            ? ((this.dynamicJsonStorage || holdsObjectKeyword(presentResult)
+            ? ((this.dynamicJsonStorage || this.holdsObjectValue(presentResult)
                   ? this.dynamicJsonType(presentResult)
                   : undefined) ??
               this.fromStoredTsType(presentResult, node) ??
@@ -8061,7 +8069,7 @@ export class DataTypeRegistry {
                 ((resolved.flags & ts.TypeFlags.Unknown) !== 0 ||
                     (!this.checker.isArrayLikeType(present) &&
                         this.dynamicJsonType(present) !== undefined))) ||
-            holdsObjectKeyword(present)
+            this.holdsObjectValue(present)
         )
             return { kind: "json" };
         if (!undefinedOnly(resolved)) {
@@ -9542,7 +9550,7 @@ export class DataTypeRegistry {
     ): DataType | undefined {
         // An element typed `object` holds dynamic values, as a field so
         // typed does (`fromRecordFieldType`).
-        const mapped: DataType | undefined = holdsObjectKeyword(elementType)
+        const mapped: DataType | undefined = this.holdsObjectValue(elementType)
             ? { kind: "json" }
             : this.fromStoredTsType(elementType, node);
         return (

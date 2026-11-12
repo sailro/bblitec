@@ -42,7 +42,6 @@ import { pinnedHandleKind } from "./data-types.js";
 import type { HandleKind } from "./data-types/model.js";
 import {
     callSignatures,
-    holdsObjectKeyword,
     holdsOnly,
     inheritsFrom,
     isTypeReference,
@@ -294,7 +293,7 @@ function emptyValueOf(
                 ? stored
                 : context.dataTypes.fromTsType(type, node);
         }) ??
-        (holdsObjectKeyword(type)
+        (context.dataTypes.holdsObjectValue(type)
             ? context.dataTypes.dynamicJsonType(type)
             : undefined);
     const checker = context.checker;

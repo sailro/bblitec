@@ -65,7 +65,6 @@ import {
     isVoid,
     arrayElementType,
     callSignatures,
-    holdsObjectKeyword,
 } from "./type-facts.js";
 import {
     isNonThenableDataType,
@@ -3683,7 +3682,7 @@ export class DeclarationLowerer {
             );
         if (
             !annotated &&
-            (holdsObjectKeyword(declaredType) ||
+            (this.context.dataTypes.holdsObjectValue(declaredType) ||
                 (rebound && (declaredType.flags & ts.TypeFlags.Unknown) !== 0))
         )
             annotated = this.context.dataTypes.dynamicJsonType(declaredType);
