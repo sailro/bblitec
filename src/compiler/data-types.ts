@@ -4403,20 +4403,19 @@ export class DataTypeRegistry {
         // meant to read, which names no storage.
         // A type parameter bound to void or undefined (`T | null` at T =
         // void) is an undefined value; nothing but `null` and one is what a
-        // dynamic value tells apart.
+        // dynamic value tells apart. A union spelled with no such parameter
+        // (`null | undefined`) keeps the storage it has without one.
+        let voided = false;
         const present = presentMembers(type).filter((member) => {
-            const voided =
+            const resolvedVoid =
                 (this.resolveTypeParameter(member).flags &
                     ts.TypeFlags.VoidLike) !==
                 0;
-            absent.undefined ||= voided;
-            return !voided;
+            voided ||= resolvedVoid;
+            absent.undefined ||= resolvedVoid;
+            return !resolvedVoid;
         });
-        if (
-            present.length === 0 &&
-            absent.null &&
-            (absent.undefined || absent.void)
-        )
+        if (voided && present.length === 0 && absent.null)
             return { kind: "json" };
         // The checker spells `boolean` as its two literals: one present type.
         const booleanOnly =

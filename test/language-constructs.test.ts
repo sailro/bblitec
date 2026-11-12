@@ -18403,3 +18403,16 @@ check(
     if (total !== 7) throw new Error("total " + total);
 `,
 );
+
+check(
+    "a-stored-generic-method-returning-t-or-null-runs-a-void-operation",
+    `
+    interface Runner { run<T>(operation: () => T): T | null }
+    const gate = new Float32Array([1]);
+    let edits = 0;
+    const runners: Runner[] = [{ run: (operation) => (gate[0]! > 0 ? operation() : null) }];
+    const value = runners[0]!.run(() => 5);
+    const nothing = runners[0]!.run(() => { edits++; });
+    if (value !== 5 || nothing !== undefined || edits !== 1) throw new Error("run " + value + " " + nothing + " " + edits);
+`,
+);
