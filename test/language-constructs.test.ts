@@ -18758,3 +18758,16 @@ checkInRealm(
     }, 0);
 `,
 );
+
+check(
+    "a-chained-null-assignment-stores-null-in-each-slot",
+    `
+    let patchPos: Float32Array | null = new Float32Array([1, 2]);
+    let patchNrm: Float32Array | null = new Float32Array([3]);
+    let patchIdx: Uint32Array | null = new Uint32Array([4, 5, 6]);
+    const gate = new Float32Array([1]);
+    const total = (patchPos?.length ?? 0) + (patchNrm?.length ?? 0) + (patchIdx?.length ?? 0);
+    if (gate[0]! > 0) patchPos = patchNrm = patchIdx = null;
+    if (total !== 6 || patchPos !== null || patchNrm !== null || patchIdx !== null) throw new Error("patch " + total);
+`,
+);

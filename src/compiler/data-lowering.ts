@@ -1514,6 +1514,15 @@ export class DataLowerer {
                 ));
         if (!assignable) return undefined;
         const value = this.compileForSink(expression.right, target.dataType);
+        // `x = null` is `null` whatever slot took it: a chain (`a = b =
+        // null`) stores the literal again, never `b`'s storage.
+        if (isNullishLiteral(this.context.checker, expression.right)) {
+            this.context.emit({
+                kind: "expression",
+                code: `${target.cpp} = ${value};`,
+            });
+            return this.context.compileValue(expression.right);
+        }
         return this.narrowOptional(
             this.leafValue(`(${target.cpp} = ${value})`, target.dataType),
             expression,
