@@ -158,6 +158,7 @@ import {
     inheritsFrom,
     unionMembers,
     objectLikeType,
+    impossibleIntersection,
     boundedTupleElements,
     tupleElements,
     fixedTupleElements,
@@ -6461,6 +6462,12 @@ export class DataTypeRegistry {
                 this.recordDictionaries.has(this.structIdentity(type)))
         )
             return this.fromStructType(type, node);
+        // The one member beside impossible intersections is the union.
+        const possible = type.types.filter(
+            (member) => !impossibleIntersection(member),
+        );
+        if (possible.length === 1 && possible.length < type.types.length)
+            return this.fromTsType(possible[0]!, node);
         const members = type.types;
         const handles = members.map((member) => this.nativeHandleKind(member));
         if (handles.every((kind) => kind === "mesh" || kind === "scene-node"))

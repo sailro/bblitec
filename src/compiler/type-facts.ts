@@ -580,6 +580,20 @@ export function objectLikeType(type: ts.Type): boolean {
     );
 }
 
+/**
+ * An intersection a union keeps although the checker reduced it to
+ * `never` (`B & { ok: true }` of `(A | B) & { ok: true }`, whose `ok` is
+ * `false & true`): it holds no value, and lists none of its members'
+ * properties.
+ */
+export function impossibleIntersection(type: ts.Type): boolean {
+    return (
+        type.isIntersection() &&
+        type.getProperties().length === 0 &&
+        type.types.some((member) => member.getProperties().length > 0)
+    );
+}
+
 /** The texts a string literal type, or a union of them, admits; undefined for any other type. */
 export function stringLiteralValues(
     type: ts.Type,

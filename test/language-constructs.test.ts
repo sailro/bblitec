@@ -18608,3 +18608,27 @@ check(
     if (text !== '["door",5000,[12346,true,null,["x",20000]],null]') throw new Error(text);
 `,
 );
+
+check(
+    "a-union-narrowed-by-an-intersection-is-its-one-possible-arm",
+    `
+    type Plan = { readonly ok: true; readonly at: number; readonly key: string } | { readonly ok: false; readonly reason: "far" | "blocked" };
+    const gate = new Float32Array([0, 1, 1]);
+    function plan(index: number): Plan {
+        return gate[index]! > 0 ? { ok: true, at: index * 2, key: "k" + index } : { ok: false, reason: "far" };
+    }
+    const named = (from: number): { plan: Plan & { readonly ok: true }; at: number } | null => {
+        for (let i = from; i < 3; i++) {
+            const candidate = plan(i);
+            if (!candidate.ok) continue;
+            return { plan: candidate, at: i };
+        }
+        return null;
+    };
+    let held = "";
+    const admitted = named(0);
+    if (admitted) held = admitted.plan.key + ":" + admitted.plan.at + ":" + admitted.at;
+    const none = named(3);
+    if (held !== "k1:2:1" || none !== null) throw new Error(held);
+`,
+);
