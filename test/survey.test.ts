@@ -561,6 +561,32 @@ test("an evaluated module's total constants are tried; an ambient declaration is
     assert.equal(report.program.attempted, report.program.statements);
 });
 
+test("an evaluated module's constant no read folds lowers as a root", (t) => {
+    // `LOOK` and `NEXT` are pure but not total: no read folds `LOOK`, and
+    // `NEXT` folds where it is read; the roots lower `LOOK`'s initializer.
+    const directory = mkdtempSync(join(tmpdir(), "bblite-module-constants-"));
+    t.after(() => rmSync(directory, { recursive: true, force: true }));
+    writeFileSync(
+        join(directory, "layout.ts"),
+        `
+        export const STRIDE = 170;
+        export const NEXT = STRIDE + 1;
+        export const LOOK = { tint: [0.9, 0.8, 0.7], brightness: 0.6 };
+    `,
+    );
+    const { report } = surveySource(
+        `
+        import { NEXT } from "./layout.js";
+        localStorage.setItem("next", String(NEXT * 2));
+    `,
+        { fileName: join(directory, "entry.ts") },
+    );
+    assert.ok(report.program);
+    assert.equal(report.program.statements, 4);
+    assert.equal(report.program.attempted, report.program.statements);
+    assert.deepEqual(report.refusals, [], listed(report));
+});
+
 test("a root of a generic function no call binds lowers at its constraints", () => {
     // `timed` is only stored, so no call binds its `T`: the root lowers at
     // `unknown`, and `work` is a function returning a document.

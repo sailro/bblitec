@@ -177,13 +177,32 @@ function emitModuleRoot(
     file: ts.SourceFile,
 ): void {
     if (context.moduleNamespaces.evaluates(file)) {
-        // Its total constants run as the folds of their reads.
-        for (const statement of file.statements)
-            if (
-                survey.unbegun(statement) &&
-                isTotalConstStatement(statement, context.evaluationOrder)
-            )
+        for (const statement of file.statements) {
+            if (!survey.unbegun(statement)) continue;
+            // Its total constants run as the folds of their reads.
+            if (isTotalConstStatement(statement, context.evaluationOrder))
                 survey.touch(statement, false);
+            // Another constant no read folded lowers its initializers, which
+            // declare nothing the roots then read.
+            else if (
+                ts.isVariableStatement(statement) &&
+                variableKind(statement.declarationList) === "const"
+            ) {
+                survey.touch(statement, false);
+                survey.inRoots(() =>
+                    context.captureEmittedStatements(() =>
+                        survey.attemptStatement(context, statement, () => {
+                            for (const { initializer } of statement
+                                .declarationList.declarations)
+                                if (initializer)
+                                    context.emitDiscardedValue(
+                                        context.compileValue(initializer),
+                                    );
+                        }),
+                    ),
+                );
+            }
+        }
         return;
     }
     const pending = file.statements.filter(
