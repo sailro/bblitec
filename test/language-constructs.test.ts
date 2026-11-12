@@ -18538,3 +18538,22 @@ checkInRealm(
     });
 `,
 );
+
+check(
+    "a-map-callback-returning-undefined-fills-an-array-of-documents",
+    `
+    interface Thumb { shot: string; at: number }
+    const gate = new Float32Array([1]);
+    function parse(text: string): unknown { return JSON.parse(text); }
+    function listSaves(keys: string[]): string {
+        let cached: (Thumb | undefined)[];
+        if (gate[0]! > 2) cached = keys.map((key) => parse(key) as Thumb | undefined);
+        else cached = keys.map(() => undefined);
+        let missing = 0;
+        for (const value of cached) if (value === undefined) missing++;
+        return missing + ":" + cached.length + ":" + String(cached[1]);
+    }
+    const listed = listSaves(["a", "b"]);
+    if (listed !== "2:2:undefined") throw new Error(listed);
+`,
+);

@@ -21,6 +21,7 @@ import {
 } from "./receiver-methods.js";
 import ts from "typescript";
 import { knownCondition, staticKeyOf, undefinedValue } from "./values/model.js";
+import { hasProvenUndefinedCompletion } from "./undefined-values.js";
 import { absentReceiverMessage } from "./properties.js";
 import { belongsToEntryEngine } from "./data-types/handles.js";
 import { cppIdentifierPattern } from "../cpp-literals.js";
@@ -3076,6 +3077,17 @@ function compileArrayMap(
                 });
             },
             (result, callback) => {
+                // A callback every completion of which is `undefined` maps
+                // each element to it.
+                if (
+                    result.kind === "void" &&
+                    !result.abruptCompletion &&
+                    ts.isFunctionLike(callback) &&
+                    hasProvenUndefinedCompletion(lowerer.context, callback)
+                ) {
+                    lowerer.context.emitDiscardedValue(result);
+                    result = undefinedValue();
+                }
                 if (!mappedType) {
                     const element =
                         result.kind === "void" && result.abruptCompletion
