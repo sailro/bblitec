@@ -124,7 +124,7 @@ function expressionStruct(
         ts.isBinaryExpression(unwrapped) &&
         unwrapped.operatorToken.kind === ts.SyntaxKind.QuestionQuestionToken
     ) {
-        const selected = lowerer.compileNullishCoalesce(unwrapped);
+        const selected = lowerer.compileNullishCoalesce(unwrapped, dataType);
         if (selected) {
             return lowerer.compileKnownValueForSink(
                 selected,

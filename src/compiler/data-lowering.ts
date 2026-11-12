@@ -5279,6 +5279,33 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                         fallback.kind === "tuple"))
             ) {
                 const type = left.dataType;
+                // A literal the left's record type cannot hold (a field it
+                // requires is missing) is stored, with the left, as the
+                // record type the result is stored as.
+                const shared =
+                    type.kind === "struct" &&
+                    sink?.kind === "struct" &&
+                    !dataTypesEqual(sink, type) &&
+                    this.context.probeEmission(
+                        () =>
+                            unlessRefused(() =>
+                                this.compileKnownValueForSink(
+                                    fallback,
+                                    type,
+                                    expression.right,
+                                ),
+                            ) === undefined,
+                    )
+                        ? sink
+                        : undefined;
+                if (shared) {
+                    const { optionalFoundCpp: _found, ...present } = left;
+                    return this.leafValue(
+                        `(${leftFound} ? ${this.compileKnownValueForSink(present, shared, expression.left)} : ` +
+                            `${fallbackArm(shared, () => this.compileKnownValueForSink(fallback, shared, expression.right))})`,
+                        shared,
+                    );
+                }
                 const selected = this.leafValue(
                     `(${leftFound} ? ${left.cpp} : ` +
                         `${fallbackArm(type, () => this.compileKnownValueForSink(fallback, type, expression.right))})`,

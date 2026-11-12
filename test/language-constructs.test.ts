@@ -7560,6 +7560,21 @@ check(
 );
 
 check(
+    "coalesced-literal-the-left-record-cannot-hold",
+    `
+    interface Result { code: string; quantity?: number; woodCost?: number }
+    interface Outcome { handled: boolean; payload?: { quantity: number; woodCost?: number } }
+    function run(o: Outcome): number {
+        let payload: Pick<Result, "quantity" | "woodCost"> = {};
+        if (o.handled) payload = o.payload ?? {};
+        return (payload.quantity ?? -1) + (payload.woodCost ?? 0);
+    }
+    const outcomes: Outcome[] = [{ handled: true, payload: { quantity: 3, woodCost: 2 } }, { handled: true }, { handled: false }];
+    if (run(outcomes[0]!) !== 5 || run(outcomes[1]!) !== -1 || run(outcomes[2]!) !== -1) throw new Error("payload");
+`,
+);
+
+check(
     "non-null-asserted-optional-stored-in-a-document",
     `
     type Tint = [number, number, number];
