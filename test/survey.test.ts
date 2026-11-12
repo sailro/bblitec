@@ -654,6 +654,37 @@ test("a root's captured nullable resource is its declaration's empty slot", () =
     assert.deepEqual(report.refusals, [], listed(report));
 });
 
+test("a root's parameter with no storage of its type stays unbound", () => {
+    // `track` is a generic function or nothing: the root lowers its body as
+    // statements, `scale` bound, and only the one reading `track` refuses.
+    const { report } = surveySource(
+        `
+        let total = 0;
+        export function step(track: (<T>(label: string, work: () => T) => T) | undefined, scale: number): void {
+            total += scale;
+            track?.("x", () => total);
+            total *= 2;
+        }
+        localStorage.setItem("total", String(total));
+    `,
+        { fileName: resolve("survey-unbound-parameter.ts") },
+    );
+    assert.ok(report.program);
+    assert.equal(report.program.attempted, report.program.statements);
+    assert.deepEqual(
+        report.refusals.map((refusal) => [
+            refusal.statement.line,
+            refusal.statements,
+            refusal.message,
+        ]),
+        [
+            [4, 0, "A survey root's track has no native storage of its type."],
+            [5, 1, "Unknown or unsupported variable 'track'."],
+        ],
+        listed(report),
+    );
+});
+
 test("a root binds a captured const function literal and what it captures", () => {
     // `send` is rooted: `post` holds an arrow reading `health` and `limit`,
     // which the root binds as the program's own bindings would hold them.

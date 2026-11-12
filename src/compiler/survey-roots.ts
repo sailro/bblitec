@@ -343,20 +343,51 @@ function emitSurveyRoot(
                 declaration.parameters[passed - 1]!.initializer
             )
                 passed--;
-            const arguments_ = declaration.parameters
-                .slice(0, passed)
-                .map((parameter) =>
-                    site(
-                        parameter,
-                        ts.isIdentifier(parameter.name)
-                            ? parameter.name.text
-                            : "parameter",
-                    ),
+            const parameters = declaration.parameters.slice(0, passed);
+            const arguments_ = parameters.map(
+                (parameter): Value | undefined => {
+                    if (!ts.isIdentifier(parameter.name))
+                        return site(parameter, "parameter");
+                    try {
+                        return site(parameter, parameter.name.text);
+                    } catch (error) {
+                        if (!(error instanceof CompileError)) throw error;
+                        survey.unboundCapture(
+                            context.checker,
+                            body.statements[0]!,
+                            parameter.name,
+                            error,
+                        );
+                        return undefined;
+                    }
+                },
+            );
+            if (arguments_.every((value) => value !== undefined)) {
+                context.userFunctions.compileSurveyRoot(
+                    context,
+                    declaration,
+                    arguments_ as Value[],
                 );
-            context.userFunctions.compileSurveyRoot(
+                return;
+            }
+            // A parameter with no storage of its type stays unbound: the
+            // body lowers as a statement root's statements do, the others
+            // bound to their placeholders or defaults.
+            for (const [index, parameter] of declaration.parameters.entries()) {
+                if (!ts.isIdentifier(parameter.name)) continue;
+                const value =
+                    arguments_[index] ??
+                    (index >= passed && parameter.initializer
+                        ? unlessRefused(() =>
+                              context.compileValue(parameter.initializer!),
+                          )
+                        : undefined);
+                if (value)
+                    context.bindings.defineVariable(parameter.name, value);
+            }
+            context.userFunctions.compileSurveyStatements(
                 context,
-                declaration,
-                arguments_,
+                body.statements,
             );
         },
     );

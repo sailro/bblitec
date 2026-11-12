@@ -988,9 +988,9 @@ export class SurveyCollector {
     }
 
     /**
-     * A root's capture (`name`) with no storage of its type: the root goes
-     * on without it, `error` is counted at the root's `first` statement
-     * without rolling one back, and the statements reading the capture
+     * A root's capture or parameter (`name`) with no storage of its type:
+     * the root goes on without it, `error` is counted at the root's `first`
+     * statement without rolling one back, and the statements reading it
      * cascade from it.
      */
     public unboundCapture(
