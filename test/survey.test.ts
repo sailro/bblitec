@@ -840,6 +840,31 @@ test("a generic class no construction binds lowers its roots at a type parameter
     assert.deepEqual(report.refusals, [], listed(report));
 });
 
+test("a survey root's iterable parameter holds an empty array of its element", () => {
+    // `Iterable<T>` is a protocol a call's collection stores: a root, which
+    // no collection reaches, iterates an empty array of `T`.
+    const { report } = surveySource(
+        `
+        interface Follower { x: number; z: number; radius: number }
+        export function boundaryRadius(cx: number, cz: number, base: number, followers: Iterable<Follower>): number {
+            let reach = Math.max(0, base);
+            for (const follower of followers) reach = Math.max(reach, Math.hypot(follower.x - cx, follower.z - cz) + follower.radius);
+            return reach;
+        }
+        export function blocked(candidates: Iterable<number>, wet: (i: number) => boolean): Set<number> {
+            const out = new Set<number>();
+            for (const i of candidates) if (wet(i)) out.add(i);
+            return out;
+        }
+        localStorage.setItem("ready", "1");
+    `,
+        { fileName: resolve("survey-iterable-root.ts") },
+    );
+    assert.ok(report.program);
+    assert.equal(report.program.attempted, report.program.statements);
+    assert.deepEqual(report.refusals, [], listed(report));
+});
+
 test("a generic method instantiating its own interface ends the survey's mapping", () => {
     // `map` returns a `Pair` again: binding its receiver's arguments would
     // unfold `Pair<B, A>` into `Pair<A, B>` without end. The survey ends with

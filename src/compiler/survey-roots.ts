@@ -27,6 +27,7 @@ import {
 import {
     calledDeclaration,
     declaredSymbol,
+    libraryName,
     resolvedSymbol,
 } from "./symbols.js";
 import {
@@ -39,7 +40,7 @@ import {
     type SupportedFunction,
 } from "./syntax.js";
 import { pinnedHandleKind } from "./data-types.js";
-import type { HandleKind } from "./data-types/model.js";
+import type { DataType, HandleKind } from "./data-types/model.js";
 import {
     callSignatures,
     holdsOnly,
@@ -295,7 +296,8 @@ function emptyValueOf(
         }) ??
         (context.dataTypes.holdsObjectValue(type)
             ? context.dataTypes.dynamicJsonType(type)
-            : undefined);
+            : undefined) ??
+        iterableArray(context, type, node);
     const checker = context.checker;
     const record = checker.getNonNullableType(type);
     // An engine object no storage holds (an ArcRotateCamera) stands as the
@@ -331,6 +333,28 @@ function emptyValueOf(
         if (value) recordProperties[property.name] = value;
     }
     return { kind: "record", cpp: "", recordProperties };
+}
+
+/**
+ * An `Iterable<T>` is a protocol whose reached collection supplies its
+ * storage (`UserFunctionLowerer`): a root, which no collection reaches,
+ * holds an empty array of `T`, a collection of the protocol.
+ */
+function iterableArray(
+    context: SurveyRootContext,
+    type: ts.Type,
+    node: ts.Node,
+): DataType | undefined {
+    const iterable = context.checker.getNonNullableType(type);
+    if (libraryName(iterable) !== "Iterable" || !isTypeReference(iterable))
+        return undefined;
+    const [iterated] = context.checker.getTypeArguments(iterable);
+    const element =
+        iterated &&
+        context.dataTypes.orDynamicJsonTypes(() =>
+            context.dataTypes.fromStoredTsType(iterated, node),
+        );
+    return element && { kind: "vector", element };
 }
 
 /** The block body of an accessor or a constructor: one no function root lowers. */
