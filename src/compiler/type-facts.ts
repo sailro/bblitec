@@ -284,6 +284,7 @@ export function absenceKind(
     node: ts.Node,
 ): Absence {
     if (value.slotFoundCpp) return { slotFoundCpp: value.slotFoundCpp };
+    if (value.absence) return value.absence;
     let absent = nullability(checker.getTypeAtLocation(node));
     // An optional chain that can short-circuit is undefined, whatever its
     // type names; one whose `?.` receivers are all present cannot, so an

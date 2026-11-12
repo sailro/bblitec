@@ -2979,6 +2979,12 @@ export interface ValueFields {
      */
     slotFoundCpp?: string;
     /**
+     * Which absent value an optional's empty state is where no expression's
+     * type says it: the settlement of a promise an optional call returned,
+     * whose awaited type joins the call's short-circuit `undefined`.
+     */
+    absence?: "undefined" | "null";
+    /**
      * The tagged storage (`DataType<"tagged">`) a value was read from, whose
      * `cpp` is a const view of the value: a store into the slot writes the
      * value and its defined state together through this.

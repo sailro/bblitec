@@ -18465,3 +18465,27 @@ check(
     if (total !== 56 || nonEmpty[2]!.x !== 1) throw new Error("total " + total);
 `,
 );
+
+checkInRealm(
+    "an-awaited-optional-call-keeps-the-null-its-promise-settles-with",
+    `
+    interface Opts { captureShot?: () => Promise<string | null> }
+    const gate = new Float32Array([1, 0]);
+    async function delayed(shot: string | null): Promise<string | null> {
+        await Promise.resolve();
+        return shot;
+    }
+    const blank: Opts = { captureShot: () => delayed(gate[1]! > 0 ? "late" : null) };
+    const framed: Opts = { captureShot: () => delayed(gate[0]! > 0 ? "pic" : null) };
+    const bare: Opts = {};
+    async function shotOf(opts: Opts): Promise<string> {
+        const settled = await opts.captureShot?.();
+        const kept = (await opts.captureShot?.()) ?? "none";
+        return (settled === null ? "null" : settled === undefined ? "undefined" : settled) + ":" + kept;
+    }
+    void Promise.all([shotOf(blank), shotOf(framed), shotOf(bare)]).then((shots) => {
+        if (shots.join(",") !== "null:none,pic:pic,undefined:none") throw new Error(shots.join(","));
+        globalThis.close();
+    });
+`,
+);

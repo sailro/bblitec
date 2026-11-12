@@ -404,7 +404,10 @@ function valuePromise(
         // conversion must therefore keep every retained object's identity.
         const lines = lowerer.context.captureEmittedLines(() => {
             converted = lowerer.compileKnownValueForSink(
-                lowerer.leafValue(parameter, source),
+                {
+                    ...lowerer.leafValue(parameter, source),
+                    ...(payload?.absence ? { absence: payload.absence } : {}),
+                },
                 result,
                 node,
             );

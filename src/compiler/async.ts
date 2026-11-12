@@ -77,8 +77,10 @@ import { convertsToSceneNode, isHandleKind } from "./data-types/handles.js";
 import { ApplicationRealmRequired } from "./worker-modules.js";
 import { representedResultType } from "./represented-result.js";
 import {
+    absentValueKind,
     isNullable,
     isTypeReference,
+    nullability,
     undefinedOnly,
     presentMembers,
     isVoid,
@@ -2344,15 +2346,42 @@ export class AsyncLowerer {
         context.useNativeValue(value);
         const cppType = context.dataTypes.cppType(settlement);
         const name = context.allocateTemporaryCppName("promise_input");
+        // The promise an optional call returned settles with the absence its
+        // own result type names; the awaited type adds the short circuit's.
+        const promised =
+            type.kind === "optional"
+                ? context.checker.getAwaitedType(
+                      context.checker.getNonNullableType(
+                          ts.isAwaitExpression(node)
+                              ? context.checker.getTypeAtLocation(
+                                    node.expression,
+                                )
+                              : source,
+                      ),
+                  )
+                : undefined;
+        const absence = promised && absentValueKind(nullability(promised));
         const body = context.captureManagedClosureLines(() => {
             context.registerNativeBinding(name);
-            const resolve = (cpp: string, member: DataType): string =>
-                this.promiseInput(
-                    context.dataLowerer.leafValue(cpp, member),
+            const resolve = (cpp: string, member: DataType): string => {
+                const input = context.dataLowerer.leafValue(cpp, member);
+                return this.promiseInput(
+                    input.kind === "promise" &&
+                        input.promiseResult &&
+                        (absence === "null" || absence === "undefined")
+                        ? {
+                              ...input,
+                              promiseResult: {
+                                  ...input.promiseResult,
+                                  absence,
+                              },
+                          }
+                        : input,
                     settlement,
                     node,
                     source,
                 );
+            };
             const emitReturn = (cpp: string): void =>
                 context.emit({
                     kind: "control",
