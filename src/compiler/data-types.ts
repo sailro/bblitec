@@ -5881,11 +5881,23 @@ export class DataTypeRegistry {
                     demand.restArguments,
                 ),
         );
-        if (type?.kind !== "function" || type.generic)
+        if (type?.kind !== "function" || type.generic) {
+            const lacking = this.withGenericFunctionArguments(
+                declaration,
+                demand,
+                () =>
+                    this.unrepresentedSignaturePart(
+                        this.checker.getNonNullableType(
+                            this.checker.getTypeAtLocation(declaration),
+                        ),
+                        node,
+                    ),
+            );
             this.fail(
                 node,
-                "Stored generic function instantiation requires a fully represented native signature.",
+                `Stored generic function instantiation requires a fully represented native signature${lacking ? ` (${lacking})` : ""}.`,
             );
+        }
         return { ...type, identity: true };
     }
 
