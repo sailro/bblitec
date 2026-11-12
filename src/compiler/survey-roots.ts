@@ -147,13 +147,12 @@ export function emitSurveyRoots(
             };
             visit(file);
         }
+        // The statements no root began lower as statement roots: a dead arm
+        // of a reached function, or the body of one whose own root refused
+        // before its body began (a signature with no native storage).
         for (const file of files)
             for (const node of sourceFileNodes(file))
-                if (
-                    bodied(node) &&
-                    !isGeneratorFunction(node) &&
-                    !survey.untouched(node.body)
-                )
+                if (bodied(node) && !isGeneratorFunction(node))
                     for (const run of unbegunRuns(survey, node.body))
                         root(run[0]!, node, () =>
                             emitStatementRoot(context, survey, run),
