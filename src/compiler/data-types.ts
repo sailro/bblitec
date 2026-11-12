@@ -7289,7 +7289,25 @@ export class DataTypeRegistry {
                                 : { kind: "union", members };
                     }
                     // Grouped arms fall back to the members' common view.
-                    if (!mapped) return grouped ? undefined : null;
+                    if (!mapped) {
+                        // The part `unrepresentedPart` explains: the arm type
+                        // no storage holds, else the property's union.
+                        const unstored = candidates.findIndex(
+                            (candidate) => !candidate,
+                        );
+                        const shared = type.getProperty(propertyName);
+                        this.unstoredLayoutProperties.set(type, {
+                            name: propertyName,
+                            type:
+                                unstored >= 0 || !shared
+                                    ? propertyTypes[Math.max(unstored, 0)]!
+                                    : this.checker.getTypeOfSymbolAtLocation(
+                                          shared,
+                                          node,
+                                      ),
+                        });
+                        return grouped ? undefined : null;
+                    }
                 } else {
                     mapped = first;
                 }
