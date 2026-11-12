@@ -279,20 +279,49 @@ function requireCopiedOwnUndefinedFields(
             );
         });
     if (!fields.length) return;
+    // A stored source without an expression (the records a `flatMap`
+    // callback returns) holds its fields as its struct declares them.
     const expression = lowerer.convertedExpression(node);
-    if (!expression) return;
-    const source = lowerer.context.checker.getNonNullableType(
-        lowerer.context.checker.getTypeAtLocation(expression),
-    );
-    // A value of the struct's own type carries no new own-undefined fact:
-    // its initializers already decided that type's presence storage.
-    const sourceType = lowerer.context.dataTypes.fromStoredTsType(
-        source,
-        expression,
-    );
-    if (sourceType?.kind === "struct" && sourceType.name === dataType.name)
+    if (!expression && !storedSource) return;
+    const source =
+        expression &&
+        lowerer.context.checker.getNonNullableType(
+            lowerer.context.checker.getTypeAtLocation(expression),
+        );
+    // A stored value of the struct's own type carries no new own-undefined
+    // fact: its initializers already decided that type's presence storage.
+    // A record's members are the initializers this copy stores: one holding
+    // an optional value, own whether or not it holds one, may be an own
+    // undefined (a conditionally own key is own only while it holds one).
+    const sourceType =
+        expression && source
+            ? lowerer.context.dataTypes.fromStoredTsType(source, expression)
+            : undefined;
+    if (sourceType?.kind === "struct" && sourceType.name === dataType.name) {
+        if (value.kind === "record" && expression && source)
+            for (const field of fields) {
+                const member = value.recordProperties?.[field.sourceName];
+                const property = source.getProperty(field.sourceName);
+                if (
+                    member &&
+                    property &&
+                    !member.conditionalOwnKey &&
+                    (member.kind === "void" ||
+                        member.dataType?.kind === "optional")
+                )
+                    lowerer.context.dataTypes.requireOwnUndefinedField(
+                        dataType.name,
+                        field,
+                        lowerer.context.checker.getTypeOfSymbolAtLocation(
+                            property,
+                            expression,
+                        ),
+                        expression,
+                    );
+            }
         return;
-    const members = unionMembers(source);
+    }
+    const members = source ? unionMembers(source) : [];
     const storedFields = storedSource
         ? new Map(
               lowerer.context.dataTypes
@@ -302,11 +331,13 @@ function requireCopiedOwnUndefinedFields(
         : undefined;
     for (const field of fields) {
         const original = storedFields?.get(field.sourceName);
-        // In this source slot, an empty payload already means a missing key.
+        // In this source slot, an empty payload already means a missing key,
+        // unless the source was written an own undefined there.
         if (
             storedSource &&
             original &&
             !original.accessorReceiver &&
+            !lowerer.context.dataTypes.writesOwnUndefined(storedSource.name) &&
             lowerer.context.dataTypes.ownPropertyPresence(
                 storedSource.name,
                 original,
@@ -323,16 +354,26 @@ function requireCopiedOwnUndefinedFields(
         const types = properties.map((property) =>
             lowerer.context.checker.getTypeOfSymbolAtLocation(
                 property,
-                expression,
+                expression ?? node,
             ),
         );
+        // A value the expression only produces (the records a `map`
+        // callback returns) holds the field as its stored struct declares it.
+        if (!properties.length && original)
+            for (const declaration of original.declarations ?? [])
+                lowerer.context.dataTypes.requireOwnUndefinedField(
+                    dataType.name,
+                    field,
+                    lowerer.context.checker.getTypeAtLocation(declaration),
+                    expression ?? node,
+                );
         types.forEach((type, index) => {
             if (isAbsentSpreadProperty(properties, types, index)) return;
             lowerer.context.dataTypes.requireOwnUndefinedField(
                 dataType.name,
                 field,
                 type,
-                expression,
+                expression ?? node,
             );
         });
     }

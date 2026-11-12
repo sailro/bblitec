@@ -18283,3 +18283,50 @@ test("parsed documents, number-keyed dictionaries and unread Error properties lo
         flags: ["/DBBLITE_WORKERS=1"],
     });
 });
+
+check(
+    "records-of-two-literal-shapes-keep-a-field-one-shape-declares-undefined",
+    `
+    interface Passage { x: number; r: number; transition?: number }
+    interface Opening { x: number; r: number; passageTransition?: number; hint?: number }
+    const openings: Opening[] = [{ x: 1, r: 0.5, passageTransition: 3, hint: 1 }, { x: 4, r: 0.5 }, { x: 2, r: 1, hint: 2 }];
+    const found = openings.flatMap((opening) => opening.hint !== undefined
+        ? [{ x: opening.x, r: opening.r, transition: opening.passageTransition }]
+        : [{ x: opening.x, r: opening.r }]);
+    let sum = 0;
+    for (const each of found) sum += each.x;
+    const passages: Passage[] = found;
+    let total = 0;
+    for (const passage of passages) total += passage.x + (passage.transition ?? passage.r * 10);
+    if (sum !== 7 || total !== 25) throw new Error("sum " + sum + " total " + total);
+`,
+);
+
+check(
+    "in-tells-an-own-undefined-a-map-callback-writes-from-a-missing-key",
+    `
+    interface Passage { x: number; r: number; transition?: number }
+    interface Opening { x: number; r: number; passageTransition?: number }
+    const openings: Opening[] = [{ x: 1, r: 0.5, passageTransition: 3 }, { x: 4, r: 0.5 }];
+    const written = openings.map((opening) => ({ x: opening.x, r: opening.r, transition: opening.passageTransition }));
+    const passages: Passage[] = written;
+    const bare: Passage[] = [{ x: 2, r: 1 }];
+    let owns = 0;
+    for (const each of [...passages, ...bare]) if ("transition" in each) owns++;
+    if (owns !== 2) throw new Error("owns " + owns);
+`,
+);
+
+check(
+    "in-tells-apart-records-of-two-literal-shapes-one-declaring-the-key-undefined",
+    `
+    interface Opening { x: number; r: number; passageTransition?: number; hint?: number }
+    const openings: Opening[] = [{ x: 1, r: 0.5, passageTransition: 3, hint: 1 }, { x: 4, r: 0.5 }, { x: 2, r: 1, hint: 2 }];
+    const found = openings.flatMap((opening) => opening.hint !== undefined
+        ? [{ x: opening.x, r: opening.r, transition: opening.passageTransition }]
+        : [{ x: opening.x, r: opening.r }]);
+    let owns = 0;
+    for (const each of found) if ("transition" in each) owns++;
+    if (owns !== 2) throw new Error("owns " + owns);
+`,
+);

@@ -7119,8 +7119,47 @@ export class DataTypeRegistry {
         const grouped = indices.some(
             (index) => outside(index, indices).length < indices.length - 1,
         );
+        // A field only some arms of a group declare tells them apart by its
+        // slot: an empty one is absent, so no declaring arm may hold null
+        // there. A required arm's undefined is an own undefined its write
+        // records (`requireOwnUndefinedField`) for the reads of its presence.
+        const slotsTellApart = (): boolean =>
+            [
+                ...new Set(
+                    propertiesByMember.flatMap((properties) =>
+                        properties.map(({ name }) => name),
+                    ),
+                ),
+            ].every((name) => {
+                const declared = propertiesByMember.map((properties) =>
+                    properties.find((property) => property.name === name),
+                );
+                return (
+                    !indices.some(
+                        (index) =>
+                            declared[index] &&
+                            indices.some(
+                                (other) =>
+                                    !declared[other] &&
+                                    root(other) === root(index),
+                            ),
+                    ) ||
+                    declared.every(
+                        (property) =>
+                            !property ||
+                            !nullability(
+                                this.checker.getTypeOfSymbolAtLocation(
+                                    property,
+                                    property.valueDeclaration ??
+                                        property.declarations?.[0] ??
+                                        node,
+                                ),
+                            ).null,
+                    )
+                );
+            });
         if (
-            (grouped && !armFields) ||
+            (grouped && (!armFields || !slotsTellApart())) ||
             indices.some(
                 (index) => !distinguish(index, outside(index, indices)),
             )
@@ -7189,25 +7228,11 @@ export class DataTypeRegistry {
                 (index) => !declaring.includes(index),
             );
             // A declaring arm's group mates lacking the field tell it apart
-            // by its slot: an empty one is absent, so no declaring arm may
-            // hold null there, nor a required arm undefined.
+            // by its slot, whose empty state no declaring arm holds
+            // (`unionArmTags`).
             const bySlot = declaring.some((index) =>
                 absent.some((other) => root(other) === root(index)),
             );
-            if (
-                bySlot &&
-                propertyTypes.some((propertyType, index) => {
-                    const empty = nullability(propertyType);
-                    return (
-                        empty.null ||
-                        ((memberProperties[index]!.flags &
-                            ts.SymbolFlags.Optional) ===
-                            0 &&
-                            (empty.undefined || empty.void))
-                    );
-                })
-            )
-                return undefined;
             // The tags tell a declaring arm apart from the arms lacking the
             // field outside its group; an arm no tag restricts leaves the
             // slot alone to decide.
@@ -8686,6 +8711,11 @@ export class DataTypeRegistry {
                 !this.presenceByTags(structName, field) &&
                 this.ownPropertyPresence(structName, field) === "own",
         );
+    }
+
+    /** Whether some field of the struct was written an own undefined its presence does not hold. */
+    public writesOwnUndefined(structName: string): boolean {
+        return this.ownUndefinedWrites.has(structName);
     }
 
     /** An own field written undefined needs presence separate from its payload. */
