@@ -5237,6 +5237,30 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 // can select without dereferencing empty storage.
                 return withFallbackAbsence(left);
             }
+            // A row of a constant numeric table and a literal row are both
+            // the tuple of its lanes: the row is read, never written.
+            if (
+                left.kind === "data" &&
+                left.dataType?.kind === "table" &&
+                left.dataType.dimensions.length === 1 &&
+                fallback.kind === "tuple"
+            ) {
+                const type: DataType = {
+                    kind: "tuple",
+                    arity: left.dataType.dimensions[0]!,
+                };
+                const fallbackCpp = fallbackArm(type, () =>
+                    this.compileKnownValueForSink(
+                        fallback,
+                        type,
+                        expression.right,
+                    ),
+                );
+                return this.leafValue(
+                    `(${leftFound} ? ${this.context.dataTypes.cppType(type)}{${left.cpp}} : ${fallbackCpp})`,
+                    type,
+                );
+            }
             if (
                 left.kind === "data" &&
                 ((left.dataType?.kind === "struct" &&

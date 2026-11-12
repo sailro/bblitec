@@ -18666,3 +18666,19 @@ check(
     if (total !== 12.5 || !("grow" in grown) || "grow" in plain || Object.keys(plain).length !== 3) throw new Error("total " + total);
 `,
 );
+
+check(
+    "a-constant-table-row-defaulted-with-its-first-row-is-a-tuple",
+    `
+    const TILE_TINTS: readonly (readonly [number, number, number])[] = [[1, 0.9, 0.8], [0.9, 0.85, 0.8], [0.8, 0.8, 0.75]];
+    let seed = 0.4;
+    const rng = (): number => { seed = (seed * 9301 + 0.49297) % 1; return seed; };
+    let total = 0;
+    for (let i = 0; i < 4; i++) {
+        const tint = TILE_TINTS[Math.floor(rng() * TILE_TINTS.length)] ?? TILE_TINTS[0]!;
+        total += tint[0] + tint[1] + tint[2];
+    }
+    const missed = TILE_TINTS[7] ?? TILE_TINTS[0]!;
+    if (!(total > 9 && total < 11) || missed[1] !== 0.9) throw new Error("tints " + total);
+`,
+);
