@@ -195,22 +195,29 @@ function emitModuleRoot(
             // Its total constants run as the folds of their reads.
             if (isTotalConstStatement(statement, context.evaluationOrder))
                 survey.touch(statement, false);
-            // Another constant no read folded lowers its initializers, which
-            // declare nothing the roots then read.
-            else if (
-                ts.isVariableStatement(statement) &&
-                variableKind(statement.declarationList) === "const"
-            ) {
+            // Another constant no read folded, or the module's default
+            // export, lowers its values, which declare nothing the roots
+            // then read.
+            else {
+                const values =
+                    ts.isVariableStatement(statement) &&
+                    variableKind(statement.declarationList) === "const"
+                        ? statement.declarationList.declarations.flatMap(
+                              ({ initializer }) =>
+                                  initializer ? [initializer] : [],
+                          )
+                        : ts.isExportAssignment(statement)
+                          ? [statement.expression]
+                          : undefined;
+                if (!values) continue;
                 survey.touch(statement, false);
                 survey.inRoots(() =>
                     context.captureEmittedStatements(() =>
                         survey.attemptStatement(context, statement, () => {
-                            for (const { initializer } of statement
-                                .declarationList.declarations)
-                                if (initializer)
-                                    context.emitDiscardedValue(
-                                        context.compileValue(initializer),
-                                    );
+                            for (const value of values)
+                                context.emitDiscardedValue(
+                                    context.compileValue(value),
+                                );
                         }),
                     ),
                 );

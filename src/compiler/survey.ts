@@ -279,7 +279,9 @@ export function surveyedStatement(node: ts.Node): node is ts.Statement {
         !ts.isInterfaceDeclaration(node) &&
         !ts.isTypeAliasDeclaration(node) &&
         !ts.isImportDeclaration(node) &&
-        !ts.isExportDeclaration(node)
+        !ts.isExportDeclaration(node) &&
+        // An overload signature declares a type; its implementation runs.
+        !(ts.isFunctionDeclaration(node) && !node.body)
     );
 }
 

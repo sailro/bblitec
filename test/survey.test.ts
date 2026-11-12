@@ -697,6 +697,31 @@ test("a generic method instantiating its own interface ends the survey's mapping
     assert.equal(report.complete, true, listed(report));
 });
 
+test("an overload signature is no statement; an evaluated module's default export is tried", (t) => {
+    // `pick`'s two signatures declare types; its implementation is the one
+    // statement. `shader.ts` evaluates, and no read folds its default
+    // export, which the roots lower.
+    const directory = mkdtempSync(join(tmpdir(), "bblite-overloads-"));
+    t.after(() => rmSync(directory, { recursive: true, force: true }));
+    writeFileSync(
+        join(directory, "shader.ts"),
+        `export default "void main() {}";`,
+    );
+    const { report } = surveySource(
+        `
+        import "./shader.js";
+        export function pick(value: number): number;
+        export function pick(value: string): string;
+        export function pick(value: number | string): number | string { return value; }
+        localStorage.setItem("pick", String(pick(3)));
+    `,
+        { fileName: join(directory, "entry.ts") },
+    );
+    assert.ok(report.program);
+    assert.equal(report.program.statements, 4);
+    assert.equal(report.program.attempted, report.program.statements);
+});
+
 test("a root of a generic function no call binds lowers at its constraints", () => {
     // `timed` is only stored, so no call binds its `T`: the root lowers at
     // `unknown`, and `work` is a function returning a document.
