@@ -36,7 +36,12 @@ import {
 } from "./syntax.js";
 import { pinnedHandleKind } from "./data-types.js";
 import type { HandleKind } from "./data-types/model.js";
-import { callSignatures, inheritsFrom, objectLikeType } from "./type-facts.js";
+import {
+    callSignatures,
+    holdsOnly,
+    inheritsFrom,
+    objectLikeType,
+} from "./type-facts.js";
 import { callTypeArguments, mentionsTypeParameter } from "./type-arguments.js";
 import type { Value } from "./types.js";
 import type { UserFunctionContext } from "./user-functions.js";
@@ -129,7 +134,13 @@ export function emitSurveyRoots(
                 ) {
                     const [declaration, body] = [node, node.body];
                     root(body.statements[0]!, declaration, () =>
-                        emitSurveyRoot(context, survey, declaration, body),
+                        emitSurveyRoot(
+                            context,
+                            survey,
+                            files,
+                            declaration,
+                            body,
+                        ),
                     );
                 }
                 ts.forEachChild(node, visit);
@@ -323,6 +334,7 @@ type RootName = (name: ts.Identifier, node: ts.Node) => Value | undefined;
 function emitSurveyRoot(
     context: SurveyRootContext,
     survey: SurveyCollector,
+    files: readonly ts.SourceFile[],
     declaration: SupportedFunction,
     body: ts.Block,
 ): void {
@@ -341,9 +353,14 @@ function emitSurveyRoot(
             )
                 passed--;
             const parameters = declaration.parameters.slice(0, passed);
-            const arguments_ = parameters.map((parameter) =>
+            // A string parameter holds a generation-known string a call
+            // passes, where one does: a source the body composes stays
+            // generation-known (an asset URL, a shader).
+            const arguments_ = parameters.map((parameter, index) =>
                 ts.isIdentifier(parameter.name)
-                    ? bound(parameter.name, parameter)
+                    ? (stringParameter(context.checker, parameter) &&
+                          staticArgument(context, files, declaration, index)) ||
+                      bound(parameter.name, parameter)
                     : site(parameter, "parameter"),
             );
             if (arguments_.every((value) => value !== undefined)) {
@@ -483,29 +500,44 @@ function withRootBindings(
     }
 }
 
-const genericCalls = new WeakMap<
+const rootedCalls = new WeakMap<
     ts.Program,
     Map<ts.SignatureDeclaration, ts.CallExpression[]>
 >();
 
+/** Whether every value `parameter` takes is a string. */
+function stringParameter(
+    checker: ts.TypeChecker,
+    parameter: ts.ParameterDeclaration,
+): boolean {
+    return holdsOnly(checker.getTypeAtLocation(parameter), ["string"]);
+}
+
 /**
- * The calls of the program's own generic functions, by the function each
- * resolves to: a root of one lowers at the type arguments a call binds.
- * Built once per program in one walk, resolving only calls whose callee
- * names one of them.
+ * The calls of the program's own functions a root lowers by, by the
+ * function each resolves to: a generic one's, at the type arguments a call
+ * binds; one with a string parameter's, at a generation-known string a call
+ * passes. Built once per program in one walk, resolving only calls whose
+ * callee names one of them.
  */
-function genericCallsOf(
+function rootedCallsOf(
     context: SurveyRootContext,
     files: readonly ts.SourceFile[],
 ): Map<ts.SignatureDeclaration, ts.CallExpression[]> {
-    const known = genericCalls.get(context.program);
+    const known = rootedCalls.get(context.program);
     if (known) return known;
     const checker = context.checker;
     const generic = new Set<ts.Node>();
     const candidates: ts.CallExpression[] = [];
     for (const file of files)
         for (const node of sourceFileNodes(file)) {
-            if (ts.isFunctionLike(node) && node.typeParameters?.length)
+            if (
+                ts.isFunctionLike(node) &&
+                (node.typeParameters?.length ||
+                    node.parameters.some((parameter) =>
+                        stringParameter(checker, parameter),
+                    ))
+            )
                 generic.add(node);
             else if (ts.isCallExpression(node)) candidates.push(node);
         }
@@ -529,8 +561,32 @@ function genericCallsOf(
         if (known) known.push(call);
         else calls.set(declaration, [call]);
     }
-    genericCalls.set(context.program, calls);
+    rootedCalls.set(context.program, calls);
     return calls;
+}
+
+/** How many of a function's calls a root tries for a parameter's argument. */
+const triedCalls = 4;
+
+/**
+ * A generation-known string one of `declaration`'s calls passes as its
+ * parameter `index`, compiled in the root's scope -- as a module constant
+ * or a literal, which the root then lowers with -- or undefined.
+ */
+function staticArgument(
+    context: SurveyRootContext,
+    files: readonly ts.SourceFile[],
+    declaration: SupportedFunction,
+    index: number,
+): Value | undefined {
+    const calls = rootedCallsOf(context, files).get(declaration) ?? [];
+    for (const call of calls.slice(0, triedCalls)) {
+        const argument = call.arguments[index];
+        if (!argument || ts.isSpreadElement(argument)) continue;
+        const value = unlessRefused(() => context.compileValue(argument));
+        if (value?.staticString !== undefined) return value;
+    }
+    return undefined;
 }
 
 /**
@@ -592,7 +648,7 @@ function withCalledTypeArguments(
         const known = calledSubstitutions.get(owner);
         if (known) return known;
         let found: ReadonlyMap<ts.Symbol, ts.Type> | undefined;
-        for (const call of genericCallsOf(context, files).get(owner) ?? []) {
+        for (const call of rootedCallsOf(context, files).get(owner) ?? []) {
             const substitution = unlessRefused(() =>
                 callTypeArguments(checker, call, owner, (node, text) =>
                     context.fail(node, text),

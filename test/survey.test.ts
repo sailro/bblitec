@@ -685,6 +685,29 @@ test("a root's parameter with no storage of its type stays unbound", () => {
     );
 });
 
+test("a root's string parameter holds a generation-known string a call passes", () => {
+    // `makeMaterial`'s one call passes a module constant: its root composes
+    // the shader from it, where an empty string parameter would refuse.
+    const { report } = surveySource(
+        [
+            'import { createShaderMaterial, wgsl } from "@babylonjs/lite";',
+            'const BASE = "fn base() {}";',
+            "export function makeMaterial(prelude: string): unknown {",
+            "    return createShaderMaterial({",
+            '        name: "batch",',
+            '        vertexSource: wgsl`${prelude + "\\n@vertex fn main() -> @builtin(position) vec4<f32> { return vec4<f32>(0.0); }"}`,',
+            '        attributes: ["position"],',
+            "        fragmentSource: wgsl`@fragment fn main() -> @location(0) vec4<f32> { return vec4<f32>(1.0); }`,",
+            "    });",
+            "}",
+            "export function later(): unknown { return makeMaterial(BASE); }",
+            'localStorage.setItem("ready", "1");',
+        ].join("\n"),
+        { fileName: resolve("survey-root-static-argument.ts") },
+    );
+    assert.deepEqual(report.refusals, [], listed(report));
+});
+
 test("a root binds a captured const function literal and what it captures", () => {
     // `send` is rooted: `post` holds an arrow reading `health` and `limit`,
     // which the root binds as the program's own bindings would hold them.
