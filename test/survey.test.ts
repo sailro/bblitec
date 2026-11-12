@@ -946,6 +946,31 @@ test("a survey root of an async function runs as its activation", () => {
     );
 });
 
+test("a statement root of an async function awaits as its activation does", () => {
+    // `track` has no storage, so the root lowers `step`'s body as
+    // statements: they run in a coroutine body, where the await suspends,
+    // and only the statement reading `track` refuses.
+    const { report } = surveySource(
+        `
+        let total = 0;
+        export async function step(track: (<T>(label: string, work: () => T) => T) | undefined, scale: number): Promise<void> {
+            const late = await new Promise<number>((done) => setTimeout(() => done(3), 1));
+            total += late * scale;
+            track?.("x", () => total);
+        }
+        localStorage.setItem("total", String(total));
+    `,
+        { fileName: resolve("survey-async-statement-root.ts") },
+    );
+    assert.ok(report.program);
+    assert.equal(report.program.attempted, report.program.statements);
+    assert.deepEqual(
+        report.refusals.map((refusal) => refusal.statement.line),
+        [4, 6],
+        listed(report),
+    );
+});
+
 test("a survey root's record parameter no native layout holds is a record of its members", () => {
     // `Deps` holds a method, so no native layout stores it: the root binds
     // the record a literal of that type would be, each member empty storage.

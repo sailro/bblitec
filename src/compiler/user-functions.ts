@@ -2052,26 +2052,30 @@ export class UserFunctionLowerer {
      * Lowers `statements` of a function's body -- ones no lowering began (an
      * arm its generation-known condition left, what follows an exit) -- in
      * a body of their own, their names already bound: a return leaves it,
-     * its value discarded, and a jump the construct it binds to.
+     * its value discarded, and a jump the construct it binds to. Those of an
+     * async function run as an activation does, in a coroutine body their
+     * awaits suspend.
      */
     public compileSurveyStatements(
         context: UserFunctionContext,
         statements: readonly ts.Statement[],
     ): void {
         const holders: ts.Node[] = [];
-        for (
-            let node = statements[0]!.parent;
-            !ts.isFunctionLike(node);
-            node = node.parent
-        )
-            holders.unshift(node);
-        this.emitValueLambdaResult(
-            context,
-            statements,
-            undefined,
-            true,
-            holders,
-        );
+        let owner = statements[0]!.parent;
+        for (; !ts.isFunctionLike(owner); owner = owner.parent)
+            holders.unshift(owner);
+        const lower = (coroutine: boolean) =>
+            this.emitValueLambdaResult(
+                context,
+                statements,
+                undefined,
+                true,
+                holders,
+                coroutine,
+            );
+        if (context.options.workers && isAsyncFunction(owner))
+            context.asyncActivations.withAsyncActivation(() => lower(true));
+        else lower(false);
     }
 
     public compileSharedMethod(
@@ -6757,24 +6761,31 @@ export class UserFunctionLowerer {
         returnType: DataType | undefined,
         discardReturn: boolean,
         holders: readonly ts.Node[] = [],
+        coroutine = false,
     ): { value: Value; abrupt: boolean } {
         if (returnType?.kind === "struct")
             context.dataTypes.markStoredObjectReferences(returnType);
         const result = `bbl_fn_${context.allocateUserFunctionPrefix()}result`;
+        const lambdaType = coroutine
+            ? "bbl::js::Promise<bbl::js::PromiseVoid>"
+            : returnType
+              ? context.dataTypes.cppType(returnType)
+              : "void";
         context.emit(
-            `${returnType ? `[[maybe_unused]] auto ${result} = ` : ""}[&]() -> ${returnType ? context.dataTypes.cppType(returnType) : "void"} {`,
+            `${returnType ? `[[maybe_unused]] auto ${result} = ` : ""}[&]() -> ${lambdaType} {`,
         );
         context.increaseIndent();
-        context.beginNativeFunctionBody(
-            returnType,
-            discardReturn,
-            this.documentReturnStorage(returnType)
+        context.beginNativeFunctionBody(returnType, discardReturn, {
+            ...(coroutine ? { coroutine: true } : {}),
+            ...(this.documentReturnStorage(returnType)
                 ? {
-                      compileReturn: (expression, type) =>
-                          this.compileInlinedReturn(context, expression, type),
+                      compileReturn: (
+                          expression: ts.Expression,
+                          type: DataType,
+                      ) => this.compileInlinedReturn(context, expression, type),
                   }
-                : {},
-        );
+                : {}),
+        });
         let terminated: boolean;
         try {
             terminated = context.emitUnderJumpOwners(holders, () =>
