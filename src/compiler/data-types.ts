@@ -7336,6 +7336,29 @@ export class DataTypeRegistry {
                                 ? members[0]
                                 : { kind: "union", members };
                     }
+                    // A field one arm stores as a document stores every
+                    // arm's record as one: a replay makes each a document.
+                    if (
+                        !mapped &&
+                        candidates.some(
+                            (candidate) => candidate?.kind === "json",
+                        ) &&
+                        candidates.every(
+                            (candidate) =>
+                                candidate?.kind === "json" ||
+                                candidate?.kind === "struct",
+                        )
+                    )
+                        for (const candidate of candidates)
+                            if (candidate?.kind === "struct") {
+                                const demand = this.documentRecordDemand(
+                                    candidate.name,
+                                );
+                                if (demand)
+                                    throw new NativeRecordStorageRequired(
+                                        demand,
+                                    );
+                            }
                     // Grouped arms fall back to the members' common view.
                     if (!mapped) {
                         // The part `unrepresentedPart` explains: the arm type
