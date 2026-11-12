@@ -6386,6 +6386,24 @@ check(
 );
 
 check(
+    "narrower-string-union-callback-slot",
+    `
+    type BuildingKind = "house" | "tower" | "mill" | "well";
+    type RecipeKind = "house" | "tower";
+    interface Guidance { openBuilding(kind: BuildingKind): void }
+    interface Ring { openRecipeGuide?: (recipe: RecipeKind) => void; label?: (text: string) => void }
+    let opened = "";
+    const guidance: Guidance = { openBuilding: (kind) => { opened += kind + ","; } };
+    const name = (kind: BuildingKind): void => { opened += "[" + kind + "]"; };
+    const rings: Ring[] = [];
+    rings.push({ openRecipeGuide: guidance.openBuilding });
+    rings.push({ openRecipeGuide: name });
+    for (const ring of rings) ring.openRecipeGuide?.(rings.length > 9 ? "house" : "tower");
+    if (opened !== "tower,[tower]") throw new Error("opened " + opened);
+`,
+);
+
+check(
     "stored-number-formats-at-run-time",
     `
     interface Saved { ax: number; yaw: number }

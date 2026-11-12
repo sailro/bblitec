@@ -191,7 +191,19 @@ function widenedLane(
         completionProofWidens(from, to)
     )
         return cpp;
-    if (!plainLaneWidens(from, to)) return undefined;
+    // A string union's member is also the lane's: one of a narrower union
+    // (`"house" | "tower"` into the building kinds), or any into a string.
+    const types = lowerer.context.dataTypes;
+    const enumWidens =
+        from.kind === "enum" &&
+        (to.kind === "string" ||
+            (to.kind === "enum" &&
+                types
+                    .enumMembers(from.name)
+                    .every((member) =>
+                        types.enumMembers(to.name).includes(member),
+                    )));
+    if (!enumWidens && !plainLaneWidens(from, to)) return undefined;
     let converted = "";
     lines.push(
         ...lowerer.context.captureEmittedLines(() => {
