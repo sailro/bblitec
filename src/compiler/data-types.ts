@@ -4463,7 +4463,10 @@ export class DataTypeRegistry {
             const single = members.length > 1 ? undefined : members[0];
             if (
                 single &&
-                (single.flags & ts.TypeFlags.TypeParameter) !== 0 &&
+                (single.flags &
+                    (ts.TypeFlags.TypeParameter |
+                        ts.TypeFlags.IndexedAccess)) !==
+                    0 &&
                 !this.substituteTypeParameter(single)
             )
                 return `${path.join(" > ")}: no call binds the type parameter here`;
@@ -4482,8 +4485,11 @@ export class DataTypeRegistry {
                                           argument,
                                       ])
                                 : []),
-                            ...this.checker
-                                .getPropertiesOfType(single)
+                            // A primitive's apparent members are no parts.
+                            ...(objectLikeType(single)
+                                ? this.checker.getPropertiesOfType(single)
+                                : []
+                            )
                                 .map((property): [string, ts.Type] => [
                                     `property '${property.name}' of type`,
                                     this.checker.getTypeOfSymbolAtLocation(
