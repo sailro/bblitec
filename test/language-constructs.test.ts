@@ -18439,3 +18439,29 @@ check(
     if (uploads !== 11 || total !== 9 || typeof solid.count !== "function") throw new Error("uploads " + uploads + " total " + total);
 `,
 );
+
+check(
+    "a-tuple-with-a-rest-element-is-an-array-of-its-elements",
+    `
+    type Seat = Readonly<{ x: number; y: number }>;
+    const MODEL: { readonly capacity: number; readonly seats: readonly [Seat, ...Seat[]]; readonly priority: readonly number[] } = {
+        capacity: 3,
+        seats: [{ x: -1, y: 0.5 }, { x: 0, y: 0.5 }, { x: 1, y: 0.5 }],
+        priority: [1, 0, 2],
+    };
+    const POTTER = { outputKind: "pots", capacity: MODEL.capacity, slots: MODEL.seats, priority: MODEL.priority } as const;
+    const KEG = { outputKind: "keg", capacity: 2, slots: [{ x: 0, y: 0 }, { x: 0, y: 1 }], priority: [1, 0], itemDisplayScale: 0.5 } as const;
+    const LAYOUTS = { potter: POTTER, keg: KEG } as const;
+    const layoutOf = (kind: keyof typeof LAYOUTS) => LAYOUTS[kind];
+    const kinds: (keyof typeof LAYOUTS)[] = [];
+    const gate = new Float32Array([1]);
+    kinds.push(gate[0]! > 0 ? "potter" : "keg", "keg");
+    let total = 0;
+    for (const kind of kinds) {
+        const layout = layoutOf(kind);
+        total += layout.capacity * 10 + layout.slots.length + layout.slots[0]!.x + layout.priority[0]!;
+    }
+    const nonEmpty: readonly [Seat, ...Seat[]] = MODEL.seats;
+    if (total !== 56 || nonEmpty[2]!.x !== 1) throw new Error("total " + total);
+`,
+);

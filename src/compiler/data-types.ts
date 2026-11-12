@@ -7561,12 +7561,38 @@ export class DataTypeRegistry {
         return this.internMappedStruct(name, fields, presences);
     }
 
+    /**
+     * A tuple with a rest element (`readonly [Seat, ...Seat[]]`, an array the
+     * type system keeps non-empty) is an array of its elements' one storage,
+     * as `Array` and `ReadonlyArray` are: a span when read-only.
+     */
+    private restTupleArray(
+        reference: ts.TypeReference,
+        node: ts.Node,
+    ): DataType | undefined {
+        const lanes = tupleElements(this.checker, reference);
+        if (!lanes?.length) return undefined;
+        const stored = lanes.map((lane) =>
+            this.arrayStoredElement(lane.type, node),
+        );
+        const element = stored[0];
+        if (
+            !element ||
+            stored.some((lane) => !lane || !dataTypesEqual(lane, element))
+        )
+            return undefined;
+        const readonly = (reference.target as ts.TupleType).readonly;
+        return !readonly || element.kind === "boolean"
+            ? { kind: "vector", element }
+            : { kind: "span", element };
+    }
+
     private fromTupleType(
         reference: ts.TypeReference,
         node: ts.Node,
     ): DataType | undefined {
         const lanes = boundedTupleElements(this.checker, reference);
-        if (!lanes) return undefined;
+        if (!lanes) return this.restTupleArray(reference, node);
         const elements = lanes.map((lane) => lane.type);
         // An empty tuple (`[] as const`) is an array of no elements: a
         // zero-length numeric tuple, which any array storage of a joined
