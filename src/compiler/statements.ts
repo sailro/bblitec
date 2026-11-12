@@ -99,7 +99,10 @@ import {
     type NamedMember,
 } from "./symbols.js";
 import { absenceKind } from "./type-facts.js";
-import { requireAssignedBindingStorage } from "./dynamic-binding-storage.js";
+import {
+    requireAssignedBindingStorage,
+    requireDynamicBindingStorage,
+} from "./dynamic-binding-storage.js";
 import {
     emitReachableStatements,
     enclosingLoopControl,
@@ -4886,6 +4889,14 @@ export class StatementLowerer {
                     context.emitDiscardedValue(value);
                     return;
                 } else {
+                    // A compile-time array a later assignment replaces is
+                    // stored: the declaration is lowered again with storage.
+                    if (target.kind === "tuple")
+                        requireDynamicBindingStorage(
+                            context.checker,
+                            unwrapped.left,
+                            "source",
+                        );
                     context.fail(
                         unwrapped.left,
                         `Assignment operator '${operator}' is not supported for ${target.kind}.`,

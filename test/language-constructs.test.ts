@@ -7494,6 +7494,32 @@ check(
 );
 
 check(
+    "reassigned-let-holding-a-literal-array-argument",
+    `
+    function count<T>(items: readonly T[], more: readonly T[]): number {
+        let current = items;
+        if (current.length !== 1) throw new Error("first " + current.length);
+        current = more.filter(() => true);
+        return current.length;
+    }
+    if (count([{ k: 1 }], [{ k: 2 }, { k: 3 }]) !== 2) throw new Error("records");
+    interface Row { key: string }
+    function make(items: readonly Row[]) {
+        let current = items;
+        const set = (next: readonly Row[]): void => { current = next; };
+        return { set, first: () => current[0]?.key ?? "-", size: () => current.length };
+    }
+    const handle = make([{ key: "v" }]);
+    if (handle.first() !== "v") throw new Error("initial " + handle.first());
+    const more: Row[] = [];
+    more.push({ key: "a" }, { key: "b" });
+    handle.set(more);
+    more.push({ key: "c" });
+    if (handle.size() !== 3 || handle.first() !== "a") throw new Error("closure " + handle.size());
+`,
+);
+
+check(
     "query-iterators-walk-the-live-list",
     `
     const params = new URLSearchParams("a=1&b=two" + (Date.now() > 0 ? "&a=3" : ""));
