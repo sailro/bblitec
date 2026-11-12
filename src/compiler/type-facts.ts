@@ -285,7 +285,12 @@ export function absenceKind(
 ): Absence {
     if (value.slotFoundCpp) return { slotFoundCpp: value.slotFoundCpp };
     if (value.absence) return value.absence;
-    let absent = nullability(checker.getTypeAtLocation(node));
+    // A non-null assertion is erased: an absence the value still holds is
+    // one its operand's type admits.
+    let typed = node;
+    while (ts.isNonNullExpression(typed) || ts.isParenthesizedExpression(typed))
+        typed = typed.expression;
+    let absent = nullability(checker.getTypeAtLocation(typed));
     // An optional chain that can short-circuit is undefined, whatever its
     // type names; one whose `?.` receivers are all present cannot, so an
     // absence its type does not name is a receiver's storage short-circuiting.

@@ -7560,6 +7560,28 @@ check(
 );
 
 check(
+    "non-null-asserted-optional-stored-in-a-document",
+    `
+    type Tint = [number, number, number];
+    const tintCopy = (value: readonly [number, number, number] | null | undefined): Tint | null =>
+        value ? [value[0], value[1], value[2]] : null;
+    interface Tower { woodTint?: Tint; ivyOff?: boolean }
+    function apply(target: Tower, trim: Tint | null, from: Tint | null): void {
+        if (trim) target.woodTint = tintCopy(from)!;
+        else delete target.woodTint;
+    }
+    const tower = JSON.parse('{"ivyOff":true}') as Tower;
+    const tints: (Tint | null)[] = [[1, 2, 3], null];
+    apply(tower, tints[0] ?? null, tints[0] ?? null);
+    if (JSON.stringify(tower) !== '{"ivyOff":true,"woodTint":[1,2,3]}') throw new Error(JSON.stringify(tower));
+    apply(tower, tints[0] ?? null, tints[1] ?? null);
+    if (JSON.stringify(tower) !== '{"ivyOff":true,"woodTint":null}') throw new Error("asserted " + JSON.stringify(tower));
+    apply(tower, tints[1] ?? null, tints[0] ?? null);
+    if (JSON.stringify(tower) !== '{"ivyOff":true}') throw new Error("deleted " + JSON.stringify(tower));
+`,
+);
+
+check(
     "reassigned-let-holding-a-literal-array-argument",
     `
     function count<T>(items: readonly T[], more: readonly T[]): number {
