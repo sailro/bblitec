@@ -4501,8 +4501,11 @@ export class DataTypeRegistry {
                                           argument,
                                       ])
                                 : []),
-                            // A primitive's apparent members are no parts.
-                            ...(objectLikeType(single)
+                            // A primitive's apparent members are no parts,
+                            // nor an array's methods: its element is.
+                            ...(objectLikeType(single) &&
+                            !this.checker.isArrayType(single) &&
+                            !this.checker.isTupleType(single)
                                 ? this.checker.getPropertiesOfType(single)
                                 : []
                             )
@@ -6857,10 +6860,11 @@ export class DataTypeRegistry {
             );
             const absent = members.length < properties.length;
             // The part `unrepresentedPart` explains where no layout holds it.
-            const unstored = (index: number): undefined => {
+            const unstored = (index: number, reason?: string): undefined => {
                 this.unstoredLayoutProperties.set(type, {
                     name: propertyName,
                     type: memberTypes[index]!,
+                    ...(reason ? { reason } : {}),
                 });
                 return undefined;
             };
@@ -6877,7 +6881,10 @@ export class DataTypeRegistry {
                         );
                     }))
             )
-                return unstored(0);
+                return unstored(
+                    0,
+                    "a member lacks it while another may hold it absent, which one optional slot cannot tell apart",
+                );
             const mapped = memberTypes.map((member, index) =>
                 this.fromRecordFieldType(member, node, members[index]),
             );
