@@ -8193,7 +8193,7 @@ export class DataTypeRegistry {
                 if (!unionField)
                     this.fail(
                         node,
-                        `Record types '${this.checker.typeToString(declared[0]!.owner)}' and '${this.checker.typeToString(declared[index]!.owner)}' hold one object (a record of one is stored as the other), but no one layout stores their property '${name}' both ways.`,
+                        `Record types '${this.checker.typeToString(declared[0]!.owner)}' and '${this.checker.typeToString(declared[index]!.owner)}' hold one object (a record of one is stored as the other), but no one layout stores their property '${name}' both ways (${JSON.stringify(stored)} and ${JSON.stringify(mapped && storage(mapped))}).`,
                     );
                 stored = storage(unionField);
                 break;
