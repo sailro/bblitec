@@ -3172,6 +3172,7 @@ export class DeclarationLowerer {
         const escapes =
             enclosingBody === undefined ||
             recursiveStorageEscapes(
+                this.context.program,
                 this.context.checker,
                 new EmissionSet<SupportedFunction>([callback]),
                 [enclosingBody],

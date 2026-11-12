@@ -3493,6 +3493,72 @@ check(
 `,
 );
 
+check(
+    "closure-calling-its-enclosing-function",
+    `
+    let gen = 0;
+    let seen = "";
+    function request(depth: number): void {
+        const generation = ++gen;
+        const finish = (): void => {
+            if (generation !== gen) return;
+            if (depth < 2) {
+                request(depth + 1);
+                return;
+            }
+            seen += "d" + depth + "g" + generation;
+        };
+        finish();
+        seen += ";" + depth;
+    }
+    request(0);
+    if (seen !== "d2g3;2;1;0") throw new Error(seen);
+    let calls = "";
+    function walk(depth: number): void {
+        const level = depth;
+        ((): void => {
+            if (level < 2) walk(level + 1);
+        })();
+        calls += level;
+    }
+    walk(0);
+    if (calls !== "210") throw new Error("immediate " + calls);
+`,
+);
+
+checkInRealm(
+    "promise-reaction-closure-calling-its-enclosing-function",
+    `
+    let requested = 1;
+    let gen = 0;
+    let inFlight = false;
+    let seen = "";
+    function request(): void {
+        const x = requested;
+        const generation = ++gen;
+        inFlight = true;
+        const finish = (point: number | null): void => {
+            if (generation !== gen) return;
+            inFlight = false;
+            if (x !== requested) {
+                request();
+                return;
+            }
+            seen += String(point) + ";";
+        };
+        void Promise.resolve()
+            .then(() => x * 2)
+            .then(finish, () => finish(null));
+    }
+    request();
+    requested = 2;
+    setTimeout(() => {
+        if (seen !== "4;" || inFlight) throw new Error("seen " + seen);
+        globalThis.close();
+    }, 0);
+`,
+);
+
 checkInRealm(
     "loops-start-async-activations-per-iteration",
     `

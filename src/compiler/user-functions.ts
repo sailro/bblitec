@@ -12,6 +12,7 @@ import { metadataFieldsForKind } from "./values/metadata.js";
 import { isJsonValue } from "./json-bridge.js";
 import { activeSurvey } from "./survey.js";
 import { emptyStorage } from "./empty-storage.js";
+import { onlyDirectCalls } from "./written-holders.js";
 import {
     someAnalysisNode,
     forEachAnalysisNode,
@@ -1295,6 +1296,23 @@ export function callbackFunction(
 }
 
 /**
+ * A function the program only runs in place, synchronously: invoked where
+ * it is written, or only ever called by name.
+ */
+function runsOnlyInPlace(
+    program: ts.Program,
+    checker: ts.TypeChecker,
+    fn: SupportedFunction,
+): boolean {
+    if (isAsyncFunction(fn) || isGeneratorFunction(fn)) return false;
+    const site = outermostWrapper(fn);
+    return (
+        (ts.isCallExpression(site.parent) && site.parent.expression === site) ||
+        onlyDirectCalls(program, checker, fn) !== undefined
+    );
+}
+
+/**
  * Whether a recursive callback's heap `std::function` object can be
  * referenced after the scope that emitted its storage returns.
  *
@@ -1309,6 +1327,10 @@ export function callbackFunction(
  * after the scope returned) or any reference inside a nested closure,
  * which may itself be retained.
  *
+ * A function nested there that the program only calls in place, and
+ * synchronously, runs at its calls: its body is scanned where each call
+ * is, not where it is declared.
+ *
  * Member references resolve through `tryResolveFunctionDeclaration` -- the
  * resolver `directCalls` builds recursive groups with -- so this walk
  * cannot disagree with group discovery about what a member reference is,
@@ -1317,6 +1339,7 @@ export function callbackFunction(
  * identifiers whose position is not already safe.
  */
 export function recursiveStorageEscapes(
+    program: ts.Program,
     checker: ts.TypeChecker,
     members: ReadonlySet<SupportedFunction>,
     regions: readonly ts.Node[],
@@ -1334,6 +1357,13 @@ export function recursiveStorageEscapes(
             root,
             foreign,
             (node, nested) => {
+                if (
+                    node !== root &&
+                    isSupportedFunction(node) &&
+                    !members.has(node) &&
+                    runsOnlyInPlace(program, checker, node)
+                )
+                    return "skip";
                 if (ts.isIdentifier(node)) {
                     const parent = node.parent;
                     const directCallee =
@@ -3665,11 +3695,38 @@ export class UserFunctionLowerer {
                         );
                         if (called) callees.add(called);
                     }
+                    // An immediately invoked function runs here.
+                    if (ts.isCallExpression(node)) {
+                        const invoked = unwrapExpression(node.expression);
+                        if (
+                            ts.isArrowFunction(invoked) ||
+                            ts.isFunctionExpression(invoked)
+                        )
+                            callees.add(invoked);
+                    }
                 },
                 { skip: (node) => node !== body && ts.isFunctionLike(node) },
             );
-        this.directCallCache.set(declaration, callees);
-        return callees;
+        // A function nested in this one lowers inside its body, where what
+        // it captures is in scope: its calls are this function's, never a
+        // group sibling lowered beside it.
+        const own = new EmissionSet<SupportedFunction>();
+        const expanded = new EmissionSet<SupportedFunction>();
+        const add = (called: SupportedFunction): void => {
+            if (
+                called === declaration ||
+                !ts.findAncestor(called.parent, (node) => node === declaration)
+            ) {
+                own.add(called);
+                return;
+            }
+            if (expanded.has(called)) return;
+            expanded.add(called);
+            for (const inner of this.directCalls(called)) add(inner);
+        };
+        for (const called of callees) add(called);
+        this.directCallCache.set(declaration, own);
+        return own;
     }
 
     /**
@@ -3681,6 +3738,7 @@ export class UserFunctionLowerer {
      * way the group itself is.
      */
     private groupStorageEscapes(
+        program: ts.Program,
         declarations: readonly SupportedFunction[],
     ): boolean {
         const root = declarations[0]!;
@@ -3690,6 +3748,7 @@ export class UserFunctionLowerer {
         // have storage at one call site.
         const group = this.recursiveGroup(root) ?? declarations;
         const escapes = recursiveStorageEscapes(
+            program,
             this.checker,
             new EmissionSet(group),
             group.flatMap((declaration) =>
@@ -4358,7 +4417,7 @@ export class UserFunctionLowerer {
             throw new SharedCallRequiresInline(
                 "A shared body would capture a borrowed platform event.",
             );
-        const escapes = this.groupStorageEscapes(declarations);
+        const escapes = this.groupStorageEscapes(context.program, declarations);
         const sharedBody = !recursive;
         const scope = sharedBody
             ? {
