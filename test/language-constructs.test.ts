@@ -6386,6 +6386,32 @@ check(
 );
 
 check(
+    "typed-arm-records-keep-their-own-field-in-a-tagged-union",
+    `
+    interface TowerHost { x: number; z: number; baseY: number }
+    interface HouseHost { cx: number; cz: number; eaveY: number }
+    interface Plane { kind: "plane"; px: number }
+    interface Cone { readonly kind: "cone"; readonly host: TowerHost }
+    interface Roof { readonly kind: "roof"; readonly host: HouseHost }
+    type Carrier = Plane | Cone | Roof;
+    const makeRoof = (eave: number): Roof | null => (eave > 0 ? { kind: "roof", host: { cx: 1, cz: 2, eaveY: eave } } : null);
+    const makeCone = (base: number): Cone => ({ kind: "cone", host: { x: 1, z: 2, baseY: base } });
+    const out: Carrier[] = [];
+    out.push({ kind: "plane", px: 1 });
+    const pitched = makeRoof(4);
+    if (pitched) out.push(pitched);
+    out.push(makeCone(3));
+    let total = 0;
+    for (const carrier of out) {
+        if (carrier.kind === "plane") total += carrier.px;
+        else if (carrier.kind === "cone") total += carrier.host.baseY;
+        else total += carrier.host.eaveY;
+    }
+    if (total !== 8) throw new Error("total " + total);
+`,
+);
+
+check(
     "one-layout-holds-a-method-two-shapes-declare-apart",
     `
     interface Brick { bind(from: number, variant: number, count: number): number; reupload(): void; bricks: number }

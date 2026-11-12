@@ -4226,6 +4226,17 @@ export class DataTypeRegistry {
                 holdsRecordStorage(fieldStorage(own))
             )
                 continue;
+            // A field holding each arm's own record type (`host` a tower's
+            // host in one arm, a house's in another) holds this member's.
+            const ownStorage = own && fieldStorage(markIdentityFunctions(own));
+            if (
+                held?.kind === "union" &&
+                ownStorage &&
+                held.members.some((candidate) =>
+                    dataTypesEqual(candidate, ownStorage),
+                )
+            )
+                continue;
             const message = `A retained record union requires one shared layout preserving its original fields and storage kinds: '${this.checker.typeToString(member)}' records stored as '${union.name}' would lose '${property.name}'.`;
             // A union storing its members' common fields stores every
             // member's on a replay (`requireArmFields`).
