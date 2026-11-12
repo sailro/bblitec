@@ -2881,6 +2881,32 @@ export class DataTypeRegistry {
         return layout ?? undefined;
     }
 
+    /**
+     * A property the shapes of one layout declare as functions of different
+     * signatures (`bind(from, variant, count)` beside `bind(from, count)`):
+     * one slot holding the function of whichever shape the record is, which
+     * a read selects by the signature its own type gives the property
+     * (`DataLowerer` struct reads). Undefined for any other disagreement.
+     */
+    private signatureUnionField(
+        values: readonly { mapped: DataType | undefined; callable: boolean }[],
+        storing: (value: {
+            mapped: DataType | undefined;
+            callable: boolean;
+        }) => boolean,
+        storage: (mapped: DataType) => DataType,
+    ): DataType<"union"> | undefined {
+        const members: DataType[] = [];
+        for (const value of values) {
+            if (!storing(value)) continue;
+            const stored = value.mapped && storage(value.mapped);
+            if (stored?.kind !== "function" || stored.generic) return undefined;
+            if (!members.some((member) => this.joinedStorage(member, stored)))
+                members.push(stored);
+        }
+        return members.length > 1 ? { kind: "union", members } : undefined;
+    }
+
     /** Synthetic own-presence slots alone do not change a method's receiver. */
     public isProxyTarget(name: string): boolean {
         const source = this.nativeRecordSources.get(name);
@@ -8262,12 +8288,13 @@ export class DataTypeRegistry {
                 }
                 if (mapped)
                     this.requireSharedValueViews(stored, storage(mapped));
-                unionField = this.unionFieldStorage(
-                    component?.unions ?? [],
-                    name,
-                    values.filter(storing),
-                    node,
-                );
+                unionField =
+                    this.unionFieldStorage(
+                        component?.unions ?? [],
+                        name,
+                        values.filter(storing),
+                        node,
+                    ) ?? this.signatureUnionField(values, storing, storage);
                 if (!unionField)
                     this.fail(
                         node,

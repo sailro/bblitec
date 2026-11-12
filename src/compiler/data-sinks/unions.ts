@@ -64,13 +64,32 @@ function unionValue(
         memberIndex = type.members.findIndex((member) =>
             lowerer.knownValueFitsSink(value, member, node),
         );
-    // A function is the union's one function arm, lowered into its storage.
+    // A function is the union's one function arm, lowered into its storage;
+    // beside others, the arm of the signature its place in the program
+    // gives it (a record property's declared method).
     if (
         memberIndex < 0 &&
         ((value.kind === "callback" && value.callbackDeclaration) ||
             value.dataType?.kind === "function")
-    )
+    ) {
         memberIndex = soleMemberIndex(type, "function");
+        const contextual =
+            memberIndex < 0 && expression
+                ? lowerer.context.checker.getContextualType(expression)
+                : undefined;
+        const signature =
+            contextual &&
+            lowerer.context.dataTypes.fromStoredTsType(contextual, node);
+        if (signature?.kind === "function")
+            memberIndex = type.members.findIndex(
+                (member) =>
+                    member.kind === "function" &&
+                    dataTypesEqual(
+                        { ...member, identity: true },
+                        { ...signature, identity: true },
+                    ),
+            );
+    }
     // A promise is the union's one promise arm, stored as that arm stores
     // one (`T | Promise<T>` returning what an async call returned).
     if (memberIndex < 0 && value.kind === "promise")

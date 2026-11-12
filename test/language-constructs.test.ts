@@ -6386,6 +6386,29 @@ check(
 );
 
 check(
+    "one-layout-holds-a-method-two-shapes-declare-apart",
+    `
+    interface Brick { bind(from: number, variant: number, count: number): number; reupload(): void; bricks: number }
+    interface Solid { bind(from: number, count: number): number; reupload(): void; solid: boolean }
+    let uploads = 0;
+    const brick: Brick = { bind: (from, variant, count) => from + variant * count, reupload: () => { uploads++; }, bricks: 3 };
+    const solid: Solid = { bind: (from, count) => from + count, reupload: () => { uploads += 10; }, solid: true };
+    const touched = new Set<{ reupload(): void }>();
+    const bound = brick.bind(1, 2, 3) + solid.bind(4, 5);
+    touched.add(brick);
+    touched.add(solid);
+    touched.add(brick);
+    for (const batch of touched) batch.reupload();
+    const bricks: Brick[] = [brick];
+    const solids: Solid[] = [solid];
+    let stored = 0;
+    for (const each of bricks) stored += each.bind(2, 1, 1);
+    for (const each of solids) stored += each.bind(3, 4);
+    if (uploads !== 11 || bound !== 16 || stored !== 10 || touched.size !== 2) throw new Error("uploads " + uploads + " bound " + bound + " stored " + stored);
+`,
+);
+
+check(
     "generic-wrapper-with-early-returns-at-a-void-result",
     `
     const rows = Math.random() >= 0 ? new Map<string, number>() : null;

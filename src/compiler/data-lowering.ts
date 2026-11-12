@@ -4320,15 +4320,28 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         const arms = type.members.flatMap((member, index) =>
             member.kind === "function" ? [{ member, index }] : [],
         );
-        const arm = arms[0];
+        const calleeType = this.context.checker.getTypeAtLocation(callee);
+        // Beside other function arms, the arm of the signature the callee's
+        // own type gives it (one method each record shape declares apart).
+        const own =
+            arms.length > 1
+                ? this.context.dataTypes.fromStoredTsType(calleeType, callee)
+                : undefined;
+        const arm =
+            arms.length === 1
+                ? arms[0]
+                : own?.kind === "function"
+                  ? arms.find(({ member }) =>
+                        dataTypesEqual(
+                            { ...member, identity: true },
+                            { ...own, identity: true },
+                        ),
+                    )
+                  : undefined;
         if (
             !arm ||
-            arms.length > 1 ||
-            callSignatures(
-                this.context.checker,
-                this.context.checker.getTypeAtLocation(callee),
-                "exact",
-            ).length === 0
+            callSignatures(this.context.checker, calleeType, "exact").length ===
+                0
         )
             return undefined;
         this.context.reachJsData();
