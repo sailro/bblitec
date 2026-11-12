@@ -10205,7 +10205,15 @@ class Compiler implements LoweringServices {
     public expectKind(value: Value, kind: ValueKind, node: ts.Node): void {
         if (kind === "string" && isStringValue(value)) return;
         if (value.kind !== kind) {
-            this.fail(node, `Expected ${kind}, received ${value.kind}.`);
+            // Data names its storage and the type it was read as.
+            const stored =
+                value.kind === "data" && value.dataType
+                    ? ` (stored as ${JSON.stringify(value.dataType)}, typed '${this.checker.typeToString(this.checker.getTypeAtLocation(node))}')`
+                    : "";
+            this.fail(
+                node,
+                `Expected ${kind}, received ${value.kind}${stored}.`,
+            );
         }
     }
 
