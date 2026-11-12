@@ -373,24 +373,6 @@ function namesStableOwner(owner: Value): boolean {
  * Array, a span, a number index, a number tuple, a static table or a typed
  * array.
  */
-/**
- * A union of numeric arrays (`Uint8Array | readonly number[]`): a read of
- * one guards its index through whichever member the value holds.
- */
-function numberArrayUnion(
-    type: DataType | undefined,
-): type is DataType<"union"> {
-    return (
-        type?.kind === "union" &&
-        type.members.every(
-            (member) =>
-                isTypedArrayType(member) ||
-                ((member.kind === "vector" || member.kind === "span") &&
-                    member.element.kind === "number"),
-        )
-    );
-}
-
 function guardableElementOwner(
     type: DataType | undefined,
 ): type is DataType<
@@ -7750,8 +7732,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 const declared = this.dataTypeAt(access.expression);
                 const type =
                     declared?.kind === "optional" ? declared.inner : declared;
-                if (!guardableElementOwner(type) && !numberArrayUnion(type))
-                    return undefined;
+                if (!guardableElementOwner(type)) return undefined;
                 owner = this.context.compileValue(access.expression);
             }
             return this.guardableElementRead(
@@ -7847,13 +7828,9 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         access: ts.ElementAccessExpression,
         observesAbsence = true,
     ): Value | undefined {
-        const numberUnion = numberArrayUnion(owner?.dataType);
-        if (
-            owner?.kind !== "data" ||
-            (!numberUnion && !guardableElementOwner(owner.dataType))
-        )
+        if (owner?.kind !== "data" || !guardableElementOwner(owner.dataType))
             return undefined;
-        const ownerType = owner.dataType!;
+        const ownerType = owner.dataType;
         // Fixed storage keeps the checked read when it is read only for its
         // value or at an index it always holds.
         if (
@@ -7979,21 +7956,14 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             attributes: "[[maybe_unused]] ",
         });
         this.context.reachJsData();
-        // Through a union, each read is of the member the value holds.
-        const read = (helper: string): string =>
-            numberUnion
-                ? `std::visit([&](const auto& bbl_member) { return bbl::js::${helper}(bbl_member, ${indexTemporary}); }, ${owner.cpp})`
-                : `bbl::js::${helper}(${owner.cpp}, ${indexTemporary})`;
-        const indexed = read(
-            numberUnion ||
-                ownerType.kind === "numberindex" ||
-                ownerType.kind === "tuple" ||
-                (ownerType.kind === "table" && element.kind === "number") ||
-                isTypedArrayType(ownerType)
-                ? "number_at"
-                : "array_at_or_default",
-        );
-        const found = read("array_has_index");
+        const indexed =
+            ownerType.kind === "numberindex" ||
+            ownerType.kind === "tuple" ||
+            (ownerType.kind === "table" && element.kind === "number") ||
+            isTypedArrayType(ownerType)
+                ? `bbl::js::number_at(${owner.cpp}, ${indexTemporary})`
+                : `bbl::js::array_at_or_default(${owner.cpp}, ${indexTemporary})`;
+        const found = `bbl::js::array_has_index(${owner.cpp}, ${indexTemporary})`;
         const captures = [
             ...ownerCaptures,
             this.context.registerNativeBinding(indexTemporary),

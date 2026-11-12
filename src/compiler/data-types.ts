@@ -149,6 +149,7 @@ import {
     undefinedOnly,
     isVoid,
     holdsNoPayload,
+    holdsOnly,
     arrayShape,
     callSignatures,
     classInstanceDeclaration,
@@ -833,13 +834,15 @@ function binaryLibraryClass(type: ts.Type): boolean {
     );
 }
 
-/**
- * A member of a union of binary classes and arrays (`Uint8Array | readonly
- * number[]`): each member keeps its own storage, which an element read and
- * `length` read through.
- */
-function binaryOrArrayMember(checker: ts.TypeChecker, type: ts.Type): boolean {
-    return binaryLibraryClass(type) || arrayShape(checker, type) !== undefined;
+/** A typed array of numbers, or an array whose elements are numbers. */
+function numericArrayMember(checker: ts.TypeChecker, type: ts.Type): boolean {
+    if (
+        declaredInDefaultLibrary(type.symbol) &&
+        TYPED_ARRAY_KINDS.has(type.symbol.name)
+    )
+        return true;
+    const shape = arrayShape(checker, type);
+    return shape !== undefined && holdsOnly(shape.element, ["number"]);
 }
 
 /** Web Audio and media identities are recognized from the DOM declarations. */
@@ -6293,14 +6296,21 @@ export class DataTypeRegistry {
                 this.arrayUnionsInProgress.delete(type);
             }
         }
-        // Opaque handles, library binary classes and arrays beside them
-        // retain their alternatives; a common-field record would discard
-        // their owners and identities.
+        // Typed arrays beside number arrays (`Float32Array | number[]`) share
+        // one numeric view, as an ArrayLike<number> slot storing several
+        // kinds of them does.
+        if (
+            type.types.every((member) =>
+                numericArrayMember(this.checker, member),
+            ) &&
+            type.types.some((member) => !binaryLibraryClass(member))
+        )
+            return { kind: "numberindex" };
+        // Opaque handles and library binary classes retain their alternatives;
+        // a common-field record would discard their owners and identities.
         if (
             handles.every((kind) => kind !== undefined) ||
-            type.types.every((member) =>
-                binaryOrArrayMember(this.checker, member),
-            )
+            type.types.every(binaryLibraryClass)
         )
             return this.fromMixedUnion(type, node);
         // A record union whose component stores shapes its own layout does
@@ -6508,9 +6518,7 @@ export class DataTypeRegistry {
                     0,
             ) &&
             !callablePair() &&
-            !type.types.every((member) =>
-                binaryOrArrayMember(this.checker, member),
-            ) &&
+            !type.types.every(binaryLibraryClass) &&
             !type.types.every(
                 (member) => this.nativeHandleKind(member) !== undefined,
             )

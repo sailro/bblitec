@@ -6370,6 +6370,22 @@ check(
 );
 
 check(
+    "typed-array-or-number-array-writes",
+    `
+    function pushPoint(out: Float32Array | number[], index: number, x: number): number {
+        out[index * 2] = x;
+        out[index * 2 + 1] = x + 0.1;
+        return out.length;
+    }
+    const floats = new Float32Array(4);
+    const numbers = [0, 0, 0, 0];
+    if (pushPoint(floats, 1, 2) !== 4 || pushPoint(numbers, 0, 3) !== 4) throw new Error("lengths");
+    if (floats[2] !== 2 || floats[3] !== Math.fround(2.1) || floats[0] !== 0) throw new Error("float lanes " + floats.join());
+    if (numbers.join() !== "3,3.1,0,0") throw new Error("number lanes " + numbers.join());
+`,
+);
+
+check(
     "stored-number-formats-at-run-time",
     `
     interface Saved { ax: number; yaw: number }

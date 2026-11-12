@@ -263,6 +263,12 @@ function expressionView(
     _expression: ts.Expression,
     unwrapped: ts.Expression,
 ): string {
+    // A literal is a fresh number array the view holds.
+    if (type.kind === "numberindex" && ts.isArrayLiteralExpression(unwrapped))
+        return `bbl::js::NumericArrayView(${lowerer.compileForSink(unwrapped, {
+            kind: "vector",
+            element: { kind: "number" },
+        })})`;
     return lowerer.compileKnownValueForSink(
         lowerer.narrowOptional(
             lowerer.context.compileValue(unwrapped),
