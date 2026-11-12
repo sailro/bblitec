@@ -6815,6 +6815,14 @@ export class DataTypeRegistry {
                 ),
             );
             const absent = members.length < properties.length;
+            // The part `unrepresentedPart` explains where no layout holds it.
+            const unstored = (index: number): undefined => {
+                this.unstoredLayoutProperties.set(type, {
+                    name: propertyName,
+                    type: memberTypes[index]!,
+                });
+                return undefined;
+            };
             // An empty payload cannot also stand for a present null/undefined key.
             if (
                 absent &&
@@ -6828,18 +6836,16 @@ export class DataTypeRegistry {
                         );
                     }))
             )
-                return undefined;
+                return unstored(0);
             const mapped = memberTypes.map((member, index) =>
                 this.fromRecordFieldType(member, node, members[index]),
             );
             const first = mapped[0];
-            if (
-                !first ||
-                mapped.some(
-                    (member) => !member || !dataTypesEqual(member, first),
-                )
-            )
-                return undefined;
+            const differing = mapped.findIndex(
+                (member) => !member || !first || !dataTypesEqual(member, first),
+            );
+            if (differing >= 0 || !first)
+                return unstored(Math.max(differing, 0));
             const stored = markIdentityFunctions(
                 this.markStoredObjectReferences(first),
             );
