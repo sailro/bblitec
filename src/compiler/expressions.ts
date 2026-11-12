@@ -162,7 +162,7 @@ import {
     structOwnEntries,
 } from "./object-statics.js";
 import { compileWindowIdentity } from "./window-events.js";
-import { compileDateTimeFormat } from "./dates.js";
+import { compileDateTimeFormat, dateNowFunctionValue } from "./dates.js";
 import {
     compileIntlConstruction,
     compileNumberLocaleString,
@@ -1113,6 +1113,8 @@ export class ExpressionLowerer {
             const arrayFunction = arrayFunctionValue(this.context, unwrapped);
             if (arrayFunction) return arrayFunction;
             if (mathFunction) return mathFunction;
+            const clock = dateNowFunctionValue(this.context, unwrapped);
+            if (clock) return clock;
             const prototype = compileLibraryPrototype(this.context, unwrapped);
             if (prototype) return prototype;
             const constant = enumMemberConstant(

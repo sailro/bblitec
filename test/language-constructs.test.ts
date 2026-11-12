@@ -7560,6 +7560,22 @@ check(
 );
 
 check(
+    "date-now-as-a-function-value",
+    `
+    interface Deps { stamp?: () => number }
+    function make(deps: Deps): () => number {
+        const stamp = deps.stamp ?? Date.now;
+        return () => stamp();
+    }
+    const fixed = make({ stamp: () => 7 });
+    const live = make({});
+    const now = Date.now;
+    const first = live();
+    if (fixed() !== 7 || !(first > 1e12) || !(now() >= first)) throw new Error("clock " + first);
+`,
+);
+
+check(
     "coalesced-literal-the-left-record-cannot-hold",
     `
     interface Result { code: string; quantity?: number; woodCost?: number }

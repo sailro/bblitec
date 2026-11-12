@@ -57,7 +57,11 @@ import {
 } from "./option-helpers.js";
 import { compileCustomEventDispatch } from "./custom-events.js";
 import { compilePointerCapture } from "./pointer-capture.js";
-import { compileDateParse, compileDateUtc } from "./dates.js";
+import {
+    compileDateParse,
+    compileDateUtc,
+    EPOCH_MILLISECONDS_CPP,
+} from "./dates.js";
 import { uiSelectorId } from "../ui-selector.js";
 import {
     classifyUiQuerySelector,
@@ -693,7 +697,7 @@ export class PlatformCalls {
         ) {
             return {
                 kind: "number",
-                cpp: "bbl::js::epoch_milliseconds()",
+                cpp: EPOCH_MILLISECONDS_CPP,
                 impure: true,
             };
         }
