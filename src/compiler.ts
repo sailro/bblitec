@@ -2306,6 +2306,7 @@ class Compiler implements LoweringServices {
         switch (pinned) {
             case "mesh":
             case "sprite-layer":
+            case "navigation":
             case "navigation-obstacle":
             case "storage-buffer":
             case "scene":

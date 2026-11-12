@@ -17,6 +17,7 @@ const handleCppTypes: Record<HandleKind, string> = {
     "procedural-sky-environment":
         "std::shared_ptr<bbl::ProceduralSkyEnvironment>",
     "gaussian-splat-stream": "std::shared_ptr<bbl::GaussianSplatStream>",
+    navigation: "bbl::pal::NavigationHandle",
     "mesh-lod-asset": "std::shared_ptr<bbl::MeshLoDAsset>",
     "mesh-lod-instance": "std::shared_ptr<bbl::MeshLoDInstance>",
     "mesh-lod-metadata": "bbl::MeshLoDMetadata",

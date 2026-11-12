@@ -17,6 +17,7 @@ export type HandleKind =
     | "gpu-environment"
     | "procedural-sky-environment"
     | "gaussian-splat-stream"
+    | "navigation"
     | "mesh-lod-asset"
     | "mesh-lod-instance"
     | "mesh-lod-metadata"

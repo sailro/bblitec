@@ -281,6 +281,7 @@ const pinnedHandleTypes: Record<string, HandleKind> = {
     EnvironmentTextures: "gpu-environment",
     ProceduralSkyEnvironment: "procedural-sky-environment",
     GaussianSplatStream: "gaussian-splat-stream",
+    NavigationPlugin: "navigation",
     MeshLoDAsset: "mesh-lod-asset",
     MeshLoDInstance: "mesh-lod-instance",
     MeshLoDMetadata: "mesh-lod-metadata",

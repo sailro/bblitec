@@ -69,6 +69,34 @@ if(!findClosestPointWithinInto(plugin,{x:0,y:1,z:0},{x:1,y:2,z:1},result))throw 
 disposeNavigationPlugin(plugin);
 `;
 
+test("a navigation plugin is a handle a nullable binding and a parameter store", () => {
+    // `ground` is absent until assigned and absent again after disposal;
+    // `blocked` takes the plugin as a parameter of its own.
+    const { cpp } = compileSource(`
+        import {createNavigationPluginAsync,disposeNavigationPlugin,navRayBlockedFast} from 'babylon-lite';
+        type Plugin = Awaited<ReturnType<typeof createNavigationPluginAsync>>;
+        let ground: Plugin | null = null;
+        const blocked = (target: Plugin): boolean => navRayBlockedFast(target, {x:0,y:0,z:0}, {x:1,y:0,z:1});
+        ground = await createNavigationPluginAsync();
+        if (ground && blocked(ground)) localStorage.setItem("blocked", "1");
+        if (ground) disposeNavigationPlugin(ground);
+        ground = null;
+    `);
+    assert.match(
+        cpp,
+        /std::optional<bbl::pal::NavigationHandle> v_ground\{\};/,
+    );
+    assert.match(
+        cpp,
+        /v_ground = bbl::upstream::create_navigation_plugin\(\);/,
+    );
+    assert.match(
+        cpp,
+        /bbl::upstream::dispose_navigation_plugin\(\(\*v_ground\)\);/,
+    );
+    assert.match(cpp, /v_ground\.reset\(\);/);
+});
+
 test("navigation source arrays and caller-owned query results generate without deferred calls", () => {
     const compiled = compileSource(sourceProgram);
     assert.deepEqual(compiled.manifest.deferredCapabilities ?? [], []);
