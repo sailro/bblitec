@@ -109,7 +109,7 @@ export function emitSurveyRoots(
     // emission is dropped.
     const root = (
         first: ts.Statement,
-        declaration: SupportedFunction,
+        declaration: ts.SignatureDeclaration,
         lower: () => void,
     ): void =>
         survey.attemptRoot(context, first, () => {
@@ -149,14 +149,27 @@ export function emitSurveyRoots(
         }
         // The statements no root began lower as statement roots: a dead arm
         // of a reached function, or the body of one whose own root refused
-        // before its body began (a signature with no native storage).
+        // before its body began (a signature with no native storage). An
+        // accessor's or a constructor's body has no function root: its own
+        // returns are statements a statement root lowers.
         for (const file of files)
-            for (const node of sourceFileNodes(file))
-                if (bodied(node) && !isGeneratorFunction(node))
-                    for (const run of unbegunRuns(survey, node.body))
-                        root(run[0]!, node, () =>
+            for (const node of sourceFileNodes(file)) {
+                const member = memberBody(node);
+                const body =
+                    member ??
+                    (bodied(node) && !isGeneratorFunction(node)
+                        ? node.body
+                        : undefined);
+                if (body)
+                    for (const run of unbegunRuns(
+                        survey,
+                        body,
+                        member !== undefined,
+                    ))
+                        root(run[0]!, node as ts.SignatureDeclaration, () =>
                             emitStatementRoot(context, survey, run),
                         );
+            }
     } finally {
         context.bindings.popScope();
         context.defaultEngineCpp = enclosingEngine;
@@ -303,6 +316,16 @@ function emptyValueOf(
     return { kind: "record", cpp: "", recordProperties };
 }
 
+/** The block body of an accessor or a constructor: one no function root lowers. */
+function memberBody(node: ts.Node): ts.Block | undefined {
+    return (ts.isGetAccessorDeclaration(node) ||
+        ts.isSetAccessorDeclaration(node) ||
+        ts.isConstructorDeclaration(node)) &&
+        node.body
+        ? node.body
+        : undefined;
+}
+
 /**
  * The runs of consecutive statements of `body` -- and of the statements a
  * begun statement of it holds, nested functions aside -- that no lowering
@@ -313,6 +336,7 @@ function emptyValueOf(
 function unbegunRuns(
     survey: SurveyCollector,
     body: ts.Block,
+    returns = false,
 ): ts.Statement[][] {
     const runs: ts.Statement[][] = [];
     const visit = (statements: readonly ts.Statement[]): void => {
@@ -322,7 +346,7 @@ function unbegunRuns(
             if (
                 !ts.isBlock(statement) &&
                 survey.unbegun(statement) &&
-                !isBodyReturn(statement)
+                (returns || !isBodyReturn(statement))
             ) {
                 run.push(statement);
                 continue;
@@ -648,7 +672,7 @@ function unboundTypeArguments(
 function withCalledTypeArguments(
     context: SurveyRootContext,
     files: readonly ts.SourceFile[],
-    declaration: SupportedFunction,
+    declaration: ts.SignatureDeclaration,
     work: () => void,
 ): void {
     const generic: ts.SignatureDeclaration[] = [];

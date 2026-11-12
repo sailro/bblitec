@@ -641,6 +641,43 @@ test("a stored generic method reads the type arguments its receiver binds", () =
     assert.deepEqual(report.refusals, [], listed(report));
 });
 
+test("a survey tries the bodies of accessors and constructors no lowering reaches", () => {
+    // `Store` is never constructed and `makeObstacle` never called: each
+    // accessor's and the constructor's statements lower as statement roots,
+    // their returns included, `this` the class's instance.
+    const { report } = surveySource(
+        `
+        export class Store {
+            private capacityValue = 16;
+            private revision = 0;
+            constructor(initial = 8) {
+                this.capacityValue = Math.max(initial, 1);
+                this.revision++;
+            }
+            get capacity(): number { return this.capacityValue; }
+            get doubled(): number {
+                const twice = this.capacityValue * 2;
+                return twice + this.revision;
+            }
+            set capacity(value: number) {
+                if (value < 1) return;
+                this.capacityValue = value;
+            }
+        }
+        export const makeObstacle = (pose: { x: number; z: number }, radius: number) => ({
+            get x() { return pose.x; },
+            get z() { return pose.z; },
+            radius,
+        });
+        localStorage.setItem("ready", "1");
+    `,
+        { fileName: resolve("survey-accessor-roots.ts") },
+    );
+    assert.ok(report.program);
+    assert.equal(report.program.attempted, report.program.statements);
+    assert.deepEqual(report.refusals, [], listed(report));
+});
+
 test("a root of a generic function no call binds lowers at its constraints", () => {
     // `timed` is only stored, so no call binds its `T`: the root lowers at
     // `unknown`, and `work` is a function returning a document.
@@ -842,26 +879,37 @@ test("a root's array parameter is an array its caller owns", () => {
     );
 });
 
-test("the program census lists the functions holding statements no lowering tried", () => {
-    // A constructor is not a root: its statements stay untried, listed by
-    // the constructor that holds them.
-    const { report } = surveySource(
+test("the program census lists the functions holding statements no lowering tried", (t) => {
+    // A class of a module only types are imported from is no root: the
+    // module never evaluates its declaration or its static block, whose
+    // statements stay untried, listed by the module that holds them.
+    const directory = mkdtempSync(join(tmpdir(), "bblite-untried-"));
+    t.after(() => rmSync(directory, { recursive: true, force: true }));
+    writeFileSync(
+        join(directory, "box.ts"),
         `
-        let total = 0;
+        export let total = 0;
         export class Box {
-            constructor(size: number) {
-                total += size;
+            static seed = 1;
+            static {
+                total += Box.seed;
                 total *= 2;
             }
         }
-        localStorage.setItem("total", String(total));
     `,
-        { fileName: resolve("survey-untried.ts") },
+    );
+    const { report } = surveySource(
+        `
+        import type { Box } from "./box.js";
+        const boxes: Box[] = [];
+        localStorage.setItem("boxes", String(boxes.length));
+    `,
+        { fileName: join(directory, "entry.ts") },
     );
     assert.ok(report.program);
     assert.deepEqual(
         report.program.untried.map((entry) => [entry.kind, entry.statements]),
-        [["Constructor", 2]],
+        [["SourceFile", 3]],
     );
 });
 
