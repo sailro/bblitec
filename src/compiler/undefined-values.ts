@@ -33,13 +33,14 @@ function undefinedLibraryCall(
     const callee = unwrapExpression(expression.expression);
     const signature = checker.getResolvedSignature(expression);
     const declaration = calledDeclaration(checker, expression);
+    // A library global's or a library object's static method
+    // (`console.log`, `URL.revokeObjectURL`) declared void.
     const global = libraryGlobal(checker, callee);
-    const consoleMethod =
-        libraryStaticMember(checker, callee)?.owner === "console";
+    const staticMethod = libraryStaticMember(checker, callee) !== undefined;
     return (
         !!signature &&
         !!declaration &&
-        (global !== undefined || consoleMethod) &&
+        (global !== undefined || staticMethod) &&
         (ts.isFunctionDeclaration(declaration) ||
             ts.isMethodSignature(declaration)) &&
         declarationInDefaultLibrary(declaration) &&

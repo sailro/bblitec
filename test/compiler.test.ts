@@ -215,6 +215,20 @@ test("a light read out of a record writes through its typed kind's setters", () 
     assert.match(result.cpp, /bbl::set_hemispheric_light_direction\(v_engine, \(v_\w+->sky\)\.second, /);
 });
 
+test("a finally handler revoking an object URL completes without a thenable", () => {
+    // URL.revokeObjectURL is a library object's static method declared
+    // void: its call completes with undefined, so finally discards it.
+    const result = compileSource(`
+        function load(bytes: Uint8Array): Promise<number> {
+            const url = URL.createObjectURL(new Blob([bytes], { type: "image/png" }));
+            return Promise.resolve(bytes.length).finally(() => URL.revokeObjectURL(url));
+        }
+        load(new Uint8Array([1, 2, 3])).then((n) => { if (n !== 3) throw new Error("finally " + n); });
+    `);
+    assert.match(result.cpp, /\.finally\(/);
+    assert.match(result.cpp, /bbl::js::revoke_object_url\(/);
+});
+
 test("records exact static scene composition reachability", () => {
     const result = compileSource(`
         import {
