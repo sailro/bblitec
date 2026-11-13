@@ -7830,6 +7830,20 @@ check(
 );
 
 check(
+    "spreading-parsed-elements-into-scalar-lanes",
+    `
+    interface Run { points: number[] }
+    const run = (JSON.parse('{"points":[1,2,3,4,5,6]}') as Run).points;
+    const head = { x: 0, z: 0 }, tail = { x: 9, z: 9 };
+    const seam = [head.x, head.z, ...run.slice(2, 4), tail.x, tail.z];
+    const copy = [...run];
+    const names = (JSON.parse('{"n":["p","q"]}') as { n: string[] }).n;
+    const labels = ["o", ...names.slice(0, 2)];
+    if (labels.join("") !== "opq" || seam.join(",") !== "0,0,3,4,9,9" || copy.length !== 6 || copy[5] !== 6) throw new Error("seam " + seam.join(","));
+`,
+);
+
+check(
     "truncating-the-array-a-call-returns",
     `
     interface Chimney { id: number }
