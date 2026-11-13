@@ -7710,6 +7710,26 @@ check(
 );
 
 check(
+    "fresh-array-local-read-once-stored-as-another-element-type",
+    `
+    interface Tower { roofMaterial?: string; shape: "cone" | "dome"; id: number }
+    interface Needs { towerRoof?: readonly (string | null | undefined)[]; towers?: readonly Tower[] }
+    interface Deps { ensureMaterials(needs: Needs): number }
+    const kept: Needs[] = [];
+    const deps: Deps = { ensureMaterials: (needs) => { kept.push(needs); return needs.towerRoof?.length ?? -1; } };
+    const towers: Tower[] = [{ roofMaterial: "slate", shape: "cone", id: 1 }, { shape: "cone", id: 2 }, { roofMaterial: "x", shape: "dome", id: 3 }];
+    function run(): number {
+      const visible = towers.filter((t) => t.shape === "cone").map((t) => t.roofMaterial);
+      return deps.ensureMaterials({ towers, towerRoof: visible });
+    }
+    let names = "";
+    if (run() !== 2) throw new Error("run");
+    for (const m of kept[0]!.towerRoof ?? []) names += m == null ? "x" : m;
+    if (names !== "slatex") throw new Error("sole " + names);
+`,
+);
+
+check(
     "truncating-the-array-a-call-returns",
     `
     interface Chimney { id: number }

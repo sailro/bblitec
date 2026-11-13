@@ -1062,6 +1062,65 @@ function newArrayExpression(
 }
 
 /**
+ * Whether `read` is the only reference to an unexported `const` local
+ * initialized with a fresh object (`fresh`), read once per binding: no
+ * function or loop lies between the declaration's statement and the read.
+ * A copy stored there replaces the only reference.
+ */
+export function soleReadOfFreshLocal(
+    checker: ts.TypeChecker,
+    read: ts.Expression,
+    fresh: (initializer: ts.Expression) => boolean,
+): boolean {
+    const unwrapped = unwrapExpression(read);
+    if (!ts.isIdentifier(unwrapped)) return false;
+    const symbol = declaredSymbol(checker, unwrapped);
+    const declaration = symbol?.valueDeclaration;
+    const statement = declaration?.parent?.parent;
+    if (
+        !symbol ||
+        !declaration ||
+        !ts.isVariableDeclaration(declaration) ||
+        !ts.isIdentifier(declaration.name) ||
+        !declaration.initializer ||
+        !statement ||
+        !ts.isVariableStatement(statement) ||
+        (declaration.parent.flags & ts.NodeFlags.Const) === 0 ||
+        statement.modifiers?.some(
+            (modifier) => modifier.kind === ts.SyntaxKind.ExportKeyword,
+        ) ||
+        !fresh(declaration.initializer)
+    )
+        return false;
+    for (let node = unwrapped.parent; node !== statement.parent; ) {
+        if (
+            ts.isSourceFile(node) ||
+            ts.isFunctionLike(node) ||
+            ts.isIterationStatement(node, false)
+        )
+            return false;
+        node = node.parent;
+    }
+    let only = true;
+    forEachAnalysisNode(
+        ts.findAncestor(statement, ts.isFunctionLike) ??
+            statement.getSourceFile(),
+        (node) => {
+            if (!only) return "skip";
+            if (
+                ts.isIdentifier(node) &&
+                node !== unwrapped &&
+                node !== declaration.name &&
+                declaredSymbol(checker, node) === symbol
+            )
+                only = false;
+            return undefined;
+        },
+    );
+    return only;
+}
+
+/**
  * Whether a record returned as `returned` is the last reference to it: a
  * local of the returning function, initialized with a fresh object
  * (`fresh`), whose other uses only read or write its properties, outside
