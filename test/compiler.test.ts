@@ -22373,6 +22373,32 @@ test("fixed render targets snapshot runtime canvas dimensions", () => {
     );
 });
 
+test("render targets take the extents a { width, height } record value holds", () => {
+    // A size held in a binding (one record) or returned by a helper (a struct).
+    const result = compileSource(`
+        import { createEngine, createRenderTargetTexture } from "@babylonjs/lite";
+        interface Size { width: number; height: number }
+        function sizeFor(scale: number): Size { return { width: Math.round(128 * scale), height: Math.round(64 * scale) }; }
+        const scales = [0.5, 1];
+        async function main(): Promise<void> {
+            const engine = await createEngine({});
+            const shadowSize = { width: 64, height: 32 };
+            const raw = createRenderTargetTexture(engine, { lbl: "raw", format: "rg16float", samples: 1, size: shadowSize });
+            const scaled = createRenderTargetTexture(engine, { lbl: "scaled", format: "rg16float", samples: 1, size: sizeFor(scales[Math.floor(Math.random() * 2)]!) });
+            void raw; void scaled;
+        }
+        void main();
+    `);
+    assert.match(
+        result.cpp,
+        /render_target_dimension\(v_shadowSize->width\)[^;]*render_target_dimension\(v_shadowSize->height\)/,
+    );
+    assert.match(
+        result.cpp,
+        /render_target_dimension\((v_(?!shadowSize)\w+)(\.|->)width\)[^;]*render_target_dimension\(\1\2height\)/,
+    );
+});
+
 test("animation owner proofs follow immutable shared returns and reject mutable owners", () => {
     const fixture = (body: string): string => `
         import {createAnimationManager,createPropertyAnimationClip,createPropertyAnimationGroup,
