@@ -314,7 +314,7 @@ import {
     literalSelf,
 } from "./home-object-methods.js";
 import { integerCounterOf } from "./integer-loops.js";
-import { readsErasedVoid } from "./undefined-values.js";
+import { provenVoidAsUndefined, readsErasedVoid } from "./undefined-values.js";
 import { classPrototypeKeys, classMemberTable } from "./class-members.js";
 import { isPlainJsonRecord } from "./json-record-views.js";
 
@@ -20124,7 +20124,12 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                       value.kind === expected.inner.handle
                           ? expected.inner
                           : undefined)));
-            if (value.kind === "json-null") {
+            // A call proven to complete with `undefined` runs, then
+            // compares as the absence it returns.
+            if (
+                value.kind === "json-null" ||
+                provenVoidAsUndefined(this.context, value, operand)
+            ) {
                 const temporary =
                     this.context.allocateTemporaryCppName("optional_compare");
                 const cppType = this.context.dataTypes.cppType(expected);

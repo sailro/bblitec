@@ -7560,6 +7560,23 @@ check(
 );
 
 check(
+    "void-callback-result-compared-with-true",
+    `
+    let seen = 0;
+    function walk(values: unknown[], visit: (path: string, value: number) => boolean | void): boolean {
+        for (let i = 0; i < values.length; i++) {
+            const value = values[i];
+            if (typeof value === "number" && visit("[" + i + "]", value) === true) return true;
+        }
+        return false;
+    }
+    const found = walk([1, "a", 3], (path, value) => { seen += value; if (value > 2) return true; });
+    const none = walk([1, 2], (path, value) => { seen += value * 10; });
+    if (!found || none || seen !== 34) throw new Error("walk " + seen);
+`,
+);
+
+check(
     "object-is-on-nullable-numbers",
     `
     interface Request { runId: number; bedSink: number | null }
