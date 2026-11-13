@@ -21761,9 +21761,18 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         }
         // Lanes of another scalar spelling, records seen through the
         // target's record type (projected as a readonly view's elements
-        // are), engine-owned resources stored as plain handles, or handles
-        // the target's handle holds (meshes as scene nodes) convert one by
-        // one.
+        // are), engine-owned resources stored as plain handles, handles
+        // the target's handle holds (meshes as scene nodes), or lanes a
+        // union or optional element holds (numbers among `number |
+        // string` lanes) convert one by one.
+        const targetElementHolds = (target: DataType): boolean =>
+            sourceElement !== undefined &&
+            ((target.kind === "union" &&
+                target.members.some((member) =>
+                    dataTypesEqual(member, sourceElement),
+                )) ||
+                (target.kind === "optional" &&
+                    dataTypesEqual(target.inner, sourceElement)));
         if (
             iterated &&
             sourceElement &&
@@ -21775,7 +21784,8 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 (sourceElement.kind === "struct" &&
                     dataType.element.kind === "struct") ||
                 (sourceElement.kind === "promise" &&
-                    dataType.element.kind === "promise"))
+                    dataType.element.kind === "promise") ||
+                targetElementHolds(dataType.element))
         ) {
             const item = this.context.allocateTemporaryCppName("spread_item");
             let converted = "";

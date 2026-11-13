@@ -7756,6 +7756,21 @@ check(
 );
 
 check(
+    "spreading-numbers-among-union-lanes-and-joining-them",
+    `
+    const profile: number[] = [1.5, 2, 3];
+    function key(id: number, shape: "cone" | "dome"): string {
+      return [id, shape, ...profile].join("|");
+    }
+    const mixed: (number | string)[] = ["a", ...profile];
+    const maybe: (number | undefined)[] = [...profile, undefined];
+    profile.push(4);
+    const flags: (number | boolean)[] = [true, ...profile];
+    if (flags.join("/") !== "true/1.5/2/3/4" || key(7, "cone") !== "7|cone|1.5|2|3|4" || mixed.length !== 4 || mixed[1] !== 1.5 || maybe.length !== 4 || maybe[3] !== undefined) throw new Error("spread " + key(7, "cone"));
+`,
+);
+
+check(
     "truncating-the-array-a-call-returns",
     `
     interface Chimney { id: number }

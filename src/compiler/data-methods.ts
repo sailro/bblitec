@@ -2211,8 +2211,35 @@ function compileArrayJoin(state: ArrayMethodState): Value {
     const absentString =
         dataType.element.kind === "optional" &&
         dataType.element.inner.kind === "string";
+    // The text one scalar element joins as.
+    const textOf = (element: DataType, cpp: string): string | undefined => {
+        switch (element.kind) {
+            case "string":
+                return cpp;
+            case "number":
+                return `bbl::js::number_to_string(${cpp})`;
+            case "boolean":
+                return `${cpp} ? "true" : "false"`;
+            case "enum":
+                return lowerer.context.dataTypes.enumToStringCpp(
+                    element,
+                    cpp,
+                    call,
+                );
+            default:
+                return undefined;
+        }
+    };
+    // A union of scalars joins each element as its member does.
+    const members =
+        dataType.element.kind === "union"
+            ? dataType.element.members.map((member, index) =>
+                  textOf(member, `std::get<${index}>(value)`),
+              )
+            : undefined;
     if (
         (!absentString &&
+            !(members?.every((text) => text !== undefined) ?? false) &&
             !["string", "enum", "number", "boolean", "json"].includes(
                 dataType.element.kind,
             )) ||
@@ -2242,12 +2269,14 @@ function compileArrayJoin(state: ArrayMethodState): Value {
                 : dataType.element.kind === "json"
                   ? ", [](const auto& value) { return value.is_null() || value.is_undefined() ? std::string{} : value.to_string(); }"
                   : dataType.element.kind === "enum"
-                    ? `, [](const auto& value) { return ${lowerer.context.dataTypes.enumToStringCpp(dataType.element, "value", call)}; }`
+                    ? `, [](const auto& value) { return ${textOf(dataType.element, "value")}; }`
                     : dataType.element.kind === "number"
-                      ? ", [](double value) { return bbl::js::number_to_string(value); }"
+                      ? `, [](double value) { return ${textOf(dataType.element, "value")}; }`
                       : dataType.element.kind === "boolean"
-                        ? ', [](bool value) { return value ? "true" : "false"; }'
-                        : ""
+                        ? `, [](bool value) { return ${textOf(dataType.element, "value")}; }`
+                        : members
+                          ? `, [](const auto& value) -> std::string { switch (value.index()) { ${members.map((text, index) => `case ${index}: return ${text};`).join(" ")} } return {}; }`
+                          : ""
         })`,
         dataType: { kind: "string" },
     };
