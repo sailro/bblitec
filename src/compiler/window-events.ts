@@ -33,6 +33,23 @@ function runtimeLocationHrefCpp(
 }
 
 /**
+ * The document's URL, which relative links resolve against: the live href
+ * where the program navigates its query, else the deployment's.
+ */
+export function documentUrlCpp(
+    context: Pick<
+        LoweringServices,
+        "options" | "cppString" | "referenceSearch"
+    >,
+): string {
+    return context.options.runtimeLocationSearch
+        ? runtimeLocationHrefCpp(context)
+        : context.cppString(
+              deploymentUrl(context.options).href + context.referenceSearch(),
+          );
+}
+
+/**
  * `location.search = query` and `location.href = url`: navigation to this
  * document with another query; `href` naming another document throws at
  * run time (`window_location_assign`).

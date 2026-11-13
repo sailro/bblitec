@@ -839,6 +839,7 @@ export async function composeScenePipeline({
         result.manifest.pbrPluginSignatures ?? [],
         result.manifest.pbrPluginAppends ?? [],
         result.manifest.features.includes("material:bent-normal"),
+        result.manifest.features.includes("material:parallax-occlusion"),
     );
     let assetMetallicReflectanceRegistered = false;
     for (const [assetIndex, asset] of gltfAssets.entries()) {
@@ -1214,6 +1215,12 @@ export async function composeScenePipeline({
                 ),
                 lightmapFileTexture: result.manifest.features.includes(
                     "material:standard-lightmap",
+                ),
+                bumpFileTexture: result.manifest.features.includes(
+                    "material:standard-bump",
+                ),
+                parallaxOcclusion: result.manifest.features.includes(
+                    "material:parallax-occlusion",
                 ),
                 uvTransform: result.manifest.features.includes(
                     "material:standard-uv-transform",

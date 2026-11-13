@@ -26,11 +26,22 @@ export function assetUrlDomain(
         fragments: (parts) => packagedFiles(context, expression, parts),
     })?.filter((url) => !unpackaged(url));
     // One candidate is a generation-known URL: it packages as the same
-    // literal does, a remote one included. A runtime selection among several
-    // stays local.
+    // literal does, a remote one included. Among several, each local one
+    // stays beneath the deployment and each remote one is an absolute HTTP(S)
+    // URL, packaged as its literal is and selected by that exact text.
     if (domain?.length === 1) return domain;
     const base = deploymentUrl(context.options);
     const safe = domain?.every((source) => {
+        if (/^https?:\/\//i.test(source)) {
+            let remote: URL;
+            try {
+                remote = new URL(source);
+            } catch {
+                return false;
+            }
+            if (remote.origin !== base.origin)
+                return !remote.username && !remote.password;
+        }
         if (/%2f|%5c|\\/i.test(source)) return false;
         const path = urlFilePath(source);
         let decoded: string;

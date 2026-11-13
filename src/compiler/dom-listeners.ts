@@ -79,6 +79,9 @@ const pointerNames = new Set([
     "cancel",
     // A details element's disclosure change, a non-bubbling task-queued event.
     "toggle",
+    // A form's submission, which a native form never makes
+    // (docs/fidelity.md): the listener is kept and never runs.
+    "submit",
 ]);
 
 const serviceNames = new Set([

@@ -1,10 +1,12 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { copyFileSync, mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import test from "node:test";
 import { compileSource } from "../src/compiler.js";
 import type { CompileResult } from "../src/compiler/types.js";
+import { readCachedDownload } from "../src/asset-download-cache.js";
 import {
     optionalNativeFixtureTools,
     runNativeFixtureCompiler,
@@ -268,6 +270,43 @@ test("a URL read through a built catalog's methods keeps the domain of the entri
     runPackagedProgram(t, directory, result);
 });
 
+test("a runtime selection among remote URLs packages each, a string-literal union field included", (t) => {
+    const directory = resolve("artifacts/packaged-fetch-remote-candidates");
+    mkdirSync(directory, { recursive: true });
+    const urls = [
+        "https://assets.invalid/bblitec-remote-candidates/a.json",
+        "https://assets.invalid/bblitec-remote-candidates/b.json",
+    ];
+    // Download-cache entries seeded by hand: generation reads no network.
+    for (const [index, url] of urls.entries()) {
+        const path = resolve(
+            ".cache",
+            "assets",
+            createHash("sha256").update(url).digest("hex").slice(0, 32),
+        );
+        mkdirSync(dirname(path), { recursive: true });
+        writeFileSync(path, JSON.stringify({ name: "ab"[index] }));
+    }
+    // The `as const` field is a union of its literals, stored as an enum.
+    const result = compileSource(
+        `
+        const FILES = { a: { url: "${urls[0]}" }, b: { url: "${urls[1]}" } } as const;
+        async function load(kind: keyof typeof FILES): Promise<string> {
+            const files = FILES[kind];
+            return ((await (await fetch(files.url)).json()) as { name: string }).name;
+        }
+        const names = [await load(Date.now() < 0 ? "b" : "a"), await load(Date.now() < 0 ? "a" : "b")];
+        if (names.join() !== "a,b") throw new Error(names.join());
+    `,
+        { fileName: join(directory, "entry.ts") },
+    );
+    assert.deepEqual(
+        result.manifest.assets.map((asset) => asset.source).sort(),
+        urls,
+    );
+    runPackagedProgram(t, directory, result);
+});
+
 test("a runtime-selected KTX2 URL loads among its packaged containers", () => {
     const directory = resolve("artifacts/packaged-ktx2-selection");
     const publicDir = join(directory, "public");
@@ -311,7 +350,12 @@ function runPackagedProgram(
         if (withheld !== undefined && asset.source.endsWith(withheld)) continue;
         const output = join(directory, asset.output);
         mkdirSync(dirname(output), { recursive: true });
-        copyFileSync(resolve(directory, asset.source), output);
+        // A remote asset packages its download-cache bytes.
+        const remote = /^https?:\/\//.test(asset.source)
+            ? readCachedDownload(asset.source)
+            : undefined;
+        if (remote) writeFileSync(output, remote);
+        else copyFileSync(resolve(directory, asset.source), output);
     }
     const native = optionalNativeFixtureTools();
     if (!native) {

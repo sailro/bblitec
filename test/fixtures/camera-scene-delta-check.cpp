@@ -64,7 +64,7 @@ int main() {
     std::vector<int> input_order;
     const auto attach = [&](bbl::CameraHandle camera, int id) {
         bbl::CameraControlOptions options;
-        options.should_handle_pointer_down = [&, id] {
+        options.should_handle_pointer_down = [&, id](const bbl::PlatformMouseEvent&) {
             input_order.push_back(id);
             return false;
         };

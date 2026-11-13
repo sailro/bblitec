@@ -1587,35 +1587,61 @@ export function wgslAttributeInteger(
 }
 
 /** Every function body's statements, entry points and helpers alike. */
-function wgslFunctionStatements(module: WgslModuleSyntax): ShaderStatement[][] {
-    return module.declarations.flatMap((declaration) =>
-        declaration.kind === "fn" ? [declaration.statements] : [],
-    );
-}
-
 /**
  * Whether any function of a module passes `texture` to a `textureSample*`
- * builtin -- the filterable read, as opposed to a `textureLoad`.
+ * builtin -- the filterable read, as opposed to a `textureLoad` -- directly
+ * or through a module function whose parameter it is handed in, which
+ * samples that parameter (`parallaxSample(dT, ...)`).
  */
 export function wgslSamplesTexture(
     module: WgslModuleSyntax,
     texture: string,
 ): boolean {
-    return wgslFunctionStatements(module).some((statements) =>
+    const functions = module.declarations.filter(
+        (declaration): declaration is WgslFunctionDeclaration =>
+            declaration.kind === "fn",
+    );
+    // The parameters each function samples, to a fixed point over calls.
+    const sampledParameters = new Map<string, Set<number>>(
+        functions.map((declaration) => [declaration.name, new Set<number>()]),
+    );
+    const samples = (
+        statements: readonly ShaderStatement[],
+        name: string,
+    ): boolean =>
         statements.some((statement) =>
             statementSome(statement, (expression) => {
-                const first =
-                    expression.kind === "call"
-                        ? expression.arguments[0]
-                        : undefined;
-                return (
-                    expression.kind === "call" &&
-                    expression.name.startsWith("textureSample") &&
-                    first?.kind === "path" &&
-                    first.parts[0] === texture
+                if (expression.kind !== "call") return false;
+                return expression.arguments.some(
+                    (argument, index) =>
+                        argument.kind === "path" &&
+                        argument.parts.length === 1 &&
+                        argument.parts[0] === name &&
+                        ((index === 0 &&
+                            expression.name.startsWith("textureSample")) ||
+                            sampledParameters
+                                .get(expression.name)
+                                ?.has(index) === true),
                 );
             }),
-        ),
+        );
+    for (let changed = true; changed;) {
+        changed = false;
+        for (const declaration of functions) {
+            const sampled = sampledParameters.get(declaration.name)!;
+            declaration.parameters.forEach((parameter, index) => {
+                if (
+                    !sampled.has(index) &&
+                    samples(declaration.statements, parameter.name)
+                ) {
+                    sampled.add(index);
+                    changed = true;
+                }
+            });
+        }
+    }
+    return functions.some((declaration) =>
+        samples(declaration.statements, texture),
     );
 }
 

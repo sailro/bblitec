@@ -2428,6 +2428,20 @@ struct FileTexture {
 
 struct FileTextureLoad;
 
+/**
+ * The pin's `ParallaxOcclusionProps`: the height texture, and every member a
+ * caller left out absent, which each reader defaults with its own `??`.
+ */
+struct ParallaxOcclusionProps {
+    TextureData height_texture{};
+    std::optional<double> height_scale;
+    std::optional<double> height_center;
+    std::optional<std::string> height_channel;
+    std::optional<double> min_steps;
+    std::optional<double> max_steps;
+    std::optional<double> refinement_steps;
+};
+
 /** Texture2D's per-device URL/options cache, projected onto native samplers. */
 inline std::string file_texture_cache_key(const std::string& path,
                                           const TextureSamplerState& sampler, bool invert_y,
@@ -3473,6 +3487,11 @@ struct MaterialRecord {
     /** Original material copied into a no-colour/ESM view. */
     MaterialHandle source_material{};
     /**
+     * How many times `rebuildMaterial` rebuilt the renderables drawing this record: a render
+     * item planned under an older generation is a renderable the rebuild replaced.
+     */
+    std::uint64_t build_generation = 0;
+    /**
      * The material a `{ ...material }` copy was made from. Unlike a view, the copy holds its own
      * values; it composes as that material does.
      */
@@ -3622,6 +3641,12 @@ struct MaterialRecord {
     // scales the interpolated normal by 1 / level before the frame is built.
     TextureData bump_texture;
     float bump_scale = 1.0f;
+    /**
+     * `_parallaxOcclusion`, the copy `setPbrParallaxOcclusion` or
+     * `setStandardParallaxOcclusion` validated (`_copyParallaxOcclusionProps`);
+     * absent while disabled.
+     */
+    std::optional<ParallaxOcclusionProps> parallax_occlusion;
     // Dedicated glTF occlusion texture sampled at uv2 (Babylon Lite's
     // pbr-template-ext pair for occlusionTexture.texCoord == 1).
     TextureData occlusion_texture;
@@ -3802,15 +3827,17 @@ struct CameraControlAttachment {
     bool dragging = false;
     bool panning = false;
     std::uint32_t buttons = 0;
-    std::map<std::pair<std::uint64_t, std::uint64_t>, std::array<double, 2>> touches;
+    /** Held touches: client x and y and the PointerEvent pointerId. */
+    std::map<std::pair<std::uint64_t, std::uint64_t>, std::array<double, 3>> touches;
     std::vector<std::string_view> listeners;
-    std::function<void(double, bool)> pointer_down;
+    /** The DOM button, whether a touch pressed, and the PointerEvent the pin's handler takes. */
+    std::function<void(double, bool, const PlatformMouseEvent&)> pointer_down;
     std::function<void(double, double, double)> pointer_move;
     std::function<void()> pointer_up;
     std::function<void(double)> wheel;
     std::function<void(std::string_view)> key_down, key_up;
     js::Callback<void(double)> update;
-    std::function<bool()> should_handle_pointer_down;
+    std::function<bool(const PlatformMouseEvent&)> should_handle_pointer_down;
     std::function<bool()> external_drag_active;
     std::function<bool()> external_pick_pending;
     [[nodiscard]] bool listens(std::string_view name) const {
@@ -3821,7 +3848,7 @@ struct CameraControlBindings {
     std::vector<std::shared_ptr<CameraControlAttachment>> entries;
 };
 struct CameraControlOptions {
-    std::function<bool()> should_handle_pointer_down;
+    std::function<bool(const PlatformMouseEvent&)> should_handle_pointer_down;
     std::function<bool()> external_drag_active;
     std::function<bool()> external_pick_pending;
 };
@@ -3885,7 +3912,7 @@ struct CameraRecord {
      * installed without one, which the pin runs no per-frame hook for.
      */
     std::weak_ptr<SceneState> controls_scene;
-    std::function<bool()> should_handle_pointer_down;
+    std::function<bool(const PlatformMouseEvent&)> should_handle_pointer_down;
     std::function<bool()> external_drag_active;
     std::function<bool()> external_pick_pending;
     // Null orthographic planes derive from the half-extent and viewport aspect.
@@ -8025,6 +8052,11 @@ void set_pbr_metallic_reflectance(Engine& engine, MaterialHandle material, bool 
 void set_pbr_lightmap(Engine& engine, MaterialHandle material, FileTexture texture, float level);
 void set_standard_lightmap_texture(Engine& engine, MaterialHandle material,
                                    const FileTexture& texture);
+void set_standard_bump_texture(Engine& engine, MaterialHandle material,
+                               const StoredTexture& texture);
+// `setPbrParallaxOcclusion` and `setStandardParallaxOcclusion` (parallax_occlusion.cpp).
+void set_parallax_occlusion(Engine& engine, MaterialHandle material,
+                            std::optional<ParallaxOcclusionProps> props);
 void set_pbr_subsurface(Engine& engine, MaterialHandle material, float intensity, Color3 color,
                         Color3 diffusion_distance, float minimum_thickness, float maximum_thickness,
                         FileTexture thickness_texture);

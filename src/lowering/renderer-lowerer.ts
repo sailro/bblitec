@@ -1098,6 +1098,9 @@ ${options.gpuInstancing ? "    ThinMaterialBindingOwner thin_binding{};\n" : ""}
     // The forward renderable the item was published from (SourceMaterialDraw::identity),
     // zero for an item no source output publishes.
     std::uint64_t source_identity = 0;
+    // The material's \`build_generation\` the item was planned under: a
+    // \`rebuildMaterial\` replaces the renderable, so the row uploads afresh.
+    std::uint64_t material_build = 0;
     bool material_override = false;
     RenderMaterialKind material_kind = RenderMaterialKind::pbr;
     RenderBucket bucket = RenderBucket::opaque;
@@ -1626,6 +1629,7 @@ RenderItem bind_render_item(
         return item;
     }
     const MaterialRecord& material = ${recordAt("engine.materials", "material_handle")};
+    item.material_build = material.build_generation;
     item.material_kind = material.shader_material
             ? RenderMaterialKind::shader
             : material.node_material

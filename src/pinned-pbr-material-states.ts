@@ -3,13 +3,15 @@
  *
  * The pin computes a material's features on its first render and keeps them
  * (`_renderFeatures`), so a material whose `alphaBlend`, `alpha`,
- * `baseColorFactor`, `bentNormalTexture` or `plugins` the program writes
+ * `baseColorFactor`, `bentNormalTexture`, `_parallaxOcclusion` or `plugins`
+ * the program writes
  * composes from whatever it holds when it is first drawn. Generation composes
  * one row for every state those writes can reach, and
  * `pbr_material_state_rows` names each by the key the native record reaches
  * it by: the pin's blend bit, the record's plugin signature, whether a base
- * colour factor was written and, under `enableBentNormals`, whether it holds
- * a bent normal texture.
+ * colour factor was written, under `enableBentNormals` whether it holds a
+ * bent normal texture and, where the program sets parallax occlusion, whether
+ * it holds an active one.
  */
 import type {
     PbrMaterialStateWrites,
@@ -26,6 +28,7 @@ import {
     type PinnedMaterialInput,
 } from "./pinned-pbr-variants.js";
 import { importPinnedModule } from "./pinned-shader-composer.js";
+import { ACTIVE_PARALLAX_OCCLUSION } from "./lowering/parallax-occlusion.js";
 
 /** The key a state row is selected by: the entry less its rows. */
 type PbrMaterialStateKey = Omit<PbrMaterialStateRow, "sourceRow" | "row">;
@@ -85,6 +88,8 @@ export class PbrMaterialStates {
          * has no `detect`, so a bent normal texture composes nothing.
          */
         private readonly bentNormals: boolean,
+        /** `material:parallax-occlusion` reached: the key carries its presence. */
+        private readonly parallax: boolean,
     ) {
         this.nextRow = firstRow;
         signatures.forEach((list, index) =>
@@ -145,6 +150,11 @@ export class PbrMaterialStates {
                   : writes.bentNormalTexture
                     ? [false, true]
                     : [false],
+            // Its `detect` reads presence and a nonzero `heightScale`; a
+            // setter can clear it as well as set it.
+            parallaxOcclusion: writes.parallaxOcclusion
+                ? [false, true]
+                : [input["_parallaxOcclusion"] !== undefined],
             alphaBlend: [...new Set([input.alphaBlend, ...writes.alphaBlend])],
             alpha: alphas,
         };
@@ -170,6 +180,9 @@ export class PbrMaterialStates {
                 baseColorFactorWritten: state.factorWritten,
                 ...(this.bentNormals
                     ? { bentNormalTexture: state.bentNormalTexture }
+                    : {}),
+                ...(this.parallax
+                    ? { parallaxOcclusion: state.parallaxOcclusion }
                     : {}),
             };
             const id = JSON.stringify(key);
@@ -202,6 +215,7 @@ export class PbrMaterialStates {
             alpha: number | undefined;
             factorWritten: boolean;
             bentNormalTexture: boolean;
+            parallaxOcclusion: boolean;
         },
         /** The plugin list, when the state holds another than the input's. */
         held: readonly MaterialPluginManifest[] | undefined,
@@ -218,6 +232,10 @@ export class PbrMaterialStates {
         if (state.factorWritten) candidate.baseColorFactor ??= [1, 1, 1, 1];
         // So does a written bent normal texture.
         if (state.bentNormalTexture) candidate["bentNormalTexture"] = {};
+        // And an active parallax occlusion through its presence alone.
+        if (state.parallaxOcclusion)
+            candidate["_parallaxOcclusion"] ??= ACTIVE_PARALLAX_OCCLUSION;
+        else delete candidate["_parallaxOcclusion"];
         if (held !== undefined) {
             if (held.length > 0) candidate["plugins"] = pinnedPlugins(held);
             else delete candidate["plugins"];

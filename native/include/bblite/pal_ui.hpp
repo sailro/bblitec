@@ -10,6 +10,7 @@
 #endif
 
 #include <algorithm>
+#include <array>
 #include <cstdint>
 #include <functional>
 #include <initializer_list>
@@ -56,6 +57,18 @@ ui_query_element(Engine& engine, UiElementHandle root,
                  UiQueryMode mode = UiQueryMode::First);
 bool ui_matches_element(Engine& engine, UiElementHandle element,
                         const std::vector<std::vector<UiSelectorStep>>& selectors);
+/**
+ * `form.elements.namedItem(name)`: the form's first listed element in tree
+ * order whose id or name is `name`, or null. Several (a RadioNodeList) throw
+ * NotSupportedError.
+ */
+js::Nullable<UiElementHandle> ui_form_named_item(Engine& engine, UiElementHandle form,
+                                                 const std::string& name);
+/**
+ * `new FormData(form)`: the form's entry list without a submitter, as
+ * name/value pairs in tree order. A file input throws NotSupportedError.
+ */
+std::vector<std::array<std::string, 2>> ui_form_entries(Engine& engine, UiElementHandle form);
 /**
  * A runtime attribute value of a selector template, delimited by `quote`.
  * A line break makes the selector invalid (SyntaxError); a quote, escape,

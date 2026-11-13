@@ -1083,7 +1083,8 @@ WGPUBindGroup build_standard_draw_group(
     // which is a reflected binding name rather than a compile-time fact --
     // the same shape `geometry_params` takes below.
     [[maybe_unused]] WGPUBuffer uv_transform_uniforms,
-    [[maybe_unused]] WGPUBuffer mesh_opacity_uniforms, WGPUBuffer geometry_params,
+    [[maybe_unused]] WGPUBuffer mesh_opacity_uniforms,
+    [[maybe_unused]] WGPUBuffer parallax_uniforms, WGPUBuffer geometry_params,
     StandardRenderViews render_views, const DawnAreaLightEmission* area_light_emission,
     [[maybe_unused]] const DawnGeometryVelocity* velocity) {
     const WGPUTextureView emissive_render_view = render_views.emissive;
@@ -1127,6 +1128,17 @@ WGPUBindGroup build_standard_draw_group(
 #if BBLITE_MESH_OPACITY
             } else if (feature_binding(binding.name) == FeatureBinding::mesh_opacity) {
                 bind_mesh_opacity(mesh_opacity_uniforms, group_entry);
+#endif
+#if BBLITE_MATERIAL_STANDARD_PARALLAX
+            } else if (binding.name == standard_parallax_block_name) {
+                if (!parallax_uniforms || !material)
+                    dawn_error("a Standard parallax variant has no material block to bind.");
+                const std::array<float, 16> block = standard_parallax_block(
+                    *material, upstream::standard_variants[variant].features);
+                DawnGpuDevice{state.queue}.write_buffer(parallax_uniforms, 0, block.data(),
+                                                        sizeof(block));
+                group_entry.buffer = parallax_uniforms;
+                group_entry.size = sizeof(block);
 #endif
 #if BBLITE_RECT_AREA_EMISSION
             } else if (binding.name == upstream::rect_area_emission_slots_block) {
@@ -1314,6 +1326,12 @@ DawnDrawState& ensure_standard_draw_buffers(DawnState& state, DawnMesh& mesh,
         draw_state.mesh_opacity_uniforms = uniform_buffer(sizeof(upstream::MeshOpacityUniforms));
     }
 #endif
+#if BBLITE_MATERIAL_STANDARD_PARALLAX
+    if (!draw_state.parallax_uniforms &&
+        rows_declare(standard_variant_rows(variant), standard_parallax_block_name)) {
+        draw_state.parallax_uniforms = uniform_buffer(sizeof(std::array<float, 16>));
+    }
+#endif
     return draw_state;
 }
 
@@ -1440,7 +1458,7 @@ void write_standard_geometry_task(DawnState& state, const Scene& scene, const En
                     state, mesh, material, variant, draw_state.mesh_uniforms,
                     colour_state.material_uniforms, colour_state.uv_uniforms,
                     colour_state.uv_transform_uniforms, colour_state.mesh_opacity_uniforms,
-                    geometry.pinned_geometry_params,
+                    colour_state.parallax_uniforms, geometry.pinned_geometry_params,
                     // A geometry task writes the MRT attachments and
                     // samples neither slot, and its layout arm is the
                     // filterable one, so it binds neither view.

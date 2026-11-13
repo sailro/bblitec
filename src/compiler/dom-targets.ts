@@ -182,6 +182,8 @@ const WINDOW_INTERFACES: ReadonlyMap<string, WindowInterface> = new Map<
             ["HTMLCanvasElement", "canvas"],
             ["HTMLImageElement", "img"],
             ["HTMLLabelElement", "label"],
+            ["HTMLFormElement", "form"],
+            ["HTMLAnchorElement", "a"],
             ["HTMLScriptElement", "script"],
         ] as const
     ).map(([name, tag]): [string, WindowInterface] => [

@@ -2474,8 +2474,8 @@ public:
                             state, mesh, standard_material, variant, standard_state.mesh_uniforms,
                             standard_state.material_uniforms, standard_state.uv_uniforms,
                             standard_state.uv_transform_uniforms,
-                            standard_state.mesh_opacity_uniforms, nullptr,
-                            standard_render_views(state, engine, standard_material),
+                            standard_state.mesh_opacity_uniforms, standard_state.parallax_uniforms,
+                            nullptr, standard_render_views(state, engine, standard_material),
                             area_light_emission_of(standard_state));
                     }
                     const InstanceStreams standard_streams =

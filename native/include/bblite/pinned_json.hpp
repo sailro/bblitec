@@ -82,16 +82,6 @@ template <class T> [[nodiscard]] js::Error class_error(const std::shared_ptr<T>&
     return value.to_string();
 }
 
-/** A dynamic value a `DOMString?` attribute stores (`textContent`): null and undefined are empty. */
-[[nodiscard]] inline std::string nullable_dom_string(const js::JsonValue& value) {
-    return value.is_null() || value.is_undefined() ? std::string{} : value.to_string();
-}
-
-/** A dynamic value a `[LegacyNullToEmptyString] DOMString` attribute stores (`innerText`). */
-[[nodiscard]] inline std::string legacy_null_dom_string(const js::JsonValue& value) {
-    return value.is_null() ? std::string{} : value.to_string();
-}
-
 /** A read the checker narrowed to `number` (`typeof x === "number"`, `x as number`). */
 [[nodiscard]] inline double json_number(const js::JsonValue& value) {
     if (!value.is_number())

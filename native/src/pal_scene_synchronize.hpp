@@ -352,7 +352,8 @@ Iteration<bool> prepare_scene_pipelines(Engine& engine,
 inline bool same_render_mesh_source(const upstream::RenderItem& left,
                                     const upstream::RenderItem& right) {
     return left.mesh == right.mesh && left.geometry == right.geometry &&
-           left.material.value == right.material.value;
+           left.material.value == right.material.value &&
+           left.material_build == right.material_build;
 }
 
 template <typename GpuMesh, typename ReleaseMesh, typename UploadItem>

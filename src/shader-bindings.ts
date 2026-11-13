@@ -119,6 +119,8 @@ export function demotableUniformBlocks(wgsl: string): string[] {
             "areaEmissionSlots",
             // Mesh opacity's per-mesh block, likewise past the four.
             "meshOpacity",
+            // The Standard parallax extension's block, likewise.
+            "parallaxParams",
         ].filter((name) => blocks.includes(name)),
         // The shadow receivers' per-light blocks: `shadowInfo_<light>` and
         // `csmInfo_<light>`, as `createShadowFragment` names them.

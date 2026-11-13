@@ -50,6 +50,9 @@
 #if BBLITE_MESH_OPACITY
 #include <bblite/upstream/mesh_opacity.hpp>
 #endif
+#if BBLITE_MATERIAL_PARALLAX_OCCLUSION
+#include <bblite/upstream/parallax_occlusion.hpp>
+#endif
 #if BBLITE_GPU_MORPH_STORAGE
 #include <bblite/upstream/morph_targets.hpp>
 #endif
@@ -773,6 +776,13 @@ const TextureData* material_slot_texture(const MaterialRecord& material,
         return standard_material ? &material.bump_texture : nullptr;
     case Source::standard_reflection:
         return standard_material ? &material.reflection_texture : nullptr;
+    case Source::parallax_height:
+#if BBLITE_MATERIAL_PARALLAX_OCCLUSION
+        return standard_material ? upstream::standard_parallax_height_texture(material)
+                                 : upstream::parallax_height_texture(material);
+#else
+        return nullptr;
+#endif
     // Scene-owned resources carry no record field. The two VAT rows
     // are the mesh's own, like the bone palette beside them.
     case Source::environment_cube:
@@ -1030,17 +1040,25 @@ PinnedPbrMaterialRow pinned_pbr_material_row(const Engine& engine, MaterialHandl
     if (std::any_of(states.begin(), states.end(), of_row)) {
         const bool blends = upstream::pbr_material_blends(drawn);
         const bool bent_normal = drawn.bent_normal_texture.has_image();
+        // `pbrParallaxOcclusionExt.detect`: active props, a nonzero height.
+#if BBLITE_MATERIAL_PARALLAX_OCCLUSION
+        const bool parallax = upstream::parallax_height_texture(drawn) != nullptr;
+#else
+        const bool parallax = false;
+#endif
         const auto composed = std::find_if(states.begin(), states.end(), [&](const auto& state) {
-            // A row keys bent-normal presence only under enableBentNormals.
+            // A row keys bent-normal presence only under enableBentNormals,
+            // parallax occlusion only where a setter is reached.
             return of_row(state) && state.blend == blends &&
                    state.plugin_signature == drawn.plugin_signature_index &&
                    state.base_color_factor_written == drawn.base_color_factor_written &&
-                   state.bent_normal_texture.value_or(bent_normal) == bent_normal;
+                   state.bent_normal_texture.value_or(bent_normal) == bent_normal &&
+                   state.parallax_occlusion.value_or(parallax) == parallax;
         });
         if (composed == states.end()) {
             row.refusal = "material " + std::to_string(row.index) +
-                          " is drawn in a blend, plugin, base-colour or bent-normal state "
-                          "generation did not compose";
+                          " is drawn in a blend, plugin, base-colour, bent-normal or parallax "
+                          "state generation did not compose";
             return row;
         }
         row.index = composed->row;
@@ -1400,6 +1418,17 @@ upstream::StandardUvTransformUniforms standard_uv_block(const MaterialRecord* ma
     upstream::write_standard_uv_transform(
         props, material != nullptr && upstream::standard_uv_inverted(features, *material), block);
     return block;
+}
+#endif
+
+#if BBLITE_MATERIAL_STANDARD_PARALLAX
+std::array<float, 16> standard_parallax_block(const MaterialRecord& material,
+                                              std::uint32_t features) {
+    const auto block = upstream::standard_parallax_params(
+        material, upstream::standard_material_props(material), features);
+    if (!block)
+        throw std::runtime_error("A Standard caster variant binds no parallax block.");
+    return *block;
 }
 #endif
 

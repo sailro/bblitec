@@ -209,10 +209,16 @@ test("a light read out of a record writes through its typed kind's setters", () 
         }
     `);
     assert.match(result.cpp, /\.lights, \(v_\w+\)\.second\)\.intensity = /);
-    assert.match(result.cpp, /bbl::set_light_direction_component\(v_engine, \(v_\w+\)\.second, 0u, /);
+    assert.match(
+        result.cpp,
+        /bbl::set_light_direction_component\(v_engine, \(v_\w+\)\.second, 0u, /,
+    );
     assert.match(result.cpp, /\.second\)\.diffuse_color = bbl::Color3\{/);
     assert.match(result.cpp, /\.second\)\.ground_color = bbl::Color3\{/);
-    assert.match(result.cpp, /bbl::set_hemispheric_light_direction\(v_engine, \(v_\w+->sky\)\.second, /);
+    assert.match(
+        result.cpp,
+        /bbl::set_hemispheric_light_direction\(v_engine, \(v_\w+->sky\)\.second, /,
+    );
 });
 
 test("a finally handler revoking an object URL completes without a thenable", () => {
@@ -21037,27 +21043,38 @@ test("fuses a mesh-material map/find and replaces an asset occlusion texture bef
     assert.doesNotMatch(result.cpp, /rebuild_material/);
 });
 
-test("refuses rebuildMaterial after native startup has begun", () => {
+const rebuildAfterStart = (register: string): string => `
+    import {
+        createEngine,
+        createPbrMaterial,
+        createSceneContext,
+        rebuildMaterial,
+        registerScene,
+        startEngine,
+    } from "@babylonjs/lite";
+    async function main() {
+        const engine = await createEngine({});
+        const scene = createSceneContext(engine);
+        const material = createPbrMaterial({});
+        ${register}
+        await startEngine(engine);
+        rebuildMaterial(scene, material);
+    }
+    void main();
+`;
+
+test("rebuildMaterial after startEngine rebuilds a registered scene's rows", () => {
+    const result = compileSource(
+        rebuildAfterStart("await registerScene(scene);"),
+    );
+    assert.ok(result.cpp.includes("bbl::rebuild_material("));
+    assert.ok(result.manifest.features.includes("material:runtime-rebuild"));
+});
+
+test("refuses rebuildMaterial after startup for a scene the program never registers", () => {
     assert.throws(
-        () =>
-            compileSource(`
-                import {
-                    createEngine,
-                    createPbrMaterial,
-                    createSceneContext,
-                    rebuildMaterial,
-                    startEngine,
-                } from "@babylonjs/lite";
-                async function main() {
-                    const engine = await createEngine({});
-                    const scene = createSceneContext(engine);
-                    const material = createPbrMaterial({});
-                    await startEngine(engine);
-                    rebuildMaterial(scene, material);
-                }
-                void main();
-            `),
-        /live GPU material resource replacement/,
+        () => compileSource(rebuildAfterStart("")),
+        /rebuilds a registered scene's renderables; this program registers none/,
     );
 });
 

@@ -2,6 +2,15 @@ import ts from "typescript";
 import type { DataLowerer } from "./data-lowering.js";
 import type { Value } from "./types.js";
 import { isMemberAccess } from "./syntax.js";
+import { libraryName } from "./symbols.js";
+import { holdsOnly } from "./type-facts.js";
+import type * as ObjectStatics from "./object-statics.js";
+
+/** The own-property walks a record initializer reads (`object-statics.ts`). */
+export type OwnPropertyWalks = Pick<
+    typeof ObjectStatics,
+    "ownArray" | "ownObjectEntries"
+>;
 
 /** Reached mutable query state invalidates earlier deployment-query folds. */
 export class RuntimeSearchParamsRequired extends Error {
@@ -63,6 +72,7 @@ export function deploymentSearchParamsValue(
 export function compileSearchParams(
     lowerer: DataLowerer,
     node: ts.NewExpression,
+    walks: OwnPropertyWalks,
 ): Value | undefined {
     const context = lowerer.context;
     if (context.libraryGlobal(node.expression) !== "URLSearchParams")
@@ -71,11 +81,57 @@ export function compileSearchParams(
     if (args.length !== 1)
         context.fail(
             node,
-            "Runtime URLSearchParams requires a string initializer.",
+            "Runtime URLSearchParams requires a string or record initializer.",
         );
-    return searchParamsValue(
-        lowerer,
-        lowerer.compileForSink(args[0]!, { kind: "string" }),
+    const init = args[0]!;
+    const initType = context.checker.getTypeAtLocation(init);
+    if (holdsOnly(initType, ["string"]))
+        return searchParamsValue(
+            lowerer,
+            lowerer.compileForSink(init, { kind: "string" }),
+        );
+    return recordSearchParams(lowerer, init, walks);
+}
+
+/**
+ * A record initializer: its own string properties, in property order, are
+ * the list (a key a conditional spread decides joins it while own).
+ */
+function recordSearchParams(
+    lowerer: DataLowerer,
+    init: ts.Expression,
+    { ownArray, ownObjectEntries }: OwnPropertyWalks,
+): Value {
+    const context = lowerer.context;
+    const owner = context.compileValue(init);
+    const pair = { kind: "vector", element: { kind: "string" } } as const;
+    const pairs = { kind: "vector", element: pair } as const;
+    const built = ownArray(context, owner, pairs, "entries", init);
+    const type = { kind: "search-params" } as const;
+    const params = (list: string): Value => {
+        context.reachJsData();
+        return {
+            ...lowerer.leafValue(
+                `${context.dataTypes.cppType(type)}::from_pairs(${list})`,
+                type,
+            ),
+            impure: true,
+        };
+    };
+    if (built) return params(built.cpp);
+    const entries = ownObjectEntries(context, owner, init);
+    if (!entries)
+        return context.fail(
+            init,
+            "Runtime URLSearchParams requires a string or a record of strings; sequences and other objects are not lowered.",
+        );
+    return params(
+        `std::vector<std::array<std::string, 2>>{${entries
+            .map(
+                ([key, value]) =>
+                    `{${context.cppString(key)}, ${lowerer.compileKnownValueForSink(value, { kind: "string" }, init)}}`,
+            )
+            .join(", ")}}`,
     );
 }
 
@@ -86,8 +142,18 @@ export function compileSearchParamsMethod(
     method: string,
 ): Value {
     const context = lowerer.context;
+    // A FormData's list is its own; only a query bag can be a URL's.
+    const callee = context.unwrap(call.expression);
+    const formData =
+        isMemberAccess(callee) &&
+        libraryName(
+            context.checker.getNonNullableType(
+                context.checker.getTypeAtLocation(callee.expression),
+            ),
+        ) === "FormData";
     if (
         searchParamsMutators.has(method) &&
+        !formData &&
         !context.options.runtimeSearchParams
     )
         throw new RuntimeSearchParamsRequired();
@@ -117,7 +183,6 @@ export function compileSearchParamsMethod(
         minimum,
         method === "has" || method === "delete" ? 2 : minimum,
     );
-    const callee = context.unwrap(call.expression);
     const pins = context.evaluationOrder.operandsToPin([
         isMemberAccess(callee) ? callee.expression : callee,
         ...call.arguments,

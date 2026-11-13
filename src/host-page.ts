@@ -347,16 +347,19 @@ export function hostPageFromDocument(
         delete others.rel;
         for (const [name, value] of Object.entries(others))
             if (name !== "type" || !/^(?:text\/css)?$/i.test(value))
-                refuse(`<link rel="stylesheet" ${name}="${value}"> is not represented.`);
+                refuse(
+                    `<link rel="stylesheet" ${name}="${value}"> is not represented.`,
+                );
         const path = href?.trim() ? hostPageUrlPath(page, href) : undefined;
-        const file = path === undefined ? undefined : hostPageSiteFile(page, path);
+        const file =
+            path === undefined ? undefined : hostPageSiteFile(page, path);
         if (!file) {
             refuse(
                 `<link rel="stylesheet" href="${href ?? ""}"> ${path === undefined ? "loads from another origin or no URL" : "names no file its site serves"}.`,
             );
             return;
         }
-        const text = readFileSync(file, "utf8").replace(/^﻿/, "");
+        const text = readFileSync(file, "utf8").replace(/^\uFEFF/, "");
         if (
             /url\s*\(/i.test(text) &&
             new URL(".", new URL(href!, hostPageUrl(page))).pathname !==

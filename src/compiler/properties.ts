@@ -2356,6 +2356,14 @@ function touchEventMember(
         : undefined;
 }
 /** The numbers an event's dispatch state holds, by DOM member. */
+/** A MessageEvent's own members, beyond Event's. */
+const MESSAGE_EVENT_MEMBERS: ReadonlySet<string> = new Set([
+    "data",
+    "origin",
+    "lastEventId",
+    "source",
+    "ports",
+]);
 const DOM_EVENT_NUMBERS: ReadonlyMap<string, string> = new Map([
     ["eventPhase", "phase"],
     ["timeStamp", "time_stamp"],
@@ -3226,6 +3234,16 @@ export class PropertyAccessLowerer {
                     cpp: `${event}.detail()`,
                 };
             }
+            // Nothing posts to a native window (it has no frames, opener or
+            // channels), so a listener the program types as a MessageEvent's
+            // receives only the events it constructs, which have none of a
+            // MessageEvent's own members.
+            if (
+                owner.kind === "custom-event" &&
+                MESSAGE_EVENT_MEMBERS.has(property) &&
+                this.declaredEventInterface(ownerExpression) === "MessageEvent"
+            )
+                return undefinedValue();
             if (
                 property === "target" ||
                 property === "currentTarget" ||
@@ -4400,10 +4418,13 @@ export class PropertyAccessLowerer {
                 },
             };
         // A retained element's own reads, an optional chain's link included.
+        const elementOwner =
+            this.context.ui.elementOfHandle(owner, expression.expression) ??
+            owner;
         const element =
-            owner.kind === "ui-element"
+            elementOwner.kind === "ui-element"
                 ? this.elementProperty(
-                      owner,
+                      elementOwner,
                       expression.name.text,
                       expression.expression,
                       expression,

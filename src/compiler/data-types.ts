@@ -792,6 +792,8 @@ const LIBRARY_OBJECT_KINDS: readonly (readonly [
     ["DOMRectReadOnly", "dom", { kind: "dom-rect" }],
     ["IdleDeadline", "dom", { kind: "idle-deadline" }],
     ["URLSearchParams", "dom", { kind: "search-params" }],
+    // A form entry list of strings is the same ordered name/value list.
+    ["FormData", "dom", { kind: "search-params" }],
     ["Date", "default", { kind: "date" }],
     ["RegExp", "default", { kind: "regexp" }],
     ["DateTimeFormat", "default", { kind: "date-time-format" }],

@@ -294,7 +294,7 @@ test("markup the host model cannot represent refuses, naming the page", () => {
                     [element("link", { rel: "stylesheet", href: "a.css" })],
                     [entryScript],
                 ),
-            /head element <link rel="stylesheet" href="a.css">/,
+            /<link rel="stylesheet" href="a.css"> names no file its site serves/,
         ],
         [() => page([], [entryScript, entryScript]), /several module scripts/],
         [
@@ -392,6 +392,41 @@ test("an external classic script runs the file the site serves at its URL", () =
         ["/loader.js", " async", "public", /attribute 'async'/],
     ] as const)
         assert.throws(() => read(src, attributes, publicDir), message);
+});
+
+test("a linked stylesheet is the file its site serves, in document order", () => {
+    const root = resolve("artifacts/test-host-page-linked-style");
+    mkdirSync(join(root, "public/nested"), { recursive: true });
+    writeFileSync(join(root, "entry.ts"), "globalThis.close();");
+    writeFileSync(join(root, "public/site.css"), "body { color: red; }");
+    writeFileSync(
+        join(root, "public/nested/art.css"),
+        "body { background: url(a.png); }",
+    );
+    const read = (href: string) => {
+        const path = join(root, "page.html");
+        writeFileSync(
+            path,
+            `<!doctype html><html><head><title>Linked</title>
+            <link rel="stylesheet" href="${href}"><style>p { color: blue; }</style>
+            </head><body><script type="module" src="/entry.ts"></script></body></html>`,
+        );
+        return readHostPage({ path, publicDir: join(root, "public") });
+    };
+    const sheets = read("/site.css").hostUi?.styleSheets ?? [];
+    assert.deepEqual(
+        sheets.map((sheet) => [sheet.text, sheet.file ?? null]),
+        [
+            ["body { color: red; }", join(root, "public/site.css")],
+            ["p { color: blue; }", null],
+        ],
+    );
+    assert.throws(() => read("/missing.css"), /names no file its site serves/);
+    // Its url() values would resolve against its own directory.
+    assert.throws(
+        () => read("/nested/art.css"),
+        /outside the page's directory/,
+    );
 });
 
 test("a module script loads the file its site serves at its URL, resolved against the page", () => {

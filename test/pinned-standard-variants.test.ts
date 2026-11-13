@@ -23,15 +23,17 @@ import { LoweringContext } from "../src/lowering/context.js";
 import { pinnedErrorCodeOf } from "../src/lowering/pinned-error.js";
 import { UpstreamSourceStore } from "../src/upstream-source.js";
 
-test("registers the pin's eleven Standard material extensions", async () => {
+test("registers the pin's twelve Standard material extensions", async () => {
     // Sorted by id — `_getStdExtsSorted` localeCompares — which is the
     // iteration order that decides fragment order and bind-group order.
     // `stdUvTransformExt` sorts first and contributes nothing to a material
     // `enableMaterialUvTransform` did not mark, which is what lets it be
-    // registered unconditionally beside the eight `_detect` ones.
+    // registered unconditionally beside the nine `_detect` ones.
     // `rectAreaStdExt` composes only for a word carrying its own bit, which
     // only enableRectAreaLights' scene context ORs in, and
     // `rectAreaEmissionStdExt` likewise only for the textured context's.
+    // `stdParallaxOcclusionExt` (setStandardParallaxOcclusion's) composes
+    // only for a material holding `_parallaxOcclusion`.
     // `stdSkeletonExt` is deliberately absent: upstream registers it only
     // through enableStandardSkeleton(), which no reached scene calls.
     // Deriving any material's features registers them first.
@@ -44,6 +46,7 @@ test("registers the pin's eleven Standard material extensions", async () => {
         [
             "0-std-uv-transform",
             "normal-map",
+            "parallax-occlusion",
             "rect-area-emission",
             "rect-area-light",
             "std-ambient",

@@ -985,7 +985,8 @@ void arc_rotate_pointer_down(
     bool& is_dragging,
     bool& is_panning,
     double button,
-    bool touch);
+    bool touch,
+    const PlatformMouseEvent& event);
 void arc_rotate_pointer_move(
     CameraRecord& camera,
     bool& is_dragging,
@@ -1058,7 +1059,7 @@ js::Callback<void()> attach_control(Engine& engine, CameraHandle handle, const S
     control->should_handle_pointer_down = std::move(options.should_handle_pointer_down);
     control->external_drag_active = std::move(options.external_drag_active);
     control->external_pick_pending = std::move(options.external_pick_pending);
-    control->pointer_down = [pointer = control.get(), camera_record = &camera](double button, bool touch) {
+    control->pointer_down = [pointer = control.get(), camera_record = &camera](double button, bool touch, [[maybe_unused]] const PlatformMouseEvent& event) {
         [[maybe_unused]] auto& camera = *camera_record;
         auto& control = *pointer;
         auto& is_dragging = control.dragging;
@@ -1100,7 +1101,8 @@ void arc_rotate_pointer_down(
     bool& is_dragging,
     bool& is_panning,
     double button,
-    bool touch) {
+    bool touch,
+    [[maybe_unused]] const PlatformMouseEvent& event) {
 ${mutations.pointerDown()}
 }
 

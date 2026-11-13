@@ -686,6 +686,89 @@ bool ui_matches_element(Engine& engine, UiElementHandle element,
     return !ui_query_elements(engine, element, selectors, UiQueryMode::Matches).empty();
 }
 
+js::Nullable<UiElementHandle> ui_form_named_item(Engine& engine, UiElementHandle form,
+                                                 const std::string& name) {
+    if (name.empty())
+        return std::nullopt;
+    const RetainedUiSelectorTree tree{engine};
+    // The listed elements a form's controls collection holds; an image
+    // button is not one. Forms do not nest, so its descendants are its own.
+    const auto listed = [&](UiElementHandle node) {
+        if (!tree.element(node) || ui_element(engine, node).svg_namespace)
+            return false;
+        for (const char* tag :
+             {"button", "fieldset", "input", "object", "output", "select", "textarea"})
+            if (tree.matches_tag(node, tag))
+                return !(std::string_view(tag) == "input" &&
+                         ascii_iequals(tree.attribute(node, "type").value_or(""), "image"));
+        return false;
+    };
+    js::Nullable<UiElementHandle> found;
+    const auto visit = [&](const auto& self, UiElementHandle parent) -> void {
+        for (std::size_t index = 0; index < tree.child_count(parent); ++index) {
+            const auto candidate = tree.child(parent, index);
+            if (listed(candidate) && (tree.attribute(candidate, "id") == name ||
+                                      tree.attribute(candidate, "name") == name)) {
+                if (found)
+                    throw js::make_dom_exception(
+                        "form.elements.namedItem('" + name +
+                            "') names several controls, a RadioNodeList, which is not "
+                            "represented natively.",
+                        "NotSupportedError");
+                found = candidate;
+            }
+            self(self, candidate);
+        }
+    };
+    visit(visit, form);
+    return found;
+}
+
+std::vector<std::array<std::string, 2>> ui_form_entries(Engine& engine, UiElementHandle form) {
+    const RetainedUiSelectorTree tree{engine};
+    std::vector<std::array<std::string, 2>> entries;
+    // HTML's "constructing the entry list" for the controls retained
+    // elements hold: an enabled control with a name, in tree order; a button
+    // only as the submitter, which this list has none of.
+    const auto visit = [&](const auto& self, UiElementHandle parent) -> void {
+        for (std::size_t index = 0; index < tree.child_count(parent); ++index) {
+            const auto node = tree.child(parent, index);
+            if (!tree.element(node))
+                continue;
+            const auto& record = ui_element(engine, node);
+            const std::string name{tree.attribute(node, "name").value_or("")};
+            const std::string type =
+                js::string_lower(std::string(tree.attribute(node, "type").value_or("")));
+            if (tree.matches_tag(node, "input") && type == "file")
+                throw js::make_dom_exception(
+                    "FormData of a file input is not represented natively.", "NotSupportedError");
+            const bool named =
+                !record.svg_namespace && !name.empty() && !ui_activation_disabled(record);
+            if (named && tree.matches_tag(node, "input")) {
+                if (type == "checkbox" || type == "radio") {
+                    if (ui_get_checked(engine, node))
+                        entries.push_back(
+                            {name, std::string(tree.attribute(node, "value").value_or("on"))});
+                } else if (type != "submit" && type != "reset" && type != "button" &&
+                           type != "image") {
+                    entries.push_back({name, ui_get_form_value(engine, node)});
+                }
+            } else if (named && tree.matches_tag(node, "textarea")) {
+                entries.push_back({name, ui_get_form_value(engine, node)});
+            } else if (named && tree.matches_tag(node, "select")) {
+                for (const auto option : record.children)
+                    if (tree.matches_tag(option, "option") &&
+                        !ui_activation_disabled(ui_element(engine, option)) &&
+                        ui_get_selected(engine, option))
+                        entries.push_back({name, ui_get_form_value(engine, option)});
+            }
+            self(self, node);
+        }
+    };
+    visit(visit, form);
+    return entries;
+}
+
 std::string ui_selector_value(std::string value, char quote) {
     // The first character that can end the quoted string decides; CSS
     // preprocessing turns CR and FF into line feeds.

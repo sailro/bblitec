@@ -9,6 +9,7 @@ import { GizmoLowerer } from "../src/lowering/gizmo-lowerer.js";
 import { PickingLowerer } from "../src/lowering/picking-lowerer.js";
 import {
     optionalNativeFixtureTools,
+    nativeFixtureVcpkgRoot,
     runNativeFixtureCompiler,
     sceneBackendSource,
 } from "./native-fixture.js";
@@ -210,9 +211,17 @@ test(
             join(output, "include"),
             "test/fixtures/js-callback/editor-pointer-check.cpp",
             ...sources,
+            join(nativeFixtureVcpkgRoot, "lib/SDL3.lib"),
         ]);
         assert.match(
-            execFileSync(executable, [], { encoding: "utf8" }),
+            execFileSync(executable, [], {
+                encoding: "utf8",
+                // The press event reads SDL's modifier and window state.
+                env: {
+                    ...process.env,
+                    PATH: `${join(nativeFixtureVcpkgRoot, "bin")};${process.env.PATH ?? ""}`,
+                },
+            }),
             /editor-pointer-check: ok/,
         );
     },

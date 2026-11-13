@@ -33,7 +33,8 @@ struct CameraPointerState {
     // button of a chord and pointerup when the last one is released, so the
     // handlers see one gesture per chord.
     SDL_MouseButtonFlags buttons = 0;
-    std::map<std::pair<std::uint64_t, std::uint64_t>, std::array<double, 2>> touches;
+    // Held touches: client x and y and the PointerEvent pointerId.
+    std::map<std::pair<std::uint64_t, std::uint64_t>, std::array<double, 3>> touches;
 };
 
 struct SurfaceCameraPointerState {
@@ -41,11 +42,28 @@ struct SurfaceCameraPointerState {
     CameraHandle captured{};
 };
 
+/**
+ * The PointerEvent of a mouse press the pin's pointer-down handler takes, as
+ * the DOM path spells it (`set_dom_pointer_context`).
+ */
+inline PlatformMouseEvent camera_mouse_press(const SDL_Event& event, SDL_MouseButtonFlags held,
+                                             double window_to_client) {
+    PlatformMouseEvent press{
+        .button = static_cast<double>(event.button.button - 1),
+        .buttons = dom_mouse_buttons(held),
+        .client_x = event.button.x * window_to_client,
+        .client_y = event.button.y * window_to_client,
+        .pressure = 0.5,
+    };
+    set_dom_pointer_context(window_to_client, press, event.button.windowID);
+    return press;
+}
+
 template <class State, class Deliver>
-inline void translate_camera_touch(const SDL_Event& event, State& state, double touch_width,
-                                   double touch_height,
-                                   const std::function<bool()>& should_handle_pointer_down,
-                                   Deliver&& deliver) {
+inline void translate_camera_touch(
+    const SDL_Event& event, State& state, double touch_width, double touch_height,
+    const std::function<bool(const PlatformMouseEvent&)>& should_handle_pointer_down,
+    Deliver&& deliver) {
     const auto key = std::pair{event.tfinger.touchID, event.tfinger.fingerID};
     const std::array<double, 2> point{event.tfinger.x * touch_width,
                                       event.tfinger.y * touch_height};
@@ -55,14 +73,30 @@ inline void translate_camera_touch(const SDL_Event& event, State& state, double 
                           first->second[1] - second->second[1]);
     };
     if (event.type == SDL_EVENT_FINGER_DOWN) {
-        if (should_handle_pointer_down && !should_handle_pointer_down()) {
+        // The lowest touch pointerId no held contact has, as the DOM path numbers them.
+        double id = dom_first_touch_pointer_id;
+        while (std::any_of(state.touches.begin(), state.touches.end(),
+                           [id](const auto& held) { return held.second[2] == id; }))
+            ++id;
+        PlatformMouseEvent press{
+            .button = 0.0,
+            .buttons = 1.0,
+            .client_x = point[0],
+            .client_y = point[1],
+            .pointer_type = "touch",
+            .pointer_id = id,
+            .is_primary = state.touches.empty(),
+            .pressure = static_cast<double>(event.tfinger.pressure),
+        };
+        static_cast<PlatformModifierKeys&>(press) = dom_modifiers(SDL_GetModState());
+        if (should_handle_pointer_down && !should_handle_pointer_down(press)) {
             state.dragging = false;
             state.panning = false;
             state.buttons = 0;
             state.touches.clear();
             return;
         }
-        state.touches.insert_or_assign(key, point);
+        state.touches.insert_or_assign(key, std::array{point[0], point[1], id});
         state.dragging = state.touches.size() == 1;
         state.panning = false;
         return;
@@ -82,7 +116,8 @@ inline void translate_camera_touch(const SDL_Event& event, State& state, double 
         translated.motion.yrel = static_cast<float>(point[1] - found->second[1]);
     } else if (state.touches.size() == 2) {
         const double previous = span();
-        found->second = point;
+        found->second[0] = point[0];
+        found->second[1] = point[1];
         const double current = span();
         if (previous <= 0 || current <= 0)
             return;
@@ -90,14 +125,16 @@ inline void translate_camera_touch(const SDL_Event& event, State& state, double 
         // A proportional gesture produces the same zoom at every DPI.
         translated.wheel.y = static_cast<float>(touch_wheel_delta_y(previous, current) / -100);
     }
-    found->second = point;
+    found->second[0] = point[0];
+    found->second[1] = point[1];
     deliver(translated);
     return;
 }
 
 inline void handle_owned_camera_pointer_event(const SDL_Event& event,
                                               CameraControlAttachment& state,
-                                              double touch_width = 1, double touch_height = 1) {
+                                              double touch_width = 1, double touch_height = 1,
+                                              double window_to_client = 1) {
     if (event.type == SDL_EVENT_WINDOW_FOCUS_LOST) {
         state.dragging = false;
         state.panning = false;
@@ -133,7 +170,8 @@ inline void handle_owned_camera_pointer_event(const SDL_Event& event,
         // SDL numbers the buttons from one; PointerEvent.button from zero.
         const double button = static_cast<double>(event.button.button - 1);
         if (pressed && idle && state.listens("pointerdown")) {
-            state.pointer_down(button, false);
+            state.pointer_down(button, false,
+                               camera_mouse_press(event, state.buttons, window_to_client));
         } else if (!pressed && state.buttons == 0 && state.listens("pointerup")) {
             state.pointer_up();
         }
@@ -158,7 +196,7 @@ inline void handle_owned_camera_pointer_event(const SDL_Event& event,
 
 inline void handle_camera_pointer_event(const SDL_Event& event, CameraRecord& camera,
                                         CameraPointerState& state, double touch_width = 1,
-                                        double touch_height = 1) {
+                                        double touch_height = 1, double window_to_client = 1) {
     if (event.type == SDL_EVENT_WINDOW_FOCUS_LOST) {
         state = {};
         return;
@@ -194,8 +232,9 @@ inline void handle_camera_pointer_event(const SDL_Event& event, CameraRecord& ca
             if (free) {
                 upstream::free_camera_pointer_down(state.dragging, button);
             } else {
-                upstream::arc_rotate_pointer_down(camera, state.dragging, state.panning, button,
-                                                  false);
+                upstream::arc_rotate_pointer_down(
+                    camera, state.dragging, state.panning, button, false,
+                    camera_mouse_press(event, state.buttons, window_to_client));
             }
         } else if (!pressed && state.buttons == 0) {
             if (free) {
@@ -274,7 +313,8 @@ inline void dispatch_surface_camera_pointer([[maybe_unused]] Engine& engine, con
         }
 #endif
         handle_owned_camera_pointer_event(event, *control, engine.canvas_client_width,
-                                          engine.canvas_client_height);
+                                          engine.canvas_client_height,
+                                          engine.canvas_window_to_client_scale);
     }
     if (!owned.empty())
         return;
@@ -283,7 +323,8 @@ inline void dispatch_surface_camera_pointer([[maybe_unused]] Engine& engine, con
         if (surfaces.captured.value < engine.cameras.size()) {
             const auto index = surfaces.captured.value;
             handle_camera_pointer_event(event, engine.cameras[index], surfaces.pointer,
-                                        engine.canvas_client_width, engine.canvas_client_height);
+                                        engine.canvas_client_width, engine.canvas_client_height,
+                                        engine.canvas_window_to_client_scale);
             if (!surfaces.pointer.dragging && !surfaces.pointer.panning &&
                 surfaces.pointer.buttons == 0 && surfaces.pointer.touches.empty())
                 surfaces.captured = {};
@@ -310,7 +351,8 @@ inline void dispatch_surface_camera_pointer([[maybe_unused]] Engine& engine, con
                 continue;
             const auto index = scene->camera.value;
             handle_camera_pointer_event(event, engine.cameras[index], surfaces.pointer,
-                                        engine.canvas_client_width, engine.canvas_client_height);
+                                        engine.canvas_client_width, engine.canvas_client_height,
+                                        engine.canvas_window_to_client_scale);
             if (surfaces.pointer.dragging || surfaces.pointer.panning ||
                 surfaces.pointer.buttons != 0 || !surfaces.pointer.touches.empty())
                 surfaces.captured = scene->camera;
@@ -322,7 +364,8 @@ inline void dispatch_surface_camera_pointer([[maybe_unused]] Engine& engine, con
     (void)surfaces;
     if (primary) {
         handle_camera_pointer_event(event, *primary, primary_state, engine.canvas_client_width,
-                                    engine.canvas_client_height);
+                                    engine.canvas_client_height,
+                                    engine.canvas_window_to_client_scale);
     }
 }
 

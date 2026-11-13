@@ -295,6 +295,7 @@ include Bullet/Havok solver differences ([contract](fidelity.md#physics-contract
 | 346 | <img src="images/scenes/scene346.png" alt="Scene 346 rendering" width="160"> | 0.000/0.000 | pixel‑perfect | Node Material Geometry Outputs (Right-Handed) |
 | 347 | <img src="images/scenes/scene347.png" alt="Scene 347 rendering" width="160"> | 0.000/0.000 | 0.000/0.000 | Sponza (Right-Handed) |
 | 348 | <img src="images/scenes/scene348.png" alt="Scene 348 rendering" width="160"> | pixel‑perfect | pixel‑perfect | Screen-Space Ambient Occlusion; half-resolution XeGTAO, temporal reset, PBR diffuse IBL |
+| 349 | <img src="images/scenes/scene349.png" alt="Scene 349 rendering" width="160"> | 0.057/0.293 | 0.057/0.293 | Parallax Occlusion Mapping; Standard and PBR, live texture, POM and depth rebuilds. UI residual; canvas-only: pixel-perfect on both backends. |
 | 353 | <img src="images/scenes/scene353.png" alt="Scene 353 rendering" width="160"> | pixel‑perfect | pixel‑perfect | Bent Normals (Right-Handed) |
 | 354 | <img src="images/scenes/scene354.png" alt="Scene 354 rendering" width="160"> | 0.000/0.000 | 0.000/0.000 | Mesh Opacity; Standard/PBR fades, OPAQUE/MASK policies, full shadows at zero, alpha-to-coverage |
 

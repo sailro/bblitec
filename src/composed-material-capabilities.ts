@@ -73,6 +73,10 @@ interface ComposedMaterialCapabilities {
      * which the record's reflection_texture needs a mesh slot.
      */
     standardReflection: boolean;
+    /** A variant of either family binds the parallax occlusion height pair. */
+    parallaxOcclusion: boolean;
+    /** A Standard variant binds the parallax extension's own block (`parallaxParams`). */
+    standardParallaxParams: boolean;
     /** Every group-1 binding name the PBR variants declare. */
     pbrBindingNames: ReadonlySet<string>;
 }
@@ -124,6 +128,10 @@ export function composedMaterialCapabilities(
         ),
         standardBump: standardBindingNames.has("bT"),
         standardReflection: standardBindingNames.has("rT"),
+        parallaxOcclusion:
+            pbrBindingNames.has("parallaxHeightTexture") ||
+            standardBindingNames.has("parallaxHeightTexture"),
+        standardParallaxParams: standardBindingNames.has("parallaxParams"),
         pbrBindingNames,
     };
 }

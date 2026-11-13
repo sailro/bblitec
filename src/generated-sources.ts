@@ -133,6 +133,14 @@ export const generatedSourceRules: readonly GeneratedSourceRule[] = [
     { source: "upstream/src/engine_dispose.cpp", features: ["engine:dispose"] },
     { source: "upstream/src/scene_core.cpp", features: [] },
     { source: "upstream/src/mesh_opacity.cpp", features: ["mesh:opacity"] },
+    {
+        source: "upstream/src/parallax_occlusion.cpp",
+        features: ["material:parallax-occlusion"],
+    },
+    {
+        source: "upstream/src/material_rebuild.cpp",
+        features: ["material:runtime-rebuild"],
+    },
     { source: "upstream/src/variant_data.cpp", features: [] },
     { source: "upstream/src/text_data.cpp", features: ["text:data"] },
     {
@@ -330,7 +338,11 @@ export const generatedSourceRules: readonly GeneratedSourceRule[] = [
     },
     {
         source: "upstream/src/material_views.cpp",
-        features: ["material:no-color-view", ...shadowGeneratorFeatures],
+        features: [
+            "material:no-color-view",
+            "material:ubo-dirty",
+            ...shadowGeneratorFeatures,
+        ],
     },
     {
         source: "upstream/src/splat_geometry.cpp",
@@ -362,6 +374,7 @@ export const generatedSourceRules: readonly GeneratedSourceRule[] = [
             "material:standard-diffuse-file-texture",
             "material:standard-emissive-file-texture",
             "material:standard-lightmap",
+            "material:standard-bump",
             "material:standard-uv-transform",
             "material:plugin-index",
             "material:plugin-textures",

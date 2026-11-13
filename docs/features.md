@@ -122,7 +122,7 @@ Rules:
 | JSON            | parse (reviver), stringify                                                                                                                     | Replacers, cycles, Map/Set values                                                                                  |
 | Date            | ISO parsing, getters, `setTime`, `Date.UTC`, UTC and local field setters, `new Date(y, m, ...)`                                                | Legacy formats                                                                                                     |
 | Functions       | `call`, `apply`, `Reflect.apply` (listed or array-literal arguments), `bind` with a receiver and bound arguments, tuple rest parameters        | `bind` of `unknown`/generic signatures, stored optional tuple rests, library prototype methods on other receivers  |
-| URL             | `URL`, `URLSearchParams` (get/has/set/delete), `AbortController`, `DOMException`                                                               | IDNA hosts (TypeError), `append`/`sort`, `AbortSignal.timeout`/`any`                                               |
+| URL             | `URL`, `URLSearchParams` (string or record initializer; get/has/set/delete), `AbortController`, `DOMException`                                 | IDNA hosts (TypeError), `append`/`sort`, `AbortSignal.timeout`/`any`                                               |
 | Binary          | ArrayBuffer, SharedArrayBuffer, Atomics, DataView, all typed arrays incl. BigInt64, `crypto.getRandomValues` (integer arrays)                  | `from` over buffers/numbers/strings, element writes through a union, `Atomics.wait`                                |
 | Reflection      | Finite record Proxy get/set traps, `Reflect.get`, Symbols                                                                                      | Other traps, FinalizationRegistry                                                                                  |
 
@@ -138,10 +138,10 @@ Rules:
 
 - Reached URLs and base64 data become packaged assets. `--public-dir` maps deployment-relative assets,
   `--public-url` serves unmapped root-relative ones, `--site-url` sets the base (default `http://localhost/`);
-  registry scenes use the pinned `lab/public`. Runtime asset URLs require a finite inferred local candidate set;
-  unknown keys and percent-encoded bodies refuse. Inference follows closed local Map registries (`set` calls or
-  constructor entries), member and `push` writes, array callback parameters, awaited values, `Promise.all` and the
-  methods of a record a call built.
+  registry scenes use the pinned `lab/public`. Runtime asset URLs require a finite inferred candidate set: local
+  files, or absolute HTTP(S) URLs packaged as their literals are; unknown keys and percent-encoded bodies refuse.
+  Inference follows closed local Map registries (`set` calls or constructor entries), member and `push` writes, array
+  callback parameters, awaited values, `Promise.all` and the methods of a record a call built.
 - `fetch` (application realm): absolute HTTP(S), method, string headers, body, static cache mode, `keepalive`, `signal`; streamed
   `body` reader. Known asset fetches use packaged responses. A `typeof fetch` wrapper forwards its runtime `RequestInit`
   (signal, headers). Request objects, teeing and Headers iteration refuse.
@@ -210,6 +210,7 @@ cancel })` is a program source; `new Response(stream, { status, statusText, head
 - ArcRotate/Free cameras, orthographic projection, viewports and SDL controls are live; `attachControl` variants keep
   independent attachments.
 - ArcRotate limits read back as `setCameraLimits` wrote them, `undefined` until set.
+- `shouldHandlePointerDown` takes the press's PointerEvent (mouse or touch), as the DOM path spells one.
 - Window realms: keys reach camera controls after a primary press on the canvas gives it focus.
 - Parented/geospatial cameras, high-precision matrices and floating origin refuse public matrix caches; later
   orthographic plane writes refuse.
@@ -294,14 +295,21 @@ composition and source albedo reads with `KHR_texture_transform` refuse.
   `light.rotationQuaternion.set` composes with its transform.
 - Standard, PBR (clearcoat, sheen, iridescence, anisotropy, transmission), Grid, shader and node materials.
   PBR field writes accept a material narrowed by `isPbrMaterial`; `baseColorTexture` replacement takes a loaded, solid
-  or stored file texture before scene registration.
+  or stored file texture before scene registration, or after `startEngine` (and in callbacks), where it binds at the
+  next `rebuildMaterial`; so does `normalTexture` on a material created with one.
+  Parallax occlusion (`setPbrParallaxOcclusion`, `setStandardParallaxOcclusion`): the pin's validation and uniform
+  writer over an RGBA8 loaded or pixels height texture (other sources throw); props and textures set later take effect
+  at `rebuildMaterial` (PBR scalars also at `markMaterialUboDirty`). `setStandardBumpTexture` takes any stored texture
+  or null.
   Bent normals: `enableBentNormals()` is an unconditional call before scene registration; `bentNormalTexture` writes
   on loaded or created PBR materials precede registration and refuse without it.
   `createPbrMaterial()` accepts omitted options and uses the pinned texture/factor defaults; `baseColorTexture` may
   be a pixels texture. `setPbrAlphaCutoff` takes a static cutoff on a created material before registration and refuses
   on an `alphaBlend` one.
-- Rebuild/replacement after binding refuses; direct factor-array writes do not bump UBO versions, except Standard
-  `diffuseColor` after `enableMaterialTracking` (re-read each frame).
+- `rebuildMaterial` of a registered scene rebuilds, at the next frame, every mesh row drawing the material (its views
+  unless `rebuildViews: false`); its completion is a promise where a PBR mesh rebuilds. `rebuildFrameGraph` outside
+  setup refuses. Other replacement after binding refuses; direct factor-array writes do not bump UBO versions, except
+  Standard `diffuseColor` after `enableMaterialTracking` (re-read each frame).
 - Shader materials: up to 16 vertex/fragment 2D/array sampler pairs, storage buffers, `get/setShaderUniform` by runtime name,
   `enableShaderUniformRangeUpdates`. Runtime resource replacements refresh shared GPU bindings;
   render-target colour and sampled depth textures rebind per draw. Template text and plugin `getCustomCode`

@@ -1624,6 +1624,8 @@ export class PlatformCalls {
                     : {}),
             };
         }
+        const namedItem = this.ui.compileFormNamedItem(call);
+        if (namedItem) return namedItem;
         const receiverMember = namedMember(
             this.context.checker,
             callee.expression,

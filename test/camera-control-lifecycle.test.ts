@@ -203,7 +203,7 @@ for (const kind of ["arc", "free"] as const) {
                 clientY: y,
             });
             cpp.push(
-                "dispatch([](auto& control) { control.pointer_down(0.0, false); });",
+                "dispatch([](auto& control) { control.pointer_down(0.0, false, bbl::PlatformMouseEvent{}); });",
             );
         };
         const move = (dx: number, dy: number) => {

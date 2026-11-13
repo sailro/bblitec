@@ -80,6 +80,7 @@ test(
 #define BBLITE_STANDARD_SKELETON 0
 #define BBLITE_STANDARD_VERTEX_ALPHA 0
 #define BBLITE_RECT_AREA_LIGHTS 0
+#define BBLITE_MATERIAL_PARALLAX_OCCLUSION 0
 #include <bblite/runtime.hpp>
 #include <cassert>
 namespace bbl::upstream {
@@ -93,12 +94,12 @@ struct RenderDrawCommand { struct Item {
 using RenderItem = RenderDrawCommand::Item;
 constexpr unsigned pbr_variant_material_count = 4;
 constexpr std::array<std::uint32_t, 1> pbr_scene_material_indices{0};
-struct PbrMaterialStateRow { std::uint32_t source_row; bool blend; std::uint8_t plugin_signature; bool base_color_factor_written; std::optional<bool> bent_normal_texture; std::uint32_t row; };
+struct PbrMaterialStateRow { std::uint32_t source_row; bool blend; std::uint8_t plugin_signature; bool base_color_factor_written; std::optional<bool> bent_normal_texture; std::optional<bool> parallax_occlusion; std::uint32_t row; };
 // Row 0's own state, its blending state, its state holding plugin list 1
 // and its state holding a bent normal texture.
 constexpr std::array<PbrMaterialStateRow, 4> pbr_material_state_rows{{
-    {0u, false, 0u, false, false, 0u}, {0u, true, 0u, false, false, 1u}, {0u, false, 1u, false, false, 2u},
-    {0u, false, 0u, false, true, 3u}}};
+    {0u, false, 0u, false, false, std::nullopt, 0u}, {0u, true, 0u, false, false, std::nullopt, 1u},
+    {0u, false, 1u, false, false, std::nullopt, 2u}, {0u, false, 0u, false, true, std::nullopt, 3u}}};
 ${pbrMaterialBlendsCpp(new LoweringContext())}
 constexpr std::size_t pinned_msh_receive_shadows = ${bits.MSH_RECEIVE_SHADOWS};
 constexpr std::size_t pinned_msh_has_skeleton = ${bits.MSH_HAS_SKELETON};

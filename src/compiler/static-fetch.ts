@@ -428,7 +428,19 @@ function discoverPackagedCandidates(
     accepts: (source: string) => boolean,
     unpackaged?: (url: string) => boolean,
 ): PackagedDiscovery | undefined {
-    const selected = context.compileValue(expression);
+    const compiled = context.compileValue(expression);
+    // A string-literal union is stored as its enum: the key is its spelling.
+    const selected =
+        compiled.kind === "data" && compiled.dataType?.kind === "enum"
+            ? context.dataLowerer.leafValue(
+                  context.dataLowerer.compileKnownValueForSink(
+                      compiled,
+                      { kind: "string" },
+                      expression,
+                  ),
+                  { kind: "string" },
+              )
+            : compiled;
     if (
         selected.staticString !== undefined ||
         !isStringValue(selected) ||
@@ -448,6 +460,13 @@ function discoverPackagedCandidates(
                 readAssetBytesSync(source, context.options.fileName);
                 return [{ logicalSource, source }];
             } catch {
+                // The browser fetches a remote candidate; natively only its
+                // packaged bytes exist, so one generation cannot read refuses.
+                if (domain && isRemoteCandidate(context, logicalSource))
+                    context.fail(
+                        expression,
+                        `Packaged URL provenance: candidate '${logicalSource}' is a remote file generation cannot read.`,
+                    );
                 if (domain) return [];
                 const directory = resolve(
                     dirname(resolve(context.options.fileName)),
@@ -497,6 +516,19 @@ function discoverPackagedCandidates(
         selected,
         url: selected,
     };
+}
+
+/** An absolute HTTP(S) URL of another origin than the deployment's. */
+function isRemoteCandidate(
+    context: StaticFetchContext,
+    source: string,
+): boolean {
+    if (!/^https?:[/][/]/i.test(source)) return false;
+    try {
+        return new URL(source).origin !== deploymentUrl(context.options).origin;
+    } catch {
+        return false;
+    }
 }
 
 export function compileStaticFetchMethod(

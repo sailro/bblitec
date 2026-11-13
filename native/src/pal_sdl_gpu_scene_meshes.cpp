@@ -181,6 +181,10 @@ GpuMeshSlotMembers mesh_slot_members(upstream::MaterialTextureSource source) {
     case Source::standard_reflection:
         return {&GpuMesh::standard_reflection, &GpuMesh::standard_reflection_sampler};
 #endif
+#if BBLITE_MATERIAL_PARALLAX_OCCLUSION
+    case Source::parallax_height:
+        return {&GpuMesh::parallax_height, &GpuMesh::parallax_height_sampler};
+#endif
     default:
         return {};
     }
@@ -386,6 +390,10 @@ void release_gpu_mesh_resources([[maybe_unused]] GpuState* state, GpuMeshResourc
 #if BBLITE_MESH_OPACITY
     for (GpuMesh::MeshOpacityStorage& binding : mesh.mesh_opacity)
         state->kept_buffers.release(state->device, binding.buffer);
+#endif
+#if BBLITE_MATERIAL_STANDARD_PARALLAX
+    if (mesh.standard_parallax_storage)
+        state->kept_buffers.release(state->device, mesh.standard_parallax_storage);
 #endif
     if (mesh.shared_composed_textures) {
         release_shared_user(mesh.shared_composed_textures,
@@ -663,6 +671,7 @@ GpuMesh upload_sdl_gpu_scene_mesh(GpuState& state, Engine& engine, const upstrea
             std::find_if(state.shared_composed_material_textures.begin(),
                          state.shared_composed_material_textures.end(), [&](const auto& candidate) {
                              return candidate->material.value == item.material.value &&
+                                    candidate->material_build == item.material_build &&
                                     candidate->standard_material == standard_material;
                          });
         if (found != state.shared_composed_material_textures.end()) {
@@ -670,6 +679,7 @@ GpuMesh upload_sdl_gpu_scene_mesh(GpuState& state, Engine& engine, const upstrea
         } else {
             auto created = std::make_unique<SharedComposedMaterialTextures>(state.device);
             created->material = item.material;
+            created->material_build = item.material_build;
             created->standard_material = standard_material;
             for (const upstream::MaterialTextureSlot& slot_row : upstream::material_texture_slots) {
                 if (slot_row.slot == upstream::material_texture_no_slot) {

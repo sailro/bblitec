@@ -58,7 +58,10 @@ test("recursive mixed array aliases are documents instead of recursing during ty
         values.set("tree", ["a", ["b", ["c"]]]);
         if (JSON.stringify(values.get("tree")) !== '["a",["b",["c"]]]') throw new Error("nested");
     `);
-    assert.match(result.cpp, /bbl::js::Map<std::string, bbl::js::JsonValue> v_values/);
+    assert.match(
+        result.cpp,
+        /bbl::js::Map<std::string, bbl::js::JsonValue> v_values/,
+    );
 });
 
 test("pinned shader recipe types include mixed options and WebGPU peer declarations", () => {

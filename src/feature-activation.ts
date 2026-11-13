@@ -1265,6 +1265,27 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
             "src/material/standard/set-std-lightmap.ts + fragments/std-lightmap-fragment.ts",
         consumers: CMAKE,
     },
+    "material:standard-bump": {
+        provenance:
+            "src/material/standard/set-std-bump.ts + fragments/normal-map-fragment.ts",
+        consumers: CMAKE,
+    },
+    "material:ubo-dirty": {
+        provenance: "src/material/material-dirty.ts markMaterialUboDirty",
+        consumers: CMAKE,
+    },
+    "material:runtime-rebuild": {
+        provenance:
+            "src/material/material-rebuild.ts rebuildMaterial after startEngine",
+        consumers: CMAKE,
+    },
+    "material:parallax-occlusion": {
+        provenance:
+            "src/material/pbr/set-parallax-occlusion.ts + " +
+            "src/material/standard/set-std-parallax-occlusion.ts + " +
+            "src/material/parallax/parallax-occlusion.ts",
+        consumers: CMAKE,
+    },
     "material:standard-diffuse-file-texture": {
         provenance:
             "src/material/standard/standard-material.ts diffuseTexture + " +
@@ -2673,6 +2694,37 @@ function capabilityRows(
                 "material_texture_slots.hpp",
                 "loader flag",
             ],
+        ),
+        row(
+            "BBLITE_MATERIAL_PARALLAX_OCCLUSION",
+            "capability",
+            composed.parallaxOcclusion,
+            composed.parallaxOcclusion
+                ? "a composed PBR or Standard variant samples the parallax " +
+                      "height texture"
+                : "no composed variant composes parallax occlusion",
+            "src/material/pbr/fragments/parallax-occlusion-fragment.ts " +
+                "pbrParallaxOcclusionExt and src/material/standard/fragments/" +
+                "std-parallax-occlusion-fragment.ts stdParallaxOcclusionExt " +
+                "compose the marching for a material whose " +
+                "src/material/parallax/parallax-occlusion.ts props name a " +
+                "height texture; upstream-lower derives the define and the " +
+                "height slot row from the composed set",
+            ["render_capabilities.hpp", "material_texture_slots.hpp"],
+        ),
+        row(
+            "BBLITE_MATERIAL_STANDARD_PARALLAX",
+            "capability",
+            composed.standardParallaxParams,
+            composed.standardParallaxParams
+                ? "a composed Standard variant binds the parallax " +
+                      "parameter block"
+                : "no composed Standard variant binds parallax parameters",
+            "src/material/standard/fragments/std-parallax-occlusion-" +
+                "fragment.ts: stdParallaxOcclusionExt binds its own " +
+                "parameter block (_bind) beside the Standard material's " +
+                "uniforms",
+            ["render_capabilities.hpp", "standard_variants.hpp"],
         ),
         row(
             "BBLITE_MATERIAL_STANDARD_REFLECTION",

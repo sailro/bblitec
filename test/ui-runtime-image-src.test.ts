@@ -393,9 +393,9 @@ test("runtime img src strings generation cannot bound refuse", () => {
             /An img src write requires sources generation can package/,
         ],
         [
-            // Another origin than the deployment's has no packaged path.
+            // A remote candidate packages only as bytes generation reads.
             `const img = document.createElement("img"); const pick = (big: boolean): string => big ? "https://cdn.example/assets/ui/red.png" : appUrl("/assets/ui/blue.png"); img.src = pick(Date.now() > 0);`,
-            /Packaged URL provenance requires local URLs/,
+            /'https:..cdn.example.assets.ui.red.png' is a remote file generation cannot read/,
         ],
     ] as const)
         assert.throws(() => compileEntry(body), pattern, body);

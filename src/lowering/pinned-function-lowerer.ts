@@ -112,6 +112,7 @@ export interface PinnedFunctionParameter {
         | "u32Buffer"
         | "f32Buffer"
         | "vec3"
+        | "string"
         | "record";
     /**
      * The emitted C++ parameter name. Usually the pinned name; different
@@ -156,8 +157,9 @@ export interface PinnedFunctionParameter {
      * those callers or restate the number beside them --
      * `normalizeVec3(x, y, z)` is the pin's own three-argument spelling in
      * `detailed-picking.ts` and `picking-helpers.ts`, and `1e-10` is not
-     * this port's to retype. Only a numeric literal is accepted, because a
-     * defaulted expression is a body the translator has not been given.
+     * this port's to retype. Only a numeric or boolean literal is accepted,
+     * because a defaulted expression is a body the translator has not been
+     * given.
      */
     pinnedDefault?: true;
     /**
@@ -265,6 +267,13 @@ const parameterKinds: Readonly<
         annotation: CPP_RECORD.vec3.annotation,
         bindingType: "vec3",
         declare: (cpp) => `const bbl::${CPP_RECORD.vec3.storage}& ${cpp}`,
+    },
+    // A JavaScript string the body reads, compares and composes messages
+    // from.
+    string: {
+        annotation: "string",
+        bindingType: "string",
+        declare: (cpp) => `const std::string& ${cpp}`,
     },
     // A record the body reads named members off. The caller supplies both
     // the annotation and the C++ type, because it owns the native record the
@@ -831,18 +840,24 @@ export function lowerPinnedFunctionParts(
             ? `${spec.mutableRecord ? "" : "const "}${spec.cppType}& ` +
               `${spec.cpp}`
             : kind.declare(spec.cpp);
-        if (spec.pinnedDefault && defaultAnnotation !== "number") {
+        if (
+            spec.pinnedDefault &&
+            defaultAnnotation !== "number" &&
+            defaultAnnotation !== "boolean"
+        ) {
             context.contractError(
                 parameter,
                 `Expected pinned ${symbolName} parameter ` +
-                    `'${spec.pinned}' to carry a numeric default.`,
+                    `'${spec.pinned}' to carry a numeric or boolean default.`,
             );
         }
         signature.push(
             spec.pinnedDefault && defaulted
-                ? `${declared} = ${doubleLiteral(
-                      context.numericValue(defaulted, file),
-                  )}`
+                ? `${declared} = ${
+                      defaultAnnotation === "boolean"
+                          ? String(defaulted.kind === ts.SyntaxKind.TrueKeyword)
+                          : doubleLiteral(context.numericValue(defaulted, file))
+                  }`
                 : declared,
         );
         if (spec.kind === "record" && !spec.cppType) {
