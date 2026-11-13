@@ -7595,6 +7595,22 @@ check(
 );
 
 check(
+    "truncating-the-array-a-call-returns",
+    `
+    interface Chimney { id: number }
+    const towers: Chimney[] = [{ id: 1 }, { id: 2 }];
+    const houses: Chimney[] = [{ id: 3 }];
+    const deps = { towerChimneys: (): Chimney[] => towers, houseChimneys: (): Chimney[] => houses };
+    function reset(keep: number): void {
+        deps.towerChimneys().length = keep;
+        deps.houseChimneys().length = 0;
+    }
+    reset(1);
+    if (towers.length !== 1 || towers[0]!.id !== 1 || houses.length !== 0) throw new Error("truncate " + towers.length + houses.length);
+`,
+);
+
+check(
     "void-callback-result-compared-with-true",
     `
     let seen = 0;

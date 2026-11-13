@@ -17114,6 +17114,15 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                     (ts.isPropertyAccessExpression(left.expression) &&
                     this.plainDataOwnerChain(left.expression)
                         ? this.context.compileValue(left.expression)
+                        : undefined) ??
+                    // A call's array (`deps.rows().length = 0`): the one
+                    // array it returns, held once.
+                    (ts.isCallExpression(this.context.unwrap(left.expression))
+                        ? this.context.bindings.pinValueToTemporary(
+                              this.context.compileValue(left.expression),
+                              "length_owner",
+                              left.expression,
+                          )
                         : undefined);
                 if (owner?.kind === "data") {
                     const narrowed = this.narrowOptional(
