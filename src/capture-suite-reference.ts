@@ -75,6 +75,9 @@ function mimeType(path: string): string {
         case ".js":
         case ".mjs":
             return "text/javascript; charset=utf-8";
+        // A page's linked style sheet: Chromium applies none of another type.
+        case ".css":
+            return "text/css; charset=utf-8";
         case ".wasm":
             // Emscripten instantiates through `WebAssembly.instantiateStreaming`,
             // which requires this exact type and otherwise falls back to a
@@ -1167,8 +1170,11 @@ export async function captureSuiteReference(
     if (existsSync(referencePath) && !force) return;
     // Past the cached-reference early return, the browser is genuinely
     // needed; only now does the harness (playwright + typescript) load.
-    const { screenshotCaptureBrowserArgs, waitForSceneReady, withBrowserPage } =
-        browserHarness();
+    const {
+        referenceScreenshotBrowserArgs,
+        waitForSceneReady,
+        withBrowserPage,
+    } = browserHarness();
     const moduleSource = suiteBrowserModule(
         sourcePath,
         transform,
@@ -1188,12 +1194,9 @@ export async function captureSuiteReference(
         server,
         {
             serverName: "parity server",
-            // A page's own text often sits on its opaque background, where
-            // Chromium would draw subpixel (LCD) text; native text, and the
-            // harness page's text over its canvas layer, is greyscale.
-            browserArgs: options.hostPage
-                ? [...screenshotCaptureBrowserArgs, "--disable-lcd-text"]
-                : screenshotCaptureBrowserArgs,
+            browserArgs: referenceScreenshotBrowserArgs(
+                options.hostPage !== undefined,
+            ),
             showScrollbars: options.showScrollbars ?? false,
             viewport: { width: 1280, height: 720 },
             pageErrorPrefix: "Reference page error",

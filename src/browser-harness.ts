@@ -88,6 +88,19 @@ export const screenshotCaptureBrowserArgs = [
     ...webgpuComputeBrowserArgs,
 ] as const;
 
+/**
+ * A reference screenshot's browser. A host page's own text often sits on its
+ * opaque background, where Chromium would draw subpixel (LCD) text; native
+ * text, and the harness page's text over its canvas layer, is greyscale.
+ */
+export function referenceScreenshotBrowserArgs(
+    hostPage: boolean,
+): readonly string[] {
+    return hostPage
+        ? [...screenshotCaptureBrowserArgs, "--disable-lcd-text"]
+        : screenshotCaptureBrowserArgs;
+}
+
 /** Linux Canvas2D producers must use the same rasterizer as reference captures. */
 export const canvasBakeBrowserArgs: readonly string[] =
     process.platform === "linux" ? screenshotCaptureBrowserArgs : [];

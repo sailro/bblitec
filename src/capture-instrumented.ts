@@ -23,7 +23,7 @@ import {
     suiteBrowserModuleDigest,
 } from "./capture-suite-reference.js";
 import {
-    screenshotCaptureBrowserArgs,
+    referenceScreenshotBrowserArgs,
     pageBase64Script,
     waitForSceneReady,
     withBrowserPage,
@@ -396,7 +396,9 @@ export async function runInstrumentedCapture(
         server,
         {
             serverName: "capture server",
-            browserArgs: screenshotCaptureBrowserArgs,
+            browserArgs: referenceScreenshotBrowserArgs(
+                sceneReferencePage(scene).hostPage !== undefined,
+            ),
             showScrollbars: scene.parity?.referenceScrollbars ?? false,
             viewport: { width: 1280, height: 720 },
             pageErrorPrefix: "Capture page error",
