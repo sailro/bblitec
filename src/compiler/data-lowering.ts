@@ -5214,11 +5214,13 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 );
             };
             // A scalar element a bounds check found (`xs[0] ?? fallback`
-            // through a span) selects its value or the fallback.
+            // through a span, or a fallback a document holds) selects its
+            // value or the fallback converted to it.
             if (
-                left.kind === "data" &&
                 isScalarDataType(left.dataType) &&
-                fallback.kind !== "json-null"
+                fallback.kind !== "json-null" &&
+                (left.kind === "data" ||
+                    (isJsonValue(fallback) && leftFound !== undefined))
             ) {
                 const type = left.dataType;
                 const fallbackCpp = fallbackArm(type, () =>

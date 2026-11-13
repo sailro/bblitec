@@ -7726,6 +7726,21 @@ check(
 );
 
 check(
+    "found-element-coalesced-with-a-parsed-member",
+    `
+    interface Tower { yaw: number; x: number; name: string }
+    const towers = JSON.parse('[{"yaw":1,"x":0,"name":"a"},{"yaw":2,"x":1,"name":"b"}]') as Tower[];
+    const builtYaw: number[] = [];
+    const builtName: string[] = ["c"];
+    builtYaw[0] = 1;
+    const ok = towers.every((t, index) => (builtYaw[index] ?? t.yaw) === t.yaw);
+    let shift = 0, names = "";
+    for (let i = 0; i < towers.length; i++) { const t = towers[i]!; shift += t.x - (builtYaw[i] ?? t.yaw); names += builtName[i] ?? t.name; }
+    if (!ok || shift !== -2 || names !== "cb") throw new Error("coalesce " + ok + " " + shift + " " + names);
+`,
+);
+
+check(
     "typeof-a-call-still-makes-the-call",
     `
     interface Deps { count(): number; list(): number[] }
