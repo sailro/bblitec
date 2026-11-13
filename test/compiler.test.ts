@@ -185,6 +185,36 @@ test("enforces light subtype property contracts", () => {
     );
 });
 
+test("a light read out of a record writes through its typed kind's setters", () => {
+    // The record keeps the light's handle, not its factory: the pinned
+    // interface it is declared as names the kind, through an asserted
+    // intersection too.
+    const result = compileSource(`
+        import { createEngine, createDirectionalLight, createHemisphericLight } from "@babylonjs/lite";
+        import type { DirectionalLight, HemisphericLight } from "@babylonjs/lite";
+        interface Lighting { sky: HemisphericLight; sun: DirectionalLight }
+        function apply(lighting: Lighting, k: number): void {
+            const sun = lighting.sun as DirectionalLight & { _bumpLightVersion?: () => void };
+            sun.intensity = k;
+            sun.direction.x = k;
+            lighting.sun.diffuse = [k, k, k];
+            lighting.sky.groundColor = [k, k, k];
+            lighting.sky.direction.set(0, 1, k);
+        }
+        async function main() {
+            const engine = await createEngine({});
+            const lighting: Lighting = { sun: createDirectionalLight([0, -1, 0]), sky: createHemisphericLight() };
+            const all: Lighting[] = [lighting];
+            for (let i = 0; i < 2; i++) apply(all[i % 1]!, i * 0.5);
+        }
+    `);
+    assert.match(result.cpp, /\.lights, \(v_\w+\)\.second\)\.intensity = /);
+    assert.match(result.cpp, /bbl::set_light_direction_component\(v_engine, \(v_\w+\)\.second, 0u, /);
+    assert.match(result.cpp, /\.second\)\.diffuse_color = bbl::Color3\{/);
+    assert.match(result.cpp, /\.second\)\.ground_color = bbl::Color3\{/);
+    assert.match(result.cpp, /bbl::set_hemispheric_light_direction\(v_engine, \(v_\w+->sky\)\.second, /);
+});
+
 test("records exact static scene composition reachability", () => {
     const result = compileSource(`
         import {

@@ -32,7 +32,7 @@ import {
     type DataType,
 } from "./data-types.js";
 import type { Value } from "./types.js";
-import { lightSetter } from "./assignments.js";
+import { lightSetter, typedLightOwner } from "./assignments.js";
 import {
     isInstrumentationHostWrite,
     isRefusedRealmHostWrite,
@@ -5345,7 +5345,12 @@ export class StatementLowerer {
             });
         }
         if (target.kind === "light") {
-            return this.compileLightVectorSet(context, call, owner, target);
+            return this.compileLightVectorSet(
+                context,
+                call,
+                owner,
+                typedLightOwner(context, target, owner.expression),
+            );
         }
         const transform = sceneNodeTransformDescriptor(owner.name);
         return transform
@@ -5486,10 +5491,9 @@ export class StatementLowerer {
             return false;
         }
         if (!target.lightKind) {
-            // A light read out of the data model carries no static kind, and
-            // the entry point is named by it. Nothing reached asks for this,
-            // so it takes the generic unsupported-statement path rather than
-            // a message that would name the wrong cause.
+            // A light whose type names no kind (`LightBase`) has no one
+            // entry point: it takes the generic unsupported-statement path
+            // rather than a message that would name the wrong cause.
             return false;
         }
         const setter = lightSetter(target, property, "vector");

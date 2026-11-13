@@ -198,7 +198,7 @@ import {
     classBaseExpression,
 } from "./syntax.js";
 import type { DataPreamble, NativeDefinition } from "./source-units.js";
-import { optionalPresentCpp, type Value } from "./types.js";
+import { optionalPresentCpp, type LightKind, type Value } from "./types.js";
 import { callTypeArguments } from "./type-arguments.js";
 import {
     GenericFunctionStorageRequired,
@@ -726,17 +726,35 @@ export function isPinnedType(type: ts.Type, names: readonly string[]): boolean {
     );
 }
 
+/** The pinned light interfaces, each the one its kind's factory returns. */
+const pinnedLightKinds: readonly (readonly [string, LightKind])[] = [
+    ["HemisphericLight", "hemispheric"],
+    ["DirectionalLight", "directional"],
+    ["PointLight", "point"],
+    ["SpotLight", "spot"],
+    ["RectAreaLight", "rectArea"],
+];
+
 /**
  * The facts a pinned type proves of every value it types: only
  * `createRenderTask` returns the pin's `RenderTask`, so the type proves its
- * factory's `renderTask` fact, even for a name never assigned.
+ * factory's `renderTask` fact, even for a name never assigned; a light
+ * interface proves its kind. An intersection proves what a member proves
+ * (`DirectionalLight & { _bumpLightVersion?: () => void }`).
  */
 export function typeImpliedFacts(
     type: ts.Type,
-): Pick<Value, "renderTask"> | undefined {
-    return isPinnedType(type, ["RenderTask"])
-        ? { renderTask: true }
-        : undefined;
+): Pick<Value, "renderTask" | "lightKind"> | undefined {
+    if (type.isIntersection()) {
+        for (const member of type.types) {
+            const facts = typeImpliedFacts(member);
+            if (facts) return facts;
+        }
+        return undefined;
+    }
+    if (isPinnedType(type, ["RenderTask"])) return { renderTask: true };
+    const light = pinnedLightKinds.find(([name]) => isPinnedType(type, [name]));
+    return light ? { lightKind: light[1] } : undefined;
 }
 
 /**

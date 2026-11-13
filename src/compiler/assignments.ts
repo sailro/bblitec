@@ -528,6 +528,26 @@ const lightProperties: Readonly<
     rectArea: lightColorPair,
 };
 
+/**
+ * A light whose value no longer records its factory (one read out of a
+ * record or an array) as the kind its pinned interface type names: a
+ * property write needs only that kind's setter, not the light's identity.
+ */
+export function typedLightOwner(
+    context: { readonly checker: ts.TypeChecker },
+    owner: Value,
+    expression: ts.Expression,
+): Value {
+    if (owner.kind !== "light" || owner.lightKind) return owner;
+    const { lightKind } =
+        typeImpliedFacts(
+            context.checker.getNonNullableType(
+                context.checker.getTypeAtLocation(unwrapExpression(expression)),
+            ),
+        ) ?? {};
+    return lightKind ? { ...owner, lightKind } : owner;
+}
+
 function directPropertyAssignment(
     owner: Value,
     property: string,
@@ -2066,7 +2086,11 @@ export function emitPropertyAssignment(
         ts.isPropertyAccessExpression(lightVector) &&
         lightVector.name.text === "direction" &&
         context.probeEmission(() => {
-            const owner = context.compileValue(lightVector.expression);
+            const owner = typedLightOwner(
+                context,
+                context.compileValue(lightVector.expression),
+                lightVector.expression,
+            );
             if (owner.kind !== "light") return undefined;
             emitLightVectorComponentAssignment(
                 context,
@@ -2098,7 +2122,7 @@ export function emitPropertyAssignment(
                       owner,
                   )
                 : compiled;
-        trsOwner = root;
+        trsOwner = typedLightOwner(context, root, owner);
         if (root.kind === "asset-root") {
             context.assetRegistry.assertAssetRootWritable(root, expression);
             const vector = left.expression.name.text;
@@ -3003,6 +3027,7 @@ function emitTargetPropertyAssignment(
             "property_target",
             targetExpression,
         );
+    target = typedLightOwner(context, target, targetExpression);
     const property = left.name.text;
     if (
         target.kind === "mesh" &&
