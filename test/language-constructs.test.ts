@@ -7560,6 +7560,17 @@ check(
 );
 
 check(
+    "object-is-on-nullable-numbers",
+    `
+    interface Request { runId: number; bedSink: number | null }
+    const requests: Request[] = [{ runId: 1, bedSink: null }, { runId: 1, bedSink: NaN }, { runId: 2, bedSink: 0 }, { runId: 2, bedSink: -0 }, { runId: 3, bedSink: null }];
+    const same = (a: Request, b: Request): boolean => Object.is(a.bedSink, b.bedSink);
+    const answers = [same(requests[0]!, requests[4]!), same(requests[1]!, requests[1]!), same(requests[2]!, requests[3]!), same(requests[0]!, requests[2]!), same(requests[2]!, requests[2]!)];
+    if (answers.join(",") !== "true,true,false,false,true") throw new Error("same value " + answers.join(","));
+`,
+);
+
+check(
     "flat-map-callback-returning-an-element-or-an-array",
     `
     const xs = [1, 2, 3];

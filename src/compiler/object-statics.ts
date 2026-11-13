@@ -46,7 +46,12 @@ import {
     compileCollectionEntries,
     compileEntryCollection,
 } from "./collection-methods.js";
-import { callSignatures, nullability, unionMembers } from "./type-facts.js";
+import {
+    absenceKind,
+    callSignatures,
+    nullability,
+    unionMembers,
+} from "./type-facts.js";
 import {
     absenceOfNull,
     jsonAbsenceCpp,
@@ -496,6 +501,27 @@ function compileObjectIs(
     }
     if (boolean(left) && boolean(right)) {
         return booleanValue(`(${left.cpp} == ${right.cpp})`);
+    }
+    // A nullable number (`number | null`) is the same value as another of
+    // its absence when both are absent, or both hold the same number.
+    const nullableNumber = (value: Value, node: ts.Expression) => {
+        if (
+            value.dataType?.kind !== "optional" ||
+            value.dataType.inner.kind !== "number"
+        )
+            return undefined;
+        const absence = absenceKind(context.checker, value, node);
+        return absence === "null" || absence === "undefined"
+            ? absence
+            : undefined;
+    };
+    const leftAbsence = nullableNumber(left, argumentAt(call, 0));
+    const rightAbsence = nullableNumber(right, argumentAt(call, 1));
+    if (leftAbsence && rightAbsence && leftAbsence === rightAbsence) {
+        context.reachJsData();
+        return booleanValue(
+            `[](const auto& left, const auto& right) { return left.has_value() == right.has_value() && (!left.has_value() || bbl::js::same_value(*left, *right)); }(${left.cpp}, ${right.cpp})`,
+        );
     }
     // JsonValue already retains erased object identity and distinguishes
     // absent values. Its strict equality supplies every nonnumeric case.
