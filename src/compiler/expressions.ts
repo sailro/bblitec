@@ -1933,6 +1933,10 @@ export class ExpressionLowerer {
                     dataType: { kind: "string" },
                 };
             }
+            // A generation-known answer still runs an operand that writes
+            // (`typeof deps.count()` calls count).
+            if (this.context.evaluationOrder.writesStorage(expression))
+                this.context.emitDiscardedValue(operand);
             return {
                 kind: "string",
                 cpp: this.context.cppString(type),

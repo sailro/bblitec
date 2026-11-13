@@ -7692,6 +7692,18 @@ check(
 );
 
 check(
+    "typeof-a-call-still-makes-the-call",
+    `
+    interface Deps { count(): number; list(): number[] }
+    let calls = 0;
+    const deps: Deps = { count: () => { calls++; return 1; }, list: () => { calls++; return []; } };
+    if (typeof deps.count() !== "number") throw new Error("number");
+    const kind = typeof deps.list();
+    if (kind !== "object" || calls !== 2) throw new Error("calls " + calls);
+`,
+);
+
+check(
     "void-callback-result-compared-with-true",
     `
     let seen = 0;
