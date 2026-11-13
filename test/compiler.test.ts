@@ -22373,6 +22373,31 @@ test("fixed render targets snapshot runtime canvas dimensions", () => {
     );
 });
 
+test("a CSM receiver callback reaches the consts its registration precedes", () => {
+    // The callback runs at each fit, after `blendData` and `savedVP` exist.
+    const result = compileSource(`
+        import { addToScene, createArcRotateCamera, createCsmDirectionalShadowGenerator, createDirectionalLight, createEngine, createSceneContext, onCsmReceiverUpdate } from "@babylonjs/lite";
+        const engine = await createEngine(document.getElementById("renderCanvas") as HTMLCanvasElement);
+        const scene = createSceneContext(engine);
+        scene.camera = createArcRotateCamera(-Math.PI / 2, Math.PI / 3, 50, { x: 0, y: 0, z: 0 });
+        const light = createDirectionalLight([0, -1, -1], 0.8);
+        addToScene(scene, light);
+        const generator = createCsmDirectionalShadowGenerator(engine, light, { mapSize: 256, numCascades: 2 });
+        function install(): () => number {
+            const uData = new Float32Array(84);
+            const upload = (): void => { blendData[1] = uData[0]!; savedVP.set(uData.subarray(0, 16)); };
+            onCsmReceiverUpdate(generator, (data) => { uData.set(data.subarray(0, 80), 0); upload(); });
+            const blendData = new Float32Array(48);
+            const savedVP = new Float32Array(16);
+            return () => blendData[1]! + savedVP[0]!;
+        }
+        const read = install();
+        if (read() < 0) throw new Error("read");
+    `);
+    assert.match(result.cpp, /on_csm_receiver_update\(/);
+    assert.match(result.cpp, /v_\w*blendData/);
+});
+
 test("render targets take the extents a { width, height } record value holds", () => {
     // A size held in a binding (one record) or returned by a helper (a struct).
     const result = compileSource(`
