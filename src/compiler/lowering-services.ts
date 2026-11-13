@@ -65,6 +65,12 @@ export type NativeReturnValueCompiler = (
 ) => string;
 
 /** Execution facts for one native function body. */
+/** Where a native declaration was emitted (`emissionMark`). */
+export interface EmissionMark {
+    readonly scope: number;
+    readonly block: number;
+}
+
 /** A statement being lowered, with where its lowering began. */
 export interface LoweringStatement {
     readonly statement: ts.Statement;
@@ -148,6 +154,8 @@ export interface LoweringServices {
     readonly executedVideoFunctions: Set<string>;
     readonly canvasReadbackFunctions: Set<string>;
     functionEmissionScope(): import("./function-specializations.js").FunctionEmissionScope;
+    emissionMark(): EmissionMark;
+    reachesEmissionMark(mark: EmissionMark): boolean;
     readonly assets: Map<string, CompileAsset>;
     readonly assetOutputs: Map<string, CompileAsset>;
     readonly assetPayloads: Map<string, string>;

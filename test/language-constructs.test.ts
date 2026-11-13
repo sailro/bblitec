@@ -7792,6 +7792,25 @@ check(
 );
 
 check(
+    "document-view-first-made-in-a-short-circuit-is-made-again-after-it",
+    `
+    function count(values: readonly unknown[]): number {
+      let n = 0;
+      for (const v of values) if (v !== undefined) n++;
+      return n;
+    }
+    const schema: unknown[] = [1, "x", undefined];
+    const config = { depth: 2, name: "n" };
+    const probe = (value: unknown): boolean => value !== null && typeof value === "object";
+    const seen: number[] = [];
+    seen.push(schema.length);
+    if (seen[0] !== 3 || count(schema) !== 2) throw new Error("n " + count(schema));
+    if (seen.length !== 1 || !probe(config)) throw new Error("record " + probe(config));
+    if (!probe(config) || !probe(schema)) throw new Error("views");
+`,
+);
+
+check(
     "truncating-the-array-a-call-returns",
     `
     interface Chimney { id: number }

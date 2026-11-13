@@ -7,11 +7,28 @@ import {
 import { constInitializer } from "./browser-erasure.js";
 import { literalMember, unwrapExpression } from "./syntax.js";
 import type { CapturedClosure } from "./closure-captures.js";
+import type { EmissionMark } from "./lowering-services.js";
 import type { Value } from "./types.js";
 import type { DataSinkHost } from "./data-sinks/contracts.js";
 
 // Record aliases share this table even when an inline call renames the value.
-const views = new EmissionWeakMap<object, Value>();
+// A view is reused only where its declaration is in scope.
+const views = new EmissionWeakMap<
+    object,
+    { readonly value: Value; readonly mark: EmissionMark }
+>();
+
+/** The view already declared for `members` and in scope here, used here. */
+function declaredView(
+    lowerer: DataSinkHost,
+    members: object,
+): string | undefined {
+    const previous = views.get(members);
+    if (!previous || !lowerer.context.reachesEmissionMark(previous.mark))
+        return undefined;
+    lowerer.context.useNativeValue(previous.value);
+    return previous.value.cpp;
+}
 
 function sharedGetter(
     lowerer: DataSinkHost,
@@ -85,11 +102,8 @@ export function compileJsonTupleView(
     const elements = tuple.tupleElements;
     if (tuple.kind !== "tuple" || !elements || tuple.cpp) return undefined;
     const context = lowerer.context;
-    const previous = views.get(elements);
-    if (previous) {
-        context.useNativeValue(previous);
-        return previous.cpp;
-    }
+    const previous = declaredView(lowerer, elements);
+    if (previous) return previous;
     const members = elements.map((value, slot) => {
         const expression = literal && literalMember(literal, slot);
         const nested =
@@ -143,7 +157,7 @@ export function compileJsonTupleView(
             ),
         ],
     };
-    views.set(elements, result);
+    views.set(elements, { value: result, mark: context.emissionMark() });
     context.useNativeValue(result);
     return cpp;
 }
@@ -202,11 +216,8 @@ export function compileJsonRecordView(
             );
         throw new DynamicBindingStorageRequired(declaration, "source");
     }
-    const previous = views.get(properties);
-    if (previous) {
-        context.useNativeValue(previous);
-        return previous.cpp;
-    }
+    const previous = declaredView(lowerer, properties);
+    if (previous) return previous;
     // This path retains the original property table and mutable scalar cells.
     // Supplying a source expression here could instead construct a second record.
     context.bindings.materializeEscapingValue(record, "dynamic_record");
@@ -267,7 +278,7 @@ export function compileJsonRecordView(
             ),
         ],
     };
-    views.set(properties, result);
+    views.set(properties, { value: result, mark: context.emissionMark() });
     context.useNativeValue(result);
     return cpp;
 }

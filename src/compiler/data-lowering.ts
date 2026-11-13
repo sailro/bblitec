@@ -640,6 +640,8 @@ interface DataLoweringContext extends Pick<
     | "libraryGlobal"
     | "hasStableNativeBinding"
     | "useNativeValue"
+    | "emissionMark"
+    | "reachesEmissionMark"
     | "registerNativeBinding"
     | "registerNativeConstBinding"
     | "registerNativeBindingType"

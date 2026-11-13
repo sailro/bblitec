@@ -43,6 +43,7 @@ import {
 } from "./compiler/emission-transaction.js";
 import type {
     LoweringServices,
+    EmissionMark,
     LoweringStatement,
     NativeFunctionBodyOptions,
 } from "./compiler/lowering-services.js";
@@ -7341,6 +7342,7 @@ class Compiler implements LoweringServices {
         const previousIndent = this.indentLevel;
         const previousScope = this.activeEmissionScope;
         this.activeEmissionScope = this.nextEmissionScope++;
+        this.emissionScopeParents.set(this.activeEmissionScope, previousScope);
         this.indentLevel = 0;
         try {
             emitBody();
@@ -7409,6 +7411,32 @@ class Compiler implements LoweringServices {
      */
     @journaled public accessor activeEmissionScope = 0;
     @journaled private accessor nextEmissionScope = 1;
+    /** The scope each captured emission scope was opened in. */
+    private readonly emissionScopeParents = new EmissionMap<number, number>();
+
+    /** Where a declaration emitted now lives: its emission scope and innermost block. */
+    public emissionMark(): EmissionMark {
+        return {
+            scope: this.activeEmissionScope,
+            block: this.emissionBlocks.at(-1)!,
+        };
+    }
+
+    /**
+     * Whether a declaration emitted at `mark` is in scope here: its block is
+     * still open and its emission scope encloses this one. One emitted in
+     * captured lines (a lambda's body, a closed block) is not, once they end.
+     */
+    public reachesEmissionMark(mark: EmissionMark): boolean {
+        if (!this.emissionBlocks.includes(mark.block)) return false;
+        for (
+            let scope: number | undefined = this.activeEmissionScope;
+            scope !== undefined;
+            scope = this.emissionScopeParents.get(scope)
+        )
+            if (scope === mark.scope) return true;
+        return false;
+    }
 
     public beginNativeFunctionBody(
         returnType: DataType | undefined,
