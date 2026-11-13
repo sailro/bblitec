@@ -7676,6 +7676,40 @@ check(
 );
 
 check(
+    "membership-on-a-union-laid-out-like-another",
+    `
+    type Vec3 = [number, number, number];
+    class SolidBatch { colors: number[] = []; recolorInstances(from: number, len: number, tint: Vec3): void { this.colors.push(from + len + tint[0]); } scaleInstanceColors(from: number, len: number, ratio: Vec3): void { this.colors.push(from * ratio[1] + len); } }
+    class BrickBatch { tints: number[] = []; recolorVariantInstances(variant: number, from: number, len: number, tint: Vec3): void { this.tints.push(variant + from + len + tint[2]); } }
+    type Action =
+      | { solid: SolidBatch; from: number; len: number; tint: Vec3 }
+      | { solid: SolidBatch; from: number; len: number; ratio: Vec3 }
+      | { pomFlat: BrickBatch; brick: boolean; variant: number; from: number; len: number; tint: Vec3 }
+      | { parts: BrickBatch; brick: boolean; variant: number; from: number; len: number; partAt: (i: number) => "body" | "roof" };
+    const body = new SolidBatch(), cone = new SolidBatch(), bricks = new BrickBatch();
+    const ops: ({ solid: SolidBatch; from: number; len: number } | { brick: BrickBatch; from: number; len: number; variant: number })[] = [
+      { solid: body, from: 0, len: 2 }, { solid: cone, from: 2, len: 3 }, { brick: bricks, from: 5, len: 1, variant: 2 }];
+    const actions: Action[] = [];
+    const tint: Vec3 = [1, 2, 3];
+    for (const op of ops) {
+      if ("solid" in op) {
+        if (op.solid === body) actions.push({ solid: body, from: op.from, len: op.len, tint });
+        else actions.push({ solid: op.solid, from: op.from, len: op.len, ratio: [2, 2, 2] });
+      } else if (op.variant > 1) actions.push({ pomFlat: op.brick, brick: true, variant: op.variant, from: op.from, len: op.len, tint });
+      else actions.push({ parts: op.brick, brick: false, variant: op.variant, from: op.from, len: op.len, partAt: (i) => (i > 0 ? "roof" : "body") });
+    }
+    for (const a of actions) {
+      if ("solid" in a) {
+        if ("tint" in a) a.solid.recolorInstances(a.from, a.len, a.tint);
+        else a.solid.scaleInstanceColors(a.from, a.len, a.ratio);
+      } else if ("pomFlat" in a) a.pomFlat.recolorVariantInstances(a.variant, a.from, a.len, a.tint);
+      else a.parts.recolorVariantInstances(a.variant, a.from, a.len, a.partAt(1) === "roof" ? tint : [0, 0, 0]);
+    }
+    if (body.colors.join(",") !== "3" || cone.colors.join(",") !== "7" || bricks.tints.join(",") !== "11") throw new Error("actions " + body.colors.join(",") + "|" + cone.colors.join(",") + "|" + bricks.tints.join(","));
+`,
+);
+
+check(
     "truncating-the-array-a-call-returns",
     `
     interface Chimney { id: number }

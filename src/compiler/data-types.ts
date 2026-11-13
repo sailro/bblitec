@@ -2679,24 +2679,38 @@ export class DataTypeRegistry {
         message: string,
     ): never {
         const source = this.nativeRecordSources.get(structName);
-        const union = source?.type;
+        const expression =
+            ts.isPropertyAccessExpression(node) ||
+            ts.isElementAccessExpression(node)
+                ? node.expression
+                : ts.isSpreadAssignment(node)
+                  ? node.expression
+                  : ts.isExpression(node)
+                    ? node
+                    : ts.isObjectLiteralExpression(node.parent)
+                      ? node.parent
+                      : undefined;
+        const actual =
+            expression &&
+            this.checker.getNonNullableType(
+                this.checker.getTypeAtLocation(expression),
+            );
+        // One struct stands for each record union laid out alike (unions
+        // whose common fields agree), named for the first: the union the
+        // node reads is the one whose arms a replay stores, unless it is a
+        // narrowing of the struct's own.
+        const sourceArms = source?.type.isUnion()
+            ? new Set(source.type.types)
+            : undefined;
+        const read =
+            sourceArms &&
+            actual?.isUnion() &&
+            !actual.types.every((member) => sourceArms.has(member)) &&
+            actual.types.some((member) => member.getProperty(field))
+                ? actual
+                : undefined;
+        const union = read ?? source?.type;
         if (source && !union?.isUnion()) {
-            const expression =
-                ts.isPropertyAccessExpression(node) ||
-                ts.isElementAccessExpression(node)
-                    ? node.expression
-                    : ts.isSpreadAssignment(node)
-                      ? node.expression
-                      : ts.isExpression(node)
-                        ? node
-                        : ts.isObjectLiteralExpression(node.parent)
-                          ? node.parent
-                          : undefined;
-            const actual =
-                expression &&
-                this.checker.getNonNullableType(
-                    this.checker.getTypeAtLocation(expression),
-                );
             const checked =
                 actual &&
                 (this.checker.getBaseConstraintOfType(actual) ?? actual);
@@ -2728,7 +2742,13 @@ export class DataTypeRegistry {
             !union.types.some((member) => member.getProperty(field))
         )
             this.fail(node, message);
-        throw new NativeRecordStorageRequired({ ...source, armFields: true });
+        throw new NativeRecordStorageRequired({
+            // The node reads a native struct: its union's records are stored.
+            ...(read
+                ? { ...this.recordDemand(read, node), stored: true as const }
+                : source),
+            armFields: true,
+        });
     }
 
     /**
