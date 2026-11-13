@@ -5906,8 +5906,10 @@ export class UserFunctionLowerer {
                                     context.compileValue(initializer);
                                 context.emitDiscardedValue(evaluated);
                             }
-                            // An erased `undefined` parameter reads its one value.
-                            if (!holdsNoPayload(resolvedType(parameter)))
+                            // An erased parameter not declared `void` or
+                            // `never` (an `undefined` one, or one whose type
+                            // argument is `void`) reads its one value.
+                            if (!holdsNoPayload(parameter.type))
                                 this.bindSpecializedParameter(
                                     context,
                                     ir.declaration,
