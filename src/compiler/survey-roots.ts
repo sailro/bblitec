@@ -825,7 +825,22 @@ function withCalledTypeArguments(
         ? []
         : (checker.getSignatureFromDeclaration(declaration)?.typeParameters ??
           []);
-    if (generic.length === 0 && contextual.length === 0) {
+    // A class's polymorphic `this` (`const owner = this`) is its instance.
+    const instances = new Map<ts.Symbol, ts.Type>();
+    for (let node: ts.Node | undefined = declaration; node; node = node.parent)
+        if (ts.isClassLike(node) && node.name) {
+            const symbol = declaredSymbol(checker, node.name);
+            const instance = symbol
+                ? (checker.getDeclaredTypeOfSymbol(symbol) as ts.InterfaceType)
+                : undefined;
+            if (instance?.thisType?.symbol)
+                instances.set(instance.thisType.symbol, instance);
+        }
+    if (
+        generic.length === 0 &&
+        contextual.length === 0 &&
+        instances.size === 0
+    ) {
         work();
         return;
     }
@@ -867,6 +882,7 @@ function withCalledTypeArguments(
             ...(contextual.length
                 ? [unboundParameterTypes(checker, contextual)]
                 : []),
+            ...(instances.size ? [instances] : []),
         ],
         work,
     );

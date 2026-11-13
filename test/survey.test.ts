@@ -1707,3 +1707,31 @@ test("a survey root typed by a contextual generic signature lowers at its constr
     assert.equal(report.program.attempted, report.program.statements);
     assert.deepEqual(report.refusals, [], listed(report));
 });
+
+test("a survey root reads a class's polymorphic this as its instance", () => {
+    // `const owner = this` types the capture `this`, a type parameter no
+    // call binds: it stands for the class's instance.
+    const { report } = surveySource(
+        `
+        export interface Provider { readonly version: number; readonly dirty: boolean }
+        export class Bounds {
+            private dirty = true;
+            private version = 0;
+            readonly provider: Provider;
+            constructor(private readonly limit: number) {
+                const owner = this;
+                this.provider = {
+                    get version(): number { return owner.version; },
+                    get dirty(): boolean { return owner.dirty && owner.limit > 0; },
+                };
+            }
+            touch(): void { this.version++; this.dirty = false; }
+        }
+        localStorage.setItem("ready", "1");
+    `,
+        { fileName: resolve("survey-this-alias.ts") },
+    );
+    assert.ok(report.program);
+    assert.equal(report.program.attempted, report.program.statements);
+    assert.deepEqual(report.refusals, [], listed(report));
+});
