@@ -108,6 +108,8 @@ struct InputDriver {
 struct SceneInputDriver {
     InputDriver data_;
     struct Frame {
+        // Keep construction explicit while optional inspects this nested type.
+        Frame() {}
         double start = 0;
         bool yield_when_skipped = false;
     };

@@ -303,7 +303,7 @@ test("dynamic class views refuse fields without stored representations", () => {
     assert.throws(
         () =>
             compileSource(`
-        class Packet {constructor(readonly values:readonly unknown[]) {}}
+        class Packet {constructor(readonly values:readonly [number, ...string[]]) {}}
         const packets:Packet[]=[new Packet([3])];
         function count(value:unknown,depth:number):number{if(depth>0)return count(value,depth-1);return value instanceof Packet?value.values.length:0;}
         count(packets[0]!,1);
