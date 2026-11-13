@@ -832,7 +832,18 @@ function valueIterable(
     type: DataType<"iterable">,
     lowerer: DataSinkHost,
     value: Value,
+    node: ts.Node,
 ): string | undefined {
+    // An array literal is a new array of its elements.
+    if (value.kind === "tuple") {
+        const array = lowerer.compileKnownValueForSink(
+            value,
+            { kind: "vector", element: type.element },
+            node,
+        );
+        lowerer.context.reachJsData();
+        return `bbl::js::array_iterable(${array})`;
+    }
     const source = value.dataType;
     if (!source) return undefined;
     if (dataTypesEqual(source, type)) return value.cpp;
