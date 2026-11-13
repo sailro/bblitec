@@ -7860,6 +7860,18 @@ check(
 );
 
 check(
+    "math-min-and-max-over-a-spread-of-parsed-numbers",
+    `
+    interface Config { speedStops: number[] }
+    const config = JSON.parse('{"speedStops":[0.5,2,4]}') as Config;
+    const finiteStops = config.speedStops.filter((stop) => Number.isFinite(stop));
+    const minimumSpeed = finiteStops.length > 0 ? Math.max(0.1, Math.min(...finiteStops)) : 0.1;
+    const maximumSpeed = finiteStops.length > 0 ? Math.min(5, Math.max(...finiteStops)) : 5;
+    if (minimumSpeed !== 0.5 || maximumSpeed !== 4) throw new Error("speed " + minimumSpeed + " " + maximumSpeed);
+`,
+);
+
+check(
     "found-element-coalesced-with-a-parsed-member",
     `
     interface Tower { yaw: number; x: number; name: string }

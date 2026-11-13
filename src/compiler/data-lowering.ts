@@ -9218,6 +9218,12 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 );
             } else if (iterated?.element.kind === "number")
                 range = iterated.range.cpp;
+            // Parsed elements are read as numbers, as each argument is
+            // (ToNumber), into a copy only the fold reads.
+            else if (iterated?.element.kind === "json") {
+                this.context.reachJsData();
+                range = `bbl::js::array_from_iterable<double>(${iterated.range.cpp}, [](const auto& element) { return element.to_number(); })`;
+            }
             if (range === undefined)
                 return this.context.fail(
                     only,
