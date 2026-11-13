@@ -7610,6 +7610,72 @@ check(
 );
 
 check(
+    "stored-function-returning-an-iterable-array",
+    `
+    interface Deps { slots(): Iterable<number> }
+    const list = [1, 2, 3];
+    const deps: Deps = { slots: () => list };
+    let total = 0;
+    for (const s of deps.slots()) { total += s; if (s === 1) list.push(10); }
+    const held = deps.slots();
+    let twice = 0;
+    for (const x of held) twice += x;
+    for (const x of held) twice += x;
+    const copy = [...deps.slots()];
+    const from = Array.from(deps.slots());
+    function sum(xs: Iterable<number>): number { let t = 0; for (const x of xs) t += x; return t; }
+    const summed = sum(deps.slots()) + sum(list);
+    if (total !== 16 || twice !== 32 || copy.join(",") !== "1,2,3,10" || from.length !== 4 || summed !== 32)
+        throw new Error("array " + total + " " + twice + " " + copy.join(",") + " " + from.length + " " + summed);
+`,
+);
+
+check(
+    "stored-function-returning-an-iterable-set-or-iterator",
+    `
+    interface Deps { slots(): Iterable<number> }
+    const set = new Set<number>([4, 5]);
+    const map = new Map<number, string>([[6, "a"], [7, "b"]]);
+    const fromSet: Deps = { slots: () => set };
+    const fromKeys: Deps = { slots: () => map.keys() };
+    let total = 0;
+    for (const s of fromSet.slots()) total += s;
+    for (const s of fromKeys.slots()) total += s;
+    const held = fromKeys.slots();
+    let resumed = 0;
+    for (const x of held) { resumed += x; break; }
+    for (const x of held) resumed += x * 10;
+    const unique = new Set(fromSet.slots());
+    const holder: { it: Iterable<number> } = { it: set };
+    set.add(6);
+    let fielded = 0;
+    for (const x of holder.it) fielded += x;
+    for (const x of holder.it) fielded += x;
+    if (total !== 22 || resumed !== 76 || unique.size !== 2 || fielded !== 30)
+        throw new Error("set " + total + " " + resumed + " " + unique.size + " " + fielded);
+`,
+);
+
+check(
+    "stored-function-returning-an-iterable-of-records",
+    `
+    interface Entry { readonly id: number; save: string }
+    interface Fns { homeIds(kind: string): Iterable<number> }
+    interface Deps { entries(): Iterable<Readonly<Entry>>; functions(): Fns }
+    const rows: Entry[] = [{ id: 1, save: "a" }, { id: 2, save: "b" }];
+    const homes = new Map<string, number[]>([["tower", [3, 4]]]);
+    const fns: Fns = { homeIds: (kind) => homes.get(kind) ?? [] };
+    const deps: Deps = { entries: () => rows, functions: () => fns };
+    let ids = "";
+    for (const e of deps.entries()) ids += e.id + e.save;
+    let t = 0;
+    for (const id of deps.functions().homeIds("tower")) t += id;
+    for (const id of deps.functions().homeIds("none")) t += id;
+    if (ids !== "1a2b" || t !== 7) throw new Error("records " + ids + " " + t);
+`,
+);
+
+check(
     "truncating-the-array-a-call-returns",
     `
     interface Chimney { id: number }

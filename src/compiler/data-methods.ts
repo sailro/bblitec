@@ -63,6 +63,7 @@ import {
 
 import {
     dataTypesEqual,
+    holdsDataKind,
     pinnedHandleKind,
     platformHandleKind,
     isTypedArrayType,
@@ -171,6 +172,12 @@ export function compileArrayPredicateOverData(
             dataType.members.some((member) => member.kind === "numberindex"))
     )
         return undefined;
+    // An Iterable holds an Array, a Set, a Map or an iterator alike.
+    if (holdsDataKind(dataType, ["iterable"]))
+        return lowerer.context.fail(
+            call,
+            "A stored Iterable does not record whether it holds an array.",
+        );
     if (dataType.kind === "json" && !optional && !binaryView)
         return {
             kind: "boolean",

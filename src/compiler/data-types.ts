@@ -64,6 +64,7 @@ export {
 } from "./data-types/typed-arrays.js";
 export {
     dataTypesEqual,
+    holdsDataKind,
     passesByReferenceKind,
     presentDataType,
     soleMemberIndex,
@@ -5194,8 +5195,17 @@ export class DataTypeRegistry {
             }
             const symbolName = library ? type.symbol.name : undefined;
             // Iterable describes a protocol, not a record with a callable iterator
-            // field. Reached helpers specialize to their actual collection storage.
-            if (symbolName === "Iterable") return undefined;
+            // field. Reached helpers specialize to their actual collection storage;
+            // a stored position (a field, a stored function's result) holds the
+            // object it is given and opens its iterator at each iteration.
+            if (symbolName === "Iterable") {
+                if (!this.classDemanded) return undefined;
+                const [elementType] = this.checker.getTypeArguments(reference);
+                const element = elementType
+                    ? this.fromStoredTsType(elementType, node)
+                    : undefined;
+                return element && { kind: "iterable", element };
+            }
             if (
                 symbolName &&
                 [

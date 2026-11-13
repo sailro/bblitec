@@ -20653,6 +20653,15 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 element: { kind: "number" },
                 arity: dataType.arity,
             };
+        // Iterating an iterable iterates the iterator it opens.
+        if (dataType?.kind === "iterable")
+            return {
+                range: this.leafValue(`${value.cpp}.iterator()`, {
+                    kind: "iterator",
+                    element: dataType.element,
+                }),
+                element: dataType.element,
+            };
         return dataType?.kind === "vector" ||
             dataType?.kind === "span" ||
             dataType?.kind === "iterator" ||
@@ -20811,7 +20820,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                       )
                     : undefined);
             return {
-                container: value,
+                container: dataType.kind === "iterable" ? iterated.range : value,
                 element,
                 ...(template ? { template } : {}),
             };

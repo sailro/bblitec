@@ -1735,3 +1735,37 @@ test("a survey root reads a class's polymorphic this as its instance", () => {
     assert.equal(report.program.attempted, report.program.statements);
     assert.deepEqual(report.refusals, [], listed(report));
 });
+
+test("a survey root iterates what a dependency's Iterable result holds", () => {
+    // A stored function returning Iterable<T> holds the object its body
+    // returns; the root's placeholder dependency has that signature.
+    const { report } = surveySource(
+        `
+        export interface Deps {
+            railedSlots(): Iterable<number>;
+            railFor(slot: number): number | undefined;
+            functions(): { homeIdsWithFunction(kind: "witchtower"): Iterable<number> };
+        }
+        export function createController(deps: Deps): { tick(): number } {
+            const shipped = new Set<number>();
+            return {
+                tick(): number {
+                    let total = 0;
+                    for (const slot of deps.railedSlots()) {
+                        const rail = deps.railFor(slot);
+                        if (rail === undefined || shipped.has(slot)) continue;
+                        shipped.add(slot);
+                        total += rail;
+                    }
+                    for (const id of deps.functions().homeIdsWithFunction("witchtower")) total += id;
+                    return total;
+                },
+            };
+        }
+    `,
+        { fileName: resolve("survey-iterable-deps.ts") },
+    );
+    assert.ok(report.program);
+    assert.equal(report.program.attempted, report.program.statements);
+    assert.deepEqual(report.refusals, [], listed(report));
+});

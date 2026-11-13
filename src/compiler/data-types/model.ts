@@ -325,6 +325,15 @@ interface DataKinds {
         asynchronous?: true;
         traced?: true;
     };
+    /**
+     * A stored `Iterable<T>`: each iteration opens its source's iterator,
+     * so an Array, Set or Map source is iterated afresh and an iterator
+     * source continues from its position.
+     */
+    iterable: {
+        kind: "iterable";
+        element: DataType;
+    };
     span: {
         kind: "span";
         element: DataType;

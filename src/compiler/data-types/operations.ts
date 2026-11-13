@@ -78,6 +78,17 @@ export function presentDataType(
     return type?.kind === "optional" ? type.inner : type;
 }
 
+/** Whether `type`, its present value or one of its union members is of one of `kinds`. */
+export function holdsDataKind(
+    type: DataType | undefined,
+    kinds: readonly DataKind[],
+): boolean {
+    if (type?.kind === "optional") return holdsDataKind(type.inner, kinds);
+    if (type?.kind === "union")
+        return type.members.some((member) => holdsDataKind(member, kinds));
+    return type !== undefined && kinds.includes(type.kind);
+}
+
 /** An optional undefined field stores key presence, never a different value. */
 export function isUndefinedDataType(type: DataType | undefined): boolean {
     return (

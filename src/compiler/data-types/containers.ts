@@ -11,6 +11,7 @@ export const containerKinds: DataKindOperations<
     | "map"
     | "set"
     | "iterator"
+    | "iterable"
     | "span"
     | "tuple"
     | "product"
@@ -159,6 +160,17 @@ export const containerKinds: DataKindOperations<
             left.asynchronous === right.asynchronous &&
             left.traced === right.traced &&
             equal(left.element, right.element),
+        children: (type) => [type.element],
+        byReference: true,
+        tracedEdges: "always",
+        sharesStorage: true,
+        reseats: true,
+    },
+    iterable: {
+        cpp: (type, context) =>
+            `bbl::js::Iterable<${context.cppType(type.element)}>`,
+        key: (type, key) => `iterable(${key(type.element)})`,
+        equal: (left, right, equal) => equal(left.element, right.element),
         children: (type) => [type.element],
         byReference: true,
         tracedEdges: "always",

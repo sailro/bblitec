@@ -25,6 +25,7 @@ import {
 import {
     BUFFER_VIEW_KINDS,
     TYPED_ARRAY_KINDS,
+    holdsDataKind,
     type DataType,
 } from "./data-types.js";
 import { compileDomInstanceOf } from "./dom-targets.js";
@@ -621,6 +622,11 @@ export class ConditionLowerer {
                 this.context.emitDiscardedValue(left);
                 return "false";
             }
+            if (left && holdsDataKind(left.dataType, ["iterable"]))
+                this.context.fail(
+                    unwrapped,
+                    "A stored Iterable does not record the class of the object it holds.",
+                );
         }
         if (this.context.browserErasure.isBrowserOnlyExpression(unwrapped)) {
             const condition =
