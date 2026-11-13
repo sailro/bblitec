@@ -7560,6 +7560,25 @@ check(
 );
 
 check(
+    "literal-union-key-over-layouts-of-different-shapes",
+    `
+    type Kind = "keg-display" | "beer-display";
+    const LAYOUTS = {
+        "keg-display": { itemDisplayScale: 2, capacity: 2, slots: [{ pitch: 0 }, { pitch: 1 }], kegs: 3 },
+        "beer-display": { itemDisplayScale: 3, capacity: 1, slots: [{ pitch: 2 }] },
+    };
+    function scaleOf(kind: Kind, propScale: number): number { return LAYOUTS[kind].itemDisplayScale * propScale; }
+    function slotOf(kind: Kind, slot: number): number {
+        const { slots, capacity } = LAYOUTS[kind];
+        return slots[((slot % capacity) + capacity) % capacity]!.pitch;
+    }
+    const kinds: Kind[] = ["keg-display", "beer-display"];
+    const read = [scaleOf(kinds[0]!, 2), scaleOf(kinds[1]!, 2), slotOf(kinds[0]!, 3), slotOf(kinds[1]!, 5)];
+    if (read.join(",") !== "4,6,1,2") throw new Error("layouts " + read.join(","));
+`,
+);
+
+check(
     "void-callback-result-compared-with-true",
     `
     let seen = 0;

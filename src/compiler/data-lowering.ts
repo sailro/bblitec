@@ -6983,7 +6983,17 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 );
                 return undefinedValue();
             }
-            const commonType = fields[0]!.type;
+            // Fields of several types read as the one type the access has
+            // (two layouts' records as their union's), each converted.
+            const joinedType =
+                mode === "read" &&
+                fields.some(
+                    (field) => !dataTypesEqual(field.type, fields[0]!.type),
+                ) &&
+                !fields.some((field) => field.accessor)
+                    ? this.dataTypeAt(access)
+                    : undefined;
+            const commonType = joinedType ?? fields[0]!.type;
             if (
                 fields.length !== keyed.length &&
                 fields.some((field) => field.accessor)
@@ -6999,6 +7009,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             if (mode === "write" && fields.some((field) => field.accessor))
                 this.accessorRead("", commonType, mode, access);
             if (
+                !joinedType &&
                 fields.some((field) => !dataTypesEqual(field.type, commonType))
             ) {
                 this.context.fail(
@@ -7037,7 +7048,14 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             const read = (field: DataStructField | undefined): string => {
                 if (!field)
                     return this.context.dataTypes.absentValue(selectedType);
-                const stored = `${owner.cpp}${arrow}${field.name}${field.accessor ? ".get()" : ""}`;
+                const own = `${owner.cpp}${arrow}${field.name}${field.accessor ? ".get()" : ""}`;
+                const stored = joinedType
+                    ? this.compileKnownValueForSink(
+                          this.leafValue(own, field.type),
+                          joinedType,
+                          access,
+                      )
+                    : own;
                 return selectedType === commonType
                     ? stored
                     : this.context.dataTypes.presentValue(selectedType, stored);
