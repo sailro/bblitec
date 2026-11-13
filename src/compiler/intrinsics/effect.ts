@@ -62,7 +62,39 @@ export interface EffectIntrinsicContext
             | "sceneManifest"
             | "emit"
             | "fail"
+            | "dataLowerer"
+            | "dataTypes"
+            | "checker"
         > {}
+
+/**
+ * A binding key known only at run time to be a name or a number (a
+ * `[string | number, ...]` table's lane): stored as that union, it keys by
+ * whichever it is.
+ */
+function nameOrNumberKey(
+    context: EffectIntrinsicContext,
+    key: Value,
+    node: ts.Expression,
+): string | undefined {
+    const union = context.dataTypes.fromTsType(
+        context.checker.getTypeAtLocation(node),
+        node,
+    );
+    if (
+        union?.kind !== "union" ||
+        union.members.length !== 2 ||
+        !union.members.some((member) => member.kind === "number") ||
+        !union.members.some((member) => member.kind === "string")
+    )
+        return undefined;
+    const stored = context.dataLowerer.compileKnownValueForSink(
+        key,
+        union,
+        node,
+    );
+    return `std::visit([](const auto& member) { return bbl::EffectBindingKey{member}; }, ${stored})`;
+}
 
 /** The pin's own align4 on a uniform binding's declared byte length. */
 function align4(value: number): number {
@@ -466,10 +498,11 @@ export function compileEffectIntrinsic(
                     ? `bbl::EffectBindingKey{static_cast<double>(${key.cpp})}`
                     : isStringValue(key)
                       ? `bbl::EffectBindingKey{std::string(${key.cpp})}`
-                      : context.fail(
+                      : (nameOrNumberKey(context, key, argumentAt(call, 1)) ??
+                        context.fail(
                             argumentAt(call, 1),
                             "An effect texture binding is a name or a binding number.",
-                        );
+                        ));
             const texture = context.compileValue(argumentAt(call, 2));
             if (texture.kind !== "render-texture") {
                 context.expectKind(texture, "texture", argumentAt(call, 2));
