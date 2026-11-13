@@ -280,6 +280,32 @@ export function adoptRecapturedRow(
     };
 }
 
+/** The first row of a newly registered scene: its first capture, pinned whole. */
+export function newReferenceRow(
+    id: string,
+    reference: string,
+    inputs: ReferenceInputs,
+): ExactCorpusReference {
+    return {
+        id,
+        sourceSha256: inputs.corpusSha256,
+        reference,
+        referenceSha256: inputs.goldenSha256,
+        moduleSha256: inputs.moduleSha256,
+        ...(inputs.referenceSearch !== undefined
+            ? { referenceSearch: inputs.referenceSearch }
+            : {}),
+        ...(inputs.referenceHostPage !== undefined &&
+        inputs.referenceHostPageSha256 !== undefined
+            ? {
+                  referenceHostPage: inputs.referenceHostPage,
+                  referenceHostPageSha256: inputs.referenceHostPageSha256,
+              }
+            : {}),
+        capturedAt: inputs.goldenWrittenAt,
+    };
+}
+
 /** `adoptRecapturedRow` for one registered scene, over the repository. */
 function adoptRecapturedReference(
     id: string,
@@ -303,9 +329,6 @@ function adoptRecapturedReference(
     }
     const index = document.scenes.findIndex((row) => row.id === id);
     const row = document.scenes[index];
-    if (row === undefined) {
-        throw new Error(`${id} has no row in ${MANIFEST_PATH}.`);
-    }
     const scene = getScene(id);
     const parity = scene.parity;
     if (!parity) throw new Error(`${id} has no registry parity entry.`);
@@ -314,8 +337,11 @@ function adoptRecapturedReference(
     if (corpusSha256 === undefined) {
         throw new Error(`${id} is not in the corpus manifest.`);
     }
-    const golden = resolve(repositoryRoot, row.reference);
-    document.scenes[index] = adoptRecapturedRow(row, {
+    // A scene's golden lives at its registry reference path.
+    const reference =
+        row?.reference ?? `reference/${id}/babylon-lite-golden.png`;
+    const golden = resolve(repositoryRoot, reference);
+    const inputs: ReferenceInputs = {
         corpusSha256,
         moduleSha256: sha256(
             suiteBrowserModule(
@@ -335,7 +361,21 @@ function adoptRecapturedReference(
                 : sha256(readFileSync(resolve(repositoryRoot, hostPage))),
         goldenSha256: sha256(readFileSync(golden)),
         goldenWrittenAt: statSync(golden).mtime.toISOString(),
-    });
+    };
+    if (row) document.scenes[index] = adoptRecapturedRow(row, inputs);
+    else {
+        // A newly registered scene's first row, in the corpus catalog's order.
+        const order = corpus.scenes.map((entry) => entry.id);
+        const at = order.indexOf(id);
+        const next = document.scenes.findIndex(
+            (entry) => order.indexOf(entry.id) > at,
+        );
+        document.scenes.splice(
+            next < 0 ? document.scenes.length : next,
+            0,
+            newReferenceRow(id, reference, inputs),
+        );
+    }
     const content = serialize(document);
     return { content, changed: content !== original };
 }

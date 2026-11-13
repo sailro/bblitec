@@ -278,7 +278,7 @@ function ownedCallbacks(
     };
     return `
     auto control = std::make_shared<CameraControlAttachment>();
-    control->pointer_down = [pointer = control.get()](double button, [[maybe_unused]] bool touch) {
+    control->pointer_down = [pointer = control.get()](double button, [[maybe_unused]] bool touch, [[maybe_unused]] const PlatformMouseEvent& event) {
 ${pointer("onPointerDown")}
     };
     control->pointer_move = [state, pointer = control.get(), camera_record = &camera]([[maybe_unused]] double touch_count, double delta_x, double delta_y) {

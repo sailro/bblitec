@@ -142,6 +142,7 @@ import {
 import { bigintFromNumberCpp } from "../compiler/bigint-values.js";
 import { jsonAbsenceCpp } from "../compiler/values/model.js";
 import { TYPED_ARRAY_KINDS } from "../compiler/data-types/typed-arrays.js";
+import { STRING_POSITION_SEARCHES } from "../compiler/string-searches.js";
 export type { RecordShape } from "./record-shapes.js";
 
 /** One member the port spells itself. */
@@ -10283,14 +10284,7 @@ class RecordBodyLowerer extends PinnedNumericLowerer {
             case "indexOf": {
                 if (node.arguments.length < 1 || node.arguments.length > 2)
                     this.refuse(node, `Pinned string ${name} arity.`);
-                const helper =
-                    name === "includes"
-                        ? "string_includes"
-                        : name === "startsWith"
-                          ? "string_starts_with"
-                          : name === "endsWith"
-                            ? "string_ends_with"
-                            : "string_index_of";
+                const helper = STRING_POSITION_SEARCHES.get(name)!.helper;
                 return `bbl::js::${helper}(${receiver()}, ${this.convert(first!, string)}${second ? `, ${this.convert(second, { kind: "number" })}` : ""})`;
             }
             case "padStart":

@@ -2,6 +2,7 @@
 
 #include <bblite/js_data.hpp>
 #include <bblite/js_encoding.hpp>
+#include <iterator>
 
 namespace bbl::js {
 namespace search_params_detail {
@@ -252,6 +253,21 @@ public:
         if (text.starts_with('?'))
             text.remove_prefix(1);
         entries_->entries = parse(text);
+    }
+    /**
+     * A record initializer's own properties in order, each a two-string pair
+     * appended as USVStrings (the constructor's record step).
+     */
+    template <class Pairs> [[nodiscard]] static SearchParams from_pairs(const Pairs& pairs) {
+        SearchParams params;
+        params.entries_ = std::make_shared<State>();
+        for (const auto& pair : pairs) {
+            auto item = std::begin(pair);
+            const std::string_view name = *item;
+            const std::string_view value = *++item;
+            params.entries_->entries.emplace_back(usv_string(name), usv_string(value));
+        }
+        return params;
     }
     /** A URL's query object: `query` without its '?', and the URL's update steps. */
     [[nodiscard]] static SearchParams for_url(std::string_view query,

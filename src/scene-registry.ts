@@ -4291,6 +4291,23 @@ const authoredInputs: readonly SceneInput[] = [
         },
     },
     {
+        id: "scene349",
+        name: "Scene 349 - Parallax Occlusion Mapping",
+        ...labScene("scene349"),
+        title: "Babylon Lite Native - Parallax Occlusion Mapping",
+        parity: {
+            referenceSettle: loaderOverlaySettle,
+            // MEASURED 0.057/0.293 on both backends: the page header's text
+            // rasterization; the canvases match exactly.
+            maxFullMad: 0.07,
+            maxForegroundMad: 0.31,
+            canvasThresholds: { maxFullMad: 0.001, maxForegroundMad: 0.001 },
+            // The scene clears to (0.035, 0.045, 0.065): 9, 11, 17 in 8-bit.
+            backgroundColor: [9, 11, 17],
+            backgroundThreshold: 30,
+        },
+    },
+    {
         id: "scene354",
         name: "Scene 354 - Mesh Opacity",
         source: "corpus/babylon-lite/lab/lite/src/lite/scene354.ts",

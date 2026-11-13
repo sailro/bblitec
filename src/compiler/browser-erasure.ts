@@ -68,6 +68,7 @@ import {
     accessedPropertySymbol,
     declarationOrigin,
     GLOBAL_OBJECT_NAMES,
+    isTopLevelWindow,
 } from "./symbols.js";
 import { searchParamsMutators } from "./search-params.js";
 import { foldMathCall, mathMemberCall } from "./math-intrinsics.js";
@@ -163,6 +164,7 @@ const NATIVE_PLATFORM_CLASSES: ReadonlySet<string> = new Set([
     "DOMException",
     "URL",
     "Blob",
+    "FormData",
 ]);
 
 /** A browser value the fold spells as a literal: a number, string, boolean, null or undefined. */
@@ -1881,6 +1883,22 @@ export class BrowserErasure {
         return condition;
     }
 
+    /**
+     * The Window an operand of `===` names in a top-level browsing context,
+     * which the native window always is: `window.parent !== window` folds.
+     * Only identity reads it; the operand's value stays the global object.
+     */
+    private windowIdentity(
+        expression: ts.Expression,
+    ): Value["browserValue"] | undefined {
+        return !this.context.options.workers?.namespace &&
+            isTopLevelWindow(
+                this.context.libraryGlobal(this.context.unwrap(expression)),
+            )
+            ? { kind: "object", window: true }
+            : undefined;
+    }
+
     private browserValueOfUncached(
         expression: ts.Expression,
     ): Value["browserValue"] | undefined {
@@ -2183,8 +2201,11 @@ export class BrowserErasure {
             // the strict forms fold here: loose equality coerces, and only its
             // nullish case folds, above.
             if (equality && !equality.loose) {
-                const right = this.browserValueOf(unwrapped.right);
-                const equal = strictlyEqualBrowserValues(left, right);
+                const equal = strictlyEqualBrowserValues(
+                    this.windowIdentity(unwrapped.left) ?? left,
+                    this.windowIdentity(unwrapped.right) ??
+                        this.browserValueOf(unwrapped.right),
+                );
                 if (equal === undefined) return undefined;
                 return {
                     kind: "boolean",
@@ -3213,6 +3234,17 @@ function strictlyEqualBrowserValues(
 ): boolean | undefined {
     if (!left || !right) return undefined;
     if (left.kind !== right.kind) return false;
+    // One Window object, and an object of another known identity is not it.
+    if (left.kind === "object" && right.kind === "object") {
+        const known = (value: typeof left): boolean =>
+            value.window === true ||
+            value.primaryCanvas === true ||
+            value.moduleUrl === true;
+        if (left.window === true || right.window === true)
+            return known(left) && known(right)
+                ? left.window === right.window
+                : undefined;
+    }
     if (
         left.kind === "object" ||
         right.kind === "object" ||

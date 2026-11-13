@@ -1,0 +1,132 @@
+{
+  "scene": "scene349",
+  "base": "registry",
+  "timeoutMs": 120000,
+  "env": {
+    "BBLITE_CAPTURE_ENGINE_FRAMES": "1"
+  },
+  "notes": "The live controls rebuild materials at run time: the texture select swaps both families' textures and rebuilds them, the right-column select drops parallax occlusion, and the depth slider moves the PBR block through markMaterialUboDirty and rebuilds the Standard one. Native presses the controls; the browser, whose select popups are platform UI, sets them and dispatches the same events, and both wait for the scene's own settings version. The capture frame counts engine frames: the canvas's render loop can start a frame after the Window's. Native against the browser measures 0.057-0.074 (the page's text); each control moves the browser image 0.8 or more.",
+  "observe": {
+    "viewport": [1280, 720],
+    "reloadEachStep": true,
+    "state": "(() => { const canvas = document.getElementById('renderCanvas'); return { search: location.search, dataset: { ...canvas.dataset } }; })()",
+    "steps": [
+      {
+        "id": "baseline",
+        "actions": [],
+        "settleFrames": 8,
+        "screenshot": "page"
+      },
+      {
+        "id": "texture-wall",
+        "actions": [
+          {
+            "evaluate": "(() => { const select = document.querySelector('select[name=asset]'); select.value = 'wall'; select.dispatchEvent(new Event('change', { bubbles: true })); })()"
+          },
+          {
+            "waitFor": "document.getElementById('renderCanvas').dataset.settingsVersion === '1' && document.getElementById('renderCanvas').dataset.updating === 'false'",
+            "timeoutMs": 30000
+          }
+        ],
+        "settleFrames": 8,
+        "screenshot": "page"
+      },
+      {
+        "id": "pom-off",
+        "actions": [
+          {
+            "evaluate": "(() => { const select = document.querySelector('select[name=pom]'); select.value = 'off'; select.dispatchEvent(new Event('change', { bubbles: true })); })()"
+          },
+          {
+            "waitFor": "document.getElementById('renderCanvas').dataset.settingsVersion === '1' && document.getElementById('renderCanvas').dataset.updating === 'false'",
+            "timeoutMs": 30000
+          }
+        ],
+        "settleFrames": 8,
+        "screenshot": "page"
+      },
+      {
+        "id": "depth-up",
+        "actions": [
+          {
+            "evaluate": "(() => { const input = document.querySelector('input[name=depth]'); for (const value of ['0.07', '0.08', '0.09', '0.1']) { input.value = value; input.dispatchEvent(new Event('input', { bubbles: true })); } })()"
+          },
+          {
+            "waitFor": "document.getElementById('renderCanvas').dataset.depth === '0.1' && document.getElementById('renderCanvas').dataset.updating === 'false'",
+            "timeoutMs": 30000
+          }
+        ],
+        "settleFrames": 8,
+        "screenshot": "page"
+      }
+    ]
+  },
+  "phases": [
+    {
+      "id": "baseline",
+      "frame": 120
+    },
+    {
+      "id": "texture-wall",
+      "frame": 120,
+      "tape": [
+        "-*60",
+        "UiClick@437:51",
+        "-*5",
+        "UiClick@430:93"
+      ]
+    },
+    {
+      "id": "pom-off",
+      "frame": 120,
+      "tape": [
+        "-*60",
+        "UiClick@137:51",
+        "-*5",
+        "UiClick@137:93"
+      ]
+    },
+    {
+      "id": "depth-up",
+      "frame": 120,
+      "tape": [
+        "-*60",
+        "UiClick@793:52",
+        "-*5",
+        "UiKey@Right",
+        "-*2",
+        "UiKey@Right",
+        "-*2",
+        "UiKey@Right",
+        "-*2",
+        "UiKey@Right"
+      ]
+    }
+  ],
+  "expect": [
+    {
+      "kind": "image-mad",
+      "phase": "baseline",
+      "vs": "browser:baseline",
+      "max": 0.1
+    },
+    {
+      "kind": "image-mad",
+      "phase": "texture-wall",
+      "vs": "browser:texture-wall",
+      "max": 0.1
+    },
+    {
+      "kind": "image-mad",
+      "phase": "pom-off",
+      "vs": "browser:pom-off",
+      "max": 0.1
+    },
+    {
+      "kind": "image-mad",
+      "phase": "depth-up",
+      "vs": "browser:depth-up",
+      "max": 0.1
+    }
+  ]
+}

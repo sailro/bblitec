@@ -79,6 +79,14 @@ import {
 } from "./lowering/pinned-numeric-lowerer.js";
 import { pinnedStandardMeshAlpha } from "./lowering/standard-mesh-alpha.js";
 import {
+    ACTIVE_PARALLAX_OCCLUSION,
+    lowerStandardParallaxParams,
+} from "./lowering/parallax-occlusion.js";
+import {
+    emissiveRenderTextureSource,
+    standardFeatureRecordSources,
+} from "./lowering/standard-material-record-sources.js";
+import {
     geometryAttachmentTypes,
     importPinnedModule,
 } from "./pinned-shader-composer.js";
@@ -295,6 +303,10 @@ function pinnedSourcePath(runtimeModule: string): string {
     return `src/${runtimeModule.replace(/\.js$/, ".ts")}`;
 }
 
+/** The parallax occlusion extension's module, which its setter registers. */
+const STANDARD_PARALLAX_MODULE =
+    "material/standard/fragments/std-parallax-occlusion-fragment.js";
+
 let registered: Promise<void> | undefined;
 
 async function registerStandardExtensions(): Promise<void> {
@@ -328,6 +340,16 @@ async function registerStandardExtensions(): Promise<void> {
         flags._registerStdExt((await pinnedRectAreaStandard()).rectAreaStdExt);
         flags._registerStdExt(
             (await pinnedRectAreaEmissionStandard()).rectAreaEmissionStdExt,
+        );
+        // `setStandardParallaxOcclusion` registers it; its `_detect` answers
+        // zero for a material with no `_parallaxOcclusion`, which only
+        // `material:parallax-occlusion` writes.
+        flags._registerStdExt(
+            (
+                await importPinnedModule<{
+                    stdParallaxOcclusionExt: StdExtDescriptor;
+                }>(STANDARD_PARALLAX_MODULE)
+            ).stdParallaxOcclusionExt,
         );
     })();
     return registered;
@@ -975,69 +997,6 @@ function standardInstanceColorSlot(): string {
 }
 
 /**
- * The render-texture half of the emissive slot.
- *
- * Two derivations read it — the slot's presence, and the depth arm the pin
- * selects from `_sampleType` — so the record field is spelled once.
- */
-const emissiveRenderTextureSource = "material.has_emissive_render_texture";
-
-/**
- * How the pin's `StandardMaterialProps` reads map onto our MaterialRecord.
- *
- * A null source folds the pin's condition to false because the generated
- * loader never fills the input — each null names the loader fact that makes
- * it so, and the generation-side composition input builder must mirror the
- * same absences so the two derivations stay bit-identical.
- */
-const standardFeatureRecordSources: Readonly<Record<string, string | null>> = {
-    // babylon-loader-cpp.ts fills base_color_texture from diffuseTexture,
-    // and a scene-code `material.diffuseTexture = <render target>` write
-    // fills the render-texture pair instead: an image and an attachment
-    // both light HAS_DIFFUSE_TEXTURE.
-    diffuseTexture:
-        "material.base_color_texture.has_image() || " +
-        "material.has_diffuse_render_texture",
-    diffuseCoordIndex: "material.diffuse_coord_index",
-    // `enableMaterialUvTransform(material)` marks a hand-built material for
-    // per-texture transforms; the flag is what `stdUvTransformExt`'s
-    // `_meshFeatures` reads, and the only thing that sets it.
-    _hasUvTx: "material.has_uv_transform",
-    // `setStandardEmissiveTexture` is the only native source of a Standard
-    // emissive texture (the .babylon loader loads none), and it takes both
-    // of the pin's `Texture2D` sources: a depth render target, and a loaded
-    // image. The presence bit is either; the depth arm is the render target
-    // alone, which is the only one carrying `_sampleType`, so both sites
-    // compose from the one spelling below rather than repeating it.
-    _emissiveTexture:
-        `${emissiveRenderTextureSource} || ` +
-        "material.emissive_texture.has_image()",
-    _bumpTexture: "material.bump_texture.has_image()",
-    _specularTexture: "material.specular_texture.has_image()",
-    specularCoordIndex: "material.specular_coord_index",
-    _ambientTexture: "material.ambient_texture.has_image()",
-    ambientCoordIndex: "material.ambient_coord_index",
-    _lightmapTexture: "material.lightmap_texture.has_image()",
-    lightmapCoordIndex: "material.lightmap_coord_index",
-    useLightmapAsShadowmap: "material.lightmap_shadowmap",
-    _opacityTexture: "material.opacity_texture.has_image()",
-    // babylon-loader-cpp.ts reads opacityTexture.getAlphaFromRGB into the
-    // record, mirroring the pin's own loader write (load-babylon.ts
-    // TEX_SLOTS opacity extra: `if (t.getAlphaFromRGB) m.opacityFromRGB`).
-    opacityFromRGB: "material.opacity_from_rgb",
-    // babylon-loader-cpp.ts fills reflection_texture from the non-cube arm
-    // of reflectionTexture (the pinned slot skips cube entries), the same
-    // split the pin's loader makes (TEX_SLOTS `skipIf: isCube` vs the
-    // separate cube branch).
-    _reflectionTexture: "material.reflection_texture.has_image()",
-    _reflectionCubeTexture: "material.reflection_cube != invalid_handle",
-    backFaceCulling: "!material.double_sided",
-    disableLighting: "material.disable_lighting",
-    // Material-wide alpha is distinct from PBR's base-colour-factor alpha.
-    alpha: "material.alpha",
-};
-
-/**
  * `_computeStandardMaterialFeatures`, lowered from its own pinned AST.
  *
  * The structure — which condition guards which `f |= FLAG`, and how the
@@ -1051,6 +1010,8 @@ function lowerStandardFeatureDerivation(
     context: LoweringContext,
     uvTransform: boolean,
     plugins: boolean,
+    /** `material:parallax-occlusion` reached: a setter registered its extension. */
+    parallax: boolean,
 ): string {
     const modulePath = "src/material/standard/standard-material-features.ts";
     const { file, declaration } = context.functionDeclaration(
@@ -1127,6 +1088,16 @@ function lowerStandardFeatureDerivation(
     /** A condition as C++, or undefined for a branch that folds to false. */
     const lowerCondition = (expression: ts.Expression): string | undefined => {
         const unwrapped = context.unwrapExpression(expression);
+        // The parallax extension's height getter (`parallax-occlusion.ts`),
+        // lowered beside it in `parallax_occlusion.hpp`.
+        if (
+            ts.isCallExpression(unwrapped) &&
+            context.expressionMatchesShape(
+                unwrapped,
+                `_getStandardParallaxHeightTexture(${scope.parameter})`,
+            )
+        )
+            return "standard_parallax_height_texture(material) != nullptr";
         const direct = propertyName(unwrapped);
         if (direct !== undefined) {
             const source = standardFeatureRecordSources[direct];
@@ -1230,8 +1201,9 @@ function lowerStandardFeatureDerivation(
             return;
         }
         if (ts.isIdentifier(unwrapped)) {
+            // Unsigned: bit 31 (`1 << 31`) is negative in JavaScript.
             lines.push(
-                `${indent}features |= ${flagValue(unwrapped.text)}u; ` +
+                `${indent}features |= ${flagValue(unwrapped.text) >>> 0}u; ` +
                     `// ${unwrapped.text}`,
             );
             return;
@@ -1270,6 +1242,8 @@ function lowerStandardFeatureDerivation(
         runtimeModule: string,
         exportName: string,
         indent: string,
+        /** The extension declares its own bit beside it, as a mesh-phase one does. */
+        ownFlags = false,
     ): void => {
         const { declaration: detect } = context.methodDeclaration(
             pinnedSourcePath(runtimeModule),
@@ -1283,7 +1257,9 @@ function lowerStandardFeatureDerivation(
             );
         }
         const previous = scope;
+        const previousModule = flagModule;
         scope = newScope(parameter.name.text);
+        if (ownFlags) flagModule = pinnedSourcePath(runtimeModule);
         lines.push(`${indent}// ${exportName}`);
         const body = detect.body;
         if (!body) {
@@ -1298,6 +1274,7 @@ function lowerStandardFeatureDerivation(
             lowerFlagExpression(body, indent);
         }
         scope = previous;
+        flagModule = previousModule;
     };
     /**
      * One mesh-phase extension's `_meshFeatures`, as the lines it adds.
@@ -1421,6 +1398,15 @@ function lowerStandardFeatureDerivation(
                 for (const [module, name] of standardExtensionModules) {
                     lowerDetect(module, name, indent);
                 }
+                // Registered by its setter, so only a scene reaching one
+                // derives its bit.
+                if (parallax)
+                    lowerDetect(
+                        STANDARD_PARALLAX_MODULE,
+                        "stdParallaxOcclusionExt",
+                        indent,
+                        true,
+                    );
                 // The mesh-phase extensions contribute in the renderable
                 // builder rather than here, but their bit is part of the
                 // same word this function's callers key a variant by. Only a
@@ -1550,6 +1536,12 @@ export interface StandardSceneCompositionInput {
      *  unfilterable-float one. */
     emissiveFileTexture: boolean;
     lightmapFileTexture?: boolean;
+    /** `material:standard-bump` reached: scene code hands a loaded image to
+     *  `setStandardBumpTexture`. */
+    bumpFileTexture?: boolean;
+    /** `material:parallax-occlusion` reached: scene code sets or clears a
+     *  material's parallax occlusion. */
+    parallaxOcclusion?: boolean;
     /** `material:standard-uv-transform` reached: scene code marked a
      *  hand-built material with `enableMaterialUvTransform`. */
     uvTransform: boolean;
@@ -1692,6 +1684,8 @@ function sceneCodeMaterialInputs(options: {
     emissiveRenderTexture: boolean;
     emissiveFileTexture: boolean;
     lightmapFileTexture?: boolean;
+    bumpFileTexture?: boolean;
+    parallaxOcclusion?: boolean;
     diffuseRenderTexture: boolean;
     diffusePixelsTexture: boolean;
     diffuseSolidTexture: boolean;
@@ -1779,7 +1773,19 @@ function sceneCodeMaterialInputs(options: {
             ),
         );
     }
-    if (!options.lightmapFileTexture) return inputs;
+    // `bumpStdExt._detect` reads only the texture's presence.
+    const bumped = options.bumpFileTexture
+        ? inputs.flatMap((input) => [input, { ...input, bumpTexture: {} }])
+        : inputs;
+    // So does the parallax extension's `_detect`, once a surface texture
+    // is there for it to displace; a setter can set or clear it.
+    const displaced = options.parallaxOcclusion
+        ? bumped.flatMap((input) => [
+              input,
+              { ...input, _parallaxOcclusion: ACTIVE_PARALLAX_OCCLUSION },
+          ])
+        : bumped;
+    if (!options.lightmapFileTexture) return displaced;
     const lightmaps: PinnedStandardMaterialInput[] = [{}];
     for (const lightmapCoordIndex of [0, 1])
         for (const useLightmapAsShadowmap of [false, true])
@@ -1789,7 +1795,7 @@ function sceneCodeMaterialInputs(options: {
                     lightmapCoordIndex,
                     useLightmapAsShadowmap,
                 });
-    return inputs.flatMap((input) =>
+    return displaced.flatMap((input) =>
         lightmaps.map((lightmap) => ({ ...input, ...lightmap })),
     );
 }
@@ -1826,6 +1832,8 @@ export async function composeSceneStandardVariants(
                 emissiveRenderTexture: input.emissiveRenderTexture,
                 emissiveFileTexture: input.emissiveFileTexture,
                 lightmapFileTexture: input.lightmapFileTexture ?? false,
+                bumpFileTexture: input.bumpFileTexture ?? false,
+                parallaxOcclusion: input.parallaxOcclusion ?? false,
                 diffuseRenderTexture: input.diffuseRenderTexture,
                 diffusePixelsTexture: input.diffusePixelsTexture,
                 diffuseSolidTexture: input.diffuseSolidTexture,
@@ -2295,6 +2303,16 @@ const standardBuiltinBindings: readonly StandardBuiltinBinding[] = [
         reflectionCube: true,
         origin: ["std-cube-reflection-fragment.ts; outside the slot table."],
     },
+    {
+        texture: "parallaxHeightTexture",
+        sampler: "parallaxHeightSampler",
+        source: "parallax_height",
+        reflectionCube: false,
+        origin: [
+            "std-parallax-occlusion-fragment.ts: the height map its surface",
+            "samples march through.",
+        ],
+    },
 ];
 
 /** Every WGSL name the composed Standard variants declare for themselves. */
@@ -2446,6 +2464,9 @@ export interface PinnedStandardSupportOptions {
     /** `material:plugins` reached: a Standard material may carry a plugin
      *  signature index, which the derived word has to shift back in. */
     plugins: boolean;
+    /** `material:parallax-occlusion` reached: the derived word carries the
+     *  parallax extension's bit. */
+    parallax?: boolean;
     /**
      * Per plugin signature index (1-based), the pin's own composed texture
      * and sampler binding names in bind order — read back off
@@ -2556,6 +2577,7 @@ inline bool standard_variant_skeleton(const StandardVariantEntry& variant) {
         context,
         options.uvTransform,
         options.plugins,
+        options.parallax === true,
     );
     // The mesh-phase extension's own uniform block, emitted only for a scene
     // that reached the pin's enabler -- the same gate the derivation line
@@ -2577,9 +2599,12 @@ inline bool standard_variant_skeleton(const StandardVariantEntry& variant) {
     // which put a blank one into every Standard scene's header and broke the
     // generated-tree byte diff for scenes that reach nothing here.
     const uvTransformBlock = uvTransform ? uvTransform.source : "";
+    const parallaxBlock = options.parallax
+        ? lowerStandardParallaxParams(context, options.uvOffset === true)
+        : "";
     const selectorRows = options.selectors.map(
         (selector) =>
-            `    {${selector.features}u, ${selector.meshFeatures}u, ` +
+            `    {${selector.features >>> 0}u, ${selector.meshFeatures}u, ` +
             `${
                 selector.geometryTask ??
                 "std::numeric_limits<std::size_t>::max()"
@@ -2646,6 +2671,7 @@ inline const StandardPluginBinding* standard_plugin_binding_for(
 #include <limits>
 #include <bblite/upstream/material_texture_slots.hpp>
 ${options.skeleton ? "#include <bblite/js_data.hpp>\n" : ""}\
+${options.parallax ? "#include <bblite/upstream/parallax_occlusion.hpp>\n" : ""}\
 
 namespace bbl::upstream {
 
@@ -2824,7 +2850,7 @@ inline std::size_t standard_variant_for(
     }
     return std::numeric_limits<std::size_t>::max();
 }
-
+${parallaxBlock}
 } // namespace bbl::upstream
 `);
 }

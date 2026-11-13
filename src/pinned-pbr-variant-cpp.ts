@@ -62,6 +62,7 @@ import {
     nativeLightKind,
     type LightKind,
 } from "./compiler/types.js";
+import { lowerPbrParallaxWriter } from "./lowering/parallax-occlusion.js";
 import {
     rectAreaLightingKeyCpp,
     rectAreaSlotDeclarationsCpp,
@@ -172,7 +173,11 @@ const extensionWriters: ReadonlyArray<
           >;
       }
     | { kind: "packet"; baseField: string; recordField: string }
+    | { kind: "parallax"; baseField: string }
 > = [
+    // `pbrParallaxOcclusionExt.writeUbo`, which hands its four fields to
+    // the module's own writer (`lowerPbrParallaxWriter`).
+    { kind: "parallax", baseField: "parallaxHeight" },
     {
         kind: "packet",
         baseField: "localEnvironmentMode",
@@ -1561,6 +1566,8 @@ export interface PbrMaterialStateRow {
     baseColorFactorWritten: boolean;
     /** Whether the record holds a bent normal texture, keyed under `enableBentNormals`. */
     bentNormalTexture?: boolean;
+    /** Whether the record holds active parallax occlusion, keyed where the program sets it. */
+    parallaxOcclusion?: boolean;
     row: number;
 }
 
@@ -1788,6 +1795,20 @@ export function pinnedPbrVariantsHeader(
             }
         }
         const lowered = reached.map((extension) => {
+            if (extension.kind === "parallax") {
+                return (
+                    `// src/material/pbr/fragments/parallax-occlusion-fragment.ts pbrParallaxOcclusionExt.writeUbo\n` +
+                    `inline void write_${name}_${extension.baseField}(\n` +
+                    `    const MaterialRecord& material, [[maybe_unused]] const TextureTransform& transform,\n` +
+                    `    ${name}MaterialUniforms& out) {\n` +
+                    lowerPbrParallaxWriter(
+                        context,
+                        slots,
+                        "std::span<float>(reinterpret_cast<float*>(&out), sizeof(out) / sizeof(float))",
+                    ) +
+                    "\n}"
+                );
+            }
             if (extension.kind === "packet") {
                 return (
                     `// Fields produced by the executed pinned extension writer.\n` +
@@ -2066,7 +2087,7 @@ export function pinnedPbrVariantsHeader(
 #include <bblite/upstream/pinned_variant_bindings.hpp>
 #include <bblite/runtime.hpp>
 ${variants.some((variant) => variant.pluginUniformFields !== undefined) ? "#include <bblite/pal_material_plugin.hpp>" : ""}
-${lightKinds.length > 0 ? "#include <bblite/upstream/light_matrix.hpp>\n" : ""}
+${lightKinds.length > 0 ? "#include <bblite/upstream/light_matrix.hpp>\n" : ""}${blocks.some((block) => block.includes("write_parallax_uniforms(")) ? "#include <bblite/upstream/parallax_occlusion.hpp>\n" : ""}
 namespace bbl::upstream {
 
 using bbl::MaterialRecord;
@@ -2235,9 +2256,11 @@ struct PbrMaterialStateRow {
     bool base_color_factor_written = false;
     /** The record holds a bent normal texture; unkeyed without \`enableBentNormals\`. */
     std::optional<bool> bent_normal_texture;
+    /** The record holds active parallax occlusion; unkeyed where no setter is reached. */
+    std::optional<bool> parallax_occlusion;
     std::uint32_t row = 0;
 };
-${cpp.table("PbrMaterialStateRow", "pbr_material_state_rows", materialStateRows.length, materialStateRows.map((state) => `    {${state.sourceRow}u, ${state.blend}, ${state.pluginSignature}u, ${state.baseColorFactorWritten}, ${state.bentNormalTexture ?? "std::nullopt"}, ${state.row}u},`).join("\n"))}
+${cpp.table("PbrMaterialStateRow", "pbr_material_state_rows", materialStateRows.length, materialStateRows.map((state) => `    {${state.sourceRow}u, ${state.blend}, ${state.pluginSignature}u, ${state.baseColorFactorWritten}, ${state.bentNormalTexture ?? "std::nullopt"}, ${state.parallaxOcclusion ?? "std::nullopt"}, ${state.row}u},`).join("\n"))}
 
 ${pbrMaterialBlendsCpp(context)}
 
@@ -2368,6 +2391,9 @@ export interface MaterialTextureSlotFeatures {
      *  (std-reflection-fragment.ts `rT`/`rS`), so the record's
      *  reflection_texture needs a mesh slot. */
     standardReflection: boolean;
+    /** A composed variant of either family binds the parallax occlusion
+     *  height pair, which both extensions name alike. */
+    parallaxOcclusion?: boolean;
     /** A composed variant binds the clustered light field's three data
      *  textures, which the scene's container owns rather than a material. */
     clusteredLights: boolean;
@@ -2617,6 +2643,17 @@ function materialTextureSlotRows(features: MaterialTextureSlotFeatures): {
             fallback: "white",
             textureName: "",
             samplerName: "",
+        });
+    }
+    if (features.parallaxOcclusion) {
+        // Appended last for the bump slot's reason. Both families name the
+        // pair alike; only a variant composed for an active height map
+        // binds it, so the fallback is never sampled.
+        mesh.push({
+            source: "parallax_height",
+            fallback: "white",
+            textureName: "parallaxHeightTexture",
+            samplerName: "parallaxHeightSampler",
         });
     }
     const state: MaterialSlotRow[] = [
@@ -2881,6 +2918,8 @@ enum class MaterialTextureSource {
      *  sampled at computed reflCoords); a PBR material leaves the
      *  fallback. */
     standard_reflection,
+    /** The parallax occlusion height map either family's extension binds. */
+    parallax_height,
     // Scene-owned resources the pinned bindings also name: no mesh slot,
     // no record field -- each backend resolves these from its own state.
     environment_cube,
@@ -3336,7 +3375,8 @@ export function pinnedStandardVariantsHeader(
         );
         table.push(
             `    {"${variant.fragmentKey}", "${variant.vertex}", ` +
-                `"${variant.fragment}", ${variant.features}, ` +
+                // Unsigned: bit 31 is negative in JavaScript.
+                `"${variant.fragment}", ${variant.features >>> 0}u, ` +
                 `${variant.meshFeatures}, ` +
                 `${bindingRows.length}, ${bindings.length}, ` +
                 `${shadowRows.length}, ${shadowBindings.length}, ` +

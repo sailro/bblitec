@@ -1824,7 +1824,7 @@ export class AsyncLowerer {
                       : known
                         ? context.withCallbackScopes(known.value, () =>
                               context.compileCallbackWithValues(
-                                  known!.target,
+                                  known.target,
                                   inputs,
                                   node,
                               ),

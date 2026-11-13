@@ -197,7 +197,7 @@ int main() {
                 (frame) => `{
             const std::vector<std::string> keys{${frame.keys.map((key) => JSON.stringify(key)).join(",")}};
             for (const auto& key : keys) control->key_down(key);
-            control->pointer_down(2.0, false);
+            control->pointer_down(2.0, false, bbl::PlatformMouseEvent{});
             control->pointer_move(0.0, ${frame.dx}, ${frame.dy});
             control->pointer_up();
             bbl::run_scene_before_render(scene, ${frame.delta});

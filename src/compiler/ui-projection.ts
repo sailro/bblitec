@@ -114,7 +114,11 @@ import {
 import { nativeHostUiElements } from "./types.js";
 import { validateFileAccept } from "./browser-file.js";
 import { CompileError } from "./compile-error.js";
-import { documentEngine, linkNavigationCpp } from "./window-events.js";
+import {
+    documentEngine,
+    documentUrlCpp,
+    linkNavigationCpp,
+} from "./window-events.js";
 import {
     elementDomHandlerFamily,
     emitDomEventHandler,
@@ -388,6 +392,7 @@ interface UiProjectionContext extends Pick<
     | "failAtFile"
     | "staticAssetUrlCandidates"
     | "propertyName"
+    | "referenceSearch"
     | "refuseLoweredSite"
     | "hasFeature"
     | "hasPresentationHost"
@@ -828,6 +833,26 @@ export class UiProjection {
         return property;
     }
 
+    /** An element handle stored under a non-null type, as the element it holds. */
+    public elementOfHandle(
+        value: Value,
+        expression: ts.Expression,
+    ): Value<"ui-element"> | undefined {
+        if (
+            value.kind !== "data" ||
+            value.dataType?.kind !== "handle" ||
+            value.dataType.handle !== "ui-element"
+        )
+            return undefined;
+        return valueForKind("ui-element", {
+            ...value,
+            engineCpp: value.dataType.ownedEngine
+                ? this.context.requireEngine(value, expression)
+                : (value.engineCpp ??
+                  this.documentEngine(this.context.unwrap(expression))),
+        });
+    }
+
     public uiElementValue(expression: ts.Expression): Value | undefined {
         const root = this.documentRootValue(expression);
         if (root) return root;
@@ -894,6 +919,8 @@ export class UiProjection {
             if (narrowed.kind === "ui-element") {
                 return withTrackedTag(narrowed);
             }
+            const handle = this.elementOfHandle(narrowed, expression);
+            if (handle) return withTrackedTag(handle);
             if (
                 value.dataType.kind !== "optional" ||
                 value.dataType.inner.kind !== "handle" ||
@@ -1095,6 +1122,91 @@ export class UiProjection {
                 )
                 .getSymbol()?.name ?? "",
         );
+    }
+
+    /**
+     * `form.elements.namedItem(name)` on a retained form: its first listed
+     * control in tree order whose id or name is `name`, or null.
+     */
+    public compileFormNamedItem(call: ts.CallExpression): Value | undefined {
+        const callee = namedMember(
+            this.context.checker,
+            this.context.unwrap(call.expression),
+        );
+        const collection = callee && this.context.unwrap(callee.expression);
+        if (
+            callee?.name !== "namedItem" ||
+            !collection ||
+            !ts.isPropertyAccessExpression(collection) ||
+            collection.name.text !== "elements"
+        )
+            return undefined;
+        const form = this.compileUiElementReceiver(collection.expression);
+        if (form?.kind !== "ui-element") return undefined;
+        if (this.declaresUiTags(form, collection.expression, ["form"]) !== true)
+            this.context.fail(
+                collection,
+                "elements is a form's controls collection; this element is not declared a <form>.",
+            );
+        if (call.arguments.length !== 1)
+            this.context.fail(call, "namedItem takes one name.");
+        const engine = this.context.requireEngine(form, call);
+        const name = this.uiStringCpp(argumentAt(call, 0), "namedItem name");
+        this.context.reachFeature("ui:rml", call);
+        this.context.reachJsData();
+        return {
+            kind: "data",
+            cpp: `bbl::ui_form_named_item(${engine}, ${form.cpp}, ${name})`,
+            dataType: {
+                kind: "optional",
+                inner: { kind: "handle", handle: "ui-element" },
+            },
+            engineCpp: engine,
+            impure: true,
+        };
+    }
+
+    /**
+     * `new FormData(form?)`: the form's entry list, an ordered name/value
+     * list held as URLSearchParams' storage.
+     */
+    public compileFormData(node: ts.NewExpression): Value | undefined {
+        if (this.context.libraryGlobal(node.expression) !== "FormData")
+            return undefined;
+        const args = node.arguments ?? [];
+        if (args.length > 1)
+            this.context.fail(
+                node,
+                "FormData with a submitter is not lowered; a native form has no submit button.",
+            );
+        const type = { kind: "search-params" } as const;
+        const params = this.context.dataTypes.cppType(type);
+        this.context.reachJsData();
+        if (args.length === 0)
+            return {
+                kind: "data",
+                cpp: `${params}::from_pairs(std::vector<std::array<std::string, 2>>{})`,
+                dataType: type,
+                freshData: true,
+                impure: true,
+            };
+        const form = this.compileUiElementReceiver(args[0]!);
+        if (
+            form?.kind !== "ui-element" ||
+            this.declaresUiTags(form, args[0]!, ["form"]) !== true
+        )
+            return this.context.fail(
+                args[0]!,
+                "FormData reads a retained <form>'s controls.",
+            );
+        this.context.reachFeature("ui:rml", node);
+        return {
+            kind: "data",
+            cpp: `${params}::from_pairs(bbl::ui_form_entries(${this.context.requireEngine(form, node)}, ${form.cpp}))`,
+            dataType: type,
+            freshData: true,
+            impure: true,
+        };
     }
 
     /**
@@ -1517,10 +1629,18 @@ export class UiProjection {
         return createsElement || this.isNativeUiHelperCall(value);
     }
 
+    /**
+     * The string a write stores. With `nulls`, a dynamic value converts as
+     * WebIDL converts it for that attribute: `DOMString?` (`textContent`)
+     * stores null and undefined as the empty string,
+     * `[LegacyNullToEmptyString] DOMString` (`innerText`) null alone; any
+     * other value is its ToString.
+     */
     public uiStringCpp(
         expression: ts.Expression,
         purpose: string,
         knownValue?: Value,
+        nulls?: "nullable" | "legacy-null-to-empty",
     ): string {
         const staticValue = knownValue
             ? knownValue.staticString
@@ -1551,6 +1671,8 @@ export class UiProjection {
                 { kind: "string" },
                 expression,
             );
+        if (nulls && isJsonValue(value))
+            return `bbl::js::${nulls === "nullable" ? "nullable_dom_string" : "legacy_null_dom_string"}(${value.cpp})`;
         this.context.fail(
             expression,
             `${purpose} requires a string, received ${value.kind}.`,
@@ -5237,17 +5359,39 @@ export class UiProjection {
         return `bbl::js::concat(${parts.join(", ")})`;
     }
 
-    /** Static markup creating form controls, parsed into its element tree. */
-    private uiAuthoredMarkup(
-        expression: ts.Expression,
-    ): UiAuthoredMarkupNode[] | undefined {
-        const source = this.tryUiStaticString(expression);
-        if (source === undefined) return undefined;
+    /**
+     * Markup creating form controls, parsed into its element tree: a static
+     * string, or a flat template whose runtime operands are text (escaped, as
+     * in projected markup), each a hole the tree's text holds.
+     */
+    private uiAuthoredMarkup(expression: ts.Expression):
+        | {
+              nodes: UiAuthoredMarkupNode[];
+              substitutions: readonly ts.Expression[];
+          }
+        | undefined {
+        const form = this.uiMarkupForm(expression, new Map());
+        if (form.kind === "structured") return undefined;
         this.prefetchUiMarkup();
-        if (!createsFormControls(source)) return undefined;
-        return parseAuthoredMarkup(source, (message) =>
-            this.context.fail(expression, `Native UI innerHTML ${message}`),
-        );
+        if (!createsFormControls(form.source)) return undefined;
+        const fail = (message: string): never =>
+            this.context.fail(expression, `Native UI innerHTML ${message}`);
+        const nodes = parseAuthoredMarkup(form.source, fail);
+        const holed = (node: UiAuthoredMarkupNode): boolean =>
+            node.kind === "element" &&
+            (node.tag.includes("__BBLITE_UI_MARKUP_") ||
+                node.attributes.some(
+                    (attribute) =>
+                        /__BBLITE_UI_MARKUP_\d+__/i.test(attribute.name) ||
+                        attribute.value.includes("__BBLITE_UI_MARKUP_"),
+                ) ||
+                node.children.some(holed));
+        if (nodes.some(holed))
+            fail("with form controls takes runtime text only in text.");
+        return {
+            nodes,
+            substitutions: form.kind === "flat" ? form.substitutions : [],
+        };
     }
 
     /**
@@ -5258,9 +5402,40 @@ export class UiProjection {
     private emitUiAuthoredMarkup(
         receiver: Value,
         engine: string,
-        nodes: readonly UiAuthoredMarkupNode[],
+        {
+            nodes,
+            substitutions,
+        }: NonNullable<ReturnType<UiProjection["uiAuthoredMarkup"]>>,
         site: ts.Expression,
     ): void {
+        // The template's operands run before the assignment, in order.
+        const texts = substitutions.map((substitution) =>
+            this.uiTemplateValueCpp(
+                this.context.bindings.pinValueToTemporary(
+                    this.context.compileValue(substitution),
+                    "markup_text",
+                    substitution,
+                ),
+                substitution,
+                "Native UI innerHTML",
+            ),
+        );
+        const textCpp = (value: string): string => {
+            if (!value.includes("__BBLITE_UI_MARKUP_"))
+                return this.context.cppString(value);
+            this.context.reachJsData();
+            const parts = value
+                .split(/(__BBLITE_UI_MARKUP_\d+__)/g)
+                .filter(Boolean)
+                .map((chunk) => {
+                    const marker = /^__BBLITE_UI_MARKUP_(\d+)__$/.exec(chunk);
+                    return marker
+                        ? texts[Number(marker[1])]!
+                        : this.context.cppString(chunk);
+                });
+            return `bbl::js::concat(${parts.join(", ")})`;
+        };
+        let linkNavigation = false;
         this.recordUiStaticReplaceChildren(receiver);
         this.context.emit({
             kind: "expression",
@@ -5276,7 +5451,7 @@ export class UiProjection {
                     uiStaticId: this.createUiStaticElement("#text"),
                 });
                 emit(
-                    `bbl::ui_append_text(${engine}, ${parent.cpp}, ${this.context.cppString(node.text)})`,
+                    `bbl::ui_append_text(${engine}, ${parent.cpp}, ${textCpp(node.text)})`,
                 );
                 return;
             }
@@ -5295,6 +5470,20 @@ export class UiProjection {
                 uiTag: node.tag,
                 uiStaticId: this.createUiStaticElement(node.tag),
             };
+            // A link navigates as `location.assign` does (docs/ui.md).
+            if (
+                node.tag === "a" &&
+                !linkNavigation &&
+                node.attributes.some(({ name }) => name === "href") &&
+                linksThisContext(
+                    Object.fromEntries(
+                        node.attributes.map(({ name, value }) => [name, value]),
+                    ),
+                )
+            ) {
+                linkNavigation = true;
+                emit(linkNavigationCpp(this.context, engine, site));
+            }
             for (const attribute of node.attributes) {
                 const value = this.lowerUiAttributeLiteral(
                     attribute.name,
@@ -5315,7 +5504,7 @@ export class UiProjection {
             const [text] = node.children;
             if (node.children.length === 1 && text?.kind === "text")
                 emit(
-                    `bbl::ui_set_text(${engine}, ${name}, ${this.context.cppString(text.text)})`,
+                    `bbl::ui_set_text(${engine}, ${name}, ${textCpp(text.text)})`,
                 );
             else for (const child of node.children) build(element, child);
             emit(
@@ -5794,6 +5983,20 @@ export class UiProjection {
         receiver: ts.Expression,
         site: ts.Node,
     ): Value | undefined {
+        // A link's href is its attribute resolved against the document URL.
+        if (
+            property === "href" &&
+            this.declaresUiTags(element, receiver, ["a", "area"]) === true
+        ) {
+            this.context.reachJsData();
+            return {
+                kind: "string",
+                cpp: `bbl::js::hyperlink_href(bbl::ui_dataset_value(${this.context.requireEngine(element, site)}, ${element.cpp}, "href"), ${documentUrlCpp(this.context)})`,
+                dataType: { kind: "string" },
+                freshData: true,
+                impure: true,
+            };
+        }
         if (
             property === "autocomplete" &&
             this.declaresUiTags(element, receiver, [
@@ -6463,6 +6666,9 @@ export class UiProjection {
                     assigned.site,
                     `UI ${property}`,
                     assigned.value,
+                    property === "textContent"
+                        ? "nullable"
+                        : "legacy-null-to-empty",
                 );
             }
             this.context.emit({
@@ -7084,7 +7290,7 @@ export class UiProjection {
         const sheets = page?.hostUi
             ? (page.hostUi.styleSheets ?? []).map((sheet) => ({
                   text: sheet.text,
-                  origin: { file: page.path, line: sheet.line },
+                  origin: { file: sheet.file ?? page.path, line: sheet.line },
               }))
             : [];
         for (const { text, origin } of sheets) {

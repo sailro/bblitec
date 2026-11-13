@@ -60,6 +60,7 @@ import type {
     ScenePbrLightmapManifest,
 } from "../types.js";
 import { recordAt } from "../record-access.js";
+import { compileSetParallaxOcclusion } from "./material-parallax.js";
 import {
     isStoredTextureHandle,
     setPbrTextureCpp,
@@ -97,10 +98,12 @@ export interface MaterialIntrinsicContext
             | "compileColor3"
             | "captureNativeExpression"
             | "compileStringLiteral"
+            | "propertyAccess"
             | "intrinsicOptions"
             | "allocateTemporaryCppName"
             | "emit"
             | "isRuntimeResourceConstruction"
+            | "isRuntimeCallback"
             | "expectObjectLiteral"
             | "objectProperty"
             | "cppString"
@@ -1020,6 +1023,27 @@ function compileSetStandardLightmapTexture(
     };
 }
 
+function compileSetStandardBumpTexture(
+    context: MaterialIntrinsicContext,
+    call: ts.CallExpression,
+): Value | undefined {
+    context.expectArgumentCount(call, 2, 2);
+    const material = context.compileValue(argumentAt(call, 0));
+    context.expectKind(material, "material", argumentAt(call, 0));
+    const texture = context.compileValue(argumentAt(call, 1));
+    const empty = texture.kind === "json-null";
+    if (!empty && texture.kind === "texture")
+        context.expectSameEngine(material, texture, call);
+    // Standard composition reads the texture presence from the material.
+    if (material.standardMaterialInput && !empty)
+        writable(material.standardMaterialInput).bumpTexture = {};
+    context.reachFeature("material:standard-bump", call);
+    return {
+        kind: "void",
+        cpp: `bbl::set_standard_bump_texture(${context.requireEngine(material, call)}, ${material.cpp}, ${empty ? "bbl::StoredTexture{}" : storedTextureCpp(context, texture, argumentAt(call, 1), "setStandardBumpTexture")})`,
+    };
+}
+
 function compileSetStandardEmissiveTexture(
     context: MaterialIntrinsicContext,
     call: ts.CallExpression,
@@ -1067,6 +1091,8 @@ function compileMarkMaterialUboDirty(
     const material = context.compileValue(argumentAt(call, 0));
     context.expectKind(material, "material", argumentAt(call, 0));
     const engine = context.requireEngine(material, call);
+    // Defined beside the material views (`material_views.cpp`).
+    context.reachFeature("material:ubo-dirty", call);
     for (const [field, value] of material.materialUboArrayFields ?? []) {
         context.emit({
             kind: "expression",
@@ -2372,12 +2398,7 @@ function compileRebuildMaterial(
     context.expectKind(scene, "scene", argumentAt(call, 0));
     context.expectKind(material, "material", argumentAt(call, 1));
     context.expectSameEngine(scene, material, call);
-    if (context.engineLifecycle.engineHasStarted()) {
-        context.fail(
-            call,
-            "rebuildMaterial after startEngine requires live GPU material resource replacement.",
-        );
-    }
+    const flags = new Map<string, boolean>();
     if (call.arguments[2]) {
         const options = context.expectObjectLiteral(call.arguments[2]);
         validateObjectProperties(
@@ -2389,16 +2410,41 @@ function compileRebuildMaterial(
         for (const name of ["rebuildViews", "rebuildFrameGraph"]) {
             const property = context.objectProperty(options, name);
             if (!property) continue;
-            const value = context.compileBoolean(property);
-            if (knownCondition(value) === undefined) {
+            const value = knownCondition(context.compileBoolean(property));
+            if (value === undefined) {
                 context.fail(property, `${name} must be a static boolean.`);
             }
+            flags.set(name, value);
         }
     }
     // Native material records are uploaded when startEngine builds
     // the renderer. A pre-start rebuild therefore observes exactly
     // the final record state without doing any work of its own.
-    return { kind: "void", cpp: "" };
+    if (
+        !context.engineLifecycle.engineHasStarted() &&
+        !context.isRuntimeCallback()
+    )
+        return { kind: "void", cpp: "" };
+    // Anywhere else -- after it, or in a callback it may run after -- the
+    // material's draw rows are rebuilt from the record
+    // (`material_rebuild.cpp`); before the first upload that is harmless.
+    if (flags.get("rebuildFrameGraph") === true)
+        context.fail(
+            call,
+            "rebuildMaterial with rebuildFrameGraph after startEngine rebuilds a live frame graph, which is not lowered.",
+        );
+    if (!context.hasRegisteredScene())
+        context.fail(
+            call,
+            "rebuildMaterial after startEngine rebuilds a registered scene's renderables; this program registers none.",
+        );
+    context.reachFeature("material:runtime-rebuild", call);
+    return {
+        kind: "data",
+        dataType: { kind: "optional", inner: { kind: "promise" } },
+        cpp: `bbl::rebuild_material(${context.requireEngine(material, call)}, ${scene.cpp}, ${material.cpp}, ${flags.get("rebuildViews") !== false})`,
+        impure: true,
+    };
 }
 
 const materialIntrinsicHandlers = new EmissionMap<
@@ -2452,6 +2498,16 @@ const materialIntrinsicHandlers = new EmissionMap<
     ],
     ["setStandardLightmapTexture", compileSetStandardLightmapTexture],
     ["setStandardEmissiveTexture", compileSetStandardEmissiveTexture],
+    ["setStandardBumpTexture", compileSetStandardBumpTexture],
+    [
+        "setStandardParallaxOcclusion",
+        (context, call) =>
+            compileSetParallaxOcclusion(context, call, "standard"),
+    ],
+    [
+        "setPbrParallaxOcclusion",
+        (context, call) => compileSetParallaxOcclusion(context, call, "pbr"),
+    ],
     ["markMaterialUboDirty", compileMarkMaterialUboDirty],
     ["createShaderMaterial", compileCreateShaderMaterial],
     ["createStorageBuffer", compileCreateStorageBuffer],

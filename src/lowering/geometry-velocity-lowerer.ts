@@ -238,7 +238,7 @@ export class GeometryVelocityLowerer {
             "Standard geometry deformation velocity was not preloaded.",
             context.functionDeclaration(
                 STANDARD_GEOMETRY_OUTPUT_MODULE,
-                "createGeometryParamsFragment",
+                "createGeometryFragment",
             ).declaration,
         )}`;
         return `// ${context.provenance(GEOMETRY_DEFORMATION_HOOKS_MODULE, "preloadGeometryDeformationVelocity")}
@@ -293,7 +293,7 @@ inline std::uint32_t preload_geometry_task(const Engine& engine, const Scene& sc
     return families;
 }
 
-// ${context.provenance(STANDARD_GEOMETRY_RENDERABLE_MODULE, "_ensureViewResources", `${STANDARD_GEOMETRY_OUTPUT_MODULE}#createGeometryParamsFragment`)}
+// ${context.provenance(STANDARD_GEOMETRY_RENDERABLE_MODULE, "_ensureViewResources", `${STANDARD_GEOMETRY_OUTPUT_MODULE}#createGeometryFragment`)}
 // A Standard velocity view of a skinned or morphed mesh composed before any
 // preload loaded the feature. A morphed one first needs the scene's Standard
 // morph context, which only a morphed mesh the preload skips (instanced or

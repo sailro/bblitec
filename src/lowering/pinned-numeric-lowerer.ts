@@ -89,6 +89,7 @@ import {
     jsToUint32Call,
 } from "./pinned-operators.js";
 import { isNullable, holdsOnly } from "../compiler/type-facts.js";
+import { STRING_POSITION_SEARCHES } from "../compiler/string-searches.js";
 
 /**
  * Each list-shaped binding's C++ storage, and what indexing it yields.
@@ -504,6 +505,8 @@ export interface PinnedBinding {
      */
     staticNumber?: number;
     staticBoolean?: boolean;
+    /** A string generation knows: a member name an unrolled loop binds. */
+    staticString?: string;
     /**
      * A record the pin reads through an optional chain (`texture?.uScale`).
      *
@@ -915,7 +918,17 @@ export class PinnedNumericLowerer {
 
     /** The representation of a source expression, resolved by declaration. */
     public binding(node: ts.Expression): PinnedBinding | undefined {
-        return this.sourceBindings.get(node);
+        const bound = this.sourceBindings.get(node);
+        if (bound || !ts.isElementAccessExpression(node)) return bound;
+        // `owner[name]` where `name` holds a known member name (an unrolled
+        // list of names): the member the caller bound under that name.
+        const owner = unwrapExpression(node.expression);
+        const name = this.sourceBindings.get(
+            unwrapExpression(node.argumentExpression),
+        )?.staticString;
+        return name !== undefined && ts.isIdentifier(owner)
+            ? this.portBinding(`${owner.text}.${name}`, node)
+            : undefined;
     }
 
     /** Resolve a validated adapter port in its explicit source scope. */
@@ -1150,6 +1163,39 @@ export class PinnedNumericLowerer {
                     statement,
                     "for-of requires one ordinary binding",
                 );
+            const names = this.literalNames(statement.expression);
+            const name = list.declarations[0]!.name;
+            if (names && ts.isIdentifier(name)) {
+                // A literal list of member names runs once per name, each
+                // block reading the member its name selects.
+                if (this.findLoopControl(statement.statement))
+                    return this.fail(
+                        statement,
+                        "loop control in a for-of over member names",
+                    );
+                return names.flatMap((text) =>
+                    this.withBindings(() => {
+                        this.bindPorts(
+                            [
+                                [
+                                    name.text,
+                                    {
+                                        cpp: `std::string(${stringLiteral(text)})`,
+                                        type: "string",
+                                        staticString: text,
+                                    },
+                                ],
+                            ],
+                            statement.statement,
+                        );
+                        return [
+                            `${indent}{`,
+                            ...this.branch(statement.statement, indent),
+                            `${indent}}`,
+                        ];
+                    }),
+                );
+            }
             return this.withBindings(() => {
                 const iteration = this.forOfIteration(
                     statement,
@@ -1195,7 +1241,9 @@ export class PinnedNumericLowerer {
             if (
                 !ts.isNewExpression(thrown) ||
                 !ts.isIdentifier(thrown.expression) ||
-                !["Error", "RangeError"].includes(thrown.expression.text) ||
+                !["Error", "RangeError", "TypeError"].includes(
+                    thrown.expression.text,
+                ) ||
                 thrown.arguments?.length !== 1
             ) {
                 this.fail(statement, "throw statement");
@@ -1447,6 +1495,40 @@ export class PinnedNumericLowerer {
             ...cleanup,
             `${indent}}`,
         ];
+    }
+
+    /** The texts of a literal list of strings (`["a", "b"] as const`). */
+    private literalNames(
+        expression: ts.Expression,
+    ): readonly string[] | undefined {
+        const list = unwrapExpression(expression);
+        if (!ts.isArrayLiteralExpression(list) || list.elements.length === 0)
+            return undefined;
+        const names = list.elements.map((entry) => unwrapExpression(entry));
+        return names.every(ts.isStringLiteralLike)
+            ? names.map((entry) => entry.text)
+            : undefined;
+    }
+
+    /** Whether a loop body breaks or continues its own loop. */
+    private findLoopControl(body: ts.Statement): boolean {
+        let found = false;
+        const visit = (node: ts.Node, loops: number): void => {
+            if (found || ts.isFunctionLike(node)) return;
+            if (
+                (ts.isBreakStatement(node) || ts.isContinueStatement(node)) &&
+                (node.label !== undefined || loops === 0)
+            ) {
+                found = true;
+                return;
+            }
+            const inner = ts.isIterationStatement(node, false)
+                ? loops + 1
+                : loops;
+            ts.forEachChild(node, (child) => visit(child, inner));
+        };
+        visit(body, 0);
+        return found;
     }
 
     private branch(statement: ts.Statement, indent: string): string[] {
@@ -3339,7 +3421,35 @@ export class PinnedNumericLowerer {
         ) {
             return `(${this.stringExpression(node.left)} + ${this.stringExpression(node.right)})`;
         }
+        // A nullable string the caller holds takes the pin's own default
+        // where it is absent (`channel ?? "r"`).
+        if (
+            ts.isBinaryExpression(node) &&
+            node.operatorToken.kind === ts.SyntaxKind.QuestionQuestionToken
+        ) {
+            const held = this.binding(unwrapExpression(node.left));
+            if (held?.staticallyAbsent)
+                return this.stringExpression(node.right);
+            if (held?.type === "string" && held.nullish !== undefined)
+                return `(${held.nullish} ? ${this.stringExpression(node.right)} : ${held.cpp})`;
+        }
         return this.fail(node, "string expression");
+    }
+
+    /**
+     * A search through a string the body holds (`"rgba".indexOf(channel)`,
+     * `format.startsWith("depth")`), by the runtime's UTF-16 helpers.
+     */
+    private stringSearchCall(node: ts.CallExpression): string | undefined {
+        const callee = unwrapExpression(node.expression);
+        if (!ts.isPropertyAccessExpression(callee)) return undefined;
+        const search = STRING_POSITION_SEARCHES.get(callee.name.text);
+        if (!search || this.valueKind(callee.expression) !== "string")
+            return undefined;
+        if (node.arguments.length < 1 || node.arguments.length > 2)
+            return this.fail(node, `string ${callee.name.text} arity`);
+        const position = node.arguments[1];
+        return `bbl::js::${search.helper}(${this.stringExpression(callee.expression)}, ${this.stringExpression(node.arguments[0]!)}${position ? `, ${this.expression(position)}` : ""})`;
     }
 
     /**
@@ -3372,6 +3482,11 @@ export class PinnedNumericLowerer {
             }
         }
         return this.fail(node, "string array");
+    }
+
+    /** A JavaScript truth test, as C++ `bool`, for a caller's return hook. */
+    public truthTest(expression: ts.Expression): string {
+        return this.condition(expression);
     }
 
     protected condition(expression: ts.Expression): string {
@@ -4162,6 +4277,20 @@ export class PinnedNumericLowerer {
                 return (absent.absentValue === literal) === equality;
             }
         }
+        // A value the reached slice never supplies is null or undefined,
+        // so it equals no string, number or boolean literal (`texture.
+        // _sampleType === "depth"` over a loaded image).
+        const isPrimitiveLiteral = (operand: ts.Expression): boolean =>
+            ts.isStringLiteralLike(operand) ||
+            ts.isNumericLiteral(operand) ||
+            operand.kind === ts.SyntaxKind.TrueKeyword ||
+            operand.kind === ts.SyntaxKind.FalseKeyword;
+        if (
+            (this.binding(left)?.staticallyAbsent &&
+                isPrimitiveLiteral(right)) ||
+            (this.binding(right)?.staticallyAbsent && isPrimitiveLiteral(left))
+        )
+            return !equality;
         const typeofComparison = this.typeofComparison(node);
         if (typeofComparison) {
             const answer = this.typeofAnswer(
@@ -4563,6 +4692,15 @@ export class PinnedNumericLowerer {
                 "string-list"
         )
             return "boolean";
+        // A string search's own result.
+        if (
+            ts.isCallExpression(node) &&
+            ts.isPropertyAccessExpression(node.expression) &&
+            STRING_POSITION_SEARCHES.get(node.expression.name.text)?.result ===
+                "boolean" &&
+            this.valueKind(node.expression.expression) === "string"
+        )
+            return "boolean";
         if (
             node.kind === ts.SyntaxKind.TrueKeyword ||
             node.kind === ts.SyntaxKind.FalseKeyword ||
@@ -4767,6 +4905,9 @@ export class PinnedNumericLowerer {
         if (binding?.type === "string-set" && node.name.text === "size") {
             return `static_cast<double>(${binding.cpp}.size())`;
         }
+        // A string's UTF-16 length.
+        if (node.name.text === "length" && this.valueKind(owner) === "string")
+            return `bbl::js::string_length(${this.stringExpression(owner)})`;
         // The global `Number.NaN`, the one quiet NaN JavaScript has.
         if (
             ts.isIdentifier(owner) &&
@@ -4797,6 +4938,8 @@ export class PinnedNumericLowerer {
         if (recordListCall !== undefined) return recordListCall;
         const stringListCall = this.stringListCall(node);
         if (stringListCall !== undefined) return stringListCall;
+        const stringSearch = this.stringSearchCall(node);
+        if (stringSearch !== undefined) return stringSearch;
         const callee = node.expression;
         // A lowered callee takes its numbers as double; a counted loop's
         // `std::int64_t` index is the one binding that is not one yet.

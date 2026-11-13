@@ -2,7 +2,9 @@
 #include "pal_camera_controls.hpp"
 #include "../finger-events.hpp"
 #include <cassert>
+#include <cmath>
 #include <iostream>
+#include <vector>
 
 namespace {
 SDL_Event mouse_button(SDL_EventType type, Uint8 button) {
@@ -46,7 +48,12 @@ int main() {
     camera.controls_enabled = true;
     bbl::pal::CameraPointerState state;
     bool dragging = false, pending = true, allowed = true;
-    camera.should_handle_pointer_down = [&] { return allowed; };
+    std::vector<bbl::PlatformMouseEvent> presses;
+    // The pin hands the predicate the press's PointerEvent.
+    camera.should_handle_pointer_down = [&](const bbl::PlatformMouseEvent& press) {
+        presses.push_back(press);
+        return allowed;
+    };
     camera.external_drag_active = [&] { return dragging; };
     camera.external_pick_pending = [&] { return pending; };
     const auto send = [&](const SDL_Event& event) {
@@ -54,6 +61,8 @@ int main() {
     };
     send(mouse_button(SDL_EVENT_MOUSE_BUTTON_DOWN, SDL_BUTTON_LEFT));
     assert(state.dragging && !state.panning);
+    assert(presses.size() == 1 && presses.back().button == 0 && presses.back().buttons == 1 &&
+           presses.back().pointer_type == "mouse" && presses.back().pressure == 0.5);
     send(mouse_motion(12, 0));
     assert(camera.inertial_alpha_offset == 0); // A pending pick defers the orbit.
     pending = false;
@@ -99,11 +108,17 @@ int main() {
     };
     camera.inertial_alpha_offset = 0;
     touch(SDL_EVENT_FINGER_DOWN, 10, .25f, .5f);
+    // A touch press: its client point, the first touch pointerId, primary.
+    assert(presses.back().pointer_type == "touch" && presses.back().pointer_id == 2 &&
+           presses.back().is_primary && presses.back().client_x == 200 &&
+           presses.back().client_y == 200 && presses.back().buttons == 1);
     touch(SDL_EVENT_FINGER_MOTION, 10, .3f, .5f);
     const double orbited = camera.inertial_alpha_offset;
     assert(orbited < 0 && state.dragging);
     touch(SDL_EVENT_FINGER_DOWN, 20, .7f, .5f);
     assert(!state.dragging && state.touches.size() == 2);
+    assert(presses.back().pointer_id == 3 && !presses.back().is_primary &&
+           std::abs(presses.back().client_x - 560) < 1e-3);
     touch(SDL_EVENT_FINGER_MOTION, 20, .9f, .5f);
     // Expanding zooms in without orbiting.
     assert(camera.inertial_radius_offset > 0 && camera.inertial_alpha_offset == orbited);

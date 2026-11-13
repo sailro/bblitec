@@ -2907,6 +2907,7 @@ import {
 import { lightKindFacts } from "./types.js";
 import type { AssetMeshWalk, Feature, LightKind, Value } from "./types.js";
 import {
+    isStoredTextureHandle,
     setPbrTextureCpp,
     storedTextureCpp,
     type PbrTextureSlot,
@@ -4605,15 +4606,23 @@ function refusePbrDoubleSidedAssignment(
 /**
  * The PBR texture props an assignment writes (`createPbrMaterial`'s), by the
  * native slot each fills, and when the write is admitted: before scene
- * registration, also definitely, or live.
+ * registration, also definitely, or live; a `rebuilt` one also once the
+ * engine has started, past the first build, where the pin binds it at the
+ * next `rebuildMaterial` and a draw row at its next upload.
  */
 const PBR_TEXTURE_SLOT_PROPS: ReadonlyMap<
     string,
-    { slot: PbrTextureSlot; setup: "registration" | "definite" | "live" }
+    {
+        slot: PbrTextureSlot;
+        setup: "registration" | "definite" | "live" | "rebuilt";
+    }
 > = new Map([
     // Every PBR variant binds the base-color slot (an absent texture binds
     // the factor's fallback texel), so the swap composes nothing.
-    ["baseColorTexture", { slot: "base_color", setup: "registration" }],
+    ["baseColorTexture", { slot: "base_color", setup: "rebuilt" }],
+    // Its presence composes (`_computePbrMaterialFeatures`), so a write
+    // replaces the texture of a material created with one.
+    ["normalTexture", { slot: "normal", setup: "rebuilt" }],
     // The pinned PBR fragment always samples its ORM texture.
     ["ormTexture", { slot: "orm", setup: "definite" }],
     // Rebound live: a loaded material's composed variant carries the slot.
@@ -4663,8 +4672,15 @@ function emitPbrTextureSlotAssignment(
     const prop = PBR_TEXTURE_SLOT_PROPS.get(property);
     if (target.kind !== "material" || !prop) return false;
     requireSimpleAssignment(context, expression, `PBR ${property}`);
+    // Past the first build: after startEngine, or in a retained callback,
+    // which may run after it (fidelity.md: the pin builds at registration).
+    const pastFirstBuild =
+        prop.setup === "rebuilt" &&
+        (context.engineLifecycle.engineHasStarted() ||
+            context.isRuntimeCallback());
     if (
         prop.setup !== "live" &&
+        !pastFirstBuild &&
         (context.hasRegisteredScene() ||
             context.engineLifecycle.engineHasStarted() ||
             (prop.setup === "definite" &&
@@ -4681,6 +4697,27 @@ function emitPbrTextureSlotAssignment(
         context.fail(
             left,
             "Replacing occlusionTexture is lowered for a PBR material read from a loaded asset, whose composed variant already carries that slot.",
+        );
+    }
+    // The material it names, else every scene-code PBR material it can be.
+    const normalMapped = (): boolean => {
+        const materials = context.sceneManifest.scenePbrMaterials;
+        if (target.scenePbrMaterialIndex !== undefined)
+            return (
+                materials[target.scenePbrMaterialIndex]?.hasNormalTexture ===
+                true
+            );
+        return (
+            !target.assetPbrMaterial &&
+            !target.assetWholeMeshList &&
+            materials.length > 0 &&
+            materials.every((material) => material.hasNormalTexture === true)
+        );
+    };
+    if (prop.slot === "normal" && !normalMapped()) {
+        context.fail(
+            left,
+            "Replacing normalTexture is lowered for a scene-code PBR material created with one, whose composed variants carry the normal map.",
         );
     }
     // The setter is the PBR factory's own (createPbrMaterial's texture props).
@@ -4744,8 +4781,15 @@ function emitDiffuseTextureAssignment(
         if (target.standardMaterialInput) {
             writable(target.standardMaterialInput).diffuseTexture = {};
         }
-        if (texture.kind === "texture" && texture.textureStorage === "stored") {
-            context.expectSameEngine(target, texture, expression);
+        // A texture record by its storage; a runtime-selected one (an
+        // element of a stored-texture collection) by its handle type.
+        if (
+            texture.kind === "texture"
+                ? texture.textureStorage === "stored"
+                : isStoredTextureHandle(texture)
+        ) {
+            if (texture.kind === "texture")
+                context.expectSameEngine(target, texture, expression);
             context.reachFeature(
                 "material:standard-diffuse-file-texture",
                 expression,

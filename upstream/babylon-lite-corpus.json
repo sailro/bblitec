@@ -1,8 +1,8 @@
 {
   "package": "@babylonjs/lite",
-  "version": "1.38.2",
+  "version": "1.39.0",
   "repository": "https://github.com/BabylonJS/Babylon-Lite.git",
-  "sourceVersion": "bc317f91a55b2af616abf487812ac6d4888151f7",
+  "sourceVersion": "2dddc888f6695e433ab29ae5918bee221375d86f",
   "scenes": [
     {
       "id": "scene1",
@@ -1748,6 +1748,12 @@
       "sha256": "9f8ff38cfc2a893bb86c6e5b6e8441edee3f002d188b40bc568dde66e1319df9"
     },
     {
+      "id": "scene349",
+      "upstreamPath": "lab/lite/src/lite/scene349.ts",
+      "source": "corpus/babylon-lite/lab/lite/src/lite/scene349.ts",
+      "sha256": "59d3d856c6532aa73f1fa20ad571ed61a978c7df7b87e21b02b17925c996bdd7"
+    },
+    {
       "id": "scene353",
       "upstreamPath": "lab/lite/src/lite/scene353.ts",
       "source": "corpus/babylon-lite/lab/lite/src/lite/scene353.ts",
@@ -2045,7 +2051,7 @@
     {
       "upstreamPath": "lab/public/loader.js",
       "source": "corpus/babylon-lite/lab/public/loader.js",
-      "sha256": "0f2838bedb6571a17fc260c19a1d586e6973ab2e51aae406cfef8317c22d553d"
+      "sha256": "60e001850af192b26a46dfc129abd66d93bbf1aa2228e72f1f13fab6f5ccb504"
     },
     {
       "upstreamPath": "lab/lite/scene181.html",
@@ -2091,6 +2097,26 @@
       "upstreamPath": "lab/lite/src/shared/scene354-opacity.ts",
       "source": "corpus/babylon-lite/lab/lite/src/shared/scene354-opacity.ts",
       "sha256": "f107eb2dc37f721ee66cb5635becab2286ad006dc7e961fe47f5c2db0872d2d9"
+    },
+    {
+      "upstreamPath": "lab/lite/scene349.html",
+      "source": "corpus/babylon-lite/lab/lite/scene349.html",
+      "sha256": "bbfde753fc847a3f5734d8360b6db042ba4a40c270e3dbf30788d7bbdc778dc4"
+    },
+    {
+      "upstreamPath": "lab/lite/scene349.css",
+      "source": "corpus/babylon-lite/lab/lite/scene349.css",
+      "sha256": "fe60455667de705381a29a6b3b45e4f4e4d5531b06c51b99fe7ceab65a7ff5fd"
+    },
+    {
+      "upstreamPath": "lab/lite/src/shared/scene349-parallax.ts",
+      "source": "corpus/babylon-lite/lab/lite/src/shared/scene349-parallax.ts",
+      "sha256": "3df8b4d116bda81e1fccf4cf0ce836c7e738137538a7ce6b122b21632bc2c43a"
+    },
+    {
+      "upstreamPath": "lab/lite/src/shared/scene349-parallax-ui.ts",
+      "source": "corpus/babylon-lite/lab/lite/src/shared/scene349-parallax-ui.ts",
+      "sha256": "8774b904e3cf8366da8d8ffb04792f5daa5d8968d4726eb0306885a35e25a8c4"
     }
   ],
   "staged": [
@@ -2119,7 +2145,7 @@
     {
       "upstreamPath": "scripts/fetch-flight-helmet.ts",
       "source": "corpus/babylon-lite/scripts/fetch-flight-helmet.ts",
-      "sha256": "f21154725f9bace24d2ba4f8d423fca8d129ac4bcd678a2855161c1e184a7d59"
+      "sha256": "5b250bd58a5f002258822b6129b403505f182809d879919a5801a45b2058601d"
     }
   ],
   "packageSources": [
@@ -3968,7 +3994,7 @@
         "sha256": "6669eefcaee453bbabe617fda3a2207cb819bc0e6785aadac673fef81c58ba6d",
         "provenance": {
           "source": "reference/ocean/provenance.json",
-          "sha256": "e072711e131e9fadca6f73ea4e7c986ff0a5ab304c96dfea5150e38287e0243d"
+          "sha256": "1309326bb195da79ca3c214c39592ad41117fbd691aa34e1d677774ab67e7166"
         }
       },
       "files": [
@@ -4869,7 +4895,7 @@
         "sha256": "0ff7af399b66ece8cf728f810d7643ac0f03a9fae1b54d01c7eead70d5b464b2",
         "provenance": {
           "source": "reference/playroom/provenance.json",
-          "sha256": "343aae103a30969555cd26fa145b35655d2f6a5ab8a5f2a0cd0b918e4bdc7235"
+          "sha256": "2e0c76248e8eeb9f8bc3cd95daa1e738a7c3d6b4a6a64f3de3cd31500712db2c"
         }
       },
       "files": [

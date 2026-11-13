@@ -90,6 +90,8 @@ interface StandardMaterialSetters {
     diffuseFile: boolean;
     emissiveFile: boolean;
     lightmapFile?: boolean;
+    /** `setStandardBumpTexture` over a loaded image. */
+    bumpFile?: boolean;
     uvTransform: boolean;
     plugins: boolean;
     /** A plugin binding filled by texels or by a loaded image. */
@@ -1519,6 +1521,7 @@ ${pbrMaterialRecordSeedCpp("material", "    ")}
             diffuseFile,
             emissiveFile,
             lightmapFile,
+            bumpFile,
             uvTransform,
             plugins,
             pluginTextures,
@@ -1539,6 +1542,18 @@ ${pbrMaterialRecordSeedCpp("material", "    ")}
                 declaration.body!.statements,
                 "mat._lightmapTexture = texture; _registerStdExt(stdLightmapExt);",
                 "Standard lightmap setter and extension registration",
+            );
+        }
+        if (bumpFile) {
+            const declaration = this.context.functionDeclaration(
+                "src/material/standard/set-std-bump.ts",
+                "setStandardBumpTexture",
+            ).declaration;
+            this.context.assertStatementShapes(
+                declaration,
+                declaration.body!.statements,
+                "mat._bumpTexture = texture; _registerStdExt(bumpStdExt);",
+                "Standard bump setter and extension registration",
             );
         }
         if (uvTransform) {
@@ -1576,6 +1591,7 @@ ${pbrMaterialRecordSeedCpp("material", "    ")}
                 ...(diffuseFile ? ["material.diffuseTexture#file"] : []),
                 ...(emissiveFile ? ["setStandardEmissiveTexture#file"] : []),
                 ...(lightmapFile ? ["setStandardLightmapTexture"] : []),
+                ...(bumpFile ? ["setStandardBumpTexture"] : []),
                 ...(uvTransform ? ["enableMaterialUvTransform"] : []),
                 ...(plugins ? ["material.plugins"] : []),
                 ...(pluginTextures ? ["material.plugins#bindTextures"] : []),
@@ -1785,6 +1801,18 @@ void set_standard_lightmap_texture(Engine& engine, MaterialHandle material, cons
     auto& record = standard_slot_material(engine, material);
     if (!record.standard_material) throw std::runtime_error("Standard lightmap requires a Standard material.");
     record.lightmap_texture = texture.data;
+}
+`
+                    : ""
+            }${
+                bumpFile
+                    ? `
+// set-std-bump.ts: the normal-map slot the .babylon loader fills, from a
+// loaded image or null. Generation performs the extension registration.
+void set_standard_bump_texture(Engine& engine, MaterialHandle material, const StoredTexture& texture) {
+    auto& record = standard_slot_material(engine, material);
+    if (!record.standard_material) throw std::runtime_error("Standard bump texture requires a Standard material.");
+    record.bump_texture = stored_texture_data(texture);
 }
 `
                     : ""

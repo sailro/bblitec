@@ -235,6 +235,85 @@ test("Window extension records refuse borrowed dispatch events", () => {
     );
 });
 
+test("the native window is top-level: parent, top and frames are the Window and nothing posts it a message", async (t) => {
+    // The Worker selects the application realm the Window listener needs.
+    const realm = `
+        const worker = new Worker(new URL("./worker.ts", import.meta.url), { type: "module" });
+        worker.terminate();
+    `;
+    const source = `
+        let order = "";
+        if (window.parent !== window || window.top !== window || window.frames !== window) order += "X";
+        if (window.parent === window) order += "P";
+        else window.parent.postMessage({ type: "framed" }, location.origin);
+        window.addEventListener("message", (event: MessageEvent<unknown>) => {
+            // A constructed event has none of a MessageEvent's own members.
+            if (event.origin !== location.origin || event.source !== window.parent || !event.data) {
+                order += "m";
+                return;
+            }
+            order += "M";
+        });
+        window.dispatchEvent(new CustomEvent("message", { detail: 1 }));
+        if (order !== "Pm") throw new Error(order);
+        globalThis.close();
+    `;
+    // A top-level browser window is the oracle.
+    let closed = false;
+    const listeners: Array<(event: object) => void> = [];
+    const window: Record<string, unknown> = {
+        addEventListener: (_type: string, listener: (event: object) => void) =>
+            listeners.push(listener),
+        dispatchEvent: (event: object) => {
+            for (const listener of listeners) listener(event);
+            return true;
+        },
+    };
+    window.parent = window.top = window.frames = window;
+    runInNewContext(
+        ts.transpileModule(source, {
+            compilerOptions: {
+                target: ts.ScriptTarget.ES2022,
+                module: ts.ModuleKind.None,
+            },
+        }).outputText,
+        {
+            window,
+            location: { origin: "http://localhost" },
+            CustomEvent: class {
+                public constructor(
+                    public readonly type: string,
+                    public readonly init: object,
+                ) {}
+            },
+            close: () => (closed = true),
+        },
+    );
+    assert.equal(closed, true);
+    const directory = resolve("artifacts/window-properties/top-level-window");
+    mkdirSync(directory, { recursive: true });
+    writeFileSync(resolve(directory, "worker.ts"), "self.close();");
+    const result = compileSource(realm + source, {
+        fileName: resolve(directory, "entry.ts"),
+    });
+    assert.doesNotMatch(result.cpp, /framed/);
+    const tools = optionalNativeFixtureTools(false);
+    if (!tools) {
+        t.skip("Native fixture compiler unavailable.");
+        return;
+    }
+    runGeneratedProgram(
+        tools,
+        "window-properties/top-level-window",
+        result.cpp + windowRuntime,
+        {
+            flags: ["/DBBLITE_WORKERS=1", "/DBBLITE_HAS_UI=1"],
+            timeoutMs: 10000,
+            expectedOutput: "",
+        },
+    );
+});
+
 test("the realm's Window reads an absent File System Access picker as undefined, so its feature test takes the fallback", async (t) => {
     const source = `
         interface PickerWindow {

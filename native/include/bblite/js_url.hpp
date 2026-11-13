@@ -952,4 +952,19 @@ private:
     std::shared_ptr<State> state_;
 };
 
+/**
+ * HTMLHyperlinkElementUtils `href`: the href attribute parsed against the
+ * document's URL; one that does not parse reads as written, none as empty.
+ */
+[[nodiscard]] inline std::string hyperlink_href(const Nullable<std::string>& attribute,
+                                                std::string_view document_url) {
+    if (!attribute.has_value())
+        return {};
+    try {
+        return Url(*attribute, document_url).href();
+    } catch (const NamedError&) {
+        return *attribute;
+    }
+}
+
 } // namespace bbl::js

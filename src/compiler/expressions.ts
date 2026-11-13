@@ -1206,7 +1206,10 @@ export class ExpressionLowerer {
                 unwrapped,
             )
                 ? undefined
-                : compileSearchParams(this.context.dataLowerer, unwrapped);
+                : compileSearchParams(this.context.dataLowerer, unwrapped, {
+                      ownArray,
+                      ownObjectEntries,
+                  });
             if (query) return query;
             const platform = compileWebPlatformNew(
                 this.context.dataLowerer,
@@ -1215,6 +1218,8 @@ export class ExpressionLowerer {
             if (platform) return platform;
             const audio = compileAudioConstructor(this.context, unwrapped);
             if (audio) return audio;
+            const formData = this.context.ui.compileFormData(unwrapped);
+            if (formData) return formData;
             const image = this.context.ui.compileImageConstructor(unwrapped);
             if (image) return image;
             const browserFile = compileBrowserFileConstructor(

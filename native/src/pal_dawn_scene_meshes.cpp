@@ -640,11 +640,13 @@ DawnMesh upload_dawn_scene_mesh(DawnState& state, Engine& engine,
             std::find_if(state.shared_composed_material_textures.begin(),
                          state.shared_composed_material_textures.end(), [&](const auto& candidate) {
                              return candidate->material.value == item.material.value &&
+                                    candidate->material_build == item.material_build &&
                                     candidate->standard_material == standard_material;
                          });
         if (shared_it == state.shared_composed_material_textures.end()) {
             auto created = std::make_unique<DawnSharedComposedMaterialTextures>();
             created->material = item.material;
+            created->material_build = item.material_build;
             created->standard_material = standard_material;
             state.shared_composed_material_textures.push_back(std::move(created));
             mesh.shared_composed_textures = state.shared_composed_material_textures.back().get();

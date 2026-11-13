@@ -561,8 +561,7 @@ ${bulkBody}
     public pointerDown(): string {
         const adapter = this.pointerAdapter();
         const bindings = new Map(adapter.bindings);
-        // The event reaches the deferral predicate only as its argument; the
-        // native predicate takes none.
+        // The event reaches the deferral predicate only, as its argument.
         bindings.set("e", { cpp: "event", type: "opaque" });
         bindings.set("e.button", { cpp: "button", type: "scalar" });
         bindings.set('e.pointerType === "touch"', {
@@ -581,7 +580,7 @@ ${bulkBody}
         const calls = new Map(adapter.calls);
         calls.set(
             "options.shouldHandlePointerDown",
-            () => `${this.controls}.should_handle_pointer_down()`,
+            () => `${this.controls}.should_handle_pointer_down(event)`,
         );
         const platform = adapter.statement!;
         return this.controlBody("onPointerDown", {

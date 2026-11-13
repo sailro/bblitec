@@ -8408,6 +8408,11 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                               },
                           }
                         : {}),
+                    // Texture storage holds the stored record
+                    // (`bbl::StoredTexture`), whatever factory made it.
+                    ...(dataType.handle === "texture"
+                        ? { textureStorage: "stored" as const }
+                        : {}),
                     ...(engineCpp ? { engineCpp } : {}),
                 },
             );

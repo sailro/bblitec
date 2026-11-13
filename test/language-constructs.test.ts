@@ -8200,6 +8200,24 @@ check(
 );
 
 check(
+    "query-record-initializer-appends-own-properties-in-order",
+    `
+    const embed = Date.now() < 0;
+    const settings = { view: Date.now() > 0 ? "grazing" : "front", depth: 0.06 };
+    const params = new URLSearchParams({
+        pom: settings.view === "grazing" ? "on" : "off",
+        depth: String(settings.depth),
+        view: settings.view,
+        ...(embed ? { embed: "1" } : {}),
+    });
+    if (params.toString() !== "pom=on&depth=0.06&view=grazing") throw new Error("record " + params.toString());
+    if (params.get("embed") !== null) throw new Error("absent " + params.get("embed"));
+    const fixed = new URLSearchParams({ a: "1 2", b: "x&y" });
+    if (fixed.toString() !== "a=1+2&b=x%26y") throw new Error("fixed " + fixed.toString());
+`,
+);
+
+check(
     "query-helpers-with-parameters",
     `
     const qs = new URLSearchParams(location.search);

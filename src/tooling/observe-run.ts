@@ -15,7 +15,7 @@ import { resolve } from "node:path";
 import type { Page } from "playwright-core";
 import {
     gotoScenePage,
-    screenshotCaptureBrowserArgs,
+    referenceScreenshotBrowserArgs,
     waitForSceneReady,
     withBrowserPage,
 } from "../browser-harness.js";
@@ -191,14 +191,16 @@ export async function runObserve(options: ObserveRunOptions): Promise<string> {
     );
     writeFileSync(resolve(outputDirectory, "module.js"), module);
     const goldenPath = scene.parity?.reference.path;
-    const hostPage =
-        spec.hostPage === false
-            ? undefined
-            : sceneReferencePage(scene).hostPage;
+    // The page's site serves what the reference capture serves (its linked
+    // stylesheets, public files); `hostPage: false` drops only the page.
+    const { siteRoot, publicDir, ...reference } = sceneReferencePage(scene);
+    const hostPage = spec.hostPage === false ? undefined : reference.hostPage;
     const server = createSuiteSceneServer(module, {
         sourcePath: scene.source,
         seededRandom: usesSeededRandom(scene),
         ...(hostPage !== undefined ? { hostPage } : {}),
+        ...(siteRoot !== undefined ? { siteRoot } : {}),
+        ...(publicDir !== undefined ? { publicDir } : {}),
     });
     const viewport = spec.viewport ?? [1280, 720];
     const stateExpression = spec.state ?? DEFAULT_STATE_EXPRESSION;
@@ -237,7 +239,7 @@ export async function runObserve(options: ObserveRunOptions): Promise<string> {
         server,
         {
             serverName: `${checkId} observer`,
-            browserArgs: screenshotCaptureBrowserArgs,
+            browserArgs: referenceScreenshotBrowserArgs(hostPage !== undefined),
             showScrollbars: scene.parity?.referenceScrollbars ?? false,
             viewport: { width: viewport[0], height: viewport[1] },
             headless: !(options.headed ?? spec.headless === false),

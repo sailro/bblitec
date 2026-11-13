@@ -109,6 +109,8 @@ export interface NativeHostUiStyleSheet {
     text: string;
     /** The source line the text starts on, where refusals point. */
     line: number;
+    /** A linked sheet's file, which refusals name instead of the page. */
+    file?: string;
 }
 
 /**
@@ -772,6 +774,11 @@ export interface PbrMaterialStateWrites {
      * holds one from its first build.
      */
     readonly bentNormalTexture: boolean | "definite";
+    /**
+     * Whether parallax occlusion is written: its presence (a nonzero
+     * `heightScale`) composes, and a write can also clear it.
+     */
+    readonly parallaxOcclusion: boolean;
     /** The plugin lists written, by PBR plugin signature (from one). */
     readonly pluginSignatures: readonly number[];
     /** The plugins appended to the list a material holds, by PBR plugin id. */
@@ -3309,6 +3316,8 @@ export interface ValueFields {
               readonly kind: "object";
               readonly primaryCanvas?: true;
               readonly moduleUrl?: true;
+              /** The top-level Window, whatever alias names it (`parent`, `top`). */
+              readonly window?: true;
           }
         | { readonly kind: "search-params"; readonly search: string }
         | { readonly kind: "string"; readonly value: string };
@@ -3657,6 +3666,10 @@ export type Feature =
     | "material:standard-diffuse-file-texture"
     | "material:standard-emissive-file-texture"
     | "material:standard-lightmap"
+    | "material:standard-bump"
+    | "material:parallax-occlusion"
+    | "material:runtime-rebuild"
+    | "material:ubo-dirty"
     | "texture:file"
     | "texture:compressed"
     | "texture:ktx2"

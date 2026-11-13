@@ -1330,16 +1330,20 @@ inline void append_touch_cancel(Engine& engine, DomEventBatch& batch, DomTouchCo
 
 /** What the platform reports beside a pointer packet: the keyboard modifiers and, from the
  * window's position, the screen coordinates. */
-inline void set_dom_pointer_context(const Engine& engine, PlatformMouseEvent& pointer,
+inline void set_dom_pointer_context(double window_to_client, PlatformMouseEvent& pointer,
                                     SDL_WindowID window_id) {
     static_cast<PlatformModifierKeys&>(pointer) = dom_modifiers(SDL_GetModState());
     if (auto* window = SDL_GetWindowFromID(window_id)) {
         int x = 0, y = 0;
         if (SDL_GetWindowPosition(window, &x, &y)) {
-            pointer.screen_x = x * engine.canvas_window_to_client_scale + pointer.client_x;
-            pointer.screen_y = y * engine.canvas_window_to_client_scale + pointer.client_y;
+            pointer.screen_x = x * window_to_client + pointer.client_x;
+            pointer.screen_y = y * window_to_client + pointer.client_y;
         }
     }
+}
+inline void set_dom_pointer_context(const Engine& engine, PlatformMouseEvent& pointer,
+                                    SDL_WindowID window_id) {
+    set_dom_pointer_context(engine.canvas_window_to_client_scale, pointer, window_id);
 }
 
 /** Build an owned script input transaction before running native defaults.

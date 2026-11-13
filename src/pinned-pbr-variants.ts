@@ -182,6 +182,17 @@ async function registerPbrExtensions(): Promise<void> {
                 "material/pbr/fragments/bent-normal-fragment.js",
             )
         ).enableBentNormals();
+        // `setPbrParallaxOcclusion` registers its extension. Registered for
+        // every scene for the environment extension's reason: its `detect`
+        // answers zero for a material with no `_parallaxOcclusion`, and only
+        // `material:parallax-occlusion` writes one.
+        flags._registerPbrExt(
+            (
+                await importPinnedModule<{
+                    pbrParallaxOcclusionExt: PbrExtDescriptor;
+                }>("material/pbr/fragments/parallax-occlusion-fragment.js")
+            ).pbrParallaxOcclusionExt,
+        );
         // Transmission has no `pbrExt` export: `set-transmission.ts` registers a
         // scene hook instead, because enabling it retargets the frame graph's
         // colour buffer, and the hook builds the extension from a factory. Only

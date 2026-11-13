@@ -48,7 +48,7 @@ private:
  * so tracing observes replaced captures and shared mutable cells as they are. */
 template <typename Environment, typename Invoke> struct Closure {
     Environment environment;
-    Invoke invoke;
+    Invoke invoke{};
     template <typename... Args>
     std::invoke_result_t<Invoke&, Environment&, Args...> operator()(Args&&... args) {
         return invoke(environment, std::forward<Args>(args)...);

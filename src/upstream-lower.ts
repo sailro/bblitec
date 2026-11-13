@@ -183,6 +183,8 @@ import {
 import { renderTaskRemovalHeader } from "./lowering/render-task-removal.js";
 import { meshFeaturesHeader } from "./lowering/mesh-attribute-features.js";
 import { lowerMeshOpacity } from "./lowering/mesh-opacity.js";
+import { lowerParallaxOcclusionUnit } from "./lowering/parallax-occlusion.js";
+import { lowerMaterialRebuild } from "./lowering/material-rebuild.js";
 import { backgroundFactories } from "./pinned-background-factories.js";
 import { subtreeVisibilityHeader } from "./lowering/subtree-visibility.js";
 import { SplatLowerer } from "./lowering/splat-lowerer.js";
@@ -1232,6 +1234,7 @@ class GeneratedSourceWriter {
                     occlusionUv2: options.occlusionUv2,
                     standardBump: composedMaterials.standardBump,
                     standardReflection: composedMaterials.standardReflection,
+                    parallaxOcclusion: composedMaterials.parallaxOcclusion,
                     clusteredLights: pbrBindingNames.has("clusteredLights"),
                     vat: pbrBindingNames.has("vatSampler"),
                     vatInstances: pbrBindingNames.has("vatInstanceTex"),
@@ -1458,6 +1461,14 @@ ${lowerThinInstanceSync(context)}
             "upstream/src/mesh_opacity.cpp",
             () => lowerMeshOpacity(context),
             "upstream/include/bblite/upstream/mesh_opacity.hpp",
+        );
+        emitReached(
+            "upstream/src/parallax_occlusion.cpp",
+            () => lowerParallaxOcclusionUnit(context),
+            "upstream/include/bblite/upstream/parallax_occlusion.hpp",
+        );
+        emitReached("upstream/src/material_rebuild.cpp", () =>
+            lowerMaterialRebuild(context),
         );
         this.emitTextData(features, context, options, generated);
         emitReached("upstream/src/frame_graph_resources.cpp", () =>
@@ -1884,6 +1895,7 @@ ${lowerThinInstanceSync(context)}
                     "material:standard-emissive-file-texture",
                 ),
                 lightmapFile: features.includes("material:standard-lightmap"),
+                bumpFile: features.includes("material:standard-bump"),
                 uvTransform: features.includes(
                     "material:standard-uv-transform",
                 ),
@@ -2212,6 +2224,9 @@ ${metallicReflectanceCapabilityDefines(pbrBindingNames)}
 #define BBLITE_MATERIAL_STANDARD_BUMP ${composedMaterials.standardBump ? 1 : 0}
 
 #define BBLITE_MATERIAL_STANDARD_REFLECTION ${composedMaterials.standardReflection ? 1 : 0}
+// The parallax occlusion height slot, and the Standard extension's own block.
+#define BBLITE_MATERIAL_PARALLAX_OCCLUSION ${composedMaterials.parallaxOcclusion ? 1 : 0}
+#define BBLITE_MATERIAL_STANDARD_PARALLAX ${composedMaterials.standardParallaxParams ? 1 : 0}
 // The shadow family: the generator's own resources and the composed
 // receiver arms. Reached by the scene's own generator factory, which is
 // where upstream keeps its shadow scheduling code out of an ordinary
@@ -4149,6 +4164,7 @@ ${shadow.blurFragmentWgsl}`,
                         "material:standard-uv-transform",
                     ),
                     plugins: features.includes("material:plugins"),
+                    parallax: features.includes("material:parallax-occlusion"),
                     renderableMeshFeatures:
                         options.standardRenderableMeshFeatures ?? [],
                     runtimeMeshFeatures: options.standardRuntimeMeshFeatures,

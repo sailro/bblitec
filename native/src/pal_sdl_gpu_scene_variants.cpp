@@ -1853,6 +1853,17 @@ void draw_standard_variant(
 #if BBLITE_MESH_OPACITY
     upstream::MeshOpacityUniforms opacity_block{};
 #endif
+#if BBLITE_MATERIAL_STANDARD_PARALLAX
+    // The row's block, taken at its first bind as the pin's `_bind` takes it.
+    const auto standard_parallax_params_of =
+        [&](const GpuMesh& row) -> const std::array<float, 16>& {
+        if (!material)
+            gpu_error("a Standard parallax variant has no material block to bind.");
+        if (!row.standard_parallax_params)
+            row.standard_parallax_params = standard_parallax_block(*material, features);
+        return *row.standard_parallax_params;
+    };
+#endif
     const auto resolve = [&](const std::string& block) -> PinnedStageBlock {
         if (block == "scene") {
             return {&pinned_scene, sizeof(pinned_scene)};
@@ -1900,6 +1911,12 @@ void draw_standard_variant(
             return {&opacity_block, sizeof(opacity_block)};
         }
 #endif
+#if BBLITE_MATERIAL_STANDARD_PARALLAX
+        if (block == standard_parallax_block_name) {
+            const std::array<float, 16>& params = standard_parallax_params_of(mesh);
+            return {params.data(), sizeof(params)};
+        }
+#endif
         return {};
     };
 #if BBLITE_STANDARD_SHADOWS
@@ -1941,6 +1958,17 @@ void draw_standard_variant(
 #if BBLITE_MESH_OPACITY
         if (feature_binding(name) == FeatureBinding::mesh_opacity)
             return mesh_opacity_storage(state, engine, item, mesh);
+#endif
+#if BBLITE_MATERIAL_STANDARD_PARALLAX
+        if (name == standard_parallax_block_name) {
+            if (!mesh.standard_parallax_storage) {
+                const std::array<float, 16>& params = standard_parallax_params_of(mesh);
+                mesh.standard_parallax_storage =
+                    upload_buffer(state.device, SDL_GPU_BUFFERUSAGE_GRAPHICS_STORAGE_READ,
+                                  params.data(), sizeof(params));
+            }
+            return mesh.standard_parallax_storage;
+        }
 #endif
 #if BBLITE_STANDARD_SHADOWS
         if (SDL_GPUBuffer* info = shadow_info_buffer_at(state, fragment_shadow_rows.storage[slot]))

@@ -985,6 +985,22 @@ export const GLOBAL_OBJECT_NAMES: ReadonlySet<string> = new Set([
 ]);
 
 /**
+ * Whether a library global names the Window itself, as it does in a
+ * top-level browsing context, which the native window always is (no frames,
+ * no opener): the global object's own names and its `parent`, `top` and
+ * `frames` WindowProxy members.
+ */
+export function isTopLevelWindow(global: string | undefined): boolean {
+    return (
+        global !== undefined &&
+        (GLOBAL_OBJECT_NAMES.has(global) ||
+            global === "parent" ||
+            global === "top" ||
+            global === "frames")
+    );
+}
+
+/**
  * Whether an identifier resolves to the checker's own global binding of its
  * name, the one a program reaches when nothing it declares shadows that
  * name. The checker models `globalThis` and `undefined` as intrinsics with

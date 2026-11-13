@@ -225,9 +225,11 @@ constexpr std::size_t standard_bump_slots = BBLITE_MATERIAL_STANDARD_BUMP ? 1 : 
 // generated slot table's own order); only the composed variant bind path
 // consults it, through its generated slot index.
 constexpr std::size_t standard_reflection_slots = BBLITE_MATERIAL_STANDARD_REFLECTION ? 1 : 0;
+// The parallax occlusion height slot appends after reflection the same way.
+constexpr std::size_t parallax_height_slots = BBLITE_MATERIAL_PARALLAX_OCCLUSION ? 1 : 0;
 constexpr std::size_t mesh_texture_slots = 5 + transmission_texture_slots +
                                            material_extension_slots + standard_bump_slots +
-                                           standard_reflection_slots;
+                                           standard_reflection_slots + parallax_height_slots;
 static_assert(mesh_texture_slots == upstream::material_texture_mesh_slots,
               "This backend's slot constants must match the generated material "
               "texture-slot table.");
@@ -320,6 +322,9 @@ struct DawnDrawResources {
 #if BBLITE_MESH_OPACITY
     std::optional<upstream::MeshOpacityUniforms> mesh_opacity_written{};
 #endif
+    // The Standard parallax extension's `parallaxParams` block, made where a
+    // composed variant declares it and filled as each group binds it.
+    WGPUBuffer parallax_uniforms = nullptr;
     WGPUBindGroup group = nullptr;
     /** The variant, times two plus the Standard unfilterable-emissive bit. */
     std::size_t group_key = npos;
@@ -607,6 +612,8 @@ struct DawnSharedMaterialTextures {
 /** Generated PBR/Standard texture slots uploaded once per material. */
 struct DawnSharedComposedMaterialTextures {
     MaterialHandle material{};
+    // The record's `build_generation` the slots were read under.
+    std::uint64_t material_build = 0;
     bool standard_material = false;
     std::array<DawnTexture, mesh_texture_slots> textures{};
     std::array<DawnTextureView, mesh_texture_slots> views{};
@@ -1571,6 +1578,8 @@ struct DawnState : DawnDevice {
             wgpuBindGroupRelease(draw.group);
         if (draw.mesh_opacity_uniforms)
             wgpuBufferRelease(draw.mesh_opacity_uniforms);
+        if (draw.parallax_uniforms)
+            wgpuBufferRelease(draw.parallax_uniforms);
         if (draw.uv_transform_uniforms)
             wgpuBufferRelease(draw.uv_transform_uniforms);
         if (draw.uv_uniforms)
@@ -2991,7 +3000,9 @@ WGPUBindGroup build_standard_draw_group(
     // the same shape `geometry_params` takes below.
     [[maybe_unused]] WGPUBuffer uv_transform_uniforms,
     // The colour draw state's `meshOpacity` block, likewise.
-    WGPUBuffer mesh_opacity_uniforms, WGPUBuffer geometry_params, StandardRenderViews render_views,
+    WGPUBuffer mesh_opacity_uniforms,
+    // And its `parallaxParams` block, filled here as the pin's `_bind` fills it.
+    WGPUBuffer parallax_uniforms, WGPUBuffer geometry_params, StandardRenderViews render_views,
     // The draw's emission allocation (`area_light_emission_of`).
     const DawnAreaLightEmission* area_light_emission,
     // A geometry task's renderable state, whose previous pose a velocity view binds.

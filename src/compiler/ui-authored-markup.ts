@@ -50,6 +50,11 @@ const TAG_ATTRIBUTES: ReadonlyMap<string, ReadonlySet<string>> = new Map(
         b: [],
         strong: [],
         label: [],
+        nav: [],
+        // A link's activation navigates this browsing context only.
+        a: ["href", "target"],
+        form: [],
+        output: ["name", "for"],
         button: ["type", "disabled"],
         input: [
             "type",
@@ -69,6 +74,12 @@ const TAG_ATTRIBUTES: ReadonlyMap<string, ReadonlySet<string>> = new Map(
 );
 
 const INPUT_TYPES = new Set(["text", "password", "range", "checkbox", "color"]);
+
+/**
+ * The admitted input types that block implicit submission: Enter in one
+ * submits the form holding it, and a native form never submits.
+ */
+const IMPLICIT_SUBMISSION_TYPES = new Set(["text", "password"]);
 
 /** Whether static markup creates a form control. */
 export function createsFormControls(markup: string): boolean {
@@ -107,6 +118,7 @@ export function parseAuthoredMarkup(
     const convert = (
         nodes: readonly HtmlFragmentNode[],
         parent: string | undefined,
+        inForm: boolean,
     ): UiAuthoredMarkupNode[] => {
         const result: UiAuthoredMarkupNode[] = [];
         for (const node of nodes) {
@@ -127,7 +139,7 @@ export function parseAuthoredMarkup(
                     ? TAG_ATTRIBUTES.get(tag)
                     : undefined) ??
                 fail(
-                    `with form controls supports div, span, p, h1, h2, b, strong, label, button, input, select, option and textarea, not <${tag}>.`,
+                    `with form controls supports div, span, p, h1, h2, b, strong, label, nav, a, form, output, button, input, select, option and textarea, not <${tag}>.`,
                 );
             const attributes: Array<{ name: string; value: string }> = [];
             for (const [name, value] of Object.entries(node.attributes ?? {})) {
@@ -148,6 +160,16 @@ export function parseAuthoredMarkup(
                 )
                     fail("<button> supports only type='button'.");
                 if (
+                    tag === "a" &&
+                    name === "target" &&
+                    !["", "_self", "_parent", "_top"].includes(
+                        value.toLowerCase(),
+                    )
+                )
+                    fail(
+                        `<a> target '${value}' opens another browsing context, which the native window does not have.`,
+                    );
+                if (
                     tag === "input" &&
                     name === "type" &&
                     !INPUT_TYPES.has(value.toLowerCase())
@@ -160,7 +182,21 @@ export function parseAuthoredMarkup(
                     value: name === "type" ? value.toLowerCase() : value,
                 });
             }
-            const children = convert(node.children ?? [], tag);
+            if (
+                inForm &&
+                tag === "input" &&
+                IMPLICIT_SUBMISSION_TYPES.has(
+                    (node.attributes?.type ?? "text").toLowerCase(),
+                )
+            )
+                fail(
+                    "has a <form> holding a text or password <input>, whose Enter submits it; native forms never submit.",
+                );
+            const children = convert(
+                node.children ?? [],
+                tag,
+                inForm || tag === "form",
+            );
             if (
                 tag === "option" &&
                 children.some((child) => child.kind !== "text")
@@ -170,5 +206,5 @@ export function parseAuthoredMarkup(
         }
         return result;
     };
-    return convert(parseHtmlFragment(markup), undefined);
+    return convert(parseHtmlFragment(markup), undefined, false);
 }

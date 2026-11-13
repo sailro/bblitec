@@ -36,7 +36,7 @@ const MORPH_CONTEXT_REFUSAL = pinnedRefusal(
 );
 const NOT_PRELOADED_REFUSAL = pinnedRefusal(
     "src/material/standard/standard-geometry-output-shader.ts",
-    "createGeometryParamsFragment",
+    "createGeometryFragment",
     "Standard geometry deformation velocity was not preloaded.",
 );
 

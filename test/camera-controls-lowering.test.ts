@@ -3,6 +3,7 @@ import { execFileSync } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import test from "node:test";
+import { compileSource } from "../src/compiler.js";
 import { CameraLowerer } from "../src/lowering/camera-lowerer.js";
 import { LoweringContext } from "../src/lowering/context.js";
 import { lowerWorldAabbHelpers } from "../src/lowering/world-bounds-lowerer.js";
@@ -344,7 +345,7 @@ test("arc-rotate pointer handlers match the pinned buttons, deferral and wheel",
             let event: string;
             if (step.kind === "down") {
                 [lastX, lastY] = [step.x, step.y];
-                event = `bbl::upstream::arc_rotate_pointer_down(camera, dragging, panning, ${step.button}, false);`;
+                event = `bbl::upstream::arc_rotate_pointer_down(camera, dragging, panning, ${step.button}, false, bbl::PlatformMouseEvent{.button = ${step.button}});`;
             } else if (step.kind === "move") {
                 event = `bbl::upstream::arc_rotate_pointer_move(camera, dragging, panning, 0, ${step.x - lastX}, ${step.y - lastY});`;
                 [lastX, lastY] = [step.x, step.y];
@@ -375,7 +376,7 @@ int main() {
     engine.cameras.push_back(record);
     auto& camera = engine.cameras[0];
     bool allow = true, drag_active = false, pick_pending = false;
-    camera.should_handle_pointer_down = [&] { return allow; };
+    camera.should_handle_pointer_down = [&](const bbl::PlatformMouseEvent&) { return allow; };
     camera.external_drag_active = [&] { return drag_active; };
     camera.external_pick_pending = [&] { return pick_pending; };
     bool dragging = false, panning = false;
@@ -651,5 +652,36 @@ test("a changed framing scale or free-camera orientation flows into its factory"
             { emptyAccumulator: false },
         ),
         /transformedRadius \+= \(coefficient \* static_cast<double>/,
+    );
+});
+
+test("attachControl hands its pointer-down predicate the press's PointerEvent", () => {
+    const program = (predicate: string): string => `
+        import { attachControl, createArcRotateCamera, createEngine, createSceneContext, registerScene, startEngine } from "babylon-lite";
+        const canvas = document.getElementById("renderCanvas") as HTMLCanvasElement;
+        const engine = await createEngine(canvas);
+        const scene = createSceneContext(engine);
+        const camera = createArcRotateCamera(0, 1, 5, { x: 0, y: 0, z: 0 });
+        scene.camera = camera;
+        attachControl(camera, canvas, scene, { shouldHandlePointerDown: ${predicate} });
+        await registerScene(scene);
+        await startEngine(engine);
+    `;
+    // The pin calls `options.shouldHandlePointerDown(e)` in onPointerDown.
+    const { cpp } = compileSource(
+        program(`(event) => event.button === 0 && event.pointerType !== "pen"`),
+    );
+    assert.match(
+        cpp,
+        /bbl::js::Borrowed<const bbl::PlatformMouseEvent>\(event\)/,
+    );
+    assert.match(
+        compileSource(program("() => true")).cpp,
+        /\(const bbl::PlatformMouseEvent&\) \{ return static_cast<bool>\(predicate\(\)\); \}/,
+    );
+    assert.throws(
+        () =>
+            compileSource(program("(event, extra) => event.button === extra")),
+        /predicate callback of the pointer event or none/,
     );
 });

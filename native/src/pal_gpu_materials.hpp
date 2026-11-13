@@ -56,6 +56,19 @@ inline bool mesh_opacity_moved(std::optional<upstream::MeshOpacityUniforms>& wri
 }
 #endif
 
+#if BBLITE_MATERIAL_STANDARD_PARALLAX
+/** `stdParallaxOcclusionExt`'s own block, by the pin's binding name. */
+inline constexpr std::string_view standard_parallax_block_name = "parallaxParams";
+
+/**
+ * The block `stdParallaxOcclusionExt._bind` writes when the pin binds a
+ * material for a variant composed under `features`: each backend takes it
+ * once per draw row, where the pin creates its buffer.
+ */
+std::array<float, 16> standard_parallax_block(const MaterialRecord& material,
+                                              std::uint32_t features);
+#endif
+
 /**
  * The resource a composed binding a material feature owns requests, by the
  * pin's binding name: one table for the names both backends realize --

@@ -302,6 +302,17 @@ struct GpuMeshResources {
     // `reflection` below stays the cube.
     SDL_GPUTexture* standard_reflection = nullptr;
 #endif
+#if BBLITE_MATERIAL_PARALLAX_OCCLUSION
+    SDL_GPUTexture* parallax_height = nullptr;
+#endif
+#if BBLITE_MATERIAL_STANDARD_PARALLAX
+    // The Standard parallax extension's block, taken when the row first
+    // binds it: the pin fills its buffer once per bind, and a rebuild makes
+    // a new row.
+    mutable std::optional<std::array<float, 16>> standard_parallax_params{};
+    // The same block where the stage compile demoted it to storage.
+    mutable SDL_GPUBuffer* standard_parallax_storage = nullptr;
+#endif
     SDL_GPUTexture* reflection = nullptr;
     SDL_GPUSampler* base_color_sampler = nullptr;
     SDL_GPUSampler* metallic_roughness_sampler = nullptr;
@@ -359,6 +370,9 @@ struct GpuMeshResources {
 #endif
 #if BBLITE_MATERIAL_STANDARD_REFLECTION
     SDL_GPUSampler* standard_reflection_sampler = nullptr;
+#endif
+#if BBLITE_MATERIAL_PARALLAX_OCCLUSION
+    SDL_GPUSampler* parallax_height_sampler = nullptr;
 #endif
     // A shader material's own sampler slots, bound as fragment samplers
     // 0..n in the order its `samplers` option declared them. Empty for
@@ -418,10 +432,12 @@ struct SharedMaterialTextures : SdlSampledTextures {
     bool task_user = false;
 };
 
-/** Generated PBR/Standard texture-slot bindings owned once per material. */
+/** Generated PBR/Standard texture-slot bindings owned once per material build. */
 struct SharedComposedMaterialTextures : SdlSampledTextures {
     using SdlSampledTextures::SdlSampledTextures;
     MaterialHandle material{};
+    // The record's `build_generation` the slots were read under.
+    std::uint64_t material_build = 0;
     bool standard_material = false;
     std::size_t users = 0;
 };

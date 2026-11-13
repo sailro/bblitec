@@ -303,20 +303,37 @@ export function compileCameraDeferralOptions(
     return fields.flatMap(([source, member]) => {
         const callback = context.objectProperty(options, source);
         if (!callback) return [];
-        if (!ts.isArrowFunction(callback) || callback.parameters.length !== 0) {
+        // The pin calls shouldHandlePointerDown with the press's PointerEvent
+        // (`onPointerDown`), the other two with nothing.
+        const takesEvent = source === "shouldHandlePointerDown";
+        if (
+            !ts.isArrowFunction(callback) ||
+            callback.parameters.length > (takesEvent ? 1 : 0)
+        ) {
             context.fail(
                 callback,
-                "Camera deferral requires a zero-argument predicate callback.",
+                takesEvent
+                    ? "Camera deferral requires a predicate callback of the pointer event or none."
+                    : "Camera deferral requires a zero-argument predicate callback.",
             );
         }
+        const event = {
+            kind: "borrowed-platform-event",
+            event: "mouse",
+        } as const;
+        const predicate = context.compileStoredDataFunction(callback, {
+            kind: "function",
+            parameters: takesEvent && callback.parameters.length ? [event] : [],
+            result: { kind: "boolean" },
+        });
         return [
             {
                 member,
-                cpp: context.compileStoredDataFunction(callback, {
-                    kind: "function",
-                    parameters: [],
-                    result: { kind: "boolean" },
-                }),
+                cpp: !takesEvent
+                    ? predicate
+                    : callback.parameters.length
+                      ? `[predicate = ${predicate}](const bbl::PlatformMouseEvent& event) { return static_cast<bool>(predicate(bbl::js::Borrowed<const bbl::PlatformMouseEvent>(event))); }`
+                      : `[predicate = ${predicate}](const bbl::PlatformMouseEvent&) { return static_cast<bool>(predicate()); }`,
             },
         ];
     });

@@ -38,6 +38,8 @@ before implementing: a source refusal does not mean RmlUi lacks the feature.
 - Location: deployment query reads fold to constants. Reload, `location.search` writes and same-document
   `assign`/`href` recreate realms, keeping durable storage; another document throws NotSupportedError.
 - Clipboard: text writes only. `visibilitychange` follows window hide/show.
+- The window is top-level: `parent`, `top` and `frames` are the Window. Nothing posts it a message, so a
+  `message` listener receives only events the program dispatches, whose MessageEvent members read `undefined`.
 - `beforeunload` then `pagehide` (persisted=false, no prompt) run before realm cleanup; worker realms refuse them.
 - Error/unhandledrejection listeners are supported; `rejectionhandled` is not.
 - `requestIdleCallback`/`cancelIdleCallback` (direct, `window.` members, stored aliases): each callback runs in its
@@ -58,12 +60,12 @@ before implementing: a source refusal does not mean RmlUi lacks the feature.
 | Area | Admitted | Refuses |
 | --- | --- | --- |
 | Tree | Static tags, text nodes, append/insert/prepend/replaceChildren, remove, `replaceWith`, `insertAdjacentElement`, parent/child/sibling reads | Stored child collections, prepend spreads, tree reads inside innerHTML, `replaceWith` text/spreads, dynamic adjacent positions |
-| Content | textContent/innerText, bounded innerHTML, static attributes, reflected properties (on a lookup of unknown tag, checked when written), dataset, `new Image()`, img `src` selecting packaged images (literals or runtime strings with inferable candidates; load/error, natural size, `complete`), `scrollTop`/`scrollLeft` (applied clamped at the next layout) | Compound text/dataset writes, dynamic dataset keys, other property writes, img `src` without inferable candidates (incl. `data:`/object URLs), `draggable = true`, `autocomplete` reads; `title` tooltips not rendered |
+| Content | textContent/innerText, bounded innerHTML, static attributes, reflected properties (on a lookup of unknown tag, checked when written), a link's `href` read (resolved against the document URL), dataset, `new Image()`, img `src` selecting packaged images (literals or runtime strings with inferable candidates; load/error, natural size, `complete`), `scrollTop`/`scrollLeft` (applied clamped at the next layout) | Compound text/dataset writes, dynamic dataset keys, other property writes, img `src` without inferable candidates (incl. `data:`/object URLs), `draggable = true`, `autocomplete` reads; `title` tooltips not rendered |
 | Styles | cssText, static style fields, classList; getComputedStyle display/opacity/visibility/zIndex | `setProperty` priority, dynamic names, other computed properties |
 | Queries | Literal selectors, runtime text in quoted attribute values, unions of literal selectors, state pseudo-classes, `matches`, `closest`, ID lookup, `contains`, `instanceof` | `:scope`, pseudo-elements, other runtime selector text |
 | Pointer/keyboard | Mouse, multi-touch, touch events, pointer capture, click/dblclick, wheel, contextmenu, keys, `on<event>` properties | Coalesced events, Touch radius/rotation/stylus fields |
 | Events | transitionend, storage, file drags (first file), gamepadconnected/gamepaddisconnected, CustomEvent, constructed Event/MouseEvent/PointerEvent/InputEvent/KeyboardEvent (keydown and keyup reach the key listeners), `composedPath` | Element CustomEvent dispatch, authored drags, cross-document redispatch |
-| Forms | Focus/blur and the bubbling focusin/focusout after them, activeElement, `tabIndex`, text/password/checkbox/color/range inputs, textarea, select, output, details/summary | Full browser form behavior; `hidden=until-found` |
+| Forms | Focus/blur and the bubbling focusin/focusout after them, activeElement, `tabIndex`, text/password/checkbox/color/range inputs, textarea, select, output, details/summary, `form.elements.namedItem`, `new FormData(form)` (its entry list; `get`/`has`/`set`/`delete`/iterators), `submit` listeners ([never dispatched](fidelity.md#semantic-contract)) | Full browser form behavior; `hidden=until-found`; several controls of one name (RadioNodeList) and file inputs in FormData throw NotSupportedError; a FormData submitter |
 
 - Selector structure is parsed at generation with the literal grammar. In a runtime attribute value, a line break
   throws SyntaxError; the delimiting quote, a backslash, tab or NUL throw NotSupportedError.
@@ -132,8 +134,11 @@ before implementing: a source refusal does not mean RmlUi lacks the feature.
 - A stored string of fixed fragments (closed choices among them included) around one runtime text reads as the shape
   whose fragments it holds, the most specific first.
 - Static innerHTML with input/select/option/textarea builds retained elements, so its controls own state as created
-  ones do: div/span/p/h1/h2/b/strong/label/button and reviewed control attributes. Comments, other tags, textarea
-  content and dynamic markup with controls refuse; whitespace between options is not kept.
+  ones do: div/span/p/h1/h2/b/strong/label/nav/a/form/output/button and reviewed control attributes. A flat template's
+  runtime operands are text there (escaped, as in projected markup); in attributes they refuse. A link targets this
+  browsing context only. A form holding a text or password input refuses (Enter submits it; native forms never
+  submit). Comments, other tags, textarea content and other dynamic markup with controls refuse; whitespace between
+  options is not kept.
 - ARIA has no native accessibility bridge.
 - `createElementNS`: SVG svg/path/rect/circle/line/ellipse/polyline/polygon and text (its text or one textPath),
   rasterized at CSS size by RmlUi's SVG plugin. Presentation properties (fill, stroke and its width, caps, joins,

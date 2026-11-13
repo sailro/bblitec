@@ -156,7 +156,9 @@ test("a declined producer is inlined, not executed", () => {
         void main();
     `);
     assert.match(result.cpp, /bbl::load_file_texture\(/);
-    assert.match(result.cpp, /bbl::set_standard_diffuse_file_texture\(/);
+    // The producer returns the stored record (`bbl::StoredTexture`); its
+    // setter dispatches to the file arm.
+    assert.ok(result.cpp.includes("bbl::set_standard_diffuse_texture("));
     assert.equal(
         result.manifest.adaptations.some(
             (adaptation) => adaptation.id === "browser-produced-textures",

@@ -101,6 +101,7 @@ export function mergePbrStateWrites(
             added.bentNormalTexture === "definite"
                 ? "definite"
                 : known.bentNormalTexture || added.bentNormalTexture,
+        parallaxOcclusion: known.parallaxOcclusion || added.parallaxOcclusion,
         pluginSignatures: merged(
             known.pluginSignatures,
             added.pluginSignatures,
@@ -255,6 +256,7 @@ export class SceneMaterialRecorder {
             alphaBelowOne?: readonly boolean[];
             baseColorFactor?: true;
             bentNormalTexture?: true | "definite";
+            parallaxOcclusion?: true;
             pluginSignature?: number;
             pluginAppend?: number;
         },
@@ -271,6 +273,7 @@ export class SceneMaterialRecorder {
             alphaBelowOne: write.alphaBelowOne ?? [],
             baseColorFactor: write.baseColorFactor === true,
             bentNormalTexture: write.bentNormalTexture ?? false,
+            parallaxOcclusion: write.parallaxOcclusion === true,
             pluginSignatures:
                 write.pluginSignature === undefined
                     ? []

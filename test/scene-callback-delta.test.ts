@@ -11,6 +11,7 @@ import { compileSource } from "../src/compiler.js";
 import { importPinnedModule } from "../src/pinned-shader-composer.js";
 import {
     cppFunction,
+    nativeFixtureVcpkgRoot,
     optionalNativeFixtureTools,
     runNativeFixtureCompiler,
     sharedGpuSource,
@@ -138,9 +139,17 @@ test(
             output,
             "test/fixtures/camera-scene-delta-check.cpp",
             ...sources,
+            join(nativeFixtureVcpkgRoot, "lib/SDL3.lib"),
         ]);
         assert.match(
-            execFileSync(executable, [], { encoding: "utf8" }),
+            execFileSync(executable, [], {
+                encoding: "utf8",
+                // The press event reads SDL's modifier and window state.
+                env: {
+                    ...process.env,
+                    PATH: `${join(nativeFixtureVcpkgRoot, "bin")};${process.env.PATH ?? ""}`,
+                },
+            }),
             /camera-scene-delta-check: ok/,
         );
     },
