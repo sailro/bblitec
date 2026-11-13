@@ -7579,6 +7579,22 @@ check(
 );
 
 check(
+    "for-of-over-an-optional-collection-or-nothing",
+    `
+    interface Reuse { bucketMeta: Map<string, { variant: number }>; seen?: Set<number> }
+    function total(reuse?: Reuse): number {
+        let n = 0;
+        for (const [key, meta] of reuse?.bucketMeta ?? []) n += meta.variant + key.length;
+        for (const id of reuse?.seen ?? []) n += id * 100;
+        return n;
+    }
+    const reuses: (Reuse | undefined)[] = [{ bucketMeta: new Map([["ab", { variant: 3 }]]), seen: new Set([1, 2]) }, undefined, { bucketMeta: new Map() }];
+    const totals = reuses.map((reuse) => total(reuse));
+    if (totals.join(",") !== "305,0,0") throw new Error("totals " + totals.join(","));
+`,
+);
+
+check(
     "void-callback-result-compared-with-true",
     `
     let seen = 0;

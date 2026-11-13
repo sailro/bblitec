@@ -5016,7 +5016,11 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             !ts.isArrayLiteralExpression(literal) ||
             literal.elements.length > 0 ||
             !element ||
-            ["vector", "span", "tuple", "json"].includes(element.kind) ||
+            // A collection's empty fallback is an empty collection of it,
+            // as the coalesce already stores one.
+            ["vector", "span", "tuple", "json", "map", "set"].includes(
+                element.kind,
+            ) ||
             unionMembers(
                 checker.getNonNullableType(
                     checker.getTypeAtLocation(expression.left),
