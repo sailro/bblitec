@@ -7730,6 +7730,32 @@ check(
 );
 
 check(
+    "nested-pattern-destructuring-a-lane-of-shared-union-storage",
+    `
+    interface Brick { variant: number; w: number }
+    interface BrickBucket { variant: number; tint: [number, number, number] | null; bs: Brick[]; rep: Brick }
+    interface Prepared { bucketEntries: [string, BrickBucket][] }
+    function prepare(bricks: { brick: Brick; tint: [number, number, number] | null }[]): Prepared {
+      const byBucket = new Map<string, BrickBucket>();
+      for (const tb of bricks) {
+        const key = \`\${tb.brick.variant}|\${tb.tint ? tb.tint.join(",") : "-"}\`;
+        const arr = byBucket.get(key);
+        if (arr) arr.bs.push(tb.brick); else byBucket.set(key, { variant: tb.brick.variant, tint: tb.tint, bs: [tb.brick], rep: tb.brick });
+      }
+      const bucketEntries = [...byBucket.entries()].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+      return { bucketEntries };
+    }
+    function build(prepared: Prepared): number {
+      let total = 0;
+      for (const [key, { variant, bs, rep }] of prepared.bucketEntries) total += variant * 10 + bs.length + rep.w + key.length;
+      return total;
+    }
+    const p = prepare([{ brick: { variant: 1, w: 2 }, tint: null }, { brick: { variant: 1, w: 3 }, tint: null }, { brick: { variant: 2, w: 1 }, tint: [1, 1, 1] }]);
+    if (build(p) !== 1 * 10 + 2 + 2 + 3 + 2 * 10 + 1 + 1 + 7) throw new Error("build " + build(p));
+`,
+);
+
+check(
     "truncating-the-array-a-call-returns",
     `
     interface Chimney { id: number }

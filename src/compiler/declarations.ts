@@ -5450,7 +5450,14 @@ export class DeclarationLowerer {
                 return;
             }
             if (!ts.isIdentifier(element.name)) {
-                this.bindPattern(element.name, bound, element);
+                this.bindPattern(
+                    element.name,
+                    this.context.dataLowerer.narrowBindingLane(
+                        bound,
+                        element.name,
+                    ),
+                    element,
+                );
                 return;
             }
             let stored = this.context.dataLowerer.narrowBindingLane(

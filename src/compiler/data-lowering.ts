@@ -4480,7 +4480,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
 
     public narrowOptional(
         value: Value,
-        expression: ts.Expression,
+        expression: ts.Expression | ts.BindingName,
         assertedNonNull = false,
         expectedType?: DataType,
     ): Value {
@@ -4565,7 +4565,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
     private narrowedUnionMemberIndex(
         type: DataType<"union">,
         narrowed: DataType | undefined,
-        expression?: ts.Expression,
+        expression?: ts.Expression | ts.BindingName,
     ): number {
         const exact = type.members.findIndex(
             (member) =>
@@ -4604,6 +4604,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         // holding another member throws where it is selected.
         if (
             expression &&
+            ts.isExpression(expression) &&
             narrowed?.kind === "struct" &&
             assertsType(expression)
         ) {
@@ -7890,16 +7891,15 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
 
     /**
      * A lane of a tuple whose elements share union storage, bound as the
-     * type its binding declares: the union member that lane holds.
+     * type its binding declares (a name, or a nested pattern destructuring
+     * it): the union member that lane holds.
      */
     public narrowBindingLane(value: Value, name: ts.BindingName): Value {
         const type =
             value.dataType?.kind === "optional"
                 ? value.dataType.inner
                 : value.dataType;
-        return value.kind === "data" &&
-            type?.kind === "union" &&
-            ts.isIdentifier(name)
+        return value.kind === "data" && type?.kind === "union"
             ? this.narrowOptional(value, name)
             : value;
     }
