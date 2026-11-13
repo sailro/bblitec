@@ -5622,17 +5622,21 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 };
             }
             // A fallback may widen a scalar's literal union, or introduce a
-            // different scalar alternative. Convert both branches through the
-            // joined type's sinks rather than forcing the fallback into the
-            // left operand's narrower storage.
+            // different scalar alternative, or a record beside an array
+            // (`frames ?? frame`). Convert both branches through the joined
+            // type's sinks rather than forcing the fallback into the left
+            // operand's narrower storage.
+            const joined = this.dataTypeAt(expression);
             let resultType =
                 this.elementOrEmptyArray(inner, expression) ??
                 (inner.kind === "enum" ||
                 inner.kind === "string" ||
                 inner.kind === "number" ||
                 inner.kind === "boolean" ||
-                inner.kind === "union"
-                    ? (this.dataTypeAt(expression) ?? inner)
+                inner.kind === "union" ||
+                ((inner.kind === "vector" || inner.kind === "span") &&
+                    joined?.kind === "union")
+                    ? (joined ?? inner)
                     : inner);
             // Flow narrowing may omit a stored tag changed by a called helper.
             // Text storage preserves every live tag, including those absent

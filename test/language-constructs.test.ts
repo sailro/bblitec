@@ -7844,6 +7844,27 @@ check(
 );
 
 check(
+    "array-coalesced-with-a-record-into-a-record-or-array-parameter",
+    `
+    interface Frame { id: number; stations: number[] }
+    const isFrameArray = (value: Frame | readonly Frame[]): value is readonly Frame[] => Array.isArray(value);
+    const seen: number[] = [];
+    const recordBodyFollow = (frames: Frame | readonly Frame[], sink: number | null): void => {
+      const frameList = isFrameArray(frames) ? frames : [frames];
+      const stations = isFrameArray(frames) ? frames.flatMap((frame) => frame.stations) : frames.stations;
+      seen.push(frameList.length * 100 + stations.length + (sink ?? 0));
+    };
+    const requests: { frame: Frame }[][] = [[{ frame: { id: 1, stations: [1, 2] } }], [{ frame: { id: 2, stations: [3] } }, { frame: { id: 3, stations: [4, 5] } }]];
+    for (const group of requests) {
+      const first = group[0]!;
+      const groupedFrames = group.length > 1 ? group.map((request) => request.frame) : null;
+      recordBodyFollow(groupedFrames ?? first.frame, null);
+    }
+    if (seen.join(",") !== "102,203") throw new Error("frames " + seen.join(","));
+`,
+);
+
+check(
     "truncating-the-array-a-call-returns",
     `
     interface Chimney { id: number }
