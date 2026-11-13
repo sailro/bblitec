@@ -7771,6 +7771,27 @@ check(
 );
 
 check(
+    "conditional-of-tuples-selects-each-lane-as-its-own-type",
+    `
+    interface Edge { x: number; z: number; nx: number; nz: number }
+    function aim(edges: readonly Edge[], cx: number, cz: number, m: number): number[] | null {
+      let best: Edge | null = null;
+      for (const e of edges) if (!best || e.x > best.x) best = e;
+      if (!best) return null;
+      const toAim = Math.hypot(best.x - cx, best.z - cz);
+      const [ux, uz, x1, z1] = toAim > m
+        ? [(best.x - cx) / toAim, (best.z - cz) / toAim, cx, cz]
+        : [best.nx, best.nz, best.x - best.nx * m, best.z - best.nz * m];
+      return [ux, uz, x1, z1];
+    }
+    const parsed = JSON.parse('[{"x":3,"z":4,"nx":1,"nz":0}]') as Edge[];
+    const literal: Edge[] = [{ x: 0.5, z: 0, nx: 0, nz: 1 }];
+    const a = aim(parsed, 0, 0, 1)!, b = aim(literal, 0, 0, 1)!;
+    if (a.join(",") !== "0.6,0.8,0,0" || b.join(",") !== "0,1,0.5,-1") throw new Error("aim " + a.join(",") + " " + b.join(","));
+`,
+);
+
+check(
     "truncating-the-array-a-call-returns",
     `
     interface Chimney { id: number }

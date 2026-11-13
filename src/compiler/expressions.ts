@@ -6217,6 +6217,7 @@ export class ExpressionLowerer {
                         element,
                         falseElements[index]!,
                         unwrapped,
+                        [String(index)],
                     ),
                 ),
             };
