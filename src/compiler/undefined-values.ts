@@ -180,6 +180,28 @@ interface UndefinedContext {
 }
 
 /** Follow immutable results to a concrete completion, never an erased void type. */
+/**
+ * The function declaration `member` names when it is a module namespace's
+ * member (the namespace's member symbol is its module's function, where an
+ * object's would be a property) and its module never rebinds it: a call of
+ * it runs that body.
+ */
+function exportedFunction(
+    context: UndefinedContext,
+    member: ts.Symbol | undefined,
+): ts.FunctionDeclaration | undefined {
+    const declaration = member?.valueDeclaration;
+    return member &&
+        (member.flags & ts.SymbolFlags.Function) !== 0 &&
+        declaration &&
+        ts.isFunctionDeclaration(declaration) &&
+        declaration.body &&
+        declaration.name &&
+        !context.sharedClosures.identifierIsRebound(declaration.name)
+        ? declaration
+        : undefined;
+}
+
 function provenUndefinedValue(
     context: UndefinedContext,
     node: ts.Node,
@@ -257,6 +279,29 @@ function provenUndefinedValue(
                 context.checker,
                 callee,
             )?.valueDeclaration;
+            // A member a pattern destructures from a namespace (`({ mount })
+            // => mount(x)`) is the function its module exports.
+            const key =
+                binding &&
+                ts.isBindingElement(binding) &&
+                ts.isObjectBindingPattern(binding.parent)
+                    ? (binding.propertyName ?? binding.name)
+                    : undefined;
+            const destructured =
+                key && (ts.isIdentifier(key) || ts.isStringLiteralLike(key))
+                    ? exportedFunction(
+                          context,
+                          context.checker
+                              .getTypeAtLocation(binding!.parent)
+                              .getProperty(key.text),
+                      )
+                    : undefined;
+            if (destructured)
+                return hasUndefinedCompletion(
+                    context.checker,
+                    destructured,
+                    awaited,
+                );
             if (
                 !binding ||
                 !(
@@ -281,6 +326,16 @@ function provenUndefinedValue(
             // holds; an absent one called optionally yields `undefined`.
             const receiver = accessed.expression;
             const name = accessed.name;
+            const exported = exportedFunction(
+                context,
+                context.checker.getSymbolAtLocation(accessed.key),
+            );
+            if (exported)
+                return hasUndefinedCompletion(
+                    context.checker,
+                    exported,
+                    awaited,
+                );
             const owner = context.bindings.lookupOptional(receiver);
             // A struct's function field stores only functions proven to
             // complete as its type requires; an absent optional struct

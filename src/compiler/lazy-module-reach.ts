@@ -137,18 +137,31 @@ function computeReadable(
         }
         return [];
     };
+    /** The module declaration a namespace-typed `owner`'s member `name` exports, kept. */
+    const keepMember = (owner: ts.Type, name: string): void => {
+        const member = owner.getProperty(name);
+        const declaration =
+            member && moduleDeclaration(aliasTarget(checker, member));
+        if (declaration) keep(declaration);
+    };
     const visit = (node: ts.Node): void => {
         if (everything) return;
         if (
             ts.isElementAccessExpression(node) &&
             ts.isStringLiteralLike(node.argumentExpression)
-        ) {
-            const member = checker
-                .getTypeAtLocation(node.expression)
-                .getProperty(node.argumentExpression.text);
-            const declaration =
-                member && moduleDeclaration(aliasTarget(checker, member));
-            if (declaration) keep(declaration);
+        )
+            keepMember(
+                checker.getTypeAtLocation(node.expression),
+                node.argumentExpression.text,
+            );
+        // A pattern reads the members it names (`.then(({ mount }) => ...)`).
+        if (ts.isObjectBindingPattern(node)) {
+            const owner = checker.getTypeAtLocation(node);
+            for (const element of node.elements) {
+                const key = element.propertyName ?? element.name;
+                if (ts.isIdentifier(key) || ts.isStringLiteralLike(key))
+                    keepMember(owner, key.text);
+            }
         }
         if (
             ts.isTypeNode(node) ||

@@ -227,3 +227,37 @@ test("namespace exports refuse writes while their object contents stay mutable",
     }
     runGeneratedProgram(tools, "dynamic-module-exported-object", result.cpp);
 });
+
+test("a lazy module's functions keep the module state they write, called destructured or through the namespace", (t) => {
+    // `mount` is reached only through a reaction's pattern and `measure` only
+    // through the namespace; each writes its own module state, and each
+    // reaction's void result is the exported function's completion.
+    const directory = resolve("artifacts/dynamic-module-members");
+    mkdirSync(directory, { recursive: true });
+    writeFileSync(
+        join(directory, "lab.ts"),
+        `let mounted = 0; let measured = 0;
+        export function mount(size: number, report: (n: number) => void): void { if (size > 1) { mounted = size; report(mounted); return; } mounted = -1; report(mounted); }
+        export function measure(size: number, report: (n: number) => void): void { measured += size; report(measured); }`,
+    );
+    const result = compileSource(
+        `
+        let seen = 0;
+        async function run(): Promise<void> {
+            await import("./lab").then(({ mount }) => mount(2, (n) => { seen += n; }));
+            await import("./lab").then((lab) => lab.measure(3, (n) => { seen += n * 10; }));
+            if (seen !== 32) throw new Error("lazy state " + seen);
+        }
+        run().then(() => globalThis.close());
+    `,
+        { fileName: join(directory, "entry.ts") },
+    );
+    const tools = optionalNativeFixtureTools(false);
+    if (!tools) {
+        t.skip("Native fixture compiler unavailable.");
+        return;
+    }
+    runGeneratedProgram(tools, "dynamic-module-members-native", result.cpp, {
+        flags: ["/DBBLITE_WORKERS=1"],
+    });
+});
