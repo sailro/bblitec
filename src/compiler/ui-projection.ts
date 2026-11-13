@@ -457,6 +457,11 @@ const UI_REFLECTED_ATTRIBUTES: ReadonlyMap<string, UiReflectedAttribute> =
             },
         ],
         ["htmlFor", { attribute: "for", readable: true, tags: ["label"] }],
+        // A loading hint: its getter is the normalized keyword, not lowered.
+        [
+            "loading",
+            { attribute: "loading", readable: false, tags: ["img", "iframe"] },
+        ],
         // Its getter is the URL resolved against the document, not lowered.
         ["href", { attribute: "href", readable: false, tags: ["a", "area"] }],
         // Its getter is the IDL-exposed autofill value, which is not lowered.
@@ -4839,7 +4844,14 @@ export class UiProjection {
                         ...(tag === "button" ? ["type", "disabled"] : []),
                         ...(tag === "a" ? ["href", "target", "rel"] : []),
                         ...(tag === "img"
-                            ? ["src", "alt", "width", "height", "fetchpriority"]
+                            ? [
+                                  "src",
+                                  "alt",
+                                  "width",
+                                  "height",
+                                  "fetchpriority",
+                                  "loading",
+                              ]
                             : []),
                     ]);
                     if (

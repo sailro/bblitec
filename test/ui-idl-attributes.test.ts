@@ -148,3 +148,16 @@ test("unrepresented IDL attribute forms refuse", () => {
     ] as const)
         assert.throws(() => compileEntry(body), pattern, body);
 });
+
+test("an image's loading hint reflects as its attribute", () => {
+    // Written as a property or in markup, the hint is the element's attribute.
+    const cpp = compileSource(`import {createEngine} from "@babylonjs/lite";
+        await createEngine({});
+        const img = document.createElement("img");
+        img.loading = "lazy";
+        document.body.append(img);
+        const panel = document.createElement("div");
+        panel.innerHTML = '<img alt="" loading="lazy"/>';
+        document.body.append(panel);`).cpp;
+    assert.match(cpp, /ui_set_attribute\([^;]*v_img, "loading", "lazy"\)/);
+});
