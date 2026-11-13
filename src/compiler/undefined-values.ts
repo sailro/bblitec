@@ -2,6 +2,7 @@ import ts from "typescript";
 import { someAnalysisNode } from "./analysis-walk.js";
 import {
     declarationInDefaultLibrary,
+    declaredSymbol,
     resolvedSymbol,
     libraryGlobal,
     libraryName,
@@ -14,6 +15,7 @@ import {
     isAsyncFunction,
     isGeneratorFunction,
     functionOfDeclaration,
+    bindingElementKey,
 } from "./syntax.js";
 import type { Value } from "./types.js";
 import type { DataType } from "./data-types.js";
@@ -180,7 +182,6 @@ interface UndefinedContext {
     };
 }
 
-/** Follow immutable results to a concrete completion, never an erased void type. */
 /**
  * The function declaration `member` names when it is a module namespace's
  * member (the namespace's member symbol is its module's function, where an
@@ -203,6 +204,7 @@ function exportedFunction(
         : undefined;
 }
 
+/** Follow immutable results to a concrete completion, never an erased void type. */
 function provenUndefinedValue(
     context: UndefinedContext,
     node: ts.Node,
@@ -286,15 +288,15 @@ function provenUndefinedValue(
                 binding &&
                 ts.isBindingElement(binding) &&
                 ts.isObjectBindingPattern(binding.parent)
-                    ? (binding.propertyName ?? binding.name)
+                    ? bindingElementKey(binding)
                     : undefined;
             const destructured =
-                key && (ts.isIdentifier(key) || ts.isStringLiteralLike(key))
+                key !== undefined
                     ? exportedFunction(
                           context,
                           context.checker
                               .getTypeAtLocation(binding!.parent)
-                              .getProperty(key.text),
+                              .getProperty(key),
                       )
                     : undefined;
             if (destructured)
@@ -329,7 +331,7 @@ function provenUndefinedValue(
             const name = accessed.name;
             const exported = exportedFunction(
                 context,
-                context.checker.getSymbolAtLocation(accessed.key),
+                declaredSymbol(context.checker, accessed.key),
             );
             if (exported)
                 return hasUndefinedCompletion(

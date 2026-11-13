@@ -17,7 +17,11 @@ export function dateNowFunctionValue(
     context: Parameters<typeof nativeFunctionValue>[0],
     expression: ts.Expression,
 ): Value | undefined {
-    if (!isLibraryStatic(context.checker, expression, "Date", "now"))
+    if (
+        (ts.isPropertyAccessExpression(expression) &&
+            expression.name.text !== "now") ||
+        !isLibraryStatic(context.checker, expression, "Date", "now")
+    )
         return undefined;
     return nativeFunctionValue(
         context,

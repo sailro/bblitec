@@ -3359,6 +3359,17 @@ template <typename Yield, bool Entries, typename T>
 /** Which part of each entry a Map iterator yields. */
 enum class MapPart { keys, values, entries };
 
+/** One step of a `keys`, `values` or `entries` iterator over a key and its value. */
+template <typename Yield, MapPart Part, typename K, typename V>
+[[nodiscard]] Nullable<Yield> map_part_yielded(const K& key, const V& value) {
+    if constexpr (Part == MapPart::keys)
+        return Nullable<Yield>::yielded(key);
+    else if constexpr (Part == MapPart::values)
+        return Nullable<Yield>::yielded(value);
+    else
+        return Nullable<Yield>::yielded(Yield{key, value});
+}
+
 /** The default projector keeps no state while accepting the existing nullptr sentinel. */
 struct NoMapEntryProjector {
     constexpr NoMapEntryProjector() = default;
@@ -3393,14 +3404,10 @@ struct MapCursor {
             return {};
         }
         const auto& entry = **cursor;
-        if constexpr (Part == MapPart::keys)
-            return Nullable<Yield>::yielded(entry.first);
-        else if constexpr (Part == MapPart::values)
-            return Nullable<Yield>::yielded(entry.second);
-        else if constexpr (!std::is_same_v<EntryProjector, std::nullptr_t>)
+        if constexpr (Part == MapPart::entries && !std::is_same_v<EntryProjector, std::nullptr_t>)
             return Nullable<Yield>::yielded(project_entry(entry.first, entry.second));
         else
-            return Nullable<Yield>::yielded(Yield{entry.first, entry.second});
+            return map_part_yielded<Yield, Part>(entry.first, entry.second);
     }
     void gc_trace(const TraceVisitor& visitor) const {
         visitor(values);
@@ -3459,9 +3466,8 @@ template <typename T> [[nodiscard]] Iterable<T> array_iterable(Array<T> values) 
 }
 
 template <typename Yield, typename T> [[nodiscard]] Iterable<Yield> set_iterable(Set<T> values) {
-    return Iterable<Yield>(make_closure(std::move(values), [](const Set<T>& owner) {
-        return set_iterator<Yield, false>(owner);
-    }));
+    return Iterable<Yield>(make_closure(
+        std::move(values), [](const Set<T>& owner) { return set_iterator<Yield, false>(owner); }));
 }
 
 template <typename Yield, typename K, typename V>
@@ -3472,7 +3478,8 @@ template <typename Yield, typename K, typename V>
 }
 
 template <typename T> [[nodiscard]] Iterable<T> iterator_iterable(Iterator<T> iterator) {
-    return Iterable<T>(make_closure(std::move(iterator), [](const Iterator<T>& self) { return self; }));
+    return Iterable<T>(
+        make_closure(std::move(iterator), [](const Iterator<T>& self) { return self; }));
 }
 
 template <typename T> using Span = std::span<T>;

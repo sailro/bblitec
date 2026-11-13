@@ -3512,18 +3512,16 @@ export class ExpressionLowerer {
                 `${trueFound ?? "true"} : ` +
                 `${falseFound ?? "true"})`;
         }
-        // A generation-known scalar is the selection's only where both arms
+        // A generation-known fact is the selection's only where both arms
         // know the same one: `x === undefined ? false : true` knows none.
         for (const fact of [
             "staticNumber",
             "staticString",
             "staticBoolean",
+            "spriteDepthMode",
         ] as const)
             if (whenTrue[fact] !== whenFalse[fact])
                 delete writable(conditional)[fact];
-        if (whenTrue.spriteDepthMode !== whenFalse.spriteDepthMode) {
-            delete writable(conditional).spriteDepthMode;
-        }
         return conditional;
     }
 

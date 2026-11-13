@@ -336,16 +336,14 @@ export class SceneMaterialRecorder {
      * Stamps setter options on the scene-code material the call names, the
      * way the pin's `setPbrSheen`/`setPbrClearCoat` stamp the props object
      * onto the material object they are handed. `index` is that object
-     * identity at compile time and rides the value the setter was passed,
-     * so a material of another family — which owns no manifest entry to
-     * stamp — is a named failure rather than a guess.
+     * identity at compile time and rides the value the setter was passed;
+     * an index no recorded material holds is a named failure.
      */
     private sceneMaterialForSetter(
         setter: string,
         index: number,
     ): Mutable<ScenePbrMaterialManifest> {
-        const material =
-            index === undefined ? undefined : this.scenePbrMaterials[index];
+        const material = this.scenePbrMaterials[index];
         if (!material)
             throw new Error(
                 `${setter} has no scene-code PBR material ${index}.`,

@@ -39,7 +39,12 @@ import {
     storeMembers,
 } from "../json-record-views.js";
 
-import type { DataSinkHost, DataSinkOperations } from "./contracts.js";
+import {
+    expressionKnownValue,
+    unwrappedKnownValue,
+    type DataSinkHost,
+    type DataSinkOperations,
+} from "./contracts.js";
 
 function expressionNumber(
     _dataType: DataType<"number">,
@@ -625,24 +630,14 @@ export const scalarsSinks: DataSinkOperations<
     | "borrowed-platform-event"
 > = {
     "module-namespace": {
-        expression: (type, lowerer, expression) =>
-            lowerer.compileKnownValueForSink(
-                lowerer.context.compileValue(expression),
-                type,
-                expression,
-            ),
+        expression: expressionKnownValue,
         value: (type, _lowerer, value) =>
             value.dataType && dataTypesEqual(type, value.dataType)
                 ? value.cpp
                 : undefined,
     },
     "weak-key": {
-        expression: (type, lowerer, expression) =>
-            lowerer.compileKnownValueForSink(
-                lowerer.context.compileValue(expression),
-                type,
-                expression,
-            ),
+        expression: expressionKnownValue,
         value: (_type, lowerer, value, node) => {
             const type = value.dataType;
             if (type?.kind === "weak-key") return value.cpp;
@@ -686,12 +681,7 @@ export const scalarsSinks: DataSinkOperations<
         },
     },
     null: {
-        expression: (type, lowerer, expression) =>
-            lowerer.compileKnownValueForSink(
-                lowerer.context.compileValue(expression),
-                type,
-                expression,
-            ),
+        expression: expressionKnownValue,
         value: (_type, lowerer, value) => {
             if (value.dataType?.kind === "null")
                 return `(static_cast<void>(${value.cpp}), bbl::js::Null{})`;
@@ -702,12 +692,7 @@ export const scalarsSinks: DataSinkOperations<
         },
     },
     undefined: {
-        expression: (type, lowerer, expression) =>
-            lowerer.compileKnownValueForSink(
-                lowerer.context.compileValue(expression),
-                type,
-                expression,
-            ),
+        expression: expressionKnownValue,
         value: (_type, lowerer, value, node) => {
             if (isUndefinedDataType(value.dataType))
                 return `(static_cast<void>(${value.cpp}), bbl::js::Undefined{})`;
@@ -753,12 +738,7 @@ export const scalarsSinks: DataSinkOperations<
     "idb-cursor": opaqueSink,
     "dom-string-list": opaqueSink,
     error: {
-        expression: (type, lowerer, expression) =>
-            lowerer.compileKnownValueForSink(
-                lowerer.context.compileValue(expression),
-                type,
-                expression,
-            ),
+        expression: expressionKnownValue,
         value: (_type, lowerer, value, node) => {
             if (value.dataType?.kind === "error") return value.cpp;
             if (isJsonValue(value))
@@ -777,51 +757,26 @@ export const scalarsSinks: DataSinkOperations<
         },
     },
     "search-params": {
-        expression: (type, lowerer, _expression, unwrapped) =>
-            lowerer.compileKnownValueForSink(
-                lowerer.context.compileValue(unwrapped),
-                type,
-                unwrapped,
-            ),
+        expression: unwrappedKnownValue,
         value: (_type, _lowerer, value) =>
             value.dataType?.kind === "search-params" ? value.cpp : undefined,
     },
     "event-target": {
-        expression: (type, lowerer, expression) =>
-            lowerer.compileKnownValueForSink(
-                lowerer.context.compileValue(expression),
-                type,
-                expression,
-            ),
+        expression: expressionKnownValue,
         value: (_type, lowerer, value, node) =>
             eventTargetCpp(lowerer.context, value, node),
     },
     "http-response": {
-        expression: (type, lowerer, _expression, unwrapped) =>
-            lowerer.compileKnownValueForSink(
-                lowerer.context.compileValue(unwrapped),
-                type,
-                unwrapped,
-            ),
+        expression: unwrappedKnownValue,
         value: (_type, _lowerer, value) =>
             value.dataType?.kind === "http-response" ? value.cpp : undefined,
     },
     promise: {
-        expression: (type, lowerer, _expression, unwrapped) =>
-            lowerer.compileKnownValueForSink(
-                lowerer.context.compileValue(unwrapped),
-                type,
-                unwrapped,
-            ),
+        expression: unwrappedKnownValue,
         value: valuePromise,
     },
     storage: {
-        expression: (type, lowerer, _expression, unwrapped) =>
-            lowerer.compileKnownValueForSink(
-                lowerer.context.compileValue(unwrapped),
-                type,
-                unwrapped,
-            ),
+        expression: unwrappedKnownValue,
         value: (_type, _lowerer, value) =>
             value.dataType?.kind === "storage" ? value.cpp : undefined,
     },

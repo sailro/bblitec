@@ -15,7 +15,7 @@ import {
     type ProgramObservations,
 } from "./program-observations.js";
 import { yieldsNewArray } from "./fresh-records.js";
-import { bindingReferences } from "./binding-references.js";
+import { bindingReferences, soleBindingRead } from "./binding-references.js";
 import { OPEN_HOLDER_FLAGS } from "./written-holders.js";
 import {
     declarationOrigin,
@@ -38,6 +38,7 @@ import {
     equalityOperator,
     positionalParameter,
     variableKind,
+    hasExportModifier,
 } from "./syntax.js";
 
 /** What a record-observation question reads: the program and the code its calls run. */
@@ -1063,61 +1064,28 @@ function newArrayExpression(
 
 /**
  * Whether `read` is the only reference to an unexported `const` local
- * initialized with a fresh object (`fresh`), read once per binding: no
- * function or loop lies between the declaration's statement and the read.
- * A copy stored there replaces the only reference.
+ * initialized with a fresh object (`fresh`), read once per binding
+ * (`soleBindingRead`). A copy stored there replaces the only reference.
  */
 export function soleReadOfFreshLocal(
+    program: ts.Program,
     checker: ts.TypeChecker,
     read: ts.Expression,
     fresh: (initializer: ts.Expression) => boolean,
 ): boolean {
     const unwrapped = unwrapExpression(read);
     if (!ts.isIdentifier(unwrapped)) return false;
-    const symbol = declaredSymbol(checker, unwrapped);
-    const declaration = symbol?.valueDeclaration;
-    const statement = declaration?.parent?.parent;
-    if (
-        !symbol ||
-        !declaration ||
-        !ts.isVariableDeclaration(declaration) ||
-        !ts.isIdentifier(declaration.name) ||
-        !declaration.initializer ||
-        !statement ||
-        !ts.isVariableStatement(statement) ||
-        (declaration.parent.flags & ts.NodeFlags.Const) === 0 ||
-        statement.modifiers?.some(
-            (modifier) => modifier.kind === ts.SyntaxKind.ExportKeyword,
-        ) ||
-        !fresh(declaration.initializer)
-    )
-        return false;
-    for (let node = unwrapped.parent; node !== statement.parent; ) {
-        if (
-            ts.isSourceFile(node) ||
-            ts.isFunctionLike(node) ||
-            ts.isIterationStatement(node, false)
-        )
-            return false;
-        node = node.parent;
-    }
-    let only = true;
-    forEachAnalysisNode(
-        ts.findAncestor(statement, ts.isFunctionLike) ??
-            statement.getSourceFile(),
-        (node) => {
-            if (!only) return "skip";
-            if (
-                ts.isIdentifier(node) &&
-                node !== unwrapped &&
-                node !== declaration.name &&
-                declaredSymbol(checker, node) === symbol
-            )
-                only = false;
-            return undefined;
-        },
+    const declaration = declaredSymbol(checker, unwrapped)?.valueDeclaration;
+    return (
+        !!declaration &&
+        ts.isVariableDeclaration(declaration) &&
+        !!declaration.initializer &&
+        ts.isVariableStatement(declaration.parent.parent) &&
+        variableKind(declaration) === "const" &&
+        !hasExportModifier(declaration.parent.parent) &&
+        fresh(declaration.initializer) &&
+        soleBindingRead(program, checker, declaration) === unwrapped
     );
-    return only;
 }
 
 /**

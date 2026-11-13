@@ -7417,7 +7417,7 @@ class Compiler implements LoweringServices {
     /** Where a declaration emitted now lives: its emission scope and innermost block. */
     public emissionMark(): EmissionMark {
         return {
-            scope: this.activeEmissionScope,
+            emission: this.activeEmissionScope,
             block: this.emissionBlocks.at(-1)!,
         };
     }
@@ -7434,7 +7434,7 @@ class Compiler implements LoweringServices {
             scope !== undefined;
             scope = this.emissionScopeParents.get(scope)
         )
-            if (scope === mark.scope) return true;
+            if (scope === mark.emission) return true;
         return false;
     }
 
@@ -10234,9 +10234,10 @@ class Compiler implements LoweringServices {
     public expectKind(value: Value, kind: ValueKind, node: ts.Node): void {
         if (kind === "string" && isStringValue(value)) return;
         if (value.kind !== kind) {
-            // Data names its storage and the type it was read as.
+            // Data names its storage and the type it was read as, where the
+            // refusal outlives a probe.
             const stored =
-                value.kind === "data" && value.dataType
+                value.kind === "data" && value.dataType && !this.speculating
                     ? ` (stored as ${JSON.stringify(value.dataType)}, typed '${this.checker.typeToString(this.checker.getTypeAtLocation(node))}')`
                     : "";
             this.fail(
@@ -10894,8 +10895,7 @@ class Compiler implements LoweringServices {
     public functionEmissionScope(): import("./compiler/function-specializations.js").FunctionEmissionScope {
         return {
             lexical: this.bindings.variableScopes.at(-1)!,
-            emission: this.activeEmissionScope,
-            block: this.emissionBlocks.at(-1)!,
+            ...this.emissionMark(),
             continuation: this.engineLifecycle.engineStartMark?.index ?? -1,
         };
     }

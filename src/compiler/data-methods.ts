@@ -63,7 +63,7 @@ import {
 
 import {
     dataTypesEqual,
-    holdsDataKind,
+    unrecordedFact,
     pinnedHandleKind,
     platformHandleKind,
     isTypedArrayType,
@@ -172,12 +172,8 @@ export function compileArrayPredicateOverData(
             dataType.members.some((member) => member.kind === "numberindex"))
     )
         return undefined;
-    // An Iterable holds an Array, a Set, a Map or an iterator alike.
-    if (holdsDataKind(dataType, ["iterable"]))
-        return lowerer.context.fail(
-            call,
-            "A stored Iterable does not record whether it holds an array.",
-        );
+    const unrecorded = unrecordedFact(dataType, "arrayness");
+    if (unrecorded) return lowerer.context.fail(call, unrecorded);
     if (dataType.kind === "json" && !optional && !binaryView)
         return {
             kind: "boolean",
@@ -2230,6 +2226,14 @@ function compileArrayJoin(state: ArrayMethodState): Value {
                 return undefined;
         }
     };
+    // The parameter a scalar element's own text conversion takes.
+    const scalarParameter = (
+        {
+            enum: "const auto&",
+            number: "double",
+            boolean: "bool",
+        } as Partial<Record<DataType["kind"], string>>
+    )[dataType.element.kind];
     // A union of scalars joins each element as its member does.
     const members =
         dataType.element.kind === "union"
@@ -2268,15 +2272,11 @@ function compileArrayJoin(state: ArrayMethodState): Value {
                 ? ", [](const auto& value) { return value.has_value() ? std::string(*value) : std::string{}; }"
                 : dataType.element.kind === "json"
                   ? ", [](const auto& value) { return value.is_null() || value.is_undefined() ? std::string{} : value.to_string(); }"
-                  : dataType.element.kind === "enum"
-                    ? `, [](const auto& value) { return ${textOf(dataType.element, "value")}; }`
-                    : dataType.element.kind === "number"
-                      ? `, [](double value) { return ${textOf(dataType.element, "value")}; }`
-                      : dataType.element.kind === "boolean"
-                        ? `, [](bool value) { return ${textOf(dataType.element, "value")}; }`
-                        : members
-                          ? `, [](const auto& value) -> std::string { switch (value.index()) { ${members.map((text, index) => `case ${index}: return ${text};`).join(" ")} } return {}; }`
-                          : ""
+                  : scalarParameter
+                    ? `, [](${scalarParameter} value) { return ${textOf(dataType.element, "value")}; }`
+                    : members
+                      ? `, [](const auto& value) -> std::string { switch (value.index()) { ${members.map((text, index) => `case ${index}: return ${text};`).join(" ")} } return {}; }`
+                      : ""
         })`,
         dataType: { kind: "string" },
     };
@@ -4071,15 +4071,11 @@ function compileMapDataMethod(
     }
     if (method === "entries" || method === "values" || method === "keys") {
         lowerer.context.expectArgumentCount(call, 0, 0);
-        const element =
-            method === "entries"
-                ? lowerer.context.dataTypes.tupleStorage([
-                      dataType.key,
-                      dataType.value,
-                  ])
-                : method === "values"
-                  ? dataType.value
-                  : dataType.key;
+        const element = lowerer.context.dataTypes.mapPartElement(
+            method,
+            dataType.key,
+            dataType.value,
+        );
         lowerer.context.reachJsData();
         let projector = "";
         if (

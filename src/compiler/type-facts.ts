@@ -1,6 +1,7 @@
 import ts from "typescript";
 import { declaredSymbol, libraryName, calledDeclaration } from "./symbols.js";
 import {
+    nonNullOperand,
     unwrapExpression,
     wrappedParent,
     objectLiteralMembers,
@@ -287,10 +288,7 @@ export function absenceKind(
     if (value.absence) return value.absence;
     // A non-null assertion is erased: an absence the value still holds is
     // one its operand's type admits.
-    let typed = node;
-    while (ts.isNonNullExpression(typed) || ts.isParenthesizedExpression(typed))
-        typed = typed.expression;
-    let absent = nullability(checker.getTypeAtLocation(typed));
+    let absent = nullability(checker.getTypeAtLocation(nonNullOperand(node)));
     // An optional chain that can short-circuit is undefined, whatever its
     // type names; one whose `?.` receivers are all present cannot, so an
     // absence its type does not name is a receiver's storage short-circuiting.
@@ -555,10 +553,7 @@ export function holdsNoPayload(type: ts.Type): boolean {
  * or only `undefined` (`founder?: undefined`), its one value.
  */
 export function erasedParameterType(type: ts.Type): boolean {
-    return (
-        holdsNoPayload(type) ||
-        ((type.flags & ts.TypeFlags.Undefined) !== 0 && !type.isUnion())
-    );
+    return holdsNoPayload(type) || (type.flags & ts.TypeFlags.Undefined) !== 0;
 }
 
 /**

@@ -65,7 +65,8 @@ export {
 } from "./data-types/typed-arrays.js";
 export {
     dataTypesEqual,
-    holdsDataKind,
+    functionArmIndex,
+    unrecordedFact,
     passesByReferenceKind,
     presentDataType,
     soleMemberIndex,
@@ -200,7 +201,12 @@ import {
     classBaseExpression,
 } from "./syntax.js";
 import type { DataPreamble, NativeDefinition } from "./source-units.js";
-import { optionalPresentCpp, type LightKind, type Value } from "./types.js";
+import {
+    lightKindFacts,
+    lightKinds,
+    optionalPresentCpp,
+    type Value,
+} from "./types.js";
 import { callTypeArguments } from "./type-arguments.js";
 import {
     GenericFunctionStorageRequired,
@@ -728,15 +734,6 @@ export function isPinnedType(type: ts.Type, names: readonly string[]): boolean {
     );
 }
 
-/** The pinned light interfaces, each the one its kind's factory returns. */
-const pinnedLightKinds: readonly (readonly [string, LightKind])[] = [
-    ["HemisphericLight", "hemispheric"],
-    ["DirectionalLight", "directional"],
-    ["PointLight", "point"],
-    ["SpotLight", "spot"],
-    ["RectAreaLight", "rectArea"],
-];
-
 /**
  * The facts a pinned type proves of every value it types: only
  * `createRenderTask` returns the pin's `RenderTask`, so the type proves its
@@ -755,8 +752,10 @@ export function typeImpliedFacts(
         return undefined;
     }
     if (isPinnedType(type, ["RenderTask"])) return { renderTask: true };
-    const light = pinnedLightKinds.find(([name]) => isPinnedType(type, [name]));
-    return light ? { lightKind: light[1] } : undefined;
+    const lightKind = lightKinds.find((kind) =>
+        isPinnedType(type, [lightKindFacts[kind].interfaceName]),
+    );
+    return lightKind ? { lightKind } : undefined;
 }
 
 /**
@@ -1880,7 +1879,7 @@ export class DataTypeRegistry {
             readonly name: string;
             readonly type: ts.Type;
             /** Why no storage holds it where each part has one. */
-            readonly reason?: string;
+            readonly reason?: () => string;
         }
     >();
 
@@ -2701,13 +2700,11 @@ export class DataTypeRegistry {
         // whose common fields agree), named for the first: the union the
         // node reads is the one whose arms a replay stores, unless it is a
         // narrowing of the struct's own.
-        const sourceArms = source?.type.isUnion()
-            ? new Set(source.type.types)
-            : undefined;
+        const sourceArms = source ? unionMembers(source.type) : [];
         const read =
-            sourceArms &&
+            source?.type.isUnion() &&
             actual?.isUnion() &&
-            !actual.types.every((member) => sourceArms.has(member)) &&
+            !actual.types.every((member) => sourceArms.includes(member)) &&
             actual.types.some((member) => member.getProperty(field))
                 ? actual
                 : undefined;
@@ -2946,16 +2943,11 @@ export class DataTypeRegistry {
      * (`DataLowerer` struct reads). Undefined for any other disagreement.
      */
     private signatureUnionField(
-        values: readonly { mapped: DataType | undefined; callable: boolean }[],
-        storing: (value: {
-            mapped: DataType | undefined;
-            callable: boolean;
-        }) => boolean,
+        values: readonly { mapped: DataType | undefined }[],
         storage: (mapped: DataType) => DataType,
     ): DataType<"union"> | undefined {
         const members: DataType[] = [];
         for (const value of values) {
-            if (!storing(value)) continue;
             const stored = value.mapped && storage(value.mapped);
             // A shape may declare it a plain value (`count: number` beside
             // a `count(): number` method): its own arm of the slot.
@@ -4309,13 +4301,19 @@ export class DataTypeRegistry {
                 )
             )
                 continue;
-            const message = `A retained record union requires one shared layout preserving its original fields and storage kinds: '${this.checker.typeToString(member)}' records stored as '${union.name}' would lose '${property.name}'.`;
+            const message = (): string =>
+                `A retained record union requires one shared layout preserving its original fields and storage kinds: '${this.checker.typeToString(member)}' records stored as '${union.name}' would lose '${property.name}'.`;
             // A union storing its members' common fields stores every
             // member's on a replay (`requireArmFields`).
             if (!field)
-                this.requireArmFields(union.name, property.name, node, message);
+                this.requireArmFields(
+                    union.name,
+                    property.name,
+                    node,
+                    message(),
+                );
             if (!held || !joined || !dataTypesEqual(joined, held))
-                this.fail(node, message);
+                this.fail(node, message());
         }
     }
 
@@ -4665,7 +4663,7 @@ export class DataTypeRegistry {
                       (single && this.unstoredLayoutProperties.get(single)))
                     : undefined;
             if (unstored?.reason)
-                return `${path.join(" > ")} > layout property '${unstored.name}': ${unstored.reason}`;
+                return `${path.join(" > ")} > layout property '${unstored.name}': ${unstored.reason()}`;
             if (unstored && unstored.type !== current) {
                 path.push(
                     `layout property '${unstored.name}' of type '${this.checker.typeToString(unstored.type)}'`,
@@ -4757,6 +4755,8 @@ export class DataTypeRegistry {
      * `T | undefined` at `T extends object`.
      */
     public holdsObjectValue(type: ts.Type): boolean {
+        if (!type.isUnion() && (type.flags & ts.TypeFlags.TypeParameter) === 0)
+            return (type.flags & ts.TypeFlags.NonPrimitive) !== 0;
         const present = presentMembers(type);
         return (
             present.length === 1 &&
@@ -5375,12 +5375,9 @@ export class DataTypeRegistry {
             ) {
                 const [elementType] = this.checker.getTypeArguments(reference);
                 if (!elementType) return undefined;
-                // An element typed `object` holds dynamic values, as an
-                // array's does (`arrayStoredElement`).
-                const element: DataType | undefined =
-                    symbolName !== "WeakSet" &&
-                    this.holdsObjectValue(elementType)
-                        ? { kind: "json" }
+                const element =
+                    symbolName !== "WeakSet"
+                        ? this.storedElementType(elementType, node)
                         : this.fromStoredTsType(elementType, node);
                 if (
                     symbolName === "WeakSet" &&
@@ -6081,12 +6078,13 @@ export class DataTypeRegistry {
                 ),
             ],
         };
+        // An optional method's declared type also admits undefined.
+        const declared = this.checker.getNonNullableType(
+            this.checker.getTypeAtLocation(declaration),
+        );
         const type = this.withGenericFunctionArguments(declaration, bound, () =>
-            // An optional method's declared type also admits undefined.
             this.fromFunctionType(
-                this.checker.getNonNullableType(
-                    this.checker.getTypeAtLocation(declaration),
-                ),
+                declared,
                 node,
                 false,
                 demand.parameters,
@@ -6098,13 +6096,7 @@ export class DataTypeRegistry {
             const lacking = this.withGenericFunctionArguments(
                 declaration,
                 bound,
-                () =>
-                    this.unrepresentedSignaturePart(
-                        this.checker.getNonNullableType(
-                            this.checker.getTypeAtLocation(declaration),
-                        ),
-                        node,
-                    ),
+                () => this.unrepresentedSignaturePart(declared, node),
             );
             this.fail(
                 node,
@@ -6163,7 +6155,6 @@ export class DataTypeRegistry {
             : storage;
     }
 
-    /** Bind an implementation's parameters by position, independent of its interface's symbols. */
     /**
      * The type arguments a method call's receiver binds to the type
      * parameters of the generic interface or class declaring `declaration`
@@ -6223,6 +6214,7 @@ export class DataTypeRegistry {
         return frame;
     }
 
+    /** Bind an implementation's parameters by position, independent of its interface's symbols. */
     public withGenericFunctionArguments<T>(
         declaration: ts.SignatureDeclaration,
         demand: GenericFunctionDemand,
@@ -6590,15 +6582,10 @@ export class DataTypeRegistry {
         if (signature) return signature;
         const settled = this.fromValueOrPromiseUnion(type, node);
         if (settled) return settled;
-        const arrayMember = (member: ts.Type): boolean =>
-            this.checker.isTupleType(member) ||
-            this.checker.isArrayType(member) ||
-            (declaredInDefaultLibrary(member.symbol) &&
-                libraryName(member) === "ReadonlyArray");
         // Tuple alternatives with different lengths still share array storage.
         // Ask the checker for their indexed element union instead of treating
         // length and the array methods as fields of a common record.
-        if (members.every(arrayMember)) {
+        if (members.every((member) => this.arrayMember(member))) {
             if (this.arrayUnionsInProgress.has(type)) return undefined;
             this.arrayUnionsInProgress.add(type);
             try {
@@ -6636,7 +6623,7 @@ export class DataTypeRegistry {
         // An array beside records (`Ignore | readonly Ignore[]`) is an arm of
         // its own, which `Array.isArray` tells apart: no common-field record
         // holds both.
-        if (members.some(arrayMember))
+        if (members.some((member) => this.arrayMember(member)))
             return this.fromMixedUnion(type, node, "arrays");
         // A tagged union whose arm field cannot map has no representation: the
         // common-field struct would hide that field and refuse at the literal
@@ -6883,6 +6870,16 @@ export class DataTypeRegistry {
         }
     }
 
+    /** An array, tuple or `ReadonlyArray` type. */
+    private arrayMember(member: ts.Type): boolean {
+        return (
+            this.checker.isTupleType(member) ||
+            this.checker.isArrayType(member) ||
+            (declaredInDefaultLibrary(member.symbol) &&
+                libraryName(member) === "ReadonlyArray")
+        );
+    }
+
     /** A primitive, an absence or an array: what a JSON value nests. */
     private documentMember(member: ts.Type): boolean {
         return (
@@ -6892,11 +6889,7 @@ export class DataTypeRegistry {
                     ts.TypeFlags.BooleanLike |
                     ts.TypeFlags.Null |
                     ts.TypeFlags.Undefined)) !==
-                0 ||
-            this.checker.isArrayType(member) ||
-            this.checker.isTupleType(member) ||
-            (declaredInDefaultLibrary(member.symbol) &&
-                libraryName(member) === "ReadonlyArray")
+                0 || this.arrayMember(member)
         );
     }
 
@@ -7049,7 +7042,7 @@ export class DataTypeRegistry {
                 this.unstoredLayoutProperties.set(type, {
                     name: propertyName,
                     type: memberTypes[index]!,
-                    ...(reason ? { reason } : {}),
+                    ...(reason ? { reason: () => reason } : {}),
                 });
                 return undefined;
             };
@@ -7595,7 +7588,8 @@ export class DataTypeRegistry {
                                       ),
                             ...(unstored < 0
                                 ? {
-                                      reason: `its arms store it as ${candidates.map((candidate) => JSON.stringify(candidate)).join(", ")}`,
+                                      reason: () =>
+                                          `its arms store it as ${candidates.map((candidate) => JSON.stringify(candidate)).join(", ")}`,
                                   }
                                 : {}),
                         });
@@ -7727,6 +7721,19 @@ export class DataTypeRegistry {
         }
         const complete = mapped as DataType[];
         return this.tupleStorage(complete);
+    }
+
+    /** What a `keys`, `values` or `entries` iterator over keys and their values yields. */
+    public mapPartElement(
+        part: "keys" | "values" | "entries",
+        key: DataType,
+        value: DataType,
+    ): DataType {
+        return part === "entries"
+            ? this.tupleStorage([key, value])
+            : part === "values"
+              ? value
+              : key;
     }
 
     public tupleStorage(elements: DataType[]): DataType<"vector" | "tuple"> {
@@ -7925,7 +7932,6 @@ export class DataTypeRegistry {
         this.refreshTypeArgumentKey();
     }
 
-    /** Runs `work` with a generic call's instantiation in force above the receiver's. */
     /** {@link withTypeArguments} for each of `frames`, outermost first. */
     public withTypeArgumentFrames<T>(
         frames: readonly (ReadonlyMap<ts.Symbol, ts.Type> | undefined)[],
@@ -7939,6 +7945,7 @@ export class DataTypeRegistry {
               );
     }
 
+    /** Runs `work` with a generic call's instantiation in force above the receiver's. */
     public withTypeArguments<T>(
         substitution: ReadonlyMap<ts.Symbol, ts.Type> | undefined,
         work: () => T,
@@ -8048,6 +8055,7 @@ export class DataTypeRegistry {
 
     /** A type with every type parameter in force replaced by its argument. */
     public resolveTypeParameter(type: ts.Type): ts.Type {
+        if ((type.flags & ts.TypeFlags.TypeParameter) === 0) return type;
         const seen = new Set<ts.Type>();
         while (!seen.has(type)) {
             seen.add(type);
@@ -8495,13 +8503,14 @@ export class DataTypeRegistry {
                 }
                 if (mapped)
                     this.requireSharedValueViews(stored, storage(mapped));
+                const storedValues = values.filter(storing);
                 unionField =
                     this.unionFieldStorage(
                         component?.unions ?? [],
                         name,
-                        values.filter(storing),
+                        storedValues,
                         node,
-                    ) ?? this.signatureUnionField(values, storing, storage);
+                    ) ?? this.signatureUnionField(storedValues, storage);
                 if (!unionField)
                     this.fail(
                         node,
@@ -9704,15 +9713,24 @@ export class DataTypeRegistry {
      * carry identity too, because indexOf/includes compare the stored
      * function object.
      */
+    /**
+     * A collection element's own type: one typed `object` holds dynamic
+     * values, as a field so typed does (`fromRecordFieldType`).
+     */
+    private storedElementType(
+        elementType: ts.Type,
+        node: ts.Node,
+    ): DataType | undefined {
+        return this.holdsObjectValue(elementType)
+            ? { kind: "json" }
+            : this.fromStoredTsType(elementType, node);
+    }
+
     private arrayStoredElement(
         elementType: ts.Type,
         node: ts.Node,
     ): DataType | undefined {
-        // An element typed `object` holds dynamic values, as a field so
-        // typed does (`fromRecordFieldType`).
-        const mapped: DataType | undefined = this.holdsObjectValue(elementType)
-            ? { kind: "json" }
-            : this.fromStoredTsType(elementType, node);
+        const mapped = this.storedElementType(elementType, node);
         return (
             mapped &&
             markIdentityFunctions(

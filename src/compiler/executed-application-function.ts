@@ -43,6 +43,7 @@ import {
     isValueReference,
     propertyKey,
     variableKind,
+    hasDeclareModifier,
 } from "./syntax.js";
 import { typeCanCarryReference } from "./type-facts.js";
 import { writesThroughTrackedRoot } from "./user-functions.js";
@@ -762,11 +763,7 @@ return __bblScope(${this.parts.get(targetFile)!.index})[${root}];
         const modifiers = ts.canHaveModifiers(statement)
             ? ts.getModifiers(statement)
             : undefined;
-        if (
-            modifiers?.some(
-                (modifier) => modifier.kind === ts.SyntaxKind.DeclareKeyword,
-            )
-        ) {
+        if (hasDeclareModifier(statement)) {
             return this.context.fail(
                 statement,
                 `${this.label} reaches an ambient declaration, which a generation closure does not carry.`,

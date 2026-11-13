@@ -45,6 +45,7 @@ import {
     holdsOnly,
     isNullable,
     erasedParameterType,
+    holdsNoPayload,
     isVoid,
     valueKindOf,
     unionMembers,
@@ -5706,11 +5707,10 @@ export class UserFunctionLowerer {
         const ir = this.irFor(declaration, "stored callback", (node, message) =>
             context.fail(node, message),
         );
+        const resolvedType = (parameter: { readonly type: ts.Type }) =>
+            context.dataTypes.resolveTypeParameter(parameter.type);
         const runtimeParameters = ir.parameters.filter(
-            (parameter) =>
-                !erasedParameterType(
-                    context.dataTypes.resolveTypeParameter(parameter.type),
-                ),
+            (parameter) => !erasedParameterType(resolvedType(parameter)),
         );
         if (
             runtimeParameters
@@ -5898,7 +5898,7 @@ export class UserFunctionLowerer {
                     );
                     let runtimeIndex = 0;
                     for (const parameter of ir.parameters) {
-                        if (erasedParameterType(parameter.type)) {
+                        if (!runtimeParameters.includes(parameter)) {
                             const initializer =
                                 parameter.declaration.initializer;
                             if (initializer) {
@@ -5907,11 +5907,7 @@ export class UserFunctionLowerer {
                                 context.emitDiscardedValue(evaluated);
                             }
                             // An erased `undefined` parameter reads its one value.
-                            if (
-                                !isVoid(parameter.type) &&
-                                (parameter.type.flags & ts.TypeFlags.Never) ===
-                                    0
-                            )
+                            if (!holdsNoPayload(resolvedType(parameter)))
                                 this.bindSpecializedParameter(
                                     context,
                                     ir.declaration,

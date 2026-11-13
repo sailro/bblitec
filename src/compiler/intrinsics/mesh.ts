@@ -2703,40 +2703,57 @@ function compileCreateMeshesFromCsg(
     );
 }
 
+/** One pinned mesh-data factory: its native call and what its record holds. */
+interface MeshDataFactory {
+    readonly label: string;
+    readonly feature: "mesh:box" | "mesh:sphere" | "mesh:cylinder";
+    data(
+        context: MeshIntrinsicContext,
+        options: ts.Expression | undefined,
+    ): string;
+    /** Its record holds `vertexCount` and `indexCount` beside the arrays. */
+    readonly counts: boolean;
+}
+
+const boxData: MeshDataFactory = {
+    label: "box_data",
+    feature: "mesh:box",
+    data: (context, options) =>
+        `bbl::create_box_data(${(options
+            ? context.intrinsicOptions.compileBoxOptions(options, "double")
+            : ["1.0", "1.0", "1.0"]
+        ).join(", ")})`,
+    counts: true,
+};
+
+const sphereData: MeshDataFactory = {
+    label: "sphere_data",
+    feature: "mesh:sphere",
+    data: (context, options) =>
+        `bbl::create_sphere_data(bbl::SphereOptions{${(options
+            ? context.intrinsicOptions.compileSphereOptions(options)
+            : ["32u", "1.0", "1.0", "1.0"]
+        ).join(", ")}})`,
+    counts: true,
+};
+
+// A cylinder's data is the four arrays alone, as the pin returns it.
+const cylinderData: MeshDataFactory = {
+    label: "cylinder_data",
+    feature: "mesh:cylinder",
+    data: (context, options) =>
+        `bbl::create_cylinder_data(${cylinderOptionsCpp(context, options)})`,
+    counts: false,
+};
+
 function compileCreateMeshData(
     context: MeshIntrinsicContext,
     call: ts.CallExpression,
-    importedName: "createBoxData" | "createSphereData" | "createCylinderData",
+    factory: MeshDataFactory,
 ): Value | undefined {
     context.expectArgumentCount(call, 0, 1);
-    const options = call.arguments[0];
-    const [label, data, feature] =
-        importedName === "createBoxData"
-            ? [
-                  "box_data",
-                  `bbl::create_box_data(${(options
-                      ? context.intrinsicOptions.compileBoxOptions(
-                            options,
-                            "double",
-                        )
-                      : ["1.0", "1.0", "1.0"]
-                  ).join(", ")})`,
-                  "mesh:box" as const,
-              ]
-            : importedName === "createSphereData"
-              ? [
-                    "sphere_data",
-                    `bbl::create_sphere_data(bbl::SphereOptions{${(options
-                        ? context.intrinsicOptions.compileSphereOptions(options)
-                        : ["32u", "1.0", "1.0", "1.0"]
-                    ).join(", ")}})`,
-                    "mesh:sphere" as const,
-                ]
-              : [
-                    "cylinder_data",
-                    `bbl::create_cylinder_data(${cylinderOptionsCpp(context, options)})`,
-                    "mesh:cylinder" as const,
-                ];
+    const { label, feature } = factory;
+    const data = factory.data(context, call.arguments[0]);
     const temporary = context.allocateTemporaryCppName(label);
     context.emit(`bbl::MeshData ${temporary} = ${data};`);
     context.reachFeature(feature, call);
@@ -2759,26 +2776,24 @@ function compileCreateMeshData(
             dataType: { kind: indices ? "u32array" : "f32array" },
         };
     }
-    // A cylinder's data is the four arrays alone, as the pin returns it.
     return {
         kind: "record",
         cpp: "",
-        recordProperties:
-            importedName === "createCylinderData"
-                ? recordProperties
-                : {
-                      ...recordProperties,
-                      vertexCount: {
-                          kind: "number",
-                          cpp: `static_cast<double>(${temporary}.vertex_count)`,
-                          dataType: { kind: "number" },
-                      },
-                      indexCount: {
-                          kind: "number",
-                          cpp: `static_cast<double>(${temporary}.index_count)`,
-                          dataType: { kind: "number" },
-                      },
+        recordProperties: !factory.counts
+            ? recordProperties
+            : {
+                  ...recordProperties,
+                  vertexCount: {
+                      kind: "number",
+                      cpp: `static_cast<double>(${temporary}.vertex_count)`,
+                      dataType: { kind: "number" },
                   },
+                  indexCount: {
+                      kind: "number",
+                      cpp: `static_cast<double>(${temporary}.index_count)`,
+                      dataType: { kind: "number" },
+                  },
+              },
     };
 }
 
@@ -3663,18 +3678,15 @@ const meshIntrinsicHandlers = new EmissionMap<
     ["createMeshesFromCsg", compileCreateMeshesFromCsg],
     [
         "createBoxData",
-        (context, call) =>
-            compileCreateMeshData(context, call, "createBoxData"),
+        (context, call) => compileCreateMeshData(context, call, boxData),
     ],
     [
         "createSphereData",
-        (context, call) =>
-            compileCreateMeshData(context, call, "createSphereData"),
+        (context, call) => compileCreateMeshData(context, call, sphereData),
     ],
     [
         "createCylinderData",
-        (context, call) =>
-            compileCreateMeshData(context, call, "createCylinderData"),
+        (context, call) => compileCreateMeshData(context, call, cylinderData),
     ],
     ["createMorphTargets", compileCreateMorphTargets],
     ["setMorphTargetWeights", compileSetMorphTargetWeights],

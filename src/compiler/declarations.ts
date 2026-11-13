@@ -2,7 +2,7 @@
 // typed data declarations, recursive and forward callback bindings, and
 // array/object binding patterns, lowered into the scope stack's bindings.
 import ts from "typescript";
-import { bindingReferences } from "./binding-references.js";
+import { soleBindingRead } from "./binding-references.js";
 import { isRebound } from "./binding-rebinds.js";
 import {
     absenceOf,
@@ -441,24 +441,26 @@ export class DeclarationLowerer {
             initializer,
             (node) =>
                 ts.isCallExpression(node) &&
-                node.arguments.some(
-                    (argument, index) =>
+                node.arguments.some((argument, index) => {
+                    const bodies = namedFunctions(argument).flatMap((name) => {
+                        const body = tryResolveFunctionDeclaration(
+                            this.context.checker,
+                            name,
+                        )?.body;
+                        return body ? [body] : [];
+                    });
+                    return (
+                        bodies.length > 0 &&
                         this.context.sharedClosures.callRetainsArgument(
                             node,
                             index,
                             true,
                         ) &&
-                        namedFunctions(argument).some((name) => {
-                            const callback = tryResolveFunctionDeclaration(
-                                this.context.checker,
-                                name,
-                            );
-                            return (
-                                !!callback?.body &&
-                                someAnalysisNode(callback.body, namesBinding)
-                            );
-                        }),
-                ),
+                        bodies.some((body) =>
+                            someAnalysisNode(body, namesBinding),
+                        )
+                    );
+                }),
         );
     }
 
@@ -1081,25 +1083,9 @@ export class DeclarationLowerer {
                 armKind === ts.SyntaxKind.TrueKeyword)
         )
             return undefined;
-        const symbol = declaredSymbol(checker, declaration.name);
-        const references = symbol
-            ? bindingReferences(this.context.program, checker, symbol)
-            : [];
-        const reference = references[0];
-        if (references.length !== 1 || !reference) return undefined;
-        const block = declaration.parent.parent.parent;
-        for (
-            let node: ts.Node = reference.parent;
-            node !== block;
-            node = node.parent
-        )
-            if (
-                !node.parent ||
-                ts.isFunctionLike(node) ||
-                ts.isIterationStatement(node, false)
-            )
-                return undefined;
-        return selection;
+        return soleBindingRead(this.context.program, checker, declaration)
+            ? selection
+            : undefined;
     }
 
     /** Whether a selection has no one native storage (its arms differ). */

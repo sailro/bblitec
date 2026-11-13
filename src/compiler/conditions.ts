@@ -25,7 +25,7 @@ import {
 import {
     BUFFER_VIEW_KINDS,
     TYPED_ARRAY_KINDS,
-    holdsDataKind,
+    unrecordedFact,
     type DataType,
 } from "./data-types.js";
 import { compileDomInstanceOf } from "./dom-targets.js";
@@ -145,6 +145,18 @@ function settlesDefinedOrVoid(checker: ts.TypeChecker, type: ts.Type): boolean {
             (member) => promises.includes(member) || undefinedOnly(member),
         )
     );
+}
+
+/** Whether the union `cpp` holds is one of the members `holds` accepts. */
+function unionArmsTest(
+    cpp: string,
+    type: DataType<"union">,
+    holds: (member: DataType) => boolean,
+): string {
+    const tests = type.members.flatMap((member, index) =>
+        holds(member) ? [`(${cpp}).index() == ${index}`] : [],
+    );
+    return tests.length ? `(${tests.join(" || ")})` : "false";
 }
 
 export class ConditionLowerer {
@@ -338,13 +350,14 @@ export class ConditionLowerer {
         const type = value.dataType;
         if (type?.kind === "optional")
             return holds(type.inner) ? optionalPresentCpp(value.cpp) : "false";
-        if (type?.kind === "union") {
-            const tests = type.members.flatMap((member, index) =>
-                holds(member) ? [`(${value.cpp}).index() == ${index}`] : [],
-            );
-            return tests.length ? `(${tests.join(" || ")})` : "false";
-        }
+        if (type?.kind === "union")
+            return unionArmsTest(value.cpp, type, holds);
         return type && holds(type) ? "true" : "false";
+    }
+
+    /** A document's native box holds a value of `kind`'s class. */
+    private boxedInstanceOf(cpp: string, kind: string): string {
+        return `(${cpp}).instance_of<${this.context.dataTypes.cppType({ kind } as DataType)}>()`;
     }
 
     /**
@@ -361,7 +374,7 @@ export class ConditionLowerer {
             operand,
         );
         if (isJsonValue(value))
-            return `(${value.cpp}).instance_of<${this.context.dataTypes.cppType({ kind: kinds[0] } as DataType)}>()`;
+            return this.boxedInstanceOf(value.cpp, kinds[0]);
         const type = value.dataType;
         if (type?.kind === "optional")
             return kinds.includes(type.inner.kind)
@@ -622,11 +635,9 @@ export class ConditionLowerer {
                 this.context.emitDiscardedValue(left);
                 return "false";
             }
-            if (left && holdsDataKind(left.dataType, ["iterable"]))
-                this.context.fail(
-                    unwrapped,
-                    "A stored Iterable does not record the class of the object it holds.",
-                );
+            const unrecorded =
+                left && unrecordedFact(left.dataType, "objectClass");
+            if (unrecorded) this.context.fail(unwrapped, unrecorded);
         }
         if (this.context.browserErasure.isBrowserOnlyExpression(unwrapped)) {
             const condition =
@@ -778,13 +789,11 @@ export class ConditionLowerer {
                             value,
                             "instance_candidate",
                         ).cpp;
-                        return `(${type.members
-                            .flatMap((member, index) =>
-                                member.kind === "promise"
-                                    ? [`(${held}).index() == ${index}`]
-                                    : [],
-                            )
-                            .join(" || ")})`;
+                        return unionArmsTest(
+                            held,
+                            type,
+                            (member) => member.kind === "promise",
+                        );
                     }
                     this.requirePromisesApart(unwrapped);
                 }
@@ -858,7 +867,7 @@ export class ConditionLowerer {
                         isJsonValue(value) &&
                         TYPED_ARRAY_KINDS.get(global) !== undefined
                     ) {
-                        const test = `(${value.cpp}).instance_of<${this.context.dataTypes.cppType({ kind: expected } as DataType)}>()`;
+                        const test = this.boxedInstanceOf(value.cpp, expected);
                         return present === undefined
                             ? test
                             : `(${present} && ${test})`;

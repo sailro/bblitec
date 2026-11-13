@@ -94,10 +94,11 @@ export function compileSearchParamsMethod(
     if (method === "entries" || method === "keys" || method === "values") {
         context.expectArgumentCount(call, 0, 0);
         const string = { kind: "string" } as const;
-        const element =
-            method === "entries"
-                ? context.dataTypes.tupleStorage([string, string])
-                : string;
+        const element = context.dataTypes.mapPartElement(
+            method,
+            string,
+            string,
+        );
         context.reachJsData();
         return lowerer.leafValue(
             `bbl::js::search_params_iterator<${context.dataTypes.cppType(element)}, bbl::js::MapPart::${method}>(${owner.cpp})`,

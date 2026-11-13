@@ -1,6 +1,7 @@
 import ts from "typescript";
 import {
     dataTypesEqual,
+    functionArmIndex,
     soleMemberIndex,
     type DataType,
 } from "../data-types.js";
@@ -8,7 +9,11 @@ import type { Value } from "../types.js";
 import { valueDataType } from "../values/model.js";
 import { writable } from "../emission-transaction.js";
 import { isJsonValue } from "../json-bridge.js";
-import type { DataSinkHost, DataSinkOperations } from "./contracts.js";
+import {
+    unwrappedKnownValue,
+    type DataSinkHost,
+    type DataSinkOperations,
+} from "./contracts.js";
 
 function unionValue(
     type: DataType<"union">,
@@ -72,23 +77,14 @@ function unionValue(
         ((value.kind === "callback" && value.callbackDeclaration) ||
             value.dataType?.kind === "function")
     ) {
-        memberIndex = soleMemberIndex(type, "function");
-        const contextual =
-            memberIndex < 0 && expression
-                ? lowerer.context.checker.getContextualType(expression)
+        memberIndex = functionArmIndex(type, () => {
+            const contextual =
+                expression &&
+                lowerer.context.checker.getContextualType(expression);
+            return contextual
+                ? lowerer.context.dataTypes.fromStoredTsType(contextual, node)
                 : undefined;
-        const signature =
-            contextual &&
-            lowerer.context.dataTypes.fromStoredTsType(contextual, node);
-        if (signature?.kind === "function")
-            memberIndex = type.members.findIndex(
-                (member) =>
-                    member.kind === "function" &&
-                    dataTypesEqual(
-                        { ...member, identity: true },
-                        { ...signature, identity: true },
-                    ),
-            );
+        });
     }
     // A promise is the union's one promise arm, stored as that arm stores
     // one (`T | Promise<T>` returning what an async call returned).
@@ -126,12 +122,7 @@ function unionValue(
 
 export const unionsSinks: DataSinkOperations<"union"> = {
     union: {
-        expression: (type, lowerer, _expression, unwrapped) =>
-            lowerer.compileKnownValueForSink(
-                lowerer.context.compileValue(unwrapped),
-                type,
-                unwrapped,
-            ),
+        expression: unwrappedKnownValue,
         value: unionValue,
     },
 };

@@ -45,7 +45,11 @@ import {
     requireAbsenceTag,
 } from "../absence-tag-storage.js";
 import { requireTupleArraySlot } from "../tuple-array-storage.js";
-import type { DataSinkHost, DataSinkOperations } from "./contracts.js";
+import {
+    unwrappedKnownValue,
+    type DataSinkHost,
+    type DataSinkOperations,
+} from "./contracts.js";
 import { NativeRecordStorageRequired } from "../native-record-storage.js";
 import { isJsonValue } from "../json-bridge.js";
 import { readsErasedVoid } from "../undefined-values.js";
@@ -865,11 +869,7 @@ const identityContainerSink = {
     ) =>
         // A traced collection cursor is stored where any iterator is.
         type.kind === "iterator"
-            ? lowerer.compileKnownValueForSink(
-                  lowerer.context.compileValue(unwrapped),
-                  type,
-                  unwrapped,
-              )
+            ? unwrappedKnownValue(type, lowerer, expression, unwrapped)
             : lowerer.requireDataValue(unwrapped, type, expression).cpp,
     value: (
         type: DataType<"iterator" | "arguments">,
@@ -897,22 +897,12 @@ export const containersSinks: DataSinkOperations<
 > = {
     iterator: identityContainerSink,
     iterable: {
-        expression: (type, lowerer, _expression, unwrapped) =>
-            lowerer.compileKnownValueForSink(
-                lowerer.context.compileValue(unwrapped),
-                type,
-                unwrapped,
-            ),
+        expression: unwrappedKnownValue,
         value: valueIterable,
     },
     arguments: identityContainerSink,
     product: {
-        expression: (type, lowerer, _expression, unwrapped) =>
-            lowerer.compileKnownValueForSink(
-                lowerer.context.compileValue(unwrapped),
-                type,
-                unwrapped,
-            ),
+        expression: unwrappedKnownValue,
         value: valueProduct,
     },
     optional: { expression: expressionOptional, value: valueOptional },

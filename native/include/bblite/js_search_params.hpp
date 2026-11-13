@@ -361,12 +361,7 @@ template <typename Yield, MapPart Part> struct SearchParamsCursor {
         if (!entry)
             return {};
         ++index;
-        if constexpr (Part == MapPart::keys)
-            return Nullable<Yield>::yielded(entry->first);
-        else if constexpr (Part == MapPart::values)
-            return Nullable<Yield>::yielded(entry->second);
-        else
-            return Nullable<Yield>::yielded(Yield{entry->first, entry->second});
+        return map_part_yielded<Yield, Part>(entry->first, entry->second);
     }
     void gc_trace(const TraceVisitor& visitor) const { visitor(params); }
 };

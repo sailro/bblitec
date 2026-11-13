@@ -1451,6 +1451,7 @@ template <typename T> struct JsonNativeBox<TypedArray<T>> final : JsonNativeObje
     }
     bbl::js::Array<std::string> own_keys() const override {
         bbl::js::Array<std::string> keys;
+        keys.reserve(value.size());
         for (std::size_t index = 0; index < value.size(); ++index)
             keys.push_back(std::to_string(index));
         return keys;
@@ -1466,18 +1467,11 @@ template <typename T> struct JsonNativeBox<TypedArray<T>> final : JsonNativeObje
         const auto index = json_property_index(key);
         if (!index)
             throw std::runtime_error("A typed array's named property is not represented.");
-        // An index past the end is no element: the write is dropped.
-        if (*index < value.size())
-            value.store(*index, numeric_store_value<T>(member.to_number()));
+        typed_array_write(value, static_cast<double>(*index), member.to_number());
     }
     std::string to_string() const override {
-        std::string text;
-        for (std::size_t index = 0; index < value.size(); ++index) {
-            if (index > 0)
-                text += ',';
-            text += number_to_string(static_cast<double>(value.load(index)));
-        }
-        return text;
+        return array_join(typed_array_numbers(value), ",",
+                          [](double element) { return number_to_string(element); });
     }
     const std::type_info& type() const override { return typeid(TypedArray<T>); }
     const void* identity() const override { return value.identity(); }

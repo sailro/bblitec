@@ -31,6 +31,7 @@ import {
     resolvedSymbol,
 } from "./symbols.js";
 import {
+    argumentForParameter,
     functionOfDeclaration,
     isDeclaredInside,
     isGeneratorFunction,
@@ -195,6 +196,18 @@ function emitModuleRoot(
     survey: SurveyCollector,
     file: ts.SourceFile,
 ): void {
+    // A statement whose values lower, each discarded: they declare nothing
+    // the roots then read.
+    const lowerValues = (
+        statement: ts.Statement,
+        values: readonly ts.Expression[],
+    ): void => {
+        survey.touch(statement, false);
+        survey.attemptStatement(context, statement, () => {
+            for (const value of values)
+                context.emitDiscardedValue(context.compileValue(value));
+        });
+    };
     if (context.moduleNamespaces.evaluates(file)) {
         for (const statement of file.statements) {
             if (!survey.unbegun(statement)) continue;
@@ -202,8 +215,7 @@ function emitModuleRoot(
             if (isTotalConstStatement(statement, context.evaluationOrder))
                 survey.touch(statement, false);
             // Another constant no read folded, or the module's default
-            // export, lowers its values, which declare nothing the roots
-            // then read.
+            // export, lowers its values.
             else {
                 const values =
                     ts.isVariableStatement(statement) &&
@@ -216,15 +228,9 @@ function emitModuleRoot(
                           ? [statement.expression]
                           : undefined;
                 if (!values) continue;
-                survey.touch(statement, false);
                 survey.inRoots(() =>
                     context.captureEmittedStatements(() =>
-                        survey.attemptStatement(context, statement, () => {
-                            for (const value of values)
-                                context.emitDiscardedValue(
-                                    context.compileValue(value),
-                                );
-                        }),
+                        lowerValues(statement, values),
                     ),
                 );
             }
@@ -242,16 +248,11 @@ function emitModuleRoot(
     survey.inRoots(() =>
         context.captureEmittedStatements(() => {
             for (const statement of pending)
-                if (ts.isExportAssignment(statement)) {
-                    // `export default <value>` declares the module's
-                    // default binding: its value is what lowers.
-                    survey.touch(statement, false);
-                    survey.attemptStatement(context, statement, () =>
-                        context.emitDiscardedValue(
-                            context.compileValue(statement.expression),
-                        ),
-                    );
-                } else context.emitStatement(statement);
+                // `export default <value>` declares the module's default
+                // binding: its value is what lowers.
+                if (ts.isExportAssignment(statement))
+                    lowerValues(statement, [statement.expression]);
+                else context.emitStatement(statement);
         }),
     );
 }
@@ -451,7 +452,7 @@ function emitSurveyRoot(
                 context.userFunctions.compileSurveyRoot(
                     context,
                     declaration,
-                    arguments_ as Value[],
+                    arguments_,
                 );
                 return;
             }
@@ -526,6 +527,10 @@ function withRootBindings(
             return undefined;
         }
     };
+    // One walk up from a name finds whichever of the scopes declares it.
+    const owners = new Set(scopes);
+    const declaredInScopes = (name: ts.Identifier): boolean =>
+        ts.findAncestor(name, (node) => owners.has(node)) !== undefined;
     context.emit({ kind: "open", code: "{" });
     context.bindings.pushScope(context.allocateUserFunctionPrefix());
     try {
@@ -536,7 +541,7 @@ function withRootBindings(
             ))
                 if (
                     !context.bindings.lookupOptional(name) &&
-                    !scopes.some((owner) => isDeclaredInside(name, owner))
+                    !declaredInScopes(name)
                 ) {
                     // A nullable resource is its declaration's empty slot.
                     if (
@@ -625,7 +630,7 @@ function rootedCallsOf(
     const known = rootedCalls.get(context.program);
     if (known) return known;
     const checker = context.checker;
-    const generic = new Set<ts.Node>();
+    const rooted = new Set<ts.Node>();
     const candidates: ts.CallExpression[] = [];
     for (const file of files)
         for (const node of sourceFileNodes(file)) {
@@ -636,7 +641,7 @@ function rootedCallsOf(
                         stringParameter(checker, parameter),
                     ))
             )
-                generic.add(node);
+                rooted.add(node);
             else if (ts.isCallExpression(node)) candidates.push(node);
         }
     const calls = new Map<ts.SignatureDeclaration, ts.CallExpression[]>();
@@ -649,12 +654,12 @@ function rootedCallsOf(
                 ? functionOfDeclaration(declaration)
                 : undefined;
             return (
-                generic.has(declaration) ||
-                (literal !== undefined && generic.has(literal))
+                rooted.has(declaration) ||
+                (literal !== undefined && rooted.has(literal))
             );
         });
         const declaration = named && calledDeclaration(checker, call);
-        if (!declaration || !generic.has(declaration)) continue;
+        if (!declaration || !rooted.has(declaration)) continue;
         const known = calls.get(declaration);
         if (known) known.push(call);
         else calls.set(declaration, [call]);
@@ -679,9 +684,9 @@ function staticArgument(
 ): Value | undefined {
     const calls = rootedCallsOf(context, files).get(declaration) ?? [];
     for (const call of calls.slice(0, triedCalls)) {
-        const argument = call.arguments[index];
-        if (!argument || ts.isSpreadElement(argument)) continue;
-        const value = unlessRefused(() => context.compileValue(argument));
+        const input = argumentForParameter(call, declaration, index);
+        if (input.kind !== "argument") continue;
+        const value = unlessRefused(() => context.compileValue(input.argument));
         if (value?.staticString !== undefined) return value;
     }
     return undefined;

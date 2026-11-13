@@ -7,6 +7,7 @@ import {
     resolvedSymbol,
 } from "./symbols.js";
 import { valueKindOf } from "./type-facts.js";
+import { bindingElementKey } from "./syntax.js";
 import type { EvaluationOrder } from "./evaluation-order.js";
 
 /**
@@ -158,9 +159,8 @@ function computeReadable(
         if (ts.isObjectBindingPattern(node)) {
             const owner = checker.getTypeAtLocation(node);
             for (const element of node.elements) {
-                const key = element.propertyName ?? element.name;
-                if (ts.isIdentifier(key) || ts.isStringLiteralLike(key))
-                    keepMember(owner, key.text);
+                const key = bindingElementKey(element);
+                if (key !== undefined) keepMember(owner, key);
             }
         }
         if (

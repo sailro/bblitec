@@ -34,6 +34,7 @@ import { EmissionSet, EmissionTransaction } from "./emission-transaction.js";
 import { keepingCoverage } from "./source-coverage.js";
 import {
     bindingNameIdentifiers,
+    hasDeclareModifier,
     reachedThroughName,
     sourceFunctionName,
     statementDeclaredNames,
@@ -266,15 +267,7 @@ interface Attempt {
 export function surveyedStatement(node: ts.Node): node is ts.Statement {
     return (
         ts.isStatement(node) &&
-        !(
-            ts.canHaveModifiers(node) &&
-            ts
-                .getModifiers(node)
-                ?.some(
-                    (modifier) =>
-                        modifier.kind === ts.SyntaxKind.DeclareKeyword,
-                )
-        ) &&
+        !hasDeclareModifier(node) &&
         !ts.isBlock(node) &&
         !ts.isInterfaceDeclaration(node) &&
         !ts.isTypeAliasDeclaration(node) &&
@@ -290,7 +283,9 @@ export function surveyedStatement(node: ts.Node): node is ts.Statement {
  * the function's result, not as a statement of its own, so the lowering of
  * its function tries it.
  */
-export function isBodyReturn(statement: ts.Statement): boolean {
+export function isBodyReturn(
+    statement: ts.Statement,
+): statement is ts.ReturnStatement & { readonly parent: ts.Block } {
     const body = statement.parent;
     return (
         ts.isReturnStatement(statement) &&
@@ -653,12 +648,12 @@ export class SurveyCollector {
                 ts.isClassDeclaration(statement)
             )
                 return holding.has(statement) || lowered.has(statement);
-            const body = statement.parent;
             return (
                 isBodyReturn(statement) &&
-                ts.isBlock(body) &&
-                (lowered.has(body.parent) ||
-                    body.statements.some((sibling) => begun.has(sibling)))
+                (lowered.has(statement.parent.parent) ||
+                    statement.parent.statements.some((sibling) =>
+                        begun.has(sibling),
+                    ))
             );
         };
         let attempted = 0;
@@ -845,9 +840,10 @@ export class SurveyCollector {
     }
 
     /**
-     * Whether `met`, a storage demand, went into the attempt's storage at
-     * once (true), or the refusal applying it raised; false for a demand
-     * already held and any other replay.
+     * What applying `met` did: true when the storage took a new demand,
+     * "held" when it already held one this attempt never took, the refusal
+     * applying it raised, and false when this attempt already took it or
+     * `met` is not a storage demand.
      */
     private applied(
         attempt: Attempt,
@@ -1004,9 +1000,21 @@ export class SurveyCollector {
         const attempt = this.current;
         if (!attempt) throw error;
         const census = this.counted(attempt, checker, first, error);
-        const symbol = declaredSymbol(checker, name);
-        if (symbol && !attempt.declarations.has(symbol))
-            attempt.declarations.set(symbol, census.site);
+        this.declaredAt(attempt, checker, [name], census.site);
+    }
+
+    /** Each of `names` that has no refusal site yet takes `site`. */
+    private declaredAt(
+        attempt: Attempt,
+        checker: ts.TypeChecker,
+        names: Iterable<ts.Identifier>,
+        site: Census["site"],
+    ): void {
+        for (const name of names) {
+            const symbol = declaredSymbol(checker, name);
+            if (symbol && !attempt.declarations.has(symbol))
+                attempt.declarations.set(symbol, site);
+        }
     }
 
     private record(
@@ -1020,11 +1028,12 @@ export class SurveyCollector {
         census.rolledBack.add(statement);
         // Every statement this refusal rolled back loses its declarations,
         // whichever caller reached the site first.
-        for (const name of statementDeclaredNames(statement)) {
-            const symbol = declaredSymbol(checker, name);
-            if (symbol && !attempt.declarations.has(symbol))
-                attempt.declarations.set(symbol, census.site);
-        }
+        this.declaredAt(
+            attempt,
+            checker,
+            statementDeclaredNames(statement),
+            census.site,
+        );
     }
 
     /** The census entry of `error`, made at `statement`, with one more occurrence. */

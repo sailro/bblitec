@@ -71,6 +71,7 @@ import {
     unwrapExpression,
     variableKind,
     isMemberAccess,
+    hasDeclareModifier,
 } from "./syntax.js";
 import {
     caughtErrorValue,
@@ -98,7 +99,7 @@ import {
     namedMember,
     type NamedMember,
 } from "./symbols.js";
-import { absenceKind, absentValueKind, nullability } from "./type-facts.js";
+import { absenceKind, isNullable } from "./type-facts.js";
 import {
     requireAssignedBindingStorage,
     requireDynamicBindingStorage,
@@ -1075,16 +1076,7 @@ export class StatementLowerer {
     ): void {
         context.asyncActivations.requirePendingActivationRealm(statement);
         context.varBindings.declareFor(statement);
-        if (
-            ts.canHaveModifiers(statement) &&
-            ts
-                .getModifiers(statement)
-                ?.some(
-                    (modifier) =>
-                        modifier.kind === ts.SyntaxKind.DeclareKeyword,
-                )
-        )
-            return;
+        if (hasDeclareModifier(statement)) return;
         if (context.handleCollections.isFoldedFlattenLoop(statement)) {
             // The declaration above it already answered with the
             // container's flattened meshes; the loop that filled the list
@@ -4775,11 +4767,9 @@ export class StatementLowerer {
                     target.kind === "data" &&
                     target.dataType?.kind === "optional" &&
                     target.dataType.inner.kind === "number" &&
-                    absentValueKind(
-                        nullability(
-                            context.checker.getTypeAtLocation(unwrapped.left),
-                        ),
-                    ) === undefined
+                    !isNullable(
+                        context.checker.getTypeAtLocation(unwrapped.left),
+                    )
                 ) {
                     // A nullable number the source narrowed to a number
                     // (`datum += raise` past a null guard): its value

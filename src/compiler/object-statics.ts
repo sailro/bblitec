@@ -502,27 +502,6 @@ function compileObjectIs(
     if (boolean(left) && boolean(right)) {
         return booleanValue(`(${left.cpp} == ${right.cpp})`);
     }
-    // A nullable number (`number | null`) is the same value as another of
-    // its absence when both are absent, or both hold the same number.
-    const nullableNumber = (value: Value, node: ts.Expression) => {
-        if (
-            value.dataType?.kind !== "optional" ||
-            value.dataType.inner.kind !== "number"
-        )
-            return undefined;
-        const absence = absenceKind(context.checker, value, node);
-        return absence === "null" || absence === "undefined"
-            ? absence
-            : undefined;
-    };
-    const leftAbsence = nullableNumber(left, argumentAt(call, 0));
-    const rightAbsence = nullableNumber(right, argumentAt(call, 1));
-    if (leftAbsence && rightAbsence && leftAbsence === rightAbsence) {
-        context.reachJsData();
-        return booleanValue(
-            `[](const auto& left, const auto& right) { return left.has_value() == right.has_value() && (!left.has_value() || bbl::js::same_value(*left, *right)); }(${left.cpp}, ${right.cpp})`,
-        );
-    }
     // JsonValue already retains erased object identity and distinguishes
     // absent values. Its strict equality supplies every nonnumeric case.
     const erased = (value: Value, node: ts.Expression): string | undefined => {
@@ -535,7 +514,19 @@ function compileObjectIs(
             return `bbl::js::JsonValue::from_string(${stringCpp(context, value, node)})`;
         if (boolean(value))
             return `bbl::js::JsonValue::from_boolean(${value.cpp})`;
-        return undefined;
+        // A nullable scalar (`number | null`) of one absent value is its
+        // present value's, or that absent value.
+        if (value.dataType?.kind !== "optional") return undefined;
+        const absence = absenceKind(context.checker, value, node);
+        if (absence !== "null" && absence !== "undefined") return undefined;
+        const present = erased(
+            { kind: "data", cpp: "(*present)", dataType: value.dataType.inner },
+            node,
+        );
+        return (
+            present &&
+            `([&]() { const auto& present = ${value.cpp}; return present.has_value() ? ${present} : ${jsonAbsenceCpp(absence)}; }())`
+        );
     };
     const erasedLeft = erased(left, argumentAt(call, 0));
     const erasedRight = erased(right, argumentAt(call, 1));

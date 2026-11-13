@@ -1,7 +1,7 @@
 import { hostAccessorValue } from "./host-globals.js";
 import type { LoweringServices } from "./lowering-services.js";
 import ts from "typescript";
-import { argumentAt } from "./syntax.js";
+import { argumentAt, unwrapExpression } from "./syntax.js";
 import {
     declaredInDefaultLibrary,
     libraryName,
@@ -102,6 +102,19 @@ export function windowViewportDimension(
     context: Pick<LoweringServices, "libraryGlobal">,
     node: ts.Expression,
 ): "width" | "height" | undefined {
+    // Only a read spelling one of the names can be one.
+    const unwrapped = unwrapExpression(node);
+    const spelled = ts.isIdentifier(unwrapped)
+        ? unwrapped.text
+        : ts.isPropertyAccessExpression(unwrapped)
+          ? unwrapped.name.text
+          : undefined;
+    if (
+        spelled !== undefined &&
+        spelled !== "innerWidth" &&
+        spelled !== "innerHeight"
+    )
+        return undefined;
     const name = context.libraryGlobal(node);
     return name === "innerWidth"
         ? "width"

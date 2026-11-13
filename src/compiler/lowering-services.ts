@@ -64,12 +64,11 @@ export type NativeReturnValueCompiler = (
     node: ts.Node,
 ) => string;
 
-/** Execution facts for one native function body. */
 /** Where a native declaration was emitted (`emissionMark`). */
-export interface EmissionMark {
-    readonly scope: number;
-    readonly block: number;
-}
+export type EmissionMark = Pick<
+    import("./function-specializations.js").FunctionEmissionScope,
+    "emission" | "block"
+>;
 
 /** A statement being lowered, with where its lowering began. */
 export interface LoweringStatement {
@@ -80,6 +79,7 @@ export interface LoweringStatement {
     readonly indentLevel: number;
 }
 
+/** Execution facts for one native function body. */
 export interface NativeFunctionBodyOptions {
     coroutine?: boolean;
     generator?: DataType<"iterator">;

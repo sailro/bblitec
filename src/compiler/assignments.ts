@@ -539,13 +539,20 @@ export function typedLightOwner(
     expression: ts.Expression,
 ): Value {
     if (owner.kind !== "light" || owner.lightKind) return owner;
-    const { lightKind } =
-        typeImpliedFacts(
-            context.checker.getNonNullableType(
-                context.checker.getTypeAtLocation(unwrapExpression(expression)),
-            ),
-        ) ?? {};
+    const { lightKind } = factsTypedAt(context.checker, expression) ?? {};
     return lightKind ? { ...owner, lightKind } : owner;
+}
+
+/** The facts `expression`'s present type proves (`typeImpliedFacts`). */
+function factsTypedAt(
+    checker: ts.TypeChecker,
+    expression: ts.Expression,
+): ReturnType<typeof typeImpliedFacts> {
+    return typeImpliedFacts(
+        checker.getNonNullableType(
+            checker.getTypeAtLocation(unwrapExpression(expression)),
+        ),
+    );
 }
 
 function directPropertyAssignment(
@@ -3085,13 +3092,8 @@ function emitTargetPropertyAssignment(
     const renderGate =
         property === "enabled" &&
         (target.renderTask === true ||
-            typeImpliedFacts(
-                context.checker.getNonNullableType(
-                    context.checker.getTypeAtLocation(
-                        unwrapExpression(targetExpression),
-                    ),
-                ),
-            )?.renderTask === true);
+            factsTypedAt(context.checker, targetExpression)?.renderTask ===
+                true);
     if (
         target.kind === "task" &&
         (property === "executionEnabled" || renderGate)

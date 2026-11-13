@@ -88,8 +88,11 @@ export function unaliasedValue(
         ((own?.kind === "vector" || own?.kind === "span") &&
             (yieldsNewArray(checker, expression) ||
                 freshStoredCall(lowerer, expression) ||
-                soleReadOfFreshLocal(checker, expression, (initializer) =>
-                    yieldsNewArray(checker, initializer),
+                soleReadOfFreshLocal(
+                    lowerer.context.program,
+                    checker,
+                    expression,
+                    (initializer) => yieldsNewArray(checker, initializer),
                 ))) ||
         // A call creating its tuple owns it; a selection (`??`, `?:`)
         // marked fresh may still yield a stored one.

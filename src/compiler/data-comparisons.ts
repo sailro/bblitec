@@ -5,7 +5,7 @@ import { numericSlotKind } from "./numeric-slot-storage.js";
 import type { DataLowerer } from "./data-lowering.js";
 import {
     dataTypesEqual,
-    holdsDataKind,
+    unrecordedFact,
     isTypedArrayType,
     type DataType,
 } from "./data-types.js";
@@ -164,7 +164,6 @@ export function selfIdentity(
     return negated ? "false" : "true";
 }
 
-
 /** A record keyed by a closed union is stored by value, one copy per location. */
 function isRecordTable(type: DataType | undefined): boolean {
     return type?.kind === "optional"
@@ -198,24 +197,12 @@ export function strictEqualsCpp(
         context.emitDiscardedValue(right);
         return negated ? "true" : "false";
     }
-    // A borrowed view (a span, a table) reads another array's storage.
-    if (
-        holdsDataKind(left.dataType, ["span", "table"]) ||
-        holdsDataKind(right.dataType, ["span", "table"])
-    )
-        context.fail(
-            expression,
-            "A borrowed array view cannot preserve JavaScript object identity in a comparison.",
-        );
-    // A stored Iterable reopens the object it holds without keeping its identity.
-    if (
-        holdsDataKind(left.dataType, ["iterable"]) ||
-        holdsDataKind(right.dataType, ["iterable"])
-    )
-        context.fail(
-            expression,
-            "A stored Iterable does not keep the identity of the object it holds for a comparison.",
-        );
+    // A borrowed view (a span, a table) reads another array's storage; a
+    // stored Iterable reopens the object it holds.
+    const unrecorded =
+        unrecordedFact(left.dataType, "identity") ??
+        unrecordedFact(right.dataType, "identity");
+    if (unrecorded) context.fail(expression, unrecorded);
     if (isRecordTable(left.dataType) && isRecordTable(right.dataType))
         context.fail(
             expression,

@@ -194,6 +194,7 @@ import {
 } from "../lowering/pinned-operators.js";
 import {
     dataTypesEqual,
+    functionArmIndex,
     isUndefinedDataType,
     presentDataType,
     doubleLiteral,
@@ -4338,29 +4339,15 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
     ): (Value & { dataType: DataType<"function"> }) | undefined {
         const type = presentDataType(value.dataType);
         if (type?.kind !== "union") return undefined;
-        const arms = type.members.flatMap((member, index) =>
-            member.kind === "function" ? [{ member, index }] : [],
-        );
         const calleeType = this.context.checker.getTypeAtLocation(callee);
         // Beside other function arms, the arm of the signature the callee's
         // own type gives it (one method each record shape declares apart).
-        const own =
-            arms.length > 1
-                ? this.context.dataTypes.fromStoredTsType(calleeType, callee)
-                : undefined;
-        const arm =
-            arms.length === 1
-                ? arms[0]
-                : own?.kind === "function"
-                  ? arms.find(({ member }) =>
-                        dataTypesEqual(
-                            { ...member, identity: true },
-                            { ...own, identity: true },
-                        ),
-                    )
-                  : undefined;
+        const index = functionArmIndex(type, () =>
+            this.context.dataTypes.fromStoredTsType(calleeType, callee),
+        );
+        const member = type.members[index];
         if (
-            !arm ||
+            member?.kind !== "function" ||
             callSignatures(this.context.checker, calleeType, "exact").length ===
                 0
         )
@@ -4373,10 +4360,10 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         return {
             ...this.projectedNativeValue(
                 present,
-                `bbl::js::function_member<${arm.index}>(${present.cpp})`,
-                arm.member,
+                `bbl::js::function_member<${index}>(${present.cpp})`,
+                member,
             ),
-            dataType: arm.member,
+            dataType: member,
         };
     }
 
@@ -4842,8 +4829,9 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
      * `a ?? b` over records of two types. JavaScript selects one of the two
      * objects, so each operand is stored as the expression's own record type
      * the way an assignment there would store it (one shared layout, or a
-     * refusal where only a copy could hold it). The result is absent exactly
-     * when the left operand is and the fallback is too.
+     * refusal where only a copy could hold it), or as `target`, the record
+     * type the result is stored as. The result is absent exactly when the
+     * left operand is and the fallback is too.
      */
     private coalesceDistinctRecords(
         expression: ts.BinaryExpression,
@@ -4851,8 +4839,9 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         leftFound: string,
         fallback: Value,
         fallbackLines: readonly string[],
+        target?: DataType,
     ): Value {
-        const declared = this.dataTypeAt(expression);
+        const declared = target ?? this.dataTypeAt(expression);
         const record =
             declared?.kind === "optional" ? declared.inner : declared;
         if (record?.kind !== "struct")
@@ -5222,8 +5211,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             if (
                 isScalarDataType(left.dataType) &&
                 fallback.kind !== "json-null" &&
-                (left.kind === "data" ||
-                    (isJsonValue(fallback) && leftFound !== undefined))
+                (left.kind === "data" || isJsonValue(fallback))
             ) {
                 const type = left.dataType;
                 const fallbackCpp = fallbackArm(type, () =>
@@ -5348,14 +5336,15 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                     )
                         ? sink
                         : undefined;
-                if (shared) {
-                    const { optionalFoundCpp: _found, ...present } = left;
-                    return this.leafValue(
-                        `(${leftFound} ? ${this.compileKnownValueForSink(present, shared, expression.left)} : ` +
-                            `${fallbackArm(shared, () => this.compileKnownValueForSink(fallback, shared, expression.right))})`,
+                if (shared)
+                    return this.coalesceDistinctRecords(
+                        expression,
+                        left,
+                        leftFound,
+                        fallback,
+                        fallbackLines,
                         shared,
                     );
-                }
                 const selected = this.leafValue(
                     `(${leftFound} ? ${left.cpp} : ` +
                         `${fallbackArm(type, () => this.compileKnownValueForSink(fallback, type, expression.right))})`,
@@ -5626,9 +5615,22 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             // (`frames ?? frame`). Convert both branches through the joined
             // type's sinks rather than forcing the fallback into the left
             // operand's narrower storage.
-            const joined = this.dataTypeAt(expression);
+            const emptyArrayJoin = this.elementOrEmptyArray(inner, expression);
+            const joined =
+                !emptyArrayJoin &&
+                [
+                    "enum",
+                    "string",
+                    "number",
+                    "boolean",
+                    "union",
+                    "vector",
+                    "span",
+                ].includes(inner.kind)
+                    ? this.dataTypeAt(expression)
+                    : undefined;
             let resultType =
-                this.elementOrEmptyArray(inner, expression) ??
+                emptyArrayJoin ??
                 (inner.kind === "enum" ||
                 inner.kind === "string" ||
                 inner.kind === "number" ||
@@ -9224,10 +9226,15 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 range = iterated.range.cpp;
             // Parsed elements are read as numbers, as each argument is
             // (ToNumber), into a copy only the fold reads.
-            else if (iterated?.element.kind === "json") {
-                this.context.reachJsData();
-                range = `bbl::js::array_from_iterable<double>(${iterated.range.cpp}, [](const auto& element) { return element.to_number(); })`;
-            }
+            else if (iterated?.element.kind === "json")
+                range = this.elementwiseCopy(
+                    iterated.range.cpp,
+                    { kind: "json" },
+                    { kind: "number" },
+                    only,
+                    "math_element",
+                    `Math.${method} reads each parsed element as a number in place; this conversion needs statements.`,
+                );
             if (range === undefined)
                 return this.context.fail(
                     only,
@@ -20834,7 +20841,8 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                       )
                     : undefined);
             return {
-                container: dataType.kind === "iterable" ? iterated.range : value,
+                container:
+                    dataType.kind === "iterable" ? iterated.range : value,
                 element,
                 ...(template ? { template } : {}),
             };
@@ -21777,54 +21785,39 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         // the target's handle holds (meshes as scene nodes), lanes a
         // union or optional element holds (numbers among `number |
         // string` lanes), or parsed elements the target's scalar lanes
-        // read convert one by one.
-        const targetElementHolds = (target: DataType): boolean =>
-            sourceElement !== undefined &&
-            ((target.kind === "union" &&
-                target.members.some((member) =>
-                    dataTypesEqual(member, sourceElement),
-                )) ||
-                (target.kind === "optional" &&
-                    dataTypesEqual(target.inner, sourceElement)));
+        // read convert one by one: each conversion keeps what an element
+        // shares with the source's.
+        const target = dataType.element;
         if (
             iterated &&
             sourceElement &&
-            !dataTypesEqual(sourceElement, dataType.element) &&
-            ((sourceElement.kind === "handle" &&
-                dataType.element.kind === "handle") ||
+            !dataTypesEqual(sourceElement, target) &&
+            ((sourceElement.kind === target.kind &&
+                ["handle", "struct", "promise"].includes(target.kind)) ||
                 (["string", "enum"].includes(sourceElement.kind) &&
-                    ["string", "enum"].includes(dataType.element.kind)) ||
-                (sourceElement.kind === "struct" &&
-                    dataType.element.kind === "struct") ||
-                (sourceElement.kind === "promise" &&
-                    dataType.element.kind === "promise") ||
-                targetElementHolds(dataType.element) ||
-                (sourceElement.kind === "json" &&
-                    isScalarDataType(dataType.element)))
-        ) {
-            const item = this.context.allocateTemporaryCppName("spread_item");
-            let converted = "";
-            const prepared = this.context.captureEmittedLines(() => {
-                converted = this.compileKnownValueForSink(
-                    this.leafValue(item, sourceElement),
-                    dataType.element,
-                    spread,
-                );
-            });
-            if (prepared.length > 0)
-                this.context.fail(
-                    spread,
-                    "Array spread converts each element in place; this element conversion needs statements.",
-                );
+                    ["string", "enum"].includes(target.kind)) ||
+                (target.kind === "union" &&
+                    target.members.some((member) =>
+                        dataTypesEqual(member, sourceElement),
+                    )) ||
+                (target.kind === "optional" &&
+                    dataTypesEqual(target.inner, sourceElement)) ||
+                (sourceElement.kind === "json" && isScalarDataType(target)))
+        )
             return {
                 ...this.leafValue(
-                    `bbl::js::array_from_iterable<${this.context.dataTypes.cppType(dataType.element)}>(` +
-                        `${iterated.range.cpp}, [](const auto& ${item}) { return ${converted}; })`,
+                    this.elementwiseCopy(
+                        iterated.range.cpp,
+                        sourceElement,
+                        target,
+                        spread,
+                        "spread_item",
+                        "Array spread converts each element in place; this element conversion needs statements.",
+                    ),
                     dataType,
                 ),
                 freshSpread: true,
             };
-        }
         if (!iterated || !dataTypesEqual(iterated.element, dataType.element)) {
             return this.context.fail(
                 spread,
@@ -21848,24 +21841,44 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         element: DataType,
         node: ts.Node,
     ): string {
-        const item = this.context.allocateTemporaryCppName("document_item");
+        const copy = this.elementwiseCopy(
+            `${document.cpp}.elements()`,
+            { kind: "json" },
+            element,
+            node,
+            "document_item",
+            "A parsed array's elements convert in place; this element conversion needs statements.",
+        );
+        this.context.reachJsData();
+        return copy;
+    }
+
+    /**
+     * A new array of the elements `rangeCpp` iterates, each `from` value
+     * stored as `to` the way a sink stores it, in place: `failure` where a
+     * conversion needs statements.
+     */
+    private elementwiseCopy(
+        rangeCpp: string,
+        from: DataType,
+        to: DataType,
+        node: ts.Node,
+        itemName: string,
+        failure: string,
+    ): string {
+        const item = this.context.allocateTemporaryCppName(itemName);
         let converted = "";
         const prepared = this.context.captureEmittedLines(() => {
             converted = this.compileKnownValueForSink(
-                this.leafValue(item, { kind: "json" }),
-                element,
+                this.leafValue(item, from),
+                to,
                 node,
             );
         });
-        if (prepared.length > 0)
-            this.context.fail(
-                node,
-                "A parsed array's elements convert in place; this element conversion needs statements.",
-            );
-        this.context.reachJsData();
+        if (prepared.length > 0) this.context.fail(node, failure);
         return (
-            `bbl::js::array_from_iterable<${this.context.dataTypes.cppType(element)}>(` +
-            `${document.cpp}.elements(), [](const auto& ${item}) { return ${converted}; })`
+            `bbl::js::array_from_iterable<${this.context.dataTypes.cppType(to)}>(` +
+            `${rangeCpp}, [](const auto& ${item}) { return ${converted}; })`
         );
     }
 

@@ -1,6 +1,6 @@
 import ts from "typescript";
 import { identifiersByName } from "./analysis-walk.js";
-import { resolvedSymbol } from "./symbols.js";
+import { declaredSymbol, resolvedSymbol } from "./symbols.js";
 import { referenceSite, specifierSourceName } from "./syntax.js";
 
 /** Whether a declaration binds a name of its module's top level. */
@@ -68,6 +68,39 @@ export function bindingReferences(
             }),
         );
     });
+}
+
+/**
+ * The one expression reading a variable declared by name, when it is read
+ * once per binding: no function or loop lies between the declaration's
+ * statement and the read. Undefined otherwise.
+ */
+export function soleBindingRead(
+    program: ts.Program,
+    checker: ts.TypeChecker,
+    declaration: ts.VariableDeclaration,
+): ts.Expression | undefined {
+    const symbol = ts.isIdentifier(declaration.name)
+        ? declaredSymbol(checker, declaration.name)
+        : undefined;
+    const references = symbol
+        ? bindingReferences(program, checker, symbol)
+        : [];
+    const reference = references[0];
+    if (references.length !== 1 || !reference) return undefined;
+    const block = declaration.parent.parent.parent;
+    for (
+        let node: ts.Node = reference.parent;
+        node !== block;
+        node = node.parent
+    )
+        if (
+            !node.parent ||
+            ts.isFunctionLike(node) ||
+            ts.isIterationStatement(node, false)
+        )
+            return undefined;
+    return reference;
 }
 
 /**
