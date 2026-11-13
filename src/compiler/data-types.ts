@@ -9333,12 +9333,17 @@ export class DataTypeRegistry {
             const propertyType = property
                 ? this.checker.getTypeOfSymbolAtLocation(property, member.name)
                 : this.checker.getTypeAtLocation(member.name);
+            // A field the program types `unknown` (or an array of unknown
+            // values) holds them as documents, as such a record field does.
             const declared =
                 this.fromFunctionType(
                     this.checker.getNonNullableType(propertyType),
                     member.name,
                     true,
-                ) ?? this.fromClassFieldType(propertyType, member.name);
+                ) ??
+                this.orDynamicJsonTypes(() =>
+                    this.fromClassFieldType(propertyType, member.name),
+                );
             const mapped =
                 declared &&
                 this.withDemandedNumericSlot(member, propertyType, declared);

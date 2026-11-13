@@ -7792,6 +7792,25 @@ check(
 );
 
 check(
+    "class-field-of-unknown-values-read-through-instanceof",
+    `
+    class AnyOf { constructor(readonly options: readonly unknown[]) {} }
+    function unifyAll(values: readonly unknown[]): number {
+      const flat: unknown[] = [];
+      for (const v of values) {
+        if (v instanceof AnyOf) flat.push(...v.options);
+        else if (v !== undefined) flat.push(v);
+      }
+      return flat.length;
+    }
+    const schema: unknown[] = [1, new AnyOf(["a", 2]), undefined, "x"];
+    const nested = new AnyOf([schema[1], 3]);
+    const inner = nested.options[0];
+    if (!(inner instanceof AnyOf) || inner.options.length !== 2 || unifyAll([nested]) !== 2 || unifyAll(schema) !== 4) throw new Error("anyof");
+`,
+);
+
+check(
     "document-view-first-made-in-a-short-circuit-is-made-again-after-it",
     `
     function count(values: readonly unknown[]): number {
