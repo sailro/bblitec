@@ -2,7 +2,7 @@ import { compilerRepositoryRoot } from "../repository-root.js";
 import { dirname, resolve } from "node:path";
 import ts from "typescript";
 import { compilerPackageTypings, isBabylonModule } from "./symbols.js";
-import type { HostPageProgram } from "./types.js";
+import type { HostPage } from "./types.js";
 import { hostPageServedFile } from "../host-page.js";
 import { sharedPinnedContext } from "../lowering/context.js";
 import {
@@ -289,7 +289,7 @@ function importedNames(
 export function createCompilerProgram(
     source: string,
     fileName: string,
-    page?: HostPageProgram,
+    page?: HostPage,
 ): CompilerProgram {
     const rootName = resolve(fileName);
     const loaderName = page?.loader ? resolve(page.loader.fileName) : undefined;
@@ -536,14 +536,24 @@ export function createCompilerProgram(
         );
     }
     // The page itself is read in place of its synthesized loader module and
-    // inline scripts; an external classic script is a file of its own.
+    // inline scripts; an external classic script and a linked style sheet
+    // are files of their own.
     const localFiles = program
         .getSourceFiles()
         .map((file) =>
             resolve(carriedFile(file.fileName)?.file ?? file.fileName),
         )
         .filter((path) => path !== loaderName && !inlineStartup.has(path))
-        .concat(page ? [resolve(page.path)] : [])
+        .concat(
+            page
+                ? [
+                      resolve(page.path),
+                      ...(page.hostUi?.styleSheets ?? []).flatMap((sheet) =>
+                          sheet.file ? [resolve(sheet.file)] : [],
+                      ),
+                  ]
+                : [],
+        )
         .filter((path) => !isInstalledPackageFile(path))
         .map((path) => repositoryRelativePath(repositoryRoot, path))
         .sort();

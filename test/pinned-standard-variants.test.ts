@@ -360,7 +360,7 @@ test("a skinned Standard view refuses a LINEAR_VELOCITY task before a preload lo
         "Standard geometry deformation velocity was not preloaded.",
         context.functionDeclaration(
             "src/material/standard/standard-geometry-output-shader.ts",
-            "createGeometryParamsFragment",
+            "createGeometryFragment",
         ).declaration,
     );
     await assert.rejects(

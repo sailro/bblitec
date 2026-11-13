@@ -1517,10 +1517,18 @@ export class UiProjection {
         return createsElement || this.isNativeUiHelperCall(value);
     }
 
+    /**
+     * The string a write stores. With `nulls`, a dynamic value converts as
+     * WebIDL converts it for that attribute: `DOMString?` (`textContent`)
+     * stores null and undefined as the empty string,
+     * `[LegacyNullToEmptyString] DOMString` (`innerText`) null alone; any
+     * other value is its ToString.
+     */
     public uiStringCpp(
         expression: ts.Expression,
         purpose: string,
         knownValue?: Value,
+        nulls?: "nullable" | "legacy-null-to-empty",
     ): string {
         const staticValue = knownValue
             ? knownValue.staticString
@@ -1551,6 +1559,8 @@ export class UiProjection {
                 { kind: "string" },
                 expression,
             );
+        if (nulls && isJsonValue(value))
+            return `bbl::pinned::${nulls === "nullable" ? "nullable_dom_string" : "legacy_null_dom_string"}(${value.cpp})`;
         this.context.fail(
             expression,
             `${purpose} requires a string, received ${value.kind}.`,
@@ -6463,6 +6473,9 @@ export class UiProjection {
                     assigned.site,
                     `UI ${property}`,
                     assigned.value,
+                    property === "textContent"
+                        ? "nullable"
+                        : "legacy-null-to-empty",
                 );
             }
             this.context.emit({
@@ -7084,7 +7097,7 @@ export class UiProjection {
         const sheets = page?.hostUi
             ? (page.hostUi.styleSheets ?? []).map((sheet) => ({
                   text: sheet.text,
-                  origin: { file: page.path, line: sheet.line },
+                  origin: { file: sheet.file ?? page.path, line: sheet.line },
               }))
             : [];
         for (const { text, origin } of sheets) {

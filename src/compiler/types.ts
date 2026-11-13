@@ -109,6 +109,8 @@ export interface NativeHostUiStyleSheet {
     text: string;
     /** The source line the text starts on, where refusals point. */
     line: number;
+    /** A linked sheet's file, which refusals name instead of the page. */
+    file?: string;
 }
 
 /**

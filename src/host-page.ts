@@ -339,6 +339,34 @@ export function hostPageFromDocument(
         const text = textContent(element);
         styleSheets.push({ text, line: lines.line(text) });
     };
+    // A same-origin sheet the site serves, in document order. Its relative
+    // url() values resolve against its own URL, which is the page's base
+    // only in the page's directory.
+    const readLinkedStyle = (element: HostPageElement): void => {
+        const { href, ...others } = element.attributes ?? {};
+        delete others.rel;
+        for (const [name, value] of Object.entries(others))
+            if (name !== "type" || !/^(?:text\/css)?$/i.test(value))
+                refuse(`<link rel="stylesheet" ${name}="${value}"> is not represented.`);
+        const path = href?.trim() ? hostPageUrlPath(page, href) : undefined;
+        const file = path === undefined ? undefined : hostPageSiteFile(page, path);
+        if (!file) {
+            refuse(
+                `<link rel="stylesheet" href="${href ?? ""}"> ${path === undefined ? "loads from another origin or no URL" : "names no file its site serves"}.`,
+            );
+            return;
+        }
+        const text = readFileSync(file, "utf8").replace(/^﻿/, "");
+        if (
+            /url\s*\(/i.test(text) &&
+            new URL(".", new URL(href!, hostPageUrl(page))).pathname !==
+                new URL(".", hostPageUrl(page)).pathname
+        )
+            refuse(
+                `<link rel="stylesheet" href="${href}"> outside the page's directory resolves its url() values against its own URL; only the page's base is represented.`,
+            );
+        styleSheets.push({ text, line: 1, file });
+    };
 
     for (const child of head.children ?? []) {
         if (child.tag === undefined) {
@@ -378,17 +406,24 @@ export function hostPageFromDocument(
                 continue;
             }
             // Browser chrome and search metadata; the light scheme is the
-            // native controls' own.
+            // native controls' own, and native requests send no referrer.
             if (
                 attributeCount === 2 &&
                 (name === "theme-color" ||
                     name === "description" ||
                     (name === "color-scheme" &&
-                        /^(?:light|normal)$/.test(content.trim())))
+                        /^(?:light|normal)$/.test(content.trim())) ||
+                    (name === "referrer" &&
+                        content.trim().toLowerCase() === "no-referrer"))
             )
                 continue;
             refuse(`head metadata ${spelled(child)} is not represented.`);
         } else if (
+            child.tag === "link" &&
+            (attributes.rel ?? "").trim().toLowerCase() === "stylesheet"
+        )
+            readLinkedStyle(child);
+        else if (
             child.tag === "link" &&
             (attributes.rel ?? "")
                 .split(/\s+/)
