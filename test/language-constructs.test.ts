@@ -7898,6 +7898,22 @@ check(
 );
 
 check(
+    "typed-array-held-in-a-parsed-document",
+    `
+    const doc = JSON.parse('{"id":1}') as { id: number; simOut?: Float32Array };
+    const out = new Float32Array(4);
+    doc.simOut = out;
+    const read = doc.simOut;
+    read[2] = 1.5;
+    out[1] = 0.25;
+    const back = doc.simOut!;
+    const keys = Object.keys(doc).join(",");
+    const checks = [back instanceof Float32Array, !Array.isArray(back), back.length === 4, back[1] === 0.25, out[2] === 1.5, back === out, keys === "id,simOut"];
+    if (checks.some((ok) => !ok)) throw new Error("doc f32 " + checks.map((ok) => (ok ? "1" : "0")).join(""));
+`,
+);
+
+check(
     "truncating-the-array-a-call-returns",
     `
     interface Chimney { id: number }

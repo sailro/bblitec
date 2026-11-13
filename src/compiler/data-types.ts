@@ -23,6 +23,7 @@ import { functionSignatureSite } from "./function-storage-flow.js";
 import {
     BUFFER_VIEW_KINDS,
     TYPED_ARRAY_KINDS,
+    isTypedArrayType,
 } from "./data-types/typed-arrays.js";
 import {
     dataTypeChildren,
@@ -10936,8 +10937,13 @@ export class DataTypeRegistry {
         }
         // A Blob is held boxed: `instanceof Blob` reads the instance back;
         // a function too, which a member call reads back with its declared
-        // signature (`json_call`).
-        if (type.kind === "blob" || type.kind === "function")
+        // signature (`json_call`); a typed array too, whose indices and
+        // length the document reads through the box.
+        if (
+            type.kind === "blob" ||
+            type.kind === "function" ||
+            isTypedArrayType(type)
+        )
             return `bbl::js::JsonValue::from_native(${cpp})`;
         if (type.kind === "struct") this.markJsonBoxed(type, node);
         else if (type.kind === "vector") {

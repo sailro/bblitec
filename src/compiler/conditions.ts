@@ -853,6 +853,16 @@ export class ConditionLowerer {
                             unwrapped,
                             `instanceof ${global} cannot be decided for an ArrayBufferView whose view class is not represented.`,
                         );
+                    // A document holds a typed array boxed; its box answers.
+                    if (
+                        isJsonValue(value) &&
+                        TYPED_ARRAY_KINDS.get(global) !== undefined
+                    ) {
+                        const test = `(${value.cpp}).instance_of<${this.context.dataTypes.cppType({ kind: expected } as DataType)}>()`;
+                        return present === undefined
+                            ? test
+                            : `(${present} && ${test})`;
+                    }
                     const index = members.findIndex(
                         (member) => member.kind === expected,
                     );

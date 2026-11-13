@@ -14,6 +14,7 @@ import {
     type Value,
 } from "../types.js";
 
+import { isJsonValue } from "../json-bridge.js";
 import { pickedMeshHandle } from "../properties.js";
 import { resolvedSymbol } from "../symbols.js";
 import type { DataSinkHost, DataSinkOperations } from "./contracts.js";
@@ -360,6 +361,12 @@ function valueResource(
             node,
         );
         return `${lowerer.context.dataTypes.cppType(dataType)}{${owner}, ${raw}}`;
+    }
+    // A typed array a document holds is the array itself, boxed: read back
+    // as an assertion of its class reads it (another value throws).
+    if (isTypedArrayType(dataType) && isJsonValue(value)) {
+        lowerer.context.reachJson();
+        return `${value.cpp}.asserted_instance<${lowerer.context.dataTypes.cppType(dataType)}>()`;
     }
     if (
         dataType.kind === "handle" &&

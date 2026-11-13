@@ -1423,6 +1423,57 @@ template <> struct JsonNativeBox<Error> final : JsonNativeObject {
     void gc_trace(const TraceVisitor& visitor) const override { visitor(value); }
 };
 
+/**
+ * A typed array a document holds, as itself: its indices and `length` read
+ * as numbers, an index write stores as the array's element type converts
+ * it, and `instanceof` or an assertion reads the array back.
+ */
+template <typename T> struct JsonNativeBox<TypedArray<T>> final : JsonNativeObject {
+    TypedArray<T> value;
+    explicit JsonNativeBox(TypedArray<T> source) : value(std::move(source)) {}
+    JsonValue get(std::string_view key) const override {
+        if (key == "length")
+            return JsonValue::from_number(static_cast<double>(value.size()));
+        const auto index = json_property_index(key);
+        return index && *index < value.size()
+                   ? JsonValue::from_number(static_cast<double>(value.load(*index)))
+                   : JsonValue{};
+    }
+    bbl::js::Array<std::string> own_keys() const override {
+        bbl::js::Array<std::string> keys;
+        for (std::size_t index = 0; index < value.size(); ++index)
+            keys.push_back(std::to_string(index));
+        return keys;
+    }
+    bool has_own(std::string_view key) const override {
+        const auto index = json_property_index(key);
+        return index && *index < value.size();
+    }
+    bool has_property(std::string_view key) const override {
+        return key == "length" || has_own(key);
+    }
+    void set(std::string_view key, const JsonValue& member) override {
+        const auto index = json_property_index(key);
+        if (!index)
+            throw std::runtime_error("A typed array's named property is not represented.");
+        // An index past the end is no element: the write is dropped.
+        if (*index < value.size())
+            value.store(*index, numeric_store_value<T>(member.to_number()));
+    }
+    std::string to_string() const override {
+        std::string text;
+        for (std::size_t index = 0; index < value.size(); ++index) {
+            if (index > 0)
+                text += ',';
+            text += number_to_string(static_cast<double>(value.load(index)));
+        }
+        return text;
+    }
+    const std::type_info& type() const override { return typeid(TypedArray<T>); }
+    const void* identity() const override { return value.identity(); }
+    void gc_trace(const TraceVisitor&) const override {}
+};
+
 template <typename T> JsonValue JsonValue::from_native(T source) {
     JsonValue value;
     value.kind_ = Kind::object;
