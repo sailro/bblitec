@@ -98,7 +98,7 @@ import {
     namedMember,
     type NamedMember,
 } from "./symbols.js";
-import { absenceKind } from "./type-facts.js";
+import { absenceKind, absentValueKind, nullability } from "./type-facts.js";
 import {
     requireAssignedBindingStorage,
     requireDynamicBindingStorage,
@@ -4769,6 +4769,39 @@ export class StatementLowerer {
                         unwrapped,
                         target.cpp,
                         operator,
+                    );
+                } else if (
+                    operator !== "=" &&
+                    target.kind === "data" &&
+                    target.dataType?.kind === "optional" &&
+                    target.dataType.inner.kind === "number" &&
+                    absentValueKind(
+                        nullability(
+                            context.checker.getTypeAtLocation(unwrapped.left),
+                        ),
+                    ) === undefined
+                ) {
+                    // A nullable number the source narrowed to a number
+                    // (`datum += raise` past a null guard): its value
+                    // combines, and the storage takes the result.
+                    const present = context.dataLowerer.narrowOptional(
+                        target,
+                        unwrapped.left,
+                    ).cpp;
+                    const { previous } = context.dataLowerer.compoundPlace(
+                        unwrapped.left,
+                        unwrapped.right,
+                        present,
+                    );
+                    const storage = context.dataTypes.cppType(target.dataType);
+                    context.dataLowerer.emitNumericCompound(
+                        unwrapped.left,
+                        unwrapped.right,
+                        operator,
+                        present,
+                        previous,
+                        (stored) => `${target.cpp} = ${storage}{${stored}};`,
+                        false,
                     );
                 } else if (target.kind === "boolean" && operator === "=") {
                     context.emit({

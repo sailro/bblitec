@@ -7560,6 +7560,30 @@ check(
 );
 
 check(
+    "compound-assignment-to-a-nullable-number-past-its-guard",
+    `
+    const ys = new Map<string, number>([["a", 2]]);
+    const groundYAt = (key: string): number | null => ys.get(key) ?? null;
+    const doors = [1, 3, 2];
+    function lift(key: string, raise: number): number | null {
+        let datum: number | null = null;
+        for (const d of doors) {
+            const y = d > 2 ? groundYAt(key) : null;
+            if (y !== null && (datum === null || y < datum)) datum = y;
+        }
+        datum = datum ?? groundYAt(key);
+        if (datum === null) return null;
+        datum += raise;
+        datum *= 2;
+        datum **= 1;
+        return datum;
+    }
+    const from = ys.get("a")!;
+    if (lift("a", 0.5) !== 5 || lift("b", 1) !== null || ys.get("a") !== from) throw new Error("lift " + lift("a", 0.5));
+`,
+);
+
+check(
     "date-now-as-a-function-value",
     `
     interface Deps { stamp?: () => number }
