@@ -423,6 +423,8 @@ struct JsonNativeObject {
     [[nodiscard]] virtual std::string to_string() const { return "[object Object]"; }
     /** A boxed function (`JsonNativeBox<Callback<Sig>>`): `typeof` reads "function". */
     [[nodiscard]] virtual bool callable() const { return false; }
+    /** A boxed typed array (`JsonTypedArrayBox`): `ArrayBuffer.isView` is true. */
+    [[nodiscard]] virtual bool array_buffer_view() const { return false; }
     virtual void set(std::string_view, const JsonValue&) {
         throw std::runtime_error("Dynamic property assignment requires an owned object.");
     }
@@ -669,6 +671,10 @@ public:
     [[nodiscard]] bool is_number() const { return kind_ == Kind::number; }
     [[nodiscard]] bool is_string() const { return kind_ == Kind::string; }
     [[nodiscard]] bool is_array() const { return kind_ == Kind::array; }
+    /** `ArrayBuffer.isView`: a typed array the document holds as itself. */
+    [[nodiscard]] bool is_array_buffer_view() const {
+        return native_ && native_->array_buffer_view();
+    }
     [[nodiscard]] bool is_object() const { return kind_ == Kind::object; }
     [[nodiscard]] bool is_callable() const { return native_ && native_->callable(); }
 
@@ -1229,6 +1235,11 @@ template <typename T> [[nodiscard]] JsonValue json_value(const bbl::js::Array<T>
 template <std::size_t N> [[nodiscard]] JsonValue json_value(const Tuple<N>& value) {
     return JsonValue::from_sequence(value);
 }
+/** A typed array is held as itself (`JsonTypedArrayBox`), an element of an array too. */
+template <typename T> [[nodiscard]] JsonValue json_value(const TypedArray<T>& value) {
+    return JsonValue::from_native(value);
+}
+[[nodiscard]] inline JsonValue json_value(const U8Array& value);
 template <typename T> [[nodiscard]] JsonValue json_value(const std::optional<T>& value);
 template <typename T> [[nodiscard]] JsonValue json_value(const Nullable<T>& value);
 template <typename T> [[nodiscard]] JsonValue json_value(const Map<std::string, T>& value);
@@ -1438,12 +1449,16 @@ template <> struct JsonNativeBox<Error> final : JsonNativeObject {
  * as numbers, an index write stores as the array's element type converts
  * it, and `instanceof` or an assertion reads the array back.
  */
-template <typename T> struct JsonNativeBox<TypedArray<T>> final : JsonNativeObject {
-    TypedArray<T> value;
-    explicit JsonNativeBox(TypedArray<T> source) : value(std::move(source)) {}
+template <typename Values> struct JsonTypedArrayBox : JsonNativeObject {
+    Values value;
+    explicit JsonTypedArrayBox(Values source) : value(std::move(source)) {}
     JsonValue get(std::string_view key) const override {
         if (key == "length")
             return JsonValue::from_number(static_cast<double>(value.size()));
+        if (key == "byteLength")
+            return JsonValue::from_number(static_cast<double>(value.byte_length()));
+        if (key == "byteOffset")
+            return JsonValue::from_number(static_cast<double>(value.byte_offset()));
         const auto index = json_property_index(key);
         return index && *index < value.size()
                    ? JsonValue::from_number(static_cast<double>(value.load(*index)))
@@ -1461,8 +1476,9 @@ template <typename T> struct JsonNativeBox<TypedArray<T>> final : JsonNativeObje
         return index && *index < value.size();
     }
     bool has_property(std::string_view key) const override {
-        return key == "length" || has_own(key);
+        return key == "length" || key == "byteLength" || key == "byteOffset" || has_own(key);
     }
+    bool array_buffer_view() const override { return true; }
     void set(std::string_view key, const JsonValue& member) override {
         const auto index = json_property_index(key);
         if (!index)
@@ -1473,9 +1489,16 @@ template <typename T> struct JsonNativeBox<TypedArray<T>> final : JsonNativeObje
         return array_join(typed_array_numbers(value), ",",
                           [](double element) { return number_to_string(element); });
     }
-    const std::type_info& type() const override { return typeid(TypedArray<T>); }
+    const std::type_info& type() const override { return typeid(Values); }
     const void* identity() const override { return value.identity(); }
     void gc_trace(const TraceVisitor&) const override {}
+};
+
+template <typename T> struct JsonNativeBox<TypedArray<T>> final : JsonTypedArrayBox<TypedArray<T>> {
+    using JsonTypedArrayBox<TypedArray<T>>::JsonTypedArrayBox;
+};
+template <> struct JsonNativeBox<U8Array> final : JsonTypedArrayBox<U8Array> {
+    using JsonTypedArrayBox::JsonTypedArrayBox;
 };
 
 template <typename T> JsonValue JsonValue::from_native(T source) {
@@ -1484,6 +1507,8 @@ template <typename T> JsonValue JsonValue::from_native(T source) {
     value.native_ = make_gc_shared<JsonNativeBox<T>>(std::move(source));
     return value;
 }
+
+inline JsonValue json_value(const U8Array& value) { return JsonValue::from_native(value); }
 
 /**
  * Any other value has no storage as that instance and throws TypeError here,

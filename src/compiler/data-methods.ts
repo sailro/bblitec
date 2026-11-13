@@ -123,7 +123,7 @@ function calledMember(
 
 /**
  * Array and binary-view predicates share the same finite data discrimination.
- * Parsed JSON is dynamic only for Array.isArray.
+ * A document answers both at run time: an array, or a typed array it holds.
  */
 export function compileArrayPredicateOverData(
     lowerer: DataLowerer,
@@ -174,10 +174,12 @@ export function compileArrayPredicateOverData(
         return undefined;
     const unrecorded = unrecordedFact(dataType, "arrayness");
     if (unrecorded) return lowerer.context.fail(call, unrecorded);
-    if (dataType.kind === "json" && !optional && !binaryView)
+    // A document answers at run time: it may hold a typed array as itself.
+    const documentTest = binaryView ? "is_array_buffer_view" : "is_array";
+    if (dataType.kind === "json" && !optional)
         return {
             kind: "boolean",
-            cpp: `${value.cpp}.is_array()`,
+            cpp: `${value.cpp}.${documentTest}()`,
             dataType: { kind: "boolean" },
         };
     const matchesType = (type: DataType): boolean =>
@@ -190,8 +192,8 @@ export function compileArrayPredicateOverData(
               );
     const member = optional ? "(*candidate)" : "candidate";
     const predicate =
-        dataType.kind === "json" && !binaryView
-            ? `${member}.is_array()`
+        dataType.kind === "json"
+            ? `${member}.${documentTest}()`
             : dataType.kind === "union"
               ? `std::array<bool, ${dataType.members.length}>{${dataType.members.map(matchesType).join(", ")}}[${member}.index()]`
               : matchesType(dataType)

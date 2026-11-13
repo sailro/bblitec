@@ -7914,6 +7914,34 @@ check(
 );
 
 check(
+    "byte-arrays-held-in-a-parsed-document",
+    `
+    const doc = JSON.parse('{"id":1}') as { rows?: Uint8Array[]; mask?: Uint8Array };
+    const mask = new Uint8Array([1, 2, 300]);
+    doc.mask = mask;
+    doc.rows = [new Uint8Array([4, 5]), mask];
+    const rows = doc.rows!;
+    const back = doc.mask!;
+    back[0] = 9;
+    const checks = [back instanceof Uint8Array, back === mask, mask[0] === 9, mask[2] === 44, rows.length === 2, rows[1] === mask, rows[0]![1] === 5];
+    if (checks.some((ok) => !ok)) throw new Error("doc u8 " + checks.map((ok) => (ok ? "1" : "0")).join(""));
+`,
+);
+
+check(
+    "array-buffer-views-among-document-values",
+    `
+    function bytes(values: readonly unknown[]): number {
+        let total = 0;
+        for (const value of values) total += ArrayBuffer.isView(value) ? value.byteLength : 100;
+        return total;
+    }
+    const mixed: unknown[] = [new Uint8Array(2), 3, "x", new Float32Array(1), [1]];
+    if (bytes(mixed) !== 306) throw new Error("views " + bytes(mixed));
+`,
+);
+
+check(
     "stored-function-with-an-undefined-only-parameter",
     `
     interface Port { spawn(spec: number, founder?: undefined, restore?: number): number }
