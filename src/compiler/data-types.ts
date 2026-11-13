@@ -152,6 +152,7 @@ import {
     type AbsentValueKind,
     undefinedOnly,
     isVoid,
+    erasedParameterType,
     holdsNoPayload,
     holdsOnly,
     arrayShape,
@@ -5751,7 +5752,12 @@ export class DataTypeRegistry {
                     .length && !actualSignature
                     ? declaredType
                     : (override ?? declaredType);
-            if (holdsNoPayload(parameterType)) {
+            // A parameter declared only `undefined` is erased as well,
+            // whatever an argument's override types it as.
+            if (
+                holdsNoPayload(parameterType) ||
+                erasedParameterType(declaredType)
+            ) {
                 erasedParameters.push(index);
                 return [];
             }

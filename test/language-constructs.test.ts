@@ -7914,6 +7914,18 @@ check(
 );
 
 check(
+    "stored-function-with-an-undefined-only-parameter",
+    `
+    interface Port { spawn(spec: number, founder?: undefined, restore?: number): number }
+    const seen: string[] = [];
+    const port: Port = { spawn: (spec, founder, restore) => { seen.push(spec + ":" + (founder === undefined ? "u" : "d") + ":" + (restore ?? -1)); return seen.length; } };
+    const ports: Port[] = [port];
+    for (const p of ports) { p.spawn(1); p.spawn(2, undefined, 7); }
+    if (seen.join(",") !== "1:u:-1,2:u:7") throw new Error("undef " + seen.join(","));
+`,
+);
+
+check(
     "truncating-the-array-a-call-returns",
     `
     interface Chimney { id: number }

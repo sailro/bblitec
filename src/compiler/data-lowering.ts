@@ -102,7 +102,7 @@ import {
     presentMembers,
     isVoid,
     holdsOnly,
-    holdsNoPayload,
+    erasedParameterType,
     valueKindOf,
     callSignatures,
     unionMembers,
@@ -1951,7 +1951,7 @@ export class DataLowerer {
                     const unwrapped = this.context.unwrap(argument);
                     if (!(
                         ts.isIdentifier(unwrapped) &&
-                        (holdsNoPayload(argumentType) ||
+                        (erasedParameterType(argumentType) ||
                             isGlobalUndefined(this.context.checker, unwrapped))
                     )) {
                         this.context.fail(

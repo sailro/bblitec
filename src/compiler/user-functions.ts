@@ -44,7 +44,7 @@ import {
     typeCanCarryReference,
     holdsOnly,
     isNullable,
-    holdsNoPayload,
+    erasedParameterType,
     isVoid,
     valueKindOf,
     unionMembers,
@@ -5708,7 +5708,7 @@ export class UserFunctionLowerer {
         );
         const runtimeParameters = ir.parameters.filter(
             (parameter) =>
-                !holdsNoPayload(
+                !erasedParameterType(
                     context.dataTypes.resolveTypeParameter(parameter.type),
                 ),
         );
@@ -5898,7 +5898,7 @@ export class UserFunctionLowerer {
                     );
                     let runtimeIndex = 0;
                     for (const parameter of ir.parameters) {
-                        if (holdsNoPayload(parameter.type)) {
+                        if (erasedParameterType(parameter.type)) {
                             const initializer =
                                 parameter.declaration.initializer;
                             if (initializer) {
@@ -5906,6 +5906,18 @@ export class UserFunctionLowerer {
                                     context.compileValue(initializer);
                                 context.emitDiscardedValue(evaluated);
                             }
+                            // An erased `undefined` parameter reads its one value.
+                            if (
+                                !isVoid(parameter.type) &&
+                                (parameter.type.flags & ts.TypeFlags.Never) ===
+                                    0
+                            )
+                                this.bindSpecializedParameter(
+                                    context,
+                                    ir.declaration,
+                                    parameter,
+                                    undefinedValue(),
+                                );
                             continue;
                         }
                         if (parameter === tupleRest) {

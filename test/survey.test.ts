@@ -1769,3 +1769,28 @@ test("a survey root iterates what a dependency's Iterable result holds", () => {
     assert.equal(report.program.attempted, report.program.statements);
     assert.deepEqual(report.refusals, [], listed(report));
 });
+
+test("a survey root calls a dependency whose signature has an undefined-only parameter", () => {
+    // `founder?: undefined` holds no payload: the stored signature erases
+    // it, as it erases a void parameter, so the placeholder keeps `spawn`.
+    const { report } = surveySource(
+        `
+        interface Spec { homeX: number; homeZ: number }
+        interface Birth { reservationId: number }
+        export interface Port {
+            spawn(spec: Spec, birth?: Birth, founder?: undefined, restore?: { age: number }): number;
+            despawn(index: number): void;
+        }
+        export function add(host: Port, x: number): number {
+            const index = host.spawn({ homeX: x, homeZ: 0 }, undefined, undefined);
+            if (index < 0) host.despawn(0);
+            return index;
+        }
+        localStorage.setItem("ready", "1");
+    `,
+        { fileName: resolve("survey-undefined-parameter.ts") },
+    );
+    assert.ok(report.program);
+    assert.equal(report.program.attempted, report.program.statements);
+    assert.deepEqual(report.refusals, [], listed(report));
+});

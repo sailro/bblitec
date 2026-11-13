@@ -551,6 +551,17 @@ export function holdsNoPayload(type: ts.Type): boolean {
 }
 
 /**
+ * Whether a parameter declared as this type is erased: it holds no payload,
+ * or only `undefined` (`founder?: undefined`), its one value.
+ */
+export function erasedParameterType(type: ts.Type): boolean {
+    return (
+        holdsNoPayload(type) ||
+        ((type.flags & ts.TypeFlags.Undefined) !== 0 && !type.isUnion())
+    );
+}
+
+/**
  * Whether every member of a type is `undefined` or `void`: a value of it is
  * `undefined`, and a call returning it completes without a value.
  */
