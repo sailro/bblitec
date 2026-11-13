@@ -25,6 +25,7 @@ import {
 import {
     BUFFER_VIEW_KINDS,
     TYPED_ARRAY_KINDS,
+    unrecordedFact,
     type DataType,
 } from "./data-types.js";
 import { compileDomInstanceOf } from "./dom-targets.js";
@@ -144,6 +145,18 @@ function settlesDefinedOrVoid(checker: ts.TypeChecker, type: ts.Type): boolean {
             (member) => promises.includes(member) || undefinedOnly(member),
         )
     );
+}
+
+/** Whether the union `cpp` holds is one of the members `holds` accepts. */
+function unionArmsTest(
+    cpp: string,
+    type: DataType<"union">,
+    holds: (member: DataType) => boolean,
+): string {
+    const tests = type.members.flatMap((member, index) =>
+        holds(member) ? [`(${cpp}).index() == ${index}`] : [],
+    );
+    return tests.length ? `(${tests.join(" || ")})` : "false";
 }
 
 export class ConditionLowerer {
@@ -298,6 +311,24 @@ export class ConditionLowerer {
     }
 
     /**
+     * `value instanceof Promise` outside an application realm, where a
+     * promise is stored as the value it settles to: that storage cannot say
+     * it held one, so the program lowers in the realm, which keeps promises
+     * apart from their values.
+     */
+    private requirePromisesApart(test: ts.BinaryExpression): void {
+        if (
+            !this.context.options.workers &&
+            ts.isIdentifier(test.right) &&
+            this.context.libraryGlobal(test.right) === "Promise" &&
+            unionMembers(
+                this.context.checker.getTypeAtLocation(test.left),
+            ).some((member) => libraryName(member) === "Promise")
+        )
+            throw new ApplicationRealmRequired();
+    }
+
+    /**
      * `value instanceof Map` (and Set, WeakMap, WeakSet): whether the
      * storage holding the value is that collection. A union answers by the
      * member it holds, an optional by its presence; a dictionary, a parsed
@@ -319,13 +350,14 @@ export class ConditionLowerer {
         const type = value.dataType;
         if (type?.kind === "optional")
             return holds(type.inner) ? optionalPresentCpp(value.cpp) : "false";
-        if (type?.kind === "union") {
-            const tests = type.members.flatMap((member, index) =>
-                holds(member) ? [`(${value.cpp}).index() == ${index}`] : [],
-            );
-            return tests.length ? `(${tests.join(" || ")})` : "false";
-        }
+        if (type?.kind === "union")
+            return unionArmsTest(value.cpp, type, holds);
         return type && holds(type) ? "true" : "false";
+    }
+
+    /** A document's native box holds a value of `kind`'s class. */
+    private boxedInstanceOf(cpp: string, kind: string): string {
+        return `(${cpp}).instance_of<${this.context.dataTypes.cppType({ kind } as DataType)}>()`;
     }
 
     /**
@@ -342,7 +374,7 @@ export class ConditionLowerer {
             operand,
         );
         if (isJsonValue(value))
-            return `(${value.cpp}).instance_of<${this.context.dataTypes.cppType({ kind: kinds[0] } as DataType)}>()`;
+            return this.boxedInstanceOf(value.cpp, kinds[0]);
         const type = value.dataType;
         if (type?.kind === "optional")
             return kinds.includes(type.inner.kind)
@@ -599,9 +631,13 @@ export class ConditionLowerer {
                 ),
             );
             if (left && primitive(left)) {
+                this.requirePromisesApart(unwrapped);
                 this.context.emitDiscardedValue(left);
                 return "false";
             }
+            const unrecorded =
+                left && unrecordedFact(left.dataType, "objectClass");
+            if (unrecorded) this.context.fail(unwrapped, unrecorded);
         }
         if (this.context.browserErasure.isBrowserOnlyExpression(unwrapped)) {
             const condition =
@@ -743,6 +779,23 @@ export class ConditionLowerer {
                                 "instance_candidate",
                             ).cpp,
                         );
+                    // A value-or-promise union holds a promise in its
+                    // promise members.
+                    if (
+                        type?.kind === "union" &&
+                        type.members.some((member) => member.kind === "promise")
+                    ) {
+                        const held = this.context.bindings.pinValueToTemporary(
+                            value,
+                            "instance_candidate",
+                        ).cpp;
+                        return unionArmsTest(
+                            held,
+                            type,
+                            (member) => member.kind === "promise",
+                        );
+                    }
+                    this.requirePromisesApart(unwrapped);
                 }
                 const collection = COLLECTION_CLASSES.get(global);
                 if (collection)
@@ -809,6 +862,16 @@ export class ConditionLowerer {
                             unwrapped,
                             `instanceof ${global} cannot be decided for an ArrayBufferView whose view class is not represented.`,
                         );
+                    // A document holds a typed array boxed; its box answers.
+                    if (
+                        isJsonValue(value) &&
+                        TYPED_ARRAY_KINDS.get(global) !== undefined
+                    ) {
+                        const test = this.boxedInstanceOf(value.cpp, expected);
+                        return present === undefined
+                            ? test
+                            : `(${present} && ${test})`;
+                    }
                     const index = members.findIndex(
                         (member) => member.kind === expected,
                     );

@@ -4,6 +4,37 @@ import type { DataLowerer } from "./data-lowering.js";
 import { isStringValue, type Value } from "./types.js";
 import { compileDateLocaleString } from "./locale.js";
 import { isLibraryStatic } from "./symbols.js";
+import { nativeFunctionValue } from "./native-function-values.js";
+
+/** What `Date.now()` returns: the wall clock in epoch milliseconds. */
+export const EPOCH_MILLISECONDS_CPP = "bbl::js::epoch_milliseconds()";
+
+/**
+ * `Date.now` read as a value (`deps.stamp ?? Date.now`): a function reading
+ * the wall clock, which the library's reads without its receiver.
+ */
+export function dateNowFunctionValue(
+    context: Parameters<typeof nativeFunctionValue>[0],
+    expression: ts.Expression,
+): Value | undefined {
+    if (
+        (ts.isPropertyAccessExpression(expression) &&
+            expression.name.text !== "now") ||
+        !isLibraryStatic(context.checker, expression, "Date", "now")
+    )
+        return undefined;
+    return nativeFunctionValue(
+        context,
+        expression,
+        {
+            kind: "function",
+            parameters: [],
+            result: { kind: "number" },
+            identity: true,
+        },
+        `return ${EPOCH_MILLISECONDS_CPP};`,
+    );
+}
 
 /** The default Intl formatter captures its host time zone at construction. */
 export function compileDateTimeFormat(

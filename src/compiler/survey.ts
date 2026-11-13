@@ -30,9 +30,11 @@ import {
     storageRequestSite,
 } from "./replay-storage.js";
 import { StorageDemand } from "./storage-demand.js";
-import { EmissionSet } from "./emission-transaction.js";
+import { EmissionSet, EmissionTransaction } from "./emission-transaction.js";
+import { keepingCoverage } from "./source-coverage.js";
 import {
     bindingNameIdentifiers,
+    hasDeclareModifier,
     reachedThroughName,
     sourceFunctionName,
     statementDeclaredNames,
@@ -75,6 +77,8 @@ interface SurveyRefusal {
     rootOccurrences: number;
     /** How many distinct statements those lowerings rolled back. */
     statements: number;
+    /** Those statements, as `file:line`, in the order rolled back. */
+    rolledBackAt: string[];
 }
 
 interface SurveyClass {
@@ -115,7 +119,13 @@ export interface SurveyReport {
      * outside a probe -- a declaration when something inside it lowered, a
      * body's last `return` when its function lowered.
      */
-    program?: { files: number; statements: number; attempted: number };
+    program?: {
+        files: number;
+        statements: number;
+        attempted: number;
+        /** The functions (or modules) holding the most statements no lowering tried, most first. */
+        untried: SurveyUntried[];
+    };
     refusals: SurveyRefusal[];
     classes: SurveyClass[];
     /**
@@ -163,7 +173,7 @@ interface StatementContext {
 }
 
 /** A refusal while it is being counted: the statements it rolled back, by node. */
-interface Census extends SurveyRefusal {
+interface Census extends Omit<SurveyRefusal, "rolledBackAt"> {
     rolledBack: Set<ts.Statement>;
 }
 
@@ -178,6 +188,19 @@ interface SurveyTiming {
 /** The statements a census lists by lowering time. */
 const slowestKept = 50;
 
+/** A function, or a module's top level, holding statements no lowering of the last passes tried. */
+interface SurveyUntried {
+    /** Its name, as a census statement names its function. */
+    function: string;
+    /** Where it is declared (for a module, its first untried statement). */
+    at: string;
+    kind: string;
+    statements: number;
+}
+
+/** The functions a census lists by untried statements. */
+const untriedKept = 200;
+
 /** A storage demand a pass met at a statement, which it rolled back: the next pass replays with it. */
 interface SurveyDemand {
     /** What the demand asks for (`describeStorageRequests`). */
@@ -187,6 +210,14 @@ interface SurveyDemand {
     statement: SurveyStatement;
     /** How many distinct statements it rolled back. */
     statements: number;
+    /** Those statements, as `file:line`, in the order rolled back. */
+    rolledBackAt: string[];
+    /**
+     * The storage held the demand before this pass took any: raised again,
+     * it does not settle by replay, and in a pass that took none it is the
+     * statement's failure.
+     */
+    held?: true;
 }
 
 /** One compile attempt (a pass) of one realm; the realm's next pass replaces it. */
@@ -197,10 +228,11 @@ interface Attempt {
     declarations: Map<ts.Symbol, SurveySite>;
     /** The replays (storage demands among them) this pass met at statements, for the next pass. */
     replays: Error[];
-    /** Those demands by description, with the statements they rolled back. */
-    demands: Map<string, SurveyDemand & { rolledBack: Set<ts.Statement> }>;
-    /** Every statement a lowering of this attempt began, probes included. */
-    touched: Set<ts.Statement>;
+    /** Those demands by what they ask for and where they rose, with the statements they rolled back. */
+    demands: Map<
+        string,
+        Omit<SurveyDemand, "rolledBackAt"> & { rolledBack: Set<ts.Statement> }
+    >;
     /** The functions whose bodies this attempt lowered outside a probe. */
     lowered: Set<ts.Node>;
     /** The statement lowerings inside survey roots. */
@@ -212,25 +244,53 @@ interface Attempt {
     /** The statements a lowering of this attempt began outside a probe. */
     distinct: Set<ts.Statement>;
     /**
+     * The storage demands it took at once (`SurveyCollector.attempt`), by
+     * what they ask for: what it lowered before one can stand on storage
+     * the demand changed (a layout already built), so a next pass lowers
+     * everything with them, and the census is exact once a pass takes none.
+     */
+    taken: Set<string>;
+    /**
      * Those a probe began: journaled, so a probe that rolls back takes
      * its statements away and a committed one keeps them.
      */
     probed: EmissionSet<ts.Statement>;
+    /** Those the roots' committed probes began, which the roots' rollback takes from `probed`. */
+    rootProbes: Set<ts.Statement>;
 }
 
 /**
  * A statement the census counts: any but a block, which only groups the
  * statements it holds, and declarations that lower to nothing (interfaces,
- * type aliases, imports, exports).
+ * type aliases, imports, exports, ambient declarations).
  */
 export function surveyedStatement(node: ts.Node): node is ts.Statement {
     return (
         ts.isStatement(node) &&
+        !hasDeclareModifier(node) &&
         !ts.isBlock(node) &&
         !ts.isInterfaceDeclaration(node) &&
         !ts.isTypeAliasDeclaration(node) &&
         !ts.isImportDeclaration(node) &&
-        !ts.isExportDeclaration(node)
+        !ts.isExportDeclaration(node) &&
+        // An overload signature declares a type; its implementation runs.
+        !(ts.isFunctionDeclaration(node) && !node.body)
+    );
+}
+
+/**
+ * Whether `statement` is a `return` of a function's own body: it lowers as
+ * the function's result, not as a statement of its own, so the lowering of
+ * its function tries it.
+ */
+export function isBodyReturn(
+    statement: ts.Statement,
+): statement is ts.ReturnStatement & { readonly parent: ts.Block } {
+    const body = statement.parent;
+    return (
+        ts.isReturnStatement(statement) &&
+        ts.isBlock(body) &&
+        ts.isFunctionLike(body.parent)
     );
 }
 
@@ -238,7 +298,7 @@ export function surveyedStatement(node: ts.Node): node is ts.Statement {
  * The statements a compound statement runs, and the names its header binds
  * for them: none for a simple statement or a declaration.
  */
-function heldStatements(statement: ts.Statement): {
+export function heldStatements(statement: ts.Statement): {
     names: ts.Identifier[];
     statements: ts.Statement[];
 } {
@@ -303,14 +363,23 @@ export function refusalClass(message: string): string {
         .replace(/\b\d+(?:\.\d+)?\b/g, "N");
 }
 
-function enclosingFunctionName(statement: ts.Statement): string {
-    const owner = ts.findAncestor(
+/** The function holding `statement`, or its module. */
+function censusOwner(statement: ts.Statement): ts.Node {
+    return ts.findAncestor(
         statement.parent,
         (node) => ts.isFunctionLike(node) || ts.isSourceFile(node),
-    );
-    return owner && ts.isFunctionLike(owner)
+    )!;
+}
+
+/** A census owner's name: its function's, `<anonymous>`, or `<module>`. */
+function ownerName(owner: ts.Node): string {
+    return ts.isFunctionLike(owner)
         ? (sourceFunctionName(owner) ?? "<anonymous>")
         : "<module>";
+}
+
+function enclosingFunctionName(statement: ts.Statement): string {
+    return ownerName(censusOwner(statement));
 }
 
 /** `statement` as the census names it. */
@@ -331,13 +400,28 @@ function replayText(replay: Error): string {
         : `${replay.constructor.name}: ${replay.message}`;
 }
 
+/** `node` as `file:line`. */
+function nodeSite(node: ts.Node): string {
+    const location = sourceLocation(node);
+    return `${location.file.fileName}:${location.line}`;
+}
+
+/** What a census lists of the statements a refusal or demand rolled back. */
+function rolledBackCensus(rolledBack: ReadonlySet<ts.Statement>): {
+    statements: number;
+    rolledBackAt: string[];
+} {
+    return {
+        statements: rolledBack.size,
+        rolledBackAt: [...rolledBack].map(nodeSite),
+    };
+}
+
 /** Where a storage demand rose: a node as `file:line`, or a signature site. */
 function replaySite(replay: unknown): string | undefined {
     if (!(replay instanceof StorageDemand)) return undefined;
     const site = replay.requests.map(storageRequestSite).find(Boolean);
-    if (typeof site !== "object") return site;
-    const location = sourceLocation(site);
-    return `${location.file.fileName}:${location.line}`;
+    return typeof site === "object" ? nodeSite(site) : site;
 }
 
 /** What restarted an attempt, and where its storage demand rose. */
@@ -352,6 +436,12 @@ function describeStop(cause: unknown): string {
     return (
         text.replace(/\s+/g, " ").slice(0, 160) + (site ? ` at ${site}` : "")
     );
+}
+
+/** How a survey runs: what it reports as it goes, and the most passes it runs. */
+export interface SurveySettings {
+    readonly progress?: SurveyProgress;
+    readonly passLimit?: number;
 }
 
 /** How a survey reports while it runs: a line at most every `intervalMs`. */
@@ -389,17 +479,23 @@ export class SurveyCollector {
     /** @unjournaled The census of the last pass that ran to its end (`publishedSurvey`). */
     private furthest: SurveyReport | undefined;
 
+    private readonly progress: SurveyProgress | undefined;
+    private readonly passLimit: number | undefined;
+    /** @unjournaled Takes a storage demand into the storage the running attempt lowers with. */
+    private apply: ((demand: StorageDemand) => boolean) | undefined;
+
     /**
-     * `replayable`: the replays besides storage a compile applies before its
-     * next attempt (a lazy module's activation, runtime query state), which
-     * a pass meets at a statement as it meets a storage demand;
-     * `passLimit`: the most passes the survey runs.
+     * `replayable`: the replays a compile applies before its next attempt
+     * (a storage demand, a lazy module's activation, runtime query state),
+     * which a pass meets at a statement.
      */
     public constructor(
-        private readonly progress?: SurveyProgress,
+        settings: SurveySettings = {},
         private readonly replayable?: (error: unknown) => error is Error,
-        private readonly passLimit?: number,
-    ) {}
+    ) {
+        this.progress = settings.progress;
+        this.passLimit = settings.passLimit;
+    }
 
     /**
      * A progress line once `intervalMs` passed: the lowerings and refused
@@ -422,11 +518,18 @@ export class SurveyCollector {
 
     /** Hands out `census`, marked incomplete with what is running. */
     private leaveCensus(running: string, census: SurveyReport): void {
-        this.progress?.census?.({
-            ...census,
-            complete: false,
-            terminal: `Survey still running: ${running}`,
-        });
+        if (!this.progress?.census) return;
+        // A later pass still short of the last full one leaves that pass's.
+        this.progress.census(
+            publishedSurvey(
+                {
+                    ...census,
+                    complete: false,
+                    terminal: `Survey still running: ${running}`,
+                },
+                this.furthest,
+            ),
+        );
     }
 
     /** Records what ended an attempt that restarts the program, and where its storage demand rose. */
@@ -450,22 +553,59 @@ export class SurveyCollector {
     }
 
     /**
-     * Lowers a function the program never reached as a root (`lower`),
-     * recorded against its body's first statement; what it reaches counts
-     * as a root's.
+     * Lowers code the program never reached as a root (`lower`), recorded
+     * against its first statement; what it reaches counts as a root's.
      */
     public attemptRoot(
         context: StatementContext,
-        body: ts.Block,
+        first: ts.Statement,
         lower: () => void,
     ): void {
+        this.inRoots(() => this.attemptStatement(context, first, lower));
+    }
+
+    /**
+     * Runs the survey roots (`work`) with what they reach -- a feature, a
+     * layout, a registration, none of them the program's -- rolled back,
+     * keeping the statements their committed probes began and the sites
+     * they lowered. The storage demands they meet stay in the replay
+     * storage the next pass lowers with.
+     */
+    public rollingBack(work: () => void): void {
+        new EmissionTransaction().run(
+            () => {
+                keepingCoverage(work);
+                const attempt = this.current;
+                if (attempt)
+                    for (const statement of attempt.probed)
+                        attempt.rootProbes.add(statement);
+            },
+            () => false,
+        );
+    }
+
+    /** Runs `work` counted as a root's: its context is the one the survey built. */
+    public inRoots(work: () => void): void {
         const enclosing = this.inRoot;
         this.inRoot = true;
         try {
-            this.attemptStatement(context, body.statements[0]!, lower);
+            work();
         } finally {
             this.inRoot = enclosing;
         }
+    }
+
+    /**
+     * Whether no lowering of this attempt began `statement` but in a probe
+     * that rolled back: the census's untried statement, which a root tries.
+     */
+    public unbegun(statement: ts.Statement): boolean {
+        const attempt = this.current;
+        return (
+            attempt !== undefined &&
+            !attempt.distinct.has(statement) &&
+            !attempt.probed.has(statement)
+        );
     }
 
     /** Lists the program's own sources' statements once, for `SurveyReport.program`. */
@@ -501,26 +641,49 @@ export class SurveyCollector {
                 parent = parent.parent
             )
                 holding.add(parent);
-        const attempted = program.statements.filter((statement) => {
+        const tried = (statement: ts.Statement): boolean => {
             if (begun.has(statement)) return true;
             if (
                 ts.isFunctionDeclaration(statement) ||
                 ts.isClassDeclaration(statement)
             )
                 return holding.has(statement) || lowered.has(statement);
-            const body = statement.parent;
             return (
-                ts.isReturnStatement(statement) &&
-                ts.isBlock(body) &&
-                ts.isFunctionLike(body.parent) &&
-                (lowered.has(body.parent) ||
-                    body.statements.some((sibling) => begun.has(sibling)))
+                isBodyReturn(statement) &&
+                (lowered.has(statement.parent.parent) ||
+                    statement.parent.statements.some((sibling) =>
+                        begun.has(sibling),
+                    ))
             );
-        }).length;
+        };
+        let attempted = 0;
+        const untried = new Map<
+            ts.Node,
+            { first: ts.Statement; statements: number }
+        >();
+        for (const statement of program.statements) {
+            if (tried(statement)) {
+                attempted++;
+                continue;
+            }
+            const owner = censusOwner(statement);
+            const entry = untried.get(owner);
+            if (entry) entry.statements++;
+            else untried.set(owner, { first: statement, statements: 1 });
+        }
         return {
             files: program.files,
             statements: program.statements.length,
             attempted,
+            untried: [...untried]
+                .sort((a, b) => b[1].statements - a[1].statements)
+                .slice(0, untriedKept)
+                .map(([owner, { first, statements }]) => ({
+                    function: ownerName(owner),
+                    at: nodeSite(ts.isSourceFile(owner) ? first : owner),
+                    kind: syntaxKindName(owner.kind),
+                    statements,
+                })),
         };
     }
 
@@ -538,7 +701,6 @@ export class SurveyCollector {
     public touch(statement: ts.Statement, speculating: boolean): void {
         const attempt = this.current;
         if (!attempt) return;
-        attempt.touched.add(statement);
         (speculating ? attempt.probed : attempt.distinct).add(statement);
     }
 
@@ -547,37 +709,49 @@ export class SurveyCollector {
      * function the program never reached, which the survey lowers as a root.
      */
     public untouched(body: ts.Block): boolean {
-        const touched = this.current?.touched;
         return (
-            touched !== undefined &&
-            body.statements.every((statement) => !touched.has(statement))
+            this.current !== undefined &&
+            body.statements.every((statement) => this.unbegun(statement))
         );
     }
 
-    /** Runs one realm's compile attempt, replacing the census a previous attempt of that realm left. */
-    public attempt<T>(realm: string, run: () => T): T {
+    /**
+     * Runs one realm's compile attempt, replacing the census a previous
+     * attempt of that realm left. `apply` takes a storage demand a statement
+     * meets into the storage this attempt lowers with, true when it added
+     * something: the statement then lowers again at once.
+     */
+    public attempt<T>(
+        realm: string,
+        run: () => T,
+        apply: (demand: StorageDemand) => boolean,
+    ): T {
         this.attempts++;
         const previous = this.current;
+        const enclosingApply = this.apply;
         const attempt: Attempt = {
             attempted: 0,
             refusals: new Map(),
             declarations: new Map(),
             replays: [],
             demands: new Map(),
-            touched: new Set(),
             lowered: new Set(),
             rooted: 0,
             settling: false,
             slowest: [],
             distinct: new Set(),
             probed: new EmissionSet(),
+            rootProbes: new Set(),
+            taken: new Set(),
         };
         this.realms.set(realm, attempt);
         this.current = attempt;
+        this.apply = apply;
         try {
             return run();
         } finally {
             this.current = previous;
+            this.apply = enclosingApply;
         }
     }
 
@@ -599,21 +773,48 @@ export class SurveyCollector {
         const timing = { started: performance.now(), nested: 0 };
         const enclosing = this.timing;
         this.timing = timing;
+        // The last demand this statement made the pass take.
+        let taken: Error | undefined;
         try {
-            context.transaction(lower);
-            return;
-        } catch (error) {
-            // A demand its replay refused is the statement's refusal; any
-            // other demand rolls its statement back for the next pass.
-            const refusal =
-                error instanceof CompileError
-                    ? error
-                    : context.refusedDemand(error);
-            if (refusal)
-                this.record(attempt, context.checker, statement, refusal);
-            else if (error instanceof StorageDemand || this.replayable?.(error))
-                this.demanded(attempt, statement, error);
-            else throw error;
+            for (;;) {
+                let met: unknown;
+                try {
+                    context.transaction(lower);
+                    return;
+                } catch (error) {
+                    met = error;
+                }
+                // A demand its replay refused is the statement's refusal; a
+                // storage demand applies at once and the statement lowers
+                // again with it; any other replay rolls its statement back
+                // for the next pass.
+                const refusal =
+                    met instanceof CompileError
+                        ? met
+                        : context.refusedDemand(met);
+                if (!refusal && !this.replayable?.(met)) throw met;
+                const applied = refusal ? false : this.applied(attempt, met);
+                if (applied === true) {
+                    taken = met as Error;
+                    continue;
+                }
+                const refused =
+                    applied instanceof CompileError ? applied : refusal;
+                // A refusal once this pass took a demand for the statement
+                // can come of storage lowered before the demand (a layout
+                // already built): the next pass lowers it afresh. A demand
+                // its application refused is refused all the same.
+                if (refused && (!taken || applied instanceof CompileError))
+                    this.record(attempt, context.checker, statement, refused);
+                else
+                    this.demanded(
+                        attempt,
+                        statement,
+                        refused ? taken! : (met as Error),
+                        applied === "held",
+                    );
+                break;
+            }
         } finally {
             this.timing = enclosing;
             const elapsed = performance.now() - timing.started;
@@ -636,6 +837,29 @@ export class SurveyCollector {
         }
         if (lowerNested)
             this.lowerHeld(context, attempt, statement, lowerNested);
+    }
+
+    /**
+     * What applying `met` did: true when the storage took a new demand,
+     * "held" when it already held one this attempt never took, the refusal
+     * applying it raised, and false when this attempt already took it or
+     * `met` is not a storage demand.
+     */
+    private applied(
+        attempt: Attempt,
+        met: unknown,
+    ): boolean | "held" | CompileError {
+        if (!(met instanceof StorageDemand) || !this.apply) return false;
+        const key = replayText(met);
+        try {
+            if (!this.apply(met))
+                return attempt.taken.has(key) ? false : "held";
+        } catch (error) {
+            if (error instanceof CompileError) return error;
+            throw error;
+        }
+        attempt.taken.add(key);
+        return true;
     }
 
     /**
@@ -662,14 +886,10 @@ export class SurveyCollector {
                 ),
         );
         if (unlowered.length === 0) return;
-        const enclosing = this.inRoot;
-        this.inRoot = true;
-        try {
+        this.inRoots(() => {
             for (const name of held.names) context.bindEmptyStorage(name);
             for (const nested of unlowered) lowerNested(nested);
-        } finally {
-            this.inRoot = enclosing;
-        }
+        });
     }
 
     /** Keeps `statement` among the attempt's slowest by its own lowering time. */
@@ -698,12 +918,14 @@ export class SurveyCollector {
         attempt: Attempt,
         statement: ts.Statement,
         replay: Error,
+        held = false,
     ): void {
         attempt.replays.push(replay);
         const described = replayText(replay);
-        let census = attempt.demands.get(described);
+        const site = replaySite(replay);
+        const key = `${described} at ${site ?? ""}`;
+        let census = attempt.demands.get(key);
         if (!census) {
-            const site = replaySite(replay);
             census = {
                 demand: described,
                 ...(site ? { site } : {}),
@@ -711,9 +933,15 @@ export class SurveyCollector {
                 statements: 0,
                 rolledBack: new Set(),
             };
-            attempt.demands.set(described, census);
+            attempt.demands.set(key, census);
         }
+        if (held) census.held = true;
         census.rolledBack.add(statement);
+    }
+
+    /** The demands the realm's last pass took: a next pass lowers everything with them. */
+    public taken(realm: string): number {
+        return this.realms.get(realm)?.taken.size ?? 0;
     }
 
     /** The replays the realm's last pass met at its statements. */
@@ -757,12 +985,64 @@ export class SurveyCollector {
         this.record(this.current, checker, statement, error);
     }
 
+    /**
+     * A root's capture or parameter (`name`) with no storage of its type:
+     * the root goes on without it, `error` is counted at the root's `first`
+     * statement without rolling one back, and the statements reading it
+     * cascade from it.
+     */
+    public unboundCapture(
+        checker: ts.TypeChecker,
+        first: ts.Statement,
+        name: ts.Identifier,
+        error: CompileError,
+    ): void {
+        const attempt = this.current;
+        if (!attempt) throw error;
+        const census = this.counted(attempt, checker, first, error);
+        this.declaredAt(attempt, checker, [name], census.site);
+    }
+
+    /** Each of `names` that has no refusal site yet takes `site`. */
+    private declaredAt(
+        attempt: Attempt,
+        checker: ts.TypeChecker,
+        names: Iterable<ts.Identifier>,
+        site: Census["site"],
+    ): void {
+        for (const name of names) {
+            const symbol = declaredSymbol(checker, name);
+            if (symbol && !attempt.declarations.has(symbol))
+                attempt.declarations.set(symbol, site);
+        }
+    }
+
     private record(
         attempt: Attempt,
         checker: ts.TypeChecker,
         statement: ts.Statement,
         error: CompileError,
     ): void {
+        const census = this.counted(attempt, checker, statement, error);
+        if (census.rolledBack.has(statement)) return;
+        census.rolledBack.add(statement);
+        // Every statement this refusal rolled back loses its declarations,
+        // whichever caller reached the site first.
+        this.declaredAt(
+            attempt,
+            checker,
+            statementDeclaredNames(statement),
+            census.site,
+        );
+    }
+
+    /** The census entry of `error`, made at `statement`, with one more occurrence. */
+    private counted(
+        attempt: Attempt,
+        checker: ts.TypeChecker,
+        statement: ts.Statement,
+        error: CompileError,
+    ): Census {
         let census = attempt.refusals.get(error.message);
         if (!census) {
             census = {
@@ -785,15 +1065,7 @@ export class SurveyCollector {
         }
         census.occurrences++;
         if (this.inRoot) census.rootOccurrences++;
-        if (census.rolledBack.has(statement)) return;
-        census.rolledBack.add(statement);
-        // Every statement this refusal rolled back loses its declarations,
-        // whichever caller reached the site first.
-        for (const name of statementDeclaredNames(statement)) {
-            const symbol = declaredSymbol(checker, name);
-            if (symbol && !attempt.declarations.has(symbol))
-                attempt.declarations.set(symbol, census.site);
-        }
+        return census;
     }
 
     /**
@@ -830,9 +1102,10 @@ export class SurveyCollector {
             rooted += attempt.rooted;
             for (const statement of attempt.distinct) begun.add(statement);
             for (const statement of attempt.probed) begun.add(statement);
+            for (const statement of attempt.rootProbes) begun.add(statement);
             for (const { rolledBack, ...demand } of attempt.demands.values()) {
                 for (const statement of rolledBack) demanded.add(statement);
-                demands.push({ ...demand, statements: rolledBack.size });
+                demands.push({ ...demand, ...rolledBackCensus(rolledBack) });
             }
             attempted += attempt.attempted;
             for (const [key, census] of attempt.refusals) {
@@ -856,7 +1129,7 @@ export class SurveyCollector {
         const refusals = [...merged.values()]
             .map(({ rolledBack, ...refusal }): SurveyRefusal => ({
                 ...refusal,
-                statements: rolledBack.size,
+                ...rolledBackCensus(rolledBack),
             }))
             .sort(
                 (a, b) =>

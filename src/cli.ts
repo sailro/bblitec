@@ -708,10 +708,8 @@ function writeSurvey(
     // it goes, and its far larger coverage every ten minutes: one stopped
     // early is still read.
     let coverageLeftAt = Date.now();
-    const { report } = surveySource(
-        source,
-        compileOptions,
-        {
+    const { report } = surveySource(source, compileOptions, {
+        progress: {
             report: (line) => console.error(line),
             intervalMs: 60 * 1000,
             census: (census) => {
@@ -721,8 +719,8 @@ function writeSurvey(
                 leaveCoverage();
             },
         },
-        passes,
-    );
+        ...(passes ? { passLimit: passes } : {}),
+    });
     writeJsonRecord(censusPath, report);
     console.log(
         `Survey: ${report.statements.attempted} statement lowerings (${report.statements.rooted} in roots), ${report.statements.refused} refused ` +

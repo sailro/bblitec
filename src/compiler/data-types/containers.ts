@@ -11,6 +11,7 @@ export const containerKinds: DataKindOperations<
     | "map"
     | "set"
     | "iterator"
+    | "iterable"
     | "span"
     | "tuple"
     | "product"
@@ -165,6 +166,27 @@ export const containerKinds: DataKindOperations<
         sharesStorage: true,
         reseats: true,
     },
+    iterable: {
+        cpp: (type, context) =>
+            `bbl::js::Iterable<${context.cppType(type.element)}>`,
+        key: (type, key) => `iterable(${key(type.element)})`,
+        equal: (left, right, equal) => equal(left.element, right.element),
+        children: (type) => [type.element],
+        byReference: true,
+        tracedEdges: "always",
+        sharesStorage: true,
+        reseats: true,
+        // It reopens the object it holds: an Array, a Set, a Map or an
+        // iterator alike.
+        unrecorded: {
+            identity:
+                "A stored Iterable does not keep the identity of the object it holds for a comparison.",
+            objectClass:
+                "A stored Iterable does not record the class of the object it holds.",
+            arrayness:
+                "A stored Iterable does not record whether it holds an array.",
+        },
+    },
     span: {
         cpp: (type, context) =>
             `bbl::js::Span<const ${context.cppType(type.element)}>`,
@@ -173,6 +195,10 @@ export const containerKinds: DataKindOperations<
         children: (type) => [type.element],
         byReference: false,
         tracedEdges: "never",
+        unrecorded: {
+            identity:
+                "A borrowed array view cannot preserve JavaScript object identity in a comparison.",
+        },
     },
     tuple: {
         cpp: (type) => `bbl::js::Tuple<${type.arity}>`,
@@ -206,5 +232,9 @@ export const containerKinds: DataKindOperations<
         children: () => [],
         byReference: false,
         tracedEdges: "never",
+        unrecorded: {
+            identity:
+                "A borrowed array view cannot preserve JavaScript object identity in a comparison.",
+        },
     },
 };

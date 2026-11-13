@@ -60,3 +60,30 @@ export type DataSinkOperations<K extends DataKind = DataKind> = {
         ): string | undefined;
     };
 };
+
+/** A sink's expression conversion: the value `unwrapped` lowers to, stored at it. */
+export function unwrappedKnownValue(
+    type: DataType,
+    lowerer: DataSinkHost,
+    _expression: ts.Expression,
+    unwrapped: ts.Expression,
+): string {
+    return lowerer.compileKnownValueForSink(
+        lowerer.context.compileValue(unwrapped),
+        type,
+        unwrapped,
+    );
+}
+
+/** A sink's expression conversion: the value `expression` lowers to, stored at it. */
+export function expressionKnownValue(
+    type: DataType,
+    lowerer: DataSinkHost,
+    expression: ts.Expression,
+): string {
+    return lowerer.compileKnownValueForSink(
+        lowerer.context.compileValue(expression),
+        type,
+        expression,
+    );
+}

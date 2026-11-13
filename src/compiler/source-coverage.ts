@@ -15,6 +15,8 @@ interface RealmCoverage {
     program: ts.Program;
     observed: Map<ts.Statement, Observation>;
     retained: EmissionMap<ts.Statement, "lowered" | "partial">;
+    /** Those of work whose state rolled back but whose lowerings count (`keepingCoverage`). */
+    kept: Map<ts.Statement, "lowered" | "partial">;
     failures: number;
     complete: boolean;
     terminal?: string;
@@ -110,6 +112,7 @@ export class SourceCoverage {
             program,
             observed: new Map(),
             retained: new EmissionMap(),
+            kept: new Map(),
             failures: 0,
             complete: false,
         };
@@ -122,7 +125,9 @@ export class SourceCoverage {
         } catch (error) {
             attempt.terminal =
                 error instanceof Error ? error.message : String(error);
-            if (furthest && furthest.retained.size > attempt.retained.size) {
+            const reached = (realm: RealmCoverage): number =>
+                realm.retained.size + realm.kept.size;
+            if (furthest && reached(furthest) > reached(attempt)) {
                 furthest.terminal = attempt.terminal;
                 this.realms.set(key, furthest);
             }
@@ -148,12 +153,14 @@ export class SourceCoverage {
                 const nodes = new Set([
                     ...realm.observed.keys(),
                     ...realm.retained.keys(),
+                    ...realm.kept.keys(),
                 ]);
                 const sites = [...nodes]
                     .filter(local)
                     .map((node) => {
                         const observation = realm.observed.get(node);
-                        const retained = realm.retained.get(node);
+                        const retained =
+                            realm.retained.get(node) ?? realm.kept.get(node);
                         const refused = (observation?.refusals.size ?? 0) > 0;
                         const state =
                             retained === "lowered" && refused
@@ -215,6 +222,18 @@ export function coverSourceRealm<T>(
     work: () => T,
 ): T {
     return active ? active.realm(program, entry, work) : work();
+}
+
+/**
+ * Runs `work`, whose state an enclosing transaction will roll back, keeping
+ * the sites it lowered as lowered.
+ */
+export function keepingCoverage(work: () => void): void {
+    work();
+    const realm = current;
+    if (realm)
+        for (const [statement, state] of realm.retained)
+            realm.kept.set(statement, state);
 }
 
 /** Record successful lowering inside its existing emission transaction. */

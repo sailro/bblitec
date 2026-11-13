@@ -72,6 +72,10 @@ test("a survey records every refusal it reaches and continues past each", () => 
     assert.equal(inheritance.statement.kind, "ExpressionStatement");
     assert.equal(inheritance.statement.function, "first");
     assert.equal(inheritance.cascade, undefined);
+    assert.deepEqual(
+        inheritance.rolledBackAt.map((site) => site.split(":").at(-1)),
+        ["6"],
+    );
     const unsupported = report.refusals.find(
         (refusal) => refusal.message === "Unsupported constructor expression.",
     );
@@ -106,7 +110,7 @@ test("a survey reports its progress and the statement it lowers", () => {
     const { report } = surveySource(
         refusing,
         { fileName: resolve("survey-progress.ts") },
-        { report: (line) => lines.push(line), intervalMs: 0 },
+        { progress: { report: (line) => lines.push(line), intervalMs: 0 } },
     );
     assert.equal(lines.length, report.statements.attempted);
     // The last line counts every refusal recorded before that statement.
@@ -133,7 +137,7 @@ test("a survey pass rolls back a storage demand's statement and the next pass re
         console.log(active.gain);
     `,
         { fileName: resolve("survey-restart.ts") },
-        { report: (line) => lines.push(line), intervalMs: 0 },
+        { progress: { report: (line) => lines.push(line), intervalMs: 0 } },
     );
     assert.deepEqual(
         lines.filter((line) => line.startsWith("Survey pass")),
@@ -168,7 +172,7 @@ test("one survey pass meets every independent demand", () => {
     const { report } = surveySource(
         source,
         { fileName: resolve("survey-plan.ts") },
-        { report: (line) => lines.push(line), intervalMs: 0 },
+        { progress: { report: (line) => lines.push(line), intervalMs: 0 } },
     );
     assert.equal(report.complete, true);
     assert.deepEqual(
@@ -181,11 +185,21 @@ test("one survey pass meets every independent demand", () => {
     const capped = surveySource(
         source,
         { fileName: resolve("survey-plan.ts") },
-        undefined,
-        1,
+        { passLimit: 1 },
     ).report;
     assert.equal(capped.passes, 1);
     assert.equal(capped.statements.demanded, 3);
+    // Each demand names the assignment it rolled back.
+    assert.deepEqual(
+        capped.demands
+            .flatMap((demand) =>
+                demand.rolledBackAt.map((site) =>
+                    Number(site.split(":").at(-1)),
+                ),
+            )
+            .sort((a, b) => a - b),
+        [9, 11, 13],
+    );
 });
 
 test("a member call through a refused binding is a cascade of its declaration", () => {
@@ -370,6 +384,796 @@ test("a survey lowers every function the program never reached as a root", () =>
     assert.equal(report.program.attempted, report.program.statements);
 });
 
+test("a root held by its own storage demand lowers in the same pass", () => {
+    // `Counter.add` reads `this`, whose class must be shared: the pass takes
+    // that demand at the root and lowers the root again with it.
+    const { report } = surveySource(
+        `
+        let total = 0;
+        class Counter {
+            private value = 0;
+            add(step: number): void {
+                this.value += step;
+                total += new FinalizationRegistry<string>(() => {}).unregister(this) ? this.value : 0;
+            }
+        }
+        export const counter = new Counter();
+        localStorage.setItem("total", String(total));
+    `,
+        { fileName: resolve("survey-root-demand.ts") },
+        { passLimit: 1 },
+    );
+    assert.deepEqual(
+        report.refusals.map((refusal) => refusal.statement.function),
+        ["Counter.add"],
+        listed(report),
+    );
+});
+
+test("a generic root lowers at the type arguments a call in the program binds", () => {
+    // `sum` is rooted before `unused`, which calls it: its `T` is the
+    // call's element type, so the refusal inside it is found.
+    const { report } = surveySource(
+        `
+        let total = 0;
+        function sum<T extends { id: number }>(items: readonly T[]): number {
+            let found = 0;
+            for (const item of items) found += item.id;
+            total += new FinalizationRegistry<string>(() => {}).unregister({ found }) ? 1 : 0;
+            return found;
+        }
+        export function unused(): number {
+            return sum([{ id: 1, name: "a" }]);
+        }
+        localStorage.setItem("total", String(total));
+    `,
+        { fileName: resolve("survey-generic-root.ts") },
+    );
+    assert.equal(report.complete, true, report.terminal);
+    assert.ok(
+        report.refusals.some(
+            (refusal) =>
+                refusal.statement.function === "sum" &&
+                refusal.message === "Unsupported constructor expression.",
+        ),
+        listed(report),
+    );
+    assert.ok(
+        report.refusals.every(
+            (refusal) => !refusal.message.startsWith("A survey root's"),
+        ),
+        listed(report),
+    );
+});
+
+test("a survey lowers the statements of a module the program never evaluates", (t) => {
+    // The entry imports only a type from `tools.ts`, so nothing runs that
+    // module: its statements lower as module roots, before the function
+    // roots, so `reset` writes the `count` they declared.
+    const directory = mkdtempSync(join(tmpdir(), "bblite-module-roots-"));
+    t.after(() => rmSync(directory, { recursive: true, force: true }));
+    writeFileSync(
+        join(directory, "tools.ts"),
+        `
+        export interface Tool { name: string }
+        let count = 0;
+        const REGISTRY = new FinalizationRegistry<string>(() => {});
+        export function reset(): void {
+            count = 0;
+        }
+    `,
+    );
+    const { report } = surveySource(
+        `
+        import type { Tool } from "./tools.js";
+        const tool: Tool = { name: "saw" };
+        localStorage.setItem("tool", tool.name);
+    `,
+        { fileName: join(directory, "entry.ts") },
+    );
+    assert.equal(report.complete, true, report.terminal);
+    assert.deepEqual(
+        report.refusals.map((refusal) => [
+            refusal.statement.line,
+            refusal.message,
+        ]),
+        [[4, "Unsupported constructor expression."]],
+        listed(report),
+    );
+    assert.ok(report.program);
+    assert.equal(report.program.attempted, report.program.statements);
+});
+
+test("a survey lowers the statements a reached function's lowering left", () => {
+    // `params.has("debug")` is generation-known: the arm it leaves is a
+    // statement root, its loop's break bound to the block standing for the
+    // loop and its return leaving the root.
+    const { report } = surveySource(
+        `
+        let total = 0;
+        function step(params: URLSearchParams): number {
+            if (params.has("debug")) {
+                for (let i = 0; i < 3; i++) {
+                    total += i;
+                    if (total > 2) break;
+                }
+                return total;
+            }
+            total += 1;
+            return total;
+        }
+        step(new URLSearchParams(location.search));
+        localStorage.setItem("total", String(total));
+    `,
+        { fileName: resolve("survey-statement-roots.ts") },
+    );
+    assert.equal(report.complete, true);
+    assert.deepEqual(report.refusals, [], listed(report));
+    assert.ok(report.program);
+    assert.equal(report.program.attempted, report.program.statements);
+});
+
+test("a survey root leaves out a trailing parameter with a default", () => {
+    // The default `{}` leaves `pointProjection` unset, so the shader source
+    // the root composes is generation-known.
+    const { report } = surveySource(
+        `
+        import { createShaderMaterial, wgsl } from "@babylonjs/lite";
+        interface BatchOptions { pointProjection?: boolean }
+        export function makeMaterial(opts: BatchOptions = {}): unknown {
+            const projection = opts.pointProjection ? "fn project() {}" : "fn flat() {}";
+            return createShaderMaterial({
+                name: "batch",
+                vertexSource: wgsl\`\${projection + "\\n@vertex fn main() -> @builtin(position) vec4<f32> { return vec4<f32>(0.0); }"}\`,
+                attributes: ["position"],
+                fragmentSource: wgsl\`@fragment fn main() -> @location(0) vec4<f32> { return vec4<f32>(1.0); }\`,
+            });
+        }
+        localStorage.setItem("ready", "1");
+    `,
+        { fileName: resolve("survey-root-default.ts") },
+    );
+    assert.deepEqual(report.refusals, [], listed(report));
+});
+
+test("an evaluated module's total constants are tried; an ambient declaration is no statement", (t) => {
+    // `STRIDE` folds where it is read and `UNUSED` is never read: neither
+    // statement lowers, and both run as the evaluated module's folds.
+    const directory = mkdtempSync(join(tmpdir(), "bblite-total-constants-"));
+    t.after(() => rmSync(directory, { recursive: true, force: true }));
+    writeFileSync(
+        join(directory, "layout.ts"),
+        `
+        declare const __FLAG__: boolean | undefined;
+        export const STRIDE = 170;
+        export const UNUSED = 42;
+    `,
+    );
+    const { report } = surveySource(
+        `
+        import { STRIDE } from "./layout.js";
+        localStorage.setItem("stride", String(STRIDE * 2));
+    `,
+        { fileName: join(directory, "entry.ts") },
+    );
+    assert.ok(report.program);
+    assert.equal(report.program.statements, 3);
+    assert.equal(report.program.attempted, report.program.statements);
+});
+
+test("an evaluated module's constant no read folds lowers as a root", (t) => {
+    // `LOOK` and `NEXT` are pure but not total: no read folds `LOOK`, and
+    // `NEXT` folds where it is read; the roots lower `LOOK`'s initializer.
+    const directory = mkdtempSync(join(tmpdir(), "bblite-module-constants-"));
+    t.after(() => rmSync(directory, { recursive: true, force: true }));
+    writeFileSync(
+        join(directory, "layout.ts"),
+        `
+        export const STRIDE = 170;
+        export const NEXT = STRIDE + 1;
+        export const LOOK = { tint: [0.9, 0.8, 0.7], brightness: 0.6 };
+    `,
+    );
+    const { report } = surveySource(
+        `
+        import { NEXT } from "./layout.js";
+        localStorage.setItem("next", String(NEXT * 2));
+    `,
+        { fileName: join(directory, "entry.ts") },
+    );
+    assert.ok(report.program);
+    assert.equal(report.program.statements, 4);
+    assert.equal(report.program.attempted, report.program.statements);
+    assert.deepEqual(report.refusals, [], listed(report));
+});
+
+test("a refused statement returning from a root's body leaves the rest of the body tried", () => {
+    // The root's call refuses at `a === b`, a statement returning a value:
+    // the statement root then lowers the body, whose returns go nowhere,
+    // and the statements after the refused one are tried.
+    const { report } = surveySource(
+        `
+        export const sameTuple = (a?: ArrayLike<number>, b?: ArrayLike<number>): boolean => {
+            if (a === b) return true;
+            if (!a || !b || a.length !== b.length) return false;
+            for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
+            return true;
+        };
+        localStorage.setItem("ready", "1");
+    `,
+        { fileName: resolve("survey-refused-return.ts") },
+    );
+    assert.ok(report.program);
+    assert.equal(report.program.attempted, report.program.statements);
+    assert.deepEqual(
+        report.refusals.map((refusal) => refusal.statement.line),
+        [3],
+        listed(report),
+    );
+});
+
+test("a stored generic method reads the type arguments its receiver binds", () => {
+    // `constrain` is generic in `T` and reads `Choice`, a parameter of
+    // `Deps`: the root's `deps: Deps<Choice>` binds it to the factory's own
+    // `Choice`, which the root holds at its constraint.
+    const { report } = surveySource(
+        `
+        interface Plan { id: string; scale: number }
+        interface Seat { x: number; z: number }
+        interface Ground extends Seat { onDeck: boolean }
+        interface Deps<Choice> {
+            constrain<T extends Seat>(kind: string, choice: Choice, point: T): T | null;
+            weight(choice: Choice): number;
+        }
+        export function createTools<Choice extends Plan = Plan>(deps: Deps<Choice>) {
+            return (kind: string, choice: Choice, point: Ground): number => {
+                const bounded = deps.constrain(kind, choice, point);
+                const moved = deps.constrain(kind, choice, { ...point, x: point.x + 1 });
+                return (bounded ? bounded.x : 0) + (moved ? moved.z : 0) + deps.weight(choice);
+            };
+        }
+        localStorage.setItem("ready", "1");
+    `,
+        { fileName: resolve("survey-receiver-type-arguments.ts") },
+    );
+    assert.ok(report.program);
+    assert.equal(report.program.attempted, report.program.statements);
+    assert.deepEqual(report.refusals, [], listed(report));
+});
+
+test("a survey tries the bodies of accessors and constructors no lowering reaches", () => {
+    // `Store` is never constructed and `makeObstacle` never called: each
+    // accessor's and the constructor's statements lower as statement roots,
+    // their returns included, `this` the class's instance.
+    const { report } = surveySource(
+        `
+        export class Store {
+            private capacityValue = 16;
+            private revision = 0;
+            constructor(initial = 8) {
+                this.capacityValue = Math.max(initial, 1);
+                this.revision++;
+            }
+            get capacity(): number { return this.capacityValue; }
+            get doubled(): number {
+                const twice = this.capacityValue * 2;
+                return twice + this.revision;
+            }
+            set capacity(value: number) {
+                if (value < 1) return;
+                this.capacityValue = value;
+            }
+        }
+        export const makeObstacle = (pose: { x: number; z: number }, radius: number) => ({
+            get x() { return pose.x; },
+            get z() { return pose.z; },
+            radius,
+        });
+        localStorage.setItem("ready", "1");
+    `,
+        { fileName: resolve("survey-accessor-roots.ts") },
+    );
+    assert.ok(report.program);
+    assert.equal(report.program.attempted, report.program.statements);
+    assert.deepEqual(report.refusals, [], listed(report));
+});
+
+test("an object literal's method root reads this as the record holding it", () => {
+    // `createMover`'s record is returned but its methods never called: each
+    // method body lowers as a root, `this.prepareBegin` a call through the
+    // record of the type its `this` reads.
+    const { report } = surveySource(
+        `
+        export interface Mover { carryBegin(id: number): boolean; prepareBegin(id: number): (() => void) | null }
+        export function createMover(saved: Set<number>): Mover {
+            const carried = new Set<number>();
+            return {
+                carryBegin(id) {
+                    const begin = this.prepareBegin(id);
+                    if (!begin) return false;
+                    begin();
+                    return true;
+                },
+                prepareBegin(id) {
+                    if (!saved.has(id)) return null;
+                    return () => { carried.add(id); };
+                },
+            };
+        }
+    `,
+        { fileName: resolve("survey-literal-this.ts") },
+    );
+    assert.ok(report.program);
+    assert.equal(report.program.attempted, report.program.statements);
+    assert.deepEqual(report.refusals, [], listed(report));
+});
+
+test("a survey root's value typed object is dynamic, as such a binding is", () => {
+    // `lease` and each method's `token` are typed `object`: their root
+    // values are dynamic values, as the binding's own storage is.
+    const { report } = surveySource(
+        `
+        export function createGate(): { open(token: object): boolean; close(token: object): void } {
+            let lease: object | null = null;
+            return {
+                open(token) { if (lease !== null && lease !== token) return false; lease = token; return true; },
+                close(token) { if (lease === token) lease = null; },
+            };
+        }
+        localStorage.setItem("ready", "1");
+    `,
+        { fileName: resolve("survey-object-root.ts") },
+    );
+    assert.ok(report.program);
+    assert.equal(report.program.attempted, report.program.statements);
+    assert.deepEqual(report.refusals, [], listed(report));
+});
+
+test("a generic class's method roots lower at a construction's type arguments", () => {
+    // `BuildCache` is constructed at two type arguments; `retain` is never
+    // called. Each method's root reads `this` as the instance the first
+    // construction builds, whose fields its initializers declare.
+    const { report } = surveySource(
+        `
+        export class BuildCache<T> {
+            private readonly builds = new Map<number, { key: string; value: T }>();
+            begin(seq: number): T | undefined { const build = this.builds.get(seq); return build ? build.value : undefined; }
+            commit(seq: number, key: string, value: T): void { this.builds.set(seq, { key, value }); }
+            retain(live: Set<number>): void { for (const seq of this.builds.keys()) if (!live.has(seq)) this.builds.delete(seq); }
+        }
+        const timber = new BuildCache<{ membership: string }>();
+        const railing = new BuildCache<{ audit: number[] | null }>();
+        timber.commit(1, "a", { membership: "m" });
+        localStorage.setItem("ready", (timber.begin(1)?.membership ?? "") + String(railing.begin(2) === undefined));
+    `,
+        { fileName: resolve("survey-generic-class.ts") },
+    );
+    assert.ok(report.program);
+    assert.equal(report.program.attempted, report.program.statements);
+    assert.deepEqual(report.refusals, [], listed(report));
+});
+
+test("a generic root reads a read-only record of its type argument", () => {
+    // No call binds `S`: the root lowers at its constraint, and `read`'s
+    // `Readonly<S>` result is the record `S` names there.
+    const { report } = surveySource(
+        `
+        interface State { wall?: string; tint?: [number, number, number] }
+        export interface Deps<S extends State> { read(id: number): Readonly<S> | undefined; copy(record: Readonly<S>): S }
+        export function createCommand<S extends State>(deps: Deps<S>): { plan(id: number): S | null } {
+            const read = (id: number) => (Number.isSafeInteger(id) && id > 0 ? deps.read(id) : undefined);
+            return { plan(id) { const current = read(id); return current ? deps.copy(current) : null; } };
+        }
+        localStorage.setItem("ready", "1");
+    `,
+        { fileName: resolve("survey-readonly-argument.ts") },
+    );
+    assert.ok(report.program);
+    assert.equal(report.program.attempted, report.program.statements);
+    assert.deepEqual(report.refusals, [], listed(report));
+});
+
+test("a generic root over an object-bound type parameter reads its callbacks", () => {
+    // No call binds `T extends object`: the root lowers at `object`, so
+    // `read`'s `T | undefined` result is a dynamic value, as `object` is.
+    const { report } = surveySource(
+        `
+        export function createChange(signal?: AbortSignal) {
+            return function change<T extends object, R>(read: () => T | undefined, publish: (record: T) => R, refused: R): R {
+                const record = read();
+                if (signal?.aborted || !record) return refused;
+                return publish(record);
+            };
+        }
+        localStorage.setItem("ready", "1");
+    `,
+        { fileName: resolve("survey-object-bound.ts") },
+    );
+    assert.ok(report.program);
+    assert.equal(report.program.attempted, report.program.statements);
+    assert.deepEqual(report.refusals, [], listed(report));
+});
+
+test("an async factory's root results in the record its signature declares", () => {
+    // No call reaches `createField`: its root runs the activation at its own
+    // declaration, whose returned record is stored as `Field`, as a call's
+    // result would be.
+    const { report } = surveySource(
+        `
+        interface Field { items: number[]; winter: number; setWinter(season: number): void; count(): number }
+        export async function createField(seed: number): Promise<Field> {
+            const items: number[] = [];
+            await Promise.resolve();
+            for (let i = 0; i < seed; i++) items.push(i);
+            let winter = 0;
+            return { items, winter: 0, setWinter: (season: number): void => { winter = season; }, count() { return items.length + winter; } };
+        }
+        localStorage.setItem("ready", "1");
+    `,
+        { fileName: resolve("survey-async-factory.ts") },
+    );
+    assert.ok(report.program);
+    assert.equal(report.program.attempted, report.program.statements);
+    assert.deepEqual(report.refusals, [], listed(report));
+});
+
+test("a generic class no construction binds lowers its roots at a type parameter's default", () => {
+    // Nothing constructs `Queue`: its roots read `this` at `T`'s default,
+    // the argument an unbound use takes, whose fields its initializers
+    // declare.
+    const { report } = surveySource(
+        `
+        interface Request { key: string; priority: boolean }
+        export class Queue<T = Request> {
+            readonly #pending: T[] = [];
+            #current: T | null = null;
+            get current(): T | null { return this.#current; }
+            get pendingCount(): number { return this.#pending.length; }
+            push(item: T): void { if (this.#current === null) this.#current = item; else this.#pending.push(item); }
+        }
+        localStorage.setItem("ready", "1");
+    `,
+        { fileName: resolve("survey-default-type-argument.ts") },
+    );
+    assert.ok(report.program);
+    assert.equal(report.program.attempted, report.program.statements);
+    assert.deepEqual(report.refusals, [], listed(report));
+});
+
+test("a survey root's iterable parameter holds an empty array of its element", () => {
+    // `Iterable<T>` is a protocol a call's collection stores: a root, which
+    // no collection reaches, iterates an empty array of `T`.
+    const { report } = surveySource(
+        `
+        interface Follower { x: number; z: number; radius: number }
+        export function boundaryRadius(cx: number, cz: number, base: number, followers: Iterable<Follower>): number {
+            let reach = Math.max(0, base);
+            for (const follower of followers) reach = Math.max(reach, Math.hypot(follower.x - cx, follower.z - cz) + follower.radius);
+            return reach;
+        }
+        export function blocked(candidates: Iterable<number>, wet: (i: number) => boolean): Set<number> {
+            const out = new Set<number>();
+            for (const i of candidates) if (wet(i)) out.add(i);
+            return out;
+        }
+        localStorage.setItem("ready", "1");
+    `,
+        { fileName: resolve("survey-iterable-root.ts") },
+    );
+    assert.ok(report.program);
+    assert.equal(report.program.attempted, report.program.statements);
+    assert.deepEqual(report.refusals, [], listed(report));
+});
+
+test("a generic method instantiating its own interface ends the survey's mapping", () => {
+    // `map` returns a `Pair` again: binding its receiver's arguments would
+    // unfold `Pair<B, A>` into `Pair<A, B>` without end. The survey ends with
+    // the method's refusal instead of exhausting the stack.
+    const { report } = surveySource(
+        `
+        interface Pair<A, B> { swap(): Pair<B, A>; first(): A; map<T>(f: (a: A) => T): Pair<T, B> }
+        export function use<A, B>(pair: Pair<A, B>, other: Pair<B, A>): number {
+            const swapped = pair.swap();
+            const mapped = other.map((b) => [b]);
+            return (swapped.first() === other.first() ? 1 : 0) + (mapped ? 1 : 0);
+        }
+        localStorage.setItem("ready", "1");
+    `,
+        { fileName: resolve("survey-self-instantiating-method.ts") },
+    );
+    assert.equal(report.complete, true, listed(report));
+});
+
+test("an overload signature is no statement; an evaluated module's default export is tried", (t) => {
+    // `pick`'s two signatures declare types; its implementation is the one
+    // statement. `shader.ts` evaluates, and no read folds its default
+    // export, which the roots lower.
+    const directory = mkdtempSync(join(tmpdir(), "bblite-overloads-"));
+    t.after(() => rmSync(directory, { recursive: true, force: true }));
+    writeFileSync(
+        join(directory, "shader.ts"),
+        `export default "void main() {}";`,
+    );
+    const { report } = surveySource(
+        `
+        import "./shader.js";
+        export function pick(value: number): number;
+        export function pick(value: string): string;
+        export function pick(value: number | string): number | string { return value; }
+        localStorage.setItem("pick", String(pick(3)));
+    `,
+        { fileName: join(directory, "entry.ts") },
+    );
+    assert.ok(report.program);
+    assert.equal(report.program.statements, 4);
+    assert.equal(report.program.attempted, report.program.statements);
+});
+
+test("a root's call at an unbound type refuses alone, not the stored generic family", () => {
+    // `edit`'s root calls `runEdit` at `U`, which no call binds: that
+    // instantiation has no native signature. The family the program's own
+    // `authorities` store keeps its other instantiation, and only the
+    // root's call refuses.
+    const { report } = surveySource(
+        `
+        interface Authority { runEdit<T>(operation: () => T): T | null; failed(): boolean }
+        const createAuthority = (): Authority => {
+            let failures = 0;
+            return {
+                runEdit<T>(operation: () => T): T | null { try { return operation(); } catch { failures++; return null; } },
+                failed: () => failures > 0,
+            };
+        };
+        const authorities: Authority[] = [createAuthority()];
+        let total = 0;
+        for (const authority of authorities) total += authority.runEdit(() => 3) ?? 0;
+        export function edit<U>(auth: Authority, make: () => U): U | null { return auth.runEdit(make); }
+        localStorage.setItem("total", String(total));
+    `,
+        { fileName: resolve("survey-generic-family-root.ts") },
+    );
+    assert.deepEqual(
+        report.refusals.map((refusal) => refusal.statement.line),
+        [13],
+        listed(report),
+    );
+});
+
+test("a root of a generic function no call binds lowers at its constraints", () => {
+    // `timed` is only stored, so no call binds its `T`: the root lowers at
+    // `unknown`, and `work` is a function returning a document.
+    const { report } = surveySource(
+        `
+        const timed = <T>(label: string, work: () => T): T => {
+            localStorage.setItem("label", label);
+            return work();
+        };
+        export const runner = { timed };
+        localStorage.setItem("ready", "1");
+    `,
+        { fileName: resolve("survey-unbound-generic.ts") },
+    );
+    assert.deepEqual(report.refusals, [], listed(report));
+    assert.ok(report.program);
+    assert.equal(report.program.attempted, report.program.statements);
+});
+
+test("a root's capture with no storage of its type stays unbound", () => {
+    // `track` is a generic function or nothing, which no storage holds: the
+    // inner root lowers its other statements, the one reading `track`
+    // cascades from it, and the reason rolls back no statement.
+    const { report } = surveySource(
+        `
+        interface Options { track?: <T>(label: string, work: () => T) => T }
+        export function outer(opts: Options): () => number {
+            const track = opts.track ? <T>(label: string, work: () => T): T => opts.track!(label, work) : undefined;
+            let total = 0;
+            return () => {
+                total += 1;
+                track?.("x", () => total);
+                return total;
+            };
+        }
+        localStorage.setItem("ready", "1");
+    `,
+        { fileName: resolve("survey-unbound-capture.ts") },
+    );
+    assert.ok(report.program);
+    assert.equal(report.program.attempted, report.program.statements);
+    const [reason, read] = report.refusals;
+    assert.ok(reason && read, listed(report));
+    assert.equal(
+        reason.message,
+        "A survey root's track has no native storage of its type ('(<T>(label: string, work: () => T) => T) | undefined' > '() => T' > 'T': no call binds the type parameter here).",
+    );
+    assert.equal(reason.statements, 0);
+    assert.equal(read.statement.line, 8);
+    assert.deepEqual(read.cascade, reason.site);
+});
+
+test("a root's engine object no storage holds stands as its pinned base's handle", () => {
+    // An ArcRotateCamera has no storage of its own; a Camera is a handle.
+    const { report } = surveySource(
+        `
+        import { getCameraPosition, type ArcRotateCamera } from "@babylonjs/lite";
+        export function follow(camera: ArcRotateCamera): number {
+            const position = getCameraPosition(camera);
+            return position.x;
+        }
+        localStorage.setItem("ready", "1");
+    `,
+        { fileName: resolve("survey-root-camera.ts") },
+    );
+    assert.deepEqual(report.refusals, [], listed(report));
+});
+
+test("a root's captured nullable resource is its declaration's empty slot", () => {
+    // `upload` is never used, so it is a root of its own: `patchMesh` holds
+    // the empty mesh slot its null-initialized declaration binds, which
+    // `patchMesh!` reads as a mesh.
+    const { report } = surveySource(
+        `
+        import { createMeshFromData, updateMeshPositions, type EngineContext, type Mesh } from "@babylonjs/lite";
+        export function createGround(engine: EngineContext): void {
+            let patchMesh: Mesh | null = null;
+            const positions = new Float32Array(9);
+            const ensure = (): void => {
+                patchMesh ??= createMeshFromData(engine, "p", positions, new Float32Array(9), new Uint32Array([0, 1, 2]));
+            };
+            const upload = (): void => {
+                updateMeshPositions(engine, patchMesh!, positions, 0);
+            };
+            ensure();
+        }
+        localStorage.setItem("ready", "1");
+    `,
+        { fileName: resolve("survey-root-resource.ts") },
+    );
+    assert.deepEqual(report.refusals, [], listed(report));
+});
+
+test("a root's parameter with no storage of its type stays unbound", () => {
+    // `track` is a generic function or nothing: the root lowers its body as
+    // statements, `scale` bound, and only the one reading `track` refuses.
+    const { report } = surveySource(
+        `
+        let total = 0;
+        export function step(track: (<T>(label: string, work: () => T) => T) | undefined, scale: number): void {
+            total += scale;
+            track?.("x", () => total);
+            total *= 2;
+        }
+        localStorage.setItem("total", String(total));
+    `,
+        { fileName: resolve("survey-unbound-parameter.ts") },
+    );
+    assert.ok(report.program);
+    assert.equal(report.program.attempted, report.program.statements);
+    assert.deepEqual(
+        report.refusals.map((refusal) => [
+            refusal.statement.line,
+            refusal.statements,
+            refusal.message,
+        ]),
+        [
+            [
+                4,
+                0,
+                "A survey root's track has no native storage of its type ('(<T>(label: string, work: () => T) => T) | undefined' > '() => T' > 'T': no call binds the type parameter here).",
+            ],
+            [5, 1, "Unknown or unsupported variable 'track'."],
+        ],
+        listed(report),
+    );
+});
+
+test("a root's string parameter holds a generation-known string a call passes", () => {
+    // `makeMaterial`'s one call passes a module constant: its root composes
+    // the shader from it, where an empty string parameter would refuse.
+    const { report } = surveySource(
+        [
+            'import { createShaderMaterial, wgsl } from "@babylonjs/lite";',
+            'const BASE = "fn base() {}";',
+            "export function makeMaterial(prelude: string): unknown {",
+            "    return createShaderMaterial({",
+            '        name: "batch",',
+            '        vertexSource: wgsl`${prelude + "\\n@vertex fn main() -> @builtin(position) vec4<f32> { return vec4<f32>(0.0); }"}`,',
+            '        attributes: ["position"],',
+            "        fragmentSource: wgsl`@fragment fn main() -> @location(0) vec4<f32> { return vec4<f32>(1.0); }`,",
+            "    });",
+            "}",
+            "export function later(): unknown { return makeMaterial(BASE); }",
+            'localStorage.setItem("ready", "1");',
+        ].join("\n"),
+        { fileName: resolve("survey-root-static-argument.ts") },
+    );
+    assert.deepEqual(report.refusals, [], listed(report));
+});
+
+test("a root binds a captured const function literal and what it captures", () => {
+    // `send` is rooted: `post` holds an arrow reading `health` and `limit`,
+    // which the root binds as the program's own bindings would hold them.
+    const { report } = surveySource(
+        `
+        type Post = (message: { kind: string; payload: unknown }) => void;
+        let sent = 0;
+        export function createHost(limit: number): { send(kind: string): void } {
+            const health = { failures: 0 };
+            const post: Post = (message) => { if (health.failures > limit) return; sent += message.kind.length; };
+            function send(kind: string): void {
+                post({ kind, payload: null });
+                sent += 1;
+            }
+            return { send };
+        }
+        localStorage.setItem("sent", String(sent));
+    `,
+        { fileName: resolve("survey-root-literal.ts") },
+    );
+    assert.equal(report.complete, true, report.terminal);
+    assert.deepEqual(report.refusals, [], listed(report));
+    assert.ok(report.program);
+    assert.equal(report.program.attempted, report.program.statements);
+});
+
+test("a root's array parameter is an array its caller owns", () => {
+    // Capturing `items` in a stored closure keeps the array's identity:
+    // a borrowed view could not, an owned array can.
+    const { report } = surveySource(
+        `
+        let total = 0;
+        const later: Array<() => number> = [];
+        export function keep(items: readonly number[]): void {
+            later.push(() => items.length);
+            total += items.length;
+        }
+        localStorage.setItem("total", String(total + later.length));
+    `,
+        { fileName: resolve("survey-root-array.ts") },
+    );
+    assert.equal(report.complete, true, report.terminal);
+    assert.ok(
+        report.refusals.every(
+            (refusal) => !refusal.message.startsWith("A borrowed array view"),
+        ),
+        listed(report),
+    );
+});
+
+test("the program census lists the functions holding statements no lowering tried", (t) => {
+    // A class of a module only types are imported from is no root: the
+    // module never evaluates its declaration or its static block, whose
+    // statements stay untried, listed by the module that holds them.
+    const directory = mkdtempSync(join(tmpdir(), "bblite-untried-"));
+    t.after(() => rmSync(directory, { recursive: true, force: true }));
+    writeFileSync(
+        join(directory, "box.ts"),
+        `
+        export let total = 0;
+        export class Box {
+            static seed = 1;
+            static {
+                total += Box.seed;
+                total *= 2;
+            }
+        }
+    `,
+    );
+    const { report } = surveySource(
+        `
+        import type { Box } from "./box.js";
+        const boxes: Box[] = [];
+        localStorage.setItem("boxes", String(boxes.length));
+    `,
+        { fileName: join(directory, "entry.ts") },
+    );
+    assert.ok(report.program);
+    assert.deepEqual(
+        report.program.untried.map((entry) => [entry.kind, entry.statements]),
+        [["SourceFile", 3]],
+    );
+});
+
 test("a survey lowers the statements a rolled-back compound statement holds", () => {
     // The `if` condition and the loop's iterable refuse; each body is still
     // lowered on its own, the loop variable holding empty storage, so the
@@ -429,6 +1233,30 @@ test("a survey root's resources belong to the entry's engine, declared for roots
     assert.deepEqual(report.refusals, [], listed(report));
 });
 
+test("a PBR setter on a material no scene record stands for refuses at its call", () => {
+    // A root's material is empty storage that no createPbrMaterial made:
+    // the setter refuses at its call and the survey goes on past it.
+    const { report } = surveySource(
+        `
+        import { setPbrUnlit } from "@babylonjs/lite";
+        let stamped = 0;
+        export function flatten(material: Parameters<typeof setPbrUnlit>[0]): void {
+            setPbrUnlit(material);
+            stamped += 1;
+        }
+        localStorage.setItem("stamped", String(stamped));
+    `,
+        { fileName: resolve("survey-root-pbr-setter.ts") },
+    );
+    assert.equal(report.complete, true, report.terminal);
+    assert.deepEqual(
+        report.refusals.map((refusal) => refusal.message),
+        [
+            "setPbrUnlit names no scene-code PBR material; only a value createPbrMaterial produced, or a mesh one was assigned to, resolves which record to stamp.",
+        ],
+    );
+});
+
 test("a survey root of an async function runs as its activation", () => {
     // Its awaits lower inside the activation a call would start; what the
     // survey meets is the fetch of a run-time URL, not the await.
@@ -452,6 +1280,31 @@ test("a survey root of an async function runs as its activation", () => {
                 refusal.message !==
                 "This await needs an asynchronous realm activation.",
         ),
+        listed(report),
+    );
+});
+
+test("a statement root of an async function awaits as its activation does", () => {
+    // `track` has no storage, so the root lowers `step`'s body as
+    // statements: they run in a coroutine body, where the await suspends,
+    // and only the statement reading `track` refuses.
+    const { report } = surveySource(
+        `
+        let total = 0;
+        export async function step(track: (<T>(label: string, work: () => T) => T) | undefined, scale: number): Promise<void> {
+            const late = await new Promise<number>((done) => setTimeout(() => done(3), 1));
+            total += late * scale;
+            track?.("x", () => total);
+        }
+        localStorage.setItem("total", String(total));
+    `,
+        { fileName: resolve("survey-async-statement-root.ts") },
+    );
+    assert.ok(report.program);
+    assert.equal(report.program.attempted, report.program.statements);
+    assert.deepEqual(
+        report.refusals.map((refusal) => refusal.statement.line),
+        [4, 6],
         listed(report),
     );
 });
@@ -527,9 +1380,11 @@ test("a survey leaves its census as it goes", () => {
     `,
         { fileName: resolve("survey-left.ts") },
         {
-            report: () => {},
-            intervalMs: 0,
-            census: (found) => left.push(found),
+            progress: {
+                report: () => {},
+                intervalMs: 0,
+                census: (found) => left.push(found),
+            },
         },
     );
     assert.equal(report.complete, true);
@@ -581,28 +1436,6 @@ test("a survey ended outside statement lowering publishes its last full pass wit
     const complete = census(30, { complete: true });
     assert.equal(publishedSurvey(complete, furthest), complete);
     assert.equal(publishedSurvey(ended, undefined), ended);
-});
-
-test("a joined record layout names the two types that disagree on an accessor", () => {
-    // `Live.cx` is the getter its literal defines; a `Plain` stored as a
-    // `Live` joins the two types' layouts.
-    assert.throws(
-        () =>
-            compileSource(`
-                interface Plain { cx: number; cz: number }
-                interface Live { readonly cx: number; readonly cz: number }
-                const flag = Math.random() >= 0;
-                const live: Live = { get cx() { return flag ? 1 : 0; }, cz: 2 };
-                const plains: Plain[] = [{ cx: 3, cz: 4 }];
-                const all: Live[] = [live];
-                all.push(plains[0]!);
-                plains[0]!.cx = 9;
-                let total = 0;
-                for (const entry of all) total += entry.cx + entry.cz;
-                if (total !== 14) throw new Error("total " + total);
-            `),
-        /Property 'cx' is an accessor in 'Live' but not in 'Plain', and one layout \('Plain'\) stores both\./,
-    );
 });
 
 test("a survey names a class member's refusal by its qualified name", () => {
@@ -764,4 +1597,200 @@ test("the CLI writes the census in place of a tree and reports completion in its
         jsonObject(JSON.parse(readFileSync(census, "utf8"))).complete,
         false,
     );
+});
+
+test("a repeated survey call's readonly array result is storage its caller owns", () => {
+    // The survey lowers `chainFor` once (the module's own call); later calls
+    // return empty storage of its result. A returned array keeps its
+    // storage, a readonly one too, so the cache holds it as its caller does.
+    const { report } = surveySource(
+        `
+        interface Sample { c: number; y: number }
+        function profileSamples(rise: number, segments: number): Sample[] {
+            const out: Sample[] = [];
+            for (let i = 0; i <= segments; i++) out.push({ c: i, y: rise - i });
+            return out;
+        }
+        function chainFor(rise: number, round: number): readonly Sample[] { return profileSamples(rise, round > 0 ? 4 : 0); }
+        const first = chainFor(2, 1);
+        let chainKey = Number.NaN;
+        let chainValue: readonly Sample[] | null = null;
+        function cachedChain(rise: number, round: number): readonly Sample[] {
+            if (chainValue !== null && rise === chainKey) return chainValue;
+            const chain = chainFor(rise, round);
+            chainKey = rise;
+            chainValue = chain;
+            return chain;
+        }
+        export function geometry(rise: number, round: number) {
+            return { rise, chain: round > 0 ? cachedChain(rise, round) : null };
+        }
+        localStorage.setItem("ready", String(first.length));
+    `,
+        { fileName: resolve("survey-repeated-array.ts") },
+    );
+    assert.ok(report.program);
+    assert.equal(report.program.attempted, report.program.statements);
+    assert.deepEqual(report.refusals, [], listed(report));
+});
+
+test("a survey root runs a derived constructor no construction reached", () => {
+    // The constructor body is a root's body: its base call keeps nothing the
+    // rolled-back root reads, so it evaluates its arguments and the body
+    // goes on.
+    const { report } = surveySource(
+        `
+        export class PathAbortError extends Error {
+            constructor() {
+                super("bake aborted");
+            }
+        }
+        export class Named extends Error {
+            constructor(readonly code: number) {
+                super("code " + code);
+                this.name = "Named";
+            }
+        }
+        localStorage.setItem("ready", "1");
+    `,
+        { fileName: resolve("survey-derived-constructor.ts") },
+    );
+    assert.ok(report.program);
+    assert.equal(report.program.attempted, report.program.statements);
+    assert.deepEqual(report.refusals, [], listed(report));
+});
+
+test("a generic class's method roots keep a set of its object type parameter", () => {
+    // No construction binds `T`: the roots lower at its constraint, and a
+    // set of `object` holds dynamic values, as an array of them does.
+    const { report } = surveySource(
+        `
+        export class UploadBatch<T extends object> {
+            private readonly dirty = new Set<T>();
+            mark(material: T): void { this.dirty.add(material); }
+            flush(upload: (material: T) => void): void {
+                for (const material of this.dirty) upload(material);
+                this.dirty.clear();
+            }
+        }
+        localStorage.setItem("ready", "1");
+    `,
+        { fileName: resolve("survey-generic-batch.ts") },
+    );
+    assert.ok(report.program);
+    assert.equal(report.program.attempted, report.program.statements);
+    assert.deepEqual(report.refusals, [], listed(report));
+});
+
+test("a survey root typed by a contextual generic signature lowers at its constraint", () => {
+    // `constrain` has no type parameters of its own: the signature it
+    // implements does, and no call binds them.
+    const { report } = surveySource(
+        `
+        export interface DropSeat { x: number; z: number; y?: number }
+        export interface Seat {
+            constrain<T extends DropSeat>(kind: string, point: T): T | null;
+        }
+        export function createSeat(limit: number): Seat {
+            return {
+                constrain(kind, point) {
+                    if ((point.y ?? 0) > 0 || point.x > limit) return null;
+                    return point;
+                },
+            };
+        }
+        localStorage.setItem("ready", "1");
+    `,
+        { fileName: resolve("survey-contextual-generic.ts") },
+    );
+    assert.ok(report.program);
+    assert.equal(report.program.attempted, report.program.statements);
+    assert.deepEqual(report.refusals, [], listed(report));
+});
+
+test("a survey root reads a class's polymorphic this as its instance", () => {
+    // `const owner = this` types the capture `this`, a type parameter no
+    // call binds: it stands for the class's instance.
+    const { report } = surveySource(
+        `
+        export interface Provider { readonly version: number; readonly dirty: boolean }
+        export class Bounds {
+            private dirty = true;
+            private version = 0;
+            readonly provider: Provider;
+            constructor(private readonly limit: number) {
+                const owner = this;
+                this.provider = {
+                    get version(): number { return owner.version; },
+                    get dirty(): boolean { return owner.dirty && owner.limit > 0; },
+                };
+            }
+            touch(): void { this.version++; this.dirty = false; }
+        }
+        localStorage.setItem("ready", "1");
+    `,
+        { fileName: resolve("survey-this-alias.ts") },
+    );
+    assert.ok(report.program);
+    assert.equal(report.program.attempted, report.program.statements);
+    assert.deepEqual(report.refusals, [], listed(report));
+});
+
+test("a survey root iterates what a dependency's Iterable result holds", () => {
+    // A stored function returning Iterable<T> holds the object its body
+    // returns; the root's placeholder dependency has that signature.
+    const { report } = surveySource(
+        `
+        export interface Deps {
+            railedSlots(): Iterable<number>;
+            railFor(slot: number): number | undefined;
+            functions(): { homeIdsWithFunction(kind: "witchtower"): Iterable<number> };
+        }
+        export function createController(deps: Deps): { tick(): number } {
+            const shipped = new Set<number>();
+            return {
+                tick(): number {
+                    let total = 0;
+                    for (const slot of deps.railedSlots()) {
+                        const rail = deps.railFor(slot);
+                        if (rail === undefined || shipped.has(slot)) continue;
+                        shipped.add(slot);
+                        total += rail;
+                    }
+                    for (const id of deps.functions().homeIdsWithFunction("witchtower")) total += id;
+                    return total;
+                },
+            };
+        }
+    `,
+        { fileName: resolve("survey-iterable-deps.ts") },
+    );
+    assert.ok(report.program);
+    assert.equal(report.program.attempted, report.program.statements);
+    assert.deepEqual(report.refusals, [], listed(report));
+});
+
+test("a survey root calls a dependency whose signature has an undefined-only parameter", () => {
+    // `founder?: undefined` holds no payload: the stored signature erases
+    // it, as it erases a void parameter, so the placeholder keeps `spawn`.
+    const { report } = surveySource(
+        `
+        interface Spec { homeX: number; homeZ: number }
+        interface Birth { reservationId: number }
+        export interface Port {
+            spawn(spec: Spec, birth?: Birth, founder?: undefined, restore?: { age: number }): number;
+            despawn(index: number): void;
+        }
+        export function add(host: Port, x: number): number {
+            const index = host.spawn({ homeX: x, homeZ: 0 }, undefined, undefined);
+            if (index < 0) host.despawn(0);
+            return index;
+        }
+        localStorage.setItem("ready", "1");
+    `,
+        { fileName: resolve("survey-undefined-parameter.ts") },
+    );
+    assert.ok(report.program);
+    assert.equal(report.program.attempted, report.program.statements);
+    assert.deepEqual(report.refusals, [], listed(report));
 });

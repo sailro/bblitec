@@ -2,7 +2,7 @@
 // typed data declarations, recursive and forward callback bindings, and
 // array/object binding patterns, lowered into the scope stack's bindings.
 import ts from "typescript";
-import { bindingReferences } from "./binding-references.js";
+import { soleBindingRead } from "./binding-references.js";
 import { isRebound } from "./binding-rebinds.js";
 import {
     absenceOf,
@@ -356,6 +356,23 @@ export class DeclarationLowerer {
         );
     }
 
+    /**
+     * Binds `name` as the empty slot of the nullable resource its declared
+     * type is (`Mesh | null`), as its declaration initialized to null does:
+     * false for any other type.
+     */
+    public bindAbsentResource(name: ts.Identifier): boolean {
+        const resource = this.context.nullableResourceKind(name);
+        if (!resource) return false;
+        this.bindOptionalResource(
+            name,
+            this.context.allocateTemporaryCppName(name.text),
+            resource,
+            false,
+        );
+        return true;
+    }
+
     private bindOptionalResource(
         name: ts.Identifier,
         cppName: string,
@@ -405,25 +422,43 @@ export class DeclarationLowerer {
             )
         )
             return true;
+        // A function a call retains, passed by name or as a member of an
+        // object literal (`create({ cancel: close })`), reads the binding
+        // when it runs.
+        const namedFunctions = (argument: ts.Expression): ts.Identifier[] => {
+            const value = this.context.unwrap(argument);
+            if (ts.isIdentifier(value)) return [value];
+            if (!ts.isObjectLiteralExpression(value)) return [];
+            return value.properties.flatMap((property) => {
+                if (ts.isShorthandPropertyAssignment(property))
+                    return [property.name];
+                if (!ts.isPropertyAssignment(property)) return [];
+                const member = this.context.unwrap(property.initializer);
+                return ts.isIdentifier(member) ? [member] : [];
+            });
+        };
         return someAnalysisNode(
             initializer,
             (node) =>
                 ts.isCallExpression(node) &&
                 node.arguments.some((argument, index) => {
-                    const value = this.context.unwrap(argument);
-                    if (!ts.isIdentifier(value)) return false;
-                    const callback = tryResolveFunctionDeclaration(
-                        this.context.checker,
-                        value,
-                    );
+                    const bodies = namedFunctions(argument).flatMap((name) => {
+                        const body = tryResolveFunctionDeclaration(
+                            this.context.checker,
+                            name,
+                        )?.body;
+                        return body ? [body] : [];
+                    });
                     return (
-                        !!callback?.body &&
+                        bodies.length > 0 &&
                         this.context.sharedClosures.callRetainsArgument(
                             node,
                             index,
                             true,
                         ) &&
-                        someAnalysisNode(callback.body, namesBinding)
+                        bodies.some((body) =>
+                            someAnalysisNode(body, namesBinding),
+                        )
                     );
                 }),
         );
@@ -1048,25 +1083,9 @@ export class DeclarationLowerer {
                 armKind === ts.SyntaxKind.TrueKeyword)
         )
             return undefined;
-        const symbol = declaredSymbol(checker, declaration.name);
-        const references = symbol
-            ? bindingReferences(this.context.program, checker, symbol)
-            : [];
-        const reference = references[0];
-        if (references.length !== 1 || !reference) return undefined;
-        const block = declaration.parent.parent.parent;
-        for (
-            let node: ts.Node = reference.parent;
-            node !== block;
-            node = node.parent
-        )
-            if (
-                !node.parent ||
-                ts.isFunctionLike(node) ||
-                ts.isIterationStatement(node, false)
-            )
-                return undefined;
-        return selection;
+        return soleBindingRead(this.context.program, checker, declaration)
+            ? selection
+            : undefined;
     }
 
     /** Whether a selection has no one native storage (its arms differ). */
@@ -2619,16 +2638,13 @@ export class DeclarationLowerer {
             const site = callback.callbackDeclaration ?? name;
             const parameters = callback.nativeCallbackParameterTypes;
             const property = ownerType.getProperty(key);
-            const declaredType =
+            const propertyType =
                 property &&
-                this.context.dataTypes.fromTsType(
-                    this.context.checker.getTypeOfSymbolAtLocation(
-                        property,
-                        name,
-                    ),
-                    name,
-                );
-            const type: DataType | undefined =
+                this.context.checker.getTypeOfSymbolAtLocation(property, name);
+            const declaredType =
+                propertyType &&
+                this.context.dataTypes.fromTsType(propertyType, name);
+            const known: DataType | undefined =
                 declaredType?.kind === "function"
                     ? declaredType
                     : parameters?.every(
@@ -2643,14 +2659,20 @@ export class DeclarationLowerer {
                                 : {}),
                         }
                       : this.context.dataLowerer.dataTypeAt(site);
+            // The slot is stored: a generic method no one signature holds is
+            // the family of the instantiations its calls reach.
+            const type =
+                known?.kind === "function" || !propertyType
+                    ? known
+                    : this.context.dataTypes.fromStoredTsType(
+                          propertyType,
+                          name,
+                      );
             if (type?.kind !== "function") {
                 const lacking =
-                    property &&
+                    propertyType &&
                     this.context.dataTypes.unrepresentedSignaturePart(
-                        this.context.checker.getTypeOfSymbolAtLocation(
-                            property,
-                            name,
-                        ),
+                        propertyType,
                         name,
                     );
                 this.context.fail(
@@ -3136,6 +3158,7 @@ export class DeclarationLowerer {
         const escapes =
             enclosingBody === undefined ||
             recursiveStorageEscapes(
+                this.context.program,
                 this.context.checker,
                 new EmissionSet<SupportedFunction>([callback]),
                 [enclosingBody],
@@ -3448,7 +3471,7 @@ export class DeclarationLowerer {
                 if (!type)
                     this.context.fail(
                         declaration,
-                        "Demanded binding no longer has a native storage representation.",
+                        `Demanded binding no longer has a native storage representation: ${this.context.dataTypes.unrepresentedPart(this.context.checker.getTypeAtLocation(declaration.name), declaration, true)}.`,
                     );
                 // Retained readonly arrays own their initializer just like
                 // returned arrays; a span would outlive a temporary projection.
@@ -3646,9 +3669,7 @@ export class DeclarationLowerer {
             );
         if (
             !annotated &&
-            ((this.context.checker.getNonNullableType(declaredType).flags &
-                ts.TypeFlags.NonPrimitive) !==
-                0 ||
+            (this.context.dataTypes.holdsObjectValue(declaredType) ||
                 (rebound && (declaredType.flags & ts.TypeFlags.Unknown) !== 0))
         )
             annotated = this.context.dataTypes.dynamicJsonType(declaredType);
@@ -5415,7 +5436,14 @@ export class DeclarationLowerer {
                 return;
             }
             if (!ts.isIdentifier(element.name)) {
-                this.bindPattern(element.name, bound, element);
+                this.bindPattern(
+                    element.name,
+                    this.context.dataLowerer.narrowBindingLane(
+                        bound,
+                        element.name,
+                    ),
+                    element,
+                );
                 return;
             }
             let stored = this.context.dataLowerer.narrowBindingLane(

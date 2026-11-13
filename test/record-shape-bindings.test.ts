@@ -104,7 +104,7 @@ test("record union storage refuses widening a mutable scalar field", () => {
             const selected=read(Date.now()>0?'first':'second');
             if(selected===stored[0])throw new Error('selected');
         `),
-        /preserving its original fields and storage kinds/,
+        /no shared layout holds both record types/,
     );
 });
 

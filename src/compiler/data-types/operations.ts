@@ -71,11 +71,53 @@ export function soleMemberIndex(
         : first;
 }
 
+/**
+ * The union's one function arm, or beside others the arm whose signature
+ * equals `signature()` (asked only then); -1 when none does.
+ */
+export function functionArmIndex(
+    type: DataType<"union">,
+    signature: () => DataType | undefined,
+): number {
+    const arms = type.members.filter((member) => member.kind === "function");
+    if (arms.length < 2) return soleMemberIndex(type, "function");
+    const own = signature();
+    return own?.kind === "function"
+        ? type.members.findIndex(
+              (member) =>
+                  member.kind === "function" &&
+                  dataTypesEqual(
+                      { ...member, identity: true },
+                      { ...own, identity: true },
+                  ),
+          )
+        : -1;
+}
+
 /** A storage past its optional wrapper. */
 export function presentDataType(
     type: DataType | undefined,
 ): DataType | undefined {
     return type?.kind === "optional" ? type.inner : type;
+}
+
+/**
+ * The refusal a reading of `fact` meets where `type`, its present value or
+ * one of its union members does not record it (`unrecorded`).
+ */
+export function unrecordedFact(
+    type: DataType | undefined,
+    fact: "identity" | "objectClass" | "arrayness",
+): string | undefined {
+    if (type?.kind === "optional") return unrecordedFact(type.inner, fact);
+    if (type?.kind === "union") {
+        for (const member of type.members) {
+            const reason = unrecordedFact(member, fact);
+            if (reason) return reason;
+        }
+        return undefined;
+    }
+    return type && kinds[type.kind].unrecorded?.[fact];
 }
 
 /** An optional undefined field stores key presence, never a different value. */

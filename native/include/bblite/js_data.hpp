@@ -3359,6 +3359,17 @@ template <typename Yield, bool Entries, typename T>
 /** Which part of each entry a Map iterator yields. */
 enum class MapPart { keys, values, entries };
 
+/** One step of a `keys`, `values` or `entries` iterator over a key and its value. */
+template <typename Yield, MapPart Part, typename K, typename V>
+[[nodiscard]] Nullable<Yield> map_part_yielded(const K& key, const V& value) {
+    if constexpr (Part == MapPart::keys)
+        return Nullable<Yield>::yielded(key);
+    else if constexpr (Part == MapPart::values)
+        return Nullable<Yield>::yielded(value);
+    else
+        return Nullable<Yield>::yielded(Yield{key, value});
+}
+
 /** The default projector keeps no state while accepting the existing nullptr sentinel. */
 struct NoMapEntryProjector {
     constexpr NoMapEntryProjector() = default;
@@ -3393,14 +3404,10 @@ struct MapCursor {
             return {};
         }
         const auto& entry = **cursor;
-        if constexpr (Part == MapPart::keys)
-            return Nullable<Yield>::yielded(entry.first);
-        else if constexpr (Part == MapPart::values)
-            return Nullable<Yield>::yielded(entry.second);
-        else if constexpr (!std::is_same_v<EntryProjector, std::nullptr_t>)
+        if constexpr (Part == MapPart::entries && !std::is_same_v<EntryProjector, std::nullptr_t>)
             return Nullable<Yield>::yielded(project_entry(entry.first, entry.second));
         else
-            return Nullable<Yield>::yielded(Yield{entry.first, entry.second});
+            return map_part_yielded<Yield, Part>(entry.first, entry.second);
     }
     void gc_trace(const TraceVisitor& visitor) const {
         visitor(values);
@@ -3416,6 +3423,63 @@ template <typename Yield, MapPart Part, typename K, typename V,
                   std::is_empty_v<EntryProjector>);
     return Iterator<Yield>(
         MapCursor<Yield, K, V, Part, EntryProjector>{values, {}, std::move(project)});
+}
+
+/** A live Array iterator: each pull reads the current length; once done it stays done. */
+template <typename T> struct ArrayCursor {
+    std::optional<Array<T>> values;
+    std::size_t index = 0;
+    Nullable<T> operator()() {
+        if (!values)
+            return {};
+        if (index >= values->size()) {
+            values.reset();
+            return {};
+        }
+        return Nullable<T>::yielded((*values)[index++]);
+    }
+    void gc_trace(const TraceVisitor& visitor) const { visitor(values); }
+};
+
+/**
+ * A stored JavaScript iterable: each iteration calls its source's
+ * `[Symbol.iterator]()`. An Array, Set or Map opens a fresh live iterator;
+ * an iterator source returns itself, so iterations share its position.
+ */
+template <typename T> class Iterable {
+public:
+    Iterable() = default;
+    explicit Iterable(Callback<Iterator<T>()> open) : open_(std::move(open)) {}
+    [[nodiscard]] Iterator<T> iterator() const { return open_(); }
+    [[nodiscard]] auto begin() const { return iterator().begin(); }
+    [[nodiscard]] std::default_sentinel_t end() const { return {}; }
+    void gc_trace(const TraceVisitor& visitor) const { visitor(open_); }
+
+private:
+    Callback<Iterator<T>()> open_;
+};
+
+template <typename T> [[nodiscard]] Iterable<T> array_iterable(Array<T> values) {
+    return Iterable<T>(make_closure(std::move(values), [](const Array<T>& owner) {
+        return Iterator<T>(ArrayCursor<T>{owner, 0});
+    }));
+}
+
+template <typename Yield, typename T> [[nodiscard]] Iterable<Yield> set_iterable(Set<T> values) {
+    return Iterable<Yield>(make_closure(
+        std::move(values), [](const Set<T>& owner) { return set_iterator<Yield, false>(owner); }));
+}
+
+template <typename Yield, typename K, typename V>
+[[nodiscard]] Iterable<Yield> map_iterable(Map<K, V> values) {
+    return Iterable<Yield>(make_closure(std::move(values), [](const Map<K, V>& owner) {
+        return map_iterator<Yield, MapPart::entries>(owner);
+    }));
+}
+
+template <typename T> [[nodiscard]] Iterable<T> iterator_iterable(Iterator<T> iterator) {
+    return Iterable<T>(
+        make_closure(std::move(iterator), [](const Iterator<T>& self) { return self; }));
 }
 
 template <typename T> using Span = std::span<T>;

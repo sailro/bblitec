@@ -76,6 +76,7 @@ import { renderClosure } from "./closure-captures.js";
 import {
     borrowedPlatformEventKind,
     handleCppType,
+    isPinnedEngineObjectKind,
     touchListDataType,
     typedArrayBytesPerElement,
     type DataType,
@@ -141,6 +142,7 @@ import {
     type Value,
     type ValueKind,
     recordMethodValue,
+    staticStringValue,
 } from "./types.js";
 import type { UiProjection } from "./ui-projection.js";
 import {
@@ -1176,6 +1178,20 @@ export const propertyRules: readonly PropertyRule[] = [
         property: "receiveShadows",
         value: "boolean",
         record: ["meshes", "receives_shadows"],
+    },
+    {
+        // The flag the `pickable` assignment writes, undefined until one does.
+        owner: "mesh",
+        property: "pickable",
+        feature: "mesh:pickable",
+        value: "data",
+        dataType: {
+            kind: "optional",
+            inner: { kind: "boolean" },
+            undefinedOnly: true,
+        },
+        record: ["meshes", "pickable.source_value()"],
+        helperReturnsFreshData: true,
     },
     {
         owner: "mesh",
@@ -3507,21 +3523,6 @@ export class PropertyAccessLowerer {
                       cpp: `std::string(${documentHidden} ? "hidden" : "visible")`,
                       dataType: { kind: "string" },
                   };
-        if (
-            this.context.libraryGlobal(ownerExpression) === "window" &&
-            (expression.name.text === "innerWidth" ||
-                expression.name.text === "innerHeight")
-        ) {
-            const property =
-                expression.name.text === "innerWidth" ? "width" : "height";
-            return {
-                kind: "number",
-                cpp:
-                    `static_cast<double>(${this.context.requireDefaultEngine(expression)}` +
-                    `.options.${property})`,
-                dataType: { kind: "number" },
-            };
-        }
         if (ownerExpression.kind === ts.SyntaxKind.ThisKeyword) {
             // Field reads resolve through the instance record the
             // constructor built.
@@ -4379,6 +4380,25 @@ export class PropertyAccessLowerer {
             expression,
         );
         if (exported) return exported;
+        // An engine object the pinned package makes is an object literal:
+        // its constructor is `Object`, whose name is "Object".
+        const engineObject =
+            owner.kind === "data" && owner.dataType?.kind === "handle"
+                ? owner.dataType.handle
+                : owner.kind;
+        if (
+            expression.name.text === "constructor" &&
+            isPinnedEngineObjectKind(engineObject)
+        )
+            return {
+                kind: "record",
+                cpp: "",
+                recordProperties: {
+                    name: staticStringValue("Object", (text) =>
+                        this.context.cppString(text),
+                    ),
+                },
+            };
         // A retained element's own reads, an optional chain's link included.
         const element =
             owner.kind === "ui-element"

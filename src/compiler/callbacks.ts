@@ -418,6 +418,8 @@ export class CallbackLowerer {
                 "A CSM receiver update requires a local function or function literal.",
             );
         }
+        // It runs at each fit, after the registration's later declarations.
+        this.hoistForwardCallbackBindings(callback);
         const dataName =
             this.context.allocateTemporaryCppName("csm_receiver_data");
         this.context.registerNativeBindingType(dataName, "bbl::js::F32Array");

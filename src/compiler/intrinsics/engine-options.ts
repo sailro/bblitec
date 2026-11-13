@@ -143,6 +143,7 @@ export interface EngineOptionContext
             | "cppString"
             | "bindings"
             | "conditions"
+            | "dataTypes"
         > {}
 
 /**
@@ -175,6 +176,66 @@ interface RenderTargetSize {
     height: string;
     surface?: Value;
     scale?: string;
+}
+
+/**
+ * The extents of a fixed size a value holds (`size: shadowSize`, a
+ * `{ width, height }` record): each a render-target dimension, or
+ * undefined for any other value.
+ */
+function fixedSizeExtents(
+    context: EngineOptionContext,
+    value: Value,
+    node: ts.Expression,
+): { width: string; height: string } | undefined {
+    const dimension = (number: string): string =>
+        `bbl::render_target_dimension(${number})`;
+    const built =
+        value.kind === "record" && !value.cpp
+            ? value.recordProperties
+            : undefined;
+    if (built) {
+        if (
+            !built.width ||
+            !built.height ||
+            Object.keys(built).some(
+                (key) => key !== "width" && key !== "height",
+            )
+        )
+            return undefined;
+        const lane = (lane: Value): string =>
+            dimension(
+                context.dataLowerer.compileKnownValueForSink(
+                    lane,
+                    { kind: "number" },
+                    node,
+                ),
+            );
+        return { width: lane(built.width), height: lane(built.height) };
+    }
+    const struct =
+        value.dataType?.kind === "struct" ? value.dataType : undefined;
+    if (!struct) return undefined;
+    const fields = context.dataTypes.structFields(struct.name, node);
+    const field = (name: string) =>
+        fields.find(
+            (candidate) =>
+                candidate.sourceName === name &&
+                candidate.type.kind === "number",
+        );
+    const widthField = field("width");
+    const heightField = field("height");
+    if (!widthField || !heightField || fields.length !== 2) return undefined;
+    const owner = context.bindings.pinValueToTemporary(
+        value,
+        "render_target_size",
+        node,
+    );
+    const access = context.dataTypes.memberAccess(struct.name);
+    return {
+        width: dimension(`${owner.cpp}${access}${widthField.name}`),
+        height: dimension(`${owner.cpp}${access}${heightField.name}`),
+    };
 }
 
 function renderTargetSize(
@@ -268,8 +329,12 @@ function renderTargetSize(
                 unwrappedSize,
             );
         } else {
-            surface = value;
-            context.expectKind(surface, "engine", unwrappedSize);
+            const extents = fixedSizeExtents(context, value, unwrappedSize);
+            if (extents) ({ width, height } = extents);
+            else {
+                surface = value;
+                context.expectKind(surface, "engine", unwrappedSize);
+            }
         }
     }
     return {

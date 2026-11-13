@@ -294,7 +294,7 @@ export class SceneMaterialRecorder {
     /** Stamps a plugin list on the scene PBR material the write names. */
     public recordScenePbrPlugins(
         plugins: readonly MaterialPluginManifest[],
-        index: number | undefined,
+        index: number,
     ): void {
         this.sceneMaterialForSetter("material.plugins", index).plugins =
             plugins;
@@ -336,23 +336,18 @@ export class SceneMaterialRecorder {
      * Stamps setter options on the scene-code material the call names, the
      * way the pin's `setPbrSheen`/`setPbrClearCoat` stamp the props object
      * onto the material object they are handed. `index` is that object
-     * identity at compile time and rides the value the setter was passed,
-     * so a material of another family — which owns no manifest entry to
-     * stamp — is a named failure rather than a guess.
+     * identity at compile time and rides the value the setter was passed;
+     * an index no recorded material holds is a named failure.
      */
     private sceneMaterialForSetter(
         setter: string,
-        index: number | undefined,
+        index: number,
     ): Mutable<ScenePbrMaterialManifest> {
-        const material =
-            index === undefined ? undefined : this.scenePbrMaterials[index];
-        if (!material) {
+        const material = this.scenePbrMaterials[index];
+        if (!material)
             throw new Error(
-                `${setter} names no scene-code PBR material; only a value ` +
-                    "createPbrMaterial produced, or a mesh one was assigned " +
-                    "to, resolves which record to stamp.",
+                `${setter} has no scene-code PBR material ${index}.`,
             );
-        }
         return writable(material);
     }
 
@@ -363,7 +358,7 @@ export class SceneMaterialRecorder {
      * appends in creation order. Returns the new entry's index, which is
      * the view's own compile-time identity.
      */
-    public recordScenePbrNoColorView(sourceIndex: number | undefined): number {
+    public recordScenePbrNoColorView(sourceIndex: number): number {
         const source = this.sceneMaterialForSetter(
             "createPbrNoColorMaterialView",
             sourceIndex,
@@ -383,21 +378,21 @@ export class SceneMaterialRecorder {
         return this.sceneMaterialCount++;
     }
 
-    public recordScenePbrUnlit(index: number | undefined): void {
+    public recordScenePbrUnlit(index: number): void {
         this.sceneMaterialForSetter("setPbrUnlit", index).unlit = true;
     }
 
-    public recordScenePbrSkybox(index: number | undefined): void {
+    public recordScenePbrSkybox(index: number): void {
         this.sceneMaterialForSetter("setPbrSkybox", index).skyboxMode = true;
     }
 
-    public recordScenePbrGammaAlbedo(index: number | undefined): void {
+    public recordScenePbrGammaAlbedo(index: number): void {
         this.sceneMaterialForSetter("setPbrGammaAlbedo", index).gammaAlbedo =
             true;
     }
 
     public recordScenePbrAlphaCutoff(
-        index: number | undefined,
+        index: number,
         cutoff: number,
     ): Readonly<ScenePbrMaterialManifest> {
         const material = this.sceneMaterialForSetter(
@@ -409,7 +404,7 @@ export class SceneMaterialRecorder {
     }
 
     public recordScenePbrShadowOnly(
-        index: number | undefined,
+        index: number,
         options: NonNullable<ScenePbrMaterialManifest["shadowOnly"]>,
     ): void {
         this.sceneMaterialForSetter("setShadowOnly", index).shadowOnly =
@@ -418,14 +413,14 @@ export class SceneMaterialRecorder {
 
     public recordScenePbrSheen(
         sheen: ScenePbrSheenManifest,
-        index: number | undefined,
+        index: number,
     ): void {
         this.sceneMaterialForSetter("setPbrSheen", index).sheen = sheen;
     }
 
     public recordScenePbrClearCoat(
         clearCoat: ScenePbrClearCoatManifest,
-        index: number | undefined,
+        index: number,
     ): void {
         this.sceneMaterialForSetter("setPbrClearCoat", index).clearCoat =
             clearCoat;
@@ -433,7 +428,7 @@ export class SceneMaterialRecorder {
 
     public recordScenePbrEmissive(
         color: readonly [number, number, number] | undefined,
-        index: number | undefined,
+        index: number,
     ): void {
         const material = this.sceneMaterialForSetter("setPbrEmissive", index);
         material.hasEmissiveColor = true;
@@ -442,7 +437,7 @@ export class SceneMaterialRecorder {
 
     public recordScenePbrIridescence(
         iridescence: ScenePbrIridescenceManifest,
-        index: number | undefined,
+        index: number,
     ): void {
         this.sceneMaterialForSetter("setPbrIridescence", index).iridescence =
             iridescence;
@@ -450,7 +445,7 @@ export class SceneMaterialRecorder {
 
     public recordScenePbrLightmap(
         lightmap: ScenePbrLightmapManifest,
-        index: number | undefined,
+        index: number,
     ): void {
         this.sceneMaterialForSetter("setPbrLightmap", index).lightmap =
             lightmap;
@@ -458,7 +453,7 @@ export class SceneMaterialRecorder {
 
     public recordScenePbrSubsurface(
         subsurface: ScenePbrSubsurfaceManifest,
-        index: number | undefined,
+        index: number,
     ): void {
         this.sceneMaterialForSetter("setPbrSubsurface", index).subsurface =
             subsurface;
@@ -466,7 +461,7 @@ export class SceneMaterialRecorder {
 
     public recordScenePbrAnisotropy(
         anisotropy: ScenePbrAnisotropyManifest,
-        index: number | undefined,
+        index: number,
     ): void {
         this.sceneMaterialForSetter("setPbrAnisotropy", index).anisotropy =
             anisotropy;
@@ -474,7 +469,7 @@ export class SceneMaterialRecorder {
 
     public recordScenePbrMetallicReflectance(
         reflectance: ScenePbrMetallicReflectanceManifest,
-        index: number | undefined,
+        index: number,
     ): void {
         const material = this.sceneMaterialForSetter(
             "setPbrMetallicReflectance",

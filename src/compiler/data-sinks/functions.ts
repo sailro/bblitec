@@ -63,7 +63,11 @@ function expressionFunction(
             nativeType?.kind === "function" &&
             nativeType.restParameter !== undefined &&
             dataType.restParameter === undefined &&
-            !hasTupleRestLanes(lowerer.context.checker, unwrapped)
+            !hasTupleRestLanes(
+                lowerer.context.checker,
+                lowerer.context.dataTypes,
+                unwrapped,
+            )
         ) {
             const cpp = lowerer.context.compileStoredDataFunction(
                 unwrapped,
@@ -191,7 +195,37 @@ function widenedLane(
         completionProofWidens(from, to)
     )
         return cpp;
-    if (!plainLaneWidens(from, to)) return undefined;
+    // A string union's member is also the lane's: one of a narrower union
+    // (`"house" | "tower"` into the building kinds), or any into a string.
+    const types = lowerer.context.dataTypes;
+    const enumWidens =
+        from.kind === "enum" &&
+        (to.kind === "string" ||
+            (to.kind === "enum" &&
+                types
+                    .enumMembers(from.name)
+                    .every((member) =>
+                        types.enumMembers(to.name).includes(member),
+                    )));
+    if (!enumWidens && !plainLaneWidens(from, to)) {
+        // A record a lane hands on is one object under both types: their
+        // layouts join (`storeRecordAs`), after which the lanes are one
+        // struct.
+        const element = (type: DataType): DataType =>
+            type.kind === "vector" || type.kind === "span"
+                ? type.element
+                : type;
+        const [fromRecord, toRecord] = [element(from), element(to)];
+        if (
+            fromRecord.kind === "struct" &&
+            toRecord.kind === "struct" &&
+            fromRecord.name !== toRecord.name
+        )
+            types.storeRecordAs(fromRecord, toRecord, node, lowerer.context, {
+                sharedArray: fromRecord !== from,
+            });
+        return undefined;
+    }
     let converted = "";
     lines.push(
         ...lowerer.context.captureEmittedLines(() => {
@@ -531,6 +565,7 @@ function valueFunction(
             dataType.restParameter === undefined &&
             !hasTupleRestLanes(
                 lowerer.context.checker,
+                lowerer.context.dataTypes,
                 value.callbackDeclaration,
             )
         ) {

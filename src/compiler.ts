@@ -43,6 +43,7 @@ import {
 } from "./compiler/emission-transaction.js";
 import type {
     LoweringServices,
+    EmissionMark,
     LoweringStatement,
     NativeFunctionBodyOptions,
 } from "./compiler/lowering-services.js";
@@ -83,12 +84,13 @@ import {
     traceSourceProgram,
     traceSourceNode,
 } from "./compiler/source-trace.js";
-import { emitSurveyRoots, emptyStorage } from "./compiler/survey-roots.js";
+import { emptyStorage } from "./compiler/empty-storage.js";
+import { emitSurveyRoots } from "./compiler/survey-roots.js";
 import {
     activeSurvey,
     SurveyCollector,
     SurveyPassLimit,
-    type SurveyProgress,
+    type SurveySettings,
     withSurvey,
     type SurveyReport,
 } from "./compiler/survey.js";
@@ -107,8 +109,8 @@ import { moduleLevelCallee } from "./compiler/runtime-case-split.js";
 import { StorageDemand } from "./compiler/storage-demand.js";
 import { ReplayStorage } from "./compiler/replay-storage.js";
 import {
-    NativeRecordDemandRefused,
     NativeRecordStorageRequired,
+    refusingRecordDemand,
 } from "./compiler/native-record-storage.js";
 import { resolve } from "node:path";
 import { integerCounterOf } from "./compiler/integer-loops.js";
@@ -661,14 +663,9 @@ interface SurveyOutcome {
 export function surveySource(
     source: string,
     options: CompileOptions = {},
-    progress?: SurveyProgress,
-    passLimit?: number,
+    settings: SurveySettings = {},
 ): SurveyOutcome {
-    const collector = new SurveyCollector(
-        progress,
-        isReplayBesidesStorage,
-        passLimit,
-    );
+    const collector = new SurveyCollector(settings, isReplay);
     return withSurvey(collector, () => {
         try {
             const result = compileSourceApplication(source, options);
@@ -692,11 +689,12 @@ function compileSourceApplication(
 }
 
 /**
- * The replays besides storage a compile applies before its next attempt: a
- * lazy module's activation, runtime query state, pending activations.
+ * The replays a compile applies before its next attempt: a storage demand,
+ * a lazy module's activation, runtime query state, pending activations.
  */
-function isReplayBesidesStorage(error: unknown): error is Error {
+function isReplay(error: unknown): error is Error {
     return (
+        error instanceof StorageDemand ||
         error instanceof ModuleActivationRequired ||
         error instanceof RuntimeSearchParamsRequired ||
         error instanceof PendingActivationsRequired
@@ -825,29 +823,36 @@ function lowerSourceApplication(
                 (demand) =>
                     !storage.joinsAlreadyHeld(demand) && storage.add(demand),
             ).length;
-        // A survey lowers every statement in each pass: a replay (a storage
-        // demand, a lazy module's activation) rolls its statement back as a
-        // refusal does, and the next pass replays with what this one met,
-        // until a pass meets nothing new. A replay raised while the program
-        // settles, every statement lowered, ends the pass with the others; one
-        // raised in an attempt's setup restarts it.
+        // A survey lowers every statement in each pass: a storage demand a
+        // statement meets goes into the storage at once and the statement
+        // lowers again; any other replay (a lazy module's activation) rolls
+        // its statement back as a refusal does, and the next pass replays
+        // with what this one met, until a pass meets and takes nothing new.
+        // A replay raised in an attempt's setup restarts it; one raised once
+        // every statement lowered ends the pass with the others.
         if (survey)
             for (;;) {
                 const realm = input.sourceFile.fileName;
                 let result: CompileResult | undefined;
                 let added = 0;
                 try {
-                    result = survey.attempt(realm, lower);
+                    result = survey.attempt(realm, lower, acceptReplay);
                 } catch (error) {
-                    // Only a replay is accepted.
-                    if (!acceptReplay(error)) throw error;
+                    const accepted = acceptReplay(error);
                     if (!survey.settling(realm)) {
+                        if (!accepted) throw error;
                         survey.restarted(error);
                         continue;
                     }
-                    added++;
+                    // One the storage already holds is the next pass's when
+                    // this one took a demand (its stale storage may raise
+                    // it), and the compile's refusal otherwise.
+                    if (accepted) added++;
+                    else if (survey.taken(realm) === 0 || !isReplay(error))
+                        throw error;
                 }
                 added += survey.replaysOf(realm).filter(acceptReplay).length;
+                added += survey.taken(realm);
                 if (survey.passEnded(added)) continue;
                 if (result) return result;
                 throw new SurveyPassLimit();
@@ -1349,7 +1354,7 @@ class Compiler implements LoweringServices {
         this.emitEntryBody(entry);
         const survey = activeSurvey();
         if (survey && !this.options.workers?.namespace)
-            emitSurveyRoots(this, survey);
+            survey.rollingBack(() => emitSurveyRoots(this, survey));
         survey?.settle();
         if (!this.options.pageStartup?.length) this.emitNativeHostUi();
         this.finalizeSceneRegistration();
@@ -1518,113 +1523,130 @@ class Compiler implements LoweringServices {
             this.ownedRecords.values(),
             this.program,
         );
-        // A demand no native object can hold stands refused: the replay
-        // drops it, and a statement demanding it again refuses instead of
-        // the whole compile.
-        for (const demand of this.ownedRecords.values()) {
-            if (demand.document) continue;
-            try {
-                this.dataTypes.predeclareOwnedRecord(demand);
-            } catch (error) {
-                if (!(error instanceof CompileError)) throw error;
-                throw new NativeRecordDemandRefused(demand, error);
-            }
-        }
-        for (const [declaration, storage] of this.dynamicBindings) {
-            const source = this.checker.getTypeAtLocation(declaration.name);
-            // A record of methods has a type only as the storage it takes:
-            // the binding's one object, whose methods read it as `this`.
-            const type =
-                this.dataTypes.fromTsType(source, declaration) ??
-                (storage === "source"
-                    ? this.dataTypes.fromStoredTsType(source, declaration)
-                    : undefined);
-            if (type) this.dataTypes.markStoredObjectReferences(type);
-        }
+        for (const demand of this.ownedRecords.values())
+            if (!demand.document)
+                refusingRecordDemand(demand, () =>
+                    this.dataTypes.predeclareOwnedRecord(demand),
+                );
+        for (const [declaration, storage] of this.dynamicBindings)
+            this.predeclaring(declaration, () => {
+                const source = this.checker.getTypeAtLocation(declaration.name);
+                // A record of methods has a type only as the storage it takes:
+                // the binding's one object, whose methods read it as `this`.
+                const type =
+                    this.dataTypes.fromTsType(source, declaration) ??
+                    (storage === "source"
+                        ? this.dataTypes.fromStoredTsType(source, declaration)
+                        : undefined);
+                if (type) this.dataTypes.markStoredObjectReferences(type);
+            });
         for (const site of storedReferenceSites(
             this.program.getSourceFiles(),
             this.symbols,
-        )) {
-            switch (site.kind) {
-                case "retained": {
-                    const targetType = this.checker.getTypeAtLocation(
+        ))
+            this.predeclaring(
+                site.kind === "retained" ? site.target : site.node,
+                () => this.predeclareSite(site),
+            );
+    }
+
+    /** Predeclares the storage one stored-reference site needs. */
+    private predeclareSite(site: StoredReferenceSite): void {
+        switch (site.kind) {
+            case "retained": {
+                const targetType = this.checker.getTypeAtLocation(site.target);
+                // Existing accessor records keep their getter/setter lowering.
+                // Plain targets are retained by the group's generated writer.
+                const hasAccessors = targetType
+                    .getProperties()
+                    .some((property) =>
+                        property.declarations?.some(
+                            (declaration) =>
+                                ts.isAccessor(declaration) ||
+                                ts.isMethodDeclaration(declaration),
+                        ),
+                    );
+                if (!hasAccessors) {
+                    const dataType = this.dataTypes.fromTsType(
+                        targetType,
                         site.target,
                     );
-                    // Existing accessor records keep their getter/setter lowering.
-                    // Plain targets are retained by the group's generated writer.
-                    const hasAccessors = targetType
-                        .getProperties()
-                        .some((property) =>
-                            property.declarations?.some(
-                                (declaration) =>
-                                    ts.isAccessor(declaration) ||
-                                    ts.isMethodDeclaration(declaration),
-                            ),
-                        );
-                    if (!hasAccessors) {
-                        const dataType = this.dataTypes.fromTsType(
-                            targetType,
-                            site.target,
-                        );
-                        if (dataType?.kind === "struct")
-                            this.dataTypes.markStoredObjectReferences(dataType);
-                    }
-                    break;
-                }
-                case "named-type":
-                    this.dataTypes.fromTsType(
-                        this.checker.getTypeAtLocation(site.node.name),
-                        site.node,
-                    );
-                    break;
-                case "annotated": {
-                    // Mapping an explicitly stored container eagerly marks any
-                    // object-valued entries as shared references. Do this before
-                    // function bodies are emitted so an earlier object literal
-                    // cannot use value syntax for a type that a later Map/Array
-                    // declaration makes reference-backed.
-                    const dataType = this.dataTypes.fromTsType(
-                        this.checker.getTypeFromTypeNode(site.type),
-                        site.type,
-                    );
-                    if (this.bindingSelectsObjects(site.node, dataType))
-                        this.dataTypes.markStoredObjectReferences(dataType!);
-                    break;
-                }
-                case "class-parameter": {
-                    // Class argument binding preserves JavaScript object identity.
-                    // Predeclare that representation before helpers returning the
-                    // same structural type are lowered.
-                    const dataType = this.dataTypes.fromTsType(
-                        this.checker.getTypeAtLocation(site.node),
-                        site.node,
-                    );
                     if (dataType?.kind === "struct")
                         this.dataTypes.markStoredObjectReferences(dataType);
-                    break;
                 }
-                case "field": {
-                    const dataType = this.dataTypes.fromTsType(
-                        this.checker.getTypeAtLocation(site.node),
-                        site.node,
-                    );
-                    if (dataType)
-                        this.dataTypes.markStoredObjectReferences(dataType);
-                    break;
-                }
-                case "home-literal": {
-                    // A method's or accessor's `this` is the object the
-                    // literal creates.
-                    const dataType = this.dataTypes.fromTsType(
-                        this.checker.getContextualType(site.node) ??
-                            this.checker.getTypeAtLocation(site.node),
-                        site.node,
-                    );
-                    if (dataType?.kind === "struct")
-                        this.dataTypes.markStoredObjectReferences(dataType);
-                    break;
-                }
+                break;
             }
+            case "named-type":
+                this.dataTypes.fromTsType(
+                    this.checker.getTypeAtLocation(site.node.name),
+                    site.node,
+                );
+                break;
+            case "annotated": {
+                // Mapping an explicitly stored container eagerly marks any
+                // object-valued entries as shared references. Do this before
+                // function bodies are emitted so an earlier object literal
+                // cannot use value syntax for a type that a later Map/Array
+                // declaration makes reference-backed.
+                const dataType = this.dataTypes.fromTsType(
+                    this.checker.getTypeFromTypeNode(site.type),
+                    site.type,
+                );
+                if (this.bindingSelectsObjects(site.node, dataType))
+                    this.dataTypes.markStoredObjectReferences(dataType!);
+                break;
+            }
+            case "class-parameter": {
+                // Class argument binding preserves JavaScript object identity.
+                // Predeclare that representation before helpers returning the
+                // same structural type are lowered.
+                const dataType = this.dataTypes.fromTsType(
+                    this.checker.getTypeAtLocation(site.node),
+                    site.node,
+                );
+                if (dataType?.kind === "struct")
+                    this.dataTypes.markStoredObjectReferences(dataType);
+                break;
+            }
+            case "field": {
+                const dataType = this.dataTypes.fromTsType(
+                    this.checker.getTypeAtLocation(site.node),
+                    site.node,
+                );
+                if (dataType)
+                    this.dataTypes.markStoredObjectReferences(dataType);
+                break;
+            }
+            case "home-literal": {
+                // A method's or accessor's `this` is the object the
+                // literal creates.
+                const dataType = this.dataTypes.fromTsType(
+                    this.checker.getContextualType(site.node) ??
+                        this.checker.getTypeAtLocation(site.node),
+                    site.node,
+                );
+                if (dataType?.kind === "struct")
+                    this.dataTypes.markStoredObjectReferences(dataType);
+                break;
+            }
+        }
+    }
+
+    /**
+     * Runs a setup step that predeclares the storage `node` needs. In a
+     * survey its refusal is the census's, recorded against the statement
+     * holding `node`, and setup goes on; elsewhere it is the compile's.
+     */
+    public predeclaring(node: ts.Node, work: () => void): void {
+        if (!activeSurvey()) {
+            work();
+            return;
+        }
+        try {
+            this.transaction(work);
+        } catch (error) {
+            if (!(error instanceof CompileError)) throw error;
+            this.surveyRefusal(node, error);
         }
     }
 
@@ -2284,7 +2306,9 @@ class Compiler implements LoweringServices {
         const pinned = pinnedHandleKind(member);
         switch (pinned) {
             case "mesh":
+            case "scene-node":
             case "sprite-layer":
+            case "navigation":
             case "navigation-obstacle":
             case "storage-buffer":
             case "scene":
@@ -7241,6 +7265,7 @@ class Compiler implements LoweringServices {
         if (this.bindings.lookupOptional(name)) return;
         try {
             this.transaction(() => {
+                if (this.declarations.bindAbsentResource(name)) return;
                 const value = emptyStorage(
                     this,
                     this.dataLowerer.dataTypeAt(name),
@@ -7317,6 +7342,7 @@ class Compiler implements LoweringServices {
         const previousIndent = this.indentLevel;
         const previousScope = this.activeEmissionScope;
         this.activeEmissionScope = this.nextEmissionScope++;
+        this.emissionScopeParents.set(this.activeEmissionScope, previousScope);
         this.indentLevel = 0;
         try {
             emitBody();
@@ -7385,6 +7411,32 @@ class Compiler implements LoweringServices {
      */
     @journaled public accessor activeEmissionScope = 0;
     @journaled private accessor nextEmissionScope = 1;
+    /** The scope each captured emission scope was opened in. */
+    private readonly emissionScopeParents = new EmissionMap<number, number>();
+
+    /** Where a declaration emitted now lives: its emission scope and innermost block. */
+    public emissionMark(): EmissionMark {
+        return {
+            emission: this.activeEmissionScope,
+            block: this.emissionBlocks.at(-1)!,
+        };
+    }
+
+    /**
+     * Whether a declaration emitted at `mark` is in scope here: its block is
+     * still open and its emission scope encloses this one. One emitted in
+     * captured lines (a lambda's body, a closed block) is not, once they end.
+     */
+    public reachesEmissionMark(mark: EmissionMark): boolean {
+        if (!this.emissionBlocks.includes(mark.block)) return false;
+        for (
+            let scope: number | undefined = this.activeEmissionScope;
+            scope !== undefined;
+            scope = this.emissionScopeParents.get(scope)
+        )
+            if (scope === mark.emission) return true;
+        return false;
+    }
 
     public beginNativeFunctionBody(
         returnType: DataType | undefined,
@@ -7889,6 +7941,13 @@ class Compiler implements LoweringServices {
             this.useNativeBinding(owner);
     }
 
+    public emitUnderJumpOwners<T>(
+        holders: readonly ts.Node[],
+        emitBody: () => T,
+    ): T {
+        return this.statements.emitUnderJumpOwners(this, holders, emitBody);
+    }
+
     public emitInlinedBody<T>(
         declaration: ts.SignatureDeclaration,
         returns: "break" | "label" | undefined,
@@ -7997,6 +8056,16 @@ class Compiler implements LoweringServices {
     public activeNativeCoroutine(): boolean {
         const top = this.returnFrames.at(-1);
         return top?.kind === "native" && top.coroutine === true;
+    }
+
+    /** Whether the innermost native body discards a returned value (a contextually void callback). */
+    public activeNativeReturnDiscarded(): boolean {
+        const top = this.returnFrames.at(-1);
+        return (
+            top?.kind === "native" &&
+            top.type === "void" &&
+            top.contextualVoid === true
+        );
     }
 
     /** Whether an expression's type is a Promise (every present member). */
@@ -10165,7 +10234,16 @@ class Compiler implements LoweringServices {
     public expectKind(value: Value, kind: ValueKind, node: ts.Node): void {
         if (kind === "string" && isStringValue(value)) return;
         if (value.kind !== kind) {
-            this.fail(node, `Expected ${kind}, received ${value.kind}.`);
+            // Data names its storage and the type it was read as, where the
+            // refusal outlives a probe.
+            const stored =
+                value.kind === "data" && value.dataType && !this.speculating
+                    ? ` (stored as ${JSON.stringify(value.dataType)}, typed '${this.checker.typeToString(this.checker.getTypeAtLocation(node))}')`
+                    : "";
+            this.fail(
+                node,
+                `Expected ${kind}, received ${value.kind}${stored}.`,
+            );
         }
     }
 
@@ -10709,7 +10787,18 @@ class Compiler implements LoweringServices {
         message: string,
         subject: ts.Node,
     ): void {
-        const error = this.refusal(site, message, "unsupported", subject);
+        this.surveyRefusal(
+            site,
+            this.refusal(site, message, "unsupported", subject),
+        );
+    }
+
+    /**
+     * A refusal at `site` decided outside its statement's lowering: a
+     * survey's census records it against the statement holding `site`;
+     * anywhere else (a plan included) it is the compile's.
+     */
+    private surveyRefusal(site: ts.Node, error: CompileError): void {
         const survey = activeStorageDemandPlanner()
             ? undefined
             : activeSurvey();
@@ -10806,8 +10895,7 @@ class Compiler implements LoweringServices {
     public functionEmissionScope(): import("./compiler/function-specializations.js").FunctionEmissionScope {
         return {
             lexical: this.bindings.variableScopes.at(-1)!,
-            emission: this.activeEmissionScope,
-            block: this.emissionBlocks.at(-1)!,
+            ...this.emissionMark(),
             continuation: this.engineLifecycle.engineStartMark?.index ?? -1,
         };
     }

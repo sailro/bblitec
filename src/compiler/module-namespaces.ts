@@ -74,6 +74,28 @@ function isTotalDefinition(expression: ts.Expression): boolean {
     return false;
 }
 
+/**
+ * Whether `statement` is a `const` whose every initializer evaluates totally
+ * and purely: reading one folds its value, so running the statement does
+ * nothing a read does not.
+ */
+export function isTotalConstStatement(
+    statement: ts.Statement,
+    evaluationOrder: { isPureExpression(expression: ts.Expression): boolean },
+): boolean {
+    return (
+        ts.isVariableStatement(statement) &&
+        variableKind(statement.declarationList) === "const" &&
+        statement.declarationList.declarations.every(
+            (declaration) =>
+                ts.isIdentifier(declaration.name) &&
+                declaration.initializer !== undefined &&
+                isTotalDefinition(declaration.initializer) &&
+                evaluationOrder.isPureExpression(declaration.initializer),
+        )
+    );
+}
+
 /** Finite module identities transport independently of their live export bindings. */
 export class ModuleNamespaces {
     /** @unjournaled Immutable source graph, independent of emission and bindings. */
@@ -89,6 +111,11 @@ export class ModuleNamespaces {
     >();
 
     public constructor(private readonly context: LoweringServices) {}
+
+    /** Whether the program evaluates `file`: statically imported at run time, or a lazy module it activates. */
+    public evaluates(file: ts.SourceFile): boolean {
+        return this.evaluatedModules().has(file) || this.activations.has(file);
+    }
 
     private evaluatedModules(): ReadonlySet<ts.SourceFile> {
         if (!this.staticModules) {
@@ -150,36 +177,10 @@ export class ModuleNamespaces {
             context.bindings.pushScope(prefix);
             const scope = context.bindings.variableScopes.at(-1)!;
             try {
-                for (const statement of file.statements) {
-                    if (ts.isVariableStatement(statement)) {
-                        for (const declaration of statement.declarationList
-                            .declarations)
-                            if (readable === "all" || readable.has(declaration))
-                                context.declarations.prepareModuleBinding(
-                                    declaration,
-                                );
-                    } else if (
-                        ts.isModuleDeclaration(statement) ||
-                        ts.isClassDeclaration(statement)
-                    )
-                        context.fail(
-                            statement,
-                            "Lazy namespace/class evaluation requires represented module storage.",
-                        );
-                    if (
-                        ts.isEnumDeclaration(statement) &&
-                        computedEnumMember(context.checker, statement)
-                    )
-                        context.fail(
-                            statement,
-                            "Lazy enum evaluation requires represented module storage.",
-                        );
-                    if (containsSuspension(statement))
-                        context.fail(
-                            statement,
-                            "Top-level await in a lazy module requires asynchronous module activation.",
-                        );
-                }
+                for (const statement of file.statements)
+                    context.predeclaring(statement, () =>
+                        this.prepareLazyStatement(statement, readable),
+                    );
             } finally {
                 const root = context.bindings.variableScopes[0]!;
                 for (const [symbol, binding] of scope)
@@ -187,6 +188,39 @@ export class ModuleNamespaces {
                 context.bindings.popScope();
             }
         }
+    }
+
+    /** Allocates the homes one lazy module statement declares, or refuses it. */
+    private prepareLazyStatement(
+        statement: ts.Statement,
+        readable: ReadonlySet<ts.VariableDeclaration> | "all",
+    ): void {
+        const context = this.context;
+        if (ts.isVariableStatement(statement)) {
+            for (const declaration of statement.declarationList.declarations)
+                if (readable === "all" || readable.has(declaration))
+                    context.declarations.prepareModuleBinding(declaration);
+        } else if (
+            ts.isModuleDeclaration(statement) ||
+            ts.isClassDeclaration(statement)
+        )
+            context.fail(
+                statement,
+                "Lazy namespace/class evaluation requires represented module storage.",
+            );
+        if (
+            ts.isEnumDeclaration(statement) &&
+            computedEnumMember(context.checker, statement)
+        )
+            context.fail(
+                statement,
+                "Lazy enum evaluation requires represented module storage.",
+            );
+        if (containsSuspension(statement))
+            context.fail(
+                statement,
+                "Top-level await in a lazy module requires asynchronous module activation.",
+            );
     }
 
     /** The lazy modules' bindings the program can read (`readableLazyBindings`). */
@@ -527,16 +561,9 @@ export class ModuleNamespaces {
                 )
                     continue;
                 if (
-                    ts.isVariableStatement(statement) &&
-                    variableKind(statement.declarationList) === "const" &&
-                    statement.declarationList.declarations.every(
-                        (declaration) =>
-                            ts.isIdentifier(declaration.name) &&
-                            declaration.initializer &&
-                            isTotalDefinition(declaration.initializer) &&
-                            this.context.evaluationOrder.isPureExpression(
-                                declaration.initializer,
-                            ),
+                    isTotalConstStatement(
+                        statement,
+                        this.context.evaluationOrder,
                     )
                 )
                     continue;

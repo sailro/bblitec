@@ -62,6 +62,16 @@ export type DataKindOperations<K extends DataKind = DataKind> = {
         /** A primitive held in a native value class ({@link PrimitiveTraits}). */
         readonly primitive?: PrimitiveTraits;
         /**
+         * What a value of this kind does not record of the JavaScript
+         * object it stands for: the refusal of an identity comparison, an
+         * `instanceof` or an `Array.isArray` reading it.
+         */
+        readonly unrecorded?: {
+            readonly identity?: string;
+            readonly objectClass?: string;
+            readonly arrayness?: string;
+        };
+        /**
          * Whether the native value can own an edge the cycle collector
          * traces (`bbl::js::gc_traceable`): always, never, through its
          * stored children, or decided by the payload.

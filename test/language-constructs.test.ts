@@ -3493,6 +3493,72 @@ check(
 `,
 );
 
+check(
+    "closure-calling-its-enclosing-function",
+    `
+    let gen = 0;
+    let seen = "";
+    function request(depth: number): void {
+        const generation = ++gen;
+        const finish = (): void => {
+            if (generation !== gen) return;
+            if (depth < 2) {
+                request(depth + 1);
+                return;
+            }
+            seen += "d" + depth + "g" + generation;
+        };
+        finish();
+        seen += ";" + depth;
+    }
+    request(0);
+    if (seen !== "d2g3;2;1;0") throw new Error(seen);
+    let calls = "";
+    function walk(depth: number): void {
+        const level = depth;
+        ((): void => {
+            if (level < 2) walk(level + 1);
+        })();
+        calls += level;
+    }
+    walk(0);
+    if (calls !== "210") throw new Error("immediate " + calls);
+`,
+);
+
+checkInRealm(
+    "promise-reaction-closure-calling-its-enclosing-function",
+    `
+    let requested = 1;
+    let gen = 0;
+    let inFlight = false;
+    let seen = "";
+    function request(): void {
+        const x = requested;
+        const generation = ++gen;
+        inFlight = true;
+        const finish = (point: number | null): void => {
+            if (generation !== gen) return;
+            inFlight = false;
+            if (x !== requested) {
+                request();
+                return;
+            }
+            seen += String(point) + ";";
+        };
+        void Promise.resolve()
+            .then(() => x * 2)
+            .then(finish, () => finish(null));
+    }
+    request();
+    requested = 2;
+    setTimeout(() => {
+        if (seen !== "4;" || inFlight) throw new Error("seen " + seen);
+        globalThis.close();
+    }, 0);
+`,
+);
+
 checkInRealm(
     "loops-start-async-activations-per-iteration",
     `
@@ -6341,6 +6407,325 @@ check(
 );
 
 check(
+    "typed-array-or-number-array-parameter",
+    `
+    interface Field {
+        restore(levels: Uint8Array | readonly number[]): boolean;
+        readonly total: number;
+    }
+    function createField(): Field {
+        const level = new Uint8Array(4);
+        let total = 0;
+        return {
+            restore(levels) {
+                let changed = false;
+                for (let i = 0; i < level.length; i++) {
+                    const v = Math.min(3, levels[i] ?? 0);
+                    if (level[i] !== v) { level[i] = v; changed = true; }
+                }
+                total += levels.length;
+                return changed;
+            },
+            get total() { return total; },
+        };
+    }
+    const fields: Field[] = [createField()];
+    const field = fields[0]!;
+    if (!field.restore(new Uint8Array([1, 2, 9])) || field.restore([1, 2, 3]) || field.total !== 6) throw new Error("union reads");
+`,
+);
+
+check(
+    "typed-array-or-number-array-writes",
+    `
+    function pushPoint(out: Float32Array | number[], index: number, x: number): number {
+        out[index * 2] = x;
+        out[index * 2 + 1] = x + 0.1;
+        return out.length;
+    }
+    const floats = new Float32Array(4);
+    const numbers = [0, 0, 0, 0];
+    if (pushPoint(floats, 1, 2) !== 4 || pushPoint(numbers, 0, 3) !== 4) throw new Error("lengths");
+    if (floats[2] !== 2 || floats[3] !== Math.fround(2.1) || floats[0] !== 0) throw new Error("float lanes " + floats.join());
+    if (numbers.join() !== "3,3.1,0,0") throw new Error("number lanes " + numbers.join());
+`,
+);
+
+check(
+    "typed-arm-records-keep-their-own-field-in-a-tagged-union",
+    `
+    interface TowerHost { x: number; z: number; baseY: number }
+    interface HouseHost { cx: number; cz: number; eaveY: number }
+    interface Plane { kind: "plane"; px: number }
+    interface Cone { readonly kind: "cone"; readonly host: TowerHost }
+    interface Roof { readonly kind: "roof"; readonly host: HouseHost }
+    type Carrier = Plane | Cone | Roof;
+    const makeRoof = (eave: number): Roof | null => (eave > 0 ? { kind: "roof", host: { cx: 1, cz: 2, eaveY: eave } } : null);
+    const makeCone = (base: number): Cone => ({ kind: "cone", host: { x: 1, z: 2, baseY: base } });
+    const out: Carrier[] = [];
+    out.push({ kind: "plane", px: 1 });
+    const pitched = makeRoof(4);
+    if (pitched) out.push(pitched);
+    out.push(makeCone(3));
+    let total = 0;
+    for (const carrier of out) {
+        if (carrier.kind === "plane") total += carrier.px;
+        else if (carrier.kind === "cone") total += carrier.host.baseY;
+        else total += carrier.host.eaveY;
+    }
+    if (total !== 8) throw new Error("total " + total);
+`,
+);
+
+check(
+    "one-layout-holds-a-method-two-shapes-declare-apart",
+    `
+    interface Brick { bind(from: number, variant: number, count: number): number; reupload(): void; bricks: number }
+    interface Solid { bind(from: number, count: number): number; reupload(): void; solid: boolean }
+    let uploads = 0;
+    const brick: Brick = { bind: (from, variant, count) => from + variant * count, reupload: () => { uploads++; }, bricks: 3 };
+    const solid: Solid = { bind: (from, count) => from + count, reupload: () => { uploads += 10; }, solid: true };
+    const touched = new Set<{ reupload(): void }>();
+    const bound = brick.bind(1, 2, 3) + solid.bind(4, 5);
+    touched.add(brick);
+    touched.add(solid);
+    touched.add(brick);
+    for (const batch of touched) batch.reupload();
+    const bricks: Brick[] = [brick];
+    const solids: Solid[] = [solid];
+    let stored = 0;
+    for (const each of bricks) stored += each.bind(2, 1, 1);
+    for (const each of solids) stored += each.bind(3, 4);
+    if (uploads !== 11 || bound !== 16 || stored !== 10 || touched.size !== 2) throw new Error("uploads " + uploads + " bound " + bound + " stored " + stored);
+`,
+);
+
+check(
+    "generic-wrapper-with-early-returns-at-a-void-result",
+    `
+    const rows = Math.random() >= 0 ? new Map<string, number>() : null;
+    let uploads = 0;
+    const record = (label: string, elapsed: number): void => {
+        rows?.set(label, elapsed);
+    };
+    const track = <T>(label: string, work: () => T): T => {
+        if (!rows) return work();
+        const started = Date.now();
+        try {
+            return work();
+        } finally {
+            record(label, Date.now() - started);
+        }
+    };
+    const upload = (): void => {
+        uploads++;
+    };
+    track("carve", () => upload());
+    const welded = track("weld", () => uploads * 2);
+    track("mark", () => upload());
+    if (uploads !== 2 || welded !== 2 || rows?.size !== 3) throw new Error("uploads " + uploads + " welded " + welded);
+`,
+);
+
+check(
+    "stored-generic-method-of-a-generic-receiver",
+    `
+    interface Plan { id: string; scale: number }
+    interface Seat { x: number; z: number }
+    interface Ground extends Seat { onDeck: boolean }
+    interface Deps<Choice> {
+        constrain<T extends Seat>(kind: string, choice: Choice, point: T): T | null;
+    }
+    const all: Deps<Plan>[] = [
+        { constrain: (kind, choice, point) => (kind === "rock" && choice.scale > 2 ? null : point) },
+        { constrain: (_kind, choice, point) => (choice.id === "b" ? null : point) },
+    ];
+    let placed = 0;
+    for (const deps of all) {
+        const ground: Ground = { x: 1, z: 2, onDeck: false };
+        const bounded = deps.constrain("tree", { id: "a", scale: 3 }, ground);
+        if (bounded) placed += bounded.x + (bounded.onDeck ? 10 : 0);
+        const seat = deps.constrain("rock", { id: "b", scale: 3 }, { x: 5, z: 7 });
+        if (seat) placed += seat.z;
+    }
+    if (placed !== 2) throw new Error("placed " + placed);
+`,
+);
+
+checkInRealm(
+    "instanceof-promise-tells-a-value-or-promise-result-apart",
+    `
+    const setters: ((id: string) => boolean | Promise<boolean>)[] = [
+        (id) => id.length > 1,
+        (id) => Promise.resolve(id.length > 2),
+    ];
+    let log = "";
+    const accepted = (ok: boolean): boolean => {
+        log += ok ? "y" : "n";
+        return ok;
+    };
+    let pending = 0;
+    for (const set of setters) {
+        const result = set("abc");
+        if (result instanceof Promise) {
+            pending++;
+            void result.then(accepted);
+        } else accepted(result);
+    }
+    if (pending !== 1 || log !== "y") throw new Error("pending " + pending + " log " + log);
+    setTimeout(() => {
+        if (log !== "yy") throw new Error("settled log " + log);
+        globalThis.close();
+    }, 0);
+`,
+);
+
+check(
+    "a-conditional-of-two-boolean-literals-knows-neither",
+    `
+    const present = (x: number | undefined): boolean => (x === undefined ? false : true);
+    const checks: ((x: number | undefined) => boolean)[] = [present];
+    let trues = 0;
+    for (const check of checks) {
+        if (check(4)) trues++;
+        if (check(undefined)) trues++;
+    }
+    const read = (): number | undefined => (trues > 0 ? 3 : undefined);
+    const x = read();
+    const ok = x === undefined ? false : true;
+    const text = String(ok);
+    if (trues !== 1 || text !== "true") throw new Error("trues " + trues + " text " + text);
+`,
+);
+
+check(
+    "stored-callback-of-a-boolean-or-void-parameter",
+    `
+    let count = 0;
+    const committed = (accepted: void | boolean): boolean => {
+        if (accepted === false) return false;
+        count++;
+        return accepted === undefined ? false : true;
+    };
+    const handlers: ((accepted: void | boolean) => boolean)[] = [committed];
+    let trues = 0;
+    for (const handler of handlers) {
+        if (handler(true)) trues++;
+        if (handler(undefined)) trues++;
+        if (handler(false)) trues++;
+    }
+    if (count !== 2 || trues !== 1) throw new Error("count " + count + " trues " + trues);
+`,
+);
+
+check(
+    "getter-and-data-property-share-one-accessor-slot",
+    `
+    interface Plain { cx: number; cz: number }
+    interface Live { readonly cx: number; readonly cz: number }
+    const flag = Math.random() >= 0;
+    let reads = 0;
+    const live: Live = { get cx() { reads++; return flag ? 1 : 0; }, cz: 2 };
+    const plains: Plain[] = [{ cx: 3, cz: 4 }];
+    const all: Live[] = [live];
+    all.push(plains[0]!);
+    plains[0]!.cx = 9;
+    let total = 0;
+    for (const entry of all) total += entry.cx + entry.cz;
+    if (total !== 16) throw new Error("total " + total);
+    if (reads !== 1) throw new Error("reads " + reads);
+`,
+);
+
+check(
+    "stored-callback-returns-an-object-by-identity",
+    `
+    interface Frame { halfX: number }
+    interface MotionTarget {
+        readonly handle: number;
+        readonly readRenderFrame?: (out: Frame) => boolean;
+        readonly publicationToken?: () => object | null;
+    }
+    interface PlacementTarget {
+        readonly motionId: number;
+        readonly readRenderFrame: (out: Frame) => boolean;
+    }
+    const frame: Frame = { halfX: 1 };
+    const first = { id: 1 };
+    const second = { id: 2 };
+    let current: object = first;
+    let retained: MotionTarget | null = null;
+    let placement: PlacementTarget | null = null;
+    let releaseToken: object | null = null;
+    const activeTarget = (): MotionTarget | PlacementTarget | null => placement ?? retained;
+    let log = "";
+    function write(): void {
+        const active = activeTarget();
+        if (!active) return;
+        if ("motionId" in active) {
+            if (active.readRenderFrame(frame)) log += "p" + active.motionId;
+        } else {
+            log += "m" + active.handle;
+            if (active.readRenderFrame) active.readRenderFrame(frame);
+        }
+        if (retained && active === retained && retained.publicationToken?.() !== releaseToken) log += "!";
+    }
+    retained = { handle: 1, publicationToken: () => current };
+    releaseToken = retained.publicationToken?.() ?? null;
+    write();
+    current = second;
+    write();
+    placement = { motionId: 3, readRenderFrame: (out) => out.halfX > 0 };
+    write();
+    if (log !== "m1m1!p3") throw new Error("log " + log);
+`,
+);
+
+check(
+    "narrower-string-union-callback-slot",
+    `
+    type BuildingKind = "house" | "tower" | "mill" | "well";
+    type RecipeKind = "house" | "tower";
+    interface Guidance { openBuilding(kind: BuildingKind): void }
+    interface Ring { openRecipeGuide?: (recipe: RecipeKind) => void; label?: (text: string) => void }
+    let opened = "";
+    const guidance: Guidance = { openBuilding: (kind) => { opened += kind + ","; } };
+    const name = (kind: BuildingKind): void => { opened += "[" + kind + "]"; };
+    const rings: Ring[] = [];
+    rings.push({ openRecipeGuide: guidance.openBuilding });
+    rings.push({ openRecipeGuide: name });
+    for (const ring of rings) ring.openRecipeGuide?.(rings.length > 9 ? "house" : "tower");
+    if (opened !== "tower,[tower]") throw new Error("opened " + opened);
+`,
+);
+
+check(
+    "stored-number-formats-at-run-time",
+    `
+    interface Saved { ax: number; yaw: number }
+    const saved = JSON.parse('{"ax":1.235,"yaw":0.5}') as Saved;
+    const rounded = [+saved.ax.toFixed(2), +saved.yaw.toFixed(3)];
+    if (rounded.join() !== "1.24,0.5" || saved.yaw.toFixed(1) !== "0.5") throw new Error("formatted " + rounded.join());
+`,
+);
+
+check(
+    "stored-generic-runner-of-a-void-edit",
+    `
+    type Runner = <T>(operation: () => T | Promise<T>) => Promise<T | null>;
+    const late = { runWorldEdit: (async <T>(operation: () => T | Promise<T>): Promise<T | null> => await operation()) as Runner };
+    let total = 0;
+    async function edits(): Promise<void> {
+        const counted = await late.runWorldEdit(() => 2);
+        const done = await late.runWorldEdit(() => { total += 10; });
+        total += counted ?? 0;
+        if (done !== undefined || total !== 12) throw new Error("void edit " + total);
+    }
+    void edits();
+`,
+);
+
+check(
     "typed-array-bytes-per-element",
     `
     const sizes = [Int8Array.BYTES_PER_ELEMENT, Uint8Array.BYTES_PER_ELEMENT, Uint8ClampedArray.BYTES_PER_ELEMENT, Int16Array.BYTES_PER_ELEMENT, Uint16Array.BYTES_PER_ELEMENT, Int32Array.BYTES_PER_ELEMENT, Uint32Array.BYTES_PER_ELEMENT, Float32Array.BYTES_PER_ELEMENT, Float64Array.BYTES_PER_ELEMENT, BigInt64Array.BYTES_PER_ELEMENT, BigUint64Array.BYTES_PER_ELEMENT];
@@ -7172,6 +7557,646 @@ check(
     if (driveName !== "studio" || (qs.get("mode") ?? "").length !== 3) throw new Error("query receivers " + driveName);
 `,
     { search: "?godmode&count=4&mode=fly" },
+);
+
+check(
+    "literal-union-key-over-layouts-of-different-shapes",
+    `
+    type Kind = "keg-display" | "beer-display";
+    const LAYOUTS = {
+        "keg-display": { itemDisplayScale: 2, capacity: 2, slots: [{ pitch: 0 }, { pitch: 1 }], kegs: 3 },
+        "beer-display": { itemDisplayScale: 3, capacity: 1, slots: [{ pitch: 2 }] },
+    };
+    function scaleOf(kind: Kind, propScale: number): number { return LAYOUTS[kind].itemDisplayScale * propScale; }
+    function slotOf(kind: Kind, slot: number): number {
+        const { slots, capacity } = LAYOUTS[kind];
+        return slots[((slot % capacity) + capacity) % capacity]!.pitch;
+    }
+    const kinds: Kind[] = ["keg-display", "beer-display"];
+    const read = [scaleOf(kinds[0]!, 2), scaleOf(kinds[1]!, 2), slotOf(kinds[0]!, 3), slotOf(kinds[1]!, 5)];
+    if (read.join(",") !== "4,6,1,2") throw new Error("layouts " + read.join(","));
+`,
+);
+
+check(
+    "for-of-over-an-optional-collection-or-nothing",
+    `
+    interface Reuse { bucketMeta: Map<string, { variant: number }>; seen?: Set<number> }
+    function total(reuse?: Reuse): number {
+        let n = 0;
+        for (const [key, meta] of reuse?.bucketMeta ?? []) n += meta.variant + key.length;
+        for (const id of reuse?.seen ?? []) n += id * 100;
+        return n;
+    }
+    const reuses: (Reuse | undefined)[] = [{ bucketMeta: new Map([["ab", { variant: 3 }]]), seen: new Set([1, 2]) }, undefined, { bucketMeta: new Map() }];
+    const totals = reuses.map((reuse) => total(reuse));
+    if (totals.join(",") !== "305,0,0") throw new Error("totals " + totals.join(","));
+`,
+);
+
+check(
+    "writing-an-element-of-the-array-a-call-returns",
+    `
+    interface Cap { id: number }
+    const caps: Cap[] = [{ id: 1 }, { id: 2 }];
+    const carried = new Map(caps.map((cap) => [cap, [false, false, false, false] as [boolean, boolean, boolean, boolean]] as const));
+    const corner = caps.length - 1;
+    carried.get(caps[0]!)![corner] = true;
+    const rows = new Map<string, number[]>([["a", [0, 0]]]);
+    rows.get("a")![rows.size] = 5;
+    const first = carried.get(caps[0]!)!, second = carried.get(caps[1]!)!;
+    if (!first[1] || second[1] || rows.get("a")!.join(",") !== "0,5") throw new Error("element " + first.join(",") + " " + rows.get("a")!.join(","));
+`,
+);
+
+check(
+    "stored-function-returning-an-iterable-array",
+    `
+    interface Deps { slots(): Iterable<number> }
+    const list = [1, 2, 3];
+    const deps: Deps = { slots: () => list };
+    let total = 0;
+    for (const s of deps.slots()) { total += s; if (s === 1) list.push(10); }
+    const held = deps.slots();
+    let twice = 0;
+    for (const x of held) twice += x;
+    for (const x of held) twice += x;
+    const copy = [...deps.slots()];
+    const from = Array.from(deps.slots());
+    function sum(xs: Iterable<number>): number { let t = 0; for (const x of xs) t += x; return t; }
+    const summed = sum(deps.slots()) + sum(list);
+    if (total !== 16 || twice !== 32 || copy.join(",") !== "1,2,3,10" || from.length !== 4 || summed !== 32)
+        throw new Error("array " + total + " " + twice + " " + copy.join(",") + " " + from.length + " " + summed);
+`,
+);
+
+check(
+    "stored-function-returning-an-iterable-set-or-iterator",
+    `
+    interface Deps { slots(): Iterable<number> }
+    const set = new Set<number>([4, 5]);
+    const map = new Map<number, string>([[6, "a"], [7, "b"]]);
+    const fromSet: Deps = { slots: () => set };
+    const fromKeys: Deps = { slots: () => map.keys() };
+    let total = 0;
+    for (const s of fromSet.slots()) total += s;
+    for (const s of fromKeys.slots()) total += s;
+    const held = fromKeys.slots();
+    let resumed = 0;
+    for (const x of held) { resumed += x; break; }
+    for (const x of held) resumed += x * 10;
+    const unique = new Set(fromSet.slots());
+    const holder: { it: Iterable<number> } = { it: set };
+    set.add(6);
+    let fielded = 0;
+    for (const x of holder.it) fielded += x;
+    for (const x of holder.it) fielded += x;
+    if (total !== 22 || resumed !== 76 || unique.size !== 2 || fielded !== 30)
+        throw new Error("set " + total + " " + resumed + " " + unique.size + " " + fielded);
+`,
+);
+
+check(
+    "stored-function-returning-an-iterable-of-records",
+    `
+    interface Entry { readonly id: number; save: string }
+    interface Fns { homeIds(kind: string): Iterable<number> }
+    interface Deps { entries(): Iterable<Readonly<Entry>>; functions(): Fns }
+    const rows: Entry[] = [{ id: 1, save: "a" }, { id: 2, save: "b" }];
+    const homes = new Map<string, number[]>([["tower", [3, 4]]]);
+    const fns: Fns = { homeIds: (kind) => homes.get(kind) ?? [] };
+    const deps: Deps = { entries: () => rows, functions: () => fns };
+    let ids = "";
+    for (const e of deps.entries()) ids += e.id + e.save;
+    let t = 0;
+    for (const id of deps.functions().homeIds("tower")) t += id;
+    for (const id of deps.functions().homeIds("none")) t += id;
+    if (ids !== "1a2b" || t !== 7) throw new Error("records " + ids + " " + t);
+`,
+);
+
+check(
+    "membership-on-a-union-laid-out-like-another",
+    `
+    type Vec3 = [number, number, number];
+    class SolidBatch { colors: number[] = []; recolorInstances(from: number, len: number, tint: Vec3): void { this.colors.push(from + len + tint[0]); } scaleInstanceColors(from: number, len: number, ratio: Vec3): void { this.colors.push(from * ratio[1] + len); } }
+    class BrickBatch { tints: number[] = []; recolorVariantInstances(variant: number, from: number, len: number, tint: Vec3): void { this.tints.push(variant + from + len + tint[2]); } }
+    type Action =
+      | { solid: SolidBatch; from: number; len: number; tint: Vec3 }
+      | { solid: SolidBatch; from: number; len: number; ratio: Vec3 }
+      | { pomFlat: BrickBatch; brick: boolean; variant: number; from: number; len: number; tint: Vec3 }
+      | { parts: BrickBatch; brick: boolean; variant: number; from: number; len: number; partAt: (i: number) => "body" | "roof" };
+    const body = new SolidBatch(), cone = new SolidBatch(), bricks = new BrickBatch();
+    const ops: ({ solid: SolidBatch; from: number; len: number } | { brick: BrickBatch; from: number; len: number; variant: number })[] = [
+      { solid: body, from: 0, len: 2 }, { solid: cone, from: 2, len: 3 }, { brick: bricks, from: 5, len: 1, variant: 2 }];
+    const actions: Action[] = [];
+    const tint: Vec3 = [1, 2, 3];
+    for (const op of ops) {
+      if ("solid" in op) {
+        if (op.solid === body) actions.push({ solid: body, from: op.from, len: op.len, tint });
+        else actions.push({ solid: op.solid, from: op.from, len: op.len, ratio: [2, 2, 2] });
+      } else if (op.variant > 1) actions.push({ pomFlat: op.brick, brick: true, variant: op.variant, from: op.from, len: op.len, tint });
+      else actions.push({ parts: op.brick, brick: false, variant: op.variant, from: op.from, len: op.len, partAt: (i) => (i > 0 ? "roof" : "body") });
+    }
+    for (const a of actions) {
+      if ("solid" in a) {
+        if ("tint" in a) a.solid.recolorInstances(a.from, a.len, a.tint);
+        else a.solid.scaleInstanceColors(a.from, a.len, a.ratio);
+      } else if ("pomFlat" in a) a.pomFlat.recolorVariantInstances(a.variant, a.from, a.len, a.tint);
+      else a.parts.recolorVariantInstances(a.variant, a.from, a.len, a.partAt(1) === "roof" ? tint : [0, 0, 0]);
+    }
+    if (body.colors.join(",") !== "3" || cone.colors.join(",") !== "7" || bricks.tints.join(",") !== "11") throw new Error("actions " + body.colors.join(",") + "|" + cone.colors.join(",") + "|" + bricks.tints.join(","));
+`,
+);
+
+check(
+    "fresh-array-local-read-once-stored-as-another-element-type",
+    `
+    interface Tower { roofMaterial?: string; shape: "cone" | "dome"; id: number }
+    interface Needs { towerRoof?: readonly (string | null | undefined)[]; towers?: readonly Tower[] }
+    interface Deps { ensureMaterials(needs: Needs): number }
+    const kept: Needs[] = [];
+    const deps: Deps = { ensureMaterials: (needs) => { kept.push(needs); return needs.towerRoof?.length ?? -1; } };
+    const towers: Tower[] = [{ roofMaterial: "slate", shape: "cone", id: 1 }, { shape: "cone", id: 2 }, { roofMaterial: "x", shape: "dome", id: 3 }];
+    function run(): number {
+      const visible = towers.filter((t) => t.shape === "cone").map((t) => t.roofMaterial);
+      return deps.ensureMaterials({ towers, towerRoof: visible });
+    }
+    let names = "";
+    if (run() !== 2) throw new Error("run");
+    for (const m of kept[0]!.towerRoof ?? []) names += m == null ? "x" : m;
+    if (names !== "slatex") throw new Error("sole " + names);
+`,
+);
+
+check(
+    "nested-pattern-destructuring-a-lane-of-shared-union-storage",
+    `
+    interface Brick { variant: number; w: number }
+    interface BrickBucket { variant: number; tint: [number, number, number] | null; bs: Brick[]; rep: Brick }
+    interface Prepared { bucketEntries: [string, BrickBucket][] }
+    function prepare(bricks: { brick: Brick; tint: [number, number, number] | null }[]): Prepared {
+      const byBucket = new Map<string, BrickBucket>();
+      for (const tb of bricks) {
+        const key = \`\${tb.brick.variant}|\${tb.tint ? tb.tint.join(",") : "-"}\`;
+        const arr = byBucket.get(key);
+        if (arr) arr.bs.push(tb.brick); else byBucket.set(key, { variant: tb.brick.variant, tint: tb.tint, bs: [tb.brick], rep: tb.brick });
+      }
+      const bucketEntries = [...byBucket.entries()].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+      return { bucketEntries };
+    }
+    function build(prepared: Prepared): number {
+      let total = 0;
+      for (const [key, { variant, bs, rep }] of prepared.bucketEntries) total += variant * 10 + bs.length + rep.w + key.length;
+      return total;
+    }
+    const p = prepare([{ brick: { variant: 1, w: 2 }, tint: null }, { brick: { variant: 1, w: 3 }, tint: null }, { brick: { variant: 2, w: 1 }, tint: [1, 1, 1] }]);
+    if (build(p) !== 1 * 10 + 2 + 2 + 3 + 2 * 10 + 1 + 1 + 7) throw new Error("build " + build(p));
+`,
+);
+
+check(
+    "spreading-numbers-among-union-lanes-and-joining-them",
+    `
+    const profile: number[] = [1.5, 2, 3];
+    function key(id: number, shape: "cone" | "dome"): string {
+      return [id, shape, ...profile].join("|");
+    }
+    const mixed: (number | string)[] = ["a", ...profile];
+    const maybe: (number | undefined)[] = [...profile, undefined];
+    profile.push(4);
+    const flags: (number | boolean)[] = [true, ...profile];
+    if (flags.join("/") !== "true/1.5/2/3/4" || key(7, "cone") !== "7|cone|1.5|2|3|4" || mixed.length !== 4 || mixed[1] !== 1.5 || maybe.length !== 4 || maybe[3] !== undefined) throw new Error("spread " + key(7, "cone"));
+`,
+);
+
+check(
+    "conditional-of-tuples-selects-each-lane-as-its-own-type",
+    `
+    interface Edge { x: number; z: number; nx: number; nz: number }
+    function aim(edges: readonly Edge[], cx: number, cz: number, m: number): number[] | null {
+      let best: Edge | null = null;
+      for (const e of edges) if (!best || e.x > best.x) best = e;
+      if (!best) return null;
+      const toAim = Math.hypot(best.x - cx, best.z - cz);
+      const [ux, uz, x1, z1] = toAim > m
+        ? [(best.x - cx) / toAim, (best.z - cz) / toAim, cx, cz]
+        : [best.nx, best.nz, best.x - best.nx * m, best.z - best.nz * m];
+      return [ux, uz, x1, z1];
+    }
+    const parsed = JSON.parse('[{"x":3,"z":4,"nx":1,"nz":0}]') as Edge[];
+    const literal: Edge[] = [{ x: 0.5, z: 0, nx: 0, nz: 1 }];
+    const a = aim(parsed, 0, 0, 1)!, b = aim(literal, 0, 0, 1)!;
+    if (a.join(",") !== "0.6,0.8,0,0" || b.join(",") !== "0,1,0.5,-1") throw new Error("aim " + a.join(",") + " " + b.join(","));
+`,
+);
+
+check(
+    "class-field-of-unknown-values-read-through-instanceof",
+    `
+    class AnyOf { constructor(readonly options: readonly unknown[]) {} }
+    function unifyAll(values: readonly unknown[]): number {
+      const flat: unknown[] = [];
+      for (const v of values) {
+        if (v instanceof AnyOf) flat.push(...v.options);
+        else if (v !== undefined) flat.push(v);
+      }
+      return flat.length;
+    }
+    const schema: unknown[] = [1, new AnyOf(["a", 2]), undefined, "x"];
+    const nested = new AnyOf([schema[1], 3]);
+    const inner = nested.options[0];
+    if (!(inner instanceof AnyOf) || inner.options.length !== 2 || unifyAll([nested]) !== 2 || unifyAll(schema) !== 4) throw new Error("anyof");
+`,
+);
+
+check(
+    "document-view-first-made-in-a-short-circuit-is-made-again-after-it",
+    `
+    function count(values: readonly unknown[]): number {
+      let n = 0;
+      for (const v of values) if (v !== undefined) n++;
+      return n;
+    }
+    const schema: unknown[] = [1, "x", undefined];
+    const config = { depth: 2, name: "n" };
+    const probe = (value: unknown): boolean => value !== null && typeof value === "object";
+    const seen: number[] = [];
+    seen.push(schema.length);
+    if (seen[0] !== 3 || count(schema) !== 2) throw new Error("n " + count(schema));
+    if (seen.length !== 1 || !probe(config)) throw new Error("record " + probe(config));
+    if (!probe(config) || !probe(schema)) throw new Error("views");
+`,
+);
+
+check(
+    "spreading-parsed-elements-into-scalar-lanes",
+    `
+    interface Run { points: number[] }
+    const run = (JSON.parse('{"points":[1,2,3,4,5,6]}') as Run).points;
+    const head = { x: 0, z: 0 }, tail = { x: 9, z: 9 };
+    const seam = [head.x, head.z, ...run.slice(2, 4), tail.x, tail.z];
+    const copy = [...run];
+    const names = (JSON.parse('{"n":["p","q"]}') as { n: string[] }).n;
+    const labels = ["o", ...names.slice(0, 2)];
+    if (labels.join("") !== "opq" || seam.join(",") !== "0,0,3,4,9,9" || copy.length !== 6 || copy[5] !== 6) throw new Error("seam " + seam.join(","));
+`,
+);
+
+check(
+    "array-coalesced-with-a-record-into-a-record-or-array-parameter",
+    `
+    interface Frame { id: number; stations: number[] }
+    const isFrameArray = (value: Frame | readonly Frame[]): value is readonly Frame[] => Array.isArray(value);
+    const seen: number[] = [];
+    const recordBodyFollow = (frames: Frame | readonly Frame[], sink: number | null): void => {
+      const frameList = isFrameArray(frames) ? frames : [frames];
+      const stations = isFrameArray(frames) ? frames.flatMap((frame) => frame.stations) : frames.stations;
+      seen.push(frameList.length * 100 + stations.length + (sink ?? 0));
+    };
+    const requests: { frame: Frame }[][] = [[{ frame: { id: 1, stations: [1, 2] } }], [{ frame: { id: 2, stations: [3] } }, { frame: { id: 3, stations: [4, 5] } }]];
+    for (const group of requests) {
+      const first = group[0]!;
+      const groupedFrames = group.length > 1 ? group.map((request) => request.frame) : null;
+      recordBodyFollow(groupedFrames ?? first.frame, null);
+    }
+    if (seen.join(",") !== "102,203") throw new Error("frames " + seen.join(","));
+`,
+);
+
+check(
+    "error-subclass-holding-an-unknown-cause-built-at-two-sites",
+    `
+    class BakeError extends Error {
+      constructor(readonly stage: "body" | "gable", readonly cause: unknown) {
+        super(stage === "body" ? "body failed" : "gable failed");
+      }
+    }
+    const caught: string[] = [];
+    function bake(stage: "body" | "gable", fail: boolean): void {
+      if (stage === "body") {
+        try {
+          if (fail) throw new Error("inner " + stage);
+        } catch (e) {
+          throw new BakeError("body", e);
+        }
+        return;
+      }
+      try {
+        if (fail) throw new Error("inner " + stage);
+      } catch (e) {
+        throw new BakeError("gable", e);
+      }
+    }
+    for (const [stage, fail] of [["body", true], ["gable", true], ["body", false]] as const) {
+      try { bake(stage, fail); caught.push("ok"); } catch (e) {
+        if (e instanceof BakeError) caught.push(e.stage + ":" + (e.cause instanceof Error ? e.cause.message : "?"));
+      }
+    }
+    if (caught.join(",") !== "body:inner body,gable:inner gable,ok") throw new Error("cause " + caught.join(","));
+`,
+);
+
+check(
+    "typed-array-held-in-a-parsed-document",
+    `
+    const doc = JSON.parse('{"id":1}') as { id: number; simOut?: Float32Array };
+    const out = new Float32Array(4);
+    doc.simOut = out;
+    const read = doc.simOut;
+    read[2] = 1.5;
+    out[1] = 0.25;
+    const back = doc.simOut!;
+    const keys = Object.keys(doc).join(",");
+    const checks = [back instanceof Float32Array, !Array.isArray(back), back.length === 4, back[1] === 0.25, out[2] === 1.5, back === out, keys === "id,simOut"];
+    if (checks.some((ok) => !ok)) throw new Error("doc f32 " + checks.map((ok) => (ok ? "1" : "0")).join(""));
+`,
+);
+
+check(
+    "byte-arrays-held-in-a-parsed-document",
+    `
+    const doc = JSON.parse('{"id":1}') as { rows?: Uint8Array[]; mask?: Uint8Array };
+    const mask = new Uint8Array([1, 2, 300]);
+    doc.mask = mask;
+    doc.rows = [new Uint8Array([4, 5]), mask];
+    const rows = doc.rows!;
+    const back = doc.mask!;
+    back[0] = 9;
+    const checks = [back instanceof Uint8Array, back === mask, mask[0] === 9, mask[2] === 44, rows.length === 2, rows[1] === mask, rows[0]![1] === 5];
+    if (checks.some((ok) => !ok)) throw new Error("doc u8 " + checks.map((ok) => (ok ? "1" : "0")).join(""));
+`,
+);
+
+check(
+    "array-buffer-views-among-document-values",
+    `
+    function bytes(values: readonly unknown[]): number {
+        let total = 0;
+        for (const value of values) total += ArrayBuffer.isView(value) ? value.byteLength : 100;
+        return total;
+    }
+    const mixed: unknown[] = [new Uint8Array(2), 3, "x", new Float32Array(1), [1]];
+    if (bytes(mixed) !== 306) throw new Error("views " + bytes(mixed));
+`,
+);
+
+check(
+    "stored-function-with-an-undefined-only-parameter",
+    `
+    interface Port { spawn(spec: number, founder?: undefined, restore?: number): number }
+    const seen: string[] = [];
+    const port: Port = { spawn: (spec, founder, restore) => { seen.push(spec + ":" + (founder === undefined ? "u" : "d") + ":" + (restore ?? -1)); return seen.length; } };
+    const ports: Port[] = [port];
+    for (const p of ports) { p.spawn(1); p.spawn(2, undefined, 7); }
+    if (seen.join(",") !== "1:u:-1,2:u:7") throw new Error("undef " + seen.join(","));
+`,
+);
+
+check(
+    "truncating-the-array-a-call-returns",
+    `
+    interface Chimney { id: number }
+    const towers: Chimney[] = [{ id: 1 }, { id: 2 }];
+    const houses: Chimney[] = [{ id: 3 }];
+    const deps = { towerChimneys: (): Chimney[] => towers, houseChimneys: (): Chimney[] => houses };
+    function reset(keep: number): void {
+        deps.towerChimneys().length = keep;
+        deps.houseChimneys().length = 0;
+    }
+    reset(1);
+    if (towers.length !== 1 || towers[0]!.id !== 1 || houses.length !== 0) throw new Error("truncate " + towers.length + houses.length);
+`,
+);
+
+check(
+    "json-stringify-writes-a-typed-array-as-its-indices",
+    `
+    interface Animal { id: number; simOut: Float32Array | null; label?: string }
+    const herd: unknown[] = [];
+    function spawn(id: number): Animal {
+      const animal: Animal = { id, simOut: null };
+      herd.push(animal);
+      return animal;
+    }
+    const a = spawn(1);
+    const simOut = a.simOut ?? (a.simOut = new Float32Array(4));
+    simOut[2] = 1.5;
+    const doc = herd[0] as { simOut: Float32Array };
+    const view = doc.simOut;
+    view[1] = 0.25;
+    const asText = JSON.stringify(herd[0]);
+    if (!(view instanceof Float32Array) || Array.isArray(view) || view.length !== 4 || simOut[1] !== 0.25 || view[2] !== 1.5 || asText !== '{"id":1,"simOut":{"0":0,"1":0.25,"2":1.5,"3":0}}') throw new Error("f32 " + asText);
+`,
+);
+
+check(
+    "math-min-and-max-over-a-spread-of-parsed-numbers",
+    `
+    interface Config { speedStops: number[] }
+    const config = JSON.parse('{"speedStops":[0.5,2,4]}') as Config;
+    const finiteStops = config.speedStops.filter((stop) => Number.isFinite(stop));
+    const minimumSpeed = finiteStops.length > 0 ? Math.max(0.1, Math.min(...finiteStops)) : 0.1;
+    const maximumSpeed = finiteStops.length > 0 ? Math.min(5, Math.max(...finiteStops)) : 5;
+    if (minimumSpeed !== 0.5 || maximumSpeed !== 4) throw new Error("speed " + minimumSpeed + " " + maximumSpeed);
+`,
+);
+
+check(
+    "found-element-coalesced-with-a-parsed-member",
+    `
+    interface Tower { yaw: number; x: number; name: string }
+    const towers = JSON.parse('[{"yaw":1,"x":0,"name":"a"},{"yaw":2,"x":1,"name":"b"}]') as Tower[];
+    const builtYaw: number[] = [];
+    const builtName: string[] = ["c"];
+    builtYaw[0] = 1;
+    const ok = towers.every((t, index) => (builtYaw[index] ?? t.yaw) === t.yaw);
+    let shift = 0, names = "";
+    for (let i = 0; i < towers.length; i++) { const t = towers[i]!; shift += t.x - (builtYaw[i] ?? t.yaw); names += builtName[i] ?? t.name; }
+    if (!ok || shift !== -2 || names !== "cb") throw new Error("coalesce " + ok + " " + shift + " " + names);
+`,
+);
+
+check(
+    "typeof-a-call-still-makes-the-call",
+    `
+    interface Deps { count(): number; list(): number[] }
+    let calls = 0;
+    const deps: Deps = { count: () => { calls++; return 1; }, list: () => { calls++; return []; } };
+    if (typeof deps.count() !== "number") throw new Error("number");
+    const kind = typeof deps.list();
+    if (kind !== "object" || calls !== 2) throw new Error("calls " + calls);
+`,
+);
+
+check(
+    "void-callback-result-compared-with-true",
+    `
+    let seen = 0;
+    function walk(values: unknown[], visit: (path: string, value: number) => boolean | void): boolean {
+        for (let i = 0; i < values.length; i++) {
+            const value = values[i];
+            if (typeof value === "number" && visit("[" + i + "]", value) === true) return true;
+        }
+        return false;
+    }
+    const found = walk([1, "a", 3], (path, value) => { seen += value; if (value > 2) return true; });
+    const none = walk([1, 2], (path, value) => { seen += value * 10; });
+    if (!found || none || seen !== 34) throw new Error("walk " + seen);
+`,
+);
+
+check(
+    "object-is-on-nullable-numbers",
+    `
+    interface Request { runId: number; bedSink: number | null }
+    const requests: Request[] = [{ runId: 1, bedSink: null }, { runId: 1, bedSink: NaN }, { runId: 2, bedSink: 0 }, { runId: 2, bedSink: -0 }, { runId: 3, bedSink: null }];
+    const same = (a: Request, b: Request): boolean => Object.is(a.bedSink, b.bedSink);
+    const answers = [same(requests[0]!, requests[4]!), same(requests[1]!, requests[1]!), same(requests[2]!, requests[3]!), same(requests[0]!, requests[2]!), same(requests[2]!, requests[2]!)];
+    if (answers.join(",") !== "true,true,false,false,true") throw new Error("same value " + answers.join(","));
+`,
+);
+
+check(
+    "flat-map-callback-returning-an-element-or-an-array",
+    `
+    const xs = [1, 2, 3];
+    const ys = xs.flatMap((x) => x > 1 ? x * 10 : []);
+    if (ys.join(",") !== "20,30") throw new Error("element " + ys.join(","));
+    const zs = xs.flatMap((x) => x === 2 ? [x, x] : x);
+    if (zs.join(",") !== "1,2,2,3") throw new Error("array " + zs.join(","));
+    interface Geometry { id: number; r: number }
+    const known = new Map<number, Geometry>([[1, { id: 1, r: 2 }]]);
+    const geometry = (id: number): Geometry | null => known.get(id) ?? null;
+    const towers: { id?: number }[] = [{ id: 1 }, { id: 2 }, {}];
+    const all = towers.flatMap((tower) => tower.id === undefined ? [] : geometry(tower.id) ?? []);
+    if (all.length !== 1 || all[0]!.r !== 2) throw new Error("coalesce " + all.length);
+    const names = new Map<number, { steam?: string }>([[1, { steam: "A" }], [2, {}]]);
+    const steam = [1, 2, 3].flatMap((id) => names.get(id)?.steam ?? []);
+    if (steam.join(",") !== "A") throw new Error("names " + steam.join(","));
+`,
+);
+
+check(
+    "compound-assignment-to-a-nullable-number-past-its-guard",
+    `
+    const ys = new Map<string, number>([["a", 2]]);
+    const groundYAt = (key: string): number | null => ys.get(key) ?? null;
+    const doors = [1, 3, 2];
+    function lift(key: string, raise: number): number | null {
+        let datum: number | null = null;
+        for (const d of doors) {
+            const y = d > 2 ? groundYAt(key) : null;
+            if (y !== null && (datum === null || y < datum)) datum = y;
+        }
+        datum = datum ?? groundYAt(key);
+        if (datum === null) return null;
+        datum += raise;
+        datum *= 2;
+        datum **= 1;
+        return datum;
+    }
+    const from = ys.get("a")!;
+    if (lift("a", 0.5) !== 5 || lift("b", 1) !== null || ys.get("a") !== from) throw new Error("lift " + lift("a", 0.5));
+`,
+);
+
+check(
+    "date-now-as-a-function-value",
+    `
+    interface Deps { stamp?: () => number }
+    function make(deps: Deps): () => number {
+        const stamp = deps.stamp ?? Date.now;
+        return () => stamp();
+    }
+    const fixed = make({ stamp: () => 7 });
+    const live = make({});
+    const now = Date.now;
+    const first = live();
+    if (fixed() !== 7 || !(first > 1e12) || !(now() >= first)) throw new Error("clock " + first);
+`,
+);
+
+check(
+    "coalesced-literal-the-left-record-cannot-hold",
+    `
+    interface Result { code: string; quantity?: number; woodCost?: number }
+    interface Outcome { handled: boolean; payload?: { quantity: number; woodCost?: number } }
+    function run(o: Outcome): number {
+        let payload: Pick<Result, "quantity" | "woodCost"> = {};
+        if (o.handled) payload = o.payload ?? {};
+        return (payload.quantity ?? -1) + (payload.woodCost ?? 0);
+    }
+    const outcomes: Outcome[] = [{ handled: true, payload: { quantity: 3, woodCost: 2 } }, { handled: true }, { handled: false }];
+    if (run(outcomes[0]!) !== 5 || run(outcomes[1]!) !== -1 || run(outcomes[2]!) !== -1) throw new Error("payload");
+`,
+);
+
+check(
+    "non-null-asserted-optional-stored-in-a-document",
+    `
+    type Tint = [number, number, number];
+    const tintCopy = (value: readonly [number, number, number] | null | undefined): Tint | null =>
+        value ? [value[0], value[1], value[2]] : null;
+    interface Tower { woodTint?: Tint; ivyOff?: boolean }
+    function apply(target: Tower, trim: Tint | null, from: Tint | null): void {
+        if (trim) target.woodTint = tintCopy(from)!;
+        else delete target.woodTint;
+    }
+    const tower = JSON.parse('{"ivyOff":true}') as Tower;
+    const tints: (Tint | null)[] = [[1, 2, 3], null];
+    apply(tower, tints[0] ?? null, tints[0] ?? null);
+    if (JSON.stringify(tower) !== '{"ivyOff":true,"woodTint":[1,2,3]}') throw new Error(JSON.stringify(tower));
+    apply(tower, tints[0] ?? null, tints[1] ?? null);
+    if (JSON.stringify(tower) !== '{"ivyOff":true,"woodTint":null}') throw new Error("asserted " + JSON.stringify(tower));
+    apply(tower, tints[1] ?? null, tints[0] ?? null);
+    if (JSON.stringify(tower) !== '{"ivyOff":true}') throw new Error("deleted " + JSON.stringify(tower));
+`,
+);
+
+check(
+    "reassigned-let-holding-a-literal-array-argument",
+    `
+    function count<T>(items: readonly T[], more: readonly T[]): number {
+        let current = items;
+        if (current.length !== 1) throw new Error("first " + current.length);
+        current = more.filter(() => true);
+        return current.length;
+    }
+    if (count([{ k: 1 }], [{ k: 2 }, { k: 3 }]) !== 2) throw new Error("records");
+    interface Row { key: string }
+    function make(items: readonly Row[]) {
+        let current = items;
+        const set = (next: readonly Row[]): void => { current = next; };
+        return { set, first: () => current[0]?.key ?? "-", size: () => current.length };
+    }
+    const handle = make([{ key: "v" }]);
+    if (handle.first() !== "v") throw new Error("initial " + handle.first());
+    const more: Row[] = [];
+    more.push({ key: "a" }, { key: "b" });
+    handle.set(more);
+    more.push({ key: "c" });
+    if (handle.size() !== 3 || handle.first() !== "a") throw new Error("closure " + handle.size());
+`,
+);
+
+check(
+    "query-iterators-walk-the-live-list",
+    `
+    const params = new URLSearchParams("a=1&b=two" + (Date.now() > 0 ? "&a=3" : ""));
+    const keep = new Set(["b"]);
+    const parts = [...params.entries()].filter(([k]) => !keep.has(k)).map(([k, v]) => k + "=" + v);
+    if (parts.join(",") !== "a=1,a=3") throw new Error("entries " + parts.join(","));
+    const keys = [...params.keys()].join(",");
+    const values = [...params.values()].join(",");
+    if (keys !== "a,b,a" || values !== "1,two,3") throw new Error("parts " + keys + " " + values);
+    let walked = "";
+    for (const [k, v] of params.entries()) {
+        walked += k + v;
+        if (k === "a" && v === "1") params.delete("b");
+    }
+    if (walked !== "a1a3") throw new Error("live " + walked);
+`,
 );
 
 check(
@@ -17964,3 +18989,491 @@ test("parsed documents, number-keyed dictionaries and unread Error properties lo
         flags: ["/DBBLITE_WORKERS=1"],
     });
 });
+
+check(
+    "records-of-two-literal-shapes-keep-a-field-one-shape-declares-undefined",
+    `
+    interface Passage { x: number; r: number; transition?: number }
+    interface Opening { x: number; r: number; passageTransition?: number; hint?: number }
+    const openings: Opening[] = [{ x: 1, r: 0.5, passageTransition: 3, hint: 1 }, { x: 4, r: 0.5 }, { x: 2, r: 1, hint: 2 }];
+    const found = openings.flatMap((opening) => opening.hint !== undefined
+        ? [{ x: opening.x, r: opening.r, transition: opening.passageTransition }]
+        : [{ x: opening.x, r: opening.r }]);
+    let sum = 0;
+    for (const each of found) sum += each.x;
+    const passages: Passage[] = found;
+    let total = 0;
+    for (const passage of passages) total += passage.x + (passage.transition ?? passage.r * 10);
+    if (sum !== 7 || total !== 25) throw new Error("sum " + sum + " total " + total);
+`,
+);
+
+check(
+    "in-tells-an-own-undefined-a-map-callback-writes-from-a-missing-key",
+    `
+    interface Passage { x: number; r: number; transition?: number }
+    interface Opening { x: number; r: number; passageTransition?: number }
+    const openings: Opening[] = [{ x: 1, r: 0.5, passageTransition: 3 }, { x: 4, r: 0.5 }];
+    const written = openings.map((opening) => ({ x: opening.x, r: opening.r, transition: opening.passageTransition }));
+    const passages: Passage[] = written;
+    const bare: Passage[] = [{ x: 2, r: 1 }];
+    let owns = 0;
+    for (const each of [...passages, ...bare]) if ("transition" in each) owns++;
+    if (owns !== 2) throw new Error("owns " + owns);
+`,
+);
+
+check(
+    "in-tells-apart-records-of-two-literal-shapes-one-declaring-the-key-undefined",
+    `
+    interface Opening { x: number; r: number; passageTransition?: number; hint?: number }
+    const openings: Opening[] = [{ x: 1, r: 0.5, passageTransition: 3, hint: 1 }, { x: 4, r: 0.5 }, { x: 2, r: 1, hint: 2 }];
+    const found = openings.flatMap((opening) => opening.hint !== undefined
+        ? [{ x: opening.x, r: opening.r, transition: opening.passageTransition }]
+        : [{ x: opening.x, r: opening.r }]);
+    let owns = 0;
+    for (const each of found) if ("transition" in each) owns++;
+    if (owns !== 2) throw new Error("owns " + owns);
+`,
+);
+
+check(
+    "an-array-of-object-elements-keeps-their-identity",
+    `
+    interface Subject { x: number; radius: number; body?: object; bodies?: readonly object[] }
+    interface Creature { x: number; mesh: { id: number } }
+    const creatures: Creature[] = [{ x: 1, mesh: { id: 4 } }, { x: 2, mesh: { id: 5 } }];
+    function subjectOf(index: number): Subject | null {
+        const creature = creatures[index];
+        if (!creature) return null;
+        if (creature.x > 1) return { x: creature.x, radius: 1, bodies: creatures.map((each) => each.mesh) };
+        return { x: creature.x, radius: 2, body: creature.mesh };
+    }
+    const first = subjectOf(0);
+    const pair = subjectOf(1);
+    if (!first || first.body !== creatures[0]!.mesh || first.bodies !== undefined) throw new Error("first");
+    if (!pair?.bodies || pair.bodies.length !== 2 || pair.bodies[1] !== creatures[1]!.mesh) throw new Error("pair");
+    if (pair.bodies.indexOf(creatures[0]!.mesh) !== 0 || pair.bodies.includes({ id: 4 })) throw new Error("identity");
+    if (subjectOf(5) !== null) throw new Error("none");
+`,
+);
+
+check(
+    "a-generic-function-reads-a-read-only-record-of-its-type-argument",
+    `
+    interface State { wall?: string; tint?: [number, number, number] }
+    interface House extends State { id: number }
+    interface Deps<S extends State> { read(id: number): Readonly<S> | undefined; copy(record: Readonly<S>): S }
+    function plan<S extends State>(deps: Deps<S>, id: number): S | null {
+        const current = id > 0 ? deps.read(id) : undefined;
+        return current ? deps.copy(current) : null;
+    }
+    const houses: House[] = [{ id: 1, wall: "stone", tint: [1, 0.5, 0] }];
+    const copied = plan<House>({ read: (id) => houses.find((house) => house.id === id), copy: (house) => ({ ...house }) }, 1);
+    if (!copied || copied === houses[0] || copied.wall !== "stone" || copied.tint?.[1] !== 0.5) throw new Error("plan");
+    if (plan<House>({ read: () => undefined, copy: (house) => ({ ...house }) }, 0) !== null) throw new Error("none");
+`,
+);
+
+check(
+    "a-generic-function-over-an-object-bound-type-reads-its-callbacks",
+    `
+    function firstOf<T extends object>(read: () => T | undefined, fallback: T): T {
+        const found = read();
+        return found ?? fallback;
+    }
+    const a = { x: 1 };
+    const b = { x: 2 };
+    const readers: (() => { x: number } | undefined)[] = [() => a, () => undefined];
+    if (firstOf(readers[0]!, b) !== a || firstOf(readers[1]!, b) !== b) throw new Error("first");
+`,
+);
+
+check(
+    "an-empty-tuple-is-an-array-of-no-elements",
+    `
+    interface Moved { created?: readonly number[] }
+    type Outcome = ({ committed: true } & Moved) | { committed: false; reason: string };
+    const gate = new Float32Array([2, 0]);
+    let held = { committed: true, created: [] } as const;
+    if (gate[0]! > 1) held = { committed: true, created: [] } as const;
+    if (held.created.length !== 0 || !Array.isArray(held.created)) throw new Error("empty");
+    if (JSON.stringify(held) !== '{"committed":true,"created":[]}') throw new Error("json " + JSON.stringify(held));
+    const outcomes: Outcome[] = [];
+    outcomes.push(held, { committed: true, created: [gate[0]!, 3] }, { committed: false, reason: "no" });
+    let total = 0;
+    for (const outcome of outcomes) {
+        if (!outcome.committed) { total += outcome.reason.length; continue; }
+        for (const id of outcome.created ?? []) total += id;
+    }
+    if (total !== 7) throw new Error("total " + total);
+`,
+);
+
+check(
+    "a-stored-generic-method-returning-t-or-null-runs-a-void-operation",
+    `
+    interface Runner { run<T>(operation: () => T): T | null }
+    const gate = new Float32Array([1]);
+    let edits = 0;
+    const runners: Runner[] = [{ run: (operation) => (gate[0]! > 0 ? operation() : null) }];
+    const value = runners[0]!.run(() => 5);
+    const nothing = runners[0]!.run(() => { edits++; });
+    if (value !== 5 || nothing !== undefined || edits !== 1) throw new Error("run " + value + " " + nothing + " " + edits);
+`,
+);
+
+check(
+    "one-layout-holds-a-field-one-shape-declares-a-method",
+    `
+    interface Brick { readonly count: number; reupload(): void; bricks: number }
+    interface Solid { count(): number; reupload(): void; solid: boolean }
+    let uploads = 0;
+    let live = 3;
+    const gate = new Float32Array([5]);
+    const brick: Brick = { get count() { return live; }, reupload: () => { uploads++; }, bricks: 3 };
+    const solid: Solid = { count: () => gate[0]!, reupload: () => { uploads += 10; }, solid: true };
+    const touched = new Set<{ reupload(): void }>();
+    touched.add(brick);
+    touched.add(solid);
+    touched.add(brick);
+    for (const batch of touched) batch.reupload();
+    const bricks: Brick[] = [brick];
+    const solids: Solid[] = [solid];
+    live = 4;
+    const total = bricks[0]!.count + solids[0]!.count();
+    if (uploads !== 11 || total !== 9 || typeof solid.count !== "function") throw new Error("uploads " + uploads + " total " + total);
+`,
+);
+
+check(
+    "a-tuple-with-a-rest-element-is-an-array-of-its-elements",
+    `
+    type Seat = Readonly<{ x: number; y: number }>;
+    const MODEL: { readonly capacity: number; readonly seats: readonly [Seat, ...Seat[]]; readonly priority: readonly number[] } = {
+        capacity: 3,
+        seats: [{ x: -1, y: 0.5 }, { x: 0, y: 0.5 }, { x: 1, y: 0.5 }],
+        priority: [1, 0, 2],
+    };
+    const POTTER = { outputKind: "pots", capacity: MODEL.capacity, slots: MODEL.seats, priority: MODEL.priority } as const;
+    const KEG = { outputKind: "keg", capacity: 2, slots: [{ x: 0, y: 0 }, { x: 0, y: 1 }], priority: [1, 0], itemDisplayScale: 0.5 } as const;
+    const LAYOUTS = { potter: POTTER, keg: KEG } as const;
+    const layoutOf = (kind: keyof typeof LAYOUTS) => LAYOUTS[kind];
+    const kinds: (keyof typeof LAYOUTS)[] = [];
+    const gate = new Float32Array([1]);
+    kinds.push(gate[0]! > 0 ? "potter" : "keg", "keg");
+    let total = 0;
+    for (const kind of kinds) {
+        const layout = layoutOf(kind);
+        total += layout.capacity * 10 + layout.slots.length + layout.slots[0]!.x + layout.priority[0]!;
+    }
+    const nonEmpty: readonly [Seat, ...Seat[]] = MODEL.seats;
+    if (total !== 56 || nonEmpty[2]!.x !== 1) throw new Error("total " + total);
+`,
+);
+
+checkInRealm(
+    "an-awaited-optional-call-keeps-the-null-its-promise-settles-with",
+    `
+    interface Opts { captureShot?: () => Promise<string | null> }
+    const gate = new Float32Array([1, 0]);
+    async function delayed(shot: string | null): Promise<string | null> {
+        await Promise.resolve();
+        return shot;
+    }
+    const blank: Opts = { captureShot: () => delayed(gate[1]! > 0 ? "late" : null) };
+    const framed: Opts = { captureShot: () => delayed(gate[0]! > 0 ? "pic" : null) };
+    const bare: Opts = {};
+    async function shotOf(opts: Opts): Promise<string> {
+        const settled = await opts.captureShot?.();
+        const kept = (await opts.captureShot?.()) ?? "none";
+        return (settled === null ? "null" : settled === undefined ? "undefined" : settled) + ":" + kept;
+    }
+    void Promise.all([shotOf(blank), shotOf(framed), shotOf(bare)]).then((shots) => {
+        if (shots.join(",") !== "null:none,pic:pic,undefined:none") throw new Error(shots.join(","));
+        globalThis.close();
+    });
+`,
+);
+
+check(
+    "a-generic-wrapper-forwards-its-tuple-rest-parameter-as-lanes",
+    `
+    const rows = new Map<string, number>();
+    const gate = new Float32Array([1]);
+    const measure = <Args extends unknown[], Result>(label: string, work: (...args: Args) => Result): ((...args: Args) => Result) => {
+        if (gate[0]! < 0) return work;
+        return (...args: Args): Result => {
+            try {
+                return work(...args);
+            } finally {
+                rows.set(label, (rows.get(label) ?? 0) + 1);
+            }
+        };
+    };
+    interface Point { x: number; y: number }
+    const dig = measure("dig", (x: number, z: number): boolean => x + z > 2);
+    const addWindow = measure("window", (index: number, mount: "wall" | "gable", point: Point): number => index + point.x + (mount === "wall" ? 1 : 2));
+    const plant = measure("plant", (x: number, z: number, plan?: { kind: string }): string => (plan?.kind ?? "none") + (x + z));
+    const total = (dig(1, 3) ? 10 : 0) + addWindow(2, "gable", { x: 3, y: 0 });
+    type Brush = (ground: readonly [number, number] | null, from?: readonly [number, number]) => { accepted: boolean };
+    const makeDot = (limit: number): Brush => (ground, from) => ({ accepted: !!ground && ground[0] < limit && (from === undefined || from[0] < limit) });
+    const restore = measure("restore", makeDot(5));
+    if (!restore([1, 2]).accepted || restore([1, 2], [9, 9]).accepted || restore(null).accepted) throw new Error("restore");
+    if (plant(1, 2) !== "none3" || plant(2, 2, { kind: "oak" }) !== "oak4") throw new Error("plant");
+    if (total !== 17 || rows.get("dig") !== 1 || rows.get("window") !== 1 || rows.get("plant") !== 2 || rows.get("restore") !== 3) throw new Error("total " + total);
+`,
+);
+
+checkInRealm(
+    "a-promise-all-lane-of-undefined-is-undefined",
+    `
+    interface Pkg { name: string; size: number }
+    const gate = new Float32Array([1, 0]);
+    async function loadPkg(name: string): Promise<Pkg> { await Promise.resolve(); return { name, size: name.length }; }
+    async function settle(): Promise<void> { await Promise.resolve(); }
+    interface Opts { bodyUrl: string; brickUrl?: string }
+    async function loadAssets(opts: Opts): Promise<string> {
+        const [body, brick, done] = await Promise.all([loadPkg(opts.bodyUrl), opts.brickUrl ? loadPkg(opts.brickUrl) : undefined, settle()]);
+        return body.name + ":" + (brick ? brick.name : "none") + ":" + String(done);
+    }
+    const withBrick: Opts = gate[0]! > 0 ? { bodyUrl: "wall", brickUrl: "brick" } : { bodyUrl: "x" };
+    void Promise.all([loadAssets(withBrick), loadAssets({ bodyUrl: "slab" })]).then((names) => {
+        if (names.join(",") !== "wall:brick:undefined,slab:none:undefined") throw new Error(names.join(","));
+        globalThis.close();
+    });
+`,
+);
+
+check(
+    "a-map-callback-returning-undefined-fills-an-array-of-documents",
+    `
+    interface Thumb { shot: string; at: number }
+    const gate = new Float32Array([1]);
+    function parse(text: string): unknown { return JSON.parse(text); }
+    function listSaves(keys: string[]): string {
+        let cached: (Thumb | undefined)[];
+        if (gate[0]! > 2) cached = keys.map((key) => parse(key) as Thumb | undefined);
+        else cached = keys.map(() => undefined);
+        let missing = 0;
+        for (const value of cached) if (value === undefined) missing++;
+        return missing + ":" + cached.length + ":" + String(cached[1]);
+    }
+    const listed = listSaves(["a", "b"]);
+    if (listed !== "2:2:undefined") throw new Error(listed);
+`,
+);
+
+check(
+    "a-record-or-an-array-of-records-is-a-union-of-the-two",
+    `
+    interface Ignore { readonly mesh: number; readonly instance?: number }
+    interface Options { ignore?: Ignore | readonly Ignore[]; detailed?: boolean }
+    interface Context { mesh: number }
+    const footprints = new WeakMap<Context, Ignore | readonly Ignore[]>();
+    function ignored(ignore: Ignore | readonly Ignore[] | undefined): number[] {
+        if (!ignore) return [];
+        const list: readonly Ignore[] = Array.isArray(ignore) ? ignore : [ignore as Ignore];
+        return list.map((entry) => entry.mesh * 10 + (entry.instance ?? 0));
+    }
+    function project(ignore: Ignore | readonly Ignore[]): number {
+        if (!Array.isArray(ignore)) return (ignore as Ignore).mesh;
+        const source = ignore as readonly Ignore[];
+        let total = 0;
+        for (let i = 0; i < source.length; i++) total += source[i]!.mesh;
+        return total;
+    }
+    const pick = (options?: Options): string => ignored(options?.ignore).join(",");
+    const gate = new Float32Array([1]);
+    const ctx: Context = { mesh: 4 };
+    footprints.set(ctx, gate[0]! > 0 ? [{ mesh: 1 }, { mesh: 2, instance: 3 }] : { mesh: 9 });
+    const single = pick({ ignore: { mesh: 5, instance: 1 } });
+    const many = pick({ ignore: footprints.get(ctx) });
+    const none = pick();
+    const projected = project(footprints.get(ctx)!) * 100 + project({ mesh: 7 });
+    if (single !== "51" || many !== "10,23" || none !== "" || projected !== 307) throw new Error(single + "|" + many + "|" + none + "|" + projected);
+`,
+);
+
+check(
+    "a-union-of-scalars-and-arrays-of-itself-is-a-document",
+    `
+    type Part = string | number | boolean | null | undefined | readonly Part[];
+    const quantized = (value: number): number => Math.round((Number.isFinite(value) ? value : 0) * 10000);
+    function normalized(part: Part): Part {
+        if (typeof part === "number") return quantized(part);
+        if (Array.isArray(part)) return part.map(normalized);
+        return part;
+    }
+    function signature(parts: readonly Part[]): string {
+        return JSON.stringify(parts.map(normalized));
+    }
+    const gate = new Float32Array([0.5, 2]);
+    const parts: Part[] = ["door", gate[0]!, [1.23456, true, null, ["x", gate[1]!]], undefined];
+    const text = signature(parts);
+    if (text !== '["door",5000,[12346,true,null,["x",20000]],null]') throw new Error(text);
+`,
+);
+
+check(
+    "a-union-narrowed-by-an-intersection-is-its-one-possible-arm",
+    `
+    type Plan = { readonly ok: true; readonly at: number; readonly key: string } | { readonly ok: false; readonly reason: "far" | "blocked" };
+    const gate = new Float32Array([0, 1, 1]);
+    function plan(index: number): Plan {
+        return gate[index]! > 0 ? { ok: true, at: index * 2, key: "k" + index } : { ok: false, reason: "far" };
+    }
+    const named = (from: number): { plan: Plan & { readonly ok: true }; at: number } | null => {
+        for (let i = from; i < 3; i++) {
+            const candidate = plan(i);
+            if (!candidate.ok) continue;
+            return { plan: candidate, at: i };
+        }
+        return null;
+    };
+    let held = "";
+    const admitted = named(0);
+    if (admitted) held = admitted.plan.key + ":" + admitted.plan.at + ":" + admitted.at;
+    const none = named(3);
+    if (held !== "k1:2:1" || none !== null) throw new Error(held);
+`,
+);
+
+check(
+    "a-parsed-element-compared-with-a-record-compares-its-identity",
+    `
+    interface Rec { x: number; mbase: Float32Array }
+    const gate = new Float32Array([1]);
+    const rec: Rec = { x: gate[0]!, mbase: new Float32Array([2]) };
+    const recs: Rec[] = [rec];
+    const docs = JSON.parse("[0, 1, {}]") as unknown[];
+    let matches = 0;
+    for (const doc of docs) if (doc === rec) matches++;
+    const differs = docs[2] !== rec;
+    if (matches !== 0 || !differs || recs[0]!.mbase[0] !== 2 || recs[0] !== rec) throw new Error("identity " + matches);
+`,
+);
+
+check(
+    "a-conditionally-spread-key-is-own-only-where-its-arm-wrote-it",
+    `
+    interface Rect { kind: "rect"; cx: number; halfW: number; grow?: number }
+    interface Circle { kind: "circle"; x: number; radius: number; grow?: number }
+    type Boundary = Rect | Circle;
+    interface Body { cx: number; halfW: number }
+    const gate = new Float32Array([0.5, 0]);
+    const rectBoundary = (fp: Body, grow = 0): Rect => ({ kind: "rect", cx: fp.cx, halfW: fp.halfW, ...(grow !== 0 ? { grow } : {}) });
+    function bodyWidth(body: Body): number { return body.halfW * 2; }
+    function reach(b: Boundary): number { return (b.kind === "rect" ? b.halfW : b.radius) + (b.grow ?? 0); }
+    const grown = rectBoundary({ cx: 0, halfW: 1 }, gate[0]!);
+    const plain = rectBoundary({ cx: 0, halfW: 2 }, gate[1]!);
+    const hosts: Boundary[] = [grown, plain, { kind: "circle", x: 0, radius: 3 }];
+    const total = hosts.reduce((sum, host) => sum + reach(host), 0) + bodyWidth(grown) + bodyWidth(plain);
+    if (total !== 12.5 || !("grow" in grown) || "grow" in plain || Object.keys(plain).length !== 3) throw new Error("total " + total);
+`,
+);
+
+check(
+    "a-constant-table-row-defaulted-with-its-first-row-is-a-tuple",
+    `
+    const TILE_TINTS: readonly (readonly [number, number, number])[] = [[1, 0.9, 0.8], [0.9, 0.85, 0.8], [0.8, 0.8, 0.75]];
+    let seed = 0.4;
+    const rng = (): number => { seed = (seed * 9301 + 0.49297) % 1; return seed; };
+    let total = 0;
+    for (let i = 0; i < 4; i++) {
+        const tint = TILE_TINTS[Math.floor(rng() * TILE_TINTS.length)] ?? TILE_TINTS[0]!;
+        total += tint[0] + tint[1] + tint[2];
+    }
+    const missed = TILE_TINTS[7] ?? TILE_TINTS[0]!;
+    if (!(total > 9 && total < 11) || missed[1] !== 0.9) throw new Error("tints " + total);
+`,
+);
+
+check(
+    "a-set-of-objects-keeps-each-object-once-by-identity",
+    `
+    class UploadBatch<T extends object> {
+        private readonly dirty = new Set<T>();
+        mark(material: T): void { this.dirty.add(material); }
+        flush(upload: (material: T) => void): number {
+            let count = 0;
+            for (const material of this.dirty) { upload(material); count++; }
+            this.dirty.clear();
+            return count;
+        }
+    }
+    const seen = new Set<object>();
+    const a = { n: 1 };
+    const b = { n: 2 };
+    seen.add(a);
+    seen.add(a);
+    seen.add(b);
+    const batch = new UploadBatch<{ n: number }>();
+    batch.mark(a);
+    batch.mark(a);
+    batch.mark(b);
+    let uploaded = 0;
+    const flushed = batch.flush((material) => { uploaded += material.n; });
+    if (seen.size !== 2 || !seen.has(a) || seen.has({ n: 1 }) || flushed !== 2 || uploaded !== 3) throw new Error("set " + seen.size + " " + flushed);
+`,
+);
+
+check(
+    "a-bare-early-return-beside-a-final-value-return-returns-undefined",
+    `
+    const gate = new Float32Array([1, 0]);
+    let applied = 0;
+    const apply = (): boolean => { applied++; return true; };
+    const set = (id: number): number | undefined => {
+        if (gate[1]! > 0 || id < 0) {
+            apply();
+            return;
+        }
+        const request = id * 2;
+        return request + (apply() ? 1 : 0);
+    };
+    const skipped = set(-1);
+    const kept = set(3);
+    if (skipped !== undefined || kept !== 7 || applied !== 2) throw new Error("set " + String(skipped) + " " + String(kept));
+`,
+);
+
+checkInRealm(
+    "a-promise-reaction-given-as-a-record-function-runs-it",
+    `
+    interface Hooks { failed(error: unknown): void; isFailed(): boolean }
+    let failures = 0;
+    const gate = new Float32Array([1]);
+    function mount(hooks: Hooks) {
+        const pending = new Set<Promise<void>>();
+        let changed = false;
+        const flush = (value: number): void => {
+            if (hooks.isFailed()) return;
+            const task = (value > 0 ? Promise.resolve(true) : Promise.reject(new Error("refused"))).then((accepted) => { changed ||= accepted; });
+            pending.add(task);
+            void task.catch(hooks.failed).finally(() => pending.delete(task));
+        };
+        return { flush, settled: () => pending.size === 0 && changed };
+    }
+    const slider = mount({ failed: () => { failures++; }, isFailed: () => gate[0]! < 0 });
+    slider.flush(1);
+    slider.flush(-1);
+    setTimeout(() => {
+        if (!slider.settled() || failures !== 1) throw new Error("settled " + failures);
+        globalThis.close();
+    }, 0);
+`,
+);
+
+check(
+    "a-chained-null-assignment-stores-null-in-each-slot",
+    `
+    let patchPos: Float32Array | null = new Float32Array([1, 2]);
+    let patchNrm: Float32Array | null = new Float32Array([3]);
+    let patchIdx: Uint32Array | null = new Uint32Array([4, 5, 6]);
+    const gate = new Float32Array([1]);
+    const total = (patchPos?.length ?? 0) + (patchNrm?.length ?? 0) + (patchIdx?.length ?? 0);
+    if (gate[0]! > 0) patchPos = patchNrm = patchIdx = null;
+    if (total !== 6 || patchPos !== null || patchNrm !== null || patchIdx !== null) throw new Error("patch " + total);
+`,
+);

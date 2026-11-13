@@ -46,7 +46,12 @@ import {
     compileCollectionEntries,
     compileEntryCollection,
 } from "./collection-methods.js";
-import { callSignatures, nullability, unionMembers } from "./type-facts.js";
+import {
+    absenceKind,
+    callSignatures,
+    nullability,
+    unionMembers,
+} from "./type-facts.js";
 import {
     absenceOfNull,
     jsonAbsenceCpp,
@@ -509,7 +514,19 @@ function compileObjectIs(
             return `bbl::js::JsonValue::from_string(${stringCpp(context, value, node)})`;
         if (boolean(value))
             return `bbl::js::JsonValue::from_boolean(${value.cpp})`;
-        return undefined;
+        // A nullable scalar (`number | null`) of one absent value is its
+        // present value's, or that absent value.
+        if (value.dataType?.kind !== "optional") return undefined;
+        const absence = absenceKind(context.checker, value, node);
+        if (absence !== "null" && absence !== "undefined") return undefined;
+        const present = erased(
+            { kind: "data", cpp: "(*present)", dataType: value.dataType.inner },
+            node,
+        );
+        return (
+            present &&
+            `([&]() { const auto& present = ${value.cpp}; return present.has_value() ? ${present} : ${jsonAbsenceCpp(absence)}; }())`
+        );
     };
     const erasedLeft = erased(left, argumentAt(call, 0));
     const erasedRight = erased(right, argumentAt(call, 1));

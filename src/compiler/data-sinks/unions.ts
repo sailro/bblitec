@@ -1,6 +1,7 @@
 import ts from "typescript";
 import {
     dataTypesEqual,
+    functionArmIndex,
     soleMemberIndex,
     type DataType,
 } from "../data-types.js";
@@ -8,7 +9,11 @@ import type { Value } from "../types.js";
 import { valueDataType } from "../values/model.js";
 import { writable } from "../emission-transaction.js";
 import { isJsonValue } from "../json-bridge.js";
-import type { DataSinkHost, DataSinkOperations } from "./contracts.js";
+import {
+    unwrappedKnownValue,
+    type DataSinkHost,
+    type DataSinkOperations,
+} from "./contracts.js";
 
 function unionValue(
     type: DataType<"union">,
@@ -64,13 +69,23 @@ function unionValue(
         memberIndex = type.members.findIndex((member) =>
             lowerer.knownValueFitsSink(value, member, node),
         );
-    // A function is the union's one function arm, lowered into its storage.
+    // A function is the union's one function arm, lowered into its storage;
+    // beside others, the arm of the signature its place in the program
+    // gives it (a record property's declared method).
     if (
         memberIndex < 0 &&
         ((value.kind === "callback" && value.callbackDeclaration) ||
             value.dataType?.kind === "function")
-    )
-        memberIndex = soleMemberIndex(type, "function");
+    ) {
+        memberIndex = functionArmIndex(type, () => {
+            const contextual =
+                expression &&
+                lowerer.context.checker.getContextualType(expression);
+            return contextual
+                ? lowerer.context.dataTypes.fromStoredTsType(contextual, node)
+                : undefined;
+        });
+    }
     // A promise is the union's one promise arm, stored as that arm stores
     // one (`T | Promise<T>` returning what an async call returned).
     if (memberIndex < 0 && value.kind === "promise")
@@ -107,12 +122,7 @@ function unionValue(
 
 export const unionsSinks: DataSinkOperations<"union"> = {
     union: {
-        expression: (type, lowerer, _expression, unwrapped) =>
-            lowerer.compileKnownValueForSink(
-                lowerer.context.compileValue(unwrapped),
-                type,
-                unwrapped,
-            ),
+        expression: unwrappedKnownValue,
         value: unionValue,
     },
 };

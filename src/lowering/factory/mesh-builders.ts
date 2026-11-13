@@ -801,6 +801,10 @@ MeshHandle create_disc(Engine& engine, DiscOptions options) {
 ${cylinderBuilderBody}
 }
 
+MeshData create_cylinder_data(CylinderOptions options) {
+    return pinned_create_cylinder_data(options);
+}
+
 MeshHandle create_cylinder(Engine& engine, CylinderOptions options) {
     PinnedMeshData data = pinned_create_cylinder_data(options);
     return create_mesh_from_data(

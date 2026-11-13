@@ -185,6 +185,50 @@ test("enforces light subtype property contracts", () => {
     );
 });
 
+test("a light read out of a record writes through its typed kind's setters", () => {
+    // The record keeps the light's handle, not its factory: the pinned
+    // interface it is declared as names the kind, through an asserted
+    // intersection too.
+    const result = compileSource(`
+        import { createEngine, createDirectionalLight, createHemisphericLight } from "@babylonjs/lite";
+        import type { DirectionalLight, HemisphericLight } from "@babylonjs/lite";
+        interface Lighting { sky: HemisphericLight; sun: DirectionalLight }
+        function apply(lighting: Lighting, k: number): void {
+            const sun = lighting.sun as DirectionalLight & { _bumpLightVersion?: () => void };
+            sun.intensity = k;
+            sun.direction.x = k;
+            lighting.sun.diffuse = [k, k, k];
+            lighting.sky.groundColor = [k, k, k];
+            lighting.sky.direction.set(0, 1, k);
+        }
+        async function main() {
+            const engine = await createEngine({});
+            const lighting: Lighting = { sun: createDirectionalLight([0, -1, 0]), sky: createHemisphericLight() };
+            const all: Lighting[] = [lighting];
+            for (let i = 0; i < 2; i++) apply(all[i % 1]!, i * 0.5);
+        }
+    `);
+    assert.match(result.cpp, /\.lights, \(v_\w+\)\.second\)\.intensity = /);
+    assert.match(result.cpp, /bbl::set_light_direction_component\(v_engine, \(v_\w+\)\.second, 0u, /);
+    assert.match(result.cpp, /\.second\)\.diffuse_color = bbl::Color3\{/);
+    assert.match(result.cpp, /\.second\)\.ground_color = bbl::Color3\{/);
+    assert.match(result.cpp, /bbl::set_hemispheric_light_direction\(v_engine, \(v_\w+->sky\)\.second, /);
+});
+
+test("a finally handler revoking an object URL completes without a thenable", () => {
+    // URL.revokeObjectURL is a library object's static method declared
+    // void: its call completes with undefined, so finally discards it.
+    const result = compileSource(`
+        function load(bytes: Uint8Array): Promise<number> {
+            const url = URL.createObjectURL(new Blob([bytes], { type: "image/png" }));
+            return Promise.resolve(bytes.length).finally(() => URL.revokeObjectURL(url));
+        }
+        load(new Uint8Array([1, 2, 3])).then((n) => { if (n !== 3) throw new Error("finally " + n); });
+    `);
+    assert.match(result.cpp, /\.finally\(/);
+    assert.match(result.cpp, /bbl::js::revoke_object_url\(/);
+});
+
 test("records exact static scene composition reachability", () => {
     const result = compileSource(`
         import {
@@ -12609,6 +12653,24 @@ test("lowers every Canvas2D clearRect shape; the PAL clears the draws exactly", 
     );
 });
 
+test("reads the window size bare or through globalThis as through window", () => {
+    const result = compileSource(`
+        import { createEngine } from "@babylonjs/lite";
+
+        async function main(): Promise<void> {
+            await createEngine({});
+            const canvas = document.createElement("canvas");
+            canvas.width = typeof innerWidth === "number" ? innerWidth : 0;
+            canvas.height = globalThis.innerHeight;
+            document.body.appendChild(canvas);
+        }
+
+        void main();
+    `);
+    assert.match(result.cpp, /static_cast<double>\([^;]*\.options\.width\)/);
+    assert.match(result.cpp, /static_cast<double>\([^;]*\.options\.height\)/);
+});
+
 test("refuses retained UI under the standalone effect and frame-graph drivers", () => {
     // NA-26: those two loops render no UiRenderFrame on either backend, so
     // the combination refuses at generation instead of silently dropping
@@ -17141,6 +17203,25 @@ test("retains Scene 118's nullable billboard pick record and all hit fields", ()
     assert.match(
         result.cpp,
         /const bbl::Vec3d eye = bbl::upstream::camera_position\(bbl::handle_at\(v_engine\.cameras, v_camera\)\); return bblscene::Vec3\{eye\.x, eye\.y, eye\.z\}/,
+    );
+});
+
+test("a camera position whose record type is a document is a fresh document of its lanes", () => {
+    // A parsed position shares the `{ x, y, z }` record type, which then
+    // stores documents: the camera's position is one, read off the same
+    // composition of the pin's body.
+    const result = compileSource(`
+        import { createArcRotateCamera, createEngine, getCameraPosition } from "babylon-lite";
+        const engine = await createEngine({});
+        const camera = createArcRotateCamera(1, 1, 10, { x: 0, y: 0, z: 0 });
+        let saved: { x: number; y: number; z: number } = JSON.parse('{"x":1,"y":2,"z":3}') as { x: number; y: number; z: number };
+        const eye = getCameraPosition(camera);
+        if (eye.y > 100) saved = eye;
+        if (saved.x !== 1 || !(eye.y > -100)) throw new Error("eye");
+    `);
+    assert.match(
+        result.cpp,
+        /const bbl::Vec3d eye = bbl::upstream::camera_position\(bbl::handle_at\(v_engine\.cameras, v_camera\)\); bbl::js::JsonValue::Object own; own\.emplace_back\("x", bbl::js::json_value\(eye\.x\)\);/,
     );
 });
 
@@ -22333,6 +22414,57 @@ test("fixed render targets snapshot runtime canvas dimensions", () => {
     assert.match(
         result.cpp,
         /render_target_dimension\(std::floor\([^;]*v_engine.options.height/,
+    );
+});
+
+test("a CSM receiver callback reaches the consts its registration precedes", () => {
+    // The callback runs at each fit, after `blendData` and `savedVP` exist.
+    const result = compileSource(`
+        import { addToScene, createArcRotateCamera, createCsmDirectionalShadowGenerator, createDirectionalLight, createEngine, createSceneContext, onCsmReceiverUpdate } from "@babylonjs/lite";
+        const engine = await createEngine(document.getElementById("renderCanvas") as HTMLCanvasElement);
+        const scene = createSceneContext(engine);
+        scene.camera = createArcRotateCamera(-Math.PI / 2, Math.PI / 3, 50, { x: 0, y: 0, z: 0 });
+        const light = createDirectionalLight([0, -1, -1], 0.8);
+        addToScene(scene, light);
+        const generator = createCsmDirectionalShadowGenerator(engine, light, { mapSize: 256, numCascades: 2 });
+        function install(): () => number {
+            const uData = new Float32Array(84);
+            const upload = (): void => { blendData[1] = uData[0]!; savedVP.set(uData.subarray(0, 16)); };
+            onCsmReceiverUpdate(generator, (data) => { uData.set(data.subarray(0, 80), 0); upload(); });
+            const blendData = new Float32Array(48);
+            const savedVP = new Float32Array(16);
+            return () => blendData[1]! + savedVP[0]!;
+        }
+        const read = install();
+        if (read() < 0) throw new Error("read");
+    `);
+    assert.match(result.cpp, /on_csm_receiver_update\(/);
+    assert.match(result.cpp, /v_\w*blendData/);
+});
+
+test("render targets take the extents a { width, height } record value holds", () => {
+    // A size held in a binding (one record) or returned by a helper (a struct).
+    const result = compileSource(`
+        import { createEngine, createRenderTargetTexture } from "@babylonjs/lite";
+        interface Size { width: number; height: number }
+        function sizeFor(scale: number): Size { return { width: Math.round(128 * scale), height: Math.round(64 * scale) }; }
+        const scales = [0.5, 1];
+        async function main(): Promise<void> {
+            const engine = await createEngine({});
+            const shadowSize = { width: 64, height: 32 };
+            const raw = createRenderTargetTexture(engine, { lbl: "raw", format: "rg16float", samples: 1, size: shadowSize });
+            const scaled = createRenderTargetTexture(engine, { lbl: "scaled", format: "rg16float", samples: 1, size: sizeFor(scales[Math.floor(Math.random() * 2)]!) });
+            void raw; void scaled;
+        }
+        void main();
+    `);
+    assert.match(
+        result.cpp,
+        /render_target_dimension\(v_shadowSize->width\)[^;]*render_target_dimension\(v_shadowSize->height\)/,
+    );
+    assert.match(
+        result.cpp,
+        /render_target_dimension\((v_(?!shadowSize)\w+)(\.|->)width\)[^;]*render_target_dimension\(\1\2height\)/,
     );
 });
 

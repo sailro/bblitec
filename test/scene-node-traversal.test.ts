@@ -50,6 +50,64 @@ test("stored imported roots retain clone dispatch and recursive SceneNode traver
     ]);
 });
 
+test("an array of meshes spreads into an array of scene nodes", () => {
+    const compiled = compileSource(`
+        import {createEngine,createSceneContext,createMeshFromData,setMeshVisible,type Mesh,type TransformNode} from "@babylonjs/lite";
+        const engine=await createEngine({});
+        const scene=createSceneContext(engine);
+        const make=(name:string):Mesh=>createMeshFromData(engine,name,new Float32Array(9),new Float32Array(9),new Uint32Array([0,1,2]));
+        const flowers={meshes:[make("a"),make("b")]};
+        const nodes:(Mesh|TransformNode)[]=[...flowers.meshes];
+        for(const node of nodes) if("material" in node) setMeshVisible(node,false);
+        localStorage.setItem("nodes",String(nodes.length+(scene?1:0)));
+    `);
+    assert.match(
+        compiled.cpp,
+        /array_from_iterable<bbl::SceneNodeHandle>\(v_flowers->meshes, \[\]\(const auto& (\w+)\) \{ return bbl::SceneNodeHandle\{\1\}; \}\)/,
+    );
+    const native = optionalNativeFixtureTools();
+    if (!native) return;
+    const output = resolve("artifacts/scene-node-spread-compile");
+    mkdirSync(output, { recursive: true });
+    emitUpstreamGenerated(output, compiled.manifest.features);
+    const file = join(output, "check.cpp");
+    writeFileSync(file, compiled.cpp);
+    runNativeFixtureCompiler(native, [
+        "/c",
+        `/Fo:${output}\\`,
+        "/I",
+        join(output, "upstream/include"),
+        file,
+    ]);
+});
+
+test("a mesh's pickable flag reads undefined until a program writes it", () => {
+    const compiled = compileSource(`
+        import {createEngine,createMeshFromData} from "@babylonjs/lite";
+        const engine=await createEngine({});
+        const mesh=createMeshFromData(engine,"m",new Float32Array(9),new Float32Array(9),new Uint32Array([0,1,2]));
+        const before=mesh.pickable;
+        mesh.pickable=false;
+        localStorage.setItem("pickable",String(before)+","+String(mesh.pickable));
+    `);
+    assert.match(compiled.cpp, /\.pickable\.source_value\(\)/);
+    assert.match(compiled.cpp, /\.pickable = false;/);
+    const native = optionalNativeFixtureTools();
+    if (!native) return;
+    const output = resolve("artifacts/mesh-pickable-compile");
+    mkdirSync(output, { recursive: true });
+    emitUpstreamGenerated(output, compiled.manifest.features);
+    const file = join(output, "check.cpp");
+    writeFileSync(file, compiled.cpp);
+    runNativeFixtureCompiler(native, [
+        "/c",
+        `/Fo:${output}\\`,
+        "/I",
+        join(output, "upstream/include"),
+        file,
+    ]);
+});
+
 test("node children preserve interleaved live order and concrete clone identity", (t) => {
     const native = optionalNativeFixtureTools();
     if (!native) {

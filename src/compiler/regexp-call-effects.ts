@@ -18,8 +18,9 @@ import {
     equalityOperator,
     variableKind,
     isMemberAccess,
+    writeSiteOf,
 } from "./syntax.js";
-import { holdsOnly } from "./type-facts.js";
+import { holdsOnly, PRIMITIVE_KINDS } from "./type-facts.js";
 
 /** Immutable checked-source facts, independent of emission and its rollbacks. */
 interface RegExpEffects {
@@ -169,12 +170,13 @@ function onlyObserved(
     const parent = expression.parent;
     // Another builtin constructor's prototype is not on a RegExp's lookup
     // path for `test`/`exec` (RegExp.prototype owns both), whatever code
-    // does with it (`GPUAdapter.prototype.requestDevice = ...`).
+    // does with it (`GPUAdapter.prototype.requestDevice = ...`), cast or not.
+    const access = ts.isExpression(value) ? unwrapExpression(value) : value;
     const constructorName =
-        ts.isPropertyAccessExpression(expression) &&
-        expression.name.text === "prototype" &&
-        ts.isIdentifier(unwrapExpression(expression.expression))
-            ? (unwrapExpression(expression.expression) as ts.Identifier)
+        ts.isPropertyAccessExpression(access) &&
+        access.name.text === "prototype" &&
+        ts.isIdentifier(unwrapExpression(access.expression))
+            ? (unwrapExpression(access.expression) as ts.Identifier)
             : undefined;
     const owner =
         constructorName &&
@@ -226,6 +228,15 @@ function onlyObserved(
     if (
         ts.isBinaryExpression(parent) &&
         equalityOperator(parent.operatorToken.kind) !== undefined
+    )
+        return true;
+    // A member read that only holds primitives (a function's `name` or
+    // `length`) passes no prototype on.
+    if (
+        isMemberAccess(parent) &&
+        parent.expression === expression &&
+        writeSiteOf(parent) === undefined &&
+        holdsOnly(checker.getTypeAtLocation(parent), PRIMITIVE_KINDS)
     )
         return true;
     if (

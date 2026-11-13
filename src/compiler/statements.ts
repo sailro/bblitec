@@ -32,7 +32,7 @@ import {
     type DataType,
 } from "./data-types.js";
 import type { Value } from "./types.js";
-import { lightSetter } from "./assignments.js";
+import { lightSetter, typedLightOwner } from "./assignments.js";
 import {
     isInstrumentationHostWrite,
     isRefusedRealmHostWrite,
@@ -71,6 +71,7 @@ import {
     unwrapExpression,
     variableKind,
     isMemberAccess,
+    hasDeclareModifier,
 } from "./syntax.js";
 import {
     caughtErrorValue,
@@ -98,8 +99,11 @@ import {
     namedMember,
     type NamedMember,
 } from "./symbols.js";
-import { absenceKind } from "./type-facts.js";
-import { requireAssignedBindingStorage } from "./dynamic-binding-storage.js";
+import { absenceKind, isNullable } from "./type-facts.js";
+import {
+    requireAssignedBindingStorage,
+    requireDynamicBindingStorage,
+} from "./dynamic-binding-storage.js";
 import {
     emitReachableStatements,
     enclosingLoopControl,
@@ -163,6 +167,7 @@ interface StatementLoweringContext extends Pick<
     | "registerNativeBindingType"
     | "activeNativeReturnType"
     | "activeNativeCoroutine"
+    | "activeNativeReturnDiscarded"
     | "prefersNativeDataIteration"
     | "trackResourceLoopEarlyReturn"
     | "isRuntimeResourceConstruction"
@@ -990,7 +995,9 @@ export class StatementLowerer {
         // that returns a value feeds it to the call that lowered the body,
         // so its refusal is the caller's statement to record: swallowing it
         // would hand the caller a binding with no value, and every later
-        // read of that binding would count as a gap of its own.
+        // read of that binding would count as a gap of its own. A survey
+        // records it as the statement's own where the body discards what it
+        // returns (a void callback, a survey root): no binding receives it.
         const planner = activeStorageDemandPlanner();
         planner?.beginActivation(statement);
         const survey = activeSurvey();
@@ -999,7 +1006,9 @@ export class StatementLowerer {
         if (
             recovery === undefined ||
             context.speculating ||
-            firstReturn([statement], { valued: true })
+            (firstReturn([statement], { valued: true }) &&
+                (recovery === planner ||
+                    !context.activeNativeReturnDiscarded()))
         ) {
             this.lowerStatement(context, statement);
             return;
@@ -1012,26 +1021,40 @@ export class StatementLowerer {
         );
     }
 
-    /**
-     * A statement that a rolled-back compound statement held, lowered on its
-     * own by a survey. Under a loop or a switch it lowers in a block a native
-     * break leaves, standing for the construct its jumps bind; under a label,
-     * before the label's exit.
-     */
+    /** A statement that a rolled-back compound statement held, lowered on its own by a survey. */
     private emitHeld(
         context: StatementLoweringContext,
         holder: ts.Statement,
         nested: ts.Statement,
     ): void {
-        const lower = (): void => this.emit(context, nested);
+        this.emitUnderJumpOwners(context, [holder], () =>
+            this.emit(context, nested),
+        );
+    }
+
+    /**
+     * Runs `emitBody` for statements a survey lowers apart from the
+     * constructs holding them (`holders`, outermost first): under each loop
+     * or switch, in a block a native break leaves, standing for the
+     * construct its jumps bind; under each label, before the label's exit.
+     */
+    public emitUnderJumpOwners<T>(
+        context: StatementLoweringContext,
+        holders: readonly ts.Node[],
+        emitBody: () => T,
+    ): T {
+        const [holder, ...inner] = holders;
+        if (!holder) return emitBody();
+        const lower = (): T =>
+            this.emitUnderJumpOwners(context, inner, emitBody);
         if (ts.isLabeledStatement(holder))
-            this.emitInlinedBody(context, holder, "label", lower);
-        else if (
+            return this.emitInlinedBody(context, holder, "label", lower);
+        if (
             ts.isIterationStatement(holder, false) ||
             ts.isSwitchStatement(holder)
         )
-            this.emitInlinedBody(context, holder, "break", lower);
-        else lower();
+            return this.emitInlinedBody(context, holder, "break", lower);
+        return lower();
     }
 
     private lowerStatement(
@@ -1053,16 +1076,7 @@ export class StatementLowerer {
     ): void {
         context.asyncActivations.requirePendingActivationRealm(statement);
         context.varBindings.declareFor(statement);
-        if (
-            ts.canHaveModifiers(statement) &&
-            ts
-                .getModifiers(statement)
-                ?.some(
-                    (modifier) =>
-                        modifier.kind === ts.SyntaxKind.DeclareKeyword,
-                )
-        )
-            return;
+        if (hasDeclareModifier(statement)) return;
         if (context.handleCollections.isFoldedFlattenLoop(statement)) {
             // The declaration above it already answered with the
             // container's flattened meshes; the loop that filled the list
@@ -4748,6 +4762,37 @@ export class StatementLowerer {
                         target.cpp,
                         operator,
                     );
+                } else if (
+                    operator !== "=" &&
+                    target.kind === "data" &&
+                    target.dataType?.kind === "optional" &&
+                    target.dataType.inner.kind === "number" &&
+                    !isNullable(
+                        context.checker.getTypeAtLocation(unwrapped.left),
+                    )
+                ) {
+                    // A nullable number the source narrowed to a number
+                    // (`datum += raise` past a null guard): its value
+                    // combines, and the storage takes the result.
+                    const present = context.dataLowerer.narrowOptional(
+                        target,
+                        unwrapped.left,
+                    ).cpp;
+                    const { previous } = context.dataLowerer.compoundPlace(
+                        unwrapped.left,
+                        unwrapped.right,
+                        present,
+                    );
+                    const storage = context.dataTypes.cppType(target.dataType);
+                    context.dataLowerer.emitNumericCompound(
+                        unwrapped.left,
+                        unwrapped.right,
+                        operator,
+                        present,
+                        previous,
+                        (stored) => `${target.cpp} = ${storage}{${stored}};`,
+                        false,
+                    );
                 } else if (target.kind === "boolean" && operator === "=") {
                     context.emit({
                         kind: "expression",
@@ -4867,6 +4912,14 @@ export class StatementLowerer {
                     context.emitDiscardedValue(value);
                     return;
                 } else {
+                    // A compile-time array a later assignment replaces is
+                    // stored: the declaration is lowered again with storage.
+                    if (target.kind === "tuple")
+                        requireDynamicBindingStorage(
+                            context.checker,
+                            unwrapped.left,
+                            "source",
+                        );
                     context.fail(
                         unwrapped.left,
                         `Assignment operator '${operator}' is not supported for ${target.kind}.`,
@@ -5282,7 +5335,12 @@ export class StatementLowerer {
             });
         }
         if (target.kind === "light") {
-            return this.compileLightVectorSet(context, call, owner, target);
+            return this.compileLightVectorSet(
+                context,
+                call,
+                owner,
+                typedLightOwner(context, target, owner.expression),
+            );
         }
         const transform = sceneNodeTransformDescriptor(owner.name);
         return transform
@@ -5423,10 +5481,9 @@ export class StatementLowerer {
             return false;
         }
         if (!target.lightKind) {
-            // A light read out of the data model carries no static kind, and
-            // the entry point is named by it. Nothing reached asks for this,
-            // so it takes the generic unsupported-statement path rather than
-            // a message that would name the wrong cause.
+            // A light whose type names no kind (`LightBase`) has no one
+            // entry point: it takes the generic unsupported-statement path
+            // rather than a message that would name the wrong cause.
             return false;
         }
         const setter = lightSetter(target, property, "vector");

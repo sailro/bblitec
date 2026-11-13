@@ -1,5 +1,5 @@
 import { StorageDemand } from "./storage-demand.js";
-import type { CompileError } from "./compile-error.js";
+import { CompileError } from "./compile-error.js";
 import type { StorageRequest } from "./replay-storage.js";
 import ts from "typescript";
 import type { InstantiatedRecord, RecordJoin } from "./record-components.js";
@@ -228,6 +228,24 @@ export class NativeRecordDemandRefused extends StorageDemand {
             demand: this.demand,
             refusal: this.refusal,
         };
+    }
+}
+
+/**
+ * Runs `work` for `demand`: a refusal it raises stands for the demand
+ * (`NativeRecordDemandRefused`), so the replay drops it and a statement
+ * demanding it again refuses instead of the whole compile.
+ */
+export function refusingRecordDemand<T>(
+    demand: NativeRecordStorageDemand,
+    work: () => T,
+): T {
+    try {
+        return work();
+    } catch (error) {
+        if (error instanceof CompileError)
+            throw new NativeRecordDemandRefused(demand, error);
+        throw error;
     }
 }
 

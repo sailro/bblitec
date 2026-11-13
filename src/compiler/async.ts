@@ -77,8 +77,10 @@ import { convertsToSceneNode, isHandleKind } from "./data-types/handles.js";
 import { ApplicationRealmRequired } from "./worker-modules.js";
 import { representedResultType } from "./represented-result.js";
 import {
+    absentValueKind,
     isNullable,
     isTypeReference,
+    nullability,
     undefinedOnly,
     presentMembers,
     isVoid,
@@ -105,6 +107,7 @@ interface AsyncContext extends Pick<
     | "compileBrowserTextureFunctionCall"
     | "compileExecutedGltfFunctionCall"
     | "compileCallbackWithValues"
+    | "withCallbackScopes"
     | "captureManagedClosureLines"
     | "withOwnedCallbackBody"
     | "asyncActivations"
@@ -837,10 +840,19 @@ export class AsyncLowerer {
                                             signature,
                                         ),
                                     );
+                                // An activation run at its own declaration
+                                // (a survey root) results as its signature
+                                // declares, as a call of it would.
                                 result.value = this.ownResult(
                                     result.value,
                                     node,
-                                    context.checker.getTypeAtLocation(node),
+                                    node === declaration && signature
+                                        ? context.checker.getReturnTypeOfSignature(
+                                              signature,
+                                          )
+                                        : context.checker.getTypeAtLocation(
+                                              node,
+                                          ),
                                 );
                                 if (
                                     result.value.kind === "void" &&
@@ -1545,11 +1557,13 @@ export class AsyncLowerer {
                       () => context.compileValue(input),
                   );
         const settlements: ReturnType<AsyncLowerer["settledHandlers"]>[] = [];
+        const sources: ts.Node[] = [];
         const pin = (
             value: Value,
             source: ts.Node,
             expected?: ts.Type,
         ): Value => {
+            sources.push(source);
             const promise = this.pinArgument(
                 this.asPromise(value, source, { source: expected }),
                 "all_input",
@@ -1640,7 +1654,15 @@ export class AsyncLowerer {
                 ? `bbl::js::promise_all_settled_tuple(${inputs}, std::tuple{${settlements.map((value) => value.fulfilled).join(", ")}}, std::tuple{${settlements.map((value) => value.rejected).join(", ")}})`
                 : `bbl::js::promise_all_tuple(${inputs})`,
             promiseType: this.cppType(result, call),
-            promiseResult: result,
+            // A void fulfillment is undefined in the aggregate.
+            promiseResult: {
+                ...result,
+                tupleElements: result.tupleElements!.map((lane, index) =>
+                    lane.kind === "void"
+                        ? undefinedFromVoid(context, sources[index]!)
+                        : lane,
+                ),
+            },
             nativeCaptures: promises.flatMap(
                 (value) => value.nativeCaptures ?? [],
             ),
@@ -1712,6 +1734,12 @@ export class AsyncLowerer {
                 ts.TypeFlags.Never) !==
                 0;
         let stored: Value | undefined;
+        // A function value whose source the program holds (`hooks.failed`,
+        // a record's arrow) runs as that literal does, in the scopes it
+        // closed over, as a call through the value does.
+        let known:
+            | { value: Value; target: ts.ArrowFunction | ts.FunctionExpression }
+            | undefined;
         if (
             !reportingOnly &&
             (evaluated ||
@@ -1723,27 +1751,41 @@ export class AsyncLowerer {
             const value = evaluated ?? context.compileValue(callback);
             const type =
                 value.dataType ?? context.dataLowerer.dataTypeAt(callback);
-            if (type?.kind !== "function")
+            const source = value.callbackDeclaration;
+            if (
+                type?.kind !== "function" &&
+                value.kind === "callback" &&
+                !value.cpp &&
+                source &&
+                (ts.isArrowFunction(source) ||
+                    ts.isFunctionExpression(source)) &&
+                !isAsyncFunction(source)
+            )
+                known = { value, target: source };
+            else if (type?.kind !== "function")
                 return context.fail(
                     callback,
                     "Promise reactions require a compiled function value.",
                 );
-            const name = context.allocateTemporaryCppName("promise_callback");
-            const cpp = context.dataLowerer.compileKnownValueForSink(
-                value,
-                type,
-                callback,
-            );
-            context.emit({
-                kind: "declaration",
-                type: "auto",
-                name,
-                initializer: cpp,
-            });
-            stored = {
-                ...context.dataLowerer.leafValue(name, type),
-                nativeCaptures: [context.registerNativeBinding(name)],
-            };
+            else {
+                const name =
+                    context.allocateTemporaryCppName("promise_callback");
+                const cpp = context.dataLowerer.compileKnownValueForSink(
+                    value,
+                    type,
+                    callback,
+                );
+                context.emit({
+                    kind: "declaration",
+                    type: "auto",
+                    name,
+                    initializer: cpp,
+                });
+                stored = {
+                    ...context.dataLowerer.leafValue(name, type),
+                    nativeCaptures: [context.registerNativeBinding(name)],
+                };
+            }
         }
         const name = context.allocateTemporaryCppName("promise_argument");
         // A settled value is passed by const reference, an exception by value.
@@ -1779,13 +1821,21 @@ export class AsyncLowerer {
                             inputs,
                             node,
                         )
-                      : asynchronous
-                        ? this.activate(inline, declaration, inputs, node)
-                        : context.compileCallbackWithValues(
-                              inline!,
-                              inputs,
-                              node,
-                          );
+                      : known
+                        ? context.withCallbackScopes(known.value, () =>
+                              context.compileCallbackWithValues(
+                                  known!.target,
+                                  inputs,
+                                  node,
+                              ),
+                          )
+                        : asynchronous
+                          ? this.activate(inline, declaration, inputs, node)
+                          : context.compileCallbackWithValues(
+                                inline!,
+                                inputs,
+                                node,
+                            );
                 if (signature)
                     result.value = this.normalizeUndefined(
                         result.value,
@@ -1799,7 +1849,17 @@ export class AsyncLowerer {
                           (stored.dataType.undefinedCompletion ||
                               (cleanup &&
                                   stored.dataType.nonThenableCompletion))
-                        : undefinedCompletion || nonThenableCompletion);
+                        : known
+                          ? hasProvenUndefinedCompletion(
+                                context,
+                                known.target,
+                            ) ||
+                            (cleanup &&
+                                hasNonThenableCompletion(
+                                    context.checker,
+                                    known.target,
+                                ))
+                          : undefinedCompletion || nonThenableCompletion);
                 if (
                     !neverReturns &&
                     result.value.kind === "void" &&
@@ -1811,6 +1871,12 @@ export class AsyncLowerer {
                             stored.dataType,
                             cleanup ? "nonthenable" : "undefined",
                         );
+                    // A struct function field the reaction completes through
+                    // takes the proof its stores then check (a replay).
+                    else if (!cleanup)
+                        hasProvenUndefinedCompletion(context, declaration, {
+                            requireFieldProofs: true,
+                        });
                     context.fail(
                         callback,
                         "Promise reaction with a void result requires a proven undefined completion.",
@@ -2075,6 +2141,8 @@ export class AsyncLowerer {
         if (value.kind === "scene") return "bbl::Scene";
         if (value.kind === "environment-textures")
             return "std::shared_ptr<const bbl::EnvironmentState>";
+        // `createNavigationPluginAsync`'s plugin is the toolset's handle.
+        if (value.kind === "navigation") return "bbl::pal::NavigationHandle";
         return this.context.fail(
             node,
             `Promise result '${value.kind}' has no owned asynchronous representation.`,
@@ -2085,8 +2153,13 @@ export class AsyncLowerer {
         cpp: string,
         binding: NativeCaptureBinding,
     ): Value {
-        // An erased browser value has no run-time state: it settles to itself.
-        if (source.kind === "browser") return source;
+        // An erased browser value has no run-time state: it settles to
+        // itself, as an aggregate's `undefined` lane does.
+        if (
+            source.kind === "browser" ||
+            (source.kind === "json-null" && absenceOf(source) === "undefined")
+        )
+            return source;
         const { ownedCpp, ...value } = source;
         if (value.dataType?.kind === "handle" && value.dataType.ownedEngine) {
             const owned = {
@@ -2327,15 +2400,42 @@ export class AsyncLowerer {
         context.useNativeValue(value);
         const cppType = context.dataTypes.cppType(settlement);
         const name = context.allocateTemporaryCppName("promise_input");
+        // The promise an optional call returned settles with the absence its
+        // own result type names; the awaited type adds the short circuit's.
+        const promised =
+            type.kind === "optional"
+                ? context.checker.getAwaitedType(
+                      context.checker.getNonNullableType(
+                          ts.isAwaitExpression(node)
+                              ? context.checker.getTypeAtLocation(
+                                    node.expression,
+                                )
+                              : source,
+                      ),
+                  )
+                : undefined;
+        const absence = promised && absentValueKind(nullability(promised));
         const body = context.captureManagedClosureLines(() => {
             context.registerNativeBinding(name);
-            const resolve = (cpp: string, member: DataType): string =>
-                this.promiseInput(
-                    context.dataLowerer.leafValue(cpp, member),
+            const resolve = (cpp: string, member: DataType): string => {
+                const input = context.dataLowerer.leafValue(cpp, member);
+                return this.promiseInput(
+                    input.kind === "promise" &&
+                        input.promiseResult &&
+                        (absence === "null" || absence === "undefined")
+                        ? {
+                              ...input,
+                              promiseResult: {
+                                  ...input.promiseResult,
+                                  absence,
+                              },
+                          }
+                        : input,
                     settlement,
                     node,
                     source,
                 );
+            };
             const emitReturn = (cpp: string): void =>
                 context.emit({
                     kind: "control",
@@ -2704,11 +2804,19 @@ export class AsyncLowerer {
                     (property &&
                         (property.flags & ts.SymbolFlags.Optional) !== 0 &&
                         !field)
-                )
+                ) {
+                    const lacking =
+                        sourceType &&
+                        this.context.dataTypes.unrepresentedSignaturePart(
+                            sourceType,
+                            node,
+                        );
                     return this.context.fail(
                         node,
-                        `Asynchronous result property '${name}' has no owned representation.`,
+                        `Asynchronous result property '${name}' has no owned representation` +
+                            (lacking ? `: ${lacking}.` : "."),
                     );
+                }
                 // An array of resources the producer already holds keeps
                 // that storage: an owned copy would split its identity.
                 const held =

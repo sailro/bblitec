@@ -57,7 +57,7 @@ const callsOf = new WeakMap<
  * function go (stored, passed, called through `call`), or it leaves its
  * module under another name.
  */
-function directCalls(
+export function onlyDirectCalls(
     program: ts.Program,
     checker: ts.TypeChecker,
     fn: ts.SignatureDeclaration,
@@ -116,7 +116,7 @@ function passedArguments(
         bindingRebinds(checker, program.getSourceFiles(), symbol).length > 0
     )
         return undefined;
-    const calls = directCalls(program, checker, fn);
+    const calls = onlyDirectCalls(program, checker, fn);
     if (!calls) return undefined;
     const positional = { parameters: ownParameters(fn) };
     const index = positional.parameters.indexOf(parameter);
@@ -171,7 +171,7 @@ function instantiatedTypes(
         )
             return [member];
         if (active.has(declaration)) return [];
-        const calls = directCalls(program, checker, fn);
+        const calls = onlyDirectCalls(program, checker, fn);
         const instantiations = calls?.map((call) =>
             determinedTypeArguments(checker, call, fn).get(member.symbol),
         );

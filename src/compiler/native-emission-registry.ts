@@ -23,6 +23,8 @@ interface NativeEmissionContext extends Pick<
     | "allocateTemporaryCppName"
     | "bindings"
     | "emit"
+    | "emissionMark"
+    | "reachesEmissionMark"
     | "fail"
     | "sourceFile"
     | "symbols"
@@ -117,15 +119,17 @@ export class NativeEmissionRegistry {
         canHoist: boolean,
     ): string {
         if (!canHoist) {
+            const mark = owner.runtimeRecordMark;
             if (
                 !owner.runtimeRecordCpp ||
-                owner.runtimeRecordScope !== this.context.activeEmissionScope
+                mark?.emission !== this.context.activeEmissionScope ||
+                !this.context.reachesEmissionMark(mark)
             ) {
                 const table = writable(owner);
                 const cppName =
                     this.context.allocateTemporaryCppName("record_table");
                 table.runtimeRecordCpp = cppName;
-                table.runtimeRecordScope = this.context.activeEmissionScope;
+                table.runtimeRecordMark = this.context.emissionMark();
                 this.context.emit({
                     kind: "declaration",
                     type: mapType,

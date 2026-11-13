@@ -1,6 +1,7 @@
 import { isUndefinedDataType } from "./data-types.js";
 import type { LoweringServices } from "./lowering-services.js";
 import { authoredErrorValue } from "./error-values.js";
+import { NativeRecordStorageRequired } from "./native-record-storage.js";
 // The JSON bridge: `JSON.stringify` over the plain-data model, and
 // `JSON.parse` plus the surface a parsed document is interrogated with.
 //
@@ -21,7 +22,7 @@ import { functionUsesDynamicThis } from "./user-functions.js";
 import { isNullishLiteral, namedMember } from "./symbols.js";
 import { holdsOnly, PRIMITIVE_KINDS } from "./type-facts.js";
 
-import type { DataType } from "./data-types.js";
+import type { DataType, DataTypeRegistry } from "./data-types.js";
 import { optionalPresentCpp, optionalValueCpp, type Value } from "./types.js";
 
 /** The narrow slice of the expression context this bridge needs. */
@@ -597,6 +598,31 @@ export function compileJsonRead(
  * JSON owns the dynamic type test; the equality dispatcher owns operand order
  * and negation.
  */
+/**
+ * `documentCpp === record` for a record value: whether the document boxes
+ * that very record, as a document holding it boxes it. A comparison keeps
+ * nothing, so the record needs no document storage of its own, only
+ * reference storage (a demand where it is stored in place). Undefined for
+ * any other value.
+ */
+export function documentHoldsRecord(
+    dataTypes: Pick<
+        DataTypeRegistry,
+        "isReferenceStruct" | "referenceRecordDemand"
+    >,
+    documentCpp: string,
+    value: Pick<Value, "kind" | "cpp" | "dataType">,
+): string | undefined {
+    if (value.kind !== "data" || value.dataType?.kind !== "struct")
+        return undefined;
+    const name = value.dataType.name;
+    if (dataTypes.isReferenceStruct(name))
+        return `bbl::js::json_holds_object(${documentCpp}, ${value.cpp})`;
+    const demand = dataTypes.referenceRecordDemand(name);
+    if (demand) throw new NativeRecordStorageRequired(demand);
+    return undefined;
+}
+
 export function compileJsonStrictComparison(
     context: JsonStrictComparisonContext,
     documentCpp: string,
@@ -626,6 +652,8 @@ export function compileJsonStrictComparison(
     const error = authoredErrorValue(context, value) ?? value;
     if (error.dataType?.kind === "error")
         return `${documentCpp}.strict_equals(bbl::js::JsonValue::from_native(bbl::js::Error(${error.cpp})))`;
+    const held = documentHoldsRecord(context.dataTypes, documentCpp, value);
+    if (held) return held;
     if (
         value.kind === "record" ||
         value.kind === "tuple" ||

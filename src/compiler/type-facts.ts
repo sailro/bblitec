@@ -1,6 +1,7 @@
 import ts from "typescript";
 import { declaredSymbol, libraryName, calledDeclaration } from "./symbols.js";
 import {
+    nonNullOperand,
     unwrapExpression,
     wrappedParent,
     objectLiteralMembers,
@@ -284,7 +285,10 @@ export function absenceKind(
     node: ts.Node,
 ): Absence {
     if (value.slotFoundCpp) return { slotFoundCpp: value.slotFoundCpp };
-    let absent = nullability(checker.getTypeAtLocation(node));
+    if (value.absence) return value.absence;
+    // A non-null assertion is erased: an absence the value still holds is
+    // one its operand's type admits.
+    let absent = nullability(checker.getTypeAtLocation(nonNullOperand(node)));
     // An optional chain that can short-circuit is undefined, whatever its
     // type names; one whose `?.` receivers are all present cannot, so an
     // absence its type does not name is a receiver's storage short-circuiting.
@@ -524,11 +528,32 @@ export function isVoid(type: ts.Type): boolean {
 }
 
 /**
+ * Whether a slot of this type is typed `object` (`null` and `undefined`
+ * aside): it holds any non-primitive value, as a dynamic value whose
+ * records keep their identity.
+ */
+export function holdsObjectKeyword(type: ts.Type): boolean {
+    const present = presentMembers(type);
+    return (
+        present.length === 1 &&
+        (present[0]!.flags & ts.TypeFlags.NonPrimitive) !== 0
+    );
+}
+
+/**
  * Whether a slot of this type holds no payload: `void` or `never`. Such a
  * parameter only fills a position; its argument is erased.
  */
 export function holdsNoPayload(type: ts.Type): boolean {
     return isVoid(type) || (type.flags & ts.TypeFlags.Never) !== 0;
+}
+
+/**
+ * Whether a parameter declared as this type is erased: it holds no payload,
+ * or only `undefined` (`founder?: undefined`), its one value.
+ */
+export function erasedParameterType(type: ts.Type): boolean {
+    return holdsNoPayload(type) || (type.flags & ts.TypeFlags.Undefined) !== 0;
 }
 
 /**
@@ -563,6 +588,20 @@ export function objectLikeType(type: ts.Type): boolean {
     return (
         (type.flags & ts.TypeFlags.Object) !== 0 ||
         (type.isIntersection() && type.types.every(objectLikeType))
+    );
+}
+
+/**
+ * An intersection a union keeps although the checker reduced it to
+ * `never` (`B & { ok: true }` of `(A | B) & { ok: true }`, whose `ok` is
+ * `false & true`): it holds no value, and lists none of its members'
+ * properties.
+ */
+export function impossibleIntersection(type: ts.Type): boolean {
+    return (
+        type.isIntersection() &&
+        type.getProperties().length === 0 &&
+        type.types.some((member) => member.getProperties().length > 0)
     );
 }
 

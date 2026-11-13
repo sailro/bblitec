@@ -64,7 +64,12 @@ export type NativeReturnValueCompiler = (
     node: ts.Node,
 ) => string;
 
-/** Execution facts for one native function body. */
+/** Where a native declaration was emitted (`emissionMark`). */
+export type EmissionMark = Pick<
+    import("./function-specializations.js").FunctionEmissionScope,
+    "emission" | "block"
+>;
+
 /** A statement being lowered, with where its lowering began. */
 export interface LoweringStatement {
     readonly statement: ts.Statement;
@@ -74,6 +79,7 @@ export interface LoweringStatement {
     readonly indentLevel: number;
 }
 
+/** Execution facts for one native function body. */
 export interface NativeFunctionBodyOptions {
     coroutine?: boolean;
     generator?: DataType<"iterator">;
@@ -148,6 +154,8 @@ export interface LoweringServices {
     readonly executedVideoFunctions: Set<string>;
     readonly canvasReadbackFunctions: Set<string>;
     functionEmissionScope(): import("./function-specializations.js").FunctionEmissionScope;
+    emissionMark(): EmissionMark;
+    reachesEmissionMark(mark: EmissionMark): boolean;
     readonly assets: Map<string, CompileAsset>;
     readonly assetOutputs: Map<string, CompileAsset>;
     readonly assetPayloads: Map<string, string>;
@@ -479,6 +487,12 @@ export interface LoweringServices {
      * later statements lower against it; nothing where its type has none.
      */
     bindEmptyStorage(name: ts.Identifier): void;
+    /**
+     * Runs a setup step that predeclares the storage `node` needs. In a
+     * survey its refusal is the census's, recorded against the statement
+     * holding `node`, and setup goes on; elsewhere it is the compile's.
+     */
+    predeclaring(node: ts.Node, work: () => void): void;
     /** The realm's engine local `name`: its storage type and how code reads it (a worker realm holds it shared). */
     realmEngine(name: string): { name: string; type: string; cpp: string };
     captureEmittedLines(
@@ -528,9 +542,12 @@ export interface LoweringServices {
         returns: "break" | "label" | undefined,
         emitBody: () => T,
     ): T;
+    /** `StatementLowerer.emitUnderJumpOwners`. */
+    emitUnderJumpOwners<T>(holders: readonly ts.Node[], emitBody: () => T): T;
     trackResourceLoopEarlyReturn(condition: ts.Expression): void;
     activeNativeReturnType(): DataType | "void" | undefined;
     activeNativeCoroutine(): boolean;
+    activeNativeReturnDiscarded(): boolean;
     emitNativeReturn(statement: ts.ReturnStatement): void;
     emitFallOffEnd(): void;
     emitNativeYield(expression: ts.YieldExpression): void;

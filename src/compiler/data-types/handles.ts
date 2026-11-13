@@ -17,6 +17,7 @@ const handleCppTypes: Record<HandleKind, string> = {
     "procedural-sky-environment":
         "std::shared_ptr<bbl::ProceduralSkyEnvironment>",
     "gaussian-splat-stream": "std::shared_ptr<bbl::GaussianSplatStream>",
+    navigation: "bbl::pal::NavigationHandle",
     "mesh-lod-asset": "std::shared_ptr<bbl::MeshLoDAsset>",
     "mesh-lod-instance": "std::shared_ptr<bbl::MeshLoDInstance>",
     "mesh-lod-metadata": "bbl::MeshLoDMetadata",
@@ -38,6 +39,7 @@ const handleCppTypes: Record<HandleKind, string> = {
     "worker-media-query": "std::shared_ptr<bbl::pal::MediaQueryList>",
     "worker-mutation-observer": "std::shared_ptr<bbl::pal::MutationObserver>",
     mesh: "bbl::MeshHandle",
+    "effect-wrapper": "bbl::EffectWrapperHandle",
     "animation-group": "bbl::AnimationGroupHandle",
     "vat-bake": "bbl::VatBake",
     "flow-graph": "bbl::FlowGraphHandle",
@@ -128,6 +130,7 @@ export function handleCppType(kind: HandleKind): string {
 const engineScopedHandleKinds = new Set<HandleKind>([
     "asset",
     "mesh",
+    "effect-wrapper",
     "thin-instance-pool",
     "material",
     "camera",

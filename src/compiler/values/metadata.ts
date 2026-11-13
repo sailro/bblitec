@@ -55,7 +55,7 @@ const resourceMetadataFields = {
         "recordGetters",
         "recordSetters",
         "runtimeRecordCpp",
-        "runtimeRecordScope",
+        "runtimeRecordMark",
         "sharedRecordContainer",
         "retainedNativeRecord",
         "recordProperties",

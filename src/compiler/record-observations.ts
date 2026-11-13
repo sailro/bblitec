@@ -15,7 +15,7 @@ import {
     type ProgramObservations,
 } from "./program-observations.js";
 import { yieldsNewArray } from "./fresh-records.js";
-import { bindingReferences } from "./binding-references.js";
+import { bindingReferences, soleBindingRead } from "./binding-references.js";
 import { OPEN_HOLDER_FLAGS } from "./written-holders.js";
 import {
     declarationOrigin,
@@ -38,6 +38,7 @@ import {
     equalityOperator,
     positionalParameter,
     variableKind,
+    hasExportModifier,
 } from "./syntax.js";
 
 /** What a record-observation question reads: the program and the code its calls run. */
@@ -1059,6 +1060,32 @@ function newArrayExpression(
     )
         return newArrayExpression(checker, method.expression);
     return yieldsNewArray(checker, unwrapped);
+}
+
+/**
+ * Whether `read` is the only reference to an unexported `const` local
+ * initialized with a fresh object (`fresh`), read once per binding
+ * (`soleBindingRead`). A copy stored there replaces the only reference.
+ */
+export function soleReadOfFreshLocal(
+    program: ts.Program,
+    checker: ts.TypeChecker,
+    read: ts.Expression,
+    fresh: (initializer: ts.Expression) => boolean,
+): boolean {
+    const unwrapped = unwrapExpression(read);
+    if (!ts.isIdentifier(unwrapped)) return false;
+    const declaration = declaredSymbol(checker, unwrapped)?.valueDeclaration;
+    return (
+        !!declaration &&
+        ts.isVariableDeclaration(declaration) &&
+        !!declaration.initializer &&
+        ts.isVariableStatement(declaration.parent.parent) &&
+        variableKind(declaration) === "const" &&
+        !hasExportModifier(declaration.parent.parent) &&
+        fresh(declaration.initializer) &&
+        soleBindingRead(program, checker, declaration) === unwrapped
+    );
 }
 
 /**

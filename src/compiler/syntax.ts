@@ -120,6 +120,17 @@ export function isTypePreservingWrapper(
     return ts.isParenthesizedExpression(node) || ts.isSatisfiesExpression(node);
 }
 
+/** A node past its parentheses and non-null assertions (`(x!)`): the operand `!` asserts present. */
+export function nonNullOperand(node: ts.Node): ts.Node {
+    let current = node;
+    while (
+        ts.isNonNullExpression(current) ||
+        ts.isParenthesizedExpression(current)
+    )
+        current = current.expression;
+    return current;
+}
+
 /** Strip the wrappers that keep the value and its static type. */
 export function unwrapTypePreserving(expression: ts.Expression): ts.Expression {
     let current = expression;
@@ -2401,17 +2412,22 @@ export function jsonScalarLiteral(
     return notJson;
 }
 
-/** Whether a node carries the `export` modifier (a module's own exported statement). */
-export function hasExportModifier(node: ts.Node): boolean {
+function hasModifier(node: ts.Node, kind: ts.ModifierSyntaxKind): boolean {
     return (
         ts.canHaveModifiers(node) &&
-        (ts
-            .getModifiers(node)
-            ?.some(
-                (modifier) => modifier.kind === ts.SyntaxKind.ExportKeyword,
-            ) ??
+        (ts.getModifiers(node)?.some((modifier) => modifier.kind === kind) ??
             false)
     );
+}
+
+/** Whether a node carries the `export` modifier (a module's own exported statement). */
+export function hasExportModifier(node: ts.Node): boolean {
+    return hasModifier(node, ts.SyntaxKind.ExportKeyword);
+}
+
+/** Whether a node carries the `declare` modifier (an ambient declaration). */
+export function hasDeclareModifier(node: ts.Node): boolean {
+    return hasModifier(node, ts.SyntaxKind.DeclareKeyword);
 }
 
 /** Whether a variable is `let` or `const`: scoped to its block, a fresh binding per loop iteration. */

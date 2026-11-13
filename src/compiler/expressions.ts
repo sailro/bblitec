@@ -3,6 +3,7 @@ import { ApplicationRealmRequired } from "./worker-modules.js";
 import { requireObservedPromise } from "./promise-observations.js";
 import { compileGpuAdapterCall } from "./gpu-adapter.js";
 import { hostAccessorValue } from "./host-globals.js";
+import { windowViewportValue } from "./canvas.js";
 import { mayCompileDataMethodCall } from "./data-methods.js";
 import { compileBoundCollectionMethod } from "./collection-functions.js";
 import { EmissionMap, writable } from "./emission-transaction.js";
@@ -161,7 +162,7 @@ import {
     structOwnEntries,
 } from "./object-statics.js";
 import { compileWindowIdentity } from "./window-events.js";
-import { compileDateTimeFormat } from "./dates.js";
+import { compileDateTimeFormat, dateNowFunctionValue } from "./dates.js";
 import {
     compileIntlConstruction,
     compileNumberLocaleString,
@@ -246,6 +247,7 @@ import { readFrozenParticleElement } from "./particle-buffer.js";
 import { pickedMeshHandle } from "./properties.js";
 import {
     absenceKind,
+    holdsOnly,
     isNullable,
     nullability,
     valueKindOf,
@@ -279,6 +281,7 @@ import { someAnalysisNode } from "./analysis-walk.js";
 import { renderClosure, type NativeExpression } from "./closure-captures.js";
 import { compileWithRuntimeCaseSplit } from "./runtime-case-split.js";
 import { numberToStringCpp } from "../cpp-expressions.js";
+import { activeSurvey } from "./survey.js";
 
 /** The global URI and base64 codecs, each a runtime function of its argument's ToString. */
 const URI_FUNCTIONS: ReadonlyMap<string, string> = new EmissionMap([
@@ -751,6 +754,8 @@ export class ExpressionLowerer {
                 requireWindowHost(this.context, unwrapped);
             return accessor;
         }
+        const viewport = windowViewportValue(this.context, unwrapped);
+        if (viewport) return viewport;
         const environment = browserEnvironmentValue(this.context, unwrapped);
         if (environment) return environment;
         const http = compileHttpFunction(this.context, unwrapped);
@@ -1108,6 +1113,8 @@ export class ExpressionLowerer {
             const arrayFunction = arrayFunctionValue(this.context, unwrapped);
             if (arrayFunction) return arrayFunction;
             if (mathFunction) return mathFunction;
+            const clock = dateNowFunctionValue(this.context, unwrapped);
+            if (clock) return clock;
             const prototype = compileLibraryPrototype(this.context, unwrapped);
             if (prototype) return prototype;
             const constant = enumMemberConstant(
@@ -1926,6 +1933,10 @@ export class ExpressionLowerer {
                     dataType: { kind: "string" },
                 };
             }
+            // A generation-known answer still runs an operand that writes
+            // (`typeof deps.count()` calls count).
+            if (this.context.evaluationOrder.writesStorage(expression))
+                this.context.emitDiscardedValue(operand);
             return {
                 kind: "string",
                 cpp: this.context.cppString(type),
@@ -2123,11 +2134,32 @@ export class ExpressionLowerer {
      */
     private numberMethodReceiver(expression: ts.Expression): Value {
         const value = this.compileValue(expression);
-        return value.kind === "data" &&
+        if (
+            value.kind === "data" &&
             value.preserveUncheckedLookup &&
             value.dataType?.kind === "optional" &&
             value.dataType.inner.kind === "number"
-            ? this.context.dataLowerer.narrowOptional(value, expression, true)
+        )
+            return this.context.dataLowerer.narrowOptional(
+                value,
+                expression,
+                true,
+            );
+        // A number a document or another storage holds (a parsed save's
+        // field) is read as one.
+        return value.kind === "data" &&
+            value.dataType?.kind !== "number" &&
+            holdsOnly(this.context.checker.getTypeAtLocation(expression), [
+                "number",
+            ])
+            ? {
+                  kind: "number",
+                  cpp: this.context.dataLowerer.compileKnownValueForSink(
+                      value,
+                      { kind: "number" },
+                      expression,
+                  ),
+              }
             : value;
     }
 
@@ -3084,9 +3116,19 @@ export class ExpressionLowerer {
                     (memberType &&
                         this.context.dataTypes.ownReturnedArray(memberType));
                 if (!inner) {
+                    const lacking =
+                        present.kind === "callback" &&
+                        present.callbackDeclaration &&
+                        this.context.dataTypes.unrepresentedSignaturePart(
+                            this.context.checker.getTypeAtLocation(
+                                present.callbackDeclaration,
+                            ),
+                            node,
+                        );
                     this.context.fail(
                         node,
-                        `Conditional record property '${name}' must have one native data type.`,
+                        `Conditional record property '${name}' must have one native data type` +
+                            (lacking ? `: ${lacking}.` : "."),
                     );
                 }
                 // The registry's nullable rule keeps a reference struct bare,
@@ -3470,15 +3512,16 @@ export class ExpressionLowerer {
                 `${trueFound ?? "true"} : ` +
                 `${falseFound ?? "true"})`;
         }
-        if (whenTrue.staticNumber !== whenFalse.staticNumber) {
-            delete writable(conditional).staticNumber;
-        }
-        if (whenTrue.staticString !== whenFalse.staticString) {
-            delete writable(conditional).staticString;
-        }
-        if (whenTrue.spriteDepthMode !== whenFalse.spriteDepthMode) {
-            delete writable(conditional).spriteDepthMode;
-        }
+        // A generation-known fact is the selection's only where both arms
+        // know the same one: `x === undefined ? false : true` knows none.
+        for (const fact of [
+            "staticNumber",
+            "staticString",
+            "staticBoolean",
+            "spriteDepthMode",
+        ] as const)
+            if (whenTrue[fact] !== whenFalse[fact])
+                delete writable(conditional)[fact];
         return conditional;
     }
 
@@ -3731,6 +3774,16 @@ export class ExpressionLowerer {
         if (deferred) return deferred;
         const target = this.context.unwrap(call.expression);
         if (target.kind === ts.SyntaxKind.SuperKeyword) {
+            // A survey lowers a derived constructor no construction reached
+            // as a root's body: its base call keeps nothing the rolled-back
+            // root reads, its arguments evaluated in order.
+            if (activeSurvey()) {
+                for (const argument of call.arguments)
+                    this.context.emitDiscardedValue(
+                        this.context.compileValue(argument),
+                    );
+                return { kind: "void", cpp: "" };
+            }
             this.context.fail(
                 call,
                 "super(...) is lowered as a top-level statement of a derived " +
@@ -6162,6 +6215,7 @@ export class ExpressionLowerer {
                         element,
                         falseElements[index]!,
                         unwrapped,
+                        [String(index)],
                     ),
                 ),
             };

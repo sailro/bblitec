@@ -11,7 +11,8 @@ import {
 import { metadataFieldsForKind } from "./values/metadata.js";
 import { isJsonValue } from "./json-bridge.js";
 import { activeSurvey } from "./survey.js";
-import { emptyStorage } from "./survey-roots.js";
+import { emptyStorage } from "./empty-storage.js";
+import { onlyDirectCalls } from "./written-holders.js";
 import {
     someAnalysisNode,
     forEachAnalysisNode,
@@ -43,6 +44,7 @@ import {
     typeCanCarryReference,
     holdsOnly,
     isNullable,
+    erasedParameterType,
     holdsNoPayload,
     isVoid,
     valueKindOf,
@@ -1218,11 +1220,15 @@ export function resolveFunctionDeclaration(
  */
 function tupleRestLanes(
     checker: ts.TypeChecker,
+    dataTypes: TypeParameterResolver,
     declaration: ts.SignatureDeclaration,
 ): readonly unknown[] | undefined {
     const last = declaration.parameters.at(-1);
     if (!last?.dotDotDotToken) return undefined;
-    const type = checker.getTypeAtLocation(last);
+    // A generic rest (`...args: Args`) is the tuple its type argument names.
+    const type = dataTypes.resolveTypeParameter(
+        checker.getTypeAtLocation(last),
+    );
     return (
         fixedTupleElements(checker, type) ??
         (restOnlyForwarded(checker, last, declaration)
@@ -1234,13 +1240,17 @@ function tupleRestLanes(
 /** Whether a function literal's final parameter is a rest parameter of tuple lanes (`tupleRestLanes`). */
 export function hasTupleRestLanes(
     checker: ts.TypeChecker,
+    dataTypes: TypeParameterResolver,
     declaration: ts.Node,
 ): boolean {
     return (
         isSupportedFunction(declaration) &&
-        tupleRestLanes(checker, declaration) !== undefined
+        tupleRestLanes(checker, dataTypes, declaration) !== undefined
     );
 }
+
+/** The type arguments in force (`DataTypeRegistry.resolveTypeParameter`). */
+type TypeParameterResolver = Pick<DataTypeRegistry, "resolveTypeParameter">;
 
 /**
  * Resolve only a function this lowerer could call directly, without turning a
@@ -1287,6 +1297,23 @@ export function callbackFunction(
 }
 
 /**
+ * A function the program only runs in place, synchronously: invoked where
+ * it is written, or only ever called by name.
+ */
+function runsOnlyInPlace(
+    program: ts.Program,
+    checker: ts.TypeChecker,
+    fn: SupportedFunction,
+): boolean {
+    if (isAsyncFunction(fn) || isGeneratorFunction(fn)) return false;
+    const site = outermostWrapper(fn);
+    return (
+        (ts.isCallExpression(site.parent) && site.parent.expression === site) ||
+        onlyDirectCalls(program, checker, fn) !== undefined
+    );
+}
+
+/**
  * Whether a recursive callback's heap `std::function` object can be
  * referenced after the scope that emitted its storage returns.
  *
@@ -1301,6 +1328,10 @@ export function callbackFunction(
  * after the scope returned) or any reference inside a nested closure,
  * which may itself be retained.
  *
+ * A function nested there that the program only calls in place, and
+ * synchronously, runs at its calls: its body is scanned where each call
+ * is, not where it is declared.
+ *
  * Member references resolve through `tryResolveFunctionDeclaration` -- the
  * resolver `directCalls` builds recursive groups with -- so this walk
  * cannot disagree with group discovery about what a member reference is,
@@ -1309,6 +1340,7 @@ export function callbackFunction(
  * identifiers whose position is not already safe.
  */
 export function recursiveStorageEscapes(
+    program: ts.Program,
     checker: ts.TypeChecker,
     members: ReadonlySet<SupportedFunction>,
     regions: readonly ts.Node[],
@@ -1326,6 +1358,13 @@ export function recursiveStorageEscapes(
             root,
             foreign,
             (node, nested) => {
+                if (
+                    node !== root &&
+                    isSupportedFunction(node) &&
+                    !members.has(node) &&
+                    runsOnlyInPlace(program, checker, node)
+                )
+                    return "skip";
                 if (ts.isIdentifier(node)) {
                     const parent = node.parent;
                     const directCallee =
@@ -1576,6 +1615,7 @@ export interface UserFunctionContext
             | "leaveRuntimeControlFlow"
             | "emitNativeCallbackStorage"
             | "emitInlinedBody"
+            | "emitUnderJumpOwners"
             | "beginNativeFunctionBody"
             | "endNativeFunctionBody"
             | "registerNativeBinding"
@@ -2013,9 +2053,11 @@ export class UserFunctionLowerer {
             signature && this.checker.getReturnTypeOfSignature(signature);
         if (discardReturn || !returned || isVoid(returned))
             return { kind: "void", cpp: "" };
+        // A returned array keeps its storage, a readonly one too.
+        const result = context.dataTypes.fromTsType(returned, ir.declaration);
         return emptyStorage(
             context,
-            context.dataTypes.fromTsType(returned, ir.declaration),
+            result && context.dataTypes.ownReturnedArray(result),
             "result",
         );
     }
@@ -2045,6 +2087,36 @@ export class UserFunctionLowerer {
             (node, message) => context.fail(node, message),
         );
         this.lower(context, ir, arguments_, declaration, true);
+    }
+
+    /**
+     * Lowers `statements` of a function's body -- ones no lowering began (an
+     * arm its generation-known condition left, what follows an exit) -- in
+     * a body of their own, their names already bound: a return leaves it,
+     * its value discarded, and a jump the construct it binds to. Those of an
+     * async function run as an activation does, in a coroutine body their
+     * awaits suspend.
+     */
+    public compileSurveyStatements(
+        context: UserFunctionContext,
+        statements: readonly ts.Statement[],
+    ): void {
+        const holders: ts.Node[] = [];
+        let owner = statements[0]!.parent;
+        for (; !ts.isFunctionLike(owner); owner = owner.parent)
+            holders.unshift(owner);
+        const lower = (coroutine: boolean) =>
+            this.emitValueLambdaResult(
+                context,
+                statements,
+                undefined,
+                true,
+                holders,
+                coroutine,
+            );
+        if (context.options.workers && isAsyncFunction(owner))
+            context.asyncActivations.withAsyncActivation(() => lower(true));
+        else lower(false);
     }
 
     public compileSharedMethod(
@@ -3624,11 +3696,38 @@ export class UserFunctionLowerer {
                         );
                         if (called) callees.add(called);
                     }
+                    // An immediately invoked function runs here.
+                    if (ts.isCallExpression(node)) {
+                        const invoked = unwrapExpression(node.expression);
+                        if (
+                            ts.isArrowFunction(invoked) ||
+                            ts.isFunctionExpression(invoked)
+                        )
+                            callees.add(invoked);
+                    }
                 },
                 { skip: (node) => node !== body && ts.isFunctionLike(node) },
             );
-        this.directCallCache.set(declaration, callees);
-        return callees;
+        // A function nested in this one lowers inside its body, where what
+        // it captures is in scope: its calls are this function's, never a
+        // group sibling lowered beside it.
+        const own = new EmissionSet<SupportedFunction>();
+        const expanded = new EmissionSet<SupportedFunction>();
+        const add = (called: SupportedFunction): void => {
+            if (
+                called === declaration ||
+                !ts.findAncestor(called.parent, (node) => node === declaration)
+            ) {
+                own.add(called);
+                return;
+            }
+            if (expanded.has(called)) return;
+            expanded.add(called);
+            for (const inner of this.directCalls(called)) add(inner);
+        };
+        for (const called of callees) add(called);
+        this.directCallCache.set(declaration, own);
+        return own;
     }
 
     /**
@@ -3640,6 +3739,7 @@ export class UserFunctionLowerer {
      * way the group itself is.
      */
     private groupStorageEscapes(
+        program: ts.Program,
         declarations: readonly SupportedFunction[],
     ): boolean {
         const root = declarations[0]!;
@@ -3649,6 +3749,7 @@ export class UserFunctionLowerer {
         // have storage at one call site.
         const group = this.recursiveGroup(root) ?? declarations;
         const escapes = recursiveStorageEscapes(
+            program,
             this.checker,
             new EmissionSet(group),
             group.flatMap((declaration) =>
@@ -4317,7 +4418,7 @@ export class UserFunctionLowerer {
             throw new SharedCallRequiresInline(
                 "A shared body would capture a borrowed platform event.",
             );
-        const escapes = this.groupStorageEscapes(declarations);
+        const escapes = this.groupStorageEscapes(context.program, declarations);
         const sharedBody = !recursive;
         const scope = sharedBody
             ? {
@@ -5511,13 +5612,11 @@ export class UserFunctionLowerer {
                 `Stored function '${sourceFunctionName(declaration) ?? "(anonymous)"}' re-enters its own lowering; its storage cannot serve this use's signature.`,
             );
         }
-        // A struct function field it completes through takes the proof its
-        // stores then check (a replay), rather than refusing here.
-        const unproven = (field: DataType<"function">): void =>
-            context.dataTypes.requireFunctionCompletion(field, "undefined");
         if (
             dataType.undefinedCompletion &&
-            !hasProvenUndefinedCompletion(context, declaration, { unproven })
+            !hasProvenUndefinedCompletion(context, declaration, {
+                requireFieldProofs: true,
+            })
         )
             context.fail(
                 expression,
@@ -5527,7 +5626,7 @@ export class UserFunctionLowerer {
             dataType.awaitedUndefinedCompletion &&
             !hasProvenUndefinedCompletion(context, declaration, {
                 awaited: true,
-                unproven,
+                requireFieldProofs: true,
             })
         )
             context.fail(
@@ -5608,11 +5707,10 @@ export class UserFunctionLowerer {
         const ir = this.irFor(declaration, "stored callback", (node, message) =>
             context.fail(node, message),
         );
+        const resolvedType = (parameter: { readonly type: ts.Type }) =>
+            context.dataTypes.resolveTypeParameter(parameter.type);
         const runtimeParameters = ir.parameters.filter(
-            (parameter) =>
-                !holdsNoPayload(
-                    context.dataTypes.resolveTypeParameter(parameter.type),
-                ),
+            (parameter) => !erasedParameterType(resolvedType(parameter)),
         );
         if (
             runtimeParameters
@@ -5643,7 +5741,8 @@ export class UserFunctionLowerer {
         const restParameter = runtimeParameters.at(-1);
         const restLanes =
             dataType.restParameter === undefined
-                ? tupleRestLanes(this.checker, declaration)?.length
+                ? tupleRestLanes(this.checker, context.dataTypes, declaration)
+                      ?.length
                 : undefined;
         const tupleRest =
             restLanes !== undefined &&
@@ -5654,7 +5753,9 @@ export class UserFunctionLowerer {
         if (
             !tupleRest &&
             restParameter?.declaration.dotDotDotToken &&
-            this.checker.isTupleType(restParameter.type) &&
+            this.checker.isTupleType(
+                context.dataTypes.resolveTypeParameter(restParameter.type),
+            ) &&
             dataType.parameters.length !== runtimeParameters.length
         )
             context.fail(
@@ -5797,7 +5898,7 @@ export class UserFunctionLowerer {
                     );
                     let runtimeIndex = 0;
                     for (const parameter of ir.parameters) {
-                        if (holdsNoPayload(parameter.type)) {
+                        if (!runtimeParameters.includes(parameter)) {
                             const initializer =
                                 parameter.declaration.initializer;
                             if (initializer) {
@@ -5805,6 +5906,16 @@ export class UserFunctionLowerer {
                                     context.compileValue(initializer);
                                 context.emitDiscardedValue(evaluated);
                             }
+                            // An erased parameter not declared `void` or
+                            // `never` (an `undefined` one, or one whose type
+                            // argument is `void`) reads its one value.
+                            if (!holdsNoPayload(parameter.type))
+                                this.bindSpecializedParameter(
+                                    context,
+                                    ir.declaration,
+                                    parameter,
+                                    undefinedValue(),
+                                );
                             continue;
                         }
                         if (parameter === tupleRest) {
@@ -6623,7 +6734,19 @@ export class UserFunctionLowerer {
                     (value) => value !== undefined,
                 );
                 if (specialized) return specialized;
-                const returnType = discardReturn
+                // A call instantiating the result at `void` (`<T>(work: () =>
+                // T): T` running a void work) returns no value: its returns
+                // run their expressions and leave.
+                const loweredResult = this.loweredSignature(ir, callNode);
+                const discarded =
+                    discardReturn ||
+                    (loweredResult !== undefined &&
+                        isVoid(
+                            this.checker.getReturnTypeOfSignature(
+                                loweredResult,
+                            ),
+                        ));
+                const returnType = discarded
                     ? undefined
                     : this.valueLambdaReturnType(
                           context,
@@ -6638,7 +6761,7 @@ export class UserFunctionLowerer {
                                 context,
                                 ir.statements,
                                 returnType,
-                                discardReturn,
+                                discarded,
                             ),
                         );
                     } catch (error) {
@@ -6649,14 +6772,14 @@ export class UserFunctionLowerer {
                         context,
                         ir.statements,
                         { kind: "json" },
-                        discardReturn,
+                        discarded,
                     );
                 }
                 return this.emitValueLambda(
                     context,
                     ir.statements,
                     returnType,
-                    discardReturn,
+                    discarded,
                 );
             }
             // Bare early returns break out of a wrapper around the body; ones
@@ -6721,32 +6844,47 @@ export class UserFunctionLowerer {
         ).value;
     }
 
+    /**
+     * `statements` in an immediately invoked native lambda returning
+     * `returnType`, lowered under the constructs `holders` names
+     * (`emitUnderJumpOwners`).
+     */
     private emitValueLambdaResult(
         context: UserFunctionContext,
         statements: readonly ts.Statement[],
         returnType: DataType | undefined,
         discardReturn: boolean,
+        holders: readonly ts.Node[] = [],
+        coroutine = false,
     ): { value: Value; abrupt: boolean } {
         if (returnType?.kind === "struct")
             context.dataTypes.markStoredObjectReferences(returnType);
         const result = `bbl_fn_${context.allocateUserFunctionPrefix()}result`;
+        const lambdaType = coroutine
+            ? "bbl::js::Promise<bbl::js::PromiseVoid>"
+            : returnType
+              ? context.dataTypes.cppType(returnType)
+              : "void";
         context.emit(
-            `${returnType ? `[[maybe_unused]] auto ${result} = ` : ""}[&]() -> ${returnType ? context.dataTypes.cppType(returnType) : "void"} {`,
+            `${returnType ? `[[maybe_unused]] auto ${result} = ` : ""}[&]() -> ${lambdaType} {`,
         );
         context.increaseIndent();
-        context.beginNativeFunctionBody(
-            returnType,
-            discardReturn,
-            this.documentReturnStorage(returnType)
+        context.beginNativeFunctionBody(returnType, discardReturn, {
+            ...(coroutine ? { coroutine: true } : {}),
+            ...(this.documentReturnStorage(returnType)
                 ? {
-                      compileReturn: (expression, type) =>
-                          this.compileInlinedReturn(context, expression, type),
+                      compileReturn: (
+                          expression: ts.Expression,
+                          type: DataType,
+                      ) => this.compileInlinedReturn(context, expression, type),
                   }
-                : {},
-        );
+                : {}),
+        });
         let terminated: boolean;
         try {
-            terminated = emitReachableStatements(context, statements);
+            terminated = context.emitUnderJumpOwners(holders, () =>
+                emitReachableStatements(context, statements),
+            );
             if (!terminated) context.emitFallOffEnd();
         } finally {
             context.endNativeFunctionBody();
@@ -7271,7 +7409,7 @@ export class UserFunctionLowerer {
         const leadingStatements = trailingReturn
             ? body.statements.slice(0, -1)
             : body.statements;
-        const needsValueLambda =
+        let needsValueLambda =
             this.containsValueReturn(leadingStatements) ||
             someAnalysisNode(
                 body,
@@ -7288,20 +7426,21 @@ export class UserFunctionLowerer {
                         )),
                 { functions: "skip" },
             );
+        let earlyReturns = needsValueLambda
+            ? "none"
+            : this.classifyEarlyReturns(leadingStatements, fail);
+        // A bare early return beside a final value return returns undefined:
+        // the call lowers through the native lambda, as an earlier value
+        // return does.
+        if (earlyReturns === "wrapper" && trailingReturn?.expression) {
+            needsValueLambda = true;
+            earlyReturns = "none";
+        }
         const statements = needsValueLambda
             ? body.statements
             : leadingStatements;
-        const earlyReturns = needsValueLambda
-            ? "none"
-            : this.classifyEarlyReturns(statements, fail);
         const needsWrapper = earlyReturns === "wrapper";
         const needsLocalNative = earlyReturns === "native";
-        if (needsWrapper && trailingReturn?.expression) {
-            fail(
-                trailingReturn,
-                "Inlined functions cannot combine a bare early return with a final return value.",
-            );
-        }
         const ir: UserFunctionIr = {
             declaration,
             name:
@@ -7500,21 +7639,30 @@ export class UserFunctionLowerer {
         return found;
     }
 
+    /**
+     * The signature a call of `ir` lowers at: a direct generic call carries
+     * its instantiated result. Callback lowering may instead name the
+     * enclosing collection call, whose signature belongs to the collection
+     * method, not this function.
+     */
+    private loweredSignature(
+        ir: UserFunctionIr,
+        callNode: ts.Node,
+    ): ts.Signature | undefined {
+        return ir.declaration.typeParameters?.length &&
+            ts.isCallExpression(callNode) &&
+            calledDeclaration(this.checker, callNode) === ir.declaration
+            ? this.checker.getResolvedSignature(callNode)
+            : this.checker.getSignatureFromDeclaration(ir.declaration);
+    }
+
     private valueLambdaReturnType(
         context: UserFunctionContext,
         ir: UserFunctionIr,
         callNode: ts.Node,
         expectedResult?: DataType,
     ): DataType {
-        // A direct generic call carries its instantiated result. Callback
-        // lowering may instead name the enclosing collection call, whose
-        // signature belongs to the collection method, not this function.
-        const signature =
-            ir.declaration.typeParameters?.length &&
-            ts.isCallExpression(callNode) &&
-            calledDeclaration(this.checker, callNode) === ir.declaration
-                ? this.checker.getResolvedSignature(callNode)
-                : this.checker.getSignatureFromDeclaration(ir.declaration);
+        const signature = this.loweredSignature(ir, callNode);
         let type = signature
             ? context.dataTypes.fromTsType(
                   this.checker.getReturnTypeOfSignature(signature),

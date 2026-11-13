@@ -2,6 +2,7 @@ import ts from "typescript";
 import { someAnalysisNode } from "./analysis-walk.js";
 import {
     declarationInDefaultLibrary,
+    declaredSymbol,
     resolvedSymbol,
     libraryGlobal,
     libraryName,
@@ -14,9 +15,11 @@ import {
     isAsyncFunction,
     isGeneratorFunction,
     functionOfDeclaration,
+    bindingElementKey,
 } from "./syntax.js";
 import type { Value } from "./types.js";
 import type { DataType } from "./data-types.js";
+import { presentDataType } from "./data-types/operations.js";
 import { undefinedOnly, holdsOnly, PRIMITIVE_KINDS } from "./type-facts.js";
 import { ownKeysKnown, undefinedValue } from "./values/model.js";
 import type { ClassHierarchy } from "./class-members.js";
@@ -32,13 +35,14 @@ function undefinedLibraryCall(
     const callee = unwrapExpression(expression.expression);
     const signature = checker.getResolvedSignature(expression);
     const declaration = calledDeclaration(checker, expression);
+    // A library global's or a library object's static method
+    // (`console.log`, `URL.revokeObjectURL`) declared void.
     const global = libraryGlobal(checker, callee);
-    const consoleMethod =
-        libraryStaticMember(checker, callee)?.owner === "console";
+    const staticMethod = libraryStaticMember(checker, callee) !== undefined;
     return (
         !!signature &&
         !!declaration &&
-        (global !== undefined || consoleMethod) &&
+        (global !== undefined || staticMethod) &&
         (ts.isFunctionDeclaration(declaration) ||
             ts.isMethodSignature(declaration)) &&
         declarationInDefaultLibrary(declaration) &&
@@ -124,10 +128,11 @@ interface ProvenUndefinedOptions {
     /** The value is awaited: a settled promise of `undefined` counts. */
     readonly awaited?: boolean;
     /**
-     * Hears each struct function field a completion calls through whose
-     * storage does not yet require the proof.
+     * A struct function field a completion calls through whose storage
+     * does not yet require the proof takes it: its stores then check it (a
+     * replay), rather than the proof failing.
      */
-    readonly unproven?: (field: DataType<"function">) => void;
+    readonly requireFieldProofs?: true;
 }
 
 /** A source-specialized callback retains the body behind an immutable alias. */
@@ -170,14 +175,43 @@ interface UndefinedContext {
             node: ts.Node,
             accessors?: "accessors",
         ): readonly { readonly sourceName: string; readonly type: DataType }[];
+        requireFunctionCompletion(
+            type: DataType<"function">,
+            completion: "undefined",
+        ): void;
     };
+}
+
+/**
+ * The function declaration `member` names when it is a module namespace's
+ * member (the namespace's member symbol is its module's function, where an
+ * object's would be a property) and its module never rebinds it: a call of
+ * it runs that body.
+ */
+function exportedFunction(
+    context: UndefinedContext,
+    member: ts.Symbol | undefined,
+): ts.FunctionDeclaration | undefined {
+    const declaration = member?.valueDeclaration;
+    return member &&
+        (member.flags & ts.SymbolFlags.Function) !== 0 &&
+        declaration &&
+        ts.isFunctionDeclaration(declaration) &&
+        declaration.body &&
+        declaration.name &&
+        !context.sharedClosures.identifierIsRebound(declaration.name)
+        ? declaration
+        : undefined;
 }
 
 /** Follow immutable results to a concrete completion, never an erased void type. */
 function provenUndefinedValue(
     context: UndefinedContext,
     node: ts.Node,
-    { awaited: awaitedNode = false, unproven }: ProvenUndefinedOptions = {},
+    {
+        awaited: awaitedNode = false,
+        requireFieldProofs,
+    }: ProvenUndefinedOptions = {},
 ): boolean {
     const seen = new Set<ts.Node>();
     const visit = (source: ts.Node, awaited = false): boolean => {
@@ -248,6 +282,29 @@ function provenUndefinedValue(
                 context.checker,
                 callee,
             )?.valueDeclaration;
+            // A member a pattern destructures from a namespace (`({ mount })
+            // => mount(x)`) is the function its module exports.
+            const key =
+                binding &&
+                ts.isBindingElement(binding) &&
+                ts.isObjectBindingPattern(binding.parent)
+                    ? bindingElementKey(binding)
+                    : undefined;
+            const destructured =
+                key !== undefined
+                    ? exportedFunction(
+                          context,
+                          context.checker
+                              .getTypeAtLocation(binding!.parent)
+                              .getProperty(key),
+                      )
+                    : undefined;
+            if (destructured)
+                return hasUndefinedCompletion(
+                    context.checker,
+                    destructured,
+                    awaited,
+                );
             if (
                 !binding ||
                 !(
@@ -272,12 +329,26 @@ function provenUndefinedValue(
             // holds; an absent one called optionally yields `undefined`.
             const receiver = accessed.expression;
             const name = accessed.name;
+            const exported = exportedFunction(
+                context,
+                declaredSymbol(context.checker, accessed.key),
+            );
+            if (exported)
+                return hasUndefinedCompletion(
+                    context.checker,
+                    exported,
+                    awaited,
+                );
             const owner = context.bindings.lookupOptional(receiver);
             // A struct's function field stores only functions proven to
-            // complete as its type requires.
-            if (owner?.kind === "data" && owner.dataType?.kind === "struct") {
+            // complete as its type requires; an absent optional struct
+            // completes no call through it with a value.
+            const stored = presentDataType(
+                owner?.kind === "data" ? owner.dataType : undefined,
+            );
+            if (stored?.kind === "struct") {
                 const field = context.dataTypes
-                    .structFields(owner.dataType.name, callee, "accessors")
+                    .structFields(stored.name, callee, "accessors")
                     .find((candidate) => candidate.sourceName === name)?.type;
                 if (field?.kind !== "function") return false;
                 if (
@@ -285,7 +356,11 @@ function provenUndefinedValue(
                     (awaited && field.awaitedUndefinedCompletion === true)
                 )
                     return true;
-                unproven?.(field);
+                if (requireFieldProofs)
+                    context.dataTypes.requireFunctionCompletion(
+                        field,
+                        "undefined",
+                    );
                 return false;
             }
             if (

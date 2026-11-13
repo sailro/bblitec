@@ -457,6 +457,11 @@ const UI_REFLECTED_ATTRIBUTES: ReadonlyMap<string, UiReflectedAttribute> =
             },
         ],
         ["htmlFor", { attribute: "for", readable: true, tags: ["label"] }],
+        // A loading hint: its getter is the normalized keyword, not lowered.
+        [
+            "loading",
+            { attribute: "loading", readable: false, tags: ["img", "iframe"] },
+        ],
         // Its getter is the URL resolved against the document, not lowered.
         ["href", { attribute: "href", readable: false, tags: ["a", "area"] }],
         // Its getter is the IDL-exposed autofill value, which is not lowered.
@@ -1707,6 +1712,8 @@ export class UiProjection {
         expression: ts.Expression,
         purpose: string,
         knownValue?: Value,
+        // `hidden` takes a string of its own (`"until-found"`), not ToBoolean.
+        toBoolean = true,
     ): string {
         const value = knownValue ?? this.context.compileValue(expression);
         if (
@@ -1715,6 +1722,11 @@ export class UiProjection {
         ) {
             return value.cpp;
         }
+        // A boolean property converts any other value as ToBoolean does.
+        const truthy = toBoolean
+            ? this.context.dataLowerer.truthinessCondition(value)
+            : undefined;
+        if (truthy !== undefined) return truthy;
         this.context.fail(
             expression,
             `${purpose} requires a boolean, received ${value.kind}.`,
@@ -4832,7 +4844,14 @@ export class UiProjection {
                         ...(tag === "button" ? ["type", "disabled"] : []),
                         ...(tag === "a" ? ["href", "target", "rel"] : []),
                         ...(tag === "img"
-                            ? ["src", "alt", "width", "height", "fetchpriority"]
+                            ? [
+                                  "src",
+                                  "alt",
+                                  "width",
+                                  "height",
+                                  "fetchpriority",
+                                  "loading",
+                              ]
                             : []),
                     ]);
                     if (
@@ -6278,7 +6297,7 @@ export class UiProjection {
         if (booleanAttribute) {
             this.context.emit({
                 kind: "expression",
-                code: `bbl::ui_set_boolean_attribute(${engine}, ${element.cpp}, ${this.context.cppString(booleanAttribute)}, ${this.uiBooleanCpp(assigned.site, `UI ${booleanAttribute}`, assigned.value)});`,
+                code: `bbl::ui_set_boolean_attribute(${engine}, ${element.cpp}, ${this.context.cppString(booleanAttribute)}, ${this.uiBooleanCpp(assigned.site, `UI ${booleanAttribute}`, assigned.value, booleanAttribute !== "hidden")});`,
             });
             return;
         }

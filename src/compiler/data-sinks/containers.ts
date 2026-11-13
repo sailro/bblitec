@@ -45,7 +45,11 @@ import {
     requireAbsenceTag,
 } from "../absence-tag-storage.js";
 import { requireTupleArraySlot } from "../tuple-array-storage.js";
-import type { DataSinkHost, DataSinkOperations } from "./contracts.js";
+import {
+    unwrappedKnownValue,
+    type DataSinkHost,
+    type DataSinkOperations,
+} from "./contracts.js";
 import { NativeRecordStorageRequired } from "../native-record-storage.js";
 import { isJsonValue } from "../json-bridge.js";
 import { readsErasedVoid } from "../undefined-values.js";
@@ -819,6 +823,54 @@ function valueProduct(
         : undefined;
 }
 
+/**
+ * A stored `Iterable<T>` holds the object it is given and opens that
+ * object's own iterator at each iteration: an Array or Set of T, a Map
+ * whose entries are T, or an iterator of T, which continues where it is.
+ */
+function valueIterable(
+    type: DataType<"iterable">,
+    lowerer: DataSinkHost,
+    value: Value,
+    node: ts.Node,
+): string | undefined {
+    // An array literal is a new array of its elements.
+    if (value.kind === "tuple") {
+        const array = lowerer.compileKnownValueForSink(
+            value,
+            { kind: "vector", element: type.element },
+            node,
+        );
+        lowerer.context.reachJsData();
+        return `bbl::js::array_iterable(${array})`;
+    }
+    const source = value.dataType;
+    if (!source) return undefined;
+    if (dataTypesEqual(source, type)) return value.cpp;
+    const types = lowerer.context.dataTypes;
+    const yielded =
+        source.kind === "vector" ||
+        source.kind === "set" ||
+        (source.kind === "iterator" && !source.asynchronous)
+            ? source.element
+            : source.kind === "map"
+              ? types.tupleStorage([source.key, source.value])
+              : undefined;
+    if (!yielded || !dataTypesEqual(yielded, type.element)) return undefined;
+    lowerer.context.reachJsData();
+    const element = types.cppType(type.element);
+    switch (source.kind) {
+        case "vector":
+            return `bbl::js::array_iterable(${value.cpp})`;
+        case "set":
+            return `bbl::js::set_iterable<${element}>(${value.cpp})`;
+        case "map":
+            return `bbl::js::map_iterable<${element}>(${value.cpp})`;
+        default:
+            return `bbl::js::iterator_iterable(${value.cpp})`;
+    }
+}
+
 const identityContainerSink = {
     expression: (
         type: DataType<"iterator" | "arguments">,
@@ -828,11 +880,7 @@ const identityContainerSink = {
     ) =>
         // A traced collection cursor is stored where any iterator is.
         type.kind === "iterator"
-            ? lowerer.compileKnownValueForSink(
-                  lowerer.context.compileValue(unwrapped),
-                  type,
-                  unwrapped,
-              )
+            ? unwrappedKnownValue(type, lowerer, expression, unwrapped)
             : lowerer.requireDataValue(unwrapped, type, expression).cpp,
     value: (
         type: DataType<"iterator" | "arguments">,
@@ -851,6 +899,7 @@ export const containersSinks: DataSinkOperations<
     | "map"
     | "set"
     | "iterator"
+    | "iterable"
     | "arguments"
     | "span"
     | "tuple"
@@ -858,14 +907,13 @@ export const containersSinks: DataSinkOperations<
     | "table"
 > = {
     iterator: identityContainerSink,
+    iterable: {
+        expression: unwrappedKnownValue,
+        value: valueIterable,
+    },
     arguments: identityContainerSink,
     product: {
-        expression: (type, lowerer, _expression, unwrapped) =>
-            lowerer.compileKnownValueForSink(
-                lowerer.context.compileValue(unwrapped),
-                type,
-                unwrapped,
-            ),
+        expression: unwrappedKnownValue,
         value: valueProduct,
     },
     optional: { expression: expressionOptional, value: valueOptional },

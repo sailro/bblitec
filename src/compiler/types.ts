@@ -29,6 +29,7 @@ export {
 import { EmissionSet } from "./emission-transaction.js";
 import type ts from "typescript";
 import type { SourceUnit } from "./source-units.js";
+import type { EmissionMark } from "./lowering-services.js";
 import type {
     NativeCaptureBinding,
     NativeCompanionKey,
@@ -1339,6 +1340,8 @@ interface LightKindFacts {
     readonly modulePath: string;
     /** The factory, whose `applyLightBase` object holds `_writeLightUbo`. */
     readonly factory: string;
+    /** The pinned interface its factory returns. */
+    readonly interfaceName: string;
     /**
      * Its `bbl::LightKind` enumerator and the stem of its
      * `create_<kind>_light` / `set_<kind>_light_<field>` entry points.
@@ -1363,6 +1366,7 @@ export const lightKindFacts: { readonly [K in LightKind]: LightKindFacts } = {
     hemispheric: {
         modulePath: "src/light/hemispheric.ts",
         factory: "createHemisphericLight",
+        interfaceName: "HemisphericLight",
         native: "hemispheric",
         feature: "light:hemispheric",
         positional: false,
@@ -1373,6 +1377,7 @@ export const lightKindFacts: { readonly [K in LightKind]: LightKindFacts } = {
     directional: {
         modulePath: "src/light/directional-light.ts",
         factory: "createDirectionalLight",
+        interfaceName: "DirectionalLight",
         native: "directional",
         feature: "light:directional",
         positional: false,
@@ -1383,6 +1388,7 @@ export const lightKindFacts: { readonly [K in LightKind]: LightKindFacts } = {
     point: {
         modulePath: "src/light/point-light.ts",
         factory: "createPointLight",
+        interfaceName: "PointLight",
         native: "point",
         feature: "light:point",
         positional: true,
@@ -1393,6 +1399,7 @@ export const lightKindFacts: { readonly [K in LightKind]: LightKindFacts } = {
     spot: {
         modulePath: "src/light/spot-light.ts",
         factory: "createSpotLight",
+        interfaceName: "SpotLight",
         native: "spot",
         feature: "light:spot",
         positional: true,
@@ -1404,6 +1411,7 @@ export const lightKindFacts: { readonly [K in LightKind]: LightKindFacts } = {
     rectArea: {
         modulePath: "src/light/rect-area-light.ts",
         factory: "createRectAreaLight",
+        interfaceName: "RectAreaLight",
         native: "rect_area",
         feature: "light:rect-area",
         positional: true,
@@ -2979,6 +2987,12 @@ export interface ValueFields {
      */
     slotFoundCpp?: string;
     /**
+     * Which absent value an optional's empty state is where no expression's
+     * type says it: the settlement of a promise an optional call returned,
+     * whose awaited type joins the call's short-circuit `undefined`.
+     */
+    absence?: "undefined" | "null";
+    /**
      * The tagged storage (`DataType<"tagged">`) a value was read from, whose
      * `cpp` is a const view of the value: a store into the slot writes the
      * value and its defined state together through this.
@@ -3243,8 +3257,11 @@ export interface ValueFields {
     recordSetters?: Readonly<Record<string, ts.SetAccessorDeclaration>>;
     /** Native map materialized for a runtime-valued record in one emitted scope. */
     runtimeRecordCpp?: string;
-    /** Emission scope that owns `runtimeRecordCpp`; generated locals cannot cross it. */
-    runtimeRecordScope?: number;
+    /**
+     * Where `runtimeRecordCpp` was declared (`emissionMark`): generated
+     * locals neither cross its emission scope nor outlive its block.
+     */
+    runtimeRecordMark?: EmissionMark;
     /** Heap scalar shared by every closure that captures an escaping record. */
     sharedRecordScalar?: true;
     /** Heap container retained by an escaping compile-time record. */

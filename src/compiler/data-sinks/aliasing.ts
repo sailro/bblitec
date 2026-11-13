@@ -7,7 +7,10 @@ import {
     yieldsFreshRecordElements,
     yieldsNewArray,
 } from "../fresh-records.js";
-import { returnedRecordLocal } from "../record-observations.js";
+import {
+    returnedRecordLocal,
+    soleReadOfFreshLocal,
+} from "../record-observations.js";
 import { unwrapExpression, objectLiteralMembers } from "../syntax.js";
 import type { Value } from "../types.js";
 import type { DataSinkHost } from "./contracts.js";
@@ -84,7 +87,13 @@ export function unaliasedValue(
             )) ||
         ((own?.kind === "vector" || own?.kind === "span") &&
             (yieldsNewArray(checker, expression) ||
-                freshStoredCall(lowerer, expression))) ||
+                freshStoredCall(lowerer, expression) ||
+                soleReadOfFreshLocal(
+                    lowerer.context.program,
+                    checker,
+                    expression,
+                    (initializer) => yieldsNewArray(checker, initializer),
+                ))) ||
         // A call creating its tuple owns it; a selection (`??`, `?:`)
         // marked fresh may still yield a stored one.
         (own?.kind === "tuple" &&

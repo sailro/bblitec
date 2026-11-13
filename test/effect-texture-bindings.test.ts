@@ -38,6 +38,19 @@ test("effect textures take render targets and bindings by number or name", () =>
     );
 });
 
+test("effect textures take a binding a table holds as a name or a number", () => {
+    // The key is one of either kind, known only at run time.
+    const compiled = compileSource(
+        program(
+            `const sources:readonly (readonly [string|number,()=>number])[]=[["named",()=>1],[1,()=>2]];const [binding,source]=sources[Math.round(Math.random())]!;if(source()>0)setEffectTexture(effect,binding,solid);`,
+        ),
+    );
+    assert.match(
+        compiled.cpp,
+        /bbl::set_effect_texture\(v_engine, v_effect, std::visit\(\[\]\(const auto& member\) \{ return bbl::EffectBindingKey\{member\}; \}, .*\(\*v_binding\).*\), v_solid\)/,
+    );
+});
+
 test("effect textures bind a render target's depth with a depth layout", () => {
     const compiled = compileSource(
         program(

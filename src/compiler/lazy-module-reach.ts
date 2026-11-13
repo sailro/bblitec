@@ -7,6 +7,7 @@ import {
     resolvedSymbol,
 } from "./symbols.js";
 import { valueKindOf } from "./type-facts.js";
+import { bindingElementKey } from "./syntax.js";
 import type { EvaluationOrder } from "./evaluation-order.js";
 
 /**
@@ -137,18 +138,30 @@ function computeReadable(
         }
         return [];
     };
+    /** The module declaration a namespace-typed `owner`'s member `name` exports, kept. */
+    const keepMember = (owner: ts.Type, name: string): void => {
+        const member = owner.getProperty(name);
+        const declaration =
+            member && moduleDeclaration(aliasTarget(checker, member));
+        if (declaration) keep(declaration);
+    };
     const visit = (node: ts.Node): void => {
         if (everything) return;
         if (
             ts.isElementAccessExpression(node) &&
             ts.isStringLiteralLike(node.argumentExpression)
-        ) {
-            const member = checker
-                .getTypeAtLocation(node.expression)
-                .getProperty(node.argumentExpression.text);
-            const declaration =
-                member && moduleDeclaration(aliasTarget(checker, member));
-            if (declaration) keep(declaration);
+        )
+            keepMember(
+                checker.getTypeAtLocation(node.expression),
+                node.argumentExpression.text,
+            );
+        // A pattern reads the members it names (`.then(({ mount }) => ...)`).
+        if (ts.isObjectBindingPattern(node)) {
+            const owner = checker.getTypeAtLocation(node);
+            for (const element of node.elements) {
+                const key = bindingElementKey(element);
+                if (key !== undefined) keepMember(owner, key);
+            }
         }
         if (
             ts.isTypeNode(node) ||

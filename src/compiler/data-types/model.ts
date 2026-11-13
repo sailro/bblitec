@@ -8,6 +8,7 @@ export type HandleKind =
     | AudioHandleKind
     | "engine"
     | "asset"
+    | "effect-wrapper"
     | "gpu-device"
     | "gpu-texture"
     | "gpu-texture-view"
@@ -16,6 +17,7 @@ export type HandleKind =
     | "gpu-environment"
     | "procedural-sky-environment"
     | "gaussian-splat-stream"
+    | "navigation"
     | "mesh-lod-asset"
     | "mesh-lod-instance"
     | "mesh-lod-metadata"
@@ -322,6 +324,15 @@ interface DataKinds {
         element: DataType;
         asynchronous?: true;
         traced?: true;
+    };
+    /**
+     * A stored `Iterable<T>`: each iteration opens its source's iterator,
+     * so an Array, Set or Map source is iterated afresh and an iterator
+     * source continues from its position.
+     */
+    iterable: {
+        kind: "iterable";
+        element: DataType;
     };
     span: {
         kind: "span";

@@ -61,6 +61,110 @@ interface BoxData {
 }
 
 test(
+    "native cylinder payload matches every pinned lane and returned arrays retain aliases",
+    { skip: !tools },
+    async () => {
+        const pin = await importPinnedModule<{
+            createCylinderData(
+                this: void,
+                options: {
+                    height: number;
+                    diameterTop: number;
+                    diameterBottom: number;
+                    tessellation: number;
+                    subdivisions: number;
+                },
+            ): Omit<BoxData, "vertexCount" | "indexCount">;
+        }>("mesh/create-cylinder.js");
+        const checks: string[] = [];
+        for (const options of [
+            {
+                height: 1,
+                diameterTop: 1.8,
+                diameterBottom: 2,
+                tessellation: 12,
+                subdivisions: 1,
+            },
+            {
+                height: 1,
+                diameterTop: 0,
+                diameterBottom: 2,
+                tessellation: 8,
+                subdivisions: 1,
+            },
+            {
+                height: 3,
+                diameterTop: 1,
+                diameterBottom: 1,
+                tessellation: 5,
+                subdivisions: 2,
+            },
+        ]) {
+            const expected = pin.createCylinderData(options);
+            checks.push(
+                `{ const auto data = bbl::create_cylinder_data(bbl::CylinderOptions{${[
+                    options.height,
+                    options.diameterTop,
+                    options.diameterBottom,
+                    options.tessellation,
+                    options.subdivisions,
+                ]
+                    .map(doubleLiteral)
+                    .join(", ")}, ${options.diameterTop === 0}});`,
+            );
+            for (const name of ["positions", "normals", "uvs"] as const) {
+                const bits = [...new Uint32Array(expected[name].buffer)];
+                checks.push(
+                    `same(data.${name}, {${bits.map((value) => `${value}u`).join(", ")}});`,
+                );
+            }
+            checks.push(
+                `assert((data.indices == std::vector<std::uint32_t>{${[...expected.indices].map((value) => `${value}u`).join(", ")}})); }`,
+            );
+        }
+        const program = compileSource(`
+        import { createCylinderData } from "@babylonjs/lite";
+        const cylinder = createCylinderData({ height: 1, diameterBottom: 2, diameterTop: 1.8, tessellation: 12 });
+        const positions = cylinder.positions;
+        positions[0] = 21;
+        if (cylinder.positions[0] !== 21 || Object.keys(cylinder).join() !== "positions,normals,uvs,indices") throw new Error("cylinder data");
+    `);
+        const output = resolve("artifacts/mesh-cylinder-data-check");
+        mkdirSync(output, { recursive: true });
+        const source = join(output, "check.cpp");
+        const executable = join(output, "check.exe");
+        const factories = new FactoryLowerer(
+            new LoweringContext(),
+        ).lowerMeshFactories(["mesh:cylinder"]).source;
+        writeFileSync(
+            source,
+            `#define main generated_scene_main
+${program.cpp}
+#undef main
+${factories}
+#include <bit>
+#include <cassert>
+void same(const std::vector<float>& actual, const std::vector<std::uint32_t>& expected) {
+    assert(actual.size() == expected.size());
+    for (std::size_t i = 0; i < actual.size(); ++i) assert(std::bit_cast<std::uint32_t>(actual[i]) == expected[i]);
+}
+int main() {
+    assert(generated_scene_main() == 0);
+${checks.join("\n")}
+}
+`,
+        );
+        runNativeFixtureCompiler(tools!, [
+            "/Gy",
+            `/Fo:${output}\\`,
+            `/Fe:${executable}`,
+            source,
+        ]);
+        execFileSync(executable, { stdio: "pipe" });
+    },
+);
+
+test(
     "native box payload matches every pinned lane and returned arrays retain aliases",
     { skip: !tools },
     async () => {
