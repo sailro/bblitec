@@ -7865,6 +7865,39 @@ check(
 );
 
 check(
+    "error-subclass-holding-an-unknown-cause-built-at-two-sites",
+    `
+    class BakeError extends Error {
+      constructor(readonly stage: "body" | "gable", readonly cause: unknown) {
+        super(stage === "body" ? "body failed" : "gable failed");
+      }
+    }
+    const caught: string[] = [];
+    function bake(stage: "body" | "gable", fail: boolean): void {
+      if (stage === "body") {
+        try {
+          if (fail) throw new Error("inner " + stage);
+        } catch (e) {
+          throw new BakeError("body", e);
+        }
+        return;
+      }
+      try {
+        if (fail) throw new Error("inner " + stage);
+      } catch (e) {
+        throw new BakeError("gable", e);
+      }
+    }
+    for (const [stage, fail] of [["body", true], ["gable", true], ["body", false]] as const) {
+      try { bake(stage, fail); caught.push("ok"); } catch (e) {
+        if (e instanceof BakeError) caught.push(e.stage + ":" + (e.cause instanceof Error ? e.cause.message : "?"));
+      }
+    }
+    if (caught.join(",") !== "body:inner body,gable:inner gable,ok") throw new Error("cause " + caught.join(","));
+`,
+);
+
+check(
     "truncating-the-array-a-call-returns",
     `
     interface Chimney { id: number }
