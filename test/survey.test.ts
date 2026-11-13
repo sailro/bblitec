@@ -1681,3 +1681,29 @@ test("a generic class's method roots keep a set of its object type parameter", (
     assert.equal(report.program.attempted, report.program.statements);
     assert.deepEqual(report.refusals, [], listed(report));
 });
+
+test("a survey root typed by a contextual generic signature lowers at its constraint", () => {
+    // `constrain` has no type parameters of its own: the signature it
+    // implements does, and no call binds them.
+    const { report } = surveySource(
+        `
+        export interface DropSeat { x: number; z: number; y?: number }
+        export interface Seat {
+            constrain<T extends DropSeat>(kind: string, point: T): T | null;
+        }
+        export function createSeat(limit: number): Seat {
+            return {
+                constrain(kind, point) {
+                    if ((point.y ?? 0) > 0 || point.x > limit) return null;
+                    return point;
+                },
+            };
+        }
+        localStorage.setItem("ready", "1");
+    `,
+        { fileName: resolve("survey-contextual-generic.ts") },
+    );
+    assert.ok(report.program);
+    assert.equal(report.program.attempted, report.program.statements);
+    assert.deepEqual(report.refusals, [], listed(report));
+});

@@ -766,13 +766,26 @@ function unboundTypeArguments(
     checker: ts.TypeChecker,
     owner: GenericOwner,
 ): ReadonlyMap<ts.Symbol, ts.Type> {
+    return unboundParameterTypes(
+        checker,
+        (owner.typeParameters ?? []).map((parameter) =>
+            checker.getTypeAtLocation(parameter),
+        ),
+    );
+}
+
+/**
+ * Each type parameter at the argument an unbound use takes: its default,
+ * as the checker gives it; else its constraint; else `unknown`.
+ */
+function unboundParameterTypes(
+    checker: ts.TypeChecker,
+    parameters: readonly ts.Type[],
+): ReadonlyMap<ts.Symbol, ts.Type> {
     const substitution = new Map<ts.Symbol, ts.Type>();
-    for (const parameter of owner.typeParameters ?? []) {
-        const symbol = declaredSymbol(checker, parameter.name);
+    for (const declared of parameters) {
+        const symbol = declared.symbol;
         if (!symbol) continue;
-        // A parameter's default is the argument an unbound use takes, as
-        // the checker gives it; else its constraint.
-        const declared = checker.getTypeAtLocation(parameter);
         const bound = [
             checker.getDefaultFromTypeParameter(declared),
             checker.getBaseConstraintOfType(declared),
@@ -797,6 +810,7 @@ function withCalledTypeArguments(
     declaration: ts.SignatureDeclaration,
     work: () => void,
 ): void {
+    const checker = context.checker;
     const generic: GenericOwner[] = [];
     for (let node: ts.Node | undefined = declaration; node; node = node.parent)
         if (
@@ -804,11 +818,17 @@ function withCalledTypeArguments(
             node.typeParameters?.length
         )
             generic.unshift(node);
-    if (generic.length === 0) {
+    // A function a contextual generic signature types (an object literal's
+    // `constrain(kind, point)` under `constrain<T extends Seat>(...)`) has
+    // that signature's type parameters, which no call of it binds.
+    const contextual = declaration.typeParameters?.length
+        ? []
+        : (checker.getSignatureFromDeclaration(declaration)?.typeParameters ??
+          []);
+    if (generic.length === 0 && contextual.length === 0) {
         work();
         return;
     }
-    const checker = context.checker;
     // A function's first call binding every type parameter.
     const called = (
         owner: ts.SignatureDeclaration,
@@ -841,7 +861,15 @@ function withCalledTypeArguments(
         calledSubstitutions.set(owner, found);
         return found;
     };
-    context.dataTypes.withTypeArgumentFrames(generic.map(substitutionOf), work);
+    context.dataTypes.withTypeArgumentFrames(
+        [
+            ...generic.map(substitutionOf),
+            ...(contextual.length
+                ? [unboundParameterTypes(checker, contextual)]
+                : []),
+        ],
+        work,
+    );
 }
 
 /** A captured name, with the initializer of the function `const` it is. */
