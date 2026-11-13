@@ -2950,7 +2950,16 @@ export class DataLowerer {
                 this.runtimeIndexedOwner(
                     unwrapped.expression,
                     unwrapped.argumentExpression,
-                );
+                ) ??
+                // An element of the array a call returns (`rows.get(k)![i] =
+                // v`): that one array, held once.
+                (mode === "write" && ts.isCallExpression(receiver)
+                    ? this.context.bindings.pinValueToTemporary(
+                          this.context.compileValue(unwrapped.expression),
+                          "element_owner",
+                          unwrapped.expression,
+                      )
+                    : undefined);
             if (!owner) {
                 return undefined;
             }

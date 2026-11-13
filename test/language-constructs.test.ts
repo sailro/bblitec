@@ -7595,6 +7595,21 @@ check(
 );
 
 check(
+    "writing-an-element-of-the-array-a-call-returns",
+    `
+    interface Cap { id: number }
+    const caps: Cap[] = [{ id: 1 }, { id: 2 }];
+    const carried = new Map(caps.map((cap) => [cap, [false, false, false, false] as [boolean, boolean, boolean, boolean]] as const));
+    const corner = caps.length - 1;
+    carried.get(caps[0]!)![corner] = true;
+    const rows = new Map<string, number[]>([["a", [0, 0]]]);
+    rows.get("a")![rows.size] = 5;
+    const first = carried.get(caps[0]!)!, second = carried.get(caps[1]!)!;
+    if (!first[1] || second[1] || rows.get("a")!.join(",") !== "0,5") throw new Error("element " + first.join(",") + " " + rows.get("a")!.join(","));
+`,
+);
+
+check(
     "truncating-the-array-a-call-returns",
     `
     interface Chimney { id: number }
