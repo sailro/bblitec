@@ -761,6 +761,8 @@ export class CallbackLowerer {
                   "platform_async",
               )
             : undefined;
+        // A callback the compiler built is materialized into a fresh name.
+        let materialized = false;
         const stored =
             asynchronous ??
             this.context.probeEmission(() => {
@@ -778,6 +780,7 @@ export class CallbackLowerer {
                             callback,
                             "A callback factory requires a native function signature.",
                         );
+                    materialized = true;
                     return this.context.dataLowerer.leafValue(
                         this.context.dataLowerer.compileKnownValueForSink(
                             value,
@@ -799,14 +802,18 @@ export class CallbackLowerer {
             const snapshot =
                 this.context.allocateTemporaryCppName("platform_callback");
             // The registration keeps the function the name holds now; a
-            // name nothing rebinds holds it for the registration already.
+            // name nothing rebinds, or a callback materialized just above,
+            // holds it for the registration already.
             const named = this.context.unwrap(callback);
             this.context.emit({
                 kind: "declaration",
                 type:
-                    ts.isIdentifier(named) &&
                     cppIdentifierPattern.test(stored.cpp) &&
-                    !this.context.sharedClosures.identifierIsRebound(named)
+                    (ts.isIdentifier(named)
+                        ? !this.context.sharedClosures.identifierIsRebound(
+                              named,
+                          )
+                        : materialized)
                         ? "const auto&"
                         : "const auto",
                 name: snapshot,
