@@ -5001,6 +5001,38 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         };
     }
 
+    /**
+     * `item ?? []` (a flatMap callback's element or nothing): the empty
+     * array literal types as `never[]`, which nothing stores, so the result
+     * is the element or an array of elements of its type.
+     */
+    private elementOrEmptyArray(
+        element: DataType | undefined,
+        expression: ts.BinaryExpression,
+    ): DataType | undefined {
+        const literal = this.context.unwrap(expression.right);
+        const checker = this.context.checker;
+        if (
+            !ts.isArrayLiteralExpression(literal) ||
+            literal.elements.length > 0 ||
+            !element ||
+            ["vector", "span", "tuple", "json"].includes(element.kind) ||
+            unionMembers(
+                checker.getNonNullableType(
+                    checker.getTypeAtLocation(expression.left),
+                ),
+            ).some(
+                (member) =>
+                    checker.isArrayType(member) || checker.isTupleType(member),
+            )
+        )
+            return undefined;
+        return {
+            kind: "union",
+            members: [element, { kind: "vector", element }],
+        };
+    }
+
     public compileNullishCoalesce(
         expression: ts.BinaryExpression,
         sink?: DataType,
@@ -5340,7 +5372,12 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             // of two kinds kept where any object is (`object | null`,
             // stored as a document value) are each stored as that document
             // value.
-            const union = this.dataTypeAt(expression);
+            const union =
+                this.dataTypeAt(expression) ??
+                this.elementOrEmptyArray(
+                    presentDataType(left.dataType),
+                    expression,
+                );
             const stored =
                 left.kind === "data" &&
                 union?.kind === "union" &&
@@ -5571,13 +5608,14 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             // joined type's sinks rather than forcing the fallback into the
             // left operand's narrower storage.
             let resultType =
-                inner.kind === "enum" ||
+                this.elementOrEmptyArray(inner, expression) ??
+                (inner.kind === "enum" ||
                 inner.kind === "string" ||
                 inner.kind === "number" ||
                 inner.kind === "boolean" ||
                 inner.kind === "union"
                     ? (this.dataTypeAt(expression) ?? inner)
-                    : inner;
+                    : inner);
             // Flow narrowing may omit a stored tag changed by a called helper.
             // Text storage preserves every live tag, including those absent
             // from the checker's narrower literal union at this read.

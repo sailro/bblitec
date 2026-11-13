@@ -3238,6 +3238,51 @@ function compileArrayMap(
                     });
                     return;
                 }
+                if (
+                    method === "flatMap" &&
+                    result.dataType?.kind === "union" &&
+                    result.dataType.members.some(
+                        (member) =>
+                            member.kind === "vector" ||
+                            member.kind === "span" ||
+                            member.kind === "tuple",
+                    )
+                ) {
+                    // An element or an array (`ok ? item : []`): flatMap
+                    // keeps the array's elements, or the element itself.
+                    const held = lowerer.context.bindings.pinValueToTemporary(
+                        result,
+                        "flat_map_either",
+                        callback,
+                    );
+                    lowerer.context.emit({
+                        kind: "open",
+                        code: `switch (${held.cpp}.index()) {`,
+                    });
+                    result.dataType.members.forEach((member, index) => {
+                        const arm = lowerer.leafValue(
+                            `std::get<${index}>(${held.cpp})`,
+                            member,
+                        );
+                        const array =
+                            member.kind === "vector" ||
+                            member.kind === "span" ||
+                            member.kind === "tuple";
+                        const stored = lowerer.compileKnownValueForSink(
+                            array ? { ...arm, unaliased: "object" } : arm,
+                            array ? mappedType! : mappedType!.element,
+                            callback,
+                        );
+                        lowerer.context.emit({
+                            kind: "expression",
+                            code: array
+                                ? `case ${index}: bbl::js::array_append(${output}, ${stored}); break;`
+                                : `case ${index}: ${output}.push_back(${stored}); break;`,
+                        });
+                    });
+                    lowerer.context.emit({ kind: "close", code: "}" });
+                    return;
+                }
                 let value: string;
                 if (
                     result.kind === "void" &&

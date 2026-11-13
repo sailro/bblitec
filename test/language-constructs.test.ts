@@ -7560,6 +7560,26 @@ check(
 );
 
 check(
+    "flat-map-callback-returning-an-element-or-an-array",
+    `
+    const xs = [1, 2, 3];
+    const ys = xs.flatMap((x) => x > 1 ? x * 10 : []);
+    if (ys.join(",") !== "20,30") throw new Error("element " + ys.join(","));
+    const zs = xs.flatMap((x) => x === 2 ? [x, x] : x);
+    if (zs.join(",") !== "1,2,2,3") throw new Error("array " + zs.join(","));
+    interface Geometry { id: number; r: number }
+    const known = new Map<number, Geometry>([[1, { id: 1, r: 2 }]]);
+    const geometry = (id: number): Geometry | null => known.get(id) ?? null;
+    const towers: { id?: number }[] = [{ id: 1 }, { id: 2 }, {}];
+    const all = towers.flatMap((tower) => tower.id === undefined ? [] : geometry(tower.id) ?? []);
+    if (all.length !== 1 || all[0]!.r !== 2) throw new Error("coalesce " + all.length);
+    const names = new Map<number, { steam?: string }>([[1, { steam: "A" }], [2, {}]]);
+    const steam = [1, 2, 3].flatMap((id) => names.get(id)?.steam ?? []);
+    if (steam.join(",") !== "A") throw new Error("names " + steam.join(","));
+`,
+);
+
+check(
     "compound-assignment-to-a-nullable-number-past-its-guard",
     `
     const ys = new Map<string, number>([["a", 2]]);
