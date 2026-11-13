@@ -34,6 +34,22 @@ test("checkbox properties and change listeners use retained input state", () => 
     );
 });
 
+test("checked takes any value as ToBoolean converts it", () => {
+    // A parsed draft's member is a document value: truthy is checked.
+    const result = compileSource(`import {createEngine} from "@babylonjs/lite";
+        await createEngine({});
+        type Key = "ssao" | "bloom";
+        const features: { key: Key }[] = [{ key: "ssao" }, { key: "bloom" }];
+        const draft: Partial<Record<Key, boolean>> = JSON.parse('{"ssao":true}');
+        for (const feature of features) {
+            const input = document.createElement("input");
+            input.type = "checkbox";
+            input.checked = draft[feature.key] ?? false;
+            document.body.append(input);
+        }`);
+    assert.match(result.cpp, /ui_set_checked\([^;]*truthy[^;]*\)/);
+});
+
 test("native checkbox edits retain current checked state before input and change", (t) => {
     runRmlUiFixture(t, "ui-checkbox");
 });

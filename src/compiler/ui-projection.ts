@@ -1707,6 +1707,8 @@ export class UiProjection {
         expression: ts.Expression,
         purpose: string,
         knownValue?: Value,
+        // `hidden` takes a string of its own (`"until-found"`), not ToBoolean.
+        toBoolean = true,
     ): string {
         const value = knownValue ?? this.context.compileValue(expression);
         if (
@@ -1715,6 +1717,11 @@ export class UiProjection {
         ) {
             return value.cpp;
         }
+        // A boolean property converts any other value as ToBoolean does.
+        const truthy = toBoolean
+            ? this.context.dataLowerer.truthinessCondition(value)
+            : undefined;
+        if (truthy !== undefined) return truthy;
         this.context.fail(
             expression,
             `${purpose} requires a boolean, received ${value.kind}.`,
@@ -6278,7 +6285,7 @@ export class UiProjection {
         if (booleanAttribute) {
             this.context.emit({
                 kind: "expression",
-                code: `bbl::ui_set_boolean_attribute(${engine}, ${element.cpp}, ${this.context.cppString(booleanAttribute)}, ${this.uiBooleanCpp(assigned.site, `UI ${booleanAttribute}`, assigned.value)});`,
+                code: `bbl::ui_set_boolean_attribute(${engine}, ${element.cpp}, ${this.context.cppString(booleanAttribute)}, ${this.uiBooleanCpp(assigned.site, `UI ${booleanAttribute}`, assigned.value, booleanAttribute !== "hidden")});`,
             });
             return;
         }
