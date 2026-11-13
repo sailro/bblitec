@@ -372,6 +372,16 @@ inline void json_write(JsonWriter& writer, const Map<K, V>& entries) {
     writer.end_object();
 }
 
+/** A typed array is an object of its indices (`{"0":1,"1":2}`), as JavaScript writes it. */
+template <typename T> inline void json_write(JsonWriter& writer, const TypedArray<T>& values) {
+    writer.begin_object();
+    for (std::size_t index = 0; index < values.size(); ++index) {
+        writer.key(std::to_string(index));
+        writer.number(static_cast<double>(values.load(index)));
+    }
+    writer.end_object();
+}
+
 template <typename... T>
 inline void json_write(JsonWriter& writer, const std::variant<T...>& value) {
     std::visit([&](const auto& member) { json_write(writer, member); }, value);

@@ -7930,6 +7930,27 @@ check(
 );
 
 check(
+    "json-stringify-writes-a-typed-array-as-its-indices",
+    `
+    interface Animal { id: number; simOut: Float32Array | null; label?: string }
+    const herd: unknown[] = [];
+    function spawn(id: number): Animal {
+      const animal: Animal = { id, simOut: null };
+      herd.push(animal);
+      return animal;
+    }
+    const a = spawn(1);
+    const simOut = a.simOut ?? (a.simOut = new Float32Array(4));
+    simOut[2] = 1.5;
+    const doc = herd[0] as { simOut: Float32Array };
+    const view = doc.simOut;
+    view[1] = 0.25;
+    const asText = JSON.stringify(herd[0]);
+    if (!(view instanceof Float32Array) || Array.isArray(view) || view.length !== 4 || simOut[1] !== 0.25 || view[2] !== 1.5 || asText !== '{"id":1,"simOut":{"0":0,"1":0.25,"2":1.5,"3":0}}') throw new Error("f32 " + asText);
+`,
+);
+
+check(
     "math-min-and-max-over-a-spread-of-parsed-numbers",
     `
     interface Config { speedStops: number[] }

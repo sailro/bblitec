@@ -10901,6 +10901,8 @@ export class DataTypeRegistry {
                 case "null":
                     return;
                 default:
+                    // A typed array is written as the object of its indices.
+                    if (isTypedArrayType(current)) return;
                     this.fail(
                         node,
                         `JSON.stringify does not serialize a '${current.kind}' value.`,
