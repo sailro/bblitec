@@ -396,6 +396,12 @@ test("runtime img src reads the calls a function stored in a typed slot receives
         // A const its function type annotates.
         `const stored: (icon: string) => void = show;
         stored("/assets/ui/blue.png");`,
+        // A member a named function type types, called through a parameter.
+        `type Sink = (icon: string) => void;
+        interface Api { show: Sink; name: string }
+        const api: Api = { show, name: "ui" };
+        function build(options: { ui: Api }): void { options.ui.show("/assets/ui/blue.png"); }
+        build({ ui: api });`,
     ]) {
         const outputs = compileEntry(`${show}${body}`).manifest.assets.map(
             (asset) => asset.output,

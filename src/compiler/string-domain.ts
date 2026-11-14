@@ -840,11 +840,27 @@ function sourceGraph(
                     const signature = calledDeclaration(checker, node);
                     if (!declaration && signature) {
                         // A property typed as a function type resolves to
-                        // that type's signature; the member names it.
+                        // that type's signature; the member names it, the
+                        // called property's own declaration where its
+                        // type is named (`show: Sink`).
                         const member = ts.isFunctionTypeNode(signature)
                             ? signature.parent
                             : signature;
                         memberCalls.push([member, node]);
+                        const called = namedMember(
+                            checker,
+                            unwrapExpression(node.expression),
+                        );
+                        for (const slot of (called &&
+                            resolvedSymbol(checker, called.key)
+                                ?.declarations) ??
+                            [])
+                            if (
+                                slot !== member &&
+                                (ts.isMethodSignature(slot) ||
+                                    ts.isPropertySignature(slot))
+                            )
+                                memberCalls.push([slot, node]);
                     }
                     if (declaration) recordCall(declaration, node);
                     const callee = unwrapExpression(node.expression);
