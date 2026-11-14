@@ -103,12 +103,14 @@ async function main(): Promise<void> {
         casters.push(knot);
     }
 
+    // The map and its cascade count are a run-time choice, as a quality tier is.
+    const tier = casters.length > 100 ? { mapSize: 1024, cascades: 4 } : { mapSize: 512, cascades: 2 };
     // Both arrive through conditional spreads, as a scene reading them off its configuration writes them.
     const worldSpaceBias = casters.length > 0 ? 2 : 0;
     const coveragePadding = casters.length > 0 ? 0.125 : 0;
     light.shadowGenerator = createCsmDirectionalShadowGenerator(engine, light, {
-        mapSize: 1024,
-        numCascades: 4,
+        mapSize: tier.mapSize,
+        numCascades: tier.cascades,
         lambda: 0.5,
         cascadeBlendPercentage: 0.1,
         stabilizeCascades: true,

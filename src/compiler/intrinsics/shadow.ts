@@ -89,9 +89,11 @@ const pcfDirectionalOptions = [
 /**
  * The CSM factory's public configuration, as far as this port builds it.
  *
- * `mapSize` and `numCascades` size the layered map, so they resolve at
- * generation; the rest ride into the record, where the cascade fit and the
- * receiver's 320-byte block read them: `stabilizeCascades` selects the
+ * `mapSize` and `numCascades` size the layered map the native factory's
+ * record creates at run time, so a run-time value (a quality tier) is
+ * admitted as the texture extent it is; the rest ride into the record,
+ * where the cascade fit and the receiver's 320-byte block read them:
+ * `stabilizeCascades` selects the
  * bounding-sphere fit and its light-axis anchor grid, `worldSpaceBias` the
  * far-plane reserve and its per-cascade clip offset.
  */
@@ -280,8 +282,9 @@ const shadowGeneratorFactories: Readonly<
             // the shadow lowerer asserts against the factory.
             forceRefreshEveryFrame: "false",
         },
+        generationResolved: [],
         // The two that size the layered map: its extent and its layer count.
-        generationResolved: ["mapSize", "numCascades"],
+        runtimeExtents: ["mapSize", "numCascades"],
         booleans: ["stabilizeCascades"],
         factory: "bbl::create_csm_directional_shadow_generator",
         optionsStruct: "bbl::CsmDirectionalShadowOptions",

@@ -8088,9 +8088,27 @@ test("carries the cascade stabilization and the world-space bias into the genera
             "(v_worldBias > 0.0 ? 0.5 : bbl::upstream::csm_default_darkness), " +
             "bbl::upstream::csm_default_frustum_edge_falloff, false",
     );
-    // The layered map is sized at generation: no condition selects it.
+    // The layered map is created from the record at run time: a quality
+    // tier sizes it and counts its cascades as the texture extents they are.
+    assert.match(
+        options(
+            compileSource(
+                source(
+                    "mapSize: worldBias > 1 ? 2048 : 1024, numCascades: stable ? 4 : 2,",
+                ),
+            ).cpp,
+        ),
+        /^bbl::gpu_u32\(bbl::gpu_size\(\(v_worldBias > 1\.0 \? 2048\.0 : 1024\.0\)\)\), bbl::gpu_u32\(bbl::gpu_size\(\(v_stable \? 4\.0 : 2\.0\)\)\), /,
+    );
+    // An ESM map sizes generated resources: no condition selects it.
     assert.throws(
-        () => compileSource(source("...(stable ? { mapSize: 2048 } : {}),")),
+        () =>
+            compileSource(
+                source("...(stable ? { mapSize: 2048 } : {}),").replaceAll(
+                    "createCsmDirectionalShadowGenerator",
+                    "createEsmDirectionalShadowGenerator",
+                ),
+            ),
         /Option 'mapSize' decides generated resources/,
     );
     assert.throws(
