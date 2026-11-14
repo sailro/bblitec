@@ -232,7 +232,17 @@ await registerSceneWithShadowSupport(scene);`,
     assert.ok(result.manifest.features.includes("shadow:csm-static-cache"));
     assert.match(
         result.cpp,
-        /bbl::enable_csm_static_cache\(v_engine, v_sg, 0\.01, std::nullopt, std::optional<double>\{1\.0\}\)/,
+        /bbl::enable_csm_static_cache\(v_engine, v_sg, 0\.01, std::nullopt, std::optional<double>\{1\.0\}, std::nullopt\)/,
+    );
+    // The coverage padding rides with the other options; one a conditional
+    // spread adds is selected where the call reads it.
+    assert.match(
+        compileSource(
+            `${prefix}const pad=Number(localStorage.getItem("pad")??"0.1");
+await enableCsmStaticCache(engine,sg,{refitAngle:0.01,...(pad>0?{cascadeCoveragePadding:pad}:{})});
+await registerSceneWithShadowSupport(scene);`,
+        ).cpp,
+        /bbl::enable_csm_static_cache\(v_engine, v_sg, 0\.01, std::nullopt, std::nullopt, \(v_pad > 0\.0 \? std::optional<double>\{v_pad\} : std::nullopt\)\)/,
     );
     // The receiver texture is the generator's own record, kept where the
     // call runs: enableCsmStaticCache reads it at run time.
@@ -256,9 +266,9 @@ void receiver;`,
     assert.throws(
         () =>
             compileSource(
-                `${prefix}await enableCsmStaticCache(engine,sg,{refitAngle:0.01,cascadeCoveragePadding:0.1});`,
+                `${prefix}await enableCsmStaticCache(engine,sg,{refitAngle:0.01,refitDistance:0.1});`,
             ),
-        /Reached enableCsmStaticCache options/,
+        /enableCsmStaticCache options are refitAngle, refitMaxIntervalMs, staticCascadesPerFrame and cascadeCoveragePadding/,
     );
 });
 

@@ -356,6 +356,7 @@ Repository fixtures against pinned Babylon Lite.
 | case-split-options | <img src="images/scenes/regression-case-split-options.png" alt="Case split options rendering" width="160"> | pixel‑perfect | pixel‑perfect | Case Split Options |
 | member-selected-material | <img src="images/scenes/regression-member-selected-material.png" alt="Member selected material rendering" width="160"> | pixel‑perfect | pixel‑perfect | Member Selected Material |
 | csm-static-cache | <img src="images/scenes/regression-csm-static-cache.png" alt="CSM static cache rendering" width="160"> | 0.000/0.000 | 0.000/0.000 | CSM Static Cache |
+| csm-coverage | <img src="images/scenes/regression-csm-coverage.png" alt="CSM coverage refit rendering" width="160"> | 0.000/0.000 | 0.000/0.000 | CSM Coverage Refit |
 | render-task-transmission | <img src="images/scenes/regression-render-task-transmission.png" alt="Render task transmission rendering" width="160"> | pixel‑perfect | pixel‑perfect | Render Task Transmission |
 | mesh-opacity-runtime | <img src="images/scenes/regression-mesh-opacity-runtime.png" alt="Mesh opacity at run time rendering" width="160"> | pixel‑perfect | pixel‑perfect | Mesh Opacity at Run Time |
 | mesh-opacity-geometry | <img src="images/scenes/regression-mesh-opacity-geometry.png" alt="Mesh opacity in a geometry task rendering" width="160"> | pixel‑perfect | pixel‑perfect | Mesh Opacity in a Geometry Task |

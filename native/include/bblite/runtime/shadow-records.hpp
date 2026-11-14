@@ -45,6 +45,26 @@ struct CsmStaticCacheOptions {
     double refit_angle = 0.0;
     double refit_max_interval_ms = 0.0;
     std::uint32_t static_cascades_per_frame = 0;
+    double cascade_coverage_padding = 0.0;
+};
+
+/**
+ * `createCoverageState`: the camera-coverage refit a cache with a
+ * `cascadeCoveragePadding` runs. A camera pose change no longer refits:
+ * each cascade keeps its published map until the camera's slice leaves it.
+ */
+struct CsmCoverageState {
+    /** `1 + padding`: what the stabilized fit's radius is scaled by. */
+    double radius_scale = 1.0;
+    /** The camera projection revision the published splits were fit for. */
+    double projection_revision = -1.0;
+    /** The camera pose the coverage test last ran for. */
+    double pose_version = -1.0;
+    /** The camera and pose of the pending fit. */
+    const CameraRecord* fit_camera = nullptr;
+    double fit_pose = -1.0;
+    /** The camera change the receivers were last notified of. */
+    double notified_camera_version = -1.0;
 };
 
 /**
@@ -60,6 +80,8 @@ struct CsmStaticCacheState {
     RenderTargetHandle cache_target{};
     /** `_gate` and `_staticScheduler`: the generated `CsmRefitRuntime`. */
     std::shared_ptr<void> refit;
+    /** `_coverage`: set for a cache keeping a coverage padding. */
+    std::optional<CsmCoverageState> coverage;
     // renderCsmShadowMapCached
     double last_camera_version = -1.0;
     const CameraRecord* last_camera = nullptr;

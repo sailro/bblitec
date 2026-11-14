@@ -8526,7 +8526,8 @@ ShadowGeneratorHandle create_csm_directional_shadow_generator(Engine& engine, Li
 std::optional<js::Error> enable_csm_static_cache(Engine& engine, ShadowGeneratorHandle generator,
                                                  double refit_angle,
                                                  std::optional<double> refit_max_interval_ms,
-                                                 std::optional<double> static_cascades_per_frame);
+                                                 std::optional<double> static_cascades_per_frame,
+                                                 std::optional<double> cascade_coverage_padding);
 /** `getCsmReceiverTexture`: the generator's receiver texture, which it keeps (`sg._csmReceiverTexture`). */
 inline ShadowGeneratorHandle get_csm_receiver_texture(Engine& engine,
                                                       ShadowGeneratorHandle generator) {

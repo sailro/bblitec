@@ -414,7 +414,8 @@ InvalidStateError), moving its playback into the graph. Other members and attrib
 - Shadow generators and caster lists can be prepared without scene scheduling; `registerSceneWithShadowSupport`
   activates shadow passes. Registered empty caster lists clear the shadow map.
 - `enableCsmStaticCache` (awaited, before registration): static casters render into a cache texture, copied per layer
-  into the map before dynamic casters draw; refit gate and per-frame cascade budget as pinned. `cascadeCoveragePadding` refuses.
+  into the map before dynamic casters draw; refit gate, per-frame cascade budget and coverage refit
+  (`cascadeCoveragePadding`) as pinned.
 - Recast/Detour solo and obstacle tile-cache builds, crowds, obstacles. Tiled builds without obstacles and off-mesh
   connections in tile caches refuse.
 - Navcat runs as program code: the pin's `navcat*.ts` modules and the vendored navcat/mathcat TypeScript compile

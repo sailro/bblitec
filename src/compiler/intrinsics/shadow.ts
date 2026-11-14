@@ -149,6 +149,14 @@ const esmDirectionalEmitted = [
     "esmIndex",
 ] as const;
 
+/** The options `enableCsmStaticCache` takes, in the native call's order. */
+const csmStaticCacheOptions = [
+    "refitAngle",
+    "refitMaxIntervalMs",
+    "staticCascadesPerFrame",
+    "cascadeCoveragePadding",
+] as const;
+
 /**
  * What separates one pinned generator factory from another.
  *
@@ -506,25 +514,46 @@ export function compileShadowIntrinsic(
                 argumentAt(call, 1),
             );
             context.expectSameEngine(engine, generator, call);
-            const options = context.expectObjectLiteral(argumentAt(call, 2));
-            validateObjectProperties(
+            // A member both arms of a conditional spread keep is compiled once.
+            const compiled = new Map<ts.Expression, string>();
+            const resolved = resolveConditionalOptions(
                 context,
-                options,
-                ["refitAngle", "refitMaxIntervalMs", "staticCascadesPerFrame"],
-                "Reached enableCsmStaticCache options are refitAngle, refitMaxIntervalMs and staticCascadesPerFrame.",
+                context.expectObjectLiteral(argumentAt(call, 2)),
+                (options) => {
+                    validateObjectProperties(
+                        context,
+                        options,
+                        csmStaticCacheOptions,
+                        "enableCsmStaticCache options are refitAngle, refitMaxIntervalMs, staticCascadesPerFrame and cascadeCoveragePadding.",
+                    );
+                    if (!context.objectProperty(options, "refitAngle"))
+                        context.fail(
+                            options,
+                            "enableCsmStaticCache requires refitAngle.",
+                        );
+                    return Object.fromEntries(
+                        csmStaticCacheOptions.map((name) => {
+                            const value = context.objectProperty(options, name);
+                            if (!value) return [name, "std::nullopt"];
+                            let cpp = compiled.get(value);
+                            if (cpp === undefined)
+                                compiled.set(
+                                    value,
+                                    (cpp = context.compileNumber(
+                                        value,
+                                        "double",
+                                    )),
+                                );
+                            return [
+                                name,
+                                name === "refitAngle"
+                                    ? cpp
+                                    : `std::optional<double>{${cpp}}`,
+                            ];
+                        }),
+                    );
+                },
             );
-            const refitAngle = context.objectProperty(options, "refitAngle");
-            if (!refitAngle)
-                context.fail(
-                    options,
-                    "enableCsmStaticCache requires refitAngle.",
-                );
-            const optional = (name: string): string => {
-                const value = context.objectProperty(options, name);
-                return value
-                    ? `std::optional<double>{${context.compileNumber(value, "double")}}`
-                    : "std::nullopt";
-            };
             context.reachFeature("shadow:csm-static-cache", call);
             const rejection = context.allocateTemporaryCppName(
                 "csm_cache_rejection",
@@ -533,7 +562,7 @@ export function compileShadowIntrinsic(
                 kind: "declaration",
                 type: "const auto",
                 name: rejection,
-                initializer: `bbl::enable_csm_static_cache(${engine.cpp}, ${generator.cpp}, ${context.compileNumber(refitAngle, "double")}, ${optional("refitMaxIntervalMs")}, ${optional("staticCascadesPerFrame")})`,
+                initializer: `bbl::enable_csm_static_cache(${engine.cpp}, ${generator.cpp}, ${csmStaticCacheOptions.map((name) => resolved[name]).join(", ")})`,
             });
             if (context.options.workers)
                 return {

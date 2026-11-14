@@ -1408,6 +1408,27 @@ const authoredInputs: readonly SceneInput[] = [
         },
     },
     {
+        // The static cache's coverage refit over a stabilized generator
+        // with a world-space bias: the camera and the light move every
+        // frame, so cascades leaving coverage re-render beside a drift
+        // refit spread over frames.
+        id: "regression-csm-coverage",
+        name: "Regression - CSM Coverage Refit",
+        source: "examples/regression-csm-coverage.ts",
+        sourceOrigin: "bblitec-regression",
+        title: "Babylon Lite Native - CSM Coverage Refit",
+        parity: {
+            // Past the first demotion; the camera, the light and the mover
+            // are functions of the frame.
+            referenceFrame: 240,
+            maxFullMad: 0.001,
+            maxForegroundMad: 0.001,
+            backgroundColor: [127, 153, 191],
+            backgroundThreshold: 30,
+            nativeEnvironment: fixedCaptureEnvironment(),
+        },
+    },
+    {
         // An explicit render task's raw transmission grab (colour and
         // depth) sampled by a transmissive shader-material quad.
         id: "regression-render-task-transmission",

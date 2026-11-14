@@ -100,6 +100,7 @@ test("registers unique generated scene targets", () => {
             "regression-case-split-options",
             "regression-member-selected-material",
             "regression-csm-static-cache",
+            "regression-csm-coverage",
             "regression-render-task-transmission",
             "regression-mesh-opacity-runtime",
             "regression-mesh-opacity-geometry",
