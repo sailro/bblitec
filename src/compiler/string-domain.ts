@@ -974,13 +974,16 @@ function sourceGraph(
                         continue;
                     }
                     // Only a plain `=` stores a value this domain can read;
-                    // every other write leaves the binding's value unknown.
+                    // any other write (`x.a.b++`) leaves the member it
+                    // writes unknown, and the rest of the binding as it was.
                     const value = kind === "assign" ? stored : undefined;
-                    const written =
-                        value && resolvedWrites(memberWritePaths(target));
-                    if (value && written)
+                    const written = resolvedWrites(memberWritePaths(target));
+                    if (written)
                         for (const { symbol, path } of written)
-                            writeMember(symbol, { path, value });
+                            writeMember(
+                                symbol,
+                                value ? { path, value } : { path },
+                            );
                     else mutate(target);
                 }
             },

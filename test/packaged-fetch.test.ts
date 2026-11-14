@@ -588,6 +588,24 @@ test("packaged URL provenance refuses uncertain mutations, origins and unbounded
             ["public/clips/voice_01.bin", "public/clips/voice_02.bin"],
             body,
         );
+    // A write the source does not spell (an increment, a compound
+    // assignment) changes the member it writes and nothing beside it: the
+    // URL a callee's parameter holds keeps both files it may select.
+    const session = `{url:Math.random()>0.5?"/clips/voice_01.bin":"/clips/voice_02.bin",edits:{count:0},label:"clip"}`;
+    for (const body of [
+        `interface Session{url:string;edits:{count:number};label:string} function touch(session:{edits:{count:number}}):void{session.edits.count++;} function pick(session:Session):string{touch(session);return session.url;} const url=pick(${session});`,
+        `interface Session{url:string;edits:{count:number};label:string} function rename(session:Session):void{session.label+="!";} function pick(session:Session):string{rename(session);return session.url;} const url=pick(${session});`,
+    ])
+        assert.deepEqual(
+            compileSource(program(body), {
+                fileName: join(directory, "entry.ts"),
+                publicDir,
+            })
+                .manifest.assets.map((asset) => asset.source)
+                .sort(),
+            ["public/clips/voice_01.bin", "public/clips/voice_02.bin"],
+            body,
+        );
     const cases = [
         `const entries=["https://remote.invalid/a.bin","https://remote.invalid/b.bin"]; const url=entries[Math.floor(Math.random()*2)];`,
         `const entries=["/clips/../clips/voice_01.bin","/clips/%2e%2e/clips/voice_02.bin"]; const url=entries[Math.floor(Math.random()*2)];`,
