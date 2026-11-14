@@ -37,6 +37,7 @@ import {
 } from "./emission-transaction.js";
 import type { LoweringServices } from "./lowering-services.js";
 import ts from "typescript";
+import { eventTargetCpp } from "./dom-targets.js";
 import {
     absenceOf,
     absenceOfNull,
@@ -20166,6 +20167,35 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 snapshot && lowered === undefined
                     ? "const auto"
                     : "const auto&";
+            // An element that may be absent, as the DOM target it is.
+            if (
+                expected.inner.kind === "event-target" &&
+                value.dataType?.kind === "optional" &&
+                value.dataType.inner.kind === "handle" &&
+                value.dataType.inner.handle === "ui-element"
+            ) {
+                const temporary =
+                    this.context.allocateTemporaryCppName("optional_compare");
+                const cppType = this.context.dataTypes.cppType(expected);
+                const present = this.leafValue(
+                    optionalValueCpp(value.cpp),
+                    value.dataType.inner,
+                );
+                const target = eventTargetCpp(
+                    this.context,
+                    value.engineCpp !== undefined
+                        ? { ...present, engineCpp: value.engineCpp }
+                        : present,
+                    operand,
+                );
+                this.context.emit({
+                    kind: "declaration",
+                    type: `const ${cppType}`,
+                    name: temporary,
+                    initializer: `${optionalPresentCpp(value.cpp)} ? ${cppType}{${target}} : ${cppType}{std::nullopt}`,
+                });
+                return temporary;
+            }
             if (
                 expected.inner.kind === "handle" &&
                 value.kind === expected.inner.handle &&
@@ -20264,12 +20294,29 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             type.kind === "handle" && type.ownedEngine
                 ? `bbl::js::detail::same_value_zero(${left}, ${right})`
                 : `${left} == ${right}`;
+        // An element that may be absent compares with a DOM target that
+        // may be (`event.target === overlay`) as the target it is.
+        const targetOf = (
+            target: DataType | undefined,
+            element: DataType | undefined,
+        ): DataType | undefined =>
+            optionalComparable(target) &&
+            target.inner.kind === "event-target" &&
+            optionalComparable(element) &&
+            element.inner.kind === "handle" &&
+            element.inner.handle === "ui-element"
+                ? target
+                : element;
+        const leftPair = targetOf(rightType, leftType);
+        const rightPair = targetOf(leftType, rightType);
         if (
-            optionalComparable(leftType) &&
-            optionalComparable(rightType) &&
-            (dataTypesEqual(leftType.inner, rightType.inner) ||
-                (textual(leftType.inner) && textual(rightType.inner)))
+            optionalComparable(leftPair) &&
+            optionalComparable(rightPair) &&
+            (dataTypesEqual(leftPair.inner, rightPair.inner) ||
+                (textual(leftPair.inner) && textual(rightPair.inner)))
         ) {
+            const leftType = leftPair;
+            const rightType = rightPair;
             const leftCpp = bindOptional(
                 left,
                 leftType,

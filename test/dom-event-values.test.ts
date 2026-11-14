@@ -223,6 +223,24 @@ test("owned DOM events retain payload, routing, identity and listener cleanup", 
             if (armedWheel(event) !== true) throw new Error("disarmed wheel callback");
             text.setAttribute("data-wheel", String(turns));
         });
+        // An element that may be absent compares with an event's target as
+        // the target it is.
+        let overlay: HTMLElement | null = null;
+        let backdrop = "";
+        function openOverlay(): void {
+            overlay = document.createElement("div");
+            const inner = document.createElement("span");
+            overlay.appendChild(inner);
+            overlay.addEventListener("click", (event) => {
+                backdrop += event.target === overlay ? "O" : "";
+                backdrop += event.target !== overlay ? "i" : "";
+            });
+            document.body.appendChild(overlay);
+            overlay.dispatchEvent(new Event("click", {bubbles: true}));
+            inner.dispatchEvent(new Event("click", {bubbles: true}));
+        }
+        openOverlay();
+        if (backdrop !== "Oi") throw new Error("nullable overlay target " + backdrop);
         globalThis.close();
     `);
     writeFileSync(join(directory, "program.hpp"), result.cpp);
