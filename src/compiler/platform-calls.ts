@@ -1530,6 +1530,31 @@ export class PlatformCalls {
                 ...this.ui.hostCanvas(id, tag, call),
             };
         }
+        // The display hit-tests the page it lays out now. The engine
+        // canvas has no element handle, so the answer is a DOM event target.
+        if (
+            callee.name === "elementFromPoint" &&
+            isDocumentReceiver(this.context, callee.expression)
+        ) {
+            this.context.expectArgumentCount(call, 2, 2);
+            const engine = this.ui.documentReceiverEngine(
+                callee.expression,
+                preparedElement,
+            );
+            const x = this.context.compileNumber(argumentAt(call, 0), "double");
+            const y = this.context.compileNumber(argumentAt(call, 1), "double");
+            this.context.reachFeature("ui:rml", call);
+            this.context.reachFeature("input:dom", call);
+            return {
+                kind: "data",
+                cpp: `bbl::dom_target_value(${engine}, bbl::ui_element_from_point(${engine}, ${x}, ${y}))`,
+                dataType: {
+                    kind: "optional",
+                    inner: { kind: "event-target" },
+                },
+                impure: true,
+            };
+        }
         if (
             callee.name === "createTextNode" &&
             isDocumentReceiver(this.context, callee.expression)

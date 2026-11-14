@@ -104,6 +104,12 @@ void ui_set_selected(Engine& engine, UiElementHandle element, bool selected);
 void ui_set_selection(Engine& engine, UiElementHandle select, UiElementHandle option);
 void ui_set_form_value(Engine& engine, UiElementHandle element, std::string value);
 UiClientRect ui_get_client_rect(Engine& engine, UiElementHandle element);
+/**
+ * `document.elementFromPoint(x, y)`: the topmost element at a viewport point in CSS pixels,
+ * laid out now; the canvas where the page lays nothing over it, and nothing outside the
+ * viewport.
+ */
+std::optional<DomEventTarget> ui_element_from_point(Engine& engine, double x, double y);
 /** getComputedStyle(element)[property] for display, opacity, visibility and z-index. */
 std::string ui_computed_style(Engine& engine, UiElementHandle element, std::string_view property);
 void ui_set_text(Engine& engine, UiElementHandle element, std::string text);

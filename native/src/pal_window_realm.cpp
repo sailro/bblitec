@@ -376,6 +376,12 @@ struct WindowServices final : CanvasProvider {
      */
     std::shared_ptr<const std::vector<std::uint8_t>> pointer_states;
     std::atomic<bool> screen_requested = false;
+    /**
+     * `document.elementFromPoint`: the realm's viewport point and what the display's next
+     * update finds there (`DomInput::element_at`), both guarded by `mutex`.
+     */
+    std::optional<std::pair<double, double>> hit_point;
+    std::optional<DomEventTarget> hit_target;
     std::atomic<bool> reload_requested = false;
     std::shared_ptr<WindowLocation> location;
     std::unordered_map<std::uint32_t, std::shared_ptr<CanvasEndpoint>> canvases;
@@ -597,6 +603,11 @@ struct WindowDocument {
             if (&owner != &window_document_engine())
                 throw std::logic_error("A Window selector state read requires its owning realm.");
             adopt_window_pointer_states();
+        };
+        engine.ui_element_at = [](Engine& owner, double x, double y) {
+            if (&owner != &window_document_engine())
+                throw std::logic_error("A Window hit test requires its owning realm.");
+            return window_element_at(x, y);
         };
 #if BBLITE_HAS_BROWSER_FILE
         engine.dispatch_file_action = [host = this->host](std::function<void(Engine&)> action) {
@@ -1301,9 +1312,11 @@ namespace {
  * while the display has not applied the previous snapshot; `await_display`
  * waits for the display to apply them; `render` ends an animation frame,
  * whose time reaches the display's next update, and also publishes when
- * nothing changed if the display's time-driven work is due by that time.
+ * nothing changed if the display's time-driven work is due by that time;
+ * `query` waits for an update of the display, publishing an empty delta when
+ * nothing changed, so the display answers a request made of it.
  */
-enum class DocumentPublication { post, await_display, render };
+enum class DocumentPublication { post, await_display, render, query };
 
 /** Publish the document's changes, stamped with the realm's fixed capture time. */
 void publish_window_document(DocumentPublication mode) {
@@ -1357,7 +1370,8 @@ void publish_window_document(DocumentPublication mode) {
     // empty delta waits for its update.
     const bool current = host.next_update && host.time == host.next_update->milliseconds &&
                          !host.next_update->due(*time);
-    if (!snapshot && mode == DocumentPublication::render && !current) {
+    if (!snapshot &&
+        (mode == DocumentPublication::query || (mode == DocumentPublication::render && !current))) {
         snapshot = std::make_unique<DocumentSnapshot>();
         snapshot->text_updates.emplace();
     }
@@ -1486,6 +1500,19 @@ void adopt_window_pointer_states() {
         doc.engine.ui_elements[index].pointer_states = (*states)[index];
 }
 } // namespace
+std::optional<DomEventTarget> window_element_at(double x, double y) {
+    auto& doc = current_document();
+    {
+        const std::lock_guard lock(doc.host->mutex);
+        if (doc.host->stopping)
+            throw WorkerTerminated{};
+        doc.host->hit_point = std::pair{x, y};
+    }
+    publish_window_document(DocumentPublication::query);
+    const std::lock_guard lock(doc.host->mutex);
+    doc.host->hit_point.reset();
+    return std::exchange(doc.host->hit_target, std::nullopt);
+}
 UiClientRect window_element_size(UiElementHandle element) {
     update_window_document();
     const auto& layout = current_document().layout;
@@ -1895,11 +1922,13 @@ static Iteration<int> window_application_iterations(WorkerEntry initialize, Engi
                     return false;
                 std::unique_ptr<DocumentSnapshot> snapshot;
                 std::uint64_t revision = 0;
+                std::optional<std::pair<double, double>> hit_point;
                 {
                     std::lock_guard lock(services->mutex);
                     snapshot = std::move(services->pending);
                     revision = services->requested;
                     updated_time = services->time;
+                    hit_point = services->hit_point;
                 }
                 // Under the fixed capture clock CSS animations run at the
                 // application realm's latest published or rendered time.
@@ -1921,6 +1950,10 @@ static Iteration<int> window_application_iterations(WorkerEntry initialize, Engi
                 next_layout.input = platform_input_capabilities();
                 supply_ui_rml_media_device(*ui, std::nullopt, next_layout.input);
                 update_ui_rml_runtime(*ui, width, height);
+                const auto hit_target =
+                    hit_point && display.dom_input && display.dom_input->element_at
+                        ? display.dom_input->element_at(hit_point->first, hit_point->second)
+                        : std::nullopt;
                 const auto next_update = ui_rml_next_update(*ui);
                 // The document lays out in the page viewport, which the realm reads as its window.
                 next_layout.width = display.ui_page_viewport.pixels.width;
@@ -1962,6 +1995,8 @@ static Iteration<int> window_application_iterations(WorkerEntry initialize, Engi
                     const std::lock_guard lock(services->mutex);
                     services->layout = layout;
                     services->pointer_states = pointer_states;
+                    if (hit_point)
+                        services->hit_target = hit_target;
                     services->completed = revision;
                     services->next_update = next_update;
                 }
