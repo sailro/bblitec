@@ -11381,6 +11381,30 @@ checkInRealm(
 );
 
 check(
+    "optional-chained-number-methods",
+    `
+    // value?.toFixed(n) and value?.toString() run on a present number and
+    // are undefined otherwise; their arguments run only when it is present.
+    interface Row { y?: number }
+    let precisions = 0;
+    function precision(): number { precisions++; return 3; }
+    function sig(key: string, crown: number | undefined, reserve: number | null, row: Row): string {
+        return key + "|cy" + (crown?.toFixed(precision()) ?? "") + "|r" + (reserve?.toFixed(2) ?? "none") +
+            "|y" + (row.y?.toFixed() ?? "-") + "|s" + (crown?.toString() ?? "?") + "|x" + (reserve?.toString(16) ?? "?");
+    }
+    const crowns: (number | undefined)[] = [1.23456, undefined];
+    const reserves: (number | null)[] = [255.5, null];
+    const rows: Row[] = [{ y: 7.6 }, {}];
+    const out: string[] = [];
+    for (let i = 0; i < 2; i++) out.push(sig("k" + i, crowns[i], reserves[i]!, rows[i]!));
+    if (out.join(";") !== "k0|cy1.235|r255.50|y8|s1.23456|xff.8;k1|cy|rnone|y-|s?|x?") throw new Error(out.join(";"));
+    if (precisions !== 1) throw new Error("precision evaluated " + precisions);
+    const formatted = crowns.map((crown) => crown?.toFixed(1));
+    if (formatted[0] !== "1.2" || formatted[1] !== undefined) throw new Error("chain value");
+`,
+);
+
+check(
     "number-to-string-checks-its-radix-first",
     `
     const rangeErrorOf = (run: () => string): string => {

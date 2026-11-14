@@ -2157,15 +2157,114 @@ export class ExpressionLowerer {
             holdsOnly(this.context.checker.getTypeAtLocation(expression), [
                 "number",
             ])
-            ? {
-                  kind: "number",
-                  cpp: this.context.dataLowerer.compileKnownValueForSink(
-                      value,
-                      { kind: "number" },
-                      expression,
-                  ),
-              }
+            ? this.storedNumber(value, expression)
             : value;
+    }
+
+    /** A number its storage holds, read as one. */
+    private storedNumber(value: Value, expression: ts.Expression): Value {
+        return {
+            kind: "number",
+            cpp: this.context.dataLowerer.compileKnownValueForSink(
+                value,
+                { kind: "number" },
+                expression,
+            ),
+        };
+    }
+
+    /**
+     * Runs a number method's lowering on its receiver. `value?.method()`
+     * on a number that may be absent runs it on the present number and is
+     * the chain's `undefined` otherwise.
+     */
+    private onNumberReceiver(
+        call: ts.CallExpression,
+        receiver: ts.Expression,
+        lower: (owner: Value) => Value | undefined,
+    ): Value | undefined {
+        const owner = this.numberMethodReceiver(receiver);
+        return ts.isOptionalChain(call) &&
+            owner.kind === "data" &&
+            owner.dataType?.kind === "optional" &&
+            owner.dataType.inner.kind === "number"
+            ? this.context.dataLowerer.optionalAccess(owner, call, (present) =>
+                  lower(
+                      present.kind === "number"
+                          ? present
+                          : this.storedNumber(present, receiver),
+                  ),
+              )
+            : lower(owner);
+    }
+
+    /** `toFixed`, `toPrecision` or `toExponential` of the number `owner`. */
+    private compileNumberFormat(
+        call: ts.CallExpression,
+        callee: NamedMember["access"],
+        memberName: string,
+        owner: Value,
+    ): Value {
+        this.context.expectArgumentCount(call, 0, 1);
+        const number =
+            owner.staticNumber ?? this.generationTimeNumber(callee.expression);
+        const digits = call.arguments[0]
+            ? staticNumberValue(this.context, call.arguments[0])
+            : undefined;
+        if (
+            memberName === "toFixed" &&
+            owner.kind === "number" &&
+            (number === undefined ||
+                (call.arguments.length > 0 && digits === undefined))
+        ) {
+            if (digits !== undefined && (digits < 0 || digits > 100)) {
+                this.context.fail(
+                    call,
+                    "Number.toFixed precision must be between 0 and 100.",
+                );
+            }
+            this.context.reachJsData();
+            const receiver = call.arguments[0]
+                ? this.context.bindings.pinValueToTemporary(
+                      owner,
+                      "format_receiver",
+                      callee.expression,
+                  )
+                : owner;
+            const precision = call.arguments[0]
+                ? this.context.compileNumber(call.arguments[0], "double")
+                : "0";
+            return {
+                kind: "data",
+                cpp: `bbl::js::number_to_fixed(${receiver.cpp}, ${precision})`,
+                dataType: { kind: "string" },
+            };
+        }
+        if (
+            owner.kind !== "number" ||
+            number === undefined ||
+            (call.arguments.length > 0 &&
+                (digits === undefined || !Number.isInteger(digits)))
+        ) {
+            this.context.fail(
+                call,
+                `Number.${memberName} in a generation-time string requires a static number and integer precision (received '${owner.cpp}').`,
+            );
+        }
+        const format = numberFormatOf(memberName)!;
+        const text = foldNumberFormat(format, number, digits);
+        if (text === undefined) {
+            const [low, high] = NUMBER_FORMAT_DIGITS.get(format)!;
+            this.context.fail(
+                call,
+                `Number.${format} precision must be between ${low} and ${high}.`,
+            );
+        }
+        return {
+            kind: "string",
+            cpp: this.context.cppString(text),
+            staticString: text,
+        };
     }
 
     /**
@@ -7747,85 +7846,31 @@ export class ExpressionLowerer {
             );
         }
         if (memberName === "toString") {
-            const owner = this.numberMethodReceiver(callee.expression);
-            if (owner.kind === "number") {
-                this.context.expectArgumentCount(call, 0, 1);
-                this.context.reachJsData();
-                const radix = call.arguments[0];
-                return {
-                    kind: "data",
-                    cpp: numberToStringCpp(
-                        owner.cpp,
-                        radix && this.context.compileNumber(radix, "double"),
-                    ),
-                    dataType: { kind: "string" },
-                };
-            }
+            const text = this.onNumberReceiver(
+                call,
+                callee.expression,
+                (owner) => {
+                    if (owner.kind !== "number") return undefined;
+                    this.context.expectArgumentCount(call, 0, 1);
+                    this.context.reachJsData();
+                    const radix = call.arguments[0];
+                    return {
+                        kind: "data",
+                        cpp: numberToStringCpp(
+                            owner.cpp,
+                            radix &&
+                                this.context.compileNumber(radix, "double"),
+                        ),
+                        dataType: { kind: "string" },
+                    };
+                },
+            );
+            if (text) return text;
         }
-        if (isLibraryNumberFormatter(this.context.checker, call)) {
-            this.context.expectArgumentCount(call, 0, 1);
-            const owner = this.numberMethodReceiver(callee.expression);
-            const number =
-                owner.staticNumber ??
-                this.generationTimeNumber(callee.expression);
-            const digits = call.arguments[0]
-                ? staticNumberValue(this.context, call.arguments[0])
-                : undefined;
-            if (
-                memberName === "toFixed" &&
-                owner.kind === "number" &&
-                (number === undefined ||
-                    (call.arguments.length > 0 && digits === undefined))
-            ) {
-                if (digits !== undefined && (digits < 0 || digits > 100)) {
-                    this.context.fail(
-                        call,
-                        "Number.toFixed precision must be between 0 and 100.",
-                    );
-                }
-                this.context.reachJsData();
-                const receiver = call.arguments[0]
-                    ? this.context.bindings.pinValueToTemporary(
-                          owner,
-                          "format_receiver",
-                          callee.expression,
-                      )
-                    : owner;
-                const precision = call.arguments[0]
-                    ? this.context.compileNumber(call.arguments[0], "double")
-                    : "0";
-                return {
-                    kind: "data",
-                    cpp: `bbl::js::number_to_fixed(${receiver.cpp}, ${precision})`,
-                    dataType: { kind: "string" },
-                };
-            }
-            if (
-                owner.kind !== "number" ||
-                number === undefined ||
-                (call.arguments.length > 0 &&
-                    (digits === undefined || !Number.isInteger(digits)))
-            ) {
-                this.context.fail(
-                    call,
-                    `Number.${memberName} in a generation-time string requires a static number and integer precision (received '${owner.cpp}').`,
-                );
-            }
-            const format = numberFormatOf(memberName)!;
-            const text = foldNumberFormat(format, number, digits);
-            if (text === undefined) {
-                const [low, high] = NUMBER_FORMAT_DIGITS.get(format)!;
-                this.context.fail(
-                    call,
-                    `Number.${format} precision must be between ${low} and ${high}.`,
-                );
-            }
-            return {
-                kind: "string",
-                cpp: this.context.cppString(text),
-                staticString: text,
-            };
-        }
+        if (isLibraryNumberFormatter(this.context.checker, call))
+            return this.onNumberReceiver(call, callee.expression, (owner) =>
+                this.compileNumberFormat(call, callee, memberName, owner),
+            )!;
         const staticContainerMethod = this.context.probeEmission(
             (): Value | undefined => {
                 const staticOwner = this.compileStaticOwner(callee.expression);
