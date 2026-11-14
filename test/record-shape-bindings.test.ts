@@ -221,6 +221,48 @@ test("a joined record declaring a property only as optional undefined stores it 
     assert.deepEqual(registry.fromTsType(declared, node), stored);
 });
 
+test("records joined through one interface join the records their common fields hold", () => {
+    // Two fields registered as one follower: neither is stored as the
+    // other, yet one layout stores `items` once.
+    const frontend = createCompilerProgram(
+        `interface Follower { level: number }
+         interface Clump { x: number; phase: number }
+         interface Fern { x: number; model: string }
+         interface Undergrowth { level: number; items: Clump[] }
+         interface Ferns { level: number; items: Fern[]; winter: number }`,
+        resolve("record-shared-interface.ts"),
+    );
+    const [follower, clump, fern, undergrowth, ferns] =
+        frontend.sourceFile.statements.map((node) => {
+            assert.ok(ts.isInterfaceDeclaration(node));
+            return frontend.checker.getTypeAtLocation(node.name);
+        });
+    assert.ok(follower && clump && fern && undergrowth && ferns);
+    const node = frontend.sourceFile;
+    const registry = new DataTypeRegistry(
+        frontend.checker,
+        (_node, message) => {
+            throw new Error(message);
+        },
+        new ClassHierarchy(frontend.checker, frontend.program),
+    );
+    registry.prepareRecordComponents(
+        recordComponents(frontend.checker, [
+            { source: undergrowth, target: follower, kind: "value" },
+            { source: ferns, target: follower, kind: "value" },
+        ]),
+        [],
+        frontend.program,
+    );
+    const stored = registry.fromTsType(ferns, node);
+    assert.equal(stored?.kind, "struct");
+    assert.deepEqual(registry.fromTsType(undergrowth, node), stored);
+    assert.deepEqual(registry.fromTsType(follower, node), stored);
+    const element = registry.fromTsType(fern, node);
+    assert.equal(element?.kind, "struct");
+    assert.deepEqual(registry.fromTsType(clump, node), element);
+});
+
 test("record demands replay in the dynamic JSON mode they were made in", () => {
     const frontend = createCompilerProgram(
         `interface Report { kind: string; error: unknown }`,
