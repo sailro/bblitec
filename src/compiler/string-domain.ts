@@ -1730,6 +1730,13 @@ class StringDomain {
         environment: Environment,
     ): Domain {
         if (ts.isPropertyAccessExpression(node)) {
+            // A read of a getter is what its body returns.
+            const getter = resolvedSymbol(
+                this.context.checker,
+                node.name,
+            )?.declarations?.find(ts.isGetAccessorDeclaration);
+            if (getter?.body)
+                return this.returned(getter, projection, environment);
             const domain = this.read(
                 node.expression,
                 [node.name.text, ...projection],
@@ -1943,7 +1950,7 @@ class StringDomain {
     }
 
     private returned(
-        declaration: SupportedFunction,
+        declaration: SupportedFunction | ts.GetAccessorDeclaration,
         projection: KeyPath,
         environment: Environment,
     ): Domain {

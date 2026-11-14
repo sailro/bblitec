@@ -319,6 +319,38 @@ test("runtime img src reads requests a class queue holds in private fields", () 
     assert.ok(!outputs.includes("assets/ui/blue.png"));
 });
 
+test("runtime img src reads the request a class getter returns", () => {
+    const result = compileEntry(`
+        interface Card { name: string; picture: string }
+        class Deck<T> {
+            #shown: T | null = null;
+            get shown(): T | null {
+                return this.#shown;
+            }
+            deal(card: T): void {
+                this.#shown = card;
+            }
+        }
+        const deck = new Deck<Card>();
+        const face = { get picture(): string { return deck.shown ? deck.shown.picture : "/assets/ui/red.png"; } };
+        function reveal(card: Card): void {
+            const img = document.createElement("img");
+            img.id = card.name;
+            img.src = appUrl(card.picture);
+            document.body.append(img);
+        }
+        deck.deal({ name: "a", picture: "/assets/ui/green.png" });
+        if (deck.shown) reveal(deck.shown);
+        const back = document.createElement("img");
+        back.src = appUrl(face.picture);
+        document.body.append(back);
+    `);
+    const outputs = result.manifest.assets.map((asset) => asset.output);
+    for (const name of ["red", "green"])
+        assert.ok(outputs.includes(`assets/ui/${name}.png`), name);
+    assert.ok(!outputs.includes("assets/ui/blue.png"));
+});
+
 test("runtime img src reads the parameters a spread tuple fills", () => {
     const result = compileEntry(`
         type Shade = "red" | "green";
