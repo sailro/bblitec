@@ -760,6 +760,14 @@ ${matrices
     const auto expected = ${cppArray(expected, "float")};
     for (std::size_t i = 0; i < expected.size(); ++i)
         assert(std::bit_cast<std::uint32_t>(actual[i]) == std::bit_cast<std::uint32_t>(expected[i]));
+    // The fit's configuration is the record's: both cascade controls too.
+    assert(!bbl::upstream::csm_config(generator)._stabilizeCascades);
+    assert(!bbl::upstream::csm_config(generator)._worldSpaceBias.has_value());
+    generator.csm_stabilize_cascades = true;
+    generator.csm_world_space_bias = 0.25;
+    generator.bias = 0.5;
+    const auto config = bbl::upstream::csm_config(generator);
+    assert(config._stabilizeCascades && config._worldSpaceBias == 0.25 && config._bias == 0.5);
     std::cout << "pinned-csm-header-check: ok\\n";
 }
 `,

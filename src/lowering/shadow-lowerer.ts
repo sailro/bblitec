@@ -669,6 +669,16 @@ function csmDefaults(context: LoweringContext) {
         darkness: optionDefault("darkness"),
         frustumEdgeFalloff: optionDefault("frustumEdgeFalloff"),
         stabilizeCascades: stabilize.kind === ts.SyntaxKind.TrueKeyword,
+        // What the factory keeps of a bias the scene passes.
+        worldSpaceBias: new PinnedNumericLowerer(file, {
+            bindings: new Map<string, PinnedBinding>([
+                [
+                    "worldSpaceBias",
+                    { cpp: "(*options.csm_world_space_bias)", type: "scalar" },
+                ],
+            ]),
+            calls: new Map(),
+        }).expression(worldBias.whenFalse),
     };
 }
 
@@ -2574,6 +2584,7 @@ ${
                   "map_size",
                   "csm_lambda",
                   "csm_cascade_blend_percentage",
+                  "csm_stabilize_cascades",
                   "csm_shadow_max_z",
                   "bias",
                   "darkness",
@@ -2582,9 +2593,12 @@ ${
               ],
               // \`Math.min(cfg.numCascades ?? N, MAX)\`, applied where the pin
               // applies it: the fit, the layered map and its caster passes then all
-              // read one already-clamped count off the record.
+              // read one already-clamped count off the record. An omitted
+              // world-space bias stays the pin's \`null\`.
               tail: `    generator.csm_num_cascades = std::min(
-        options.csm_num_cascades, upstream::csm_max_cascades);`,
+        options.csm_num_cascades, upstream::csm_max_cascades);
+    if (options.csm_world_space_bias)
+        generator.csm_world_space_bias = ${csmDefaults(context).worldSpaceBias};`,
           })
 }
 ${
@@ -2941,6 +2955,7 @@ inline constexpr double csm_default_lambda = ${context.doubleLiteral(csm.lambda)
 inline constexpr double csm_default_cascade_blend_percentage = ${context.doubleLiteral(
             csm.cascadeBlendPercentage,
         )};
+inline constexpr bool csm_default_stabilize_cascades = ${csm.stabilizeCascades};
 inline constexpr double csm_default_bias = ${context.doubleLiteral(csm.bias)};
 inline constexpr double csm_default_darkness = ${context.doubleLiteral(csm.darkness)};
 inline constexpr double csm_default_frustum_edge_falloff = ${context.doubleLiteral(
@@ -2955,10 +2970,10 @@ inline CsmConfig csm_config(const ShadowGeneratorRecord& generator) {
         static_cast<double>(generator.csm_num_cascades),
         generator.csm_lambda,
         generator.csm_cascade_blend_percentage,
-        ${csm.stabilizeCascades},
+        generator.csm_stabilize_cascades,
         generator.csm_shadow_max_z,
         generator.bias,
-        std::nullopt,
+        generator.csm_world_space_bias,
         generator.darkness,
         generator.frustum_edge_falloff,
         static_cast<double>(generator.map_size),

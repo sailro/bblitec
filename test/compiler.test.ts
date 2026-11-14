@@ -8029,8 +8029,8 @@ test("compiles the cascaded shadow generator's own factory and options", () => {
     );
 });
 
-test("refuses the two cascaded controls this port does not build", () => {
-    const source = (option: string) => `
+test("carries the cascade stabilization and the world-space bias into the generator", () => {
+    const source = (options: string) => `
         import {
             addToScene,
             createCsmDirectionalShadowGenerator,
@@ -8044,31 +8044,58 @@ test("refuses the two cascaded controls this port does not build", () => {
             const scene = createSceneContext(engine);
             const light = createDirectionalLight([-1, -2, -1], 1);
             addToScene(scene, light);
+            const stable = (localStorage.getItem("stable") ?? "1") === "1";
+            const worldBias = Number(localStorage.getItem("bias") ?? "0.05");
             createCsmDirectionalShadowGenerator(engine, light, {
-                ${option},
+                ${options}
             });
         }
 
         void main();
     `;
+    const options = (cpp: string): string =>
+        /bbl::CsmDirectionalShadowOptions\{(.*)\}\)\);/.exec(cpp)?.[1] ?? "";
     // The bounding-sphere fit with its light-axis anchor grid, and the
-    // world-space bias's far-plane reserve plus per-cascade clip offset.
-    // `validateObjectProperties` locates the refusal at the property, so
-    // the column is what names which one.
-    for (const option of ["stabilizeCascades: true", "worldSpaceBias: 0.5"]) {
-        assert.throws(
-            () => compileSource(source(option)),
-            /A CSM directional shadow generator options/,
-            option,
-        );
-    }
-    // Everything the cascade array does build still compiles.
-    assert.doesNotThrow(() =>
-        compileSource(
-            source(
-                "cascadeBlendPercentage: 0.25, shadowMaxZ: 500, frustumEdgeFalloff: 0.1",
-            ),
+    // world-space bias's far-plane reserve plus per-cascade clip offset:
+    // the record keeps both, in the pin's own configuration order.
+    assert.equal(
+        options(
+            compileSource(
+                source(
+                    "stabilizeCascades: true, worldSpaceBias: 0.5, bias: 0.25,",
+                ),
+            ).cpp,
         ),
+        "bbl::upstream::csm_default_map_size, bbl::upstream::csm_default_num_cascades, " +
+            "bbl::upstream::csm_default_lambda, bbl::upstream::csm_default_cascade_blend_percentage, " +
+            "true, std::optional<double>{}, 0.25, std::optional<double>{0.5}, " +
+            "bbl::upstream::csm_default_darkness, bbl::upstream::csm_default_frustum_edge_falloff, false",
+    );
+    // An option a conditional spread adds is selected where it is read, and
+    // one the scene omits there keeps the pin's default.
+    assert.equal(
+        options(
+            compileSource(
+                source(
+                    "stabilizeCascades: stable, ...(worldBias > 0 ? { worldSpaceBias: worldBias, darkness: 0.5 } : {}), bias: 0.25,",
+                ),
+            ).cpp,
+        ),
+        "bbl::upstream::csm_default_map_size, bbl::upstream::csm_default_num_cascades, " +
+            "bbl::upstream::csm_default_lambda, bbl::upstream::csm_default_cascade_blend_percentage, " +
+            "v_stable, std::optional<double>{}, 0.25, " +
+            "(v_worldBias > 0.0 ? std::optional<double>{v_worldBias} : std::optional<double>{}), " +
+            "(v_worldBias > 0.0 ? 0.5 : bbl::upstream::csm_default_darkness), " +
+            "bbl::upstream::csm_default_frustum_edge_falloff, false",
+    );
+    // The layered map is sized at generation: no condition selects it.
+    assert.throws(
+        () => compileSource(source("...(stable ? { mapSize: 2048 } : {}),")),
+        /Option 'mapSize' decides generated resources/,
+    );
+    assert.throws(
+        () => compileSource(source("normalBias: 0.5,")),
+        /A CSM directional shadow generator options/,
     );
 });
 

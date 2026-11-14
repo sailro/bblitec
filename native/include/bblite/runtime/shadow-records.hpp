@@ -167,7 +167,10 @@ struct ShadowGeneratorRecord {
     std::uint32_t csm_num_cascades = 0;
     double csm_lambda = 0.0;
     double csm_cascade_blend_percentage = 0.0;
+    bool csm_stabilize_cascades = false;
     std::optional<double> csm_shadow_max_z{};
+    /** `cfg._worldSpaceBias`: unset is the pin's `null`, where `bias` applies. */
+    std::optional<double> csm_world_space_bias{};
     std::vector<ShadowCascade> csm_cascades;
     /** Subscribers to the exact packed CSM receiver block for this frame. */
     std::shared_ptr<PlatformEventListeners<void(const js::F32Array&)>> csm_receiver_callbacks;

@@ -8479,8 +8479,7 @@ struct PcfDirectionalShadowOptions {
  *
  * `map_size` and the cascade count size the layered map; the rest ride into
  * the record, where the per-cascade fit and the receiver's own 320-byte
- * block read them. `stabilizeCascades` and `worldSpaceBias` are the two
- * arms this port does not build and refuse by name at generation.
+ * block read them.
  */
 struct CsmDirectionalShadowOptions {
     // No factory defaults, for the reason above: every field is written
@@ -8489,9 +8488,13 @@ struct CsmDirectionalShadowOptions {
     std::uint32_t csm_num_cascades{};
     double csm_lambda{};
     double csm_cascade_blend_percentage{};
+    /** `cfg.stabilizeCascades ?? false`: the bounding-sphere fit. */
+    bool csm_stabilize_cascades{};
     /** `cfg.shadowMaxZ ?? null`, resolved against the camera's far plane. */
     std::optional<double> csm_shadow_max_z;
     double bias{};
+    /** `cfg.worldSpaceBias`: an omitted one leaves `bias` in force. */
+    std::optional<double> csm_world_space_bias;
     double darkness{};
     double frustum_edge_falloff{};
     /** `cfg.forceRefreshEveryFrame ?? false`: disables the render gate. */

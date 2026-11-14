@@ -343,7 +343,7 @@ async function main(){
     const light=createDirectionalLight([0,-1,-1],1);
     addToScene(scene,light);
     const sg=createCsmDirectionalShadowGenerator(engine,light,{mapSize:256,numCascades:2,lambda:0.5,
-        cascadeBlendPercentage:0.1,bias:0.001,darkness:0.1,frustumEdgeFalloff:0.2});
+        cascadeBlendPercentage:0.1,stabilizeCascades:false,bias:0.001,darkness:0.1,frustumEdgeFalloff:0.2});
     const receiver=${receiverMaterial};
     const materials:ShaderMaterial[]=[receiver];
     createHost({shadow:sg,decor:{enabled:false}},materials);
