@@ -215,6 +215,49 @@ test("Window extension callbacks retain identity and captures through replacemen
     );
 });
 
+test("a Window extension declared unknown holds a function or a record of functions as a document", (t) => {
+    const directory = resolve("artifacts/window-properties-unknown");
+    mkdirSync(directory, { recursive: true });
+    writeFileSync(resolve(directory, "worker.ts"), "self.close();");
+    // Neither value has storage of its own type: a function returning
+    // records of unknown members, a record whose members are functions.
+    const result = compileSource(
+        `
+        const worker = new Worker(new URL("./worker.ts", import.meta.url), {type:"module"});
+        worker.terminate();
+        let count = 0;
+        const debug = window as unknown as Record<string, unknown>;
+        if (debug.ccAudit !== undefined) throw new Error("unwritten");
+        debug.ccAudit = (): Array<Record<string, unknown>> => [{ count }];
+        (window as unknown as Record<string, unknown>).ccFish = {
+            count: () => count,
+            bump: (by: number): void => { count += by; },
+            label: "fish",
+        };
+        if (debug.ccAudit === undefined || debug.ccFish === undefined) throw new Error("held");
+        debug.ccAudit = "off";
+        if (debug.ccAudit === undefined) throw new Error("replaced");
+        globalThis.close();
+    `,
+        { fileName: resolve(directory, "entry.ts") },
+    );
+    const tools = optionalNativeFixtureTools(false);
+    if (!tools) {
+        t.skip("Native fixture compiler unavailable.");
+        return;
+    }
+    runGeneratedProgram(
+        tools,
+        "window-properties-unknown",
+        result.cpp + windowRuntime,
+        {
+            flags: ["/DBBLITE_WORKERS=1", "/DBBLITE_HAS_UI=1"],
+            timeoutMs: 10000,
+            expectedOutput: "",
+        },
+    );
+});
+
 test("Window extension records refuse borrowed dispatch events", () => {
     const directory = resolve("artifacts/window-properties-borrowed");
     mkdirSync(directory, { recursive: true });

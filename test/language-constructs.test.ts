@@ -15311,6 +15311,27 @@ check(
 );
 
 check(
+    "functions-stored-in-unknown-slots-of-a-document",
+    `
+    // A function stored where the slot is declared unknown is held as its
+    // own type: a member of a record's parameter, a method, an arrow, an
+    // async arrow, one with a default.
+    interface Deps { pick(x: number, y: number): number; snapshot(): string[] }
+    function install(target: Record<string, unknown>, deps: Deps): void {
+        target.ccPick = deps.pick;
+        target.ccSnapshot = deps.snapshot;
+        target.ccTrace = async (x: number): Promise<number> => deps.pick(x, x);
+        target.ccGround = (x: number, z: number, radius = 0) => ({ x, z, radius });
+    }
+    const bag: Record<string, unknown> = JSON.parse('{"kept":1}');
+    install(bag, { pick: (x, y) => x + y, snapshot: () => ["a"] });
+    const kinds = Object.keys(bag).map((key) => key + ":" + typeof bag[key]).join();
+    if (kinds !== "kept:number,ccPick:function,ccSnapshot:function,ccTrace:function,ccGround:function") throw new Error(kinds);
+    if (JSON.stringify(bag) !== '{"kept":1}') throw new Error("serialized " + JSON.stringify(bag));
+`,
+);
+
+check(
     "arrays-stored-as-a-union's-array-member",
     `
     // An array of records of another type (a map's or flatMap's results, a
