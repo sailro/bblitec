@@ -89,7 +89,10 @@ import {
     type NamedMember,
     arrayMemberName,
 } from "./symbols.js";
-import { callsFreshArrayBuiltin } from "./fresh-records.js";
+import {
+    callsFreshArrayBuiltin,
+    returnsFreshRecordArrays,
+} from "./fresh-records.js";
 import {
     regexpCaptureFacts,
     regexpGroupsType,
@@ -3268,9 +3271,22 @@ function compileArrayMap(
                         result.dataType?.kind === "span")
                 ) {
                     // flatMap reads the returned array's elements once and
-                    // keeps none of the array itself.
+                    // keeps none of the array itself; elements that are
+                    // fresh records are held by nothing else either.
                     const values = lowerer.compileKnownValueForSink(
-                        { ...result, unaliased: result.unaliased ?? "object" },
+                        {
+                            ...result,
+                            unaliased:
+                                result.unaliased ??
+                                ((ts.isArrowFunction(callback) ||
+                                    ts.isFunctionExpression(callback)) &&
+                                returnsFreshRecordArrays(
+                                    lowerer.context.checker,
+                                    callback,
+                                )
+                                    ? "elements"
+                                    : "object"),
+                        },
                         mappedType,
                         callback,
                     );

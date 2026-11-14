@@ -15332,6 +15332,31 @@ check(
 );
 
 check(
+    "fresh-records-stored-as-dictionaries",
+    `
+    // The records a map or flatMap callback builds, held by nothing else,
+    // are stored as the dictionaries a stored function's type declares.
+    interface Rec { id: number; w: number; name: string }
+    const recs: Rec[] = [{ id: 1, w: 2, name: "a" }, { id: 2, w: 0, name: "b" }, { id: 3, w: 1, name: "c" }];
+    const fns: (() => Array<Record<string, unknown>>)[] = [];
+    fns.push(() => recs.map((rec) => ({ id: rec.id, label: rec.name })));
+    fns.push(() => recs.flatMap((rec) => rec.w > 0 ? [{ id: rec.id, wide: rec.w > 1 }] : []));
+    fns.push(() => recs.flatMap((rec) => {
+        if (rec.w === 0) return [];
+        const wide = rec.w > 1;
+        return [{ id: rec.id, wide }, { id: -rec.id, wide: false }];
+    }));
+    const seen = fns.map((fn) => JSON.stringify(fn())).join("|");
+    if (seen !== '[{"id":1,"label":"a"},{"id":2,"label":"b"},{"id":3,"label":"c"}]|[{"id":1,"wide":true},{"id":3,"wide":false}]|[{"id":1,"wide":true},{"id":-1,"wide":false},{"id":3,"wide":false},{"id":-3,"wide":false}]')
+        throw new Error(seen);
+    // Each is a dictionary of its own: it takes a key the record never had.
+    const rows = fns[0]!();
+    rows[0]!.extra = true;
+    if (Object.keys(rows[0]!).join() !== "id,label,extra" || Object.keys(rows[1]!).join() !== "id,label") throw new Error("own dictionary");
+`,
+);
+
+check(
     "arrays-stored-as-a-union's-array-member",
     `
     // An array of records of another type (a map's or flatMap's results, a

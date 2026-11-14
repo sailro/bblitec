@@ -123,6 +123,25 @@ export function yieldsFreshRecordElements(
 }
 
 /**
+ * Whether `callback` returns only arrays of fresh records
+ * (`yieldsFreshRecordElements`), or a selection among them: what an array
+ * `flatMap` over it collects are fresh records.
+ */
+export function returnsFreshRecordArrays(
+    checker: ts.TypeChecker,
+    callback: ts.FunctionLikeDeclaration,
+): boolean {
+    return returnsOnly(callback, new Set(), (returned) => {
+        const expression = unwrapExpression(returned);
+        return (
+            isOperandSelection(expression)
+                ? valueOperands(expression)
+                : [expression]
+        ).every((operand) => yieldsFreshRecordElements(checker, operand));
+    });
+}
+
+/**
  * The one expression every element of an array expression evaluates: the
  * single returned expression of an array `map` callback, evaluated once per
  * element. Undefined for any other array.
