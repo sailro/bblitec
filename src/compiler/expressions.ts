@@ -1604,9 +1604,7 @@ export class ExpressionLowerer {
             this.collectStringPlusOperands(unwrapped, operands);
             const pins = this.context.evaluationOrder.operandsToPin(operands);
             const values = operands.map((operand, index) => {
-                const text = this.context.probeEmission(() =>
-                    this.context.evaluator.staticTextValue(operand),
-                );
+                const text = this.staticText(operand);
                 const value =
                     text === undefined
                         ? this.compileValue(operand)
@@ -2311,6 +2309,17 @@ export class ExpressionLowerer {
     }
 
     /** A template's text: each substitution's string between the literal parts. */
+    /**
+     * The text a piece of a string (a concatenation's operand, a template's
+     * substitution) is known to be at generation. One whose evaluation
+     * refuses is not known: its value lowers.
+     */
+    private staticText(piece: ts.Expression) {
+        return this.context.probeEmission(() =>
+            unlessRefused(() => this.context.evaluator.staticTextValue(piece)),
+        );
+    }
+
     private compileTemplateText(
         head: string,
         spans: readonly { expression: ts.Expression; text: string }[],
@@ -2328,9 +2337,7 @@ export class ExpressionLowerer {
         spans.forEach((span, index) => {
             // Resolve each substitution after its predecessors' effects. A
             // closed numeric expression keeps its fact alongside helper results.
-            const known = this.context.probeEmission(() =>
-                this.context.evaluator.staticTextValue(span.expression),
-            );
+            const known = this.staticText(span.expression);
             const compiled =
                 known === undefined
                     ? this.compileValue(span.expression)

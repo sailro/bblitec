@@ -258,6 +258,46 @@ test("a Window extension declared unknown holds a function or a record of functi
     );
 });
 
+test("a template substitution whose static evaluation refuses lowers as its value", (t) => {
+    const directory = resolve("artifacts/window-properties-template");
+    mkdirSync(directory, { recursive: true });
+    writeFileSync(resolve(directory, "worker.ts"), "self.close();");
+    // Evaluating `window.innerWidth` statically reads a member of the
+    // Window target and refuses; the substitution is the viewport's width.
+    const result = compileSource(
+        `
+        const worker = new Worker(new URL("./worker.ts", import.meta.url), {type:"module"});
+        worker.terminate();
+        const text = \`viewport: \${window.innerWidth}x\${window.innerHeight}\`;
+        if (text !== "viewport: " + window.innerWidth + "x" + window.innerHeight) throw new Error(text);
+        if (text !== "viewport: 640x360") throw new Error(text);
+        globalThis.close();
+    `,
+        { fileName: resolve(directory, "entry.ts") },
+    );
+    const tools = optionalNativeFixtureTools(false);
+    if (!tools) {
+        t.skip("Native fixture compiler unavailable.");
+        return;
+    }
+    runGeneratedProgram(
+        tools,
+        "window-properties-template",
+        result.cpp +
+            windowRuntime +
+            `
+namespace bbl::pal {
+UiClientRect window_viewport_size() { UiClientRect rect; rect.width = 640.0; rect.height = 360.0; return rect; }
+}
+`,
+        {
+            flags: ["/DBBLITE_WORKERS=1", "/DBBLITE_HAS_UI=1"],
+            timeoutMs: 10000,
+            expectedOutput: "",
+        },
+    );
+});
+
 test("Window extension records refuse borrowed dispatch events", () => {
     const directory = resolve("artifacts/window-properties-borrowed");
     mkdirSync(directory, { recursive: true });
