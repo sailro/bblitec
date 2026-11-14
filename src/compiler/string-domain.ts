@@ -32,6 +32,7 @@ import {
     accessKey,
     keyIndex,
     objectLiteralMembers,
+    patternSlots,
     testsTruthinessOnly,
     functionOfDeclaration,
     hasExportModifier,
@@ -215,6 +216,53 @@ interface AliasEdge {
 
 /** Deeper alias paths count as a write the target cannot read: aliases may cycle. */
 const maxAliasPath = 8;
+
+/**
+ * Where a binding pattern's name reads its value: the declaration the
+ * pattern destructures (`root`) and the name's path inside what it holds
+ * (an array element is any element); the members an object rest name's
+ * siblings took (`taken`), which the rest object lacks; and each default
+ * on the way, with the path from it down to the name. Undefined for a
+ * computed key, an array rest, or a pattern no variable or parameter
+ * declares.
+ */
+function patternSource(element: ts.BindingElement):
+    | {
+          root: ts.VariableDeclaration | ts.ParameterDeclaration;
+          path: KeyPath;
+          taken: readonly string[];
+          defaults: readonly { value: ts.Expression; below: KeyPath }[];
+      }
+    | undefined {
+    const path: string[] = [];
+    const defaults: { value: ts.Expression; below: KeyPath }[] = [];
+    let taken: readonly string[] = [];
+    for (let node = element; ;) {
+        const pattern = node.parent;
+        const slot = patternSlots(pattern).find(
+            (candidate) => candidate.element === node,
+        );
+        if (!slot) return undefined;
+        if (slot.fallback)
+            defaults.push({ value: slot.fallback, below: [...path] });
+        const { read } = slot;
+        if (read.kind === "rest-from") return undefined;
+        if (read.kind === "rest") {
+            if (!read.excluded) return undefined;
+            taken = read.excluded;
+        } else {
+            if (read.key === undefined) return undefined;
+            path.unshift(keyIndex(read.key) !== undefined ? ANY_KEY : read.key);
+        }
+        const declared = pattern.parent;
+        if (ts.isBindingElement(declared)) node = declared;
+        else
+            return ts.isVariableDeclaration(declared) ||
+                ts.isParameter(declared)
+                ? { root: declared, path, taken, defaults }
+                : undefined;
+    }
+}
 
 /** The step an access takes: its key, or any element for an index or a run-time key. */
 function memberStep(
@@ -1712,6 +1760,60 @@ class StringDomain {
                 origin.environment,
             );
         const declaration = symbol.valueDeclaration ?? symbol.declarations?.[0];
+        if (declaration && ts.isBindingElement(declaration)) {
+            // A pattern's name holds what its source does at the name's
+            // path, or a default along it; a rest name the source without
+            // the members its siblings took.
+            const source = patternSource(declaration);
+            if (!source) return undefined;
+            if (
+                projection[0] !== undefined &&
+                source.taken.includes(projection[0])
+            )
+                return this.nullish ? nothing : undefined;
+            return this.union([
+                () => {
+                    // A default replaces what its element reads where
+                    // that is undefined, as `??` does.
+                    const nullishDepths = this.nullishDepths;
+                    this.nullishDepths = [
+                        ...nullishDepths,
+                        ...source.defaults.map(
+                            ({ below }) => below.length + projection.length,
+                        ),
+                    ];
+                    try {
+                        return this.declaredAt(
+                            node,
+                            source.root,
+                            [...source.path, ...projection],
+                            environment,
+                        );
+                    } finally {
+                        this.nullishDepths = nullishDepths;
+                    }
+                },
+                ...source.defaults.map(
+                    ({ value, below }) =>
+                        () =>
+                            this.read(
+                                value,
+                                [...below, ...projection],
+                                environment,
+                            ),
+                ),
+            ]);
+        }
+        return this.declaredAt(node, declaration, projection, environment);
+    }
+
+    /** What a declaration gives the binding it declares, at a path inside it. */
+    private declaredAt(
+        node: Binding,
+        declaration: ts.Declaration | undefined,
+        projection: KeyPath,
+        environment: Environment,
+    ): Domain {
         if (declaration && ts.isVariableDeclaration(declaration)) {
             if (
                 declaration.getSourceFile() !== node.getSourceFile() &&
@@ -2078,7 +2180,8 @@ class StringDomain {
     ): Domain {
         const nested = new Map(environment);
         for (const [index, parameter] of declaration.parameters.entries()) {
-            if (!ts.isIdentifier(parameter.name)) return undefined;
+            // A pattern's names read what every call passes (`patternSource`).
+            if (!ts.isIdentifier(parameter.name)) continue;
             const symbol = resolvedSymbol(this.context.checker, parameter.name);
             const input = parameterInput(
                 this.context.checker,

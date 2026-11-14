@@ -606,6 +606,36 @@ test("packaged URL provenance refuses uncertain mutations, origins and unbounded
             ["public/clips/voice_01.bin", "public/clips/voice_02.bin"],
             body,
         );
+    // A pattern's name reads what its source holds at the name's path: a
+    // rest object, a parameter's pattern, a default along the way and an
+    // array's elements keep the files they may select.
+    const either = `Math.random()>0.5?"/clips/voice_01.bin":"/clips/voice_02.bin"`;
+    for (const body of [
+        `interface Options{url:string;host:string;size:number} function pick(options:Options):string{const {host,...rest}=options; void host; return rest.url;} const url=pick({url:${either},host:"h",size:1});`,
+        `interface Options{url:string;size:number} function pick({url,size}:Options):string{void size; return url;} const url=pick({url:${either},size:1});`,
+        `function pick(options:{nested:{url?:string}}):string{const {nested:{url="/clips/voice_02.bin"}}=options; return url;} const url=pick({nested:Math.random()>0.5?{url:"/clips/voice_01.bin"}:{}});`,
+        `function pick(options:{urls:string[]}):string{const [first]=options.urls; return first??"/clips/voice_01.bin";} const url=pick({urls:Math.random()>0.5?["/clips/voice_01.bin"]:["/clips/voice_02.bin"]});`,
+    ])
+        assert.deepEqual(
+            compileSource(program(body), {
+                fileName: join(directory, "entry.ts"),
+                publicDir,
+            })
+                .manifest.assets.map((asset) => asset.source)
+                .sort(),
+            ["public/clips/voice_01.bin", "public/clips/voice_02.bin"],
+            body,
+        );
+    // A rest object lacks the members its siblings took.
+    assert.deepEqual(
+        compileSource(
+            program(
+                `interface Options{url:string;host:string} function pick(options:Options):string{const {url,...rest}=options; void url; return (rest as {url?:string}).url??"/clips/voice_02.bin";} const url=pick({url:"/clips/voice_01.bin",host:"h"});`,
+            ),
+            { fileName: join(directory, "entry.ts"), publicDir },
+        ).manifest.assets.map((asset) => asset.source),
+        ["public/clips/voice_02.bin"],
+    );
     const cases = [
         `const entries=["https://remote.invalid/a.bin","https://remote.invalid/b.bin"]; const url=entries[Math.floor(Math.random()*2)];`,
         `const entries=["/clips/../clips/voice_01.bin","/clips/%2e%2e/clips/voice_02.bin"]; const url=entries[Math.floor(Math.random()*2)];`,
