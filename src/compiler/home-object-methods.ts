@@ -8,6 +8,7 @@ import {
     wrappedParent,
     isTypeAssertion,
     wrappersAround,
+    variableKind,
 } from "./syntax.js";
 import {
     declaredContextualType,
@@ -16,7 +17,12 @@ import {
 } from "./type-facts.js";
 import type { Value } from "./types.js";
 import { functionUsesDynamicThis } from "./user-functions.js";
-import { staticPropertyKey } from "./symbols.js";
+import {
+    libraryStaticMember,
+    resolvedSymbol,
+    staticPropertyKey,
+} from "./symbols.js";
+import { instantiatedTypes } from "./written-holders.js";
 
 /** An object literal's own method or function-expression property whose body reads `this`. */
 type HomeObjectMethod = ts.MethodDeclaration | ts.FunctionExpression;
@@ -97,6 +103,80 @@ function homeObjectType(
 }
 
 /**
+ * The types the object of an untyped wholesale read can have, where the
+ * read names a value a loop takes out of an object the checker types
+ * (`for (const [key, value] of Object.entries(row))`, `Object.values`):
+ * that object's property types, a type parameter of a function the program
+ * only calls directly read as its calls instantiate it
+ * (`instantiatedTypes`). Undefined where the read's object stays open.
+ */
+function enumeratedValueTypes(
+    program: ts.Program,
+    checker: ts.TypeChecker,
+    read: ts.Node,
+): readonly ts.Type[] | undefined {
+    const name = ts.isExpression(read) ? unwrapExpression(read) : read;
+    if (!ts.isIdentifier(name)) return undefined;
+    const declaration = resolvedSymbol(checker, name)?.valueDeclaration;
+    const entry =
+        declaration !== undefined &&
+        ts.isBindingElement(declaration) &&
+        ts.isArrayBindingPattern(declaration.parent) &&
+        declaration.parent.elements[1] === declaration &&
+        !declaration.dotDotDotToken &&
+        !declaration.initializer;
+    const variable = entry ? declaration.parent.parent : declaration;
+    if (!variable || !ts.isVariableDeclaration(variable)) return undefined;
+    const list = variable.parent;
+    const loop = list.parent;
+    if (
+        !ts.isVariableDeclarationList(list) ||
+        variableKind(list) !== "const" ||
+        !ts.isForOfStatement(loop) ||
+        loop.initializer !== list
+    )
+        return undefined;
+    const call = unwrapExpression(loop.expression);
+    const enumerated = ts.isCallExpression(call)
+        ? call.arguments[0]
+        : undefined;
+    if (
+        !ts.isCallExpression(call) ||
+        !enumerated ||
+        call.arguments.length !== 1 ||
+        ts.isSpreadElement(enumerated)
+    )
+        return undefined;
+    const callee = libraryStaticMember(
+        checker,
+        unwrapExpression(call.expression),
+    );
+    if (
+        callee?.owner !== "Object" ||
+        callee.name !== (entry ? "entries" : "values")
+    )
+        return undefined;
+    const held: ts.Type[] = [];
+    for (const object of instantiatedTypes(
+        program,
+        checker,
+        checker.getTypeAtLocation(enumerated),
+    )) {
+        // An object the checker does not type holds anything.
+        if (
+            (object.flags & ts.TypeFlags.Object) === 0 &&
+            !object.isIntersection()
+        )
+            return undefined;
+        for (const property of checker.getPropertiesOfType(object))
+            held.push(checker.getTypeOfSymbol(property));
+        for (const index of checker.getIndexInfosOfType(object))
+            held.push(index.type);
+    }
+    return held;
+}
+
+/**
  * The first place the program could read method `name`'s function value
  * from an object that can hold it rather than call it through that object,
  * or undefined when there is none. Answers are kept per method name and
@@ -146,7 +226,14 @@ function methodValueRead(
                     ) === "number";
                 const type = checker.getTypeAtLocation(node);
                 const into = index ? indexTypes : types;
-                if (!into.has(type)) into.set(type, node);
+                // An untyped value a loop takes out of a typed object is
+                // one of that object's property values.
+                const held =
+                    (type.flags & ts.TypeFlags.Any) !== 0
+                        ? enumeratedValueTypes(context.program, checker, node)
+                        : undefined;
+                for (const object of held ?? [type])
+                    if (!into.has(object)) into.set(object, node);
             }
             state.wholesaleTypes = types;
             state.indexTypes = indexTypes;

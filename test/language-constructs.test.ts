@@ -15357,6 +15357,75 @@ check(
 );
 
 check(
+    "methods-reading-this-beside-copies-of-enumerated-values",
+    `
+    // An untyped value a loop takes out of a typed object is one of that
+    // object's property values: spreading it reads no method of a record
+    // those properties cannot hold.
+    interface Row { id: number; name: string; glass: { r: number; g: number } }
+    function copyRow<T extends object>(row: T): T {
+        const out: Record<string, unknown> = {};
+        for (const [key, value] of Object.entries(row)) {
+            out[key] = value !== null && typeof value === "object" ? { ...value } : value;
+        }
+        return out as T;
+    }
+    interface Ledger { get(): number; grant(amount: number): void; grantMorning(shares: number): number }
+    function createLedger(start: number): Ledger {
+        let balance = start;
+        return {
+            get: () => balance,
+            grant(amount) { if (amount > 0) balance += amount; },
+            grantMorning(shares) { const amount = shares * 2; this.grant(amount); return amount; },
+        };
+    }
+    let ledger: Ledger = createLedger(1);
+    function configure(start: number): void { ledger = createLedger(start); }
+    const row: Row = { id: 1, name: "a", glass: { r: 1, g: 2 } };
+    const copy = copyRow(row);
+    copy.glass.r = 7;
+    const first = ledger.grantMorning(3) + ":" + ledger.get();
+    configure(10);
+    const seen = [first, String(ledger.grantMorning(1)), String(ledger.get()), String(row.glass.r), String(copy.glass.r), String(copy.id), copy.name].join("|");
+    if (seen !== "6:7|2|12|1|7|1|a") throw new Error(seen);
+`,
+);
+
+test("a method reading this refuses beside a copy of an enumerated value that can hold it", () => {
+    // The enumerated object holds the ledger: its copy's method would run
+    // with the copy as receiver.
+    assert.throws(
+        () =>
+            compileSource(`
+    function copyRow<T extends object>(row: T): T {
+        const out: Record<string, unknown> = {};
+        for (const [key, value] of Object.entries(row)) {
+            out[key] = value !== null && typeof value === "object" ? { ...value } : value;
+        }
+        return out as T;
+    }
+    interface Ledger { get(): number; grant(amount: number): void; grantMorning(shares: number): number }
+    function createLedger(start: number): Ledger {
+        let balance = start;
+        return {
+            get: () => balance,
+            grant(amount) { if (amount > 0) balance += amount; },
+            grantMorning(shares) { const amount = shares * 2; this.grant(amount); return amount; },
+        };
+    }
+    let ledger: Ledger = createLedger(1);
+    function configure(start: number): void { ledger = createLedger(start); }
+    interface Bag { id: number; ledger: Ledger }
+    const bag: Bag = { id: 1, ledger };
+    const copy = copyRow(bag);
+    configure(10);
+    console.log(copy.id, ledger.grantMorning(1));
+`),
+        /Method 'grantMorning' reads `this`, and .*:\d+ reads its function value, which could call it with another receiver/,
+    );
+});
+
+check(
     "function-slots-over-records-holding-unknown-values",
     `
     // A declared slot starting null takes a function whose parameter
