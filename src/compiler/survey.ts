@@ -324,8 +324,8 @@ interface SurveyRoot {
 /** The rounds a pass runs at most. */
 const roundLimit = 12;
 
-/** The demands a round takes per second, at least, for another to follow. */
-const roundYield = 0.1;
+/** The demands a round takes per statement it lowers, at least, for another to follow. */
+const roundYield = 0.001;
 
 /**
  * A statement the census counts: any but a block, which only groups the
@@ -789,9 +789,9 @@ export class SurveyCollector {
                 `Survey pass ${this.passes + 1} round ${round}: ${added} demand${added === 1 ? "" : "s"} taken lowering ${stale.length} root${stale.length === 1 ? "" : "s"} again ` +
                     `(${seconds.toFixed(0)} s / ${next.attempted})`,
             );
-            // A round that takes demands slower than a pass does is the
+            // A round that takes few demands for what it lowers is the
             // last: the next pass takes what is left.
-            if (added < seconds * roundYield) return;
+            if (added < next.attempted * roundYield) return;
             previous = next;
         }
     }
