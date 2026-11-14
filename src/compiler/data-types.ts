@@ -57,6 +57,7 @@ export {
     isBinaryDataType,
     isNumericSequenceType,
     isTypedArrayType,
+    isTypedArrayUnion,
     typedArrayBytesPerElement,
     typedArrayConstructorName,
     typedArrayStem,

@@ -67,6 +67,7 @@ import {
     pinnedHandleKind,
     platformHandleKind,
     isTypedArrayType,
+    isTypedArrayUnion,
     typedArrayStoreExpression,
     type DataType,
     type TypedArrayKind,
@@ -241,6 +242,39 @@ function relativeRangeArguments(
             ? lowerer.context.compileNumber(endArgument, "double")
             : `static_cast<double>(${receiverCpp}.size())`,
     ];
+}
+
+/**
+ * `fill` or `copyWithin` over the typed array `receiver` names, whose
+ * element stores a number as `store` converts it.
+ */
+function typedArrayRangeWrite(
+    lowerer: DataLowerer,
+    call: ts.CallExpression,
+    method: "fill" | "copyWithin",
+    receiver: string,
+    store: (value: string) => string,
+): string {
+    const fill = method === "fill";
+    const least = fill ? 1 : 2;
+    if (call.arguments.length < least || call.arguments.length > 3) {
+        lowerer.context.fail(
+            call,
+            fill
+                ? "TypedArray.fill expects one to three arguments."
+                : "TypedArray.copyWithin expects two or three arguments.",
+        );
+    }
+    lowerer.context.reachJsData();
+    const first = lowerer.context.compileNumber(argumentAt(call, 0), "double");
+    if (fill && call.arguments.length === 1)
+        return `bbl::js::array_fill(${receiver}, ${store(first)})`;
+    // Both endpoints are relative indices and an omitted end is the length,
+    // exactly as `slice` resolves its own pair.
+    const [start, end] = relativeRangeArguments(lowerer, call, receiver);
+    return fill
+        ? `bbl::js::array_fill_range(${receiver}, ${store(first)}, ${start}, ${end})`
+        : `bbl::js::array_copy_within(${receiver}, ${first}, ${start}, ${end})`;
 }
 
 /** The observing methods a numeric tuple shares with a readonly number array. */
@@ -1181,12 +1215,11 @@ export function compileDataMethodCall(
             ownerExpression,
         );
     } else if (
-        method === "set" &&
-        dynamicOwner?.dataType?.kind === "union" &&
-        dynamicOwner.dataType.members.every(isTypedArrayType)
+        ["set", "fill", "copyWithin"].includes(method) &&
+        isTypedArrayUnion(dynamicOwner?.dataType)
     ) {
         // Reading an evaluated property chain again would repeat its calls.
-        // The set lowerer captures the selected array before its arguments.
+        // Their lowering captures the selected array before its arguments.
         constructedOwner = dynamicOwner;
     }
     // A library method writes its receiver as the analyses classify it, by
@@ -1703,72 +1736,45 @@ function compileKnownDataMethod(
             { kind: "number" },
             method,
         );
-    if (isTypedArrayType(dataType) && method === "fill") {
-        if (call.arguments.length < 1 || call.arguments.length > 3) {
-            lowerer.context.fail(
-                call,
-                "TypedArray.fill expects one to three arguments.",
-            );
-        }
-        lowerer.context.reachJsData();
-        const number = lowerer.context.compileNumber(
-            argumentAt(call, 0),
-            "double",
-        );
-        const stored = typedArrayStoreExpression(dataType.kind, number);
-        if (call.arguments.length === 1) {
-            return {
-                kind: "void",
-                cpp: `bbl::js::array_fill(${narrowed.cpp}, ${stored})`,
-            };
-        }
-        // `fill(value, start[, end])`: both endpoints are relative
-        // indices and an omitted end is the length, exactly as `slice`
-        // resolves its own pair.
-        const [start, end] = relativeRangeArguments(
-            lowerer,
-            call,
-            narrowed.cpp,
-        );
+    if (
+        isTypedArrayType(dataType) &&
+        (method === "fill" || method === "copyWithin")
+    ) {
+        const { kind } = dataType;
         return {
             kind: "void",
-            cpp:
-                `bbl::js::array_fill_range(${narrowed.cpp}, ` +
-                `${stored}, ${start}, ${end})`,
+            cpp: typedArrayRangeWrite(
+                lowerer,
+                call,
+                method,
+                narrowed.cpp,
+                (value) => typedArrayStoreExpression(kind, value),
+            ),
         };
     }
-    if (isTypedArrayType(dataType) && method === "copyWithin") {
-        if (call.arguments.length < 2 || call.arguments.length > 3) {
-            lowerer.context.fail(
-                call,
-                "TypedArray.copyWithin expects two or three arguments.",
-            );
-        }
-        lowerer.context.reachJsData();
-        const target = lowerer.context.compileNumber(
-            argumentAt(call, 0),
-            "double",
-        );
-        const [start, end] = relativeRangeArguments(
+    if (
+        isTypedArrayUnion(dataType) &&
+        (method === "fill" || method === "copyWithin")
+    ) {
+        // The array the union holds is selected before the arguments run.
+        const receiver = captureArrayReceiver(lowerer, narrowed);
+        const write = typedArrayRangeWrite(
             lowerer,
             call,
-            narrowed.cpp,
+            method,
+            "array",
+            (value) =>
+                `bbl::js::numeric_store_value<typename std::decay_t<decltype(array)>::value_type>(${value})`,
         );
         return {
             kind: "void",
-            cpp:
-                `bbl::js::array_copy_within(${narrowed.cpp}, ` +
-                `${target}, ${start}, ${end})`,
+            cpp: `std::visit([&](auto& array) { ${write}; }, ${receiver})`,
         };
     }
     if (isTypedArrayType(dataType) && method === "set") {
         return lowerer.compileTypedArraySet(call, narrowed, dataType.kind);
     }
-    if (
-        dataType?.kind === "union" &&
-        dataType.members.every(isTypedArrayType) &&
-        method === "set"
-    ) {
+    if (isTypedArrayUnion(dataType) && method === "set") {
         return compileTypedArrayUnionSet(lowerer, call, narrowed);
     }
     if (
@@ -1929,9 +1935,7 @@ function compileTypedArrayUnionSet(
             type,
         );
     }
-    const sourceUnion =
-        value.dataType?.kind === "union" &&
-        value.dataType.members.every(isTypedArrayType);
+    const sourceUnion = isTypedArrayUnion(value.dataType);
     const typedSource = isTypedArrayType(value.dataType) || sourceUnion;
     const initializer = typedSource
         ? value.cpp

@@ -5948,14 +5948,6 @@ double atomics_compare_exchange(Values values, double index, double expected, do
     return U8Array(typed_array_length(count));
 }
 
-template <typename Values> [[nodiscard]] inline U8Array u8_array_from(const Values& values) {
-    U8Array result(values.size());
-    for (std::size_t index = 0; index < values.size(); ++index) {
-        result[index] = to_uint8(static_cast<double>(typed_array_load(values, index)));
-    }
-    return result;
-}
-
 [[nodiscard]] inline F32Array f32_array_sized(double count) {
     return F32Array(typed_array_length(count), 0.0f);
 }
@@ -5990,12 +5982,24 @@ template <typename Values> [[nodiscard]] inline U8Array u8_array_from(const Valu
 
 template <typename Output, typename Values, typename Convert>
 [[nodiscard]] inline Output typed_array_from_values(const Values& values, Convert convert) {
-    Output result;
-    result.reserve(values.size());
-    for (std::size_t index = 0; index < values.size(); ++index) {
-        result.push_back(convert(static_cast<double>(typed_array_load(values, index))));
+    if constexpr (std::is_same_v<Output, U8Array>) {
+        U8Array result(values.size());
+        for (std::size_t index = 0; index < values.size(); ++index) {
+            result[index] = convert(static_cast<double>(typed_array_load(values, index)));
+        }
+        return result;
+    } else {
+        Output result;
+        result.reserve(values.size());
+        for (std::size_t index = 0; index < values.size(); ++index) {
+            result.push_back(convert(static_cast<double>(typed_array_load(values, index))));
+        }
+        return result;
     }
-    return result;
+}
+
+template <typename Values> [[nodiscard]] inline U8Array u8_array_from(const Values& values) {
+    return typed_array_from_values<U8Array>(values, to_uint8);
 }
 
 template <typename Values> [[nodiscard]] inline U16Array u16_array_from(const Values& values) {

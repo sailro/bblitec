@@ -6295,6 +6295,39 @@ check(
 );
 
 check(
+    "typed-array-union-writes",
+    `
+    const positions = new Float32Array([1, 2, 3, 4, 5, 6]);
+    const colors = new Uint8Array([10, 20, 30, 40, 50, 60, 70, 80]);
+    const streams: (Float32Array | Uint8Array)[] = [positions, colors];
+    for (const stream of streams) { stream.copyWithin(0, 2, 4); stream.fill(300.5, 4); }
+    if (positions.join() !== "3,4,3,4,300.5,300.5" || colors.join() !== "30,40,30,40,44,44,44,44") throw new Error("fill and copyWithin through an array of typed arrays");
+    const picked: Float32Array | Uint8Array = positions.length > 2 ? positions : colors;
+    picked.fill(7, -1);
+    picked.copyWithin(1, -1);
+    if (positions.join() !== "3,7,3,4,300.5,7") throw new Error("a union binding writes the array it names");
+    const lanes: ReadonlyArray<readonly [Float32Array | Uint8Array, number]> = [[positions, 3], [colors, 4]];
+    let order = "";
+    function index(at: number): number { order += at; return at; }
+    for (const [stream, stride] of lanes) stream.copyWithin(index(0), stride, 2 * stride);
+    if (positions.join() !== "4,300.5,7,4,300.5,7" || colors.join() !== "44,44,44,44,44,44,44,44" || order !== "00") throw new Error("copyWithin through a lane of a pair array");
+    const extra = lanes.length > 1 ? new Float32Array([9, 8]) : null;
+    const all: ReadonlyArray<readonly [Float32Array | Uint8Array, number]> = [
+        [positions, 3], [colors, 4],
+        ...(extra ? [[extra, 1] as const] : []),
+    ];
+    let total = 0;
+    for (const [stream, stride] of all) { stream.set([1, 2], stride - 1); total += stream.length / stride; }
+    if (total !== 6 || positions.join() !== "4,300.5,1,2,300.5,7" || colors[4] !== 2 || extra![0] !== 1) throw new Error("set and length through a lane");
+    function head(stream: Float32Array | Uint8Array): number { return stream[0]!; }
+    let heads = 0;
+    for (const [stream] of lanes) heads += head(stream);
+    for (const pair of lanes) pair[0].fill(pair[1], 0, 1);
+    if (heads !== 48 || positions[0] !== 3 || colors[0] !== 4) throw new Error("a lane passed on and filled through its pair");
+`,
+);
+
+check(
     "typed-array-spreads-and-reverse",
     `
     const floats = new Float32Array([1.5, -2, 3]);

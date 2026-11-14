@@ -4481,13 +4481,22 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 narrowed,
                 expression,
             );
-            return index < 0
+            if (index >= 0)
+                return this.projectedNativeValue(
+                    value,
+                    `std::get<${index}>(${value.cpp})`,
+                    value.dataType.members[index]!,
+                );
+            if (!this.sharesSomeMembers(value.dataType, narrowed)) return value;
+            const members = compileDataValueSink(
+                narrowed,
+                this,
+                value,
+                expression,
+            );
+            return members === undefined
                 ? value
-                : this.projectedNativeValue(
-                      value,
-                      `std::get<${index}>(${value.cpp})`,
-                      value.dataType.members[index]!,
-                  );
+                : this.leafValue(members, narrowed);
         }
         if (value.kind !== "data" || value.dataType?.kind !== "optional") {
             return value;
@@ -4515,11 +4524,12 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                         (["string", "enum"].includes(inner.kind) &&
                             ["string", "enum"].includes(narrowed.kind)))) ||
                     (inner.kind === "union" &&
-                        this.narrowedUnionMemberIndex(
+                        (this.narrowedUnionMemberIndex(
                             inner,
                             narrowed,
                             expression,
-                        ) >= 0) ||
+                        ) >= 0 ||
+                            this.sharesSomeMembers(inner, narrowed))) ||
                     // Array.isArray widens a readonly array to any[]: the
                     // optional array it guarded is present.
                     (expectedType === undefined &&
@@ -4550,6 +4560,30 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             );
         }
         return value;
+    }
+
+    /**
+     * Whether `narrowed` is the union of some of `type`'s members, each one
+     * storage a copy shares (or a scalar): a union slot the checker types as
+     * those members alone (one lane of a tuple array, stored as every lane's
+     * union) reads as their union, the same objects the slot holds.
+     */
+    private sharesSomeMembers(
+        type: DataType<"union">,
+        narrowed: DataType | undefined,
+    ): narrowed is DataType<"union"> {
+        return (
+            narrowed?.kind === "union" &&
+            narrowed.members.length < type.members.length &&
+            narrowed.members.every(
+                (member) =>
+                    (this.sharesObjectStorage(member) ||
+                        isScalarDataType(member)) &&
+                    type.members.some((stored) =>
+                        dataTypesEqual(stored, member),
+                    ),
+            )
+        );
     }
 
     private narrowedUnionMemberIndex(
