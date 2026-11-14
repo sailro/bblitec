@@ -351,6 +351,77 @@ test("runtime img src reads the request a class getter returns", () => {
     assert.ok(!outputs.includes("assets/ui/blue.png"));
 });
 
+test("runtime img src reads one instantiation of a generic class apart from another", () => {
+    // The notes' pictures are whatever the page stores: they are no part of
+    // what a deck of cards holds.
+    const result = compileEntry(`
+        interface Card { name: string; picture: string }
+        class Deck<T> {
+            #shown: T | null = null;
+            get shown(): T | null {
+                return this.#shown;
+            }
+            deal(card: T): T | null {
+                const first = this.#shown === null;
+                this.#shown = card;
+                return first ? card : null;
+            }
+        }
+        function reveal(card: Card): void {
+            const img = document.createElement("img");
+            img.id = card.name;
+            img.src = appUrl(card.picture);
+            document.body.append(img);
+        }
+        const cards = new Deck<Card>();
+        const dealt = cards.deal({ name: "a", picture: "/assets/ui/green.png" });
+        if (dealt) reveal(dealt);
+        cards.deal({ name: "b", picture: "/assets/ui/red.png" });
+        if (cards.shown) reveal(cards.shown);
+        interface Note { text: string; picture?: string }
+        const notes = new Deck<Note>();
+        notes.deal({ text: "n", picture: localStorage.getItem("picture") ?? undefined });
+        console.log(notes.shown?.text ?? "");
+    `);
+    const outputs = result.manifest.assets.map((asset) => asset.output);
+    for (const name of ["red", "green"])
+        assert.ok(outputs.includes(`assets/ui/${name}.png`), name);
+    assert.ok(!outputs.includes("assets/ui/blue.png"));
+    // Two decks of one instantiation may be one deck: their cards are read together.
+    assert.throws(
+        () =>
+            compileEntry(`
+        interface Card { name: string; picture: string }
+        class Deck<T> {
+            #shown: T | null = null;
+            get shown(): T | null {
+                return this.#shown;
+            }
+            deal(card: T): T | null {
+                const first = this.#shown === null;
+                this.#shown = card;
+                return first ? card : null;
+            }
+        }
+        function reveal(card: Card): void {
+            const img = document.createElement("img");
+            img.id = card.name;
+            img.src = appUrl(card.picture);
+            document.body.append(img);
+        }
+        const cards = new Deck<Card>();
+        const dealt = cards.deal({ name: "a", picture: "/assets/ui/green.png" });
+        if (dealt) reveal(dealt);
+        cards.deal({ name: "b", picture: "/assets/ui/red.png" });
+        if (cards.shown) reveal(cards.shown);
+        const more = new Deck<Card>();
+        more.deal({ name: "c", picture: localStorage.getItem("picture") ?? "" });
+        console.log(more.shown?.name ?? "");
+    `),
+        /An img src write requires sources generation can package/,
+    );
+});
+
 test("runtime img src reads the parameters a spread tuple fills", () => {
     const result = compileEntry(`
         type Shade = "red" | "green";

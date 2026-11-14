@@ -1132,6 +1132,77 @@ class StringDomain {
     /** @unjournaled An optional member can produce undefined instead of throwing. */
     private optionalProjection = false;
     /**
+     * @unjournaled The instantiation of the generic class whose member the
+     * read entered through a receiver (`queue.current` on a
+     * `Queue<Card>`): what its fields hold came through that instantiation.
+     */
+    private instance: ts.TypeReference | undefined;
+
+    /** The generic class instantiation an expression's value is, if one. */
+    private instantiationOf(
+        receiver: ts.Expression,
+    ): ts.TypeReference | undefined {
+        const type = this.context.checker.getNonNullableType(
+            this.context.checker.getTypeAtLocation(receiver),
+        );
+        return (type.flags & ts.TypeFlags.Object) !== 0 &&
+            ((type as ts.ObjectType).objectFlags & ts.ObjectFlags.Reference) !==
+                0 &&
+            ((type.symbol?.flags ?? 0) & ts.SymbolFlags.Class) !== 0 &&
+            this.context.checker.getTypeArguments(type as ts.TypeReference)
+                .length > 0
+            ? (type as ts.TypeReference)
+            : undefined;
+    }
+
+    /**
+     * Reads a class member entered through `receiver`: under the receiver's
+     * instantiation where it is a generic class's, under the one in force
+     * where it is `this`.
+     */
+    private throughReceiver<T>(receiver: ts.Expression, read: () => T): T {
+        const entered = unwrapExpression(receiver);
+        if (entered.kind === ts.SyntaxKind.ThisKeyword) return read();
+        const instance = this.instance;
+        this.instance = this.instantiationOf(entered);
+        try {
+            return read();
+        } finally {
+            this.instance = instance;
+        }
+    }
+
+    /**
+     * Whether a call of a generic class's method can write the instance
+     * the read entered: any call where no instance is in force, one made
+     * through `this`, and one whose receiver's instantiation is that one
+     * or is assignable with it either way.
+     */
+    private reachesInstance(owner: ts.Node, call: ts.CallExpression): boolean {
+        const instance = this.instance;
+        if (
+            !instance ||
+            !ts.isMethodDeclaration(owner) ||
+            !ts.isClassLike(owner.parent)
+        )
+            return true;
+        const callee = namedMember(
+            this.context.checker,
+            unwrapExpression(call.expression),
+        );
+        const receiver = callee && unwrapExpression(callee.expression);
+        if (!receiver || receiver.kind === ts.SyntaxKind.ThisKeyword)
+            return true;
+        const other = this.instantiationOf(receiver);
+        return (
+            !other ||
+            other.target !== instance.target ||
+            other === instance ||
+            this.context.checker.isTypeAssignableTo(other, instance) ||
+            this.context.checker.isTypeAssignableTo(instance, other)
+        );
+    }
+    /**
      * @unjournaled Reading an object spread's source: a member it lacks, at
      * any depth of the path, is one the spread never writes.
      */
@@ -1254,6 +1325,9 @@ class StringDomain {
                 this.truthy.size,
                 this.optionalProjection,
                 this.operations,
+                this.instance
+                    ? this.context.checker.typeToString(this.instance)
+                    : "",
             ].join("\u0001"),
             environment,
         };
@@ -1708,8 +1782,13 @@ class StringDomain {
             if (neverRuns(this.graph, owner)) return nothing;
             // Calls through a value it escaped as are unseen.
             if (this.graph.escaped.has(owner)) return undefined;
+            // A generic class's method writes the instance the read
+            // entered only through that instantiation.
+            const calls = (this.graph.calls.get(owner) ?? []).filter((call) =>
+                this.reachesInstance(owner, call),
+            );
             return this.union(
-                (this.graph.calls.get(owner) ?? []).map((call) => () => {
+                calls.map((call) => () => {
                     const input = parameterInput(
                         this.context.checker,
                         call,
@@ -1752,7 +1831,9 @@ class StringDomain {
                 node.name,
             )?.declarations?.find(ts.isGetAccessorDeclaration);
             if (getter?.body)
-                return this.returned(getter, projection, environment);
+                return this.throughReceiver(node.expression, () =>
+                    this.returned(getter, projection, environment),
+                );
             const domain = this.read(
                 node.expression,
                 [node.name.text, ...projection],
@@ -2110,8 +2191,21 @@ class StringDomain {
         environment: Environment,
     ): Domain {
         const declaration = calledFunction(this.context.checker, call);
-        if (declaration?.body)
-            return this.invoked(declaration, call, projection, environment);
+        if (declaration?.body) {
+            const entered =
+                ts.isMethodDeclaration(declaration) &&
+                ts.isClassLike(declaration.parent)
+                    ? namedMember(
+                          this.context.checker,
+                          unwrapExpression(call.expression),
+                      )
+                    : undefined;
+            const invoked = (): Domain =>
+                this.invoked(declaration, call, projection, environment);
+            return entered
+                ? this.throughReceiver(entered.expression, invoked)
+                : invoked();
+        }
         const callee = namedMember(
             this.context.checker,
             unwrapExpression(call.expression),
