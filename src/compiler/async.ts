@@ -2158,7 +2158,8 @@ export class AsyncLowerer {
         if (
             value.kind === "void" ||
             value.kind === "physics-engine-module" ||
-            value.kind === "browser"
+            value.kind === "browser" ||
+            absenceOf(value) === "undefined"
         )
             return "bbl::js::PromiseVoid";
         if (value.kind === "tuple")
@@ -2188,10 +2189,7 @@ export class AsyncLowerer {
     ): Value {
         // An erased browser value has no run-time state: it settles to
         // itself, as an aggregate's `undefined` lane does.
-        if (
-            source.kind === "browser" ||
-            (source.kind === "json-null" && absenceOf(source) === "undefined")
-        )
+        if (source.kind === "browser" || absenceOf(source) === "undefined")
             return source;
         const { ownedCpp, ...value } = source;
         if (value.dataType?.kind === "handle" && value.dataType.ownedEngine) {
@@ -2993,7 +2991,11 @@ export class AsyncLowerer {
     }
     private resultCpp(value: Value, node: ts.Node): string {
         this.context.dataLowerer.markEscaped(value);
-        if (value.kind === "physics-engine-module" || value.kind === "browser")
+        if (
+            value.kind === "physics-engine-module" ||
+            value.kind === "browser" ||
+            absenceOf(value) === "undefined"
+        )
             return "bbl::js::PromiseVoid{}";
         if (
             value.kind === "string" &&
