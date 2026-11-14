@@ -99,6 +99,11 @@ function unionValue(
         records.length === 1
     )
         memberIndex = type.members.indexOf(records[0]!);
+    // An array stored as the union's one array type converts through the
+    // array sink, which decides how its elements are stored as that type's.
+    const arrays = type.members.filter((member) => member.kind === "vector");
+    if (memberIndex < 0 && source?.kind === "vector" && arrays.length === 1)
+        memberIndex = type.members.indexOf(arrays[0]!);
     // A parsed value never holds a native handle or function: beside those
     // members it is the union's one scalar member, converted as it is read.
     if (memberIndex < 0 && isJsonValue(value)) {

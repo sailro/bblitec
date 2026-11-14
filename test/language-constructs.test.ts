@@ -15310,6 +15310,39 @@ check(
 `,
 );
 
+check(
+    "arrays-stored-as-a-union's-array-member",
+    `
+    // An array of records of another type (a map's or flatMap's results, a
+    // function's) is stored as the union's one array member, its elements
+    // as that member's.
+    interface Ignore { readonly name: string; readonly instance?: number; readonly range?: { readonly start: number; readonly count: number } }
+    type Resolver = (key: string) => Ignore | Ignore[] | null;
+    const resolvers: Resolver[] = [];
+    const names = ["a", "b", "c"];
+    function describe(result: Ignore | Ignore[] | null): string {
+        if (result === null) return "null";
+        if (Array.isArray(result))
+            return "[" + result.map((entry) => entry.name + ":" + (entry.instance ?? "-") + ":" + (entry.range ? entry.range.start + "+" + entry.range.count : "-")).join() + "]";
+        return result.name + ":" + (result.instance ?? "-");
+    }
+    resolvers.push((key) => {
+        if (key === "none") return null;
+        return names.flatMap((name) => name >= key ? [{ name, range: { start: 1, count: 2 } }] : []);
+    });
+    resolvers.push((key) => names.map((name) => ({ name, instance: key.length })));
+    const lookup = (key: string): { name: string }[] | undefined => key === "b" ? [{ name: key }] : undefined;
+    resolvers.push((key) => lookup(key) ?? []);
+    resolvers.push((key) => key === "x" ? null : { name: key, instance: 2 });
+    function pick(key: string): Ignore | Ignore[] | null {
+        const found = names.map((name) => ({ name, instance: key.length }));
+        return found;
+    }
+    const seen = resolvers.map((resolve) => describe(resolve("b"))).join(";") + ";" + describe(resolvers[0]!("none")) + ";" + describe(pick("zz"));
+    if (seen !== "[b:-:1+2,c:-:1+2];[a:1:-,b:1:-,c:1:-];[b:-:-];b:2;null;[a:2:-,b:2:-,c:2:-]") throw new Error(seen);
+`,
+);
+
 checkInRealm(
     "later-bindings-read-from-nested-levels-across-awaits",
     `
