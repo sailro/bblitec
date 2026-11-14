@@ -15357,6 +15357,33 @@ check(
 );
 
 check(
+    "function-slots-declared-with-a-stub-returning-undefined",
+    `
+    // A slot whose first function always returns undefined takes functions
+    // that return values later: a call reads what the stored one returns.
+    interface Footprint { w: number; d: number }
+    const cache = new Map<number, { fp: Footprint; floorY: number }>();
+    let fpOf = (_seq: number): Footprint | undefined => undefined;
+    let floorOf = (_seq: number): number | undefined => undefined;
+    let bottomOf = (_seq: number): number | null | undefined => undefined;
+    function bottom(entry: { fp: Footprint; floorY: number } | undefined): number | null | undefined { return entry ? entry.floorY - 1 : null; }
+    function describe(seq: number): string {
+        const fp = fpOf(seq);
+        return (fp ? fp.w + "x" + fp.d : "none") + "@" + floorOf(seq) + "/" + bottomOf(seq);
+    }
+    const before = describe(1);
+    if (cache.size === 0) {
+        cache.set(1, { fp: { w: 2, d: 3 }, floorY: 4 });
+        fpOf = (seq: number): Footprint | undefined => cache.get(seq)?.fp;
+        floorOf = (seq: number): number | undefined => cache.get(seq)?.floorY;
+        bottomOf = seq => bottom(cache.get(seq));
+    }
+    const seen = [before, describe(1), describe(2)].join("|");
+    if (seen !== "none@undefined/undefined|2x3@4/3|none@undefined/null") throw new Error(seen);
+`,
+);
+
+check(
     "void-results-returned-from-void-bodies",
     `
     // \`return work()\` in a body whose result is void runs the call and

@@ -5715,11 +5715,13 @@ export class UserFunctionLowerer {
             !hasProvenUndefinedCompletion(context, declaration, {
                 requireFieldProofs: true,
             })
-        )
+        ) {
+            context.dataTypes.withdrawCompletion(dataType);
             context.fail(
                 expression,
                 "A stored callback requires a proven undefined completion.",
             );
+        }
         if (
             dataType.awaitedUndefinedCompletion &&
             !hasProvenUndefinedCompletion(context, declaration, {
