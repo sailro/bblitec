@@ -15357,6 +15357,30 @@ check(
 );
 
 check(
+    "destructured-tuples-stored-as-number-arrays",
+    `
+    // A tuple a parameter pattern reads from a record, stored where a
+    // union's layout keeps a number array, is the record's own array: its
+    // property takes growable storage, as for a member read of it.
+    type Hit = { kind: "bridge"; span: number; point: [number, number] } | { kind: "tower"; index: number; point: [number, number, number] };
+    interface MeshHit { id: number; point: [number, number, number] }
+    const resolvers: ((hit: MeshHit) => Hit | null)[] = [];
+    resolvers.push(({ id, point }) => id > 0 ? { kind: "tower", index: id, point } : null);
+    resolvers.push(({ id, point: [x, y] }) => id === 0 ? { kind: "bridge", span: x + y, point: [x, y] } : null);
+    const hits: MeshHit[] = [{ id: 1, point: [1, 2, 3] }, { id: 0, point: [4, 5, 6] }];
+    const seen: string[] = [];
+    for (const hit of hits) for (const resolve of resolvers) {
+        const found = resolve(hit);
+        if (!found) { seen.push("none"); continue; }
+        // A write through the stored array is read through the hit's.
+        found.point[0] = 9;
+        seen.push(found.kind + ":" + found.point.join(",") + ":" + hit.point.join(",") + ":" + (found.kind === "tower" && found.point === hit.point));
+    }
+    if (seen.join("|") !== "tower:9,2,3:9,2,3:true|none|none|bridge:9,5:4,5,6:false") throw new Error(seen.join("|"));
+`,
+);
+
+check(
     "function-slots-declared-with-a-stub-returning-undefined",
     `
     // A slot whose first function always returns undefined takes functions

@@ -6144,6 +6144,9 @@ export class DeclarationLowerer {
                     cppName,
                     field.type,
                 );
+                // The slot's own declarations, as a member read of it carries.
+                if (field.declarations && !field.accessor)
+                    writable(fieldValue).slotDeclarations = field.declarations;
                 const staticField = field.accessor
                     ? undefined
                     : value.recordProperties?.[property];
