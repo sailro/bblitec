@@ -15365,6 +15365,31 @@ check(
 );
 
 checkInRealm(
+    "optional-promise-reactions",
+    `
+    // A reaction on a promise that may be absent runs on the present one;
+    // an absent receiver evaluates none of its arguments.
+    let seen = "";
+    let evaluated = 0;
+    setTimeout(() => {
+        if (seen.split("").sort().join("") !== "1cf") throw new Error("seen " + seen);
+        if (evaluated !== 1) throw new Error("arguments evaluated " + evaluated);
+        globalThis.close();
+    }, 5);
+    async function load(n: number): Promise<number> { if (n > 1) throw new Error("big"); return n; }
+    function kick(n: number): Promise<number> | undefined { return n > 0 ? load(n) : undefined; }
+    function maybe(n: number): Promise<number> | null { return n > 0 ? load(n) : null; }
+    const recovery = (): (() => void) => { evaluated++; return () => { seen += "c"; }; };
+    for (const n of [2, 0]) { const p = kick(n); void p?.catch(recovery()); }
+    for (const n of [1, 0]) { const p = maybe(n); p?.then((value) => { seen += String(value); }); }
+    let pending: Promise<number> | undefined;
+    pending?.finally(() => { seen += "never"; });
+    pending = load(1);
+    void pending?.finally(() => { seen += "f"; });
+`,
+);
+
+checkInRealm(
     "later-bindings-read-from-nested-levels-across-awaits",
     `
     // The storage declared ahead of an awaiting statement lives across the

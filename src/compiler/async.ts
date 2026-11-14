@@ -282,6 +282,9 @@ export class AsyncLowerer {
         return temporary;
     }
 
+    /** @unjournaled The present promise an optional reaction's receiver holds, while that reaction lowers on it. */
+    private readonly presentReceivers = new Map<ts.Expression, Value>();
+
     compile(expression: ts.Expression): Value | undefined {
         const context = this.context;
         // unwrap intentionally removes awaits for the existing immediate path;
@@ -417,16 +420,46 @@ export class AsyncLowerer {
             ? undefined
             : optionalPromiseReactionOf(callee, context.checker);
         const present = optional
-            ? context.probeEmission(
+            ? (this.presentReceivers.get(optional.expression) ??
+              context.probeEmission(
                   () => context.compileValue(optional.expression),
                   (value) => value.kind === "promise",
-              )
+              ))
             : undefined;
-        if (present && present.kind !== "promise")
+        if (optional && present && present.kind !== "promise") {
+            // A receiver that may be absent at run time: the reaction runs
+            // on the present promise, its callbacks unevaluated otherwise.
+            // A discarded chain is then all there is.
+            if (
+                present.kind === "data" &&
+                present.dataType?.kind === "optional" &&
+                present.dataType.inner.kind === "promise" &&
+                !isPromiseResultUsed(node)
+            ) {
+                const settled = context.dataLowerer.optionalAccess(
+                    context.compileValue(optional.expression),
+                    node,
+                    (owner) => {
+                        this.presentReceivers.set(
+                            optional.expression,
+                            this.asPromise(owner, node),
+                        );
+                        try {
+                            const reaction = this.compile(expression);
+                            if (reaction) context.emitDiscardedValue(reaction);
+                            return { kind: "void", cpp: "" };
+                        } finally {
+                            this.presentReceivers.delete(optional.expression);
+                        }
+                    },
+                );
+                if (settled) return settled;
+            }
             return context.fail(
                 callee,
                 "An optional promise reaction requires a receiver generation proves present.",
             );
+        }
         const reaction = direct ?? optional;
         if (reaction) {
             // A reaction the checker types undefined, null or void
