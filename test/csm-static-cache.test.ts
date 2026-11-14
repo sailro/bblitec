@@ -396,3 +396,86 @@ ${checked}`,
         { timeoutMs: 10000, expectedOutput: "" },
     );
 });
+
+/** The follow a scene binds to a generator: it forces the refresh while a deformation is live. */
+const refreshFollow = `interface RefreshTarget{_config?:{_forceRefreshEveryFrame?:boolean}|undefined}
+function follow(shadow:RefreshTarget|null|undefined){
+    const config=shadow?._config;
+    if(shadow!=null&&typeof config?._forceRefreshEveryFrame!=="boolean")throw new TypeError("no flag");
+    const authored=config?._forceRefreshEveryFrame===true;
+    let held=false;
+    return {step(deforming:boolean){held=deforming;if(config)config._forceRefreshEveryFrame=authored||held;},following:()=>held};
+}`;
+
+test("a scene reads and writes a generator's refresh flag through its configuration", (t) => {
+    const source = (
+        last: boolean,
+    ): string => `import {createEngine,createSceneContext,addToScene,createDirectionalLight,
+createCsmDirectionalShadowGenerator} from "@babylonjs/lite";
+${refreshFollow}
+async function main(){
+    const engine=await createEngine({});
+    const scene=createSceneContext(engine);
+    const light=createDirectionalLight([0,-1,-1],1);
+    addToScene(scene,light);
+    const sg=createCsmDirectionalShadowGenerator(engine,light,{mapSize:256,numCascades:2,lambda:0.5,
+        cascadeBlendPercentage:0.1,stabilizeCascades:false,bias:0.001,darkness:0.1,frustumEdgeFalloff:0.2});
+    const followed=follow(sg);
+    followed.step(true);
+    followed.step(false);
+    followed.step(${last});
+}
+main();
+`;
+    const { cpp } = compileSource(source(true));
+    // `_config` is the generator's own record: the flag is read and
+    // written where every family's render gate reads it, and a present
+    // generator's flag is a boolean, so the scene's guard folds away.
+    assert.match(
+        cpp,
+        /const bool \w+ = bbl::handle_at\(v_engine\.shadow_generators, \w+\)\.force_refresh_every_frame;/,
+    );
+    assert.match(
+        cpp,
+        /bbl::handle_at\(v_engine\.shadow_generators, \w+\)\.force_refresh_every_frame = \(\w+ \|\| \(\*\w+\)\);/,
+    );
+    assert.doesNotMatch(cpp, /no flag/);
+    const native = optionalNativeFixtureTools(false);
+    if (!native) {
+        t.skip("Native fixture compiler unavailable.");
+        return;
+    }
+    for (const last of [true, false]) {
+        // The fixture names every option, so the pinned defaults are unread.
+        const checked = compileSource(source(last))
+            .cpp.replace("#include <bblite/upstream/pinned_shadow.hpp>", "")
+            .replace(
+                "        return 0;",
+                `        assert(bbl::handle_at(v_engine.shadow_generators, v_sg).force_refresh_every_frame == ${last});
+        return 0;`,
+            );
+        assert.ok(checked.includes("force_refresh_every_frame == "));
+        runGeneratedProgram(
+            native,
+            `shadow-refresh-flag-${last}`,
+            `#include <bblite/runtime.hpp>
+#include <cassert>
+namespace bbl {
+Engine create_engine(EngineOptions) { return {}; }
+Scene create_scene_context(Engine& engine) { Scene scene; scene.engine = &engine; return scene; }
+LightHandle create_directional_light(Engine& engine, Vec3, double) {
+    engine.lights.emplace_back();
+    return LightHandle{static_cast<std::uint32_t>(engine.lights.size() - 1)};
+}
+void add_to_scene(Scene& scene, LightHandle light) { scene.lights.push_back(light); }
+ShadowGeneratorHandle create_csm_directional_shadow_generator(Engine& engine, LightHandle, CsmDirectionalShadowOptions) {
+    engine.shadow_generators.emplace_back();
+    engine.shadow_generators.back().filter = ShadowFilter::csm_directional;
+    return ShadowGeneratorHandle{static_cast<std::uint32_t>(engine.shadow_generators.size() - 1)};
+}
+}
+${checked}`,
+            { timeoutMs: 10000, expectedOutput: "" },
+        );
+    }
+});

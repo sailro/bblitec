@@ -1984,6 +1984,9 @@ export type ValueKind =
     // and meshes it joins is generation's to resolve, since the composed
     // receiver fragment is keyed by the scene's shadow-light slots.
     | "shadow-generator"
+    // `ShadowGenerator._config`: the generator again, read as the record of
+    // its configuration.
+    | "shadow-generator-config"
     // The opt-in bone-control pair: a `Skeleton` the loader built per glTF
     // skin instance, and one `Bone` of it. Both are native handles because
     // the bones and their overrides live on records the loader fills, and

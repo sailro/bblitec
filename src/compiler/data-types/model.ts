@@ -65,6 +65,7 @@ export type HandleKind =
     | "clustered-light"
     | "clustered-light-container"
     | "shadow-generator"
+    | "shadow-generator-config"
     | "hierarchy-instance-pool"
     | "thin-instance-pool"
     | "storage-buffer"

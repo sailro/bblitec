@@ -413,6 +413,7 @@ InvalidStateError), moving its playback into the graph. Other members and attrib
 - PCF spot/directional, ESM directional, CSM. Thin-instance contracts refuse.
 - Shadow generators and caster lists can be prepared without scene scheduling; `registerSceneWithShadowSupport`
   activates shadow passes. Registered empty caster lists clear the shadow map.
+- `generator._config._forceRefreshEveryFrame` reads and writes the flag the render gate tests each frame.
 - `enableCsmStaticCache` (awaited, before registration): static casters render into a cache texture, copied per layer
   into the map before dynamic casters draw; refit gate, per-frame cascade budget and coverage refit
   (`cascadeCoveragePadding`) as pinned.

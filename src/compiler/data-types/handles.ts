@@ -74,6 +74,8 @@ const handleCppTypes: Record<HandleKind, string> = {
     "clustered-light": "bbl::ClusteredLightHandle",
     "clustered-light-container": "bbl::ClusteredLightContainerHandle",
     "shadow-generator": "bbl::ShadowGeneratorHandle",
+    // The generator's `_config` is the generator's own record.
+    "shadow-generator-config": "bbl::ShadowGeneratorHandle",
     "hierarchy-instance-pool": "bbl::HierarchyInstancePoolHandle",
     "thin-instance-pool": "std::shared_ptr<bbl::ThinInstancePoolData>",
     "storage-buffer": "bbl::StorageBufferHandle",
@@ -153,6 +155,7 @@ const engineScopedHandleKinds = new Set<HandleKind>([
     "bone",
     "splat-mesh",
     "shadow-generator",
+    "shadow-generator-config",
     "utility-layer",
     "pointer-drag",
     "ui-element",
