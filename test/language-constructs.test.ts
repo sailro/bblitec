@@ -15132,6 +15132,217 @@ check(
 );
 
 check(
+    "later-bindings-read-from-nested-levels",
+    `
+    interface Follow { settled(): void; count(): number }
+    function createFollow(step: number): Follow { let n = 0; return { settled: () => { n += step; }, count: () => n }; }
+    // A closure built in a nested block reads a binding the enclosing block
+    // declares later: the binding's storage exists ahead of the block.
+    function nestedBlock(active: boolean): number {
+        const handlers: (() => void)[] = [];
+        if (active) {
+            const finish = (): void => { casters.settled(); };
+            handlers.push(finish);
+        }
+        const casters = createFollow(2);
+        for (const handler of handlers) handler();
+        return casters.count();
+    }
+    if (nestedBlock(true) !== 2 || nestedBlock(false) !== 0) throw new Error("nested block");
+    function nestedNumber(active: boolean): number {
+        const handlers: (() => void)[] = [];
+        let total = 0;
+        if (active) {
+            const finish = (): void => { total += limit; };
+            handlers.push(finish);
+        }
+        const limit = handlers.length + 4;
+        for (const handler of handlers) handler();
+        return total;
+    }
+    if (nestedNumber(true) !== 5 || nestedNumber(false) !== 0) throw new Error("nested number");
+    function twoLevels(active: boolean): number {
+        const handlers: (() => void)[] = [];
+        if (active) {
+            for (let i = 0; i < 2; i++) {
+                const finish = (): void => { casters.settled(); };
+                handlers.push(finish);
+            }
+        }
+        const casters = createFollow(2);
+        for (const handler of handlers) handler();
+        return casters.count();
+    }
+    if (twoLevels(true) !== 4) throw new Error("two levels");
+    function reassigned(active: boolean): number {
+        let finish = (): void => {};
+        if (active) {
+            finish = (): void => { casters.settled(); };
+        }
+        const casters = createFollow(3);
+        finish();
+        return casters.count();
+    }
+    if (reassigned(true) !== 3 || reassigned(false) !== 0) throw new Error("reassigned");
+    // Two later bindings, one a pattern's name, read by one nested closure.
+    function several(active: boolean): string {
+        const handlers: (() => string)[] = [];
+        if (active) {
+            handlers.push(() => label + ":" + radius + ":" + casters.count());
+        }
+        const casters = createFollow(1);
+        const { radius } = { radius: 7 };
+        const label = "ring" + handlers.length;
+        casters.settled();
+        return handlers.map((handler) => handler()).join();
+    }
+    if (several(true) !== "ring1:7:1") throw new Error("several " + several(true));
+    // Its temporal dead zone holds: a read before the declaration throws.
+    function early(): string {
+        const handlers: (() => number)[] = [];
+        {
+            handlers.push(() => limit + 1);
+        }
+        let outcome = "";
+        try {
+            handlers[0]!();
+            outcome = "read";
+        } catch {
+            outcome = "threw";
+        }
+        const limit = 4;
+        return outcome + ":" + handlers[0]!();
+    }
+    if (early() !== "threw:5") throw new Error("temporal dead zone " + early());
+    // A closure handed to a function reads bindings its caller's block
+    // declares later, from that function's own nested block.
+    interface World { night(): number; drop(): void }
+    interface Options { onDrop: () => void; label: string }
+    const registry: (() => void)[] = [];
+    function makeCounter(): { bump(): void; read(): number } { let n = 0; return { bump: () => { n++; }, read: () => n }; }
+    function buildWorld(options: Options): World {
+        const counter = makeCounter();
+        registry.push(() => options.onDrop());
+        if (options.label.length > 0) {
+            const drop = (): void => { options.onDrop(); counter.bump(); };
+            registry.push(drop);
+        }
+        return { night: () => counter.read(), drop: () => { for (const entry of registry) entry(); } };
+    }
+    function main(): string {
+        const world = buildWorld({ onDrop: () => { dropped.push(tag); }, label: "w" });
+        const follow = (): number => world.night() + dropped.length;
+        const dropped: string[] = [];
+        const tag = "t" + registry.length;
+        world.drop();
+        return follow() + ":" + dropped.join();
+    }
+    if (main() !== "3:t2,t2") throw new Error("handed closure " + main());
+    // Each lowering of the function's block declares its own storage.
+    function twice(apply: (v: number) => number): number {
+        const handlers: (() => number)[] = [];
+        {
+            handlers.push(() => apply(base));
+        }
+        const base = handlers.length + 1;
+        return handlers[0]!();
+    }
+    if (twice((v) => v * 2) !== 4 || twice((v) => v + 5) !== 7) throw new Error("two lowerings");
+    // A closure built by a closure of a nested block, and a function of the
+    // block called from one, read the later binding all the same.
+    function layered(active: boolean): number {
+        const handlers: (() => () => number)[] = [];
+        const register = (): void => {
+            if (active) handlers.push(() => () => scale * 2);
+        };
+        if (active) {
+            handlers.push(() => () => scale + 1);
+            register();
+        }
+        const scale = handlers.length * 10;
+        let total = 0;
+        for (const handler of handlers) total += handler()();
+        return total;
+    }
+    if (layered(true) !== 61 || layered(false) !== 0) throw new Error("layered " + layered(true));
+    // Each iteration of a loop body declares its own storage.
+    function perIteration(): string {
+        const reads: (() => number)[] = [];
+        for (let i = 0; i < 3; i++) {
+            if (i !== 1) {
+                reads.push(() => squared + i);
+            }
+            const squared = i * i;
+        }
+        return reads.map((read) => read()).join();
+    }
+    if (perIteration() !== "0,6") throw new Error("per iteration " + perIteration());
+    // The block that declares it later is a loop's body or a plain block,
+    // the closure at its level or nested in it.
+    function loops(count: number): string {
+        const reads: (() => number)[] = [];
+        for (let i = 0; i < count; i++) {
+            reads.push(() => squared + i);
+            const squared = i * i;
+        }
+        for (const i of [5, 6]) {
+            if (i !== 5) {
+                reads.push(() => doubled - i);
+            }
+            const doubled = i * 2;
+        }
+        let k = 0;
+        while (k < 2) {
+            const step = k;
+            {
+                reads.push(() => cubed + step);
+            }
+            const cubed = step * step * step;
+            k++;
+        }
+        {
+            reads.push(() => last * 10);
+            const last = reads.length;
+        }
+        return reads.map((read) => read()).join();
+    }
+    if (loops(Number("3")) !== "0,2,6,6,0,2,70") throw new Error("loops " + loops(Number("3")));
+`,
+);
+
+checkInRealm(
+    "later-bindings-read-from-nested-levels-across-awaits",
+    `
+    // The storage declared ahead of an awaiting statement lives across the
+    // await: closures built before it read the binding declared after it.
+    const reads: (() => string)[] = [];
+    async function loaded(text: string): Promise<string> {
+        await Promise.resolve();
+        return text + "!";
+    }
+    async function start(active: boolean): Promise<string> {
+        if (active) {
+            reads.push(() => label + ":" + sizes.length);
+        }
+        const first = await loaded("a");
+        for (const part of ["x", "y"]) {
+            if (part !== "x") {
+                reads.push(() => suffix + part);
+            }
+            const suffix = await loaded(part);
+        }
+        const label = first + (await loaded("b"));
+        const sizes = [label.length];
+        return reads.map((read) => read()).join();
+    }
+    void start(true).then((seen) => {
+        if (seen !== "a!b!:1,y!y") throw new Error("across awaits " + seen);
+        globalThis.close();
+    });
+`,
+);
+
+check(
     "shared-body-record-argument-members",
     `
     // A shared body specialized on a static key and a record argument reads

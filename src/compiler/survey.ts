@@ -170,6 +170,10 @@ interface StatementContext {
     transaction(work: () => void): void;
     refusedDemand(error: unknown): CompileError | undefined;
     bindEmptyStorage(name: ts.Identifier): void;
+    readonly callbacks: Pick<
+        import("./callbacks.js").CallbackLowerer,
+        "forwardBindingMissed" | "hoistMissedBinding"
+    >;
 }
 
 /** A refusal while it is being counted: the statements it rolled back, by node. */
@@ -1081,11 +1085,24 @@ export class SurveyCollector {
         try {
             for (;;) {
                 let met: unknown;
+                const begun = this.bodiesBegun();
                 try {
                     context.transaction(lower);
                     return;
                 } catch (error) {
                     met = error;
+                }
+                // A read of a binding its block declares later: the binding
+                // takes storage ahead of the statement that block stands
+                // at, and this statement lowers again, with the bodies its
+                // withdrawn lowering began. From scopes of its own (a
+                // function's body) an enclosing statement does.
+                const missed = context.callbacks.forwardBindingMissed(met);
+                if (missed) {
+                    if (!context.callbacks.hoistMissedBinding(missed))
+                        throw met;
+                    this.withdrawBodies(begun);
+                    continue;
                 }
                 // A demand its replay refused is the statement's refusal; a
                 // storage demand applies at once and the statement lowers
@@ -1151,6 +1168,31 @@ export class SurveyCollector {
             this.lowerHeld(context, attempt, statement, lowerNested);
     }
 
+    /** Storage lowering reads changed: what a probe refused before may lower now. */
+    public storageChanged(): void {
+        if (this.current) this.current.speculative = noSpeculativeRefusals();
+    }
+
+    /** How many bodies this attempt began lowering: a mark for `withdrawBodies`. */
+    public bodiesBegun(): number {
+        return this.current?.lowered.size ?? 0;
+    }
+
+    /**
+     * Forgets the bodies begun since `mark`: the statement that reached
+     * them was withdrawn and lowers again, their bodies with it.
+     */
+    public withdrawBodies(mark: number): void {
+        const attempt = this.current;
+        if (!attempt) return;
+        let index = 0;
+        for (const body of attempt.lowered)
+            if (index++ >= mark) {
+                attempt.lowered.delete(body);
+                attempt.unfinished.delete(body);
+            }
+    }
+
     /**
      * What applying `met` did: true when the storage took a new demand,
      * "held" when it already held one this attempt never took, the refusal
@@ -1172,8 +1214,7 @@ export class SurveyCollector {
         }
         attempt.taken.add(key);
         attempt.fresh.add(key);
-        // What a probe refused before may lower with the demand.
-        attempt.speculative = noSpeculativeRefusals();
+        this.storageChanged();
         return true;
     }
 

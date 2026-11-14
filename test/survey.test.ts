@@ -343,6 +343,38 @@ test("a refused value return is the calling statement's refusal", () => {
     });
 });
 
+test("a later binding a nested block's closure reads is no refusal of a survey", () => {
+    // The closures read `casters` and `limit` ahead of their declarations:
+    // the `if` statement starts over with their storage ahead of it, and
+    // the one refusal left is the constructor's.
+    const { report } = surveySource(
+        `
+        interface Follow { settled(): void; count(): number }
+        function createFollow(step: number): Follow { let n = 0; return { settled: () => { n += step; }, count: () => n }; }
+        function build(active: boolean): number {
+            const handlers: (() => void)[] = [];
+            let total = 0;
+            if (active) {
+                handlers.push(() => { casters.settled(); total += limit; });
+                handlers.push(() => { total += new FinalizationRegistry(() => {}) ? 1 : 0; });
+            }
+            const casters = createFollow(2);
+            const limit = 3;
+            for (const handler of handlers) handler();
+            return casters.count() + total;
+        }
+        localStorage.setItem("total", String(build(true)));
+    `,
+        { fileName: resolve("survey-forward.ts") },
+    );
+    assert.equal(report.complete, true);
+    assert.deepEqual(
+        report.refusals.map((refusal) => refusal.site.line),
+        [9],
+        listed(report),
+    );
+});
+
 test("a refused declaration keeps its binding, so later statements lower against it", () => {
     // The initializer refuses at its own statement; the store reads the
     // binding kept with empty storage of its type instead of cascading.

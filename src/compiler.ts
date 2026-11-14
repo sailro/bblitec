@@ -27,6 +27,7 @@ import {
 } from "./compiler/data-types/handles.js";
 import {
     forEachAnalysisNode,
+    precedesForwardRead,
     someAnalysisNode,
     sourceFileNodes,
     sourceFilesWalk,
@@ -2174,18 +2175,107 @@ class Compiler implements LoweringServices {
         this.emissionSource =
             statement.getSourceFile()?.fileName ?? previousSource;
         this.statementDependencies.push(new EmissionSet());
-        this.loweringStatements.push({
-            statement,
-            scopeDepth: this.bindings.variableScopes.length,
-            emissionScope: this.activeEmissionScope,
-            indentLevel: this.indentLevel,
-        });
         try {
-            this.statements.emit(this, statement);
+            this.standingAt(statement, false, () =>
+                this.statements.emit(this, statement),
+            );
         } finally {
-            this.loweringStatements.pop();
             this.popDependencies(this.statementDependencies);
             this.emissionSource = previousSource;
+        }
+    }
+
+    /**
+     * Lowers a statement of a block nested in a statement (`lower`), which
+     * stands as the one that block is lowering; one `emitStatement` stands
+     * at already lowers as it is.
+     */
+    public lowerNestedStatement(
+        statement: ts.Statement,
+        lower: () => void,
+    ): void {
+        if (this.loweringStatements.at(-1)?.statement === statement) lower();
+        else this.standingAt(statement, true, lower);
+    }
+
+    /**
+     * Runs `lower` with `statement` standing as the one its block is
+     * lowering, then places the lines declared ahead of it.
+     */
+    private standingAt(
+        statement: ts.Statement,
+        nested: boolean,
+        lower: () => void,
+    ): void {
+        const hoistsForward = precedesForwardRead(statement);
+        const entry: LoweringStatement = {
+            statement,
+            nested,
+            scopeDepth: this.bindings.variableScopes.length,
+            scope: this.bindings.variableScopes.at(-1)!,
+            emissionScope: this.activeEmissionScope,
+            indentLevel: this.indentLevel,
+            block: this.emissionBlocks.at(-1)!,
+            blockDepth: this.emissionBlocks.length,
+            bodyStart: this.body.length,
+            aheadSequence: hoistsForward ? ++this.nextNativeBindingSequence : 0,
+            continuationSequence: this.engineLifecycle.continuationSequence,
+            hoistsForward,
+        };
+        this.loweringStatements.push(entry);
+        if (hoistsForward) this.forwardOwners++;
+        try {
+            lower();
+            const ahead = this.aheadLines.get(entry);
+            if (ahead) {
+                this.aheadLines.delete(entry);
+                this.body.splice(entry.bodyStart, 0, ...ahead);
+            }
+        } finally {
+            if (hoistsForward) this.forwardOwners--;
+            this.loweringStatements.pop();
+        }
+    }
+
+    /** How many statements being lowered precede a later binding of their block (`hoistsForward`). */
+    private forwardOwners = 0;
+
+    /**
+     * Lowers a statement (`lower`). Under a statement that precedes a later
+     * binding of its block, each time it refuses a read of such a binding
+     * no scope holds (a closure built in a nested block, a function it
+     * reaches), its lines are withdrawn, the binding takes
+     * temporal-dead-zone storage ahead of the statement its block stands
+     * at, and it lowers again. From scopes that are not under that
+     * statement (a body with scopes of its own) the refusal is an enclosing
+     * statement's to start over on.
+     */
+    public hoistingForward(lower: () => void): void {
+        if (this.forwardOwners === 0) return lower();
+        const survey = activeSurvey();
+        for (;;) {
+            const begun = survey?.bodiesBegun() ?? 0;
+            const refusal = this.emissionTransaction(
+                () => {
+                    try {
+                        lower();
+                        return undefined;
+                    } catch (error) {
+                        if (
+                            !(error instanceof CompileError) ||
+                            !this.callbacks.forwardBindingMissed(error)
+                        )
+                            throw error;
+                        return error;
+                    }
+                },
+                (met) => met === undefined,
+            );
+            if (!refusal) return;
+            const missed = this.callbacks.forwardBindingMissed(refusal);
+            if (!missed || !this.callbacks.hoistMissedBinding(missed))
+                throw refusal;
+            survey?.withdrawBodies(begun);
         }
     }
 
@@ -2208,6 +2298,63 @@ class Compiler implements LoweringServices {
             this.activeEmissionScope === statement.emissionScope &&
             this.indentLevel === statement.indentLevel
         );
+    }
+
+    public standsUnder(statement: LoweringStatement): boolean {
+        return (
+            this.bindings.variableScopes[statement.scopeDepth - 1] ===
+                statement.scope &&
+            this.emissionBlocks[statement.blockDepth - 1] === statement.block
+        );
+    }
+
+    /** Lines declared ahead of statements being lowered, until each ends. */
+    private readonly aheadLines = new EmissionMap<
+        LoweringStatement,
+        readonly NativeEmission[]
+    >();
+    /** The sequence native bindings take while declared ahead of a statement. */
+    @journaled private accessor aheadBindingSequence: number | undefined =
+        undefined;
+
+    public emitAheadOf(statement: LoweringStatement, work: () => void): void {
+        // At the statement's start, emission is ahead of it already.
+        if (
+            this.body.length === statement.bodyStart &&
+            this.emitsAtLevelOf(statement) &&
+            this.bindings.variableScopes.length === statement.scopeDepth
+        ) {
+            work();
+            return;
+        }
+        const start = this.body.length;
+        const indentLevel = this.indentLevel;
+        const emissionScope = this.activeEmissionScope;
+        const sequence = this.aheadBindingSequence;
+        const blocks = this.emissionBlocks.splice(statement.blockDepth);
+        this.indentLevel = statement.indentLevel;
+        this.activeEmissionScope = statement.emissionScope;
+        this.aheadBindingSequence = statement.aheadSequence;
+        const continuation = this.engineLifecycle.continuationSequence;
+        this.engineLifecycle.continuationSequence =
+            statement.continuationSequence;
+        this.statementDependencies.push(new EmissionSet());
+        try {
+            this.bindings.withScopeDepth(statement.scopeDepth, work);
+        } finally {
+            this.statementDependencies.pop();
+            this.engineLifecycle.continuationSequence = continuation;
+            this.aheadBindingSequence = sequence;
+            this.activeEmissionScope = emissionScope;
+            this.indentLevel = indentLevel;
+            this.emissionBlocks.push(...blocks);
+            const lines = this.body.splice(start);
+            if (lines.length > 0)
+                this.aheadLines.set(statement, [
+                    ...(this.aheadLines.get(statement) ?? []),
+                    ...lines,
+                ]);
+        }
     }
 
     public statementTerminatesAfterLowering(statement: ts.Statement): boolean {
@@ -7496,7 +7643,8 @@ class Compiler implements LoweringServices {
             name,
             borrowed,
             allowReference,
-            sequence: ++this.nextNativeBindingSequence,
+            sequence:
+                this.aheadBindingSequence ?? ++this.nextNativeBindingSequence,
             entryLifetime:
                 this.bindings.variableScopes.length === 1 &&
                 this.activeEmissionScope === 0 &&

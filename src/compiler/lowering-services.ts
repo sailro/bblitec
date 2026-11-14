@@ -73,10 +73,40 @@ export type EmissionMark = Pick<
 /** A statement being lowered, with where its lowering began. */
 export interface LoweringStatement {
     readonly statement: ts.Statement;
-    /** The binding scope depth its declarations bind at. */
+    /** A statement of a block nested in a statement, not of a function's or module's body. */
+    readonly nested: boolean;
+    /** The binding scope depth its declarations bind at, and that scope. */
     readonly scopeDepth: number;
+    readonly scope: object;
     readonly emissionScope: number;
     readonly indentLevel: number;
+    /** Its emission block, and how many blocks were open. */
+    readonly block: number;
+    readonly blockDepth: number;
+    /** How many entry-body lines preceded it. */
+    readonly bodyStart: number;
+    /**
+     * The sequence of native bindings declared ahead of it: after those of
+     * every closure open at its start, before those of the closures it
+     * builds. Reserved where it `hoistsForward`.
+     */
+    readonly aheadSequence: number;
+    /** The engine continuation its lines began in. */
+    readonly continuationSequence: number;
+    /**
+     * Whether its lowering starts over when it refuses a read of a binding
+     * its block declares later (`ForwardBindingMissed`).
+     */
+    readonly hoistsForward: boolean;
+}
+
+/** A later binding of `owner`'s block that a refusal under `owner` read. */
+export interface ForwardBindingMissed {
+    readonly owner: LoweringStatement;
+    readonly symbol: ts.Symbol;
+    /** The declaration, or the name a later pattern declares. */
+    readonly declared:
+        import("./declarations.js").ForwardDeclaration | ts.Identifier;
 }
 
 /** Execution facts for one native function body. */
@@ -174,6 +204,18 @@ export interface LoweringServices {
     loweringStatementIn(container: ts.Node): LoweringStatement | undefined;
     /** Whether emission is at the top level of the block `statement` is lowering in. */
     emitsAtLevelOf(statement: LoweringStatement): boolean;
+    /** Whether emission stands in `statement`'s scopes and blocks, at its level or nested in it. */
+    standsUnder(statement: LoweringStatement): boolean;
+    /**
+     * Runs `work` as where `statement`'s lowering began: what it emits goes
+     * ahead of the statement's lines, what it binds is bound in the
+     * statement's scope and precedes every closure the statement builds.
+     */
+    emitAheadOf(statement: LoweringStatement, work: () => void): void;
+    /** Lowers a statement, starting it over on a refused read of a later binding (`Compiler.hoistingForward`). */
+    hoistingForward(lower: () => void): void;
+    /** Lowers a statement of a block nested in a statement (`Compiler.lowerNestedStatement`). */
+    lowerNestedStatement(statement: ts.Statement, lower: () => void): void;
     statementTerminatesAfterLowering(statement: ts.Statement): boolean;
     emitExpressionAsStatement(expression: ts.Expression): void;
     compileTextMutation(expression: ts.Expression): Value | undefined;

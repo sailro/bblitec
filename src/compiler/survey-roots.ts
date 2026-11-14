@@ -62,6 +62,7 @@ export type SurveyRootContext = UserFunctionContext &
         | "options"
         | "checker"
         | "bindings"
+        | "callbacks"
         | "allocateUserFunctionPrefix"
         | "registerNativeBindingType"
         | "classLowerer"

@@ -1,5 +1,9 @@
 import ts from "typescript";
-import { isValueReference } from "./syntax.js";
+import {
+    bindingNameIdentifiers,
+    isBlockScopedVariable,
+    isValueReference,
+} from "./syntax.js";
 
 interface AnalysisWalkPolicy {
     includeRoot?: boolean;
@@ -64,6 +68,51 @@ export function identifiersByName(
         fileIdentifiers.set(file, (known = names));
     }
     return known;
+}
+
+/** @unjournaled Parsed syntax is immutable: per block, where its last binding read ahead is declared. */
+const fileForwardReads = new WeakMap<
+    ts.SourceFile,
+    ReadonlyMap<ts.Node, number>
+>();
+
+/**
+ * Whether `statement` precedes a `let`/`const` statement of its own block
+ * whose name is read ahead of it: a closure `statement` builds or reaches
+ * may read that binding before its declaration.
+ */
+export function precedesForwardRead(statement: ts.Statement): boolean {
+    const file = statement.getSourceFile() as ts.SourceFile | undefined;
+    if (!file) return false;
+    let limits = fileForwardReads.get(file);
+    if (!limits) {
+        const found = new Map<ts.Node, number>();
+        const identifiers = identifiersByName(file);
+        for (const node of sourceFileNodes(file)) {
+            if (
+                !ts.isVariableStatement(node) ||
+                !isBlockScopedVariable(node.declarationList)
+            )
+                continue;
+            const readAhead = node.declarationList.declarations.some(
+                (declaration) =>
+                    bindingNameIdentifiers(declaration.name).some((name) => {
+                        for (const read of identifiers.get(name.text) ?? []) {
+                            if (read.pos >= node.pos) break;
+                            if (
+                                read.pos >= node.parent.pos &&
+                                isValueReference(read)
+                            )
+                                return true;
+                        }
+                        return false;
+                    }),
+            );
+            if (readAhead) found.set(node.parent, node.pos);
+        }
+        fileForwardReads.set(file, (limits = found));
+    }
+    return statement.pos < (limits.get(statement.parent) ?? -1);
 }
 
 /** Preorder analysis with explicit boundaries and early termination. */

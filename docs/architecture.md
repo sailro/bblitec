@@ -88,6 +88,12 @@ Paths are relative to `generated/<id>/`.
   rolled back: only the storage demands they meet carry into the next pass. A root lowered before the pass took a
   demand it meets lowers again in that pass (a round), while rounds keep taking demands; the pass a limit ends the
   survey at runs none.
+- A closure may read a `let`/`const` its block declares later. The binding takes temporal-dead-zone storage
+  (`bbl::js::LexicalBinding`) ahead of the statement that builds the closure: at registration when emission stands at
+  the level of a function's or module's body (`hoistForwardCallbackBindings`), otherwise when a statement refuses the
+  read. That statement's lines are withdrawn, the storage is declared ahead of the statement the declaring block
+  stands at (`emitAheadOf`), and the statement lowers again (`hoistingForward`; a survey's statement attempt does the
+  same, with the bodies it began).
 - A feature marked `applicationRealm` (`feature-activation.ts`) replays the whole program in the application realm
   from `reachFeature`; explicit `ApplicationRealmRequired` throws remain only for conditional shapes.
 - Erasure never drops an API `dom-lowerings.ts` lists, and an erased method call needs a receiver `isBrowserOwner`

@@ -1,4 +1,5 @@
 import { emissionArray, EmissionMap } from "./emission-transaction.js";
+import { CompileError, unlessRefused } from "./compile-error.js";
 import ts from "typescript";
 import { cppIdentifierPattern } from "../cpp-literals.js";
 import { bindingIsOnlyCalledDirectly } from "./binding-rebinds.js";
@@ -22,6 +23,7 @@ import {
     physicsEventInfoValue,
 } from "./intrinsics/physics.js";
 import type {
+    ForwardBindingMissed,
     LoweringServices,
     LoweringStatement,
 } from "./lowering-services.js";
@@ -29,9 +31,11 @@ import { verbatimEmission, type NativeEmission } from "./native-statements.js";
 import {
     functionOfDeclaration,
     isBlockScopedVariable,
+    reachedThroughName,
     variableKind,
 } from "./syntax.js";
 import { callSignatures } from "./type-facts.js";
+import { activeSurvey } from "./survey.js";
 
 /** What callback lowering reads of the compiler. */
 interface CallbackContext extends Pick<
@@ -53,6 +57,7 @@ interface CallbackContext extends Pick<
     | "emitDiscardedValue"
     | "emitExpressionAsStatement"
     | "emitStatement"
+    | "emitAheadOf"
     | "emitsAtLevelOf"
     | "endNativeFunctionBody"
     | "engineLifecycle"
@@ -64,6 +69,7 @@ interface CallbackContext extends Pick<
     | "reachJsData"
     | "registerNativeBinding"
     | "sharedClosures"
+    | "standsUnder"
     | "registerNativeBindingType"
     | "registerNativeConstBinding"
     | "statementTerminatesAfterLowering"
@@ -656,6 +662,88 @@ export class CallbackLowerer {
     }
 
     /**
+     * Per block scope, the later bindings a refusal read that took storage
+     * ahead or were refused it: another refusal reading one there is the
+     * read's own.
+     */
+    private readonly forwardTried = new EmissionMap<
+        object,
+        ReadonlySet<ts.Symbol>
+    >();
+
+    /**
+     * The later binding a refusal read: its subject is a name, or an access
+     * rooted at one, that no scope holds and a block being lowered declares
+     * after the statement it stands at, whose lowering starts over on it.
+     */
+    public forwardBindingMissed(
+        error: unknown,
+    ): ForwardBindingMissed | undefined {
+        if (!(error instanceof CompileError) || !error.subject)
+            return undefined;
+        const root = reachedThroughName(error.subject);
+        const symbol = root && this.context.symbols.valueSymbol(root);
+        if (!symbol) return undefined;
+        const pattern = this.pendingPattern(symbol, true);
+        const later = pattern
+            ? undefined
+            : this.pendingDeclaration(symbol, false, true);
+        const owner = (pattern ?? later)?.owner;
+        const declared = pattern?.name ?? later?.declaration;
+        return owner?.hoistsForward &&
+            !this.forwardTried.get(owner.scope)?.has(symbol) &&
+            declared &&
+            (ts.isIdentifier(declared) || declared.initializer)
+            ? {
+                  owner,
+                  symbol,
+                  declared: declared as ForwardDeclaration | ts.Identifier,
+              }
+            : undefined;
+    }
+
+    /**
+     * Gives a later binding a refusal read its temporal-dead-zone storage
+     * ahead of the statement its block stands at, from that statement or one
+     * lowering under it; false from scopes that are not under it (a body
+     * with scopes of its own), where nothing is declared. A binding with no
+     * such storage is left for the read to refuse.
+     */
+    public hoistMissedBinding({
+        owner,
+        symbol,
+        declared,
+    }: ForwardBindingMissed): boolean {
+        if (!this.context.standsUnder(owner)) return false;
+        this.forwardTried.set(
+            owner.scope,
+            new Set([...(this.forwardTried.get(owner.scope) ?? []), symbol]),
+        );
+        this.context.probeEmission(() =>
+            unlessRefused(() => {
+                this.context.emitAheadOf(owner, () => {
+                    if (ts.isIdentifier(declared))
+                        this.context.declarations.hoistForwardPatternName(
+                            declared,
+                            symbol,
+                        );
+                    else
+                        this.context.declarations.hoistForwardBinding(
+                            declared,
+                            symbol,
+                            false,
+                            "temporal-dead-zone",
+                        );
+                });
+                return true;
+            }),
+        );
+        // What a probe refused for want of the binding may lower with it.
+        activeSurvey()?.storageChanged();
+        return true;
+    }
+
+    /**
      * The name a `const { name } = record` pattern declares, in a statement
      * a block being lowered has not reached yet: a top-level element with
      * no default and no rest, whose statement emission stands at the level
@@ -663,6 +751,17 @@ export class CallbackLowerer {
      */
     private pendingPatternName(
         symbol: ts.Symbol,
+    ): { name: ts.Identifier; owner: LoweringStatement } | undefined {
+        const pattern = this.pendingPattern(symbol);
+        return pattern && this.context.emitsAtLevelOf(pattern.owner)
+            ? pattern
+            : undefined;
+    }
+
+    /** `pendingPatternName`, whatever level emission stands at. */
+    private pendingPattern(
+        symbol: ts.Symbol,
+        nested = false,
     ): { name: ts.Identifier; owner: LoweringStatement } | undefined {
         const element = symbol.valueDeclaration;
         if (
@@ -681,25 +780,28 @@ export class CallbackLowerer {
         const owner = this.pendingOwner(
             symbol,
             element.parent.parent.parent.parent,
+            false,
+            nested,
         );
-        return owner && this.context.emitsAtLevelOf(owner)
-            ? { name: element.name, owner }
-            : undefined;
+        return owner && { name: element.name, owner };
     }
 
     /**
      * The statement a block being lowered stands at, where that block has
      * not reached `statement` yet (or, with `includeInitializing`, is
-     * lowering it) and `symbol` is still unbound.
+     * lowering it) and `symbol` is still unbound: a function's or module's
+     * body, or with `nested` a block nested in a statement too.
      */
     private pendingOwner(
         symbol: ts.Symbol,
         statement: ts.VariableStatement,
         includeInitializing = false,
+        nested = false,
     ): LoweringStatement | undefined {
         if (this.context.bindings.peekBinding(symbol)) return undefined;
         const owner = this.context.loweringStatementIn(statement.parent);
         return owner &&
+            (nested || !owner.nested) &&
             (owner.statement.pos < statement.pos ||
                 (includeInitializing && owner.statement === statement))
             ? owner
@@ -714,6 +816,7 @@ export class CallbackLowerer {
     private pendingDeclaration(
         symbol: ts.Symbol,
         includeInitializing = false,
+        nested = false,
     ):
         | { declaration: ts.VariableDeclaration; owner: LoweringStatement }
         | undefined {
@@ -731,6 +834,7 @@ export class CallbackLowerer {
             symbol,
             declaration.parent.parent,
             includeInitializing,
+            nested,
         );
         return owner ? { declaration, owner } : undefined;
     }

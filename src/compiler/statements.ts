@@ -139,6 +139,9 @@ interface StatementLoweringContext extends Pick<
     | "asyncActivations"
     | "pageLoader"
     | "options"
+    | "callbacks"
+    | "hoistingForward"
+    | "lowerNestedStatement"
     | "speculating"
     | "transaction"
     | "refusedDemand"
@@ -989,6 +992,15 @@ export class StatementLowerer {
         context: StatementLoweringContext,
         statement: ts.Statement,
     ): void {
+        context.lowerNestedStatement(statement, () =>
+            this.emitStanding(context, statement),
+        );
+    }
+
+    private emitStanding(
+        context: StatementLoweringContext,
+        statement: ts.Statement,
+    ): void {
         // A discarded planner or survey wraps statement recovery in a
         // transaction; ordinary generation has neither active. Inside
         // a speculative probe the refusal belongs to the probe. A statement
@@ -1003,6 +1015,7 @@ export class StatementLowerer {
         const survey = activeSurvey();
         survey?.touch(statement, context.speculating);
         const recovery = planner ?? survey;
+        const lower = (): void => this.lowerStatement(context, statement);
         if (
             recovery === undefined ||
             context.speculating ||
@@ -1010,13 +1023,15 @@ export class StatementLowerer {
                 (recovery === planner ||
                     !context.activeNativeReturnDiscarded()))
         ) {
-            this.lowerStatement(context, statement);
+            context.hoistingForward(lower);
             return;
         }
+        // A survey's attempt starts its statement over on a later binding
+        // itself.
         recovery.attemptStatement(
             context,
             statement,
-            () => this.lowerStatement(context, statement),
+            recovery === survey ? lower : () => context.hoistingForward(lower),
             (nested) => this.emitHeld(context, statement, nested),
         );
     }
