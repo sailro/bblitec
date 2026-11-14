@@ -2396,7 +2396,10 @@ export class DataTypeRegistry {
                     (actual.kind === "handle" &&
                         (mapped.kind === "struct" ||
                             (mapped.kind === "handle" &&
-                                mapped.handle === actual.handle))))
+                                mapped.handle === actual.handle))) ||
+                    // A platform object (a GPU adapter, its info) is the
+                    // object a record type of its members views.
+                    (isOpaqueReference(actual) && mapped.kind === "struct"))
             )
                 return part;
             const element =

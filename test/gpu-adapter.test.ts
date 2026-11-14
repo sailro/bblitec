@@ -26,6 +26,19 @@ async function inspect(gpu: Source | undefined = typeof navigator === "undefined
     try { const adapter = await gpu.requestAdapter({powerPreference:"high-performance"}); return vendor(adapter?.info); }
     catch { return "unavailable"; }
 }
+// A binding asked again while it holds no adapter retains the adapter as the record type views it.
+async function probe(gpu: Source | undefined = typeof navigator === "undefined" ? undefined : navigator.gpu, retries = 2): Promise<string> {
+    if (!gpu) return "none";
+    try {
+        let adapter = await gpu.requestAdapter({powerPreference:"high-performance"});
+        for (let attempt = 0; attempt < retries; attempt++) {
+            if (adapter) break;
+            adapter = await gpu.requestAdapter({powerPreference:"high-performance"});
+        }
+        if (!adapter) return "none";
+        return vendor(adapter.info) === "apple" ? "apple" : "other:" + vendor(adapter.info);
+    } catch { return "unknown"; }
+}
 `;
 
 const optionalSource = `
@@ -81,6 +94,8 @@ async function main(): Promise<void> {
         typeof info.device !== "string" || typeof info.description !== "string") throw new Error("info storage");
     if (vendor(info) !== info.vendor.trim().toLowerCase() || await inspect() !== vendor(info))
         throw new Error("structural metadata view");
+    if (await probe() !== "other:" + vendor(info) || await probe(navigator.gpu, 0) !== "other:" + vendor(info))
+        throw new Error("retried structural request");
     const inspectors: Array<typeof inspect> = [inspect];
     if (await inspectors[0]!() !== vendor(info) || await inspectors[0]!(navigator.gpu) !== vendor(info))
         throw new Error("retained structural default owner");
