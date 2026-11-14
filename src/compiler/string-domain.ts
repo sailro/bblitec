@@ -1112,7 +1112,7 @@ class StringDomain {
     private operations = 0;
     private readonly graph: SourceGraph;
     /** @unjournaled Traversal budget for one domain query, discarded with that query. */
-    private remaining = 4096;
+    private remaining = 16384;
     /**
      * @unjournaled The projection lengths where an enclosing `??` replaces
      * the value read: an inner one (`queue.shift() ?? null`) leaves the
