@@ -301,9 +301,11 @@ export interface AssignedStorageContext extends DemandedStorageContext {
 }
 
 /**
- * An assignment of a value with native storage to an auto-typed binding
- * that holds no storage yet (its `null` initializer is generation-known):
- * the binding is stored as the assigned type, nullable as its initializer.
+ * An assignment of a value with native storage to a binding that holds no
+ * storage yet (its `null` initializer is generation-known): an auto-typed
+ * binding is stored as the assigned type, nullable as its initializer; a
+ * declared one as its declared type, the `unknown` values it reaches as
+ * documents (`demandedStorageType`).
  */
 export function requireAssignedBindingStorage(
     context: AssignedStorageContext,
@@ -312,12 +314,20 @@ export function requireAssignedBindingStorage(
 ): void {
     const { checker } = context;
     const declaration = initializedVariableDeclaration(checker, target);
-    if (
-        !declaration ||
-        context.dynamicBindings.has(declaration) ||
-        !isAnyTyped(checker.getTypeAtLocation(declaration.name))
-    )
+    if (!declaration || context.dynamicBindings.has(declaration)) return;
+    if (!isAnyTyped(checker.getTypeAtLocation(declaration.name))) {
+        if (
+            declaration.type &&
+            demandedStorageType(
+                context,
+                declaration,
+                "source",
+                declaration.initializer,
+            )
+        )
+            throw new DynamicBindingStorageRequired(declaration, "source");
         return;
+    }
     const nativeType = checker.getNonNullableType(
         checker.getTypeAtLocation(value),
     );

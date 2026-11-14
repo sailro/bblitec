@@ -15357,6 +15357,36 @@ check(
 );
 
 check(
+    "function-slots-over-records-holding-unknown-values",
+    `
+    // A declared slot starting null takes a function whose parameter
+    // record holds an unknown value: the slot's unknown positions are
+    // stored as the values they are.
+    interface CrashInput { kind: "boot" | "frame"; error: unknown; context?: string }
+    let gate: ((input: CrashInput) => boolean) | null = null;
+    function setGate(next: ((input: CrashInput) => boolean) | null): void { gate = next; }
+    function report(input: CrashInput): string {
+        let withheld = false;
+        if (gate) {
+            try { withheld = gate(input) === true; } catch { /* a broken gate hides nothing */ }
+        }
+        return withheld ? "withheld" : "shown:" + String(input.error);
+    }
+    const first = report({ kind: "boot", error: "a" });
+    const absorbed: unknown[] = [];
+    setGate((input) => { absorbed.push(input.error); return input.kind === "frame"; });
+    const second = report({ kind: "frame", error: "b" });
+    const third = report({ kind: "boot", error: 3 });
+    setGate((input) => { if (input.error === null) throw new Error("broken"); return typeof input.error === "number"; });
+    const fourth = report({ kind: "boot", error: null });
+    const fifth = report({ kind: "boot", error: 5, context: "late" });
+    setGate(null);
+    const seen = [first, second, third, fourth, fifth, report({ kind: "frame", error: true }), absorbed.length, typeof absorbed[1]].join("|");
+    if (seen !== "shown:a|withheld|shown:3|shown:null|withheld|shown:true|2|number") throw new Error(seen);
+`,
+);
+
+check(
     "destructured-tuples-stored-as-number-arrays",
     `
     // A tuple a parameter pattern reads from a record, stored where a
