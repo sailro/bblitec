@@ -292,6 +292,7 @@ import {
     undefinedOnly,
     callSignatures,
     inheritsFrom,
+    isVoid,
     unionMembers,
 } from "./compiler/type-facts.js";
 import {
@@ -8371,7 +8372,16 @@ class Compiler implements LoweringServices {
         }
         if (returnType === "void") {
             if (statement.expression) {
-                if (frame?.kind !== "native" || !frame.contextualVoid) {
+                if (
+                    (frame?.kind !== "native" || !frame.contextualVoid) &&
+                    !isVoid(
+                        this.dataTypes.resolveTypeParameter(
+                            this.checker.getTypeAtLocation(
+                                statement.expression,
+                            ),
+                        ),
+                    )
+                ) {
                     this.fail(
                         statement.expression,
                         "Void functions cannot return a value.",
@@ -8381,6 +8391,9 @@ class Compiler implements LoweringServices {
                 // expression's value but not its side effects. Preserve the
                 // same boundary for `return stopEngine(engine)` and for
                 // value-returning expressions accepted by a void callback.
+                // A `void` expression has no value to discard: `return
+                // work()` in a body whose result type is `void` here, a type
+                // parameter's argument included.
                 this.asyncActivations.emitDiscardedReturn(statement.expression);
             }
             if (coroutine)

@@ -15357,6 +15357,50 @@ check(
 );
 
 check(
+    "void-results-returned-from-void-bodies",
+    `
+    // \`return work()\` in a body whose result is void runs the call and
+    // returns: the declared void, and a type parameter's void argument.
+    const rows = new Map<string, number>();
+    const record = (label: string): void => { rows.set(label, (rows.get(label) ?? 0) + 1); };
+    const track = <T>(label: string, work: () => T): T => {
+        if (label === "skip") return work();
+        try {
+            return work();
+        } finally {
+            record(label);
+        }
+    };
+    const measure = <Args extends unknown[], Result>(label: string, work: (...args: Args) => Result): ((...args: Args) => Result) => {
+        if (label === "plain") return work;
+        return (...args: Args): Result => {
+            try {
+                return work(...args);
+            } finally {
+                record(label);
+            }
+        };
+    };
+    let total = 0;
+    function bump(): void { total += 1; }
+    function run(skip: boolean): void { if (skip) return; return bump(); }
+    run(false);
+    run(true);
+    track("a", () => { total += 10; });
+    track("skip", () => { total += 100; });
+    const three = track("b", () => 3);
+    const add = measure("add", (amount: number): void => { total += amount; });
+    add(1000);
+    add(1000);
+    const twice = measure("twice", (amount: number): number => amount * 2);
+    const plain = measure("plain", (amount: number): void => { total += amount; });
+    plain(10000);
+    const seen = [total, three, twice(4), [...rows].map(([label, calls]) => label + "," + calls).join(";")].join("|");
+    if (seen !== "12111|3|8|a,1;b,1;add,2;twice,1") throw new Error(seen);
+`,
+);
+
+check(
     "arrays-stored-as-a-union's-array-member",
     `
     // An array of records of another type (a map's or flatMap's results, a
