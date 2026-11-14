@@ -28,6 +28,7 @@ import {
 import {
     forEachAnalysisNode,
     someAnalysisNode,
+    sourceFileNodes,
     sourceFilesWalk,
 } from "./compiler/analysis-walk.js";
 import {
@@ -1353,8 +1354,13 @@ class Compiler implements LoweringServices {
         this.moduleNamespaces.defineInitializers();
         this.emitEntryBody(entry);
         const survey = activeSurvey();
-        if (survey && !this.options.workers?.namespace)
+        survey?.phaseEnded("entry");
+        if (survey && !this.options.workers?.namespace) {
             survey.rollingBack(() => emitSurveyRoots(this, survey));
+            survey.rounds(() =>
+                survey.rollingBack(() => emitSurveyRoots(this, survey)),
+            );
+        }
         survey?.settle();
         if (!this.options.pageStartup?.length) this.emitNativeHostUi();
         this.finalizeSceneRegistration();
@@ -4229,29 +4235,23 @@ class Compiler implements LoweringServices {
             return this.staticAssetUrlCandidateCache;
         }
         const candidates = new EmissionSet<string>();
-        const visit = (root: ts.Node): void =>
-            forEachAnalysisNode(root, (node) => {
-                if (
-                    ts.isCallExpression(node) &&
-                    ts.isIdentifier(node.expression) &&
-                    this.symbols.isPhysicsEngineModule(node.expression)
-                ) {
-                    // Native physics substitutes the browser module; its
-                    // loader callbacks are never invoked or packaged.
-                    return "skip";
-                }
+        // Native physics substitutes the browser module; its loader
+        // callbacks are never invoked or packaged.
+        const physicsModuleCall = (node: ts.Node): boolean =>
+            ts.isCallExpression(node) &&
+            ts.isIdentifier(node.expression) &&
+            this.symbols.isPhysicsEngineModule(node.expression);
+        for (const source of this.sourceFiles())
+            for (const node of sourceFileNodes(source))
                 if (
                     ts.isCallExpression(node) &&
                     node.arguments.length === 2 &&
-                    ts.isStringLiteralLike(argumentAt(node, 0))
+                    ts.isStringLiteralLike(argumentAt(node, 0)) &&
+                    !ts.findAncestor(node, physicsModuleCall)
                 ) {
                     const url = this.moduleRelativeAssetUrl(node);
                     if (url !== undefined) candidates.add(url);
                 }
-            });
-        for (const source of this.sourceFiles()) {
-            visit(source);
-        }
         this.staticAssetUrlCandidateCache = [...candidates].sort();
         return this.staticAssetUrlCandidateCache;
     }
@@ -7244,11 +7244,25 @@ class Compiler implements LoweringServices {
         answered: (result: T) => boolean = (result) => result !== undefined,
     ): T {
         this.probeDepth++;
+        // A survey times its outermost probes, kept or dropped.
+        const survey = this.probeDepth === 1 ? activeSurvey() : undefined;
+        const started = survey ? performance.now() : 0;
+        let kept = false;
         try {
-            return this.emissionTransaction(probe, answered);
+            const result = this.emissionTransaction(probe, answered);
+            kept = answered(result);
+            return result;
         } finally {
             this.probeDepth--;
+            survey?.probed(kept, performance.now() - started);
         }
+    }
+
+    public keptEmission<T>(
+        work: () => T,
+        answered: (result: T) => boolean = (result) => result !== undefined,
+    ): T {
+        return this.emissionTransaction(work, answered);
     }
 
     public transaction(work: () => void): void {

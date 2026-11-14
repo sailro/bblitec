@@ -476,6 +476,12 @@ export interface LoweringServices {
         escapesEmittingScope: boolean,
     ): Value<"callback">;
     probeEmission<T>(probe: () => T, answered?: (result: T) => boolean): T;
+    /**
+     * `probeEmission` without speculation: `work`'s emission is kept where
+     * it answers and rolled back otherwise, and a statement it lowers
+     * recovers on its own as outside it.
+     */
+    keptEmission<T>(work: () => T, answered?: (result: T) => boolean): T;
     /** True while a speculative probe is open: a refusal inside is the probe's to decide. */
     readonly speculating: boolean;
     /** Runs `work` in an emission transaction: committed on return, rolled back on a throw. */

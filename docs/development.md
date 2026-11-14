@@ -141,7 +141,9 @@ message class, function and cascades, the storage demands the last pass met, the
 statements slowest to lower; no tree) and `api/report.html` (referenced pinned declarations). A survey lowers every
 function of the program's own sources ([survey invariants](architecture.md#lowering-invariants));
 `bblitec <entry> --survey <census.json>` rewrites the census as it goes (`complete: false`), and `--survey-passes <n>` caps
-the passes: one attempts every statement. Group by shared capability and probe source shapes before implementing. The
+the passes: one attempts every statement. Each pass reports on stderr the seconds and statement lowerings of its entry,
+module roots, function roots and statement roots, and the seconds its probes kept and rolled back. Group by shared
+capability and probe source shapes before implementing. The
 compiler's `--coverage <coverage.json>` (with `--out` or `--survey`) records statement-level retained, refused and
 rolled-back lowering; it does not prove native support. A survey rewrites it every ten minutes (`complete: false` until it
 ends).

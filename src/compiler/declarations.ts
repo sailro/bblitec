@@ -320,6 +320,20 @@ export function initializerNamesBinding(
     return found;
 }
 
+/**
+ * The only nodes an object's mutation clauses accept
+ * (`inferredObjectIsMutated`): a declaration, a write, a call or a
+ * construction.
+ */
+function objectMutationCandidate(node: ts.Node): boolean {
+    return (
+        ts.isVariableDeclaration(node) ||
+        ts.isCallExpression(node) ||
+        ts.isNewExpression(node) ||
+        writeSites(node).length > 0
+    );
+}
+
 export class DeclarationLowerer {
     constructor(private readonly context: DeclarationContext) {}
 
@@ -5114,6 +5128,7 @@ export class DeclarationLowerer {
             identifier,
             (name) => this.context.symbols.valueSymbol(name),
             {
+                candidates: objectMutationCandidate,
                 aliasingInitializer: (initializer, scan) =>
                     isAlias(scan, initializer) ||
                     literalHeldValues(initializer).some((value) =>
