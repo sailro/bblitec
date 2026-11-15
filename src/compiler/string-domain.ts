@@ -45,6 +45,7 @@ import {
 } from "./syntax.js";
 import { pathStartsWith, type KeyPath } from "./projections.js";
 import {
+    nullability,
     stringLiteralValues,
     typeCanCarryReference,
     unionMembers,
@@ -262,6 +263,24 @@ function patternSource(element: ts.BindingElement):
                 ? { root: declared, path, taken, defaults }
                 : undefined;
     }
+}
+
+/** Whether a member read is of a member that may be absent, where TypeScript proves it present. */
+function narrowedPresent(
+    checker: ts.TypeChecker,
+    node: ts.PropertyAccessExpression,
+): boolean {
+    const symbol = resolvedSymbol(checker, node.name);
+    if (!symbol) return false;
+    const declared = nullability(checker.getTypeOfSymbol(symbol));
+    const read = nullability(checker.getTypeAtLocation(node));
+    return (
+        (declared.undefined ||
+            declared.null ||
+            (symbol.flags & ts.SymbolFlags.Optional) !== 0) &&
+        !read.undefined &&
+        !read.null
+    );
 }
 
 /** The step an access takes: its key, or any element for an index or a run-time key. */
@@ -1554,6 +1573,22 @@ class StringDomain {
                 },
                 () => this.read(node.whenFalse, projection, environment),
             ]);
+        }
+        // An optional member TypeScript narrows to present where it is read
+        // (`opts.url ? load(opts.url) : none`) is not undefined there: a
+        // record lacking it never reaches the read, as under `??`.
+        if (
+            ts.isPropertyAccessExpression(node) &&
+            !this.nullishDepths.includes(projection.length) &&
+            narrowedPresent(this.context.checker, node)
+        ) {
+            const nullishDepths = this.nullishDepths;
+            this.nullishDepths = [...nullishDepths, projection.length];
+            try {
+                return this.member(node, projection, environment);
+            } finally {
+                this.nullishDepths = nullishDepths;
+            }
         }
         return this.member(node, projection, environment);
     }

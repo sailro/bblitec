@@ -636,6 +636,24 @@ test("packaged URL provenance refuses uncertain mutations, origins and unbounded
         ).manifest.assets.map((asset) => asset.source),
         ["public/clips/voice_02.bin"],
     );
+    // An optional member read where TypeScript narrows it to present is
+    // not undefined there: a record lacking it never reaches that read.
+    const optional = `{url:"/clips/voice_01.bin",...(Math.random()>0.5?{extra:"/clips/voice_02.bin"}:{})}`;
+    for (const body of [
+        `interface Options{url:string;extra?:string} function pick(options:Options):string{return options.extra?options.extra:options.url;} const url=pick(${optional});`,
+        `interface Options{url:string;extra?:string} function same(value:string):string{return value;} function pick(options:Options):string{return options.extra?same(options.extra):options.url;} const url=pick(${optional});`,
+        `interface Options{url:string;extra?:string} function pick(options:Options):string{if(options.extra){return options.extra;} return options.url;} const url=pick(${optional});`,
+    ])
+        assert.deepEqual(
+            compileSource(program(body), {
+                fileName: join(directory, "entry.ts"),
+                publicDir,
+            })
+                .manifest.assets.map((asset) => asset.source)
+                .sort(),
+            ["public/clips/voice_01.bin", "public/clips/voice_02.bin"],
+            body,
+        );
     const cases = [
         `const entries=["https://remote.invalid/a.bin","https://remote.invalid/b.bin"]; const url=entries[Math.floor(Math.random()*2)];`,
         `const entries=["/clips/../clips/voice_01.bin","/clips/%2e%2e/clips/voice_02.bin"]; const url=entries[Math.floor(Math.random()*2)];`,
