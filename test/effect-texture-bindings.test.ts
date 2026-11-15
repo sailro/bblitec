@@ -45,9 +45,15 @@ test("effect textures take a binding a table holds as a name or a number", () =>
             `const sources:readonly (readonly [string|number,()=>number])[]=[["named",()=>1],[1,()=>2]];const [binding,source]=sources[Math.round(Math.random())]!;if(source()>0)setEffectTexture(effect,binding,solid);`,
         ),
     );
+    // The pair's lane is projected to the name-or-number union where the
+    // pattern reads it; the call visits that.
     assert.match(
         compiled.cpp,
-        /bbl::set_effect_texture\(v_engine, v_effect, std::visit\(\[\]\(const auto& member\) \{ return bbl::EffectBindingKey\{member\}; \}, .*\(\*v_binding\).*\), v_solid\)/,
+        /auto v_binding = \(\[&\]\(\) -> std::variant<double, std::string> \{ const auto \w+ = bbl::js::snapshot_value\(\(\*bbl::js::array_relative_at</,
+    );
+    assert.match(
+        compiled.cpp,
+        /bbl::set_effect_texture\(v_engine, v_effect, std::visit\(\[\]\(const auto& member\) \{ return bbl::EffectBindingKey\{member\}; \}, v_binding\), v_solid\)/,
     );
 });
 
