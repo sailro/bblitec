@@ -370,6 +370,7 @@ export interface ExpressionContext
             | "captureEmittedStatements"
             | "emitCapturedStatements"
             | "probeEmission"
+            | "runCallOverHeldData"
             | "nativeEmission"
             | "requireEngine"
             | "conditions"

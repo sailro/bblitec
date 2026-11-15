@@ -55,7 +55,10 @@ import type { NativeEmissionRegistry } from "./native-emission-registry.js";
 import type { AssetRegistry } from "./asset-registry.js";
 import type { AdmissionRecorder } from "./admissions.js";
 import type { IntrinsicOptions } from "./intrinsic-options.js";
-import type { ExecutedArgument } from "./executed-application-function.js";
+import type {
+    ExecutedArgument,
+    ExecutedResult,
+} from "./executed-application-function.js";
 
 /** Convert an already evaluated return value, including adopted promise results. */
 export type NativeReturnValueCompiler = (
@@ -382,6 +385,18 @@ export interface LoweringServices {
         label: string,
         pinnedStandIn?: (name: string) => unknown,
     ): unknown;
+    /**
+     * A call run at generation over the data `held` gives the enclosing
+     * bindings it reads (`runApplicationFunction`): what it settles with,
+     * as the run's realm holds it. The run reads no module constant the
+     * program writes through (`written`).
+     */
+    runCallOverHeldData(
+        call: ts.CallExpression,
+        held: (identifier: ts.Identifier) => ExecutedArgument | undefined,
+        written: (name: ts.Identifier) => boolean,
+        label: string,
+    ): ExecutedResult;
     compileShaderSource(expression: ts.Expression): {
         source: string;
         dynamicUniforms: Array<{

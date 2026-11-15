@@ -5,7 +5,8 @@ import { resolveBundledAsset } from "./assets.js";
 import { deploymentUrl } from "./deployment.js";
 import type { LoweringServices } from "./lowering-services.js";
 import { stringDomain, type StringDomainContext } from "./string-domain.js";
-import { urlFilePath } from "../asset-source.js";
+import { localAssetPath, urlFilePath } from "../asset-source.js";
+import { readAssetBytesSync } from "./asset-bytes-sync.js";
 
 type Context = StringDomainContext & Pick<LoweringServices, "options">;
 
@@ -24,6 +25,7 @@ export function assetUrlDomain(
     const domain = stringDomain(context, expression, {
         label: "Packaged URL",
         fragments: (parts) => packagedFiles(context, expression, parts),
+        document: (url) => packagedText(context, url),
     })?.filter((url) => !unpackaged(url));
     // One candidate is a generation-known URL: it packages as the same
     // literal does, a remote one included. Among several, each local one
@@ -71,6 +73,24 @@ export function assetUrlDomain(
             "Packaged URL provenance requires local URLs without traversal or encoded separators.",
         );
     return domain;
+}
+
+/** The text of the local file a URL packages, if the deployment holds it. */
+function packagedText(context: Context, url: string): string | undefined {
+    try {
+        const source = resolveBundledAsset(
+            url,
+            context.options.fileName,
+            context.options,
+        );
+        return localAssetPath(source, resolve(context.options.fileName))
+            ? new TextDecoder().decode(
+                  readAssetBytesSync(source, context.options.fileName),
+              )
+            : undefined;
+    } catch {
+        return undefined;
+    }
 }
 
 /** The packaged files a URL with unknown fragments (undefined parts) can name. */

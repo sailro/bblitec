@@ -3,6 +3,10 @@ import { forEachAnalysisNode } from "./analysis-walk.js";
 import { CompileError } from "./compile-error.js";
 import { forEachReturn } from "./loop-control.js";
 import type { LoweringServices } from "./lowering-services.js";
+import type {
+    ExecutedArgument,
+    ExecutedResult,
+} from "./executed-application-function.js";
 import {
     aliasTarget,
     declaredInDefaultLibrary,
@@ -38,6 +42,7 @@ import {
     functionOfDeclaration,
     hasExportModifier,
     isSupportedFunction,
+    isValueReference,
     type SupportedFunction,
     type WriteKind,
     variableKind,
@@ -69,6 +74,7 @@ export type StringDomainContext = Pick<
     | "fail"
     | "unwrap"
     | "options"
+    | "runCallOverHeldData"
 >;
 
 /** What a consumer adds to the closed string domain. */
@@ -79,6 +85,8 @@ export interface StringDomainUse {
     readonly fragments?: (
         parts: readonly (string | undefined)[],
     ) => readonly string[] | undefined;
+    /** The text of the document the consumer packages at a URL, if it holds one. */
+    readonly document?: (url: string) => string | undefined;
 }
 
 interface Origin {
@@ -210,6 +218,29 @@ interface SourceGraph {
         ts.VariableDeclaration,
         Map<string, readonly SupportedFunction[] | undefined>
     >;
+    /**
+     * `executed` runs, by the call and the data its bindings held
+     * (`HeldData.key`): a function of the checked program and that data,
+     * filled as it is asked. Undefined: the run refuses.
+     */
+    readonly executed: Map<
+        ts.CallExpression,
+        Map<string, ExecutedResult | undefined>
+    >;
+}
+
+/** Data generation holds for an expression (`heldData`). */
+interface HeldData {
+    readonly value: ExecutedArgument;
+    /** Spells the value. */
+    readonly key: string;
+    /** A packaged document, not a literal. */
+    readonly document: boolean;
+}
+
+/** A parsed JSON document: every object of it is plain data. */
+function parsedDocument(value: unknown): ExecutedResult {
+    return { value, isPlain: (member) => typeof member === "object" };
 }
 
 interface MemberWrite {
@@ -1222,6 +1253,7 @@ function sourceGraph(
         registries,
         escaped,
         builtMethods: new Map(),
+        executed: new Map(),
     };
     sourceGraphs.set(checker, graph);
     return graph;
@@ -1515,13 +1547,19 @@ class StringDomain {
         key: ts.Expression,
         environment: Environment,
     ): readonly string[] | undefined {
+        const budget = this.remaining;
         const domain = this.attempt(() => this.operand(key, [], environment));
         if (
             domain === undefined ||
             domain instanceof UnboundedDomain ||
             domain === nothing
-        )
+        ) {
+            // The key's provenance refines the read: one that closes no
+            // set of names leaves most of the budget it entered with to
+            // the read by any key.
+            this.remaining = Math.max(this.remaining, budget - (budget >> 2));
             return undefined;
+        }
         // The key's flow type keeps only the values a guard lets through
         // (`if (name === "a" || name === "b")`), whatever its callers pass.
         const narrowed = stringLiteralValues(
@@ -2525,7 +2563,7 @@ class StringDomain {
                 this.invoked(declaration, call, projection, environment);
             return entered
                 ? this.throughReceiver(entered.expression, invoked)
-                : invoked();
+                : (invoked() ?? this.executed(call, projection, environment));
         }
         const callee = namedMember(
             this.context.checker,
@@ -2554,6 +2592,15 @@ class StringDomain {
                 callee.expression,
                 projection,
                 environment,
+            );
+        // The JSON of a packaged response is the document the package holds.
+        const document =
+            method === "json" ? this.heldData(call, environment) : undefined;
+        if (document)
+            return this.heldStrings(
+                parsedDocument(document.value),
+                document.value,
+                projection,
             );
         // Object.freeze returns its argument.
         const frozen =
@@ -2708,6 +2755,218 @@ class StringDomain {
             return this.bounded(candidates());
         }
         return [];
+    }
+
+    /**
+     * The expression behind `expression`'s awaits, the parameters handed it
+     * and the consts holding it, where no write reaches what those hold.
+     */
+    private settled(
+        expression: ts.Expression,
+        environment: Environment,
+    ): { node: ts.Expression; environment: Environment } | undefined {
+        for (;;) {
+            if (--this.remaining < 0) return undefined;
+            const node = unwrapExpression(expression);
+            if (ts.isAwaitExpression(node)) {
+                expression = node.expression;
+                continue;
+            }
+            if (!ts.isIdentifier(node)) return { node, environment };
+            const symbol = resolvedSymbol(this.context.checker, node);
+            const origin = symbol && environment.get(symbol);
+            if (origin) {
+                if (
+                    origin.absent ||
+                    origin.projection.length > 0 ||
+                    unwrapExpression(origin.expression) === node ||
+                    this.graph.mutated.has(symbol)
+                )
+                    return undefined;
+                expression = origin.expression;
+                environment = origin.environment;
+                continue;
+            }
+            const declaration = this.unwrittenConst(node);
+            if (!declaration) return undefined;
+            expression = declaration.initializer;
+        }
+    }
+
+    /**
+     * Data generation holds for `expression`: a scalar literal, or the JSON
+     * document the consumer packages at the one URL its response was
+     * fetched from.
+     */
+    private heldData(
+        expression: ts.Expression,
+        environment: Environment,
+    ): HeldData | undefined {
+        const settled = this.settled(expression, environment);
+        if (!settled) return undefined;
+        const { node } = settled;
+        const scalar = ts.isStringLiteralLike(node)
+            ? node.text
+            : ts.isNumericLiteral(node)
+              ? Number(node.text)
+              : node.kind === ts.SyntaxKind.TrueKeyword
+                ? true
+                : node.kind === ts.SyntaxKind.FalseKeyword
+                  ? false
+                  : undefined;
+        if (scalar !== undefined)
+            return {
+                value: scalar,
+                key: JSON.stringify(scalar),
+                document: false,
+            };
+        if (!ts.isCallExpression(node) || node.arguments.length > 0)
+            return undefined;
+        const callee = namedMember(
+            this.context.checker,
+            unwrapExpression(node.expression),
+        );
+        if (
+            callee?.name !== "json" ||
+            libraryName(
+                this.context.checker.getTypeAtLocation(callee.expression),
+            ) !== "Response"
+        )
+            return undefined;
+        const response = this.settled(callee.expression, settled.environment);
+        const fetched = response?.node;
+        const url =
+            response &&
+            fetched &&
+            ts.isCallExpression(fetched) &&
+            fetched.arguments.length === 1 &&
+            this.context.libraryGlobal(fetched.expression) === "fetch"
+                ? this.attempt(() =>
+                      this.operand(
+                          fetched.arguments[0]!,
+                          [],
+                          response.environment,
+                      ),
+                  )
+                : undefined;
+        const text =
+            url && !(url instanceof UnboundedDomain) && url.length === 1
+                ? this.use.document?.(url[0]!)
+                : undefined;
+        if (text === undefined) return undefined;
+        try {
+            return {
+                value: JSON.parse(text) as ExecutedArgument,
+                key: text,
+                document: true,
+            };
+        } catch {
+            return undefined;
+        }
+    }
+
+    /**
+     * A call run over the data generation holds for the bindings its
+     * arguments read (`heldData`), a packaged document among them, returns
+     * what that run returns: the strings its result holds at the
+     * projection. The run is the program's own where no write reaches a
+     * module constant it reads.
+     */
+    private executed(
+        call: ts.CallExpression,
+        projection: KeyPath,
+        environment: Environment,
+    ): Domain {
+        const held = new Map<ts.Identifier, HeldData>();
+        for (const argument of call.arguments)
+            forEachAnalysisNode(
+                argument,
+                (node) => {
+                    if (!ts.isIdentifier(node) || !isValueReference(node))
+                        return;
+                    const data = this.heldData(node, environment);
+                    if (data) held.set(node, data);
+                },
+                { types: "skip", names: "references" },
+            );
+        if (![...held.values()].some(({ document }) => document))
+            return undefined;
+        const key = [...held]
+            .map(([name, { key }]) => `${name.pos}\u0000${key}`)
+            .join("\u0001");
+        let runs = this.graph.executed.get(call);
+        if (!runs)
+            this.graph.executed.set(
+                call,
+                (runs = new Map<string, ExecutedResult | undefined>()),
+            );
+        if (!runs.has(key)) {
+            let result: ExecutedResult | undefined;
+            try {
+                result = this.context.runCallOverHeldData(
+                    call,
+                    (identifier) => held.get(identifier)?.value,
+                    (name) => {
+                        const symbol = resolvedSymbol(
+                            this.context.checker,
+                            name,
+                        );
+                        return !symbol || this.graph.mutated.has(symbol);
+                    },
+                    `Call '${call.expression.getText()}'`,
+                );
+            } catch (error) {
+                if (!(error instanceof CompileError)) throw error;
+            }
+            runs.set(key, result);
+        }
+        const result = runs.get(key);
+        return result
+            ? this.heldStrings(result, result.value, projection)
+            : undefined;
+    }
+
+    /**
+     * The strings held data reads as at a projection, each object on the
+     * way plain data. An absent value is undefined: a member read from it
+     * throws, and `??` replaces it.
+     */
+    private heldStrings(
+        data: ExecutedResult,
+        value: unknown,
+        projection: KeyPath,
+    ): Domain {
+        if (value === null || value === undefined)
+            return (projection.length > 0 && !this.optionalProjection) ||
+                this.nullishDepths.includes(projection.length)
+                ? nothing
+                : undefined;
+        const key = projection[0];
+        if (key === undefined)
+            return typeof value === "string"
+                ? [value]
+                : typeof value === "number" || typeof value === "boolean"
+                  ? [String(value)]
+                  : undefined;
+        if (typeof value !== "object" || !data.isPlain(value)) return undefined;
+        const rest = projection.slice(1);
+        if (key === ANY_KEY) {
+            const members: unknown[] = Object.values(value);
+            return members.length === 0
+                ? nothing
+                : this.union(
+                      members.map(
+                          (member) => () =>
+                              this.heldStrings(data, member, rest),
+                      ),
+                  );
+        }
+        if (Array.isArray(value) && keyIndex(key) === undefined)
+            return undefined;
+        const member: unknown = Object.hasOwn(value, key)
+            ? (value as Readonly<Record<string, unknown>>)[key]
+            : undefined;
+        return this.heldStrings(data, member, rest);
     }
 
     /**

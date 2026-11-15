@@ -141,7 +141,9 @@ Rules:
   registry scenes use the pinned `lab/public`. Runtime asset URLs require a finite inferred candidate set: local
   files, or absolute HTTP(S) URLs packaged as their literals are; unknown keys and percent-encoded bodies refuse.
   Inference follows closed local Map registries (`set` calls or constructor entries), member and `push` writes, array
-  callback parameters, awaited values, `Promise.all` and the methods of a record a call built.
+  callback parameters, awaited values, `Promise.all`, the methods of a record a call built and a dynamic import's
+  exports. The JSON of a packaged response reads as the document the package holds; a call handed that document
+  (a merge over defaults) is run at generation for the strings its result holds.
 - `fetch` (application realm): absolute HTTP(S), method, string headers, body, static cache mode, `keepalive`, `signal`; streamed
   `body` reader. Known asset fetches use packaged responses. A `typeof fetch` wrapper forwards its runtime `RequestInit`
   (signal, headers). Request objects, teeing and Headers iteration refuse.

@@ -205,8 +205,10 @@ import {
 } from "./compiler/option-helpers.js";
 import {
     executeApplicationFunction,
+    runApplicationFunction,
     type ExecutedScalar,
     type ExecutedArgument,
+    type ExecutedResult,
     type ExecutedTarget,
 } from "./compiler/executed-application-function.js";
 import { liftWgslModuleConstant } from "./shader-ir.js";
@@ -5718,6 +5720,28 @@ class Compiler implements LoweringServices {
         );
         if (closed) runs.set(key, result);
         return result;
+    }
+
+    public runCallOverHeldData(
+        call: ts.CallExpression,
+        held: (identifier: ts.Identifier) => ExecutedArgument | undefined,
+        written: (name: ts.Identifier) => boolean,
+        label: string,
+    ): ExecutedResult {
+        return runApplicationFunction(
+            {
+                checker: this.checker,
+                sourceFiles: this.program.getSourceFiles(),
+                fail: (node, message) => this.fail(node, message),
+                foldEnclosing: held,
+                deploymentValue: (expression) =>
+                    browserDeploymentValue(this, expression),
+                writtenThrough: written,
+            },
+            call,
+            [],
+            label,
+        );
     }
 
     /** The generation-known scalar an expression folds to, if any. */

@@ -266,7 +266,15 @@ test("a URL read through a built catalog's methods keeps the domain of the entri
     `,
         { fileName: join(directory, "entry.ts"), publicDir },
     );
-    assert.equal(result.manifest.assets.length, 4);
+    // The files the index lists; generation read the index itself.
+    assert.deepEqual(
+        result.manifest.assets.map((asset) => asset.source).sort(),
+        [
+            "public/data/a.json",
+            "public/data/b.json",
+            "public/data/skip.json",
+        ],
+    );
     runPackagedProgram(t, directory, result);
 });
 
@@ -420,6 +428,156 @@ test("a packaged URL read from a table by a run-time key keeps the members its c
     );
     // The four table members: no other file of the directory.
     assert.equal(result.manifest.assets.length, 4);
+    runPackagedProgram(t, directory, result);
+});
+
+test("a packaged URL read from a config merged over its defaults keeps the packaged document's values", (t) => {
+    const directory = resolve("artifacts/packaged-fetch-config");
+    const data = join(directory, "public", "data");
+    mkdirSync(join(data, "a"), { recursive: true });
+    mkdirSync(join(data, "b"), { recursive: true });
+    for (const [file, name] of [
+        ["a/z", "z"],
+        ["b/x", "x"],
+        ["b/y", "y"],
+        ["b/other", "other"],
+    ])
+        writeFileSync(join(data, `${file}.json`), `{"name":"${name}"}`);
+    writeFileSync(
+        join(data, "config.json"),
+        `{"models":{"dir":"b","names":["x","y"]},"note":"shipped"}`,
+    );
+    writeFileSync(join(directory, "noop-worker.ts"), "self.close();\n");
+    const result = compileSource(
+        `
+        interface Config { models: { dir: string; names: string[] }; label: string }
+        const DEFAULTS: Config = { models: { dir: "a", names: ["z"] }, label: "defaults" };
+        function isPlainObject(value: unknown): value is Record<string, unknown> {
+            return typeof value === "object" && value !== null && !Array.isArray(value);
+        }
+        // The merge is generic: no member of it names a URL.
+        function deepMerge<T>(base: T, source: unknown): T {
+            if (!isPlainObject(base) || !isPlainObject(source)) return source === undefined ? base : (source as T);
+            const out: Record<string, unknown> = { ...(base as unknown as Record<string, unknown>) };
+            for (const key of Object.keys(source)) out[key] = isPlainObject(out[key]) ? deepMerge(out[key], source[key]) : source[key];
+            return out as unknown as T;
+        }
+        async function loadConfig(base: string): Promise<Config> {
+            try {
+                const response = await fetch(\`\${base}/config.json\`);
+                if (!response.ok) return DEFAULTS;
+                const parsed = (await response.json()) as unknown;
+                return deepMerge(DEFAULTS, parsed);
+            } catch {
+                return DEFAULTS;
+            }
+        }
+        async function nameAt(url: string): Promise<string> {
+            const response = await fetch(url);
+            return ((await response.json()) as { name: string }).name;
+        }
+        const worker = new Worker(new URL("./noop-worker.ts", import.meta.url), { type: "module" });
+        worker.terminate();
+        async function main(): Promise<void> {
+            const config = await loadConfig("/data");
+            let names = "";
+            for (const name of config.models.names) names += await nameAt(\`/data/\${config.models.dir}/\${name}.json\`);
+            if (names !== "xy") throw new Error(names);
+            globalThis.close();
+        }
+        void main();
+    `,
+        { fileName: join(directory, "entry.ts"), publicDir: join(directory, "public") },
+    );
+    // The document, the default's file and the two the document names.
+    assert.deepEqual(
+        result.manifest.assets.map((asset) => asset.source).sort(),
+        [
+            "public/data/a/z.json",
+            "public/data/b/x.json",
+            "public/data/b/y.json",
+            "public/data/config.json",
+        ],
+    );
+    runPackagedProgram(t, directory, result);
+});
+
+test("a packaged URL read from a packaged response's JSON keeps the document's values", (t) => {
+    const directory = resolve("artifacts/packaged-fetch-document");
+    const data = join(directory, "public", "data");
+    mkdirSync(data, { recursive: true });
+    for (const name of ["x", "y", "z", "other"])
+        writeFileSync(join(data, `${name}.json`), `{"name":"${name}"}`);
+    writeFileSync(
+        join(data, "index.json"),
+        `{"entry":"x","list":["y"],"count":2}`,
+    );
+    writeFileSync(join(directory, "noop-worker.ts"), "self.close();\n");
+    const result = compileSource(
+        `
+        interface Index { entry: string; list: string[]; fallback?: string }
+        async function nameAt(url: string): Promise<string> {
+            const response = await fetch(url);
+            return ((await response.json()) as { name: string }).name;
+        }
+        const worker = new Worker(new URL("./noop-worker.ts", import.meta.url), { type: "module" });
+        worker.terminate();
+        async function main(): Promise<void> {
+            const response = await fetch("/data/index.json");
+            const index = (await response.json()) as Index;
+            let names = await nameAt(\`/data/\${index.entry}.json\`);
+            for (const name of index.list) names += await nameAt(\`/data/\${name}.json\`);
+            // A member the document lacks is the value that replaces it.
+            names += await nameAt(\`/data/\${index.fallback ?? "z"}.json\`);
+            if (names !== "xyz") throw new Error(names);
+            globalThis.close();
+        }
+        void main();
+    `,
+        { fileName: join(directory, "entry.ts"), publicDir: join(directory, "public") },
+    );
+    assert.deepEqual(
+        result.manifest.assets.map((asset) => asset.source).sort(),
+        [
+            "public/data/index.json",
+            "public/data/x.json",
+            "public/data/y.json",
+            "public/data/z.json",
+        ],
+    );
+    runPackagedProgram(t, directory, result);
+});
+
+test("a table read by a key whose provenance outruns the analysis keeps every member's URL", (t) => {
+    const directory = resolve("artifacts/packaged-fetch-key-budget");
+    const data = join(directory, "public", "data");
+    mkdirSync(data, { recursive: true });
+    for (const name of ["a", "b", "other"])
+        writeFileSync(join(data, `${name}.json`), `{"name":"${name}"}`);
+    // Each level returns the level below along two paths: 2^16 reads.
+    const levels = Array.from(
+        { length: 16 },
+        (_unused, level) =>
+            `function pick${level + 1}(key: string): string { return flip() ? pick${level}(key) : pick${level}(key); }`,
+    ).join("\n");
+    const result = compileSource(
+        `
+        type Kind = "a" | "b";
+        const MODELS: Record<Kind, { url: string }> = { a: { url: "/data/a.json" }, b: { url: "/data/b.json" } };
+        function flip(): boolean { return Math.random() < 2; }
+        function pick0(key: string): string { return key; }
+        ${levels}
+        const kind = pick16(String.fromCharCode(98 + Math.floor(Math.random()))) as Kind;
+        const response = await fetch(MODELS[kind].url);
+        const name = ((await response.json()) as { name: string }).name;
+        if (name !== "b") throw new Error(name);
+    `,
+        { fileName: join(directory, "entry.ts"), publicDir: join(directory, "public") },
+    );
+    assert.deepEqual(
+        result.manifest.assets.map((asset) => asset.source).sort(),
+        ["public/data/a.json", "public/data/b.json"],
+    );
     runPackagedProgram(t, directory, result);
 });
 

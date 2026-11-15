@@ -368,6 +368,7 @@ interface UiProjectionContext extends Pick<
     | "sourceFile"
     | "sourceFiles"
     | "inlinedCallArgument"
+    | "runCallOverHeldData"
     | "checker"
     | "compileBoolean"
     | "conditions"

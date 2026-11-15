@@ -43,6 +43,7 @@ export interface StaticFetchContext extends Pick<
     | "checker"
     | "sourceFiles"
     | "inlinedCallArgument"
+    | "runCallOverHeldData"
 > {}
 
 export function compileStaticFetch(

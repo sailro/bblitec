@@ -111,6 +111,7 @@ export interface AssetIntrinsicContext
             | "inlinedCallArgument"
             | "reachJsData"
             | "probeEmission"
+            | "runCallOverHeldData"
             | "requireEngine"
             | "requireDefaultEngine"
             | "fail"
