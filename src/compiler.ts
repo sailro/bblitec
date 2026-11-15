@@ -4154,19 +4154,47 @@ class Compiler implements LoweringServices {
     ): ts.ObjectLiteralExpression {
         const resolved = this.evaluator.resolveStaticLiteral(expression);
         if (ts.isObjectLiteralExpression(resolved)) return resolved;
+        return (
+            this.boundRecordLiteral(expression) ??
+            this.fail(resolved, "Expected an object literal.")
+        );
+    }
+
+    /**
+     * A name bound to a record whose properties are current, as the literal
+     * of its own fields: each one reads the bound owner, whose initializer
+     * has already run, and dynamic fields remain ordinary native reads.
+     * Undefined for anything else.
+     */
+    private boundRecordLiteral(
+        expression: ts.Expression,
+    ): ts.ObjectLiteralExpression | undefined {
         const node = this.unwrap(expression);
         const bound = ts.isIdentifier(node)
             ? this.bindings.lookupOptional(node)
             : undefined;
-        const properties = bound?.recordProperties;
+        if (!bound || !ts.isIdentifier(node)) return undefined;
+        // A struct whose every field is always an own key: its fields.
+        if (bound.kind === "data" && bound.dataType?.kind === "struct") {
+            const struct = bound.dataType.name;
+            return bound.recordOwnKeys ||
+                this.dataTypes.ownKeysDecided(struct, node)
+                ? this.memberLiteral(
+                      node,
+                      bound.recordOwnKeys ??
+                          this.dataTypes
+                              .structFields(struct, node, "accessors")
+                              .map((field) => field.sourceName),
+                  )
+                : undefined;
+        }
+        const properties = bound.recordProperties;
         const keys =
-            bound?.recordOwnKeys ??
-            (bound?.kind === "record" && properties
+            bound.recordOwnKeys ??
+            (bound.kind === "record" && properties
                 ? Object.keys(properties)
                 : undefined);
-        if (
-            bound &&
-            properties &&
+        return properties &&
             keys &&
             this.bindings.recordPropertiesAreCurrent(bound) &&
             !Object.keys(bound.recordGetters ?? {}).length &&
@@ -4178,38 +4206,42 @@ class Compiler implements LoweringServices {
                     properties[key] !== undefined &&
                     !properties[key].conditionalOwnKey,
             )
-        ) {
-            // Project current fields from the bound owner. Its initializer has
-            // already run, and dynamic fields remain ordinary native reads.
-            const object = ts.factory.createObjectLiteralExpression(
-                keys.map((key) => {
-                    const access = ts.factory.createPropertyAccessExpression(
-                        node,
-                        key,
-                    );
-                    ts.setOriginalNode(access, node);
-                    ts.setTextRange(access, node);
-                    writable(access).parent = node.parent;
-                    writable(access.name).parent = access;
-                    const keyLiteral = ts.factory.createStringLiteral(key);
-                    ts.setOriginalNode(keyLiteral, node);
-                    ts.setTextRange(keyLiteral, node);
-                    const assignment = ts.factory.createPropertyAssignment(
-                        keyLiteral,
-                        access,
-                    );
-                    ts.setOriginalNode(assignment, node);
-                    ts.setTextRange(assignment, node);
-                    writable(keyLiteral).parent = assignment;
-                    return assignment;
-                }),
-            );
-            ts.setOriginalNode(object, node);
-            ts.setTextRange(object, node);
-            writable(object).parent = node.parent;
-            return object;
-        }
-        return this.fail(resolved, "Expected an object literal.");
+            ? this.memberLiteral(node, keys)
+            : undefined;
+    }
+
+    /** The literal `{ key: owner.key, ... }` of `keys`, placed where `owner` stands. */
+    private memberLiteral(
+        owner: ts.Identifier,
+        keys: readonly string[],
+    ): ts.ObjectLiteralExpression {
+        const object = ts.factory.createObjectLiteralExpression(
+            keys.map((key) => {
+                const access = ts.factory.createPropertyAccessExpression(
+                    owner,
+                    key,
+                );
+                ts.setOriginalNode(access, owner);
+                ts.setTextRange(access, owner);
+                writable(access).parent = owner.parent;
+                writable(access.name).parent = access;
+                const keyLiteral = ts.factory.createStringLiteral(key);
+                ts.setOriginalNode(keyLiteral, owner);
+                ts.setTextRange(keyLiteral, owner);
+                const assignment = ts.factory.createPropertyAssignment(
+                    keyLiteral,
+                    access,
+                );
+                ts.setOriginalNode(assignment, owner);
+                ts.setTextRange(assignment, owner);
+                writable(keyLiteral).parent = assignment;
+                return assignment;
+            }),
+        );
+        ts.setOriginalNode(object, owner);
+        ts.setTextRange(object, owner);
+        writable(object).parent = owner.parent;
+        return object;
     }
 
     /**
@@ -4259,9 +4291,10 @@ class Compiler implements LoweringServices {
                 this.literalSelection(),
                 spread.expression,
             );
-            return selected && ts.isObjectLiteralExpression(selected)
+            if (!selected) return undefined;
+            return ts.isObjectLiteralExpression(selected)
                 ? selected
-                : undefined;
+                : this.boundRecordLiteral(selected);
         });
     }
 

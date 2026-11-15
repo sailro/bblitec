@@ -793,7 +793,7 @@ function compileLoadTexture2D(
     };
     if (call.arguments[2]) {
         const options = context.expectObjectLiteral(call.arguments[2]);
-        for (const property of options.properties) {
+        for (const property of context.objectProperties(options)) {
             const name = property.name && propertyKey(property.name);
             if (!loadTexture2DOptionFields.includes(name ?? "")) {
                 context.fail(

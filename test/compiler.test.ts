@@ -5996,6 +5996,32 @@ test("carries file-texture address modes into the sampler", () => {
     );
 });
 
+test("file-texture options spread from a constant read the constant's own fields", () => {
+    const result = compileSource(
+        `
+        import { createEngine, loadTexture2D, type EngineContext, type Texture2D } from "@babylonjs/lite";
+
+        const REPEAT = { addressModeU: "mirror-repeat" as const, addressModeV: "clamp-to-edge" as const, invertY: false, mipMaps: false };
+        function load(engine: EngineContext, srgb: boolean): Promise<Texture2D> {
+            return loadTexture2D(engine, "/textures/nme/ebf71b300f43563f.png", { srgb, ...REPEAT });
+        }
+        async function main() {
+            const engine = await createEngine({});
+            await Promise.all([load(engine, true), load(engine, false)]);
+        }
+    `,
+        labDeployment,
+    );
+
+    // Each call keeps the spread's sampler and upload flags beside its own.
+    const loads = [
+        ...result.cpp.matchAll(
+            /bbl::TextureMipmapMode::nearest, bbl::TextureAddressMode::mirror, bbl::TextureAddressMode::clamp, [^}]*\}, false, (true|false), false\)/g,
+        ),
+    ].map((match) => match[1]);
+    assert.deepEqual(loads, ["true", "false"]);
+});
+
 test("uses a boolean fallback for an explicitly undefined record property", () => {
     const result = compileSource(
         `
