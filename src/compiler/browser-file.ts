@@ -66,6 +66,22 @@ function isDefaultGlobal(
     );
 }
 
+/**
+ * The object-URL static of the default `URL` a callee names:
+ * `createObjectURL` or `revokeObjectURL`, else undefined.
+ */
+export function objectUrlMethod(
+    context: DefaultGlobalContext & Pick<BrowserFileContext, "checker">,
+    callee: ts.Expression,
+): "createObjectURL" | "revokeObjectURL" | undefined {
+    const member = namedMember(context.checker, context.unwrap(callee));
+    return member &&
+        isDefaultGlobal(context, member.expression, "URL") &&
+        (member.name === "createObjectURL" || member.name === "revokeObjectURL")
+        ? member.name
+        : undefined;
+}
+
 function staticPropertyName(
     context: BrowserFileContext,
     name: ts.PropertyName,
@@ -294,24 +310,19 @@ export function compileBrowserFileCall(
         context.unwrap(call.expression),
     );
     if (!callee) return undefined;
-    if (
-        isDefaultGlobal(context, callee.expression, "URL") &&
-        (callee.name === "createObjectURL" || callee.name === "revokeObjectURL")
-    ) {
+    const method = objectUrlMethod(context, call.expression);
+    if (method) {
         context.expectArgumentCount(call, 1, 1);
         const argument = context.compileValue(argumentAt(call, 0));
         // A URL the bake driver produced exists only at generation; the
         // release upstream writes for it is the driver's own page's to
         // perform, so the call is no statement here and reaches no file
         // bridge.
-        if (
-            callee.name === "revokeObjectURL" &&
-            argument.kind === "executed-url"
-        ) {
+        if (method === "revokeObjectURL" && argument.kind === "executed-url") {
             return { kind: "void", cpp: "" };
         }
         context.reachFeature("browser:file", call);
-        if (callee.name === "createObjectURL") {
+        if (method === "createObjectURL") {
             if (!isFileValue(argument, "blob"))
                 context.fail(
                     argumentAt(call, 0),
@@ -709,13 +720,9 @@ export function isNativeBrowserFileExpression(
     ) {
         return true;
     }
-    const callee = ts.isCallExpression(value)
-        ? namedMember(context.checker, value.expression)
-        : undefined;
     if (
-        callee &&
-        isDefaultGlobal(context, callee.expression, "URL") &&
-        (callee.name === "createObjectURL" || callee.name === "revokeObjectURL")
+        ts.isCallExpression(value) &&
+        objectUrlMethod(context, value.expression) !== undefined
     ) {
         return true;
     }

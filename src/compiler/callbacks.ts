@@ -703,6 +703,21 @@ export class CallbackLowerer {
     }
 
     /**
+     * A read of a binding its block declares later (`forwardBindingMissed`)
+     * gives that binding its storage ahead of its owner
+     * (`hoistMissedBinding`) and `withdraw`s what the refused lowering
+     * began: true when the statement is to lower again, false for any other
+     * error. A miss whose binding takes no storage there stands.
+     */
+    public retryForwardMiss(error: unknown, withdraw: () => void): boolean {
+        const missed = this.forwardBindingMissed(error);
+        if (!missed) return false;
+        if (!this.hoistMissedBinding(missed)) throw error;
+        withdraw();
+        return true;
+    }
+
+    /**
      * Gives a later binding a refusal read its temporal-dead-zone storage
      * ahead of the statement its block stands at, from that statement or one
      * lowering under it; false from scopes that are not under it (a body

@@ -172,7 +172,7 @@ interface StatementContext {
     bindEmptyStorage(name: ts.Identifier): void;
     readonly callbacks: Pick<
         import("./callbacks.js").CallbackLowerer,
-        "forwardBindingMissed" | "hoistMissedBinding"
+        "retryForwardMiss"
     >;
 }
 
@@ -553,30 +553,43 @@ function roundAttempt(
     const distinct = new Set(begun.filter((node) => !forgotten.has(node)));
     const kept = new Set(lowered.filter((node) => !forgotten.has(node)));
     const mark: RootMark = [distinct.size, kept.size];
+    return newAttempt({
+        lowered: kept,
+        distinct,
+        probed: new EmissionSet(previous.probed),
+        rootProbes: new Set([...previous.rootProbes].filter(probedElsewhere)),
+        taken: pass.taken,
+        moduleRoots: { from: mark, to: mark },
+        sources,
+    });
+}
+
+/** An attempt nothing has lowered, refused or demanded in yet, but what it `carries` on. */
+function newAttempt(carries: Partial<Attempt> = {}): Attempt {
     return {
         attempted: 0,
         refusals: new Map(),
         declarations: new Map(),
         replays: [],
         demands: new Map(),
-        lowered: kept,
+        lowered: new Set(),
         unfinished: new Set(),
         rooted: 0,
         settling: false,
         slowest: [],
-        distinct,
-        probed: new EmissionSet(previous.probed),
-        rootProbes: new Set([...previous.rootProbes].filter(probedElsewhere)),
-        taken: pass.taken,
+        distinct: new Set(),
+        probed: new EmissionSet(),
+        rootProbes: new Set(),
+        taken: new Set(),
         fresh: new Set(),
         phases: [],
         probes: { kept: 0, dropped: 0 },
         phase: { started: performance.now(), lowerings: 0 },
         roots: [],
         root: undefined,
-        moduleRoots: { from: mark, to: mark },
-        sources,
+        moduleRoots: { from: [0, 0], to: [0, 0] },
         speculative: noSpeculativeRefusals(),
+        ...carries,
     };
 }
 
@@ -1026,30 +1039,7 @@ export class SurveyCollector {
         this.attempts++;
         const previous = this.current;
         const enclosingApply = this.apply;
-        const attempt: Attempt = {
-            attempted: 0,
-            refusals: new Map(),
-            declarations: new Map(),
-            replays: [],
-            demands: new Map(),
-            lowered: new Set(),
-            unfinished: new Set(),
-            rooted: 0,
-            settling: false,
-            slowest: [],
-            distinct: new Set(),
-            probed: new EmissionSet(),
-            rootProbes: new Set(),
-            taken: new Set(),
-            fresh: new Set(),
-            phases: [],
-            probes: { kept: 0, dropped: 0 },
-            phase: { started: performance.now(), lowerings: 0 },
-            roots: [],
-            root: undefined,
-            moduleRoots: { from: [0, 0], to: [0, 0] },
-            speculative: noSpeculativeRefusals(),
-        };
+        const attempt: Attempt = newAttempt();
         this.realms.set(realm, attempt);
         this.last = attempt;
         this.current = attempt;
@@ -1097,13 +1087,12 @@ export class SurveyCollector {
                 // at, and this statement lowers again, with the bodies its
                 // withdrawn lowering began. From scopes of its own (a
                 // function's body) an enclosing statement does.
-                const missed = context.callbacks.forwardBindingMissed(met);
-                if (missed) {
-                    if (!context.callbacks.hoistMissedBinding(missed))
-                        throw met;
-                    this.withdrawBodies(begun);
+                if (
+                    context.callbacks.retryForwardMiss(met, () =>
+                        this.withdrawBodies(begun),
+                    )
+                )
                     continue;
-                }
                 // A demand its replay refused is the statement's refusal; a
                 // storage demand applies at once and the statement lowers
                 // again with it; any other replay rolls its statement back

@@ -3,12 +3,12 @@ import ts from "typescript";
 import { staticBooleanOf } from "../values/model.js";
 import { argumentAt, outermostWrapper } from "../syntax.js";
 import { rejectedWhenRefused } from "../promises.js";
-import { holdsOnly } from "../type-facts.js";
 import type { Feature, ShadowCasterMeshManifest, Value } from "../types.js";
 import type { IntrinsicCallContext } from "./context.js";
 import {
     compilePositiveInteger,
     discardOption,
+    booleanCondition,
     resolveConditionalOptions,
     staticNumberValue,
     validateObjectProperties,
@@ -363,15 +363,8 @@ function compileShadowGeneratorFactory(
         }
         // Into the record, read where the cascades are fitted: a run-time
         // boolean is its condition.
-        if (spec.booleans?.includes(name)) {
-            if (
-                !holdsOnly(context.checker.getTypeAtLocation(expression), [
-                    "boolean",
-                ])
-            )
-                context.fail(expression, "Expected a boolean.");
-            return context.conditions.compileCondition(expression);
-        }
+        if (spec.booleans?.includes(name))
+            return booleanCondition(context, expression);
         if (spec.runtimeExtents?.includes(name)) {
             // A run-time extent takes WebGPU's own size conversion.
             return staticNumberValue(context, expression) === undefined
@@ -393,13 +386,12 @@ function compileShadowGeneratorFactory(
             ? `std::optional<double>{${number}}`
             : number;
     };
-    // A member both arms of a conditional spread keep is compiled once.
-    const compiled = new Map<ts.Expression, string>();
     // Each option's pinned default, in the order the emitted options struct
     // takes them. An option the scene omits keeps the folded constant, which
     // is the factory's own `??` value read out of the pin.
     const resolveOptions = (
         options: ts.ObjectLiteralExpression,
+        once: (member: ts.Expression, compile: () => string) => string,
     ): Record<string, string> => {
         const resolved: Record<string, string> = { ...spec.defaults };
         validateObjectProperties(
@@ -410,20 +402,18 @@ function compileShadowGeneratorFactory(
         );
         for (const name of spec.unread ?? []) {
             const expression = context.objectProperty(options, name);
-            if (!expression || compiled.has(expression)) continue;
-            discardOption(context, options, expression);
-            compiled.set(expression, "");
+            if (!expression) continue;
+            once(expression, () => {
+                discardOption(context, options, expression);
+                return "";
+            });
         }
         for (const name of spec.options) {
             const expression = context.objectProperty(options, name);
             if (!expression) continue;
-            let cpp = compiled.get(expression);
-            if (cpp === undefined)
-                compiled.set(
-                    expression,
-                    (cpp = compileOption(name, expression)),
-                );
-            resolved[name] = cpp;
+            resolved[name] = once(expression, () =>
+                compileOption(name, expression),
+            );
         }
         return resolved;
     };
@@ -528,12 +518,10 @@ export function compileShadowIntrinsic(
                 argumentAt(call, 1),
             );
             context.expectSameEngine(engine, generator, call);
-            // A member both arms of a conditional spread keep is compiled once.
-            const compiled = new Map<ts.Expression, string>();
             const resolved = resolveConditionalOptions(
                 context,
                 context.expectObjectLiteral(argumentAt(call, 2)),
-                (options) => {
+                (options, once) => {
                     validateObjectProperties(
                         context,
                         options,
@@ -549,15 +537,9 @@ export function compileShadowIntrinsic(
                         csmStaticCacheOptions.map((name) => {
                             const value = context.objectProperty(options, name);
                             if (!value) return [name, "std::nullopt"];
-                            let cpp = compiled.get(value);
-                            if (cpp === undefined)
-                                compiled.set(
-                                    value,
-                                    (cpp = context.compileNumber(
-                                        value,
-                                        "double",
-                                    )),
-                                );
+                            const cpp = once(value, () =>
+                                context.compileNumber(value, "double"),
+                            );
                             return [
                                 name,
                                 name === "refitAngle"

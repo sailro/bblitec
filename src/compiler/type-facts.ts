@@ -541,6 +541,25 @@ export function holdsObjectKeyword(type: ts.Type): boolean {
 }
 
 /**
+ * Whether `type` is an empty object type such as `{}`: anonymous, with no
+ * properties, signatures or index signatures of its own.
+ */
+export function isEmptyObjectType(
+    checker: ts.TypeChecker,
+    type: ts.Type,
+): boolean {
+    return (
+        (type.flags & ts.TypeFlags.Object) !== 0 &&
+        ((type as ts.ObjectType).objectFlags & ts.ObjectFlags.Anonymous) !==
+            0 &&
+        checker.getPropertiesOfType(type).length === 0 &&
+        type.getCallSignatures().length === 0 &&
+        type.getConstructSignatures().length === 0 &&
+        checker.getIndexInfosOfType(type).length === 0
+    );
+}
+
+/**
  * Whether a slot of this type holds any value but `null` and `undefined`:
  * the empty object type `{}`, which is also what TypeScript narrows
  * `unknown` to where a test rules an absent value out (`x !== null` leaves
@@ -552,17 +571,12 @@ export function holdsAnyPresentValue(
 ): boolean {
     const present = presentMembers(type);
     const only = present.length === 1 ? present[0]! : undefined;
-    if (!only || (only.flags & ts.TypeFlags.Object) === 0) return false;
-    const flags = (only as ts.ObjectType).objectFlags;
     return (
-        (flags & ts.ObjectFlags.Anonymous) !== 0 &&
+        only !== undefined &&
+        isEmptyObjectType(checker, only) &&
         // An empty object literal is a value, not a slot for any.
-        (flags & ts.ObjectFlags.ObjectLiteral) === 0 &&
-        checker.getPropertiesOfType(only).length === 0 &&
-        checker.getSignaturesOfType(only, ts.SignatureKind.Call).length === 0 &&
-        checker.getSignaturesOfType(only, ts.SignatureKind.Construct).length ===
-            0 &&
-        checker.getIndexInfosOfType(only).length === 0
+        ((only as ts.ObjectType).objectFlags & ts.ObjectFlags.ObjectLiteral) ===
+            0
     );
 }
 

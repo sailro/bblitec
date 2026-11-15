@@ -72,6 +72,14 @@ std::shared_ptr<Engine> create_realm_engine(EngineOptions options,
 
 js::Promise<js::PromiseVoid> start_realm_engine(std::shared_ptr<Engine> engine);
 
+/** The realm's own reference to `engine`, which an asynchronous asset load keeps alive. */
+inline std::shared_ptr<Engine> owned_engine(Engine& engine) {
+    auto owner = engine.realm_owner.lock();
+    if (!owner)
+        throw std::logic_error("An asynchronous asset load requires an owned engine.");
+    return owner;
+}
+
 /**
  * `loadGltf` in a realm. A native job reads, parses and decodes the file
  * (`read_gltf`, `prepare_gltf`), which writes no engine record, while the
@@ -80,9 +88,7 @@ js::Promise<js::PromiseVoid> start_realm_engine(std::shared_ptr<Engine> engine);
  */
 template <bool Cameras = false>
 js::Promise<AssetHandle> load_realm_gltf(Engine& engine, std::string path) {
-    const auto owner = engine.realm_owner.lock();
-    if (!owner)
-        throw std::logic_error("An asynchronous asset load requires an owned engine.");
+    const auto owner = owned_engine(engine);
     // The file's own failure settles after the disposal check, which preceded the read.
     struct Read {
         std::shared_ptr<GltfSource> file;
@@ -121,9 +127,7 @@ inline js::Promise<StoredTexture> load_realm_file_texture(Engine& engine, Textur
                                                           TextureSamplerState sampler,
                                                           bool invert_y, bool srgb,
                                                           bool premultiply_alpha) {
-    const auto owner = engine.realm_owner.lock();
-    if (!owner)
-        throw std::logic_error("An asynchronous asset load requires an owned engine.");
+    const auto owner = owned_engine(engine);
     std::string key =
         file_texture_cache_key(source.name, sampler, invert_y, srgb, premultiply_alpha);
     if (const auto found = engine.file_texture_cache.find(key);
@@ -184,9 +188,7 @@ template <typename Load> auto rejecting_load(Load&& load) -> decltype(load()) {
  */
 inline js::Promise<StoredTexture> load_realm_ktx2_texture(Engine& engine, std::string path,
                                                           bool srgb) {
-    const auto owner = engine.realm_owner.lock();
-    if (!owner)
-        throw std::logic_error("An asynchronous asset load requires an owned engine.");
+    const auto owner = owned_engine(engine);
     return run_native_job<StoredTexture>(
         [path = std::move(path)] { return read_binary_file(path); },
         [owner, srgb](std::vector<std::uint8_t> container) {

@@ -24,6 +24,14 @@ import { runGenerationChild } from "./generation-child.js";
 /** Immutable inline and download-cache bytes can be shared across compiles. */
 const bytesBySource = new EmissionMap<string, Uint8Array>();
 
+/** A registered asset's text, its bytes decoded as UTF-8. */
+export function readAssetTextSync(
+    source: string,
+    entryFileName: string,
+): string {
+    return new TextDecoder().decode(readAssetBytesSync(source, entryFileName));
+}
+
 export function readAssetBytesSync(
     source: string,
     entryFileName: string,

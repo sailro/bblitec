@@ -63,6 +63,32 @@ const MAX_CANDIDATE_SELECTORS = 8;
 const MAX_MEMBER_DEPTH = 2;
 /** A value typed as a union of at most this many string literals selects. */
 const MAX_LITERAL_OUTCOMES = 16;
+/** At most this many arms, the product of the tests' outcomes, split one call. */
+const MAX_ARMS = 81;
+
+/**
+ * Whether an argument of `call` reads a value or a condition the run-time
+ * case split being compiled fixed in its arm: the call specializes on that
+ * outcome inline rather than sharing a body.
+ */
+export function fixedByCaseSplit(
+    context: Pick<LoweringServices, "valueOverrides" | "conditionOverrides">,
+    call: ts.CallExpression | ts.NewExpression,
+): boolean {
+    return (
+        (context.valueOverrides.size > 0 ||
+            context.conditionOverrides.size > 0) &&
+        (call.arguments ?? []).some((argument) =>
+            someAnalysisNode(
+                argument,
+                (node) =>
+                    context.valueOverrides.has(node) ||
+                    context.conditionOverrides.has(node),
+                { functions: "skip" },
+            ),
+        )
+    );
+}
 
 /**
  * Compiles a local function call whose arguments pick between values with a
@@ -78,7 +104,8 @@ const MAX_LITERAL_OUTCOMES = 16;
  * read (such a function reaches a local binding only through its
  * arguments). With more than two tests, the call splits only on those whose
  * staying a runtime test, with every other test fixed, still refuses; a call
- * that depends on more than `MAX_SELECTORS`, or reads more than
+ * that depends on more than `MAX_SELECTORS`, whose tests' outcomes make
+ * more than `MAX_ARMS` arms, or that reads more than
  * `MAX_CANDIDATE_SELECTORS`, keeps its refusal, which then says so.
  */
 export function compileWithRuntimeCaseSplit(
@@ -109,11 +136,29 @@ export function compileWithRuntimeCaseSplit(
         );
         if (runtime === undefined) throw error;
         if (runtime.variable.length > MAX_CANDIDATE_SELECTORS)
-            throw beyondSplit(error, runtime.variable, MAX_CANDIDATE_SELECTORS);
+            throw beyondSplit(
+                error,
+                runtime.variable,
+                `at most ${MAX_CANDIDATE_SELECTORS} run-time tests; it reads ${runtime.variable.length}`,
+            );
         const selectors = dependedSelectors(context, runtime, compile);
         if (selectors === undefined) throw error;
         if (selectors.length > MAX_SELECTORS)
-            throw beyondSplit(error, selectors, MAX_SELECTORS);
+            throw beyondSplit(
+                error,
+                selectors,
+                `at most ${MAX_SELECTORS} run-time tests; it reads ${selectors.length}`,
+            );
+        const arms = selectors.reduce(
+            (product, selector) => product * selector.outcomes.length,
+            1,
+        );
+        if (arms > MAX_ARMS)
+            throw beyondSplit(
+                error,
+                selectors,
+                `run-time tests in at most ${MAX_ARMS} arms; its tests make ${arms}`,
+            );
         const split = context.probeEmission(
             () => {
                 try {
@@ -140,12 +185,13 @@ export function compileWithRuntimeCaseSplit(
 
 /**
  * The refusal of a call a split could not reach: its own text, then the
- * run-time tests that exceeded `limit`. A restart stands as it is.
+ * limit the run-time tests exceeded (`reach`) and the tests. A restart
+ * stands as it is.
  */
 function beyondSplit(
     error: unknown,
     tests: readonly Selector[],
-    limit: number,
+    reach: string,
 ): unknown {
     if (!(error instanceof CompileError)) return error;
     const names = tests.map((test) =>
@@ -155,7 +201,7 @@ function beyondSplit(
         error.fileName,
         error.line,
         error.column,
-        `${error.detail} The call compiles once per outcome of at most ${limit} run-time tests; it reads ${tests.length}: ${names.join(", ")}.`,
+        `${error.detail} The call compiles once per outcome of ${reach}: ${names.join(", ")}.`,
         error.reason,
         error.subject,
     );

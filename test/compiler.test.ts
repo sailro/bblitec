@@ -14952,7 +14952,7 @@ test("lowers setCameraLimits with the fields present in the pinned options recor
 
     assert.match(
         result.cpp,
-        /bbl::set_camera_limits\([^,]+, [^,]+, 56u, std::array<double, 6>\{0\.0, 0\.0, 0\.0, 1\.7, 2\.0, 20\.0\}\)/,
+        /bbl::write_camera_limits\([^,]+, [^,]+, 56u, std::array<std::optional<double>, 6>\{std::nullopt, std::nullopt, std::nullopt, 1\.7, 2\.0, 20\.0\}\)/,
     );
 });
 
@@ -14987,10 +14987,10 @@ test("setCameraLimits writes limits that may be undefined, from a literal, a spr
         held.script(false);
         held.dispose();
     `);
-    // Limits that are all numbers keep the number form.
+    // Limits that are all numbers write each as present.
     assert.match(
         result.cpp,
-        /bbl::set_camera_limits\([^,]+, [^,]+, 48u, std::array<double, 6>\{0\.0, 0\.0, 0\.0, 0\.0, 2\.0, 20\.0\}\)/,
+        /bbl::write_camera_limits\([^,]+, [^,]+, 48u, std::array<std::optional<double>, 6>\{std::nullopt, std::nullopt, std::nullopt, std::nullopt, 2\.0, 20\.0\}\)/,
     );
     // The keys each record holds are its present mask; a value that may be
     // undefined is written as it is.
@@ -14999,7 +14999,7 @@ test("setCameraLimits writes limits that may be undefined, from a literal, a spr
             /bbl::write_camera_limits\([^,]+, [^,]+, (\d+)u, std::array<std::optional<double>, 6>\{std::nullopt, std::nullopt, /g,
         ),
     ].map((match) => match[1]);
-    assert.deepEqual(writes, ["12", "60", "60", "60"]);
+    assert.deepEqual(writes, ["48", "12", "60", "60", "60"]);
 });
 
 test("lowers Scene 12's imported recursive mesh walk and animated root clones", () => {

@@ -29,6 +29,7 @@ import {
     declaredSymbol,
     libraryCallName,
     libraryGlobal,
+    libraryStaticMember,
     libraryName,
     resolvedSymbol,
     nullishComparison,
@@ -997,9 +998,11 @@ function listedMembers(
     values: readonly Projection[],
 ): Projection[] | undefined {
     if (index !== 0 || !ts.isCallExpression(call)) return undefined;
-    const callee = namedMember(checker, unwrapExpression(call.expression));
-    if (!callee || libraryGlobal(checker, callee.expression) !== "Object")
-        return undefined;
+    const callee = libraryStaticMember(
+        checker,
+        unwrapExpression(call.expression),
+    );
+    if (callee?.owner !== "Object") return undefined;
     const members = projectMember(values, ANY_KEY);
     return callee.name === "values"
         ? nest(members, ANY_KEY)

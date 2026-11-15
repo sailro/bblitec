@@ -41,6 +41,7 @@ import { eventTargetCpp } from "./dom-targets.js";
 import {
     absenceOf,
     absenceOfNull,
+    knownAbsent,
     knownCondition,
     staticKeyOf,
     undefinedValue,
@@ -296,6 +297,8 @@ import {
     localCallback,
     type LocalCallback,
     notJson,
+    plainDataMembers,
+    type DataMember,
 } from "./syntax.js";
 import {
     namespaceMemberName,
@@ -876,6 +879,12 @@ function soleRecordMember(
 function storesDocumentScalars(element: DataType): boolean {
     const stored = element.kind === "optional" ? element.inner : element;
     return ["number", "string", "boolean", "enum"].includes(stored.kind);
+}
+
+/** A `const` table's object literal and the named data members it stores. */
+interface ConstTable {
+    readonly literal: ts.ObjectLiteralExpression;
+    readonly members: readonly DataMember[];
 }
 
 export class DataLowerer {
@@ -6087,7 +6096,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             if (
                 unwrittenRecordField &&
                 (sourceField?.kind === "json-null" ||
-                    knownCondition(sourceField?.optionalFoundCpp) === false ||
+                    knownAbsent(sourceField) ||
                     (sourceField === undefined &&
                         owner.recordOwnKeys !== undefined &&
                         !owner.recordOwnKeys.includes(property))) &&
@@ -6371,14 +6380,14 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 access,
             );
             this.context.reachJsData();
-            return this.tableMember(
-                access,
-                property,
-                this.leafValue(
-                    `bbl::js::enum_map_at(${owner.cpp}, ${tag})`,
-                    dataType.element,
-                ),
+            const table = this.constTable(access);
+            const read = this.leafValue(
+                `bbl::js::enum_map_at(${owner.cpp}, ${tag})`,
+                dataType.element,
             );
+            return table
+                ? this.tableMember(access, table, property, read)
+                : read;
         }
         // Error views expose their message and dynamic constructor name.
         const carried = owner.nativeError
@@ -6922,17 +6931,20 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 dataType.enumName,
             );
             this.context.reachJsData();
-            const key = this.context.probeEmission(
-                () => this.context.compileValue(access.argumentExpression),
-                () => false,
-            ).staticString;
+            const table = this.constTable(access);
+            const key =
+                table &&
+                this.context.probeEmission(
+                    () => this.context.compileValue(access.argumentExpression),
+                    () => false,
+                ).staticString;
             const read = this.leafValue(
                 `bbl::js::enum_map_at(${owner.cpp}, ${tag})`,
                 dataType.element,
             );
-            return key === undefined
-                ? read
-                : this.tableMember(access, key, read);
+            return table && key !== undefined
+                ? this.tableMember(access, table, key, read)
+                : read;
         }
         if (dataType.kind === "struct") {
             // A write through a view of fixed fields names its field by a
@@ -14556,10 +14568,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                     source.kind === "data"
                         ? this.narrowOptional(source, property.expression)
                         : source;
-                if (
-                    spread.kind === "json-null" ||
-                    knownCondition(spread.optionalFoundCpp) === false
-                ) {
+                if (spread.kind === "json-null" || knownAbsent(spread)) {
                     declareDefault();
                     continue;
                 }
@@ -19004,6 +19013,25 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
     }
 
     /**
+     * The object literal a `const` holding a table initializes
+     * (`constObjectLiteral`), with its members, when it only stores named
+     * data; undefined for any other owner.
+     */
+    private constTable(
+        access: ts.PropertyAccessExpression | ts.ElementAccessExpression,
+    ): ConstTable | undefined {
+        const created = constObjectLiteral(
+            this.context.checker,
+            access.expression,
+        )?.literal;
+        const members =
+            created &&
+            ts.isObjectLiteralExpression(created) &&
+            plainDataMembers(created);
+        return members ? { literal: created, members } : undefined;
+    }
+
+    /**
      * A member a known key reads of a `const` an object literal initializes:
      * the native read, holding what generation knows of the literal's
      * member where no write in the program replaces it (`recordFieldIsWritten`):
@@ -19012,48 +19040,24 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
      */
     private tableMember(
         access: ts.PropertyAccessExpression | ts.ElementAccessExpression,
+        table: ConstTable,
         key: string,
         read: Value,
     ): Value {
-        const root = unwrapExpression(access.expression);
-        const declaration =
-            ts.isIdentifier(root) &&
-            resolvedSymbol(this.context.checker, root)?.valueDeclaration;
-        if (
-            !declaration ||
-            !ts.isVariableDeclaration(declaration) ||
-            !ts.isIdentifier(declaration.name) ||
-            !ts.isVariableDeclarationList(declaration.parent) ||
-            variableKind(declaration.parent) !== "const" ||
-            !declaration.initializer
-        )
-            return read;
-        const table = unwrapExpression(declaration.initializer);
-        if (
-            !ts.isObjectLiteralExpression(table) ||
-            table.properties.some(
-                (property) => !ts.isPropertyAssignment(property),
-            )
-        )
-            return read;
-        const entry = [...table.properties]
-            .reverse()
-            .find(
-                (property): property is ts.PropertyAssignment =>
-                    ts.isPropertyAssignment(property) &&
-                    propertyKey(property.name) === key,
-            );
-        const literal = entry && unwrapExpression(entry.initializer);
+        const entry = table.members
+            .filter((member) => member.key === key)
+            .at(-1);
+        const literal = entry && unwrapExpression(entry.value);
         const checker = this.context.checker;
         if (
             !literal ||
             !ts.isObjectLiteralExpression(literal) ||
             recordFieldIsWritten(
                 this.context,
-                checker.getTypeAtLocation(root),
+                checker.getTypeAtLocation(access.expression),
                 key,
                 false,
-                table,
+                table.literal,
             )
         )
             return read;
@@ -19235,7 +19239,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             return `static_cast<bool>(${value.cpp})`;
         }
         if (value.kind === "data" && value.dataType?.kind === "optional") {
-            if (knownCondition(value.optionalFoundCpp) === false) {
+            if (knownAbsent(value)) {
                 return "false";
             }
             if (
@@ -19532,7 +19536,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             return equal !== negated ? "true" : "false";
         }
         if (value?.kind === "data" && value.dataType?.kind === "optional") {
-            if (knownCondition(value.optionalFoundCpp) === false) {
+            if (knownAbsent(value)) {
                 return absentTest("false", "true");
             }
             if (
@@ -20260,7 +20264,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         const absentBeside = (absent?: Value, present?: Value): boolean =>
             absent !== undefined &&
             present !== undefined &&
-            knownCondition(absent.optionalFoundCpp) === false &&
+            knownAbsent(absent) &&
             hasScalarFacts(present);
         if (
             absentBeside(leftOptional, rightOptional) ||

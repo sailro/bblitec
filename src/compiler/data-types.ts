@@ -170,6 +170,7 @@ import {
     signatureParameterTypes,
     declaredRecordName,
     holdsAnyPresentValue,
+    isEmptyObjectType,
     holdsObjectKeyword,
     valueKindOf,
 } from "./type-facts.js";
@@ -4864,15 +4865,9 @@ export class DataTypeRegistry {
 
     /** `{}` or `object`: the checker's spelling of a non-null constraint, which adds no members of its own. */
     private isNonNullConstraint(type: ts.Type): boolean {
-        if ((type.flags & ts.TypeFlags.NonPrimitive) !== 0) return true;
         return (
-            (type.flags & ts.TypeFlags.Object) !== 0 &&
-            ((type as ts.ObjectType).objectFlags & ts.ObjectFlags.Anonymous) !==
-                0 &&
-            this.checker.getPropertiesOfType(type).length === 0 &&
-            callSignatures(this.checker, type, "exact").length === 0 &&
-            type.getConstructSignatures().length === 0 &&
-            this.checker.getIndexInfosOfType(type).length === 0
+            (type.flags & ts.TypeFlags.NonPrimitive) !== 0 ||
+            isEmptyObjectType(this.checker, type)
         );
     }
 

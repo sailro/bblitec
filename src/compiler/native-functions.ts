@@ -2,6 +2,7 @@ import {
     someAnalysisNode,
     findAnalysisNodeWithState,
 } from "./analysis-walk.js";
+import { fixedByCaseSplit } from "./runtime-case-split.js";
 import { EmissionSet, EmissionMap } from "./emission-transaction.js";
 import type { LoweringServices } from "./lowering-services.js";
 import ts from "typescript";
@@ -431,20 +432,7 @@ export class NativeFunctionLowerer {
             )
         )
             return undefined;
-        // An argument a run-time case split fixed is the outcome its arm
-        // compiles for: the body specializes on it inline.
-        if (
-            call.arguments.some((argument) =>
-                someAnalysisNode(
-                    argument,
-                    (node) =>
-                        this.context.valueOverrides.has(node) ||
-                        this.context.conditionOverrides.has(node),
-                    { functions: "skip" },
-                ),
-            )
-        )
-            return undefined;
+        if (fixedByCaseSplit(this.context, call)) return undefined;
         const signature = this.resolveSignature(declaration, callee);
         if (!signature) {
             return undefined;

@@ -38,6 +38,7 @@ import {
     keyIndex,
     objectLiteralMembers,
     patternSlots,
+    type PatternSlot,
     testsTruthinessOnly,
     functionOfDeclaration,
     hasExportModifier,
@@ -49,9 +50,12 @@ import {
     valueConsumer,
     yieldedOperands,
     ANY_KEY,
+    jsonScalarLiteral,
+    notJson,
 } from "./syntax.js";
 import { pathStartsWith, type KeyPath } from "./projections.js";
 import {
+    isTypeReference,
     nullability,
     stringLiteralValues,
     typeCanCarryReference,
@@ -227,6 +231,14 @@ interface SourceGraph {
         ts.CallExpression,
         Map<string, ExecutedResult | undefined>
     >;
+    /**
+     * The packaged documents held data reads, parsed, by URL: a function of
+     * the checked program and its package. Undefined: none, or not JSON.
+     */
+    readonly documents: Map<
+        string,
+        { readonly value: ExecutedArgument } | undefined
+    >;
 }
 
 /** Data generation holds for an expression (`heldData`). */
@@ -334,9 +346,7 @@ function patternSource(element: ts.BindingElement):
     let taken: readonly string[] = [];
     for (let node = element; ;) {
         const pattern = node.parent;
-        const slot = patternSlots(pattern).find(
-            (candidate) => candidate.element === node,
-        );
+        const slot = slotOf(pattern, node);
         if (!slot) return undefined;
         if (slot.fallback)
             defaults.push({ value: slot.fallback, below: [...path] });
@@ -419,7 +429,22 @@ function heldBindings(expression: ts.Expression): Binding[] {
     });
 }
 
-/** The step one element of a pattern takes below what the pattern reads: none for a rest. */
+/** The slot of `pattern` that `element` fills. */
+function slotOf(
+    pattern:
+        | ts.BindingPattern
+        | ts.ObjectLiteralExpression
+        | ts.ArrayLiteralExpression,
+    element: ts.Node,
+): PatternSlot | undefined {
+    return patternSlots(pattern).find((slot) => slot.element === element);
+}
+
+/**
+ * The step one element of a pattern takes below what the pattern reads:
+ * none for a rest, any member for a computed key. `patternSource` reads
+ * the same slots but refuses those two.
+ */
 function patternStep(
     pattern:
         | ts.BindingPattern
@@ -427,9 +452,7 @@ function patternStep(
         | ts.ArrayLiteralExpression,
     element: ts.Node,
 ): KeyPath {
-    const read = patternSlots(pattern).find(
-        (slot) => slot.element === element,
-    )?.read;
+    const read = slotOf(pattern, element)?.read;
     return read?.kind === "member" ? [keyStep(read.key)] : [];
 }
 
@@ -1254,6 +1277,7 @@ function sourceGraph(
         escaped,
         builtMethods: new Map(),
         executed: new Map(),
+        documents: new Map(),
     };
     sourceGraphs.set(checker, graph);
     return graph;
@@ -1293,6 +1317,8 @@ class StringDomain {
     >();
     /** @unjournaled String-building operands being read (`operand`). */
     private operations = 0;
+    /** @unjournaled A number per generic instantiation a read enters, for its query's context. */
+    private readonly instances = new Map<ts.TypeReference, number>();
     private readonly graph: SourceGraph;
     /** @unjournaled Traversal budget for one domain query, discarded with that query. */
     private remaining = 16384;
@@ -1328,13 +1354,10 @@ class StringDomain {
         const type = this.context.checker.getNonNullableType(
             this.context.checker.getTypeAtLocation(receiver),
         );
-        return (type.flags & ts.TypeFlags.Object) !== 0 &&
-            ((type as ts.ObjectType).objectFlags & ts.ObjectFlags.Reference) !==
-                0 &&
+        return isTypeReference(type) &&
             ((type.symbol?.flags ?? 0) & ts.SymbolFlags.Class) !== 0 &&
-            this.context.checker.getTypeArguments(type as ts.TypeReference)
-                .length > 0
-            ? (type as ts.TypeReference)
+            this.context.checker.getTypeArguments(type).length > 0
+            ? type
             : undefined;
     }
 
@@ -1491,15 +1514,28 @@ class StringDomain {
         return [...values];
     }
 
+    /** One step of the query's traversal budget ({@link remaining}). */
+    private spend(): void {
+        if (--this.remaining < 0)
+            throw new UnboundedDomain(
+                `${this.use.label} provenance exceeds the analysis budget.`,
+            );
+    }
+
+    /** The number {@link instances} gives `instance`. */
+    private instanceId(instance: ts.TypeReference): number {
+        let id = this.instances.get(instance);
+        if (id === undefined)
+            this.instances.set(instance, (id = this.instances.size));
+        return id;
+    }
+
     public read(
         expression: ts.Expression,
         projection: KeyPath,
         environment: Environment,
     ): Domain {
-        if (--this.remaining < 0)
-            throw new UnboundedDomain(
-                `${this.use.label} provenance exceeds the analysis budget.`,
-            );
+        this.spend();
         const node = unwrapExpression(expression);
         const query = {
             context: [
@@ -1508,9 +1544,7 @@ class StringDomain {
                 this.truthy.size,
                 this.optionalProjection,
                 this.operations,
-                this.instance
-                    ? this.context.checker.typeToString(this.instance)
-                    : "",
+                this.instance ? this.instanceId(this.instance) : "",
             ].join("\u0001"),
             environment,
         };
@@ -1867,6 +1901,7 @@ class StringDomain {
         const index = owner.parameters.indexOf(parameter);
         const named: BuiltConst[] = [];
         for (const call of this.reachingCalls(owner)) {
+            this.spend();
             const input = parameterInput(
                 this.context.checker,
                 call,
@@ -2473,6 +2508,14 @@ class StringDomain {
         name: string,
         environment: Environment,
     ): readonly SupportedFunction[] | undefined {
+        // A primitive or an array is no record a call's object literal built.
+        const type = this.context.checker.getTypeAtLocation(receiver);
+        const kind = valueKindOf(type);
+        if (
+            (kind !== "object" && kind !== "unknown") ||
+            this.context.checker.isArrayType(type)
+        )
+            return undefined;
         const declarations = this.namedConsts(receiver, environment);
         if (!declarations?.length) return undefined;
         const methods = new Set<SupportedFunction>();
@@ -2805,16 +2848,8 @@ class StringDomain {
         const settled = this.settled(expression, environment);
         if (!settled) return undefined;
         const { node } = settled;
-        const scalar = ts.isStringLiteralLike(node)
-            ? node.text
-            : ts.isNumericLiteral(node)
-              ? Number(node.text)
-              : node.kind === ts.SyntaxKind.TrueKeyword
-                ? true
-                : node.kind === ts.SyntaxKind.FalseKeyword
-                  ? false
-                  : undefined;
-        if (scalar !== undefined)
+        const scalar = jsonScalarLiteral(node);
+        if (scalar !== notJson && scalar !== null)
             return {
                 value: scalar,
                 key: JSON.stringify(scalar),
@@ -2849,20 +2884,33 @@ class StringDomain {
                       ),
                   )
                 : undefined;
-        const text =
+        const at =
             url && !(url instanceof UnboundedDomain) && url.length === 1
-                ? this.use.document?.(url[0]!)
+                ? url[0]!
                 : undefined;
-        if (text === undefined) return undefined;
-        try {
-            return {
-                value: JSON.parse(text) as ExecutedArgument,
-                key: text,
-                document: true,
-            };
-        } catch {
-            return undefined;
+        const document = this.use.document;
+        if (at === undefined || !document) return undefined;
+        if (!this.graph.documents.has(at)) {
+            const text = document(at);
+            let parsed: { readonly value: ExecutedArgument } | undefined;
+            try {
+                parsed =
+                    text === undefined
+                        ? undefined
+                        : { value: JSON.parse(text) as ExecutedArgument };
+            } catch {
+                parsed = undefined;
+            }
+            this.graph.documents.set(at, parsed);
         }
+        const parsed = this.graph.documents.get(at);
+        return (
+            parsed && {
+                value: parsed.value,
+                key: `document ${at}`,
+                document: true,
+            }
+        );
     }
 
     /**

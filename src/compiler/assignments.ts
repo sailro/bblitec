@@ -2805,15 +2805,6 @@ function emitCameraViewportAssignment(
  * A boolean expression's value where it is assigned: a condition is its
  * operand's truthiness, which for a boolean is the value itself.
  */
-function booleanCondition(
-    context: AssignmentContext,
-    expression: ts.Expression,
-): string {
-    if (!holdsOnly(context.checker.getTypeAtLocation(expression), ["boolean"]))
-        context.fail(expression, "Expected a boolean.");
-    return context.conditions.compileCondition(expression);
-}
-
 function requireSimpleAssignment(
     context: AssignmentContext,
     expression: ts.BinaryExpression,
@@ -2851,7 +2842,7 @@ import {
     requireParticleBakeWritable,
 } from "./particle-buffer.js";
 import { emitFrozenParticleSheetAssignment } from "./particle-sheet.js";
-import { staticNumberValue } from "./option-helpers.js";
+import { booleanCondition, staticNumberValue } from "./option-helpers.js";
 import { staticTableEntry, type TableOption } from "./table-options.js";
 import { propertyNeverRead } from "./unread-properties.js";
 import { unlessRefused } from "./compile-error.js";
@@ -2897,7 +2888,7 @@ import { ApplicationRealmRequired } from "./worker-modules.js";
 import { stringLiteral } from "../cpp-literals.js";
 import { PINNED_ASSIGNMENT_OPERATORS } from "../lowering/pinned-operators.js";
 import { unwrappedIdentifier } from "./syntax.js";
-import { holdsOnly, unionMembers } from "./type-facts.js";
+import { unionMembers } from "./type-facts.js";
 import { ERROR_CLASS_FIELDS } from "./error-values.js";
 import { isGlobalUndefined, libraryName } from "./symbols.js";
 import {

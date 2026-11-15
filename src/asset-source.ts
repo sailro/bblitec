@@ -1,3 +1,4 @@
+import { closeSync, openSync, readSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 
 import { isDataUrl } from "./data-url.js";
@@ -20,4 +21,15 @@ export function localAssetPath(
         return undefined;
     }
     return resolve(dirname(inputPath), source);
+}
+
+/** A file's first `length` bytes, or all of a shorter file. */
+export function readFilePrefix(path: string, length: number): Buffer {
+    const prefix = Buffer.alloc(length);
+    const file = openSync(path, "r");
+    try {
+        return prefix.subarray(0, readSync(file, prefix, 0, length, 0));
+    } finally {
+        closeSync(file);
+    }
 }

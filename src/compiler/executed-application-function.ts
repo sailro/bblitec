@@ -65,7 +65,7 @@ export type ExecutedArgument =
     | readonly ExecutedArgument[]
     | { readonly [name: string]: ExecutedArgument };
 
-interface ExecutedFunctionContext {
+export interface ExecutedFunctionContext {
     readonly checker: ts.TypeChecker;
     readonly sourceFiles?: readonly ts.SourceFile[];
     fail(node: ts.Node, message: string): never;

@@ -6,10 +6,13 @@ export interface ArchiveMember {
     bytes: Uint8Array;
 }
 
+/** The fewest bytes a zip holds: its end-of-central-directory record. */
+export const ZIP_MINIMUM_BYTES = 22;
+
 /** Whether bytes begin as a zip's first local file header does. */
 export function isZip(bytes: Uint8Array): boolean {
     return (
-        bytes.length >= 22 &&
+        bytes.length >= ZIP_MINIMUM_BYTES &&
         bytes[0] === 0x50 &&
         bytes[1] === 0x4b &&
         bytes[2] === 0x03 &&
@@ -24,6 +27,20 @@ export function isZip(bytes: Uint8Array): boolean {
  * storing entries raw or deflated, and refuses anything else by name.
  */
 export function zipMembers(bytes: Uint8Array, url: string): ArchiveMember[] {
+    return zipEntries(bytes, url).map(({ path, read }) => ({
+        path,
+        bytes: read(),
+    }));
+}
+
+/**
+ * A zip's stored files as its central directory lists them, each read
+ * (inflated) only when asked.
+ */
+function zipEntries(
+    bytes: Uint8Array,
+    url: string,
+): { readonly path: string; readonly read: () => Uint8Array }[] {
     const archive = Buffer.from(
         bytes.buffer,
         bytes.byteOffset,
@@ -46,7 +63,7 @@ export function zipMembers(bytes: Uint8Array, url: string): ArchiveMember[] {
     if (count === 0xffff || directoryOffset === 0xffffffff) {
         throw new Error(`ZIP64 archives are not supported: ${url}.`);
     }
-    const members: ArchiveMember[] = [];
+    const entries: { path: string; read: () => Uint8Array }[] = [];
     let cursor = directoryOffset;
     for (let index = 0; index < count; index++) {
         if (archive.readUInt32LE(cursor) !== 0x02014b50) {
@@ -80,16 +97,32 @@ export function zipMembers(bytes: Uint8Array, url: string): ArchiveMember[] {
         const start = localOffset + 30 + localNameLength + localExtraLength;
         const raw = archive.subarray(start, start + compressedSize);
         if (method === 0) {
-            members.push({ path, bytes: raw });
+            entries.push({ path, read: () => raw });
         } else if (method === 8) {
-            members.push({ path, bytes: inflateRawSync(raw) });
+            entries.push({ path, read: () => inflateRawSync(raw) });
         } else {
             throw new Error(
                 `Unsupported zip compression method ${method} for ${path} in ${url}.`,
             );
         }
     }
-    return members;
+    return entries;
+}
+
+/**
+ * The files packaged bytes hold: each stored file of a zip archive, under
+ * its path, else the bytes themselves, under no member path.
+ */
+export function* packagedFiles(
+    bytes: Uint8Array,
+    url: string,
+): Generator<{ readonly bytes: Uint8Array; readonly member?: string }> {
+    if (!isZip(bytes)) {
+        yield { bytes };
+        return;
+    }
+    for (const member of zipMembers(bytes, url))
+        yield { bytes: member.bytes, member: member.path };
 }
 
 /** One file of a zip, by its path. */
@@ -98,9 +131,9 @@ export function zipMember(
     url: string,
     path: string,
 ): Uint8Array {
-    const member = zipMembers(bytes, url).find(
+    const member = zipEntries(bytes, url).find(
         (candidate) => candidate.path === path,
     );
     if (!member) throw new Error(`No member '${path}' in ${url}.`);
-    return member.bytes;
+    return member.read();
 }

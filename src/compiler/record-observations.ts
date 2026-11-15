@@ -40,6 +40,7 @@ import {
     variableKind,
     hasExportModifier,
     propertyKey,
+    valueConsumer,
 } from "./syntax.js";
 
 /** What a record-observation question reads: the program and the code its calls run. */
@@ -184,9 +185,44 @@ export function recordFieldIsWritten(
     keepsPresent = false,
     origin?: ts.Node,
 ): boolean {
+    const site = origin
+        ? `${origin.getSourceFile().fileName}:${origin.pos}:${origin.end}:${origin.kind}`
+        : "";
+    const key = `${property}|${keepsPresent}|${site}`;
+    let byKey = writtenFields.get(source);
+    if (!byKey) writtenFields.set(source, (byKey = new Map<string, boolean>()));
+    let written = byKey.get(key);
+    if (written === undefined) {
+        written = fieldWriteFound(
+            context,
+            source,
+            property,
+            keepsPresent,
+            origin,
+        );
+        byKey.set(key, written);
+    }
+    return written;
+}
+
+/**
+ * @unjournaled {@link recordFieldIsWritten}'s answers by record type and
+ * question: pure functions of the checked program, kept across replays.
+ */
+const writtenFields = new WeakMap<ts.Type, Map<string, boolean>>();
+
+/** {@link recordFieldIsWritten}, computed. */
+function fieldWriteFound(
+    context: RecordObservationContext,
+    source: ts.Type,
+    property: string,
+    keepsPresent: boolean,
+    origin: ts.Node | undefined,
+): boolean {
     const { checker } = context;
     const observations = programObservations(context.program);
     const holds = holderTest(checker);
+    const records = [source];
     const mentionsTypeParameter = (
         type: ts.Type,
         seen = new Set<ts.Type>(),
@@ -233,7 +269,7 @@ export function recordFieldIsWritten(
     return (
         writesWhere(
             observations,
-            (type) => holds(type, [source]) || viewedAsSource(type),
+            (type) => holds(type, records) || viewedAsSource(type),
             (write) =>
                 (write.property === undefined || write.property === property) &&
                 relevant(write),
@@ -572,27 +608,15 @@ function handedMemberReads(
     use: ts.Expression,
 ): readonly ts.Expression[] | undefined {
     const { checker } = context;
-    const property = use.parent;
-    const key =
-        ts.isPropertyAssignment(property) && property.initializer === use
-            ? propertyKey(property.name)
-            : ts.isShorthandPropertyAssignment(property) &&
-                property.name === use
-              ? property.name.text
-              : undefined;
-    if (key === undefined || !ts.isObjectLiteralExpression(property.parent))
-        return undefined;
-    const argument = flowingUse(property.parent);
-    const call = argument.parent;
-    if (
-        !(ts.isCallExpression(call) || ts.isNewExpression(call)) ||
-        call.expression === argument
-    )
-        return undefined;
+    const property = valueConsumer(use);
+    if (property.kind !== "property") return undefined;
+    const key = propertyKey(property.name);
+    const handed = valueConsumer(flowingUse(property.literal));
+    if (key === undefined || handed.kind !== "argument") return undefined;
     const parameter = programParameter(
-        calledDeclaration(checker, call),
-        call,
-        call.arguments?.indexOf(argument) ?? -1,
+        calledDeclaration(checker, handed.call),
+        handed.call,
+        handed.index,
     );
     const symbol =
         parameter &&
@@ -605,14 +629,13 @@ function handedMemberReads(
         checker,
         symbol,
     )) {
-        const object = flowingUse(reference);
-        const access = object.parent;
+        const read = valueConsumer(flowingUse(reference));
         if (
-            !ts.isPropertyAccessExpression(access) ||
-            access.expression !== object
+            read.kind !== "member" ||
+            !ts.isPropertyAccessExpression(read.access)
         )
             return undefined;
-        if (access.name.text === key) memberReads.push(access);
+        if (read.access.name.text === key) memberReads.push(read.access);
     }
     return memberReads;
 }

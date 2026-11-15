@@ -30,6 +30,7 @@
 #include <new>
 #include <optional>
 #include <stdexcept>
+#include <span>
 #include <string>
 #include <string_view>
 #include <type_traits>
@@ -2452,24 +2453,35 @@ struct TextureImageSource {
     std::shared_ptr<const std::vector<std::uint8_t>> bytes;
 };
 
+/** The hash 64-bit FNV-1a starts from. */
+inline constexpr std::uint64_t fnv1a_64_basis = 0xcbf29ce484222325ull;
+
+/** 64-bit FNV-1a over `bytes`, continuing from `hash`. */
+inline std::uint64_t fnv1a_64(std::span<const std::uint8_t> bytes,
+                              std::uint64_t hash = fnv1a_64_basis) {
+    for (const std::uint8_t byte : bytes) {
+        hash ^= byte;
+        hash *= 0x100000001b3ull;
+    }
+    return hash;
+}
+
+/** A 64-bit value as sixteen lowercase hexadecimal digits. */
+inline std::string hex_digits_64(std::uint64_t value) {
+    static constexpr char digits[] = "0123456789abcdef";
+    std::string text(16, '0');
+    for (std::size_t index = 0; index < text.size(); ++index)
+        text[index] = digits[(value >> (60u - 4u * index)) & 0xfu];
+    return text;
+}
+
 /**
  * The name bytes package under where a program selects them by content at
  * run time: their 64-bit FNV-1a hash as sixteen hexadecimal digits, then
  * their length. `contentKey` (src/content-key.ts) computes the same text.
  */
 inline std::string content_key(const std::vector<std::uint8_t>& bytes) {
-    std::uint64_t hash = 0xcbf29ce484222325ull;
-    for (const std::uint8_t byte : bytes) {
-        hash ^= byte;
-        hash *= 0x100000001b3ull;
-    }
-    static constexpr char digits[] = "0123456789abcdef";
-    std::string key(16, '0');
-    for (std::size_t index = 0; index < key.size(); ++index)
-        key[index] = digits[(hash >> (60u - 4u * index)) & 0xfu];
-    key.push_back('-');
-    key += std::to_string(bytes.size());
-    return key;
+    return hex_digits_64(fnv1a_64(bytes)) + "-" + std::to_string(bytes.size());
 }
 
 /** Texture2D's per-device URL/options cache, projected onto native samplers. */
@@ -8852,13 +8864,6 @@ void set_camera_vector(CameraRecord& camera, Vec3d CameraRecord::* vector, Vec3d
 /** `setCameraLimits`: each limit `present_mask` names is written, an absent one removing its wall. */
 void write_camera_limits(Engine& engine, CameraHandle camera, std::uint32_t present_mask,
                          const std::array<std::optional<double>, 6>& limits);
-/** `write_camera_limits` of limits that are all numbers. */
-inline void set_camera_limits(Engine& engine, CameraHandle camera, std::uint32_t present_mask,
-                              const std::array<double, 6>& limits) {
-    write_camera_limits(engine, camera, present_mask,
-                        std::array<std::optional<double>, 6>{limits[0], limits[1], limits[2],
-                                                             limits[3], limits[4], limits[5]});
-}
 js::Callback<void()> attach_free_control(Engine& engine, CameraHandle camera, const Scene& scene);
 struct ConfigurableFreeControlOptions {
     std::optional<std::vector<std::string>> upKeys;

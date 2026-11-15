@@ -153,7 +153,7 @@ import {
     mathConstantAccess,
     mathMemberCall,
 } from "./math-intrinsics.js";
-import { knownCondition } from "./values/model.js";
+import { knownAbsent, knownCondition } from "./values/model.js";
 
 /** Whether a symbol names a module-scope `const` declared in the program. */
 function isModuleConstant(symbol: ts.Symbol): boolean {
@@ -1669,7 +1669,7 @@ export class StaticEvaluator {
                     return undefined;
                 }
                 const resolvedField = this.resolveProperty(left);
-                if (knownCondition(resolvedField?.optionalFoundCpp) === false) {
+                if (knownAbsent(resolvedField)) {
                     return expression.right;
                 }
                 if (

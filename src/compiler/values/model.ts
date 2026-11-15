@@ -175,6 +175,16 @@ export function knownCondition(cpp: string | undefined): boolean | undefined {
     return cpp === "true" ? true : cpp === "false" ? false : undefined;
 }
 
+/**
+ * Whether generation knows an optional member absent: its found test
+ * (`optionalFoundCpp`) folds to false.
+ */
+export function knownAbsent(
+    value: Pick<Value, "optionalFoundCpp"> | undefined,
+): boolean {
+    return knownCondition(value?.optionalFoundCpp) === false;
+}
+
 /** Which absence a json-null value is; undefined for any other value. */
 export function absenceOf(value: Value): "undefined" | "null" | undefined {
     if (value.kind !== "json-null") return undefined;
@@ -204,8 +214,7 @@ export function keepsStaticMember(value: Value): boolean {
     return (
         !value.parameterBinding &&
         (value.kind === "json-null" ||
-            // An optional member generation knows absent.
-            knownCondition(value.optionalFoundCpp) === false ||
+            knownAbsent(value) ||
             value.kind === "record" ||
             isHandleKind(value.kind) ||
             hasScalarFacts(value) ||

@@ -337,6 +337,39 @@ test("names the run-time tests a call compiles too many outcomes of", () => {
     );
 });
 
+test("names the run-time tests whose outcomes make too many arms for one call", () => {
+    // Two tests of ten constant-table keys each make 100 arms.
+    const shades = Array.from(
+        "abcdefghij",
+        (key, index) => `${key}: "0.${index}"`,
+    );
+    const source = `import { createEngine, createShaderMaterial, wgsl, type EngineContext, type ShaderMaterial } from "@babylonjs/lite";
+const VERTEX = \`struct VertexOutput { @builtin(position) position: vec4<f32>, };
+@vertex fn mainVertex(input: VertexInput) -> VertexOutput {
+  var out: VertexOutput;
+  out.position = shaderSystem.worldViewProjection * vec4<f32>(input.position * /*TONE*/ * /*TINT*/, 1.0);
+  return out;
+}\`;
+const FRAGMENT = wgsl\`@fragment fn mainFragment() -> @location(0) vec4<f32> { return vec4<f32>(1.0, 0.5, 0.2, 1.0); }\`;
+const SHADES = { ${shades.join(", ")} } as const;
+type Shade = keyof typeof SHADES;
+function material(engine: EngineContext, tone: Shade, tint: Shade): ShaderMaterial {
+    const vertex = VERTEX.replace("/*TONE*/", SHADES[tone]).replace("/*TINT*/", SHADES[tint]);
+    return createShaderMaterial({ vertexSource: wgsl\`\${vertex}\`, fragmentSource: FRAGMENT, attributes: ["position"], uniforms: ["worldViewProjection"] });
+}
+async function main(): Promise<void> {
+    const engine = await createEngine(document.getElementById("renderCanvas") as HTMLCanvasElement);
+    const shades = Object.keys(SHADES) as Shade[];
+    for (const tone of shades) for (const tint of shades) material(engine, tone, tint);
+}
+void main();
+`;
+    assert.match(
+        refusal(source, "test/executed-arms-entry.ts"),
+        /compiles once per outcome of run-time tests in at most 81 arms; its tests make 100: tone, tint\./,
+    );
+});
+
 const pluginScene = (plugin: string, prelude = ""): string => `
     import {
         addToScene,

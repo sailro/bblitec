@@ -184,7 +184,7 @@ int main() {
     scalar(&bbl::CameraRecord::alpha, 2); scalar(&bbl::CameraRecord::alpha, 0); observe();
     x(0); observe(); bbl::set_camera_vector(camera, &bbl::CameraRecord::target, {}); observe();
     x(3); x(0); observe();
-    bbl::set_camera_limits(engine, handle, 51u, {-0.1, 0.1, 0, 0, 2, 5}); observe();
+    bbl::write_camera_limits(engine, handle, 51u, {-0.1, 0.1, std::nullopt, std::nullopt, 2.0, 5.0}); observe();
     scalar(&bbl::CameraRecord::radius, 9); observe(); scalar(&bbl::CameraRecord::alpha, 4); observe();
     camera.inertial_alpha_offset = 0.3; camera.inertial_beta_offset = -1.5; camera.inertial_radius_offset = 4;
     camera.inertial_panning_x = 10; camera.inertial_panning_y = -8;

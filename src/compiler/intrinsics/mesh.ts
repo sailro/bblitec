@@ -55,7 +55,7 @@ import { writeVec3Lanes } from "./vec3-write.js";
 import { emitPresentOption, retainedOptions } from "./retained-options.js";
 import { constructedFieldPresent } from "../constructed-fields.js";
 import { creationInSegment } from "../creation-segments.js";
-import { knownCondition } from "../values/model.js";
+import { knownAbsent, knownCondition } from "../values/model.js";
 
 /** Attribute uploads change existing buffers without recording composition facts. */
 export const runtimeOnlyMeshIntrinsics: ReadonlySet<string> = new EmissionSet([
@@ -1352,8 +1352,7 @@ function compileMeshOptionalStreams(
         if (!argument || context.symbols.isGlobalUndefined(argument))
             return { cpp: "std::nullopt", present: false };
         const value = context.compileValue(argument);
-        if (knownCondition(value.optionalFoundCpp) === false)
-            return { cpp: "std::nullopt", present: false };
+        if (knownAbsent(value)) return { cpp: "std::nullopt", present: false };
         const optional =
             value.dataType?.kind === "optional" &&
             knownCondition(value.optionalFoundCpp) !== true &&

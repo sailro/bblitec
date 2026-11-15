@@ -206,6 +206,7 @@ import {
 import {
     executeApplicationFunction,
     runApplicationFunction,
+    type ExecutedFunctionContext,
     type ExecutedScalar,
     type ExecutedArgument,
     type ExecutedResult,
@@ -2237,7 +2238,6 @@ class Compiler implements LoweringServices {
             hoistsForward,
         };
         this.loweringStatements.push(entry);
-        if (hoistsForward) this.forwardOwners++;
         try {
             lower();
             const ahead = this.aheadLines.get(entry);
@@ -2246,13 +2246,9 @@ class Compiler implements LoweringServices {
                 this.body.splice(entry.bodyStart, 0, ...ahead);
             }
         } finally {
-            if (hoistsForward) this.forwardOwners--;
             this.loweringStatements.pop();
         }
     }
-
-    /** How many statements being lowered precede a later binding of their block (`hoistsForward`). */
-    @journaled private accessor forwardOwners = 0;
 
     /**
      * Lowers a statement (`lower`). Under a statement that precedes a later
@@ -2262,10 +2258,15 @@ class Compiler implements LoweringServices {
      * temporal-dead-zone storage ahead of the statement its block stands
      * at, and it lowers again. From scopes that are not under that
      * statement (a body with scopes of its own) the refusal is an enclosing
-     * statement's to start over on.
+     * statement's to start over on, so they lower it directly.
      */
     public hoistingForward(lower: () => void): void {
-        if (this.forwardOwners === 0) return lower();
+        if (
+            !this.loweringStatements.some(
+                (entry) => entry.hoistsForward && this.standsUnder(entry),
+            )
+        )
+            return lower();
         const survey = activeSurvey();
         for (;;) {
             const begun = survey?.bodiesBegun() ?? 0;
@@ -2286,10 +2287,12 @@ class Compiler implements LoweringServices {
                 (met) => met === undefined,
             );
             if (!refusal) return;
-            const missed = this.callbacks.forwardBindingMissed(refusal);
-            if (!missed || !this.callbacks.hoistMissedBinding(missed))
+            if (
+                !this.callbacks.retryForwardMiss(refusal, () =>
+                    survey?.withdrawBodies(begun),
+                )
+            )
                 throw refusal;
-            survey?.withdrawBodies(begun);
         }
     }
 
@@ -5760,30 +5763,27 @@ class Compiler implements LoweringServices {
         // specialization it was reached in, so only a closed one is kept.
         let closed = true;
         const result = executeApplicationFunction(
-            {
-                checker: this.checker,
-                sourceFiles: this.program.getSourceFiles(),
-                fail: (node, message) => this.fail(node, message),
-                foldEnclosing: (identifier) => {
+            this.generationRunContext(
+                (identifier) => {
                     closed = false;
                     return this.staticScalar(identifier);
                 },
-                deploymentValue: (expression) =>
-                    browserDeploymentValue(this, expression),
-                ...(pinnedStandIn ? { pinnedStandIn } : {}),
-                ...(ts.isVariableDeclaration(declaration) ||
-                ts.isCallExpression(declaration)
-                    ? {
-                          writtenThrough: (name: ts.Identifier) =>
-                              this.moduleConstantIsWritten(name) &&
-                              (!ts.isVariableDeclaration(declaration) ||
-                                  !this.moduleRecordUnchangedBeforeSnapshot(
-                                      name,
-                                      declaration,
-                                  )),
-                      }
-                    : {}),
-            },
+                {
+                    ...(pinnedStandIn ? { pinnedStandIn } : {}),
+                    ...(ts.isVariableDeclaration(declaration) ||
+                    ts.isCallExpression(declaration)
+                        ? {
+                              writtenThrough: (name: ts.Identifier) =>
+                                  this.moduleConstantIsWritten(name) &&
+                                  (!ts.isVariableDeclaration(declaration) ||
+                                      !this.moduleRecordUnchangedBeforeSnapshot(
+                                          name,
+                                          declaration,
+                                      )),
+                          }
+                        : {}),
+                },
+            ),
             declaration,
             args,
             label,
@@ -5799,19 +5799,31 @@ class Compiler implements LoweringServices {
         label: string,
     ): ExecutedResult {
         return runApplicationFunction(
-            {
-                checker: this.checker,
-                sourceFiles: this.program.getSourceFiles(),
-                fail: (node, message) => this.fail(node, message),
-                foldEnclosing: held,
-                deploymentValue: (expression) =>
-                    browserDeploymentValue(this, expression),
-                writtenThrough: written,
-            },
+            this.generationRunContext(held, { writtenThrough: written }),
             call,
             [],
             label,
         );
+    }
+
+    /**
+     * What a generation run reads of the program: its checker and files,
+     * the deployment's constants, the enclosing bindings `foldEnclosing`
+     * folds, and `more`.
+     */
+    private generationRunContext(
+        foldEnclosing: ExecutedFunctionContext["foldEnclosing"],
+        more: Pick<ExecutedFunctionContext, "writtenThrough" | "pinnedStandIn">,
+    ): ExecutedFunctionContext {
+        return {
+            checker: this.checker,
+            sourceFiles: this.program.getSourceFiles(),
+            fail: (node, message) => this.fail(node, message),
+            foldEnclosing,
+            deploymentValue: (expression) =>
+                browserDeploymentValue(this, expression),
+            ...more,
+        };
     }
 
     /** The generation-known scalar an expression folds to, if any. */

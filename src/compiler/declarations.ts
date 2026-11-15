@@ -60,6 +60,7 @@ import { isNativeOwnerRecord } from "./native-owner-carrier.js";
 import { NativeRecordStorageRequired } from "./native-record-storage.js";
 import {
     nullability,
+    unionMembers,
     presentLiteralKeys,
     typeCanCarryReference,
     isVoid,
@@ -337,6 +338,28 @@ function objectMutationCandidate(node: ts.Node): boolean {
 
 export class DeclarationLowerer {
     constructor(private readonly context: DeclarationContext) {}
+
+    /**
+     * Whether a read of `expression` may be `null` or `undefined`: its
+     * type holds one, or is open (`any`, `unknown`, or a type an
+     * instantiation binds).
+     */
+    private mayReadAbsent(expression: ts.Expression): boolean {
+        const type = this.context.checker.getTypeAtLocation(expression);
+        const absent = nullability(type);
+        return (
+            absent.null ||
+            absent.undefined ||
+            unionMembers(type).some(
+                (member) =>
+                    (member.flags &
+                        (ts.TypeFlags.Any |
+                            ts.TypeFlags.Unknown |
+                            ts.TypeFlags.Instantiable)) !==
+                    0,
+            )
+        );
+    }
 
     /**
      * A module `let` only never-run functions assign keeps its initializer
@@ -3835,6 +3858,7 @@ export class DeclarationLowerer {
             ts.isIdentifier(name) &&
             isOperandSelection(initializer) &&
             !this.context.sharedClosures.identifierIsRebound(name) &&
+            this.mayReadAbsent(unwrappedInitializer) &&
             // A selection the probe refuses is declared on its own path.
             unlessRefused(() =>
                 this.context.probeEmission(

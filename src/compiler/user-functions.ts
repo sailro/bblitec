@@ -8,6 +8,7 @@ import {
     valueForKind,
     withNativeMetadata,
 } from "./types.js";
+import { fixedByCaseSplit } from "./runtime-case-split.js";
 import { metadataFieldsForKind } from "./values/metadata.js";
 import { isJsonValue } from "./json-bridge.js";
 import { activeSurvey } from "./survey.js";
@@ -2500,20 +2501,7 @@ export class UserFunctionLowerer {
             requiresDefaultParameterBinding(this.checker, ir.declaration, call)
         )
             return undefined;
-        // An argument a run-time case split fixed is the outcome its arm
-        // compiles for: the body specializes on it inline.
-        if (
-            ts.isCallExpression(call) &&
-            call.arguments.some((argument) =>
-                someAnalysisNode(
-                    argument,
-                    (node) =>
-                        context.valueOverrides.has(node) ||
-                        context.conditionOverrides.has(node),
-                    { functions: "skip" },
-                ),
-            )
-        )
+        if (ts.isCallExpression(call) && fixedByCaseSplit(context, call))
             return undefined;
         if (
             ir.parameters.some((parameter, index) => {

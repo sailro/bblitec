@@ -320,11 +320,18 @@ export function recordComponents(
         // of the other.
         const membersA = membersOf.get(rootA)!;
         const membersB = membersOf.get(rootB)!;
-        parent.set(rootB, rootA);
-        membersOf.set(rootA, [...membersA, ...membersB]);
-        membersOf.delete(rootB);
-        for (const memberA of membersA)
-            for (const memberB of membersB) joinHeld(memberA, memberB);
+        const countA = membersA.length;
+        const countB = membersB.length;
+        // The smaller component joins the larger one's list, whose members
+        // the pairs below, counted before, do not grow.
+        const [kept, merged] =
+            countA >= countB ? [rootA, rootB] : [rootB, rootA];
+        parent.set(merged, kept);
+        membersOf.get(kept)!.push(...membersOf.get(merged)!);
+        membersOf.delete(merged);
+        for (let a = 0; a < countA; a++)
+            for (let b = 0; b < countB; b++)
+                joinHeld(membersA[a]!, membersB[b]!);
     };
     for (const {
         source,

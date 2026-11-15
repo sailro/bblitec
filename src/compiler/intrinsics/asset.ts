@@ -10,7 +10,7 @@ import { dirname, join, resolve } from "node:path";
 import ts from "typescript";
 import { absenceOf, knownCondition } from "../values/model.js";
 import { argumentAt, propertyKey } from "../syntax.js";
-import { namedMember } from "../symbols.js";
+import { objectUrlMethod } from "../browser-file.js";
 import type { CompileAsset, SplatFragmentManifest, Value } from "../types.js";
 import type { IntrinsicCallContext } from "./context.js";
 import { splatContainerByLoader } from "../assets.js";
@@ -749,11 +749,59 @@ function objectUrlArgument(
     const held = ts.isIdentifier(node)
         ? context.bindings.lookupOptional(node)?.kind === "object-url"
         : ts.isCallExpression(node) &&
-          namedMember(context.checker, context.unwrap(node.expression))
-              ?.name === "createObjectURL";
+          objectUrlMethod(context, node.expression) === "createObjectURL";
     if (!held) return undefined;
     const value = context.compileValue(expression);
     return value.kind === "object-url" ? value : undefined;
+}
+
+/** The file a loader's URL argument names ({@link loaderFile}). */
+interface LoaderFile {
+    /** The C++ path the native loader reads. */
+    readonly pathCpp: string;
+    /** The argument is an object URL, which can fail to resolve at the call. */
+    readonly objectUrl: boolean;
+    /** The literal URL and its packaged asset, where the argument is one. */
+    readonly literal?: { readonly url: string; readonly asset: CompileAsset };
+}
+
+/**
+ * Where a loader's URL argument reads its file: the bytes an object URL
+ * holds, which the native function `objectUrl.reads` names reads once
+ * `objectUrl.demand` states what they need; the packaged file of `kind` a run-time URL
+ * selects among those `packaged` accepts; or the packaged asset a literal
+ * URL names.
+ */
+function loaderFile(
+    context: AssetIntrinsicContext,
+    call: ts.CallExpression,
+    kind: "texture" | "ktx2",
+    packaged: RegExp,
+    objectUrl: { readonly reads: string; readonly demand: () => void },
+): LoaderFile {
+    const argument = argumentAt(call, 1);
+    const held = objectUrlArgument(context, argument);
+    if (held) {
+        objectUrl.demand();
+        return {
+            pathCpp: `bbl::js::${objectUrl.reads}(${context.requireEngine(held, call)}, ${held.cpp})`,
+            objectUrl: true,
+        };
+    }
+    const dynamic = compileDynamicPackagedAsset(
+        context,
+        argument,
+        kind,
+        (source) => packaged.test(source),
+    )?.dynamicAssetPathCpp;
+    if (dynamic) return { pathCpp: dynamic, objectUrl: false };
+    const url = context.compileStringLiteral(argument);
+    const asset = context.assetRegistry.registerAsset(url, kind);
+    return {
+        pathCpp: `bbl::asset_path(${context.cppString(asset.output)})`,
+        objectUrl: false,
+        literal: { url, asset },
+    };
 }
 
 function compileLoadTexture2D(
@@ -764,28 +812,16 @@ function compileLoadTexture2D(
     const engine = context.compileValue(argumentAt(call, 0));
     context.expectKind(engine, "engine", argumentAt(call, 0));
     // An object URL's image is the bytes the URL holds.
-    const objectUrl = objectUrlArgument(context, argumentAt(call, 1));
-    if (objectUrl) context.reachFeature("image:packaged-bytes", call);
-    const dynamic = objectUrl
-        ? undefined
-        : compileDynamicPackagedAsset(
-              context,
-              argumentAt(call, 1),
-              "texture",
-              (source) => /\.(?:png|jpe?g|webp)(?:[?#]|$)/i.test(source),
-          );
-    const url =
-        objectUrl || dynamic
-            ? undefined
-            : context.compileStringLiteral(argumentAt(call, 1));
-    const asset =
-        url === undefined
-            ? undefined
-            : context.assetRegistry.registerAsset(url, "texture");
-    const texturePathCpp = objectUrl
-        ? `bbl::js::object_url_image(${context.requireEngine(objectUrl, call)}, ${objectUrl.cpp})`
-        : (dynamic?.dynamicAssetPathCpp ??
-          `bbl::asset_path(${context.cppString(asset!.output)})`);
+    const file = loaderFile(
+        context,
+        call,
+        "texture",
+        /\.(?:png|jpe?g|webp)(?:[?#]|$)/i,
+        {
+            reads: "object_url_image",
+            demand: () => context.reachFeature("image:packaged-bytes", call),
+        },
+    );
     // The pin's own option defaults live in
     // `pinned-address-modes.ts`, beside the sampler rule the browser
     // texture bake shares. Mip sampling clamps to the base level
@@ -901,7 +937,7 @@ function compileLoadTexture2D(
     });
     context.reachFeature("texture:file", call);
     const loadArguments =
-        `${engine.cpp}, ${texturePathCpp}, ` +
+        `${engine.cpp}, ${file.pathCpp}, ` +
         `${sampler}, ${invertY ? "true" : "false"}, ` +
         `${srgb ? "true" : "false"}, ` +
         `${premultiplyAlpha ? "true" : "false"}`;
@@ -916,10 +952,12 @@ function compileLoadTexture2D(
         textureObjectInvertY: false,
         cpp: `bbl::load_file_texture(${loadArguments})`,
         textureFile: {
-            ...(url === undefined
+            ...(file.literal === undefined
                 ? {}
                 : {
-                      source: url.startsWith("data:") ? url : asset!.source,
+                      source: file.literal.url.startsWith("data:")
+                          ? file.literal.url
+                          : file.literal.asset.source,
                       entryFileName: context.options.fileName,
                       ...(loaderOptions ? { loaderOptions } : {}),
                   }),
@@ -932,7 +970,7 @@ function compileLoadTexture2D(
               call,
               texture,
               `bbl::pal::load_realm_file_texture(${loadArguments})`,
-              objectUrl !== undefined,
+              file.objectUrl,
           )
         : texture;
 }
@@ -1024,34 +1062,19 @@ function compileLoadKtx2Texture2D(
     const engine = context.compileValue(argumentAt(call, 0));
     context.expectKind(engine, "engine", argumentAt(call, 0));
     // An object URL's bytes select, by content, the chain generation
-    // transcoded from the same bytes in a packaged file.
-    const objectUrl = objectUrlArgument(context, argumentAt(call, 1));
-    if (objectUrl) context.assetRegistry.demandContentImages();
-    // A runtime URL selects among the packaged containers its inference
-    // finds, as `loadTexture2D`'s does.
-    const dynamic = objectUrl
-        ? undefined
-        : compileDynamicPackagedAsset(
-              context,
-              argumentAt(call, 1),
-              "ktx2",
-              (source) => /\.ktx2(?:[?#]|$)/i.test(source),
-          );
-    const texturePathCpp = objectUrl
-        ? `bbl::js::object_url_ktx2_path(${context.requireEngine(objectUrl, call)}, ${objectUrl.cpp})`
-        : (dynamic?.dynamicAssetPathCpp ??
-          `bbl::asset_path(${context.cppString(
-              context.assetRegistry.registerAsset(
-                  context.compileStringLiteral(argumentAt(call, 1)),
-                  "ktx2",
-              ).output,
-          )})`);
+    // transcoded from the same bytes in a packaged file; a runtime URL
+    // selects among the packaged containers its inference finds, as
+    // `loadTexture2D`'s does.
+    const file = loaderFile(context, call, "ktx2", /\.ktx2(?:[?#]|$)/i, {
+        reads: "object_url_ktx2_path",
+        demand: () => context.assetRegistry.demandContentImages(),
+    });
     const srgb = call.arguments[2]
         ? context.conditions.compileCondition(call.arguments[2])
         : "false";
     context.reachFeature("texture:compressed", call);
     context.reachFeature("texture:ktx2", call);
-    const loadArguments = `${engine.cpp}, ${texturePathCpp}, ${srgb}`;
+    const loadArguments = `${engine.cpp}, ${file.pathCpp}, ${srgb}`;
     const texture: Value = {
         kind: "texture",
         textureStorage: "file",
@@ -1066,7 +1089,7 @@ function compileLoadKtx2Texture2D(
               call,
               texture,
               `bbl::pal::load_realm_ktx2_texture(${loadArguments})`,
-              objectUrl !== undefined,
+              file.objectUrl,
           )
         : texture;
 }

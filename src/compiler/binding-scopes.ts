@@ -1625,6 +1625,7 @@ export class BindingScopes {
             // The owner's own scalars beside members that are no way back
             // to it: no write through a member reaches them.
             const separateScalars =
+                !independentFields &&
                 plainOwner &&
                 Object.values(value.recordProperties ?? {}).every(
                     (member) => plainScalar(member) || !reachesOwner(member),

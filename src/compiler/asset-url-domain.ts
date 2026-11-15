@@ -6,7 +6,7 @@ import { deploymentUrl } from "./deployment.js";
 import type { LoweringServices } from "./lowering-services.js";
 import { stringDomain, type StringDomainContext } from "./string-domain.js";
 import { localAssetPath, urlFilePath } from "../asset-source.js";
-import { readAssetBytesSync } from "./asset-bytes-sync.js";
+import { readAssetTextSync } from "./asset-bytes-sync.js";
 import { unlessRefused } from "./compile-error.js";
 
 type Context = StringDomainContext & Pick<LoweringServices, "options">;
@@ -102,9 +102,7 @@ function packagedText(context: Context, url: string): string | undefined {
             context.options,
         );
         return localAssetPath(source, resolve(context.options.fileName))
-            ? new TextDecoder().decode(
-                  readAssetBytesSync(source, context.options.fileName),
-              )
+            ? readAssetTextSync(source, context.options.fileName)
             : undefined;
     } catch {
         return undefined;

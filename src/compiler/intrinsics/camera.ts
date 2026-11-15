@@ -554,21 +554,16 @@ export function compileCameraIntrinsic(
             const limitsType = context.checker.getNonNullableType(
                 context.checker.getTypeAtLocation(argumentAt(call, 1)),
             );
-            const absent = fields.some((field) => {
+            const values = fields.map((field, index) => {
+                const value = context.objectProperty(limits, field);
+                if (!value) return "std::nullopt";
+                presentMask |= 1 << index;
                 const member = context.checker.getPropertyOfType(
                     limitsType,
                     field,
                 );
-                return (
-                    member !== undefined &&
+                return member &&
                     isNullable(context.checker.getTypeOfSymbol(member))
-                );
-            });
-            const values = fields.map((field, index) => {
-                const value = context.objectProperty(limits, field);
-                if (!value) return absent ? "std::nullopt" : "0.0";
-                presentMask |= 1 << index;
-                return absent
                     ? `bbl::js::Nullable<double>{${context.dataLowerer.compileForSink(value, { kind: "optional", inner: { kind: "number" } })}}.to_optional()`
                     : context.compileNumber(value, "double");
             });
@@ -582,8 +577,8 @@ export function compileCameraIntrinsic(
             return {
                 kind: "void",
                 cpp:
-                    `bbl::${absent ? "write_camera_limits" : "set_camera_limits"}(${engine}, ${camera.cpp}, ` +
-                    `${presentMask}u, std::array<${absent ? "std::optional<double>" : "double"}, 6>{${values.join(", ")}})`,
+                    `bbl::write_camera_limits(${engine}, ${camera.cpp}, ` +
+                    `${presentMask}u, std::array<std::optional<double>, 6>{${values.join(", ")}})`,
             };
         }
 

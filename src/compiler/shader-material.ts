@@ -667,9 +667,9 @@ function compileShaderExternalTextures(
 ): string[] {
     if (!expression || absentShaderOption(context, expression)) return [];
     const names = context
-        .expectStaticArrayElements(expression)
-        .map((element) => {
-            const name = context.compileStaticString(element);
+        .staticListItems(expression)
+        .map(({ node: element, text }) => {
+            const name = text ?? context.compileStaticString(element);
             reserveSamplerPair(
                 context,
                 element,
@@ -846,14 +846,14 @@ function compileShaderUniformSignatures(
     defaults: CompiledShaderUniformDefault[];
     dynamicDefaults: Array<{ name: string; components: string[] }>;
 } {
-    const elements = context.expectStaticArrayElements(expression);
     const defaults: CompiledShaderUniformDefault[] = [];
     const dynamicDefaults: Array<{
         name: string;
         components: string[];
     }> = [];
-    const signatures = elements.map((element) => {
-        const resolved = context.resolveStaticLiteral(element);
+    const signatures = context.staticListItems(expression).map((item) => {
+        if (item.text !== undefined) return item.text;
+        const resolved = context.resolveStaticLiteral(item.node);
         if (ts.isStringLiteralLike(resolved)) {
             return resolved.text;
         }
