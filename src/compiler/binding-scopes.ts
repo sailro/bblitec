@@ -75,6 +75,7 @@ import { metadataFieldsForKind } from "./values/metadata.js";
 import { DynamicBindingStorageRequired } from "./dynamic-binding-storage.js";
 import { isNativeOwnerRecord } from "./native-owner-carrier.js";
 import { parameterProjectionIsReadOnly } from "./parameter-projection-effects.js";
+import { recordFieldIsWritten } from "./record-observations.js";
 import { loopBoundMayChange, walkReachedLoopNodes } from "./resource-loops.js";
 import { calledFunction } from "./symbols.js";
 import {
@@ -86,6 +87,8 @@ import {
 /** What the bindings ask of the compiler: symbols, values and native storage. */
 interface BindingScopesContext extends Pick<
     LoweringServices,
+    | "program"
+    | "evaluationOrder"
     | "activeNativeReturnType"
     | "allocateBlockPrefix"
     | "allocateTemporaryCppName"
@@ -2854,11 +2857,24 @@ export class BindingScopes {
                 );
             }
         }
+        // An absent field no write in the program replaces stays absent:
+        // it takes no storage of its own.
+        const owner = field?.declarations?.[0]?.parent;
         if (
             field &&
             !parameter &&
             value.kind === "json-null" &&
-            present !== type
+            present !== type &&
+            !(
+                owner &&
+                (ts.isInterfaceDeclaration(owner) ||
+                    ts.isTypeLiteralNode(owner)) &&
+                !recordFieldIsWritten(
+                    this.context,
+                    this.context.checker.getTypeAtLocation(owner),
+                    field.name,
+                )
+            )
         ) {
             const mapped = this.context.dataTypes.fromStoredTsType(type, node);
             if (

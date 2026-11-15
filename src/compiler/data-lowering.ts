@@ -6367,9 +6367,13 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 access,
             );
             this.context.reachJsData();
-            return this.leafValue(
-                `bbl::js::enum_map_at(${owner.cpp}, ${tag})`,
-                dataType.element,
+            return this.tableMember(
+                access,
+                property,
+                this.leafValue(
+                    `bbl::js::enum_map_at(${owner.cpp}, ${tag})`,
+                    dataType.element,
+                ),
             );
         }
         // Error views expose their message and dynamic constructor name.
@@ -6914,10 +6918,15 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 dataType.enumName,
             );
             this.context.reachJsData();
-            return this.leafValue(
+            const key = this.context.probeEmission(
+                () => this.context.compileValue(access.argumentExpression),
+                () => false,
+            ).staticString;
+            const read = this.leafValue(
                 `bbl::js::enum_map_at(${owner.cpp}, ${tag})`,
                 dataType.element,
             );
+            return key === undefined ? read : this.tableMember(access, key, read);
         }
         if (dataType.kind === "struct") {
             // A write through a view of fixed fields names its field by a
@@ -18961,6 +18970,82 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
      * as a native condition. Presence alone -- whether a nullable is there,
      * whatever it holds -- is `presenceCpp`'s.
      */
+    /**
+     * A member a known key reads of a `const` an object literal initializes:
+     * the native read, holding what generation knows of the literal's
+     * member where no write in the program replaces it (`recordFieldIsWritten`):
+     * the entry itself, each scalar member kept, and for its own keys every
+     * other property its type declares.
+     */
+    private tableMember(
+        access: ts.PropertyAccessExpression | ts.ElementAccessExpression,
+        key: string,
+        read: Value,
+    ): Value {
+        const root = unwrapExpression(access.expression);
+        const declaration =
+            ts.isIdentifier(root) &&
+            resolvedSymbol(this.context.checker, root)?.valueDeclaration;
+        if (
+            !declaration ||
+            !ts.isVariableDeclaration(declaration) ||
+            !ts.isIdentifier(declaration.name) ||
+            !ts.isVariableDeclarationList(declaration.parent) ||
+            variableKind(declaration.parent) !== "const" ||
+            !declaration.initializer
+        )
+            return read;
+        const table = unwrapExpression(declaration.initializer);
+        if (
+            !ts.isObjectLiteralExpression(table) ||
+            table.properties.some((property) => !ts.isPropertyAssignment(property))
+        )
+            return read;
+        const entry = [...table.properties]
+            .reverse()
+            .find(
+                (property): property is ts.PropertyAssignment =>
+                    ts.isPropertyAssignment(property) &&
+                    propertyKey(property.name) === key,
+            );
+        const literal = entry && unwrapExpression(entry.initializer);
+        const checker = this.context.checker;
+        if (
+            !literal ||
+            !ts.isObjectLiteralExpression(literal) ||
+            recordFieldIsWritten(
+                this.context,
+                checker.getTypeAtLocation(root),
+                key,
+            )
+        )
+            return read;
+        const known = this.context.probeEmission(
+            () => this.context.compileValue(literal),
+            () => false,
+        );
+        if (known.kind !== "record" || !known.recordProperties) return read;
+        const entryType = checker.getTypeAtLocation(access);
+        const unwritten = (name: string): boolean =>
+            !recordFieldIsWritten(this.context, entryType, name, false, literal);
+        const properties: Record<string, Value> = {};
+        for (const [name, member] of Object.entries(known.recordProperties))
+            if (hasScalarFacts(member) && !member.parameterBinding && unwritten(name)) {
+                const kept: Value = { ...member };
+                writable(kept).readOnly = true;
+                properties[name] = kept;
+            }
+        const ownKeys = known.recordOwnKeys ?? Object.keys(known.recordProperties);
+        const keysKept = checker
+            .getPropertiesOfType(entryType)
+            .every((property) => ownKeys.includes(property.name) || unwritten(property.name));
+        if (Object.keys(properties).length === 0 && !keysKept) return read;
+        const member: Value = { ...read };
+        writable(member).recordProperties = properties;
+        if (keysKept) writable(member).recordOwnKeys = ownKeys;
+        return member;
+    }
+
     public truthinessCondition(value: Value): string | undefined {
         if (isUndefinedDataType(value.dataType))
             return `(static_cast<void>(${value.cpp}), false)`;

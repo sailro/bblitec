@@ -4035,9 +4035,10 @@ test("lowers a Record keyed by a string union into tag-ordered slots", () => {
         result.cpp,
         /bbl::js::EnumMap<bblscene::RenderSet, 3>\{v_bblite_slot_1, v_bblite_slot_0, v_bblite_slot_2\}/,
     );
-    // Both a runtime tag and a literal key index the same way.
+    // A runtime tag indexes the slots; a literal key reads the entry
+    // generation knows, which nothing replaces.
     assert.match(result.cpp, /enum_map_at\(v_sets, v_mode\)/);
-    assert.match(result.cpp, /enum_map_at\(v_sets, bblscene::Mode::arcade\)/);
+    assert.match(result.cpp, /v_picked = \(v_active->scale \+ 2\.0\);/);
 });
 
 test("narrows an optional string-union key before Record lookup", () => {
@@ -6057,6 +6058,96 @@ test("a selection of members a call omits is absent where that call is lowered",
     `);
     // The call that omits both reads no storage: the test of the name folds.
     assert.match(result.cpp, /std::string v_fn\d+_setup = "";/);
+});
+
+test("a builder handed options a table's entry gives reads that entry's facts in each key's arm", () => {
+    // The species table, the options builder and the iteration share one
+    // module; the builder awaits and caches before composing its shader.
+    const directory = resolve("artifacts/compiler-keyed-table-options");
+    mkdirSync(directory, { recursive: true });
+    writeFileSync(join(directory, "noop-worker.ts"), "self.close();\n");
+    writeFileSync(join(directory, "species.ts"), `import type { EngineContext, ShaderMaterial } from "@babylonjs/lite";
+import { herd, type HerdOptions } from "./herd";
+export type Species = "deer" | "fox" | "hen";
+interface SpeciesDef { file: string; height: number; glow?: boolean; base: { speed: number } }
+const SPECIES: Record<Species, SpeciesDef> = {
+    deer: { file: "Deer.glb", height: 2.9, base: { speed: 1 } },
+    fox: { file: "Fox.glb", height: 0.8, glow: true, base: { speed: 2 } },
+    hen: { file: "Hen.glb", height: 0.4, base: { speed: 0.5 } },
+};
+export function speciesSpeed(type: Species): number { return SPECIES[type].base.speed; }
+export function isSpecies(value: string): value is Species { return Object.prototype.hasOwnProperty.call(SPECIES, value); }
+function optionsFor(type: Species, capacity: number): HerdOptions {
+    const def = SPECIES[type];
+    return { file: def.file, height: def.height, glow: def.glow, capacity };
+}
+export async function buildHerds(engine: EngineContext, capacity: number): Promise<ShaderMaterial[]> {
+    const types = Object.keys(SPECIES) as Species[];
+    return Promise.all(types.map((type) => herd(engine, optionsFor(type, capacity))));
+}
+`);
+    writeFileSync(join(directory, "herd.ts"), `import { createShaderMaterial, wgsl, type EngineContext, type ShaderMaterial } from "@babylonjs/lite";
+export interface HerdOptions { file: string; height: number; glow?: boolean; capacity: number }
+const VERTEX = \`struct VertexOutput { @builtin(position) position: vec4<f32>, };
+@vertex fn mainVertex(input: VertexInput) -> VertexOutput {
+  var out: VertexOutput;
+  out.position = shaderSystem.worldViewProjection * vec4<f32>(input.position * /*HEIGHT*/, 1.0);
+  return out;
+}\`;
+const FRAGMENT = wgsl\`@fragment fn mainFragment() -> @location(0) vec4<f32> { return vec4<f32>(1.0, 0.5, 0.2, 1.0); }\`;
+const cache = new Map<string, Promise<number>>();
+async function prepare(opts: HerdOptions): Promise<number> {
+    await Promise.resolve();
+    return opts.capacity;
+}
+function prepared(opts: HerdOptions): Promise<number> {
+    let prep = cache.get(opts.file);
+    if (!prep) {
+        prep = prepare(opts);
+        prep.catch(() => cache.delete(opts.file));
+        cache.set(opts.file, prep);
+    }
+    return prep;
+}
+export async function herd(engine: EngineContext, opts: HerdOptions): Promise<ShaderMaterial> {
+    const capacity = await prepared(opts);
+    let vertex = VERTEX.replace("/*HEIGHT*/", String(opts.height));
+    if (opts.glow) vertex = vertex.replace("input.position", "(input.position * 1.1)");
+    await Promise.resolve();
+    return createShaderMaterial({ name: opts.file + capacity, vertexSource: wgsl\`\${vertex}\`, fragmentSource: FRAGMENT, attributes: ["position"], uniforms: ["worldViewProjection"] });
+}
+`);
+    const result = compileSource(`import { addToScene, createArcRotateCamera, createEngine, createPlane, createSceneContext, registerScene, startEngine } from "@babylonjs/lite";
+import { buildHerds, isSpecies, speciesSpeed } from "./species";
+const worker = new Worker(new URL("./noop-worker.ts", import.meta.url), { type: "module" });
+worker.terminate();
+async function main(): Promise<void> {
+    const engine = await createEngine(document.getElementById("renderCanvas") as HTMLCanvasElement);
+    const scene = createSceneContext(engine);
+    scene.camera = createArcRotateCamera(-Math.PI / 2, Math.PI / 2, 8, { x: 0, y: 0, z: 0 });
+    const materials = await buildHerds(engine, 8);
+    const plane = createPlane(engine, { width: 2, height: 2 });
+    plane.material = materials[0]!;
+    addToScene(scene, plane);
+    console.log(speciesSpeed(isSpecies(String(Math.random())) ? "fox" : "deer"));
+    await registerScene(scene);
+    await startEngine(engine);
+}
+void main();
+`, {
+        fileName: join(directory, "entry.ts"),
+    });
+    assert.deepEqual(
+        result.manifest.customShaderPrograms.map((program) => [
+            /\* ([0-9.]+), 1\.0\)/.exec(program.vertexSource)?.[1],
+            program.vertexSource.includes("(input.position * 1.1)"),
+        ]),
+        [
+            ["2.9", false],
+            ["0.8", true],
+            ["0.4", false],
+        ],
+    );
 });
 
 test("a material builder iterated over a constant table's keys composes one program per key", () => {

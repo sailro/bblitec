@@ -79,6 +79,8 @@ import {
 
 export interface NativeFunctionContext extends Pick<
     LoweringServices,
+    | "valueOverrides"
+    | "conditionOverrides"
     | "allocateTemporaryCppName"
     | "canReplaySharedCallEffects"
     | "checker"
@@ -426,6 +428,20 @@ export class NativeFunctionLowerer {
                 this.context.checker,
                 declaration,
                 call,
+            )
+        )
+            return undefined;
+        // An argument a run-time case split fixed is the outcome its arm
+        // compiles for: the body specializes on it inline.
+        if (
+            call.arguments.some((argument) =>
+                someAnalysisNode(
+                    argument,
+                    (node) =>
+                        this.context.valueOverrides.has(node) ||
+                        this.context.conditionOverrides.has(node),
+                    { functions: "skip" },
+                ),
             )
         )
             return undefined;

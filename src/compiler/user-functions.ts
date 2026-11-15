@@ -103,6 +103,7 @@ import { nativeReturnTsType } from "./native-return-type.js";
 import { programObservations } from "./program-observations.js";
 import { sourceTypeHasObservedIdentity } from "./storage-demand-index.js";
 import { parameterProjectionIsReadOnly } from "./parameter-projection-effects.js";
+import { recordFieldIsWritten } from "./record-observations.js";
 import {
     hasProvenUndefinedCompletion,
     hasNonThenableCompletion,
@@ -7441,8 +7442,8 @@ export class UserFunctionLowerer {
         const index = consumer.arguments.indexOf(argument);
         const declaration = calledDeclaration(context.checker, consumer);
         if (index < 0 || !isSupportedFunction(declaration)) return undefined;
-        if (positionalParameter(consumer, declaration, index) === undefined)
-            return undefined;
+        const parameter = positionalParameter(consumer, declaration, index);
+        if (parameter === undefined) return undefined;
         const fields = new Set(
             Object.entries(value.recordProperties ?? {})
                 .filter(
@@ -7450,13 +7451,22 @@ export class UserFunctionLowerer {
                         (field.staticString !== undefined ||
                             field.staticNumber !== undefined ||
                             field.staticBoolean !== undefined) &&
-                        parameterProjectionIsReadOnly(
+                        // A field no write in the program replaces keeps
+                        // its value wherever the record goes.
+                        (parameterProjectionIsReadOnly(
                             context.checker,
                             declaration,
                             index,
                             [name],
                             true,
-                        ),
+                        ) ||
+                            !recordFieldIsWritten(
+                                context,
+                                context.checker.getTypeAtLocation(
+                                    parameter.name,
+                                ),
+                                name,
+                            )),
                 )
                 .map(([name]) => name),
         );
