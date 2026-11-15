@@ -334,6 +334,95 @@ test("a packaged URL keeps its domain beside a sibling leaf's write, through a r
     runPackagedProgram(t, directory, result);
 });
 
+test("a packaged URL built from names destructured from a dynamic import keeps their module's values", (t) => {
+    const directory = resolve("artifacts/packaged-fetch-dynamic-import");
+    const publicDir = join(directory, "public");
+    mkdirSync(join(publicDir, "data"), { recursive: true });
+    for (const name of ["a", "b", "c"])
+        writeFileSync(
+            join(publicDir, "data", `${name}.json`),
+            `{"name":"${name}"}`,
+        );
+    writeFileSync(
+        join(directory, "base.ts"),
+        `export const DATA_BASE = "/data";
+export const NAMES = ["a", "b"] as const;
+`,
+    );
+    const result = compileSource(
+        `
+        async function nameAt(url: string): Promise<string> {
+            const response = await fetch(url);
+            return ((await response.json()) as { name: string }).name;
+        }
+        // The import is deferred to the call that fetches.
+        async function load(pick: number): Promise<string> {
+            const { DATA_BASE, NAMES } = await import("./base");
+            return nameAt(\`\${DATA_BASE}/\${NAMES[pick]}.json\`);
+        }
+        const first = await load(Date.now() > 0 ? 1 : 0);
+        const other = await nameAt(Date.now() > 0 ? "/data/c.json" : "/data/a.json");
+        if (first !== "b" || other !== "c") throw new Error(first + other);
+        // The deferred import makes the program a realm: it ends when closed.
+        globalThis.close();
+    `,
+        { fileName: join(directory, "entry.ts"), publicDir },
+    );
+    assert.equal(result.manifest.assets.length, 3);
+    runPackagedProgram(t, directory, result);
+});
+
+test("a packaged URL read from a table by a run-time key keeps the members its conditional spreads copy in", (t) => {
+    const directory = resolve("artifacts/packaged-fetch-table-spreads");
+    const publicDir = join(directory, "public");
+    mkdirSync(join(publicDir, "data"), { recursive: true });
+    for (const name of ["a", "b", "c", "d", "other"])
+        writeFileSync(
+            join(publicDir, "data", `${name}.json`),
+            `{"name":"${name}"}`,
+        );
+    const result = compileSource(
+        `
+        interface Spec { readonly url: string; readonly variants: number }
+        function allowed(path: string): boolean { return Date.now() > 0 || path.length > 100; }
+        const DOORS: Readonly<Record<string, Spec>> = {
+            a: { url: "a.json", variants: 1 },
+            ...(allowed("b.json") ? { b: { url: "b.json", variants: 2 } } : {}),
+        };
+        const SIGNS: Readonly<Record<string, Spec>> = {
+            ...(allowed("c.json") ? { c: { url: "c.json", variants: 1 } } : {}),
+            d: { url: "d.json", variants: 1 },
+        };
+        const base = "/data";
+        const loads = new Map<string, Promise<string>>();
+        async function nameAt(url: string): Promise<string> {
+            const response = await fetch(url);
+            return ((await response.json()) as { name: string }).name;
+        }
+        async function loadFamily(key: string, spec: Spec): Promise<string> {
+            return (await nameAt(\`\${base}/\${spec.url}\`)) + key.length;
+        }
+        const ensure = (key: string, table: Readonly<Record<string, Spec>>): void => {
+            const spec = table[key];
+            if (!spec || loads.has(key)) return;
+            loads.set(key, loadFamily(key, spec));
+        };
+        // Keys no generation knows.
+        const keyAt = (code: number): string => String.fromCharCode(code + Math.floor(Math.random()));
+        ensure(keyAt(98), DOORS);
+        ensure(keyAt(99), SIGNS);
+        ensure("missing", SIGNS);
+        let names = "";
+        for (const load of loads.values()) names += await load;
+        if (names !== "b1c1") throw new Error(names);
+    `,
+        { fileName: join(directory, "entry.ts"), publicDir },
+    );
+    // The four table members: no other file of the directory.
+    assert.equal(result.manifest.assets.length, 4);
+    runPackagedProgram(t, directory, result);
+});
+
 test("a runtime selection among remote URLs packages each, a string-literal union field included", (t) => {
     const directory = resolve("artifacts/packaged-fetch-remote-candidates");
     mkdirSync(directory, { recursive: true });

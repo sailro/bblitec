@@ -689,7 +689,7 @@ function valueMap(
             );
             if (!conditional) return `{${key}, ${stored}}`;
             return presence
-                ? `if (${presence.ownCpp}) own.set(${key}, ${stored});`
+                ? `if (${presence.ownCpp}) { own.set(${key}, ${stored}); }`
                 : `own.set(${key}, ${stored});`;
         });
         lowerer.context.reachJsData();

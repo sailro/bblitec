@@ -4,6 +4,7 @@ import { CompileError } from "./compile-error.js";
 import { forEachReturn } from "./loop-control.js";
 import type { LoweringServices } from "./lowering-services.js";
 import {
+    aliasTarget,
     declaredInDefaultLibrary,
     resolvedSymbol,
     nullishLiteral,
@@ -237,6 +238,25 @@ function storedValue(
     stored: ts.Expression | undefined,
 ): ts.Expression | undefined {
     return kind === "assign" || kind === "logical" ? stored : undefined;
+}
+
+/**
+ * The name of the variable a dynamic import's namespace holds as `key`: an
+ * export of the imported module, an alias followed to what it re-exports.
+ */
+function importedBinding(
+    checker: ts.TypeChecker,
+    call: ts.CallExpression,
+    key: string,
+): ts.Identifier | undefined {
+    const namespace = checker.getAwaitedType(checker.getTypeAtLocation(call));
+    const member = namespace && checker.getPropertyOfType(namespace, key);
+    const declaration = member && aliasTarget(checker, member).valueDeclaration;
+    return declaration &&
+        ts.isVariableDeclaration(declaration) &&
+        ts.isIdentifier(declaration.name)
+        ? declaration.name
+        : undefined;
 }
 
 /** A const declared with the value it holds. */
@@ -2175,26 +2195,35 @@ class StringDomain {
                   ])
                 : written();
         }
-        // A record read by a runtime key selects one of its member values.
+        // A record read by a runtime key selects one of its member values,
+        // those a spread copies in included; an empty one holds none.
         if (ts.isObjectLiteralExpression(node) && key === ANY_KEY)
-            return this.union(
-                node.properties.map(
-                    (property) => () =>
-                        ts.isPropertyAssignment(property)
-                            ? this.read(
-                                  property.initializer,
-                                  projection.slice(1),
-                                  environment,
-                              )
-                            : ts.isShorthandPropertyAssignment(property)
-                              ? this.read(
-                                    property.name,
-                                    projection.slice(1),
-                                    environment,
-                                )
-                              : undefined,
-                ),
-            );
+            return node.properties.length === 0
+                ? nothing
+                : this.union(
+                      node.properties.map(
+                          (property) => () =>
+                              ts.isPropertyAssignment(property)
+                                  ? this.read(
+                                        property.initializer,
+                                        projection.slice(1),
+                                        environment,
+                                    )
+                                  : ts.isShorthandPropertyAssignment(property)
+                                    ? this.read(
+                                          property.name,
+                                          projection.slice(1),
+                                          environment,
+                                      )
+                                    : ts.isSpreadAssignment(property)
+                                      ? this.read(
+                                            property.expression,
+                                            projection,
+                                            environment,
+                                        )
+                                      : undefined,
+                      ),
+                  );
         const index = key === undefined ? undefined : keyIndex(key);
         if (
             ts.isArrayLiteralExpression(node) &&
@@ -2225,6 +2254,31 @@ class StringDomain {
                                     ),
                       ),
                   );
+        // A dynamic import settles with its module's namespace: a member of
+        // it is the binding that module exports.
+        if (
+            ts.isCallExpression(node) &&
+            node.expression.kind === ts.SyntaxKind.ImportKeyword
+        ) {
+            const exported =
+                projection[0] === undefined
+                    ? undefined
+                    : importedBinding(
+                          this.context.checker,
+                          node,
+                          projection[0],
+                      );
+            const symbol =
+                exported && resolvedSymbol(this.context.checker, exported);
+            return exported && symbol
+                ? this.identifier(
+                      exported,
+                      symbol,
+                      projection.slice(1),
+                      environment,
+                  )
+                : undefined;
+        }
         if (ts.isCallExpression(node))
             return this.call(node, projection, environment);
         if (projection.length) return undefined;
