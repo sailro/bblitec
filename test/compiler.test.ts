@@ -6022,6 +6022,43 @@ test("file-texture options spread from a constant read the constant's own fields
     assert.deepEqual(loads, ["true", "false"]);
 });
 
+test("a selection of members a call omits is absent where that call is lowered", () => {
+    const result = compileSource(`
+        interface Cell { u: number; v: number; w: number; h: number }
+        interface Options {
+            name: string;
+            cells?: { cells: readonly Cell[]; vFlip: boolean };
+            map?: { cells: readonly Cell[]; vFlip: boolean; capacity: number; keySource: "a" | "b" };
+        }
+        function build(opts: Options): string {
+            const cells = opts.cells;
+            const map = opts.map;
+            const mode = cells ?? map;
+            const setup = mode ? \`cells \${cells ? "direct" : map ? map.keySource : ""}\` : "";
+            let total = 0;
+            if (mode) {
+                const count = Math.max(1, mode.cells.length);
+                const data = new Float32Array((count + 1) * 4);
+                data[0] = count;
+                data[1] = mode.vFlip ? -1 : 1;
+                const source = mode.cells.length ? mode.cells : [{ u: 0, v: 0, w: 1, h: 1 }];
+                for (let i = 0; i < count; i++) {
+                    const cell = source[i]!;
+                    data.set([cell.u, cell.v, cell.w, cell.h], (i + 1) * 4);
+                }
+                total += data.length;
+            }
+            return opts.name + "[" + setup + "]" + total;
+        }
+        const options = { name: "body" };
+        console.log(build(options));
+        const withCells = { name: "cells", cells: { cells: [{ u: 0, v: 0, w: 1, h: 1 }], vFlip: true } };
+        console.log(build(withCells));
+    `);
+    // The call that omits both reads no storage: the test of the name folds.
+    assert.match(result.cpp, /std::string v_fn\d+_setup = "";/);
+});
+
 test("uses a boolean fallback for an explicitly undefined record property", () => {
     const result = compileSource(
         `

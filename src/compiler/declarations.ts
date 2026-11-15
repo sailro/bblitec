@@ -3789,6 +3789,20 @@ export class DeclarationLowerer {
         ) {
             annotated = this.evolvedArrayType(name);
         }
+        // A selection generation knows yields no value declares that
+        // absence: no storage holds it, and a test of the name folds.
+        if (
+            ts.isIdentifier(name) &&
+            isOperandSelection(initializer) &&
+            !this.context.sharedClosures.identifierIsRebound(name) &&
+            this.context.probeEmission(
+                () =>
+                    this.context.compileValue(unwrappedInitializer).kind ===
+                    "json-null",
+                (absent) => absent,
+            )
+        )
+            return false;
         if (
             ts.isObjectLiteralExpression(initializer) &&
             hasDynamicObjectSpread(this.context, initializer)

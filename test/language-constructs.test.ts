@@ -6328,6 +6328,44 @@ check(
 );
 
 check(
+    "selection-of-absent-members",
+    `
+    // A selection of two members a call omits is absent in that call; the
+    // same body holds a value in the call that passes one.
+    interface Cell { u: number; v: number; w: number; h: number }
+    interface Options {
+        name: string;
+        cells?: { cells: readonly Cell[]; vFlip: boolean };
+        map?: { cells: readonly Cell[]; vFlip: boolean; capacity: number; keySource: "a" | "b" };
+    }
+    function build(opts: Options): string {
+        const cells = opts.cells;
+        const map = opts.map;
+        const mode = cells ?? map;
+        const setup = mode ? "cells " + (cells ? "direct" : map ? map.keySource : "") : "";
+        let total = 0;
+        if (mode) {
+            const count = Math.max(1, mode.cells.length);
+            const data = new Float32Array((count + 1) * 4);
+            data[0] = count;
+            data[1] = mode.vFlip ? -1 : 1;
+            const source = mode.cells.length ? mode.cells : [{ u: 0, v: 0, w: 1, h: 1 }];
+            for (let i = 0; i < count; i++) {
+                const cell = source[i]!;
+                data.set([cell.u, cell.v, cell.w, cell.h], (i + 1) * 4);
+            }
+            total += data.length + data[1]!;
+        }
+        return opts.name + "[" + setup + "]" + total;
+    }
+    const plain = build({ name: "body" });
+    const direct = build({ name: "cells", cells: { cells: [{ u: 0, v: 0, w: 1, h: 1 }], vFlip: true } });
+    const keyed = build({ name: "map", map: { cells: [], vFlip: false, capacity: 4, keySource: "b" } });
+    if (plain !== "body[]0" || direct !== "cells[cells direct]7" || keyed !== "map[cells b]9") throw new Error(plain + " " + direct + " " + keyed);
+`,
+);
+
+check(
     "typed-array-spreads-and-reverse",
     `
     const floats = new Float32Array([1.5, -2, 3]);
