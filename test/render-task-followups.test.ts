@@ -350,6 +350,16 @@ capture.drop(sphere);
             name,
         );
         assert.match(result.cpp, /std::optional<bbl::TaskHandle>/, name);
+        // A sample count of one folds the task away: generation knows the
+        // const holds null, so every guarded use folds with it.
+        if (name === "absentSamples") {
+            assert.doesNotMatch(
+                result.cpp,
+                /\.has_value\(\)|bbl::remove_render_task_mesh|bbl::enable_render_task_mesh_refresh/,
+                name,
+            );
+            continue;
+        }
         assert.match(result.cpp, /\.has_value\(\)/, name);
         assert.match(
             result.cpp,
@@ -357,10 +367,4 @@ capture.drop(sphere);
             name,
         );
     }
-    // A sample count of one folds the task away, yet the guarded uses still
-    // name the entry engine and the type's render-task fact.
-    assert.match(
-        compileSource(nullableTaskPrefix + shapes.absentSamples).cpp,
-        /std::optional<bbl::TaskHandle> v_fn\d+_visibilityCapture\{\};\s+if \(v_fn\d+_visibilityCapture\.has_value\(\)\) \{\s+bbl::enable_render_task_mesh_refresh\(v_engine,/,
-    );
 });
