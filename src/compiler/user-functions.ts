@@ -7439,6 +7439,7 @@ export class UserFunctionLowerer {
         if (index < 0 || !isSupportedFunction(declaration)) return undefined;
         const parameter = positionalParameter(consumer, declaration, index);
         if (parameter === undefined) return undefined;
+        const parameterType = context.checker.getTypeAtLocation(parameter.name);
         const fields = new Set(
             Object.entries(value.recordProperties ?? {})
                 .filter(
@@ -7446,8 +7447,9 @@ export class UserFunctionLowerer {
                         (field.staticString !== undefined ||
                             field.staticNumber !== undefined ||
                             field.staticBoolean !== undefined) &&
-                        // A field no write in the program replaces keeps
-                        // its value wherever the record goes.
+                        // A field the parameter's type declares, which no
+                        // write in the program replaces, keeps its value
+                        // wherever the record goes.
                         (parameterProjectionIsReadOnly(
                             context.checker,
                             declaration,
@@ -7455,13 +7457,17 @@ export class UserFunctionLowerer {
                             [name],
                             true,
                         ) ||
-                            !recordFieldIsWritten(
-                                context,
-                                context.checker.getTypeAtLocation(
-                                    parameter.name,
+                            (context.checker.getPropertyOfType(
+                                context.checker.getNonNullableType(
+                                    parameterType,
                                 ),
                                 name,
-                            )),
+                            ) !== undefined &&
+                                !recordFieldIsWritten(
+                                    context,
+                                    parameterType,
+                                    name,
+                                ))),
                 )
                 .map(([name]) => name),
         );

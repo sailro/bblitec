@@ -3853,7 +3853,8 @@ export class DeclarationLowerer {
             annotated = this.evolvedArrayType(name);
         }
         // A selection generation knows yields no value declares that
-        // absence: no storage holds it, and a test of the name folds.
+        // absence: no storage holds it, and a test of the name folds. The
+        // probe only asks; the value path lowers the selection, once.
         if (
             ts.isIdentifier(name) &&
             isOperandSelection(initializer) &&
@@ -3865,7 +3866,7 @@ export class DeclarationLowerer {
                     () =>
                         this.context.compileValue(unwrappedInitializer).kind ===
                         "json-null",
-                    (absent) => absent,
+                    () => false,
                 ),
             )
         )
