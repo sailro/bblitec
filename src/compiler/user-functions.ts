@@ -7435,8 +7435,15 @@ export class UserFunctionLowerer {
             return undefined;
         const invocation = this.invocations.get(ir.declaration)?.call;
         if (!invocation) return undefined;
-        const argument = outermostWrapper(invocation);
+        let argument = outermostWrapper(invocation);
         if (!ts.isExpression(argument)) return undefined;
+        // A record spread into a literal hands its fields, by name, to the
+        // literal's consumer (`f({ ...build(), extra })`).
+        if (
+            ts.isSpreadAssignment(argument.parent) &&
+            ts.isObjectLiteralExpression(argument.parent.parent)
+        )
+            argument = outermostWrapper(argument.parent.parent);
         const consumer = argument.parent;
         if (!ts.isCallExpression(consumer)) return undefined;
         const index = consumer.arguments.indexOf(argument);

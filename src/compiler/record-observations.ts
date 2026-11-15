@@ -39,6 +39,7 @@ import {
     positionalParameter,
     variableKind,
     hasExportModifier,
+    propertyKey,
 } from "./syntax.js";
 
 /** What a record-observation question reads: the program and the code its calls run. */
@@ -498,61 +499,122 @@ function identityUses(
     const array = checker.isArrayLikeType(
         checker.getTypeAtLocation(declaration.name),
     );
+    // The expressions that read the object: references of the names that
+    // hold it, and reads of a member a callee was handed it as.
     const followed: ts.Symbol[] = [];
+    const reads: ts.Expression[] = [];
     const follow = (name: ts.BindingName): void => {
         const symbol = ts.isIdentifier(name)
             ? declaredSymbol(checker, name)
             : undefined;
-        if (symbol && !followed.includes(symbol)) followed.push(symbol);
+        if (symbol && !followed.includes(symbol)) {
+            followed.push(symbol);
+            reads.push(
+                ...bindingReferences(context.program, context.checker, symbol),
+            );
+        }
     };
     follow(declaration.name);
     let reason: string | undefined;
-    for (let index = 0; index < followed.length && !reason; index++)
-        for (const reference of bindingReferences(
-            context.program,
-            context.checker,
-            followed[index]!,
-        )) {
-            const use = flowingUse(reference);
-            const parent = use.parent;
-            if (isIdentityComparison(parent)) {
-                const other = parent.left === use ? parent.right : parent.left;
-                const partner = token
-                    ? emptyTokenRoot(checker, other)
-                    : undefined;
-                if (partner) tokens.push(partner);
-                else if (nullishLiteral(checker, other) === undefined)
-                    reason = "the program compares it by identity";
-            } else if (
-                (ts.isVariableDeclaration(parent) || ts.isParameter(parent)) &&
-                parent.initializer === use &&
-                ts.isIdentifier(parent.name)
+    for (let index = 0; index < reads.length && !reason; index++) {
+        const use = flowingUse(reads[index]!);
+        const parent = use.parent;
+        if (isIdentityComparison(parent)) {
+            const other = parent.left === use ? parent.right : parent.left;
+            const partner = token ? emptyTokenRoot(checker, other) : undefined;
+            if (partner) tokens.push(partner);
+            else if (nullishLiteral(checker, other) === undefined)
+                reason = "the program compares it by identity";
+        } else if (
+            (ts.isVariableDeclaration(parent) || ts.isParameter(parent)) &&
+            parent.initializer === use &&
+            ts.isIdentifier(parent.name)
+        )
+            follow(parent.name);
+        else if (
+            (ts.isCallExpression(parent) || ts.isNewExpression(parent)) &&
+            parent.expression !== use
+        ) {
+            const position = parent.arguments?.indexOf(use) ?? -1;
+            const callee = calledDeclaration(checker, parent);
+            // The engine takes what it is handed in its own storage:
+            // a record or array converts at the call.
+            if (
+                (callee && declarationOrigin(callee) === "babylon") ||
+                (ts.isCallExpression(parent) &&
+                    callOnlyReadsArgument(checker, parent, position))
             )
-                follow(parent.name);
-            else if (
-                (ts.isCallExpression(parent) || ts.isNewExpression(parent)) &&
-                parent.expression !== use
-            ) {
-                const position = parent.arguments?.indexOf(use) ?? -1;
-                const callee = calledDeclaration(checker, parent);
-                // The engine takes what it is handed in its own storage:
-                // a record or array converts at the call.
-                if (
-                    (callee && declarationOrigin(callee) === "babylon") ||
-                    (ts.isCallExpression(parent) &&
-                        callOnlyReadsArgument(checker, parent, position))
-                )
-                    continue;
-                const parameter = programParameter(callee, parent, position);
-                if (parameter) follow(parameter.name);
-                else if (array) reason = storedIdentity(context, use);
-            } else if (array && !onlyReads(use, parent))
-                reason = storedIdentity(context, use);
-            if (reason) break;
+                continue;
+            const parameter = programParameter(callee, parent, position);
+            if (parameter) follow(parameter.name);
+            else if (array) reason = storedIdentity(context, use);
+        } else if (array && !onlyReads(use, parent)) {
+            const member = handedMemberReads(context, use);
+            if (member)
+                reads.push(...member.filter((read) => !reads.includes(read)));
+            else reason = storedIdentity(context, use);
         }
+    }
     const uses = { ...(reason ? { reason } : {}), tokens };
     identityUseAnswers.set(declaration, uses);
     return uses;
+}
+
+/**
+ * The reads of the member an object literal hands `use` as to a function
+ * the program holds (`f({ dir: use })`, `f({ dir })`): every
+ * `parameter.dir` in its body. Undefined where the callee uses the
+ * parameter otherwise (keeps, hands on or spreads the object), so the
+ * member may be read where no reference names it.
+ */
+function handedMemberReads(
+    context: RecordObservationContext,
+    use: ts.Expression,
+): readonly ts.Expression[] | undefined {
+    const { checker } = context;
+    const property = use.parent;
+    const key =
+        ts.isPropertyAssignment(property) && property.initializer === use
+            ? propertyKey(property.name)
+            : ts.isShorthandPropertyAssignment(property) &&
+                property.name === use
+              ? property.name.text
+              : undefined;
+    if (key === undefined || !ts.isObjectLiteralExpression(property.parent))
+        return undefined;
+    const argument = flowingUse(property.parent);
+    const call = argument.parent;
+    if (
+        !(ts.isCallExpression(call) || ts.isNewExpression(call)) ||
+        call.expression === argument
+    )
+        return undefined;
+    const parameter = programParameter(
+        calledDeclaration(checker, call),
+        call,
+        call.arguments?.indexOf(argument) ?? -1,
+    );
+    const symbol =
+        parameter &&
+        ts.isIdentifier(parameter.name) &&
+        declaredSymbol(checker, parameter.name);
+    if (!symbol) return undefined;
+    const memberReads: ts.Expression[] = [];
+    for (const reference of bindingReferences(
+        context.program,
+        checker,
+        symbol,
+    )) {
+        const object = flowingUse(reference);
+        const access = object.parent;
+        if (
+            !ts.isPropertyAccessExpression(access) ||
+            access.expression !== object
+        )
+            return undefined;
+        if (access.name.text === key) memberReads.push(access);
+    }
+    return memberReads;
 }
 
 /**

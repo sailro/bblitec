@@ -3313,14 +3313,14 @@ export class DataLowerer {
         // inside it carries neither the flag nor the optional storage.
         const { optionalFoundCpp, optionalStorageCpp, ...plainOwner } = owner;
         // An owner that cannot be absent is read as it is. Stored objects
-        // encode absence as an empty shared pointer instead (below).
+        // encode absence as an empty shared pointer instead (below), unless
+        // generation knows the pointer set.
+        const storedObject =
+            owner.dataType?.kind === "struct" &&
+            this.context.dataTypes.isReferenceStruct(owner.dataType.name);
         if (
-            isPresentValue(owner) &&
-            !isJsonValue(owner) &&
-            !(
-                owner.dataType?.kind === "struct" &&
-                this.context.dataTypes.isReferenceStruct(owner.dataType.name)
-            )
+            (isPresentValue(owner) && !isJsonValue(owner) && !storedObject) ||
+            (storedObject && knownCondition(presenceFlagCpp(owner)) === true)
         )
             return read(plainOwner);
         const ownerFound = presenceFlagCpp(owner);
