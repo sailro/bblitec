@@ -270,6 +270,70 @@ test("a URL read through a built catalog's methods keeps the domain of the entri
     runPackagedProgram(t, directory, result);
 });
 
+test("a packaged URL keeps its domain beside a sibling leaf's write, through a record parameter's method and past a rebind", (t) => {
+    const directory = resolve("artifacts/packaged-fetch-held-records");
+    const publicDir = join(directory, "public");
+    mkdirSync(join(publicDir, "data"), { recursive: true });
+    for (const name of ["a", "b", "c"])
+        writeFileSync(
+            join(publicDir, "data", `${name}.json`),
+            `{"name":"${name}"}`,
+        );
+    const result = compileSource(
+        `
+        interface Entry { id: string; url: string }
+        interface Slot { late?: Entry }
+        interface Kinds { packages: readonly Entry[]; slots: Slot; spare: Slot }
+        interface Catalog { forKind(kind: string): readonly Entry[] }
+        async function nameAt(url: string): Promise<string> {
+            return ((await (await fetch(url)).json()) as { name: string }).name;
+        }
+        function createKinds(): Kinds {
+            return { packages: [{ id: "a", url: "/data/a.json" }, { id: "b", url: "/data/b.json" }], slots: {}, spare: {} };
+        }
+        // A write through one pattern leaf, declared or assigned, leaves
+        // its siblings as they were.
+        const kinds = createKinds();
+        const { packages, slots } = kinds;
+        slots.late = { id: "late", url: String(Date.now()) };
+        let spare: Slot;
+        ({ spare } = kinds);
+        spare.late = { id: "late", url: String(Date.now()) };
+        let names = "";
+        for (const entry of kinds.packages) names += await nameAt(entry.url);
+        // A built record's method called through a parameter is that
+        // record's own.
+        async function loadCatalog(): Promise<Catalog> {
+            const entries: Entry[] = [{ id: "a", url: "/data/a.json" }, { id: "b", url: "/data/b.json" }];
+            const forKind = (kind: string): readonly Entry[] => entries.filter((entry) => entry.id.startsWith(kind));
+            return { forKind };
+        }
+        function describe(catalog: Catalog): readonly { id: string; packageUrl: string }[] {
+            return catalog.forKind("b").map((entry) => ({ id: entry.id, packageUrl: entry.url }));
+        }
+        const catalog = await loadCatalog();
+        for (const kind of describe(catalog)) names += await nameAt(kind.packageUrl);
+        // A rebind writes the binding, not the object it held.
+        const entries: Entry[] = [{ id: "a", url: "/data/a.json" }, { id: "b", url: "/data/b.json" }];
+        let first: Entry | undefined;
+        for (const entry of entries) {
+            if (entry.id === "a" && Date.now() < 0) continue;
+            first ??= entry;
+        }
+        names += first ? first.id : "";
+        for (const entry of entries) names += await nameAt(entry.url);
+        // A logical assignment stores its right side or keeps what was there.
+        let picked = Date.now() < 0 ? "/data/a.json" : "/data/b.json";
+        if (Date.now() > 0) picked &&= "/data/c.json";
+        names += await nameAt(picked);
+        if (names !== "abbaabc" || packages.length !== 2) throw new Error(names);
+    `,
+        { fileName: join(directory, "entry.ts"), publicDir },
+    );
+    assert.equal(result.manifest.assets.length, 3);
+    runPackagedProgram(t, directory, result);
+});
+
 test("a runtime selection among remote URLs packages each, a string-literal union field included", (t) => {
     const directory = resolve("artifacts/packaged-fetch-remote-candidates");
     mkdirSync(directory, { recursive: true });

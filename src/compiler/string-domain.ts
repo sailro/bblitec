@@ -38,6 +38,7 @@ import {
     hasExportModifier,
     isSupportedFunction,
     type SupportedFunction,
+    type WriteKind,
     variableKind,
     valueConsumer,
     yieldedOperands,
@@ -179,7 +180,15 @@ interface SourceGraph {
         SupportedFunction,
         readonly ts.CallExpression[]
     >;
+    /** The values a binding's rebinds store (`storedValue`), by the binding. */
     readonly writes: ReadonlyMap<ts.Symbol, readonly ts.Expression[]>;
+    /**
+     * Bindings a rebind that stores no readable value reaches (`x += 1`,
+     * `x++`, a pattern leaf, a loop target): what they hold is unknown, and
+     * no object is written.
+     */
+    readonly rebound: ReadonlySet<ts.Symbol>;
+    /** Bindings whose held object some write reaches. */
     readonly mutated: ReadonlySet<ts.Symbol>;
     /**
      * Plain `x.a[i].b = v` writes into a binding's object graph, by the
@@ -219,6 +228,40 @@ interface AliasEdge {
 const maxAliasPath = 8;
 
 /**
+ * The value a write leaves in its target where this domain can read it: what
+ * `=` stores, or what a logical assignment (`??=`, `||=`, `&&=`) stores on
+ * the runs that store, the target keeping its own on the others.
+ */
+function storedValue(
+    kind: WriteKind,
+    stored: ts.Expression | undefined,
+): ts.Expression | undefined {
+    return kind === "assign" || kind === "logical" ? stored : undefined;
+}
+
+/** A const declared with the value it holds. */
+type BuiltConst = ts.VariableDeclaration & {
+    readonly initializer: ts.Expression;
+};
+
+/** The function a parameter belongs to. */
+function parameterOwner(
+    parameter: ts.ParameterDeclaration,
+): SupportedFunction | undefined {
+    const owner = parameter.parent;
+    return ts.isArrowFunction(owner) ||
+        ts.isFunctionExpression(owner) ||
+        ts.isMethodDeclaration(owner)
+        ? owner
+        : functionOfDeclaration(owner);
+}
+
+/** The step a key takes: itself, or any element for an index or a run-time key. */
+function keyStep(key: string | undefined): string {
+    return key === undefined || keyIndex(key) !== undefined ? ANY_KEY : key;
+}
+
+/**
  * Where a binding pattern's name reads its value: the declaration the
  * pattern destructures (`root`) and the name's path inside what it holds
  * (an array element is any element); the members an object rest name's
@@ -253,7 +296,7 @@ function patternSource(element: ts.BindingElement):
             taken = read.excluded;
         } else {
             if (read.key === undefined) return undefined;
-            path.unshift(keyIndex(read.key) !== undefined ? ANY_KEY : read.key);
+            path.unshift(keyStep(read.key));
         }
         const declared = pattern.parent;
         if (ts.isBindingElement(declared)) node = declared;
@@ -283,12 +326,11 @@ function narrowedPresent(
     );
 }
 
-/** The step an access takes: its key, or any element for an index or a run-time key. */
+/** The step an access takes. */
 function memberStep(
     access: ts.PropertyAccessExpression | ts.ElementAccessExpression,
 ): string {
-    const key = accessKey(access);
-    return key === undefined || keyIndex(key) !== undefined ? ANY_KEY : key;
+    return keyStep(accessKey(access));
 }
 
 /** A binding: a name, or a class's private field read through any instance. */
@@ -326,32 +368,45 @@ function heldBindings(expression: ts.Expression): Binding[] {
     });
 }
 
+/** The step one element of a pattern takes below what the pattern reads: none for a rest. */
+function patternStep(
+    pattern:
+        | ts.BindingPattern
+        | ts.ObjectLiteralExpression
+        | ts.ArrayLiteralExpression,
+    element: ts.Node,
+): KeyPath {
+    const read = patternSlots(pattern).find(
+        (slot) => slot.element === element,
+    )?.read;
+    return read?.kind === "member" ? [keyStep(read.key)] : [];
+}
+
 /**
- * How many members below what its alias site reads a name holds its value
- * (`AliasSite.holds`): none for the value itself, one per pattern level for a
- * pattern leaf (a rest element adds none), one more for a loop's element.
+ * The path below what its alias site reads at which a name holds its value
+ * (`AliasSite.holds`): none for the value itself, each pattern level's step
+ * for a pattern leaf, under any element for a loop's element.
  */
-function aliasDepth(name: ts.Identifier, holds: AliasSite["holds"]): number {
-    if (holds === "value" || holds === "returned") return 0;
-    let depth = holds === "element" ? 1 : 0;
+function aliasPath(name: ts.Identifier, holds: AliasSite["holds"]): KeyPath {
+    if (holds === "value" || holds === "returned") return [];
+    const path: string[] = [];
     for (let node: ts.Node = name; ;) {
         const parent = node.parent;
         const declared = declarationNamed(node);
         if (declared && ts.isBindingElement(declared)) {
-            if (!declared.dotDotDotToken) depth++;
+            path.unshift(...patternStep(declared.parent, declared));
             node = declared.parent;
         } else if (
-            ts.isShorthandPropertyAssignment(parent) ||
-            (ts.isPropertyAssignment(parent) && parent.initializer === node)
+            ts.isObjectLiteralExpression(parent) ||
+            ts.isArrayLiteralExpression(parent)
         ) {
-            depth++;
-            node = parent.parent;
-        } else if (ts.isArrayLiteralExpression(parent)) {
-            depth++;
+            path.unshift(...patternStep(parent, node));
             node = parent;
         } else if (
-            // A default (`[x = 1] = s`) or a rest (`[...xs] = s`) leaves
-            // the level to its element.
+            // An assigned pattern's element around its target: a property
+            // (`{ a: x }`, `{ x }`), a default (`[x = 1]`), a rest (`[...xs]`).
+            ts.isShorthandPropertyAssignment(parent) ||
+            (ts.isPropertyAssignment(parent) && parent.initializer === node) ||
             (ts.isBinaryExpression(parent) &&
                 parent.left === node &&
                 parent.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
@@ -361,11 +416,13 @@ function aliasDepth(name: ts.Identifier, holds: AliasSite["holds"]): number {
             ts.isSpreadAssignment(parent)
         )
             node = parent;
-        // An assigned loop target (`for (x of xs)`) takes each element.
+        // A loop's name (`for (const x of xs)`) and an assigned loop target
+        // (`for (x of xs)`) take each element.
         else
-            return ts.isForOfStatement(parent) && parent.initializer === node
-                ? depth + 1
-                : depth;
+            return holds === "element" ||
+                (ts.isForOfStatement(parent) && parent.initializer === node)
+                ? [ANY_KEY, ...path]
+                : path;
     }
 }
 
@@ -724,6 +781,7 @@ function sourceGraph(
     }[] = [];
     const memberCalls: [ts.Node, ts.CallExpression][] = [];
     const writes = new Map<ts.Symbol, ts.Expression[]>();
+    const rebound = new Set<ts.Symbol>();
     const mutated = new Set<ts.Symbol>();
     const aliases = new Map<ts.Symbol, AliasEdge[]>();
     // Where a source expression holds a binding's object: what a literal holds
@@ -747,9 +805,13 @@ function sourceGraph(
                 );
         }
     };
-    // A name `depth` members inside what it reads (a pattern leaf, a loop's
-    // element) holds an object that far below the source's own path.
-    const alias = (target: ts.Node, source: ts.Expression, depth = 0): void => {
+    // A name inside what it reads (a pattern leaf, a loop's element) holds
+    // an object `below` the source's own path.
+    const alias = (
+        target: ts.Node,
+        source: ts.Expression,
+        below: KeyPath = [],
+    ): void => {
         const type = checker.getNonNullableType(
             checker.getTypeAtLocation(target),
         );
@@ -768,7 +830,7 @@ function sourceGraph(
             edges.push({
                 to,
                 fromPath,
-                toPath: [...toPath, ...new Array<string>(depth).fill(ANY_KEY)],
+                toPath: [...toPath, ...below],
             });
             aliases.set(from, edges);
         });
@@ -819,7 +881,7 @@ function sourceGraph(
                 alias(parameter.name, input.argument);
             // A spread tuple's element is held one element below it.
             else if (input.kind === "element")
-                alias(parameter.name, input.spread, 1);
+                alias(parameter.name, input.spread, [ANY_KEY]);
         });
     };
     for (const source of sourceFiles) {
@@ -842,7 +904,7 @@ function sourceGraph(
                 // holds what it reads.
                 for (const { name, source, holds } of aliasSites(node))
                     if (holds !== "returned")
-                        alias(name, source, aliasDepth(name, holds));
+                        alias(name, source, aliasPath(name, holds));
                 // A function annotated to return a function type: calls typed
                 // by that type reach the literals it returns, when it returns
                 // nothing else.
@@ -1027,23 +1089,24 @@ function sourceGraph(
                         )
                     )
                         continue;
-                    // A private field's are its plain `=` writes, each one
-                    // holding what it stores; any other leaves it unknown.
+                    // A private field's are the writes storing a value it
+                    // can read, each one holding what it stores; any other
+                    // leaves it unknown.
                     const field = privateField(access);
                     const fieldSymbol = field && resolvedSymbol(checker, field);
+                    const value = storedValue(kind, stored);
                     if (field && fieldSymbol) {
-                        if (kind === "assign" && stored) {
+                        if (value) {
                             const values = writes.get(fieldSymbol) ?? [];
-                            values.push(stored);
+                            values.push(value);
                             writes.set(fieldSymbol, values);
-                            alias(field, stored);
-                        } else mutated.add(fieldSymbol);
+                            alias(field, value);
+                        } else rebound.add(fieldSymbol);
                         continue;
                     }
-                    // Only a plain `=` stores a value this domain can read;
-                    // any other write (`x.a.b++`) leaves the member it
-                    // writes unknown, and the rest of the binding as it was.
-                    const value = kind === "assign" ? stored : undefined;
+                    // A write that stores no readable value (`x.a.b++`)
+                    // leaves the member it writes unknown, and the rest of
+                    // the binding as it was.
                     const written = resolvedWrites(memberWritePaths(target));
                     if (written)
                         for (const { symbol, path } of written)
@@ -1058,17 +1121,17 @@ function sourceGraph(
         );
         for (const [symbol, sites] of fileRebinds(checker, source))
             for (const { kind, stored } of sites) {
-                const value = kind === "assign" ? stored : undefined;
+                const value = storedValue(kind, stored);
                 if (value) {
                     const values = writes.get(symbol) ?? [];
                     values.push(value);
                     writes.set(symbol, values);
-                } else mutated.add(symbol);
+                } else rebound.add(symbol);
             }
     }
     for (const { declaration, name } of annotatedFunctionBindings) {
         const symbol = resolvedSymbol(checker, name);
-        if (!symbol || mutated.has(symbol)) continue;
+        if (!symbol || mutated.has(symbol) || rebound.has(symbol)) continue;
         const held = [
             ...(declaration.initializer ? [declaration.initializer] : []),
             ...(writes.get(symbol) ?? []),
@@ -1086,12 +1149,9 @@ function sourceGraph(
     const pending = [...mutated];
     const reached = new Map<ts.Symbol, Set<string>>();
     const reach = (target: ts.Symbol, write: MemberWrite): void => {
-        const whole =
-            write.path.length === 0 ||
-            write.path.length > maxAliasPath ||
-            (mutated.has(target) && !memberWrites.has(target));
-        if (whole) {
-            if (otherwiseMutated.has(target)) return;
+        // Already unknown as a whole.
+        if (otherwiseMutated.has(target)) return;
+        if (write.path.length === 0 || write.path.length > maxAliasPath) {
             otherwiseMutated.add(target);
             mutated.add(target);
             pending.push(target);
@@ -1135,6 +1195,7 @@ function sourceGraph(
     const graph: SourceGraph = {
         calls,
         writes,
+        rebound,
         mutated,
         memberWrites,
         otherwiseMutated,
@@ -1599,6 +1660,7 @@ class StringDomain {
         projection: KeyPath,
         environment: Environment,
     ): Domain {
+        if (this.graph.rebound.has(symbol)) return undefined;
         const memberWrites = this.graph.memberWrites.get(symbol);
         if (
             this.graph.mutated.has(symbol) &&
@@ -1694,12 +1756,77 @@ class StringDomain {
         );
     }
 
-    /** The declaration of the never-written const `expression` names, with the value it holds. */
-    private unwrittenConst(
+    /**
+     * The calls of `owner` a read can come from: a generic class's method
+     * writes the instance the read entered only through that instantiation.
+     */
+    private reachingCalls(owner: SupportedFunction): ts.CallExpression[] {
+        return (this.graph.calls.get(owner) ?? []).filter((call) =>
+            this.reachesInstance(owner, call),
+        );
+    }
+
+    /**
+     * The never-written consts `expression` may name: the one it names, or
+     * those each call passes for the never-written parameter it names.
+     * Undefined where it may hold anything else.
+     */
+    private namedConsts(
         expression: ts.Expression,
-    ):
-        | (ts.VariableDeclaration & { readonly initializer: ts.Expression })
-        | undefined {
+        environment: Environment,
+        entered: ReadonlySet<ts.Symbol> = new Set(),
+    ): readonly BuiltConst[] | undefined {
+        const declaration = this.unwrittenConst(expression);
+        if (declaration) return [declaration];
+        const node = unwrapExpression(expression);
+        const symbol = ts.isIdentifier(node)
+            ? resolvedSymbol(this.context.checker, node)
+            : undefined;
+        const parameter = symbol?.valueDeclaration;
+        if (
+            !symbol ||
+            !parameter ||
+            !ts.isParameter(parameter) ||
+            entered.has(symbol) ||
+            this.graph.rebound.has(symbol) ||
+            this.graph.mutated.has(symbol) ||
+            this.graph.writes.get(symbol)?.length
+        )
+            return undefined;
+        const within = new Set(entered).add(symbol);
+        const origin = environment.get(symbol);
+        if (origin)
+            return origin.absent || origin.projection.length
+                ? undefined
+                : this.namedConsts(
+                      origin.expression,
+                      origin.environment,
+                      within,
+                  );
+        const owner = parameterOwner(parameter);
+        // Calls through a value it escaped as are unseen.
+        if (!owner || this.graph.escaped.has(owner)) return undefined;
+        const index = owner.parameters.indexOf(parameter);
+        const named: BuiltConst[] = [];
+        for (const call of this.reachingCalls(owner)) {
+            const input = parameterInput(
+                this.context.checker,
+                call,
+                owner,
+                index,
+            );
+            const passed =
+                input.kind === "argument"
+                    ? this.namedConsts(input.argument, environment, within)
+                    : undefined;
+            if (!passed) return undefined;
+            named.push(...passed);
+        }
+        return named;
+    }
+
+    /** The declaration of the never-written const `expression` names, with the value it holds. */
+    private unwrittenConst(expression: ts.Expression): BuiltConst | undefined {
         const node = unwrapExpression(expression);
         const symbol = ts.isIdentifier(node)
             ? resolvedSymbol(this.context.checker, node)
@@ -1711,9 +1838,7 @@ class StringDomain {
             variableKind(declaration.parent) === "const" &&
             declaration.initializer &&
             !this.graph.mutated.has(symbol)
-            ? (declaration as ts.VariableDeclaration & {
-                  readonly initializer: ts.Expression;
-              })
+            ? (declaration as BuiltConst)
             : undefined;
     }
 
@@ -1882,12 +2007,7 @@ class StringDomain {
                   ? nothing
                   : undefined;
         if (declaration && ts.isParameter(declaration)) {
-            const owner =
-                ts.isArrowFunction(declaration.parent) ||
-                ts.isFunctionExpression(declaration.parent) ||
-                ts.isMethodDeclaration(declaration.parent)
-                    ? declaration.parent
-                    : functionOfDeclaration(declaration.parent);
+            const owner = parameterOwner(declaration);
             if (!owner) return undefined;
             const index = owner.parameters.indexOf(declaration);
             // An array iteration callback's first parameter is each
@@ -1922,13 +2042,8 @@ class StringDomain {
             if (neverRuns(this.graph, owner)) return nothing;
             // Calls through a value it escaped as are unseen.
             if (this.graph.escaped.has(owner)) return undefined;
-            // A generic class's method writes the instance the read
-            // entered only through that instantiation.
-            const calls = (this.graph.calls.get(owner) ?? []).filter((call) =>
-                this.reachesInstance(owner, call),
-            );
             return this.union(
-                calls.map((call) => () => {
+                this.reachingCalls(owner).map((call) => () => {
                     const input = parameterInput(
                         this.context.checker,
                         call,
@@ -2256,24 +2371,35 @@ class StringDomain {
 
     /**
      * The functions a record's member `name` holds, where the record is a
-     * never-written const a call built: each object literal the called
-     * function returns defines the member as a method or as a function
-     * (`callbackFunction`). Undefined otherwise.
+     * never-written const a call built, named directly or through parameters
+     * (`namedConsts`): each object literal the called function returns
+     * defines the member as a method or as a function (`callbackFunction`).
+     * Undefined otherwise.
      */
     private builtRecordMethods(
         receiver: ts.Expression,
         name: string,
+        environment: Environment,
     ): readonly SupportedFunction[] | undefined {
-        const declaration = this.unwrittenConst(receiver);
-        if (!declaration) return undefined;
-        let known = this.graph.builtMethods.get(declaration);
-        if (!known) {
-            known = new Map();
-            this.graph.builtMethods.set(declaration, known);
+        const declarations = this.namedConsts(receiver, environment);
+        if (!declarations?.length) return undefined;
+        const methods = new Set<SupportedFunction>();
+        for (const declaration of declarations) {
+            let known = this.graph.builtMethods.get(declaration);
+            if (!known) {
+                known = new Map();
+                this.graph.builtMethods.set(declaration, known);
+            }
+            if (!known.has(name))
+                known.set(
+                    name,
+                    this.builtMethodsOf(declaration.initializer, name),
+                );
+            const own = known.get(name);
+            if (!own) return undefined;
+            for (const method of own) methods.add(method);
         }
-        if (!known.has(name))
-            known.set(name, this.builtMethodsOf(declaration.initializer, name));
-        return known.get(name);
+        return [...methods];
     }
 
     /** `builtRecordMethods` for the value a const holds. */
@@ -2354,7 +2480,11 @@ class StringDomain {
         if (!callee) return undefined;
         const method = callee.name;
         // A method of a record a call built is that record's own.
-        const built = this.builtRecordMethods(callee.expression, method);
+        const built = this.builtRecordMethods(
+            callee.expression,
+            method,
+            environment,
+        );
         if (built)
             return this.union(
                 built.map(
