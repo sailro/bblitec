@@ -541,6 +541,32 @@ export function holdsObjectKeyword(type: ts.Type): boolean {
 }
 
 /**
+ * Whether a slot of this type holds any value but `null` and `undefined`:
+ * the empty object type `{}`, which is also what TypeScript narrows
+ * `unknown` to where a test rules an absent value out (`x !== null` leaves
+ * `{} | undefined`).
+ */
+export function holdsAnyPresentValue(
+    checker: ts.TypeChecker,
+    type: ts.Type,
+): boolean {
+    const present = presentMembers(type);
+    const only = present.length === 1 ? present[0]! : undefined;
+    if (!only || (only.flags & ts.TypeFlags.Object) === 0) return false;
+    const flags = (only as ts.ObjectType).objectFlags;
+    return (
+        (flags & ts.ObjectFlags.Anonymous) !== 0 &&
+        // An empty object literal is a value, not a slot for any.
+        (flags & ts.ObjectFlags.ObjectLiteral) === 0 &&
+        checker.getPropertiesOfType(only).length === 0 &&
+        checker.getSignaturesOfType(only, ts.SignatureKind.Call).length === 0 &&
+        checker.getSignaturesOfType(only, ts.SignatureKind.Construct).length ===
+            0 &&
+        checker.getIndexInfosOfType(only).length === 0
+    );
+}
+
+/**
  * Whether a slot of this type holds no payload: `void` or `never`. Such a
  * parameter only fills a position; its argument is erased.
  */

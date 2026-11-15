@@ -169,6 +169,7 @@ import {
     fixedTupleElements,
     signatureParameterTypes,
     declaredRecordName,
+    holdsAnyPresentValue,
     holdsObjectKeyword,
     valueKindOf,
 } from "./type-facts.js";
@@ -4746,7 +4747,11 @@ export class DataTypeRegistry {
         const substituted = this.substituteTypeParameter(type);
         if (substituted) return this.dynamicJsonType(substituted);
         if ((type.flags & ts.TypeFlags.Unknown) !== 0) return { kind: "json" };
-        if (this.holdsObjectValue(type)) return { kind: "json" };
+        if (
+            this.holdsObjectValue(type) ||
+            holdsAnyPresentValue(this.checker, type)
+        )
+            return { kind: "json" };
         const element = this.checker.isArrayType(type)
             ? this.checker.getIndexTypeOfType(type, ts.IndexKind.Number)
             : this.checker.getIndexTypeOfType(type, ts.IndexKind.String);
