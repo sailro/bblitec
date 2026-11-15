@@ -3553,7 +3553,8 @@ function compileArrayPush(state: ArrayMethodState): Value {
     // emitted after the branch.
     if (
         knownPush &&
-        !lowerer.context.isInRuntimeControlFlow() &&
+        (!lowerer.context.isInRuntimeControlFlow() ||
+            lowerer.context.mutatesWhereCreated(narrowed)) &&
         staticElements &&
         pushedValues?.every(
             (value) =>

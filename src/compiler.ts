@@ -374,6 +374,8 @@ import {
 import { StaticExpansionBudget } from "./compiler/static-expansion.js";
 import type {
     CollectionCardinality,
+    CollectionSite,
+    StaticListItem,
     CompileAsset,
     CompileOptions,
     CompileResult,
@@ -3333,9 +3335,22 @@ class Compiler implements LoweringServices {
             this.constArrayLiteral(expression);
         if (!literal) {
             const unwrapped = this.unwrap(expression);
-            return ts.isIdentifier(unwrapped)
-                ? this.bindings.lookupOptional(unwrapped)?.staticStrings
+            const binding = ts.isIdentifier(unwrapped)
+                ? this.bindings.lookupOptional(unwrapped)
                 : undefined;
+            // A list generation holds by its elements (a local array its
+            // pushes kept) has no literal to read.
+            const elements =
+                binding?.staticElementsOwner?.staticElements ??
+                binding?.staticElements;
+            if (binding?.staticStrings || !elements)
+                return binding?.staticStrings;
+            const held: string[] = [];
+            for (const element of elements) {
+                if (element.staticString === undefined) return undefined;
+                held.push(element.staticString);
+            }
+            return held;
         }
         const strings: string[] = [];
         for (const element of literal.elements) {
@@ -3914,6 +3929,55 @@ class Compiler implements LoweringServices {
                     ? this.expectStaticArrayElements(element.expression)
                     : [element],
         );
+    }
+
+    /**
+     * The items of a generation-known list, as `expectStaticArrayElements`
+     * spells them, or as the strings a part it cannot spell holds: a local
+     * list its pushes kept (`staticStringElements`), or a closed call run
+     * at generation (`ITEMS.map((item) => nameOf(item))`).
+     */
+    public staticListItems(expression: ts.Expression): StaticListItem[] {
+        const projected = this.projectedStaticElements(expression);
+        if (projected) return projected.map((node) => ({ node }));
+        const literal = unlessRefused(() =>
+            this.expectStaticArrayLiteral(expression),
+        );
+        if (literal)
+            return literal.elements.flatMap((element) =>
+                ts.isSpreadElement(element)
+                    ? this.staticListItems(element.expression)
+                    : [{ node: element }],
+            );
+        const held = this.heldStrings(expression);
+        if (held) return held.map((text) => ({ node: expression, text }));
+        return this.expectStaticArrayElements(expression).map((node) => ({
+            node,
+        }));
+    }
+
+    /** The strings a list generation cannot spell holds (`staticListItems`). */
+    private heldStrings(
+        expression: ts.Expression,
+    ): readonly string[] | undefined {
+        const kept = this.staticStringElements(expression);
+        if (kept) return kept;
+        const selected = this.unwrap(
+            this.evaluator.staticArrayExpression(expression),
+        );
+        if (!ts.isCallExpression(selected)) return undefined;
+        const value = unlessRefused(() =>
+            this.runGenerationFunction(
+                selected,
+                [],
+                `List '${selected.expression.getText()}'`,
+            ),
+        );
+        const strings: unknown[] = Array.isArray(value) ? value : [];
+        return Array.isArray(value) &&
+            strings.every((item): item is string => typeof item === "string")
+            ? strings
+            : undefined;
     }
 
     /**
@@ -10350,6 +10414,53 @@ class Compiler implements LoweringServices {
             : undefined;
     }
 
+    /** Where the source walk is, by the run-time regions around it. */
+    private collectionSite(): CollectionSite {
+        return {
+            control: this.runtimeControlFlowDepth,
+            iteration: this.runtimeIterationDepth,
+            callback: this.frameCallbackDepth,
+            frame: [...this.returnFrames]
+                .reverse()
+                .find((frame) => frame.kind === "native"),
+        };
+    }
+
+    /**
+     * Gives a list a block-scoped declaration creates a cardinality of its
+     * own, created here.
+     */
+    public declaredCollection(value: Value): void {
+        const state: CollectionCardinality = {
+            kind: "array",
+            count: undefined,
+            createdIn: [...this.parameterizedResourceIterations],
+            varyingIn: new EmissionSet(),
+            createdAt: this.collectionSite(),
+        };
+        this.collectionCardinalities.add(state);
+        writable(value).collectionCardinality = state;
+    }
+
+    /** Whether a mutation here runs whenever `value`'s collection was created. */
+    public mutatesWhereCreated(value: Value): boolean {
+        const state =
+            (value.staticElementsOwner ?? value).collectionCardinality ??
+            value.collectionCardinality;
+        const created = state?.createdAt;
+        if (!created || state.untrackedAliases) return false;
+        const here = this.collectionSite();
+        return (
+            created.control === here.control &&
+            created.iteration === here.iteration &&
+            created.callback === here.callback &&
+            created.frame === here.frame &&
+            !this.returnFrames.some((current) =>
+                this.resourceLoopReturns.has(current),
+            )
+        );
+    }
+
     public definiteCollectionMutation(): boolean {
         const frame = this.parameterizedResourceIterations.at(-1);
         const definite = frame
@@ -10378,7 +10489,7 @@ class Compiler implements LoweringServices {
         if (state) writable(value).collectionCardinality = state;
         if (
             added === undefined ||
-            !this.definiteCollectionMutation() ||
+            !(this.definiteCollectionMutation() || this.mutatesWhereCreated(value)) ||
             state?.untrackedAliases
         ) {
             if (state) {

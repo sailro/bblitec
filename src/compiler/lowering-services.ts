@@ -23,6 +23,7 @@ import type {
     ResolvedCompileOptions,
     Value,
     ValueKind,
+    StaticListItem,
 } from "./types.js";
 import type {
     CapturedClosure,
@@ -310,6 +311,8 @@ export interface LoweringServices {
      * (`...decls()`, `...(flag ? [a] : [])`) contributing its own.
      */
     expectStaticArrayElements(expression: ts.Expression): ts.Expression[];
+    /** A list's items, spelled or held (`staticListItems` in compiler.ts). */
+    staticListItems(expression: ts.Expression): StaticListItem[];
     referenceSearch(): string;
     /** The default-library global an expression names (symbols.ts `libraryGlobal`). */
     libraryGlobal(expression: ts.Expression): string | undefined;
@@ -771,6 +774,13 @@ export interface LoweringServices {
     knownCollectionCardinality(expression: ts.Expression): number | undefined;
     runtimeCollectionCardinality(expression: ts.Expression): number | undefined;
     recordArrayPush(value: Value, added: number | undefined): boolean;
+    /**
+     * Gives a list a block-scoped declaration creates a cardinality of its
+     * own, created where the walk is.
+     */
+    declaredCollection(value: Value): void;
+    /** Whether a mutation here runs whenever `value`'s collection was created. */
+    mutatesWhereCreated(value: Value): boolean;
     recordCollectionKey(value: Value, key: Value, removed?: boolean): void;
     recordCollectionClear(value: Value): void;
     expectKind(value: Value, kind: ValueKind, node: ts.Node): void;

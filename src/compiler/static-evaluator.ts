@@ -1446,7 +1446,8 @@ export class StaticEvaluator {
         return ts.isArrayLiteralExpression(resolved) ? resolved : undefined;
     }
 
-    private staticArrayExpression(expression: ts.Expression): ts.Expression {
+    /** The expression a static list reads, through selections generation settles. */
+    public staticArrayExpression(expression: ts.Expression): ts.Expression {
         // Same selection the array probe makes, through the same helper:
         // a list a scene chooses with a generation-known condition is
         // still a static list. Scene 140 writes `sg ? [sg] : undefined`

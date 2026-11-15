@@ -672,6 +672,7 @@ interface DataLoweringContext extends Pick<
     | "cppString"
     | "propertyName"
     | "recordDataAssignmentMetadata"
+    | "mutatesWhereCreated"
     | "sceneManifest"
     | "propertyAccess"
     | "resolveStaticExpression"

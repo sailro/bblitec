@@ -2232,6 +2232,29 @@ export interface CollectionCardinality {
     readonly varyingIn: Set<object>;
     /** An untracked alias can mutate this collection without visiting its cell. */
     readonly untrackedAliases?: true;
+    /**
+     * Where a block-scoped declaration created it: a mutation at the same
+     * site runs whenever the creation did.
+     */
+    readonly createdAt?: CollectionSite;
+}
+
+/**
+ * One item of a generation-known list: an element as spelled, or a string
+ * generation holds for a part not spelled (`node` is that part).
+ */
+export interface StaticListItem {
+    readonly node: ts.Expression;
+    readonly text?: string;
+}
+
+/** A point of the source walk by the run-time regions around it. */
+export interface CollectionSite {
+    readonly control: number;
+    readonly iteration: number;
+    readonly callback: number;
+    /** The innermost native function body. */
+    readonly frame: object | undefined;
 }
 
 export interface DefaultRenderTaskEmission {

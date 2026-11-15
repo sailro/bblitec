@@ -319,7 +319,8 @@ composition and source albedo reads with `KHR_texture_transform` refuse.
   `enableShaderUniformRangeUpdates`. Runtime resource replacements refresh shared GPU bindings;
   render-target colour and sampled depth textures rebind per draw. Template text and plugin `getCustomCode`
   functions run at generation with scalar or fresh literal-data arguments; reaching host/engine APIs, `this`, module
-  `let`, clock or random refuses. Retained objects stay native.
+  `let`, clock or random refuses. Retained objects stay native. `attributes` and `samplers` lists may be a local list
+  built by pushes generation settles, or a closed call (a module list mapped to names) run at generation.
   `depthBias`, `depthBiasSlopeScale` and `depthOnlyFragment` control pipeline depth behaviour. WGSL `@interpolate`
   and static `blend` overrides are supported (`add`; `zero`, `one`, `src-alpha`, `one-minus-src-alpha`, `dst`, `dst-alpha`).
   Conditional option spreads select up to 64 static variants; effectful predicates or conflicts with earlier evaluations refuse.

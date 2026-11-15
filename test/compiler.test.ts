@@ -6059,6 +6059,48 @@ test("a selection of members a call omits is absent where that call is lowered",
     assert.match(result.cpp, /std::string v_fn\d+_setup = "";/);
 });
 
+test("a shader material's attribute list a function pushes onto is the list it holds", () => {
+    const program = (pushes: string): string => `
+        import { addToScene, createArcRotateCamera, createEngine, createPlane, createSceneContext, createShaderMaterial, registerScene, startEngine, wgsl } from "@babylonjs/lite";
+        const VERTEX = wgsl\`struct VertexOutput { @builtin(position) position: vec4<f32>, };
+        @vertex fn mainVertex(input: VertexInput) -> VertexOutput {
+          var out: VertexOutput;
+          out.position = shaderSystem.worldViewProjection * vec4<f32>(input.position + input.normal * 0.0, 1.0);
+          return out;
+        }\`;
+        const FRAGMENT = wgsl\`@fragment fn mainFragment() -> @location(0) vec4<f32> { return vec4<f32>(1.0, 0.5, 0.2, 1.0); }\`;
+        function material(normals: boolean, uvs: boolean) {
+            const attributes = normals ? ["position", "normal"] : ["position"];
+            ${pushes}
+            return createShaderMaterial({ name: "m", vertexSource: VERTEX, fragmentSource: FRAGMENT, attributes: attributes as ("position" | "normal" | "uv")[], uniforms: ["worldViewProjection"] });
+        }
+        async function main(): Promise<void> {
+            const engine = await createEngine(document.getElementById("renderCanvas") as HTMLCanvasElement);
+            const scene = createSceneContext(engine);
+            scene.camera = createArcRotateCamera(-Math.PI / 2, Math.PI / 2, 8, { x: 0, y: 0, z: 0 });
+            const plane = createPlane(engine, { width: 2, height: 2 });
+            plane.material = material(true, true);
+            addToScene(scene, plane);
+            await registerScene(scene);
+            await startEngine(engine);
+        }
+        void main();
+    `;
+    const [shader] = compileSource(program(`if (uvs) attributes.push("uv");`))
+        .manifest.customShaderPrograms;
+    assert.deepEqual(shader?.attributes, ["position", "normal", "uv"]);
+    // A push a run-time test guards, or an element write, leaves no list
+    // generation knows.
+    for (const pushes of [
+        `if (Math.random() > 2) attributes.push("uv");`,
+        `if (uvs) attributes.push("uv"); attributes[0] = Math.random() > 2 ? "uv" : "position";`,
+    ])
+        assert.throws(
+            () => compileSource(program(pushes)),
+            /Expected a static array literal/,
+        );
+});
+
 test("a record's own scalars stay generation-known beside handles its callee hands on", () => {
     const program = (write: string, helper = ""): string => `
         import { createEngine, createSceneContext, type EngineContext, type SceneContext } from "@babylonjs/lite";
@@ -18151,6 +18193,28 @@ const SHADER_SAMPLER_SOURCE = (
         await startEngine(engine);
     }
 `;
+
+test("a shader material's sampler list mapped by a call is the names that call computes", () => {
+    // The mapped part has no element to spell: the call runs at
+    // generation over the module's own list.
+    const source = SHADER_SAMPLER_SOURCE(
+        `samplers: [...BINDINGS.map(([, name]) => name), ...(Date.now() < 0 ? [] : BINDINGS.map(([, name]) => suffixed(name, "secondary")))],`,
+        "return textureSample(albedo,albedoSampler,input.uv)+textureSample(albedoSecondary,albedoSecondarySampler,input.uv)*0.0;",
+    ).replace(
+        "async function main() {",
+        `const BINDINGS = [["color", "albedo"]] as const;
+    function suffixed(name: string, role: string): string { return name + role[0]!.toUpperCase() + role.slice(1); }
+    async function main() {`,
+    );
+    assert.throws(
+        () => compileSource(source, labDeployment),
+        /Expected a static array literal/,
+    );
+    const settled = source.replace("Date.now() < 0", "false");
+    const [program] = compileSource(settled, labDeployment).manifest
+        .customShaderPrograms;
+    assert.deepEqual(program?.samplers, ["albedo", "albedoSecondary"]);
+});
 
 test("reaches a shader material's samplers and defines", () => {
     const result = compileSource(

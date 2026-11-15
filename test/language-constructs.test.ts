@@ -6349,6 +6349,46 @@ check(
 );
 
 check(
+    "pushed-string-lists",
+    `
+    // Lists of strings a function pushes onto, read and iterated as they hold.
+    function attributes(normals: boolean, uvs: boolean): string[] {
+        const list = normals ? ["position", "normal"] : ["position"];
+        if (uvs) list.push("uv");
+        let joined = "";
+        for (const name of list) joined += name[0];
+        list.push(joined);
+        return list;
+    }
+    const a = attributes(true, true);
+    const b = attributes(false, Math.random() < 2);
+    const c = attributes(Math.random() > 2, false);
+    if (a.join() !== "position,normal,uv,pnu" || b.join() !== "position,uv,pu" || c.join() !== "position,p") throw new Error(a.join() + " " + b.join() + " " + c.join());
+    const written = ["x", "y"];
+    written.push("z");
+    written[1] = Math.random() > 2 ? "q" : "w";
+    let spelled = "";
+    for (const name of written) spelled += name;
+    if (spelled !== "xwz" || written.length !== 3) throw new Error(spelled);
+    // A push through an alias, a callee or a callback is the list's too.
+    function aliased(extra: boolean): string {
+        const list = extra ? ["a", "b"] : ["a"];
+        const alias = list;
+        alias.push("c");
+        const add = (name: string): void => { list.push(name); };
+        add("d");
+        grow(list);
+        let joined = "";
+        for (const name of list) joined += name;
+        return joined + list.length;
+    }
+    function grow(list: string[]): void { list.push("e"); }
+    const viaAlias = aliased(true) + aliased(Math.random() > 2);
+    if (viaAlias !== "abcde5acde4") throw new Error(viaAlias);
+`,
+);
+
+check(
     "selection-of-absent-members",
     `
     // A selection of two members a call omits is absent in that call; the

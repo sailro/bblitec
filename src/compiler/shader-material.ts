@@ -95,6 +95,7 @@ export interface ShaderMaterialContext
             | "expectObjectLiteral"
             | "expectStaticArrayLiteral"
             | "expectStaticArrayElements"
+            | "staticListItems"
             | "resolveStaticLiteral"
             | "objectProperty"
             | "compileValue"
@@ -567,12 +568,15 @@ function compileShaderSamplers(
         return [];
     }
     const samplers: CompiledShaderSampler[] = [];
-    for (const element of context.expectStaticArrayElements(expression)) {
+    for (const { node: element, text } of context.staticListItems(
+        expression,
+    )) {
         // A typed `ShaderSamplerDecl` names its own sample type, view
         // dimension and comparison mode. Everything else goes through the
         // same static-string resolution `attributes` and `uniforms` take, so
         // a module constant naming a sampler works in all three.
-        const resolved = context.resolveStaticLiteral(element);
+        const resolved =
+            text === undefined ? context.resolveStaticLiteral(element) : element;
         let name: string;
         let sampleType: CompiledShaderSampler["sampleType"] = "float";
         let viewDimension: CompiledShaderSampler["viewDimension"] = "2d";
@@ -634,7 +638,7 @@ function compileShaderSamplers(
                 sampleType = "depth";
             }
         } else {
-            name = context.compileStaticString(element);
+            name = text ?? context.compileStaticString(element);
         }
         reserveSamplerPair(context, element, "sampler", name, used);
         samplers.push({ name, sampleType, viewDimension, comparison });
@@ -1301,8 +1305,8 @@ function compileStaticStringArray(
     expression: ts.Expression,
 ): string[] {
     return context
-        .expectStaticArrayElements(expression)
-        .map((element) => context.compileStaticString(element));
+        .staticListItems(expression)
+        .map((item) => item.text ?? context.compileStaticString(item.node));
 }
 
 function expectStaticNumber(

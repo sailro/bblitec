@@ -170,6 +170,7 @@ interface DeclarationContext
         PositiveIntegerContext,
         Pick<
             LoweringServices,
+            | "declaredCollection"
             | "absenceTags"
             | "propertyName"
             | "impureReadCount"
@@ -3634,6 +3635,36 @@ export class DeclarationLowerer {
                     resourceArraySnapshot?.staticElements;
                 if (resourceElements)
                     writable(bound).staticElements = resourceElements;
+                // A fresh list of strings generation settles keeps them:
+                // a push or a write updates or withdraws them, as it does
+                // a list of handles.
+                const settledStrings =
+                    type.kind === "vector" &&
+                    type.element.kind === "string" &&
+                    !sharedClosureStorage &&
+                    !rebound &&
+                    valueOperands(
+                        declaration.initializer,
+                        this.context.unwrap,
+                    ).every(ts.isArrayLiteralExpression)
+                        ? this.context.probeEmission(
+                              () =>
+                                  this.context.compileValue(
+                                      declaration.initializer!,
+                                  ).tupleElements,
+                              () => false,
+                          )
+                        : undefined;
+                if (
+                    settledStrings?.every(
+                        (element) => element.staticString !== undefined,
+                    )
+                ) {
+                    writable(bound).staticElements = settledStrings;
+                    // A hoisted `var` outlives the block that creates it.
+                    if (!this.context.varBindings.hoists(declaration))
+                        this.context.declaredCollection(bound);
+                }
                 this.context.bindings.defineVariable(name, bound);
                 if (arraySnapshot)
                     this.context.dataLowerer.retainArrayLiteralFacts(
