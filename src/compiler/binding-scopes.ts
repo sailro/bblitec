@@ -1556,16 +1556,46 @@ export class BindingScopes {
                             type.elements.every(scalarStorage)))
                 );
             };
+            // Whether a member is a way back to the owner: native storage
+            // cannot hold a reference to an owner that has none (a handle,
+            // a native value); a compile-time record or tuple is one where
+            // the owner is among the values it holds, or code it holds (a
+            // callback, a method, an accessor, a class's) may name it.
+            const reachesOwner = (
+                member: Value,
+                seen = new Set<object>(),
+            ): boolean => {
+                if (
+                    member.kind === "callback" ||
+                    Object.keys(member.recordGetters ?? {}).length > 0 ||
+                    Object.keys(member.recordSetters ?? {}).length > 0 ||
+                    Object.keys(member.recordMethods ?? {}).length > 0 ||
+                    ((member.kind === "record" || member.kind === "tuple") &&
+                        !rawOwner(member))
+                )
+                    return true;
+                const identity = member.recordProperties ?? member.tupleElements;
+                if (!identity) return false;
+                if (identity === value.recordProperties) return true;
+                if (seen.has(identity)) return false;
+                seen.add(identity);
+                return [
+                    ...Object.values(member.recordProperties ?? {}),
+                    ...(member.tupleElements ?? []),
+                ].some((held) => reachesOwner(held, seen));
+            };
             const literalArgument = argument && unwrapExpression(argument);
             const unreferencedLiteralArgument =
                 literalArgument !== undefined &&
                 ts.isObjectLiteralExpression(literalArgument) &&
                 homeObjectMembers(literalArgument).size === 0;
-            const independentFields =
+            const plainOwner =
                 rawOwner(value) &&
                 Object.keys(value.recordGetters ?? {}).length === 0 &&
                 Object.keys(value.recordSetters ?? {}).length === 0 &&
-                Object.keys(value.recordMethods ?? {}).length === 0 &&
+                Object.keys(value.recordMethods ?? {}).length === 0;
+            const independentFields =
+                plainOwner &&
                 (unreferencedLiteralArgument ||
                     Object.values(value.recordProperties ?? {}).every(
                         (member) =>
@@ -1588,6 +1618,13 @@ export class BindingScopes {
                                     member.recordProperties ?? {},
                                 ).every(plainScalar)),
                     ));
+            // The owner's own scalars beside members that are no way back
+            // to it: no write through a member reaches them.
+            const separateScalars =
+                plainOwner &&
+                Object.values(value.recordProperties ?? {}).every(
+                    (member) => plainScalar(member) || !reachesOwner(member),
+                );
             value = this.materializeRecordScalars(
                 value,
                 `${identifier.text}_parameter`,
@@ -1605,7 +1642,8 @@ export class BindingScopes {
                             parameterDeclaration,
                         ),
                         path,
-                        independentFields,
+                        independentFields ||
+                            (separateScalars && path.length === 1),
                         argument,
                         member.staticString !== undefined ||
                             member.staticNumber !== undefined ||

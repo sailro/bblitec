@@ -6059,6 +6059,45 @@ test("a selection of members a call omits is absent where that call is lowered",
     assert.match(result.cpp, /std::string v_fn\d+_setup = "";/);
 });
 
+test("a record's own scalars stay generation-known beside handles its callee hands on", () => {
+    const program = (write: string, helper = ""): string => `
+        import { createEngine, createSceneContext, type EngineContext, type SceneContext } from "@babylonjs/lite";
+        interface Options { engine: EngineContext; scene: SceneContext; tint?: boolean; name?: string }
+        function paint(scene: SceneContext): void { scene.clearColor = { r: 0.1, g: 0.1, b: 0.1, a: 1 }; }
+        ${helper}
+        function describe(opts: Options): string {
+            // The scene is written through; it is no way back to the options.
+            paint(opts.scene);
+            ${write}
+            const label = opts.tint ? "tinted" : "plain";
+            return label + (opts.name ?? "");
+        }
+        async function main() {
+            const engine = await createEngine({});
+            const scene = createSceneContext(engine);
+            const options = { engine, scene, tint: true, name: "body" };
+            console.log(describe(options));
+        }
+        main().catch(console.error);
+    `;
+    assert.match(
+        compileSource(program("")).cpp,
+        /std::string v_fn\d+_label = "tinted";/,
+    );
+    // A write of the scalar itself, or by a helper handed the record, is read where it is stored.
+    for (const [write, helper] of [
+        ["if (Date.now() > 0) opts.tint = false;", ""],
+        [
+            "retint(opts);",
+            "function retint(o: Options): void { if (Date.now() > 0) o.tint = false; }",
+        ],
+    ] as const)
+        assert.match(
+            compileSource(program(write, helper)).cpp,
+            /std::string v_fn\d+_label = \(v_fn\d+_opts->tint \? "tinted" : "plain"\);/,
+        );
+});
+
 test("uses a boolean fallback for an explicitly undefined record property", () => {
     const result = compileSource(
         `

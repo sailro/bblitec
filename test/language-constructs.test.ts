@@ -6328,6 +6328,27 @@ check(
 );
 
 check(
+    "record-scalars-beside-written-members",
+    `
+    // A callee writing through one member of a record it is handed: the
+    // record's own scalars hold, unless a member's code can name the record.
+    interface Options { seen: Map<string, number>; tint?: boolean; name: string; nested: { count: number }; reset: () => void }
+    function grow(seen: Map<string, number>): void { seen.set("k", seen.size + 1); }
+    function describe(opts: Options): string {
+        grow(opts.seen);
+        opts.reset();
+        return (opts.tint ? "tinted" : "plain") + opts.name + opts.nested.count + opts.seen.size;
+    }
+    const resetting: Options = { seen: new Map(), tint: true, name: "-a", nested: { count: 1 }, reset: () => {} };
+    resetting.reset = () => { resetting.tint = false; };
+    const first = describe(resetting);
+    const kept: Options = { seen: new Map<string, number>(), tint: true, name: "-b", nested: { count: 2 }, reset: () => {} };
+    const second = describe(kept);
+    if (first !== "plain-a11" || second !== "tinted-b21" || resetting.tint !== false) throw new Error(first + " " + second);
+`,
+);
+
+check(
     "selection-of-absent-members",
     `
     // A selection of two members a call omits is absent in that call; the
