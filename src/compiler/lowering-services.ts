@@ -458,6 +458,13 @@ export interface LoweringServices {
     executedInitializerElements(
         identifier: ts.Identifier,
     ): readonly Value[] | undefined;
+    /**
+     * The primitives an expression reads when the documents the package
+     * serves are the ones generation holds, spelled as strings.
+     */
+    packagedValueDomain(
+        expression: ts.Expression,
+    ): readonly string[] | undefined;
     executedModuleConstantMapEntry(
         expression: ts.Expression,
         key: string | number,

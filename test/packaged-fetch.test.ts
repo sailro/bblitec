@@ -184,19 +184,20 @@ test("a URL member a record takes from a spread call result keeps that member's 
     writeFileSync(join(publicDir, "data", "a.json"), '{"name":"a"}');
     writeFileSync(join(publicDir, "data", "b.json"), '{"name":"b"}');
     // The record lacks `file` itself; its type requires it, so the spread
-    // source supplies it on every path.
+    // source supplies it on every path. The kind is typed a string: a split
+    // per literal kind would read each file at generation instead.
     const result = compileSource(
         `
         interface Options { dir?: string; file: string; size: number }
         const FILES = { a: { file: "a.json" }, b: { file: "b.json" } } as const;
-        function preset(kind: "a" | "b") {
-            return { dir: "data", file: FILES[kind].file, size: 1 } as const;
+        function preset(kind: string) {
+            return { dir: "data", file: FILES[kind as "a" | "b"].file, size: 1 } as const;
         }
         async function load(options: Options): Promise<string> {
             const url = \`/\${options.dir ?? "other"}/\${options.file}\`;
             return ((await (await fetch(url)).json()) as { name: string }).name;
         }
-        const kinds: ("a" | "b")[] = Date.now() < 0 ? ["b"] : ["a", "b"];
+        const kinds: string[] = Date.now() < 0 ? ["b"] : ["a", "b"];
         const names: string[] = [];
         for (const kind of kinds) names.push(await load({ ...preset(kind), size: 2 }));
         if (names.join() !== "a,b") throw new Error(names.join());
@@ -499,6 +500,76 @@ test("a packaged URL read from a config merged over its defaults keeps the packa
         ],
     );
     runPackagedProgram(t, directory, result);
+});
+
+test("a number the packaged document and its defaults read alike composes a shader from the merged config", () => {
+    // The loader can return the defaults (a failed fetch, a throw), so a
+    // number folds only where the document gives the default's value.
+    const compile = (scale: string): CompileResult => {
+        const directory = resolve(
+            `artifacts/packaged-fetch-config-shader-${scale}`,
+        );
+        mkdirSync(join(directory, "public"), { recursive: true });
+        writeFileSync(
+            join(directory, "public", "config.json"),
+            `{"look":{"scale":${scale}},"note":"shipped"}`,
+        );
+        writeFileSync(join(directory, "noop-worker.ts"), "self.close();\n");
+        return compileSource(
+            `import { createEngine, createSceneContext, createShaderMaterial, wgsl } from "@babylonjs/lite";
+interface Config { look: { scale: number; tone: number }; note: string }
+const DEFAULTS: Config = { look: { scale: 2.5, tone: 0.25 }, note: "defaults" };
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+    return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+function deepMerge<T>(base: T, source: unknown): T {
+    if (!isPlainObject(base) || !isPlainObject(source)) return source === undefined ? base : (source as T);
+    const out: Record<string, unknown> = { ...(base as unknown as Record<string, unknown>) };
+    for (const key of Object.keys(source)) out[key] = isPlainObject(out[key]) ? deepMerge(out[key], source[key]) : source[key];
+    return out as unknown as T;
+}
+async function loadConfig(base: string): Promise<Config> {
+    try {
+        const response = await fetch(\`\${base}/config.json\`);
+        if (!response.ok) return DEFAULTS;
+        const parsed = (await response.json()) as unknown;
+        return deepMerge(DEFAULTS, parsed);
+    } catch {
+        return DEFAULTS;
+    }
+}
+const VERTEX = \`struct VertexOutput { @builtin(position) position: vec4<f32>, };
+@vertex fn mainVertex(input: VertexInput) -> VertexOutput { var out: VertexOutput; out.position = shaderSystem.worldViewProjection * vec4<f32>(input.position * /*S*/ * /*T*/, 1.0); return out; }\`;
+const FRAGMENT = wgsl\`@fragment fn mainFragment() -> @location(0) vec4<f32> { return vec4<f32>(1.0); }\`;
+const worker = new Worker(new URL("./noop-worker.ts", import.meta.url), { type: "module" });
+worker.terminate();
+async function main(): Promise<void> {
+    const engine = await createEngine(document.getElementById("renderCanvas") as HTMLCanvasElement);
+    createSceneContext(engine);
+    const config = await loadConfig("");
+    const vertex = VERTEX.replace("/*S*/", config.look.scale.toFixed(2)).replace("/*T*/", config.look.tone.toFixed(2));
+    createShaderMaterial({ name: "m", vertexSource: wgsl\`\${vertex}\`, fragmentSource: FRAGMENT, attributes: ["position"], uniforms: ["worldViewProjection"] });
+}
+void main();
+`,
+            {
+                fileName: join(directory, "entry.ts"),
+                publicDir: join(directory, "public"),
+            },
+        );
+    };
+    assert.deepEqual(
+        compile("2.5").manifest.customShaderPrograms.map((program) =>
+            /position \* ([0-9.]+) \* ([0-9.]+), 1\.0\)/
+                .exec(program.vertexSource)
+                ?.slice(1),
+        ),
+        [["2.50", "0.25"]],
+    );
+    assert.throws(
+        () => compile("3"),
+        /'vertex' is bound as data without a static string/,
+    );
 });
 
 test("a packaged URL read from a packaged response's JSON keeps the document's values", (t) => {

@@ -7,6 +7,7 @@ import type { LoweringServices } from "./lowering-services.js";
 import { stringDomain, type StringDomainContext } from "./string-domain.js";
 import { localAssetPath, urlFilePath } from "../asset-source.js";
 import { readAssetBytesSync } from "./asset-bytes-sync.js";
+import { unlessRefused } from "./compile-error.js";
 
 type Context = StringDomainContext & Pick<LoweringServices, "options">;
 
@@ -76,6 +77,23 @@ export function assetUrlDomain(
 }
 
 /** The text of the local file a URL packages, if the deployment holds it. */
+/**
+ * The primitives `expression` can read when the documents the package
+ * serves are the ones generation holds (`StringDomainUse.document`),
+ * spelled as strings; undefined when unknown or unbounded.
+ */
+export function packagedValueDomain(
+    context: Context,
+    expression: ts.Expression,
+): readonly string[] | undefined {
+    return unlessRefused(() =>
+        stringDomain(context, expression, {
+            label: "Packaged value",
+            document: (url) => packagedText(context, url),
+        }),
+    );
+}
+
 function packagedText(context: Context, url: string): string | undefined {
     try {
         const source = resolveBundledAsset(

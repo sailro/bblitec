@@ -680,6 +680,7 @@ interface DataLoweringContext extends Pick<
     | "executedModuleConstantElements"
     | "executedModuleConstantMapEntry"
     | "executedInitializerElements"
+    | "packagedValueDomain"
     | "unwrap"
     | "unwrapValue"
     | "emit"
@@ -5947,6 +5948,8 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             if (element) return element;
         }
         if (dataType.kind === "json") {
+            const packaged = this.packagedPrimitive(access);
+            if (packaged) return packaged;
             // A parsed document answers every property, because that is
             // what a document does: a key it does not carry reads as
             // `undefined` rather than failing here.
@@ -18973,6 +18976,38 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
      * as a native condition. Presence alone -- whether a nullable is there,
      * whatever it holds -- is `presenceCpp`'s.
      */
+    /**
+     * A document member that reads one primitive wherever the documents
+     * the package serves are the ones generation holds
+     * (`packagedValueDomain`): that primitive. Undefined for any other.
+     */
+    public packagedPrimitive(access: ts.Expression): Value | undefined {
+        const kind = valueKindOf(
+            this.context.checker.getTypeAtLocation(access),
+        );
+        if (kind !== "number" && kind !== "string" && kind !== "boolean")
+            return undefined;
+        const domain = this.context.packagedValueDomain(access);
+        if (domain?.length !== 1) return undefined;
+        const [text] = domain as [string];
+        if (kind === "string")
+            return {
+                kind: "string",
+                cpp: this.context.cppString(text),
+                staticString: text,
+            };
+        if (kind === "boolean") {
+            const known = knownCondition(text);
+            return known === undefined
+                ? undefined
+                : { kind: "boolean", cpp: text, staticBoolean: known };
+        }
+        const number = Number(text);
+        return String(number) === text
+            ? numberConstantValue(number)
+            : undefined;
+    }
+
     /**
      * A member a known key reads of a `const` an object literal initializes:
      * the native read, holding what generation knows of the literal's

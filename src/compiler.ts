@@ -349,6 +349,7 @@ import {
     keysMayMatch,
 } from "./compiler/syntax.js";
 import { CompileError, unlessRefused } from "./compiler/compile-error.js";
+import { packagedValueDomain } from "./compiler/asset-url-domain.js";
 import { isEffectTaskMethodName } from "./compiler/effect-task-methods.js";
 import {
     ClosureCaptures,
@@ -961,6 +962,12 @@ class Compiler implements LoweringServices {
      * compile.
      */
     public readonly valueOverrides = new Map<ts.Node, Value>();
+    /**
+     * Whether a packaged-value query is running: reads it lowers answer as
+     * the documents they read, not by asking again. @unjournaled Set and
+     * cleared around one query.
+     */
+    private packagedQuery = false;
     /**
      * `stableLocalInitializer` answers, by declaration (`false`: none).
      * @unjournaled A function of the program's syntax.
@@ -5928,6 +5935,18 @@ class Compiler implements LoweringServices {
                   ),
               )
             : undefined;
+    }
+
+    public packagedValueDomain(
+        expression: ts.Expression,
+    ): readonly string[] | undefined {
+        if (this.packagedQuery) return undefined;
+        this.packagedQuery = true;
+        try {
+            return packagedValueDomain(this, expression);
+        } finally {
+            this.packagedQuery = false;
+        }
     }
 
     /**

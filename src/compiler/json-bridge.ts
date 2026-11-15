@@ -567,7 +567,7 @@ export function compileJsonRead(
             );
         return ts.isOptionalChain(unwrapped)
             ? context.dataLowerer.optionalAccess(owner, unwrapped, read)
-            : read(owner);
+            : (context.dataLowerer.packagedPrimitive(unwrapped) ?? read(owner));
     }
     if (ts.isElementAccessExpression(unwrapped)) {
         const owner = compileJsonRead(context, unwrapped.expression);
