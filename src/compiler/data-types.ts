@@ -2962,34 +2962,39 @@ export class DataTypeRegistry {
     }
 
     /**
-     * A property the shapes of one layout declare as functions of different
-     * signatures (`bind(from, variant, count)` beside `bind(from, count)`):
-     * one slot holding the function of whichever shape the record is, which
-     * a read selects by the signature its own type gives the property
-     * (`DataLowerer` struct reads). Undefined for any other disagreement.
+     * A property the shapes of one layout store different ways: functions
+     * of different signatures (`bind(from, variant, count)` beside
+     * `bind(from, count)`), a method beside a plain value, or lists of
+     * different elements (`items: number[]` beside `items: string[]`). One
+     * slot holds the value of whichever shape the record is, which a read
+     * selects by the type its own receiver gives the property
+     * (`DataLowerer` struct reads). Each arm is a scalar, a function or
+     * storage a copy shares, so a read arm is the value the slot holds.
+     * Undefined for any other disagreement.
      */
-    private signatureUnionField(
+    private shapeUnionField(
         values: readonly { mapped: DataType | undefined }[],
         storage: (mapped: DataType) => DataType,
     ): DataType<"union"> | undefined {
         const members: DataType[] = [];
         for (const value of values) {
             const stored = value.mapped && storage(value.mapped);
-            // A shape may declare it a plain value (`count: number` beside
-            // a `count(): number` method): its own arm of the slot.
             if (
                 !stored ||
-                (stored.kind === "function" && stored.generic) ||
-                (stored.kind !== "function" && !isScalarDataType(stored))
+                (stored.kind === "function"
+                    ? stored.generic
+                    : !isScalarDataType(stored) &&
+                      !sharesStorageKind(stored) &&
+                      !(
+                          stored.kind === "struct" &&
+                          this.isReferenceStruct(stored.name)
+                      ))
             )
                 return undefined;
             if (!members.some((member) => this.joinedStorage(member, stored)))
                 members.push(stored);
         }
-        return members.length > 1 &&
-            members.some((member) => member.kind === "function")
-            ? { kind: "union", members }
-            : undefined;
+        return members.length > 1 ? { kind: "union", members } : undefined;
     }
 
     /** Synthetic own-presence slots alone do not change a method's receiver. */
@@ -8540,7 +8545,7 @@ export class DataTypeRegistry {
                         name,
                         storedValues,
                         node,
-                    ) ?? this.signatureUnionField(storedValues, storage);
+                    ) ?? this.shapeUnionField(storedValues, storage);
                 if (!unionField)
                     this.fail(
                         node,

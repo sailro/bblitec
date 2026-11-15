@@ -6328,6 +6328,48 @@ check(
 );
 
 check(
+    "records-of-several-shapes-held-as-one-interface",
+    `
+    // Records of different types held as one interface, called and found by identity.
+    interface Bounds { minX: number; maxX: number }
+    interface Follower { followGround(dirty?: Bounds | null): boolean }
+    interface Ferns { items: number[]; wind: string; followGround(dirty?: Bounds | null): boolean; scale: number }
+    interface Bushes { items: string[]; winter: number; followGround(dirty?: Bounds | null): boolean }
+    function registry() {
+        const followers: Follower[] = [];
+        return {
+            add(follower: Follower): () => void {
+                followers.push(follower);
+                return () => { const i = followers.indexOf(follower); if (i >= 0) followers.splice(i, 1); };
+            },
+            follow(bounds: Bounds | null): boolean {
+                let changed = false;
+                for (const follower of followers) changed = follower.followGround(bounds) || changed;
+                return changed;
+            },
+        };
+    }
+    function makeFerns(): Ferns {
+        let moved = 0;
+        return { items: [1, 2], wind: "w", scale: 2, followGround: (dirty) => { moved += 1; return !!dirty && moved > 0; } };
+    }
+    function makeBushes(): Bushes {
+        const items = ["a"];
+        return { items, winter: 0, followGround: (dirty) => items.length > 0 && !dirty };
+    }
+    const followers = registry();
+    const ferns = makeFerns();
+    const removeFerns = followers.add(ferns);
+    followers.add(makeBushes());
+    followers.add({ followGround: (dirty) => dirty === null });
+    const a = followers.follow(null);
+    removeFerns();
+    const b = followers.follow({ minX: 0, maxX: 1 });
+    if (a !== true || b !== false || ferns.items.length !== 2) throw new Error(\`\${a} \${b}\`);
+`,
+);
+
+check(
     "record-scalars-beside-written-members",
     `
     // A callee writing through one member of a record it is handed: the
