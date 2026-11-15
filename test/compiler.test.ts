@@ -14454,6 +14454,52 @@ test("lowers setCameraLimits with the fields present in the pinned options recor
     );
 });
 
+test("setCameraLimits writes limits that may be undefined, from a literal, a spread record and a held record", () => {
+    const result = compileSource(`
+        import { createArcRotateCamera, createEngine, createSceneContext, setCameraLimits, type ArcRotateCamera, type SceneContext } from "@babylonjs/lite";
+        interface Walls { lowerBetaLimit: number | undefined; upperBetaLimit: number | undefined; lowerRadiusLimit: number | undefined; upperRadiusLimit: number | undefined }
+        const POLE = { lowerBetaLimit: 0.02, upperBetaLimit: 3 } as const;
+        function controls(camera: ArcRotateCamera, scene: SceneContext, classicLower: number | undefined, classicUpper: number | undefined) {
+            let saved: Walls | null = null;
+            function write(walls: Partial<Walls>): void { setCameraLimits(camera, walls, scene); }
+            function read(): Walls {
+                return { lowerBetaLimit: camera.lowerBetaLimit, upperBetaLimit: camera.upperBetaLimit, lowerRadiusLimit: camera.lowerRadiusLimit, upperRadiusLimit: camera.upperRadiusLimit };
+            }
+            return {
+                sync(): void { write({ lowerBetaLimit: classicLower, upperBetaLimit: classicUpper }); },
+                script(on: boolean): void {
+                    if (on) { saved ??= read(); write({ ...POLE, lowerRadiusLimit: undefined, upperRadiusLimit: undefined }); }
+                    else if (saved) { const restored = saved; saved = null; write(restored); }
+                },
+                dispose(): void { const base = saved ?? read(); saved = null; write({ ...base, lowerBetaLimit: classicLower, upperBetaLimit: classicUpper }); },
+            };
+        }
+        const engine = await createEngine(document.getElementById("renderCanvas") as HTMLCanvasElement);
+        const scene = createSceneContext(engine);
+        const camera = createArcRotateCamera(0, 1, 8, { x: 0, y: 0, z: 0 });
+        scene.camera = camera;
+        setCameraLimits(camera, { lowerRadiusLimit: 2, upperRadiusLimit: 20 }, scene);
+        const held = controls(camera, scene, Date.now() < 0 ? undefined : 0.3, 1.2);
+        held.sync();
+        held.script(true);
+        held.script(false);
+        held.dispose();
+    `);
+    // Limits that are all numbers keep the number form.
+    assert.match(
+        result.cpp,
+        /bbl::set_camera_limits\([^,]+, [^,]+, 48u, std::array<double, 6>\{0\.0, 0\.0, 0\.0, 0\.0, 2\.0, 20\.0\}\)/,
+    );
+    // The keys each record holds are its present mask; a value that may be
+    // undefined is written as it is.
+    const writes = [
+        ...result.cpp.matchAll(
+            /bbl::write_camera_limits\([^,]+, [^,]+, (\d+)u, std::array<std::optional<double>, 6>\{std::nullopt, std::nullopt, /g,
+        ),
+    ].map((match) => match[1]);
+    assert.deepEqual(writes, ["12", "60", "60", "60"]);
+});
+
 test("lowers Scene 12's imported recursive mesh walk and animated root clones", () => {
     const sourcePath = "corpus/babylon-lite/lab/lite/src/lite/scene12.ts";
     const result = compileSource(readFileSync(resolve(sourcePath), "utf8"), {

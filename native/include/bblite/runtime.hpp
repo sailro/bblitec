@@ -8849,8 +8849,16 @@ void write_camera_scalar(CameraRecord& camera, double CameraRecord::* field, dou
 void write_camera_vector_component(CameraRecord& camera, Vec3d CameraRecord::* vector,
                                    double Vec3d::* component, double value);
 void set_camera_vector(CameraRecord& camera, Vec3d CameraRecord::* vector, Vec3d value);
-void set_camera_limits(Engine& engine, CameraHandle camera, std::uint32_t present_mask,
-                       const std::array<double, 6>& limits);
+/** `setCameraLimits`: each limit `present_mask` names is written, an absent one removing its wall. */
+void write_camera_limits(Engine& engine, CameraHandle camera, std::uint32_t present_mask,
+                         const std::array<std::optional<double>, 6>& limits);
+/** `write_camera_limits` of limits that are all numbers. */
+inline void set_camera_limits(Engine& engine, CameraHandle camera, std::uint32_t present_mask,
+                              const std::array<double, 6>& limits) {
+    write_camera_limits(engine, camera, present_mask,
+                        std::array<std::optional<double>, 6>{limits[0], limits[1], limits[2],
+                                                             limits[3], limits[4], limits[5]});
+}
 js::Callback<void()> attach_free_control(Engine& engine, CameraHandle camera, const Scene& scene);
 struct ConfigurableFreeControlOptions {
     std::optional<std::vector<std::string>> upKeys;

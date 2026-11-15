@@ -1026,11 +1026,11 @@ ${mutations.clamp()}
 // setCameraLimits: the compiled presence mask stands in for the pin's
 // \`in\` tests, and the record's flag is the self-clamp hook the scalar
 // setters call.
-void set_camera_limits(
+void write_camera_limits(
     Engine& engine,
     CameraHandle handle,
     std::uint32_t present_mask,
-    const std::array<double, 6>& limits) {
+    const std::array<std::optional<double>, 6>& limits) {
     if (handle.value >= engine.cameras.size()) {
         throw std::runtime_error("Invalid camera handle.");
     }

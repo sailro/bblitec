@@ -550,11 +550,27 @@ export function compileCameraIntrinsic(
             const limits = context.expectObjectLiteral(argumentAt(call, 1));
             const fields = CAMERA_LIMIT_PROPERTIES;
             let presentMask = 0;
+            // A limit written undefined removes that wall.
+            const limitsType = context.checker.getNonNullableType(
+                context.checker.getTypeAtLocation(argumentAt(call, 1)),
+            );
+            const absent = fields.some((field) => {
+                const member = context.checker.getPropertyOfType(
+                    limitsType,
+                    field,
+                );
+                return (
+                    member !== undefined &&
+                    isNullable(context.checker.getTypeOfSymbol(member))
+                );
+            });
             const values = fields.map((field, index) => {
                 const value = context.objectProperty(limits, field);
-                if (!value) return "0.0";
+                if (!value) return absent ? "std::nullopt" : "0.0";
                 presentMask |= 1 << index;
-                return context.compileNumber(value, "double");
+                return absent
+                    ? `bbl::js::Nullable<double>{${context.dataLowerer.compileForSink(value, { kind: "optional", inner: { kind: "number" } })}}.to_optional()`
+                    : context.compileNumber(value, "double");
             });
             if (call.arguments[2]) {
                 const scene = context.compileValue(call.arguments[2]);
@@ -566,8 +582,8 @@ export function compileCameraIntrinsic(
             return {
                 kind: "void",
                 cpp:
-                    `bbl::set_camera_limits(${engine}, ${camera.cpp}, ` +
-                    `${presentMask}u, std::array<double, 6>{${values.join(", ")}})`,
+                    `bbl::${absent ? "write_camera_limits" : "set_camera_limits"}(${engine}, ${camera.cpp}, ` +
+                    `${presentMask}u, std::array<${absent ? "std::optional<double>" : "double"}, 6>{${values.join(", ")}})`,
             };
         }
 
