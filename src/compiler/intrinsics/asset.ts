@@ -767,10 +767,10 @@ interface LoaderFile {
 
 /**
  * Where a loader's URL argument reads its file: the bytes an object URL
- * holds, which the native function `objectUrl.reads` names reads once
- * `objectUrl.demand` states what they need; the packaged file of `kind` a run-time URL
- * selects among those `packaged` accepts; or the packaged asset a literal
- * URL names.
+ * holds, through the native `bbl::js` function `objectUrl.reads` names,
+ * once `objectUrl.demand` states what they need; the packaged file of
+ * `kind` a run-time URL selects among those `packaged` matches; or the
+ * packaged asset a literal URL names.
  */
 function loaderFile(
     context: AssetIntrinsicContext,
