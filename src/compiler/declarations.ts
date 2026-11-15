@@ -395,6 +395,8 @@ export class DeclarationLowerer {
         shared: boolean,
         value?: Value,
         initializer = "",
+        /** No write replaces the absent initializer it holds. */
+        staysAbsent = false,
     ): void {
         const type = `std::optional<${resource.cppType}>`;
         const cell = shared
@@ -418,6 +420,10 @@ export class DeclarationLowerer {
         );
         if (cell) writable(stored).sharedStorageCpp = cell.sharedStorageCpp;
         else delete writable(stored).sharedStorageCpp;
+        if (staysAbsent) {
+            writable(stored).optionalFoundCpp = "false";
+            writable(stored).truthinessCpp = "false";
+        }
         this.context.bindings.defineVariable(name, stored);
     }
 
@@ -1544,6 +1550,9 @@ export class DeclarationLowerer {
                 cppName,
                 nullableResource,
                 sharedClosureStorage,
+                undefined,
+                "",
+                initializerFactsStable(),
             );
             return;
         }
@@ -3830,8 +3839,8 @@ export class DeclarationLowerer {
             unlessRefused(() =>
                 this.context.probeEmission(
                     () =>
-                        this.context.compileValue(unwrappedInitializer)
-                            .kind === "json-null",
+                        this.context.compileValue(unwrappedInitializer).kind ===
+                        "json-null",
                     (absent) => absent,
                 ),
             )

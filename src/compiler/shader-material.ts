@@ -568,15 +568,15 @@ function compileShaderSamplers(
         return [];
     }
     const samplers: CompiledShaderSampler[] = [];
-    for (const { node: element, text } of context.staticListItems(
-        expression,
-    )) {
+    for (const { node: element, text } of context.staticListItems(expression)) {
         // A typed `ShaderSamplerDecl` names its own sample type, view
         // dimension and comparison mode. Everything else goes through the
         // same static-string resolution `attributes` and `uniforms` take, so
         // a module constant naming a sampler works in all three.
         const resolved =
-            text === undefined ? context.resolveStaticLiteral(element) : element;
+            text === undefined
+                ? context.resolveStaticLiteral(element)
+                : element;
         let name: string;
         let sampleType: CompiledShaderSampler["sampleType"] = "float";
         let viewDimension: CompiledShaderSampler["viewDimension"] = "2d";

@@ -6084,6 +6084,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             if (
                 unwrittenRecordField &&
                 (sourceField?.kind === "json-null" ||
+                    knownCondition(sourceField?.optionalFoundCpp) === false ||
                     (sourceField === undefined &&
                         owner.recordOwnKeys !== undefined &&
                         !owner.recordOwnKeys.includes(property))) &&
@@ -6926,7 +6927,9 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 `bbl::js::enum_map_at(${owner.cpp}, ${tag})`,
                 dataType.element,
             );
-            return key === undefined ? read : this.tableMember(access, key, read);
+            return key === undefined
+                ? read
+                : this.tableMember(access, key, read);
         }
         if (dataType.kind === "struct") {
             // A write through a view of fixed fields names its field by a
@@ -18998,7 +19001,9 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         const table = unwrapExpression(declaration.initializer);
         if (
             !ts.isObjectLiteralExpression(table) ||
-            table.properties.some((property) => !ts.isPropertyAssignment(property))
+            table.properties.some(
+                (property) => !ts.isPropertyAssignment(property),
+            )
         )
             return read;
         const entry = [...table.properties]
@@ -19017,6 +19022,8 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 this.context,
                 checker.getTypeAtLocation(root),
                 key,
+                false,
+                table,
             )
         )
             return read;
@@ -19027,18 +19034,32 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         if (known.kind !== "record" || !known.recordProperties) return read;
         const entryType = checker.getTypeAtLocation(access);
         const unwritten = (name: string): boolean =>
-            !recordFieldIsWritten(this.context, entryType, name, false, literal);
+            !recordFieldIsWritten(
+                this.context,
+                entryType,
+                name,
+                false,
+                literal,
+            );
         const properties: Record<string, Value> = {};
         for (const [name, member] of Object.entries(known.recordProperties))
-            if (hasScalarFacts(member) && !member.parameterBinding && unwritten(name)) {
+            if (
+                hasScalarFacts(member) &&
+                !member.parameterBinding &&
+                unwritten(name)
+            ) {
                 const kept: Value = { ...member };
                 writable(kept).readOnly = true;
                 properties[name] = kept;
             }
-        const ownKeys = known.recordOwnKeys ?? Object.keys(known.recordProperties);
+        const ownKeys =
+            known.recordOwnKeys ?? Object.keys(known.recordProperties);
         const keysKept = checker
             .getPropertiesOfType(entryType)
-            .every((property) => ownKeys.includes(property.name) || unwritten(property.name));
+            .every(
+                (property) =>
+                    ownKeys.includes(property.name) || unwritten(property.name),
+            );
         if (Object.keys(properties).length === 0 && !keysKept) return read;
         const member: Value = { ...read };
         writable(member).recordProperties = properties;
@@ -20193,6 +20214,17 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         const rightOptional = hasOptional
             ? compileOperand(right, "comparison_right")
             : undefined;
+        // A member generation knows absent equals no present scalar.
+        const absentBeside = (absent?: Value, present?: Value): boolean =>
+            absent !== undefined &&
+            present !== undefined &&
+            knownCondition(absent.optionalFoundCpp) === false &&
+            hasScalarFacts(present);
+        if (
+            absentBeside(leftOptional, rightOptional) ||
+            absentBeside(rightOptional, leftOptional)
+        )
+            return negated ? "true" : "false";
         if (
             !loose &&
             leftOptional &&

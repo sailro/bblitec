@@ -204,6 +204,8 @@ export function keepsStaticMember(value: Value): boolean {
     return (
         !value.parameterBinding &&
         (value.kind === "json-null" ||
+            // An optional member generation knows absent.
+            knownCondition(value.optionalFoundCpp) === false ||
             value.kind === "record" ||
             isHandleKind(value.kind) ||
             hasScalarFacts(value) ||

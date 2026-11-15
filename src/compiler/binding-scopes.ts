@@ -1577,7 +1577,8 @@ export class BindingScopes {
                         !rawOwner(member))
                 )
                     return true;
-                const identity = member.recordProperties ?? member.tupleElements;
+                const identity =
+                    member.recordProperties ?? member.tupleElements;
                 if (!identity) return false;
                 if (identity === value.recordProperties) return true;
                 if (seen.has(identity)) return false;

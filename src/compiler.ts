@@ -10489,7 +10489,10 @@ class Compiler implements LoweringServices {
         if (state) writable(value).collectionCardinality = state;
         if (
             added === undefined ||
-            !(this.definiteCollectionMutation() || this.mutatesWhereCreated(value)) ||
+            !(
+                this.definiteCollectionMutation() ||
+                this.mutatesWhereCreated(value)
+            ) ||
             state?.untrackedAliases
         ) {
             if (state) {

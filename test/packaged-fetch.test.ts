@@ -269,11 +269,7 @@ test("a URL read through a built catalog's methods keeps the domain of the entri
     // The files the index lists; generation read the index itself.
     assert.deepEqual(
         result.manifest.assets.map((asset) => asset.source).sort(),
-        [
-            "public/data/a.json",
-            "public/data/b.json",
-            "public/data/skip.json",
-        ],
+        ["public/data/a.json", "public/data/b.json", "public/data/skip.json"],
     );
     runPackagedProgram(t, directory, result);
 });
@@ -487,7 +483,10 @@ test("a packaged URL read from a config merged over its defaults keeps the packa
         }
         void main();
     `,
-        { fileName: join(directory, "entry.ts"), publicDir: join(directory, "public") },
+        {
+            fileName: join(directory, "entry.ts"),
+            publicDir: join(directory, "public"),
+        },
     );
     // The document, the default's file and the two the document names.
     assert.deepEqual(
@@ -534,7 +533,10 @@ test("a packaged URL read from a packaged response's JSON keeps the document's v
         }
         void main();
     `,
-        { fileName: join(directory, "entry.ts"), publicDir: join(directory, "public") },
+        {
+            fileName: join(directory, "entry.ts"),
+            publicDir: join(directory, "public"),
+        },
     );
     assert.deepEqual(
         result.manifest.assets.map((asset) => asset.source).sort(),
@@ -572,7 +574,10 @@ test("a table read by a key whose provenance outruns the analysis keeps every me
         const name = ((await response.json()) as { name: string }).name;
         if (name !== "b") throw new Error(name);
     `,
-        { fileName: join(directory, "entry.ts"), publicDir: join(directory, "public") },
+        {
+            fileName: join(directory, "entry.ts"),
+            publicDir: join(directory, "public"),
+        },
     );
     assert.deepEqual(
         result.manifest.assets.map((asset) => asset.source).sort(),
