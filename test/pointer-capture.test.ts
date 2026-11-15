@@ -255,6 +255,103 @@ int main() { return generated_main(); }
     );
 });
 
+test("a record type viewing the canvas, stored as an event target, is the canvas", () => {
+    // The session takes the canvas as the members it calls, then stores it
+    // where an event target is held.
+    const result = compileSource(`
+        import { createEngine, startEngine } from "@babylonjs/lite";
+        interface CaptureTarget {
+            setPointerCapture(pointerId: number): void;
+            hasPointerCapture(pointerId: number): boolean;
+            releasePointerCapture(pointerId: number): void;
+            dispatchEvent?(event: Event): boolean;
+        }
+        interface Lease { readonly pointerId: number; readonly target: EventTarget }
+        const leases = new Map<number, Lease>();
+        function lease(pointerId: number, target: EventTarget): Lease {
+            const held: Lease = { pointerId, target };
+            leases.set(pointerId, held);
+            return held;
+        }
+        interface Session { capture(pointerId: number, target?: CaptureTarget, synthetic?: boolean): boolean; held(): Lease | null }
+        function createSession(): Session {
+            let current: Lease | null = null;
+            let owner: CaptureTarget | null = null;
+            const session: Session = {
+                capture(pointerId, target, synthetic = false) {
+                    if (synthetic && target && typeof target.dispatchEvent !== "function") return false;
+                    if (target && !synthetic) {
+                        try {
+                            target.setPointerCapture(pointerId);
+                            if (!target.hasPointerCapture(pointerId)) return false;
+                        } catch {
+                            return false;
+                        }
+                    }
+                    current = synthetic && target ? lease(pointerId, target as unknown as EventTarget) : null;
+                    owner = !synthetic ? target ?? null : null;
+                    return owner !== null || current !== null;
+                },
+                held: () => current,
+            };
+            return session;
+        }
+        let log = "";
+        async function main(): Promise<void> {
+            const engine = await createEngine({});
+            const canvas = document.getElementById("renderCanvas") as HTMLCanvasElement;
+            const session = createSession();
+            canvas.addEventListener("pointerdown", (e) => {
+                log += session.capture(e.pointerId, canvas) ? "C" : "c";
+                log += canvas.hasPointerCapture(e.pointerId) ? "H" : "h";
+                log += session.capture(e.pointerId, e.isTrusted ? canvas : undefined, true) ? "S" : "s";
+                const held = session.held();
+                log += held && held.target === canvas && leases.get(e.pointerId) === held ? "T" : "t";
+                if (held) held.target.addEventListener("pointerup", () => { log += "U"; }, { once: true });
+            });
+            requestAnimationFrame(() => { if (log !== "CHSTU") throw new Error(log); });
+            startEngine(engine);
+        }
+        void main();
+    `);
+    assert.equal(result.manifest.deferredCapabilities, undefined);
+    const tools = optionalNativeFixtureTools(false);
+    assert.ok(tools, "Native fixture compiler required");
+    runGeneratedProgram(
+        tools,
+        "pointer-capture/record-view",
+        `#define main generated_main
+${result.cpp}
+#undef main
+#include <bblite/pal_dom_events.hpp>
+#include <cassert>
+namespace bbl {
+Engine create_engine(EngineOptions) { return {}; }
+void start_engine(Engine& engine) {
+    const auto inside = dom_canvas_path();
+    const auto send = [&](DomPointerAction action, double button, double buttons) {
+        dispatch_dom_batch(engine, dom_pointer_input(engine, action,
+                                                      PlatformMouseEvent{.button = button,
+                                                                         .buttons = buttons,
+                                                                         .client_x = 10,
+                                                                         .client_y = 10},
+                                                      inside));
+    };
+    send(DomPointerAction::Move, -1, 0);
+    send(DomPointerAction::Down, 0, 1);
+    send(DomPointerAction::Up, 0, 0);
+    assert(engine.animation_frame_once_callbacks.size() == 1);
+    const auto callbacks = std::move(engine.animation_frame_once_callbacks);
+    engine.animation_frame_once_callbacks.clear();
+    callbacks.front()(16.0);
+}
+} // namespace bbl
+int main() { return generated_main(); }
+`,
+        { expectedOutput: "", timeoutMs: 20000 },
+    );
+});
+
 test("pointer capture retargets Window input across the display and realm, beyond the window", (t) => {
     // test/fixtures/pointer-capture-window-check.cpp drives SDL input through the
     // Window display: its hit tests and the realm's listeners run on two threads.

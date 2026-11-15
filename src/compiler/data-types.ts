@@ -2460,6 +2460,25 @@ export class DataTypeRegistry {
     }
 
     /**
+     * A record stored where a DOM event target is held is that target, which
+     * the program asserted its record type views: demands the view for the
+     * record type struct `name` maps. Returns where the struct maps none.
+     */
+    public requireEventTargetView(name: string, node: ts.Node): void {
+        const source = this.nativeRecordSources.get(name);
+        if (!source || this.isClassStruct(name) || !ts.isExpression(node))
+            return;
+        throw new NativeRecordStorageRequired({
+            ...source,
+            native: {
+                type: this.checker.getTypeAtLocation(node),
+                node: unwrapExpression(node),
+                storage: { kind: "event-target" },
+            },
+        });
+    }
+
+    /**
      * A structural record type no layout stores (a member has no native
      * storage) as a view of the native owner that the expression `node`,
      * checked as that type, holds. `held` gives the owner's storage; it is

@@ -9,6 +9,7 @@ import {
     valueDataType,
 } from "../values/model.js";
 import { isHandleKind } from "../data-types/handles.js";
+import { presentDataType } from "../data-types/operations.js";
 import { absenceKind, declaredContextualType } from "../type-facts.js";
 import { hasNonNullAssertion } from "../syntax.js";
 import { ownEntries } from "../object-statics.js";
@@ -771,8 +772,15 @@ export const scalarsSinks: DataSinkOperations<
     },
     "event-target": {
         expression: expressionKnownValue,
-        value: (_type, lowerer, value, node) =>
-            eventTargetCpp(lowerer.context, value, node),
+        value: (_type, lowerer, value, node) => {
+            const record = presentDataType(value.dataType);
+            if (record?.kind === "struct")
+                lowerer.context.dataTypes.requireEventTargetView(
+                    record.name,
+                    node,
+                );
+            return eventTargetCpp(lowerer.context, value, node);
+        },
     },
     "http-response": {
         expression: unwrappedKnownValue,
