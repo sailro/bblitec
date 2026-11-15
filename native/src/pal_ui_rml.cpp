@@ -1037,6 +1037,24 @@ UiClientRect ui_get_client_rect(Engine& engine, UiElementHandle element) {
             rect.scroll_left * scale, rect.scroll_top * scale,   rect.zoom};
 }
 
+std::optional<DomEventTarget> ui_element_from_point(Engine& engine, double x, double y) {
+    // WebIDL double: a non-finite coordinate is a TypeError.
+    if (!std::isfinite(x) || !std::isfinite(y))
+        throw js::NamedError("TypeError", "Failed to execute 'elementFromPoint' on 'Document': "
+                                          "The provided double value is non-finite.");
+    std::optional<DomEventTarget> target;
+    if (engine.ui_element_at)
+        target = engine.ui_element_at(engine, x, y);
+    else if (engine.dom_input && engine.dom_input->element_at)
+        target = engine.dom_input->element_at(x, y);
+    else
+        throw std::logic_error("document.elementFromPoint requires a laid-out document.");
+    // The root element answers where the page lays nothing else at the point.
+    if (target && target->kind == DomEventTargetKind::Document)
+        return DomEventTarget::node(ui_document_root(engine, UiDocumentPart::Html).value);
+    return target;
+}
+
 double ui_scroll_offset(Engine& engine, UiElementHandle element, bool left) {
     const auto rect = ui_get_client_rect(engine, element).unzoomed();
     return left ? rect.scroll_left : rect.scroll_top;
@@ -6478,6 +6496,34 @@ struct UiRmlRuntime {
                     path.insert(path.begin(), DomEventTarget::canvas());
                 return path;
             };
+            input.element_at = [this](double x, double y) -> std::optional<DomEventTarget> {
+                const Rml::Vector2f point{static_cast<float>(x) * density_ratio,
+                                          static_cast<float>(y) * density_ratio};
+                const Rml::Vector2f size{context->GetDimensions()};
+                if (x < 0 || y < 0 || point.x > size.x || point.y > size.y)
+                    return std::nullopt;
+                // The display's own hit test leaves ordinary elements transparent until a
+                // listener opts them in (`element_style`); CSS hit-tests every element whose
+                // pointer-events are not none, so the root's inherited none is lifted for the
+                // query.
+                document->SetProperty("pointer-events", "auto");
+                context->Update();
+                auto* hit = context->GetElementAtPoint(point);
+                std::optional<DomEventTarget> found = DomEventTarget::document();
+                if (this->engine.dom_input->canvas_background &&
+                    (!hit || hit == document || hit == document_body ||
+                     hit == context->GetRootElement()))
+                    found = DomEventTarget::canvas();
+                else
+                    for (const auto target : event_path(hit))
+                        if (target.kind == DomEventTargetKind::Element) {
+                            found = target;
+                            break;
+                        }
+                document->RemoveProperty("pointer-events");
+                context->Update();
+                return found;
+            };
             input.focus_path = [this] {
                 return this->engine.canvas_focused ? dom_canvas_path()
                                                    : event_path(context->GetFocusElement());
@@ -6509,6 +6555,7 @@ struct UiRmlRuntime {
         engine.ui_lays_out_page = false;
         if (engine.dom_input) {
             engine.dom_input->hit_path = {};
+            engine.dom_input->element_at = {};
             engine.dom_input->focus_path = {};
             engine.dom_input->can_activate = {};
             engine.dom_input->end_withheld_press = {};

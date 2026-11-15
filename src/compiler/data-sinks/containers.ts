@@ -646,10 +646,28 @@ function valueMap(
         }
         requireHeldRecordStorage(lowerer.context, value, node);
     }
-    if (value.kind === "record") {
+    // A record nothing else references (`unaliasedValue`) is stored as a
+    // dictionary of its own members: no reference is left to tell the two
+    // objects apart.
+    const copied =
+        dataType.dictionary &&
+        dataType.key.kind === "string" &&
+        value.kind === "data" &&
+        value.dataType?.kind === "struct" &&
+        unaliasedValue(lowerer, value, node) !== undefined
+            ? lowerer.context.bindings.pinValueToTemporary(
+                  value,
+                  "dictionary_source",
+              )
+            : undefined;
+    if (value.kind === "record" || copied) {
         // A key a conditional spread wrote is stored while it is own, in
         // creation order.
-        const entries = ownEntries(lowerer.ownObjectContext(), value, node)!;
+        const entries = ownEntries(
+            lowerer.ownObjectContext(),
+            copied ?? value,
+            node,
+        )!;
         const conditional = entries.some(
             (entry) => entry.presence !== undefined,
         );
@@ -671,7 +689,7 @@ function valueMap(
             );
             if (!conditional) return `{${key}, ${stored}}`;
             return presence
-                ? `if (${presence.ownCpp}) own.set(${key}, ${stored});`
+                ? `if (${presence.ownCpp}) { own.set(${key}, ${stored}); }`
                 : `own.set(${key}, ${stored});`;
         });
         lowerer.context.reachJsData();

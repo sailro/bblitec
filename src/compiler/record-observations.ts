@@ -39,6 +39,9 @@ import {
     positionalParameter,
     variableKind,
     hasExportModifier,
+    propertyKey,
+    valueConsumer,
+    isGeneratorFunction,
 } from "./syntax.js";
 
 /** What a record-observation question reads: the program and the code its calls run. */
@@ -183,9 +186,98 @@ export function recordFieldIsWritten(
     keepsPresent = false,
     origin?: ts.Node,
 ): boolean {
+    return cachedFieldWrite(
+        context,
+        source,
+        property,
+        keepsPresent,
+        origin,
+        false,
+    );
+}
+
+/**
+ * Whether a write in the program can replace `property` on a record of
+ * `source` type once that record is built: as
+ * {@link recordFieldIsWritten}, but a write through a function's own
+ * `const` holding a fresh literal's object, in that function's own body
+ * (no nested function, no generator), builds the object before the
+ * function returns it, and is not counted. What such a write stores is
+ * the reader's to know.
+ */
+export function builtRecordFieldIsWritten(
+    context: RecordObservationContext,
+    source: ts.Type,
+    property: string,
+): boolean {
+    return cachedFieldWrite(context, source, property, false, undefined, true);
+}
+
+/** {@link recordFieldIsWritten} or {@link builtRecordFieldIsWritten}, kept per type and question. */
+function cachedFieldWrite(
+    context: RecordObservationContext,
+    source: ts.Type,
+    property: string,
+    keepsPresent: boolean,
+    origin: ts.Node | undefined,
+    built: boolean,
+): boolean {
+    const site = origin
+        ? `${origin.getSourceFile().fileName}:${origin.pos}:${origin.end}:${origin.kind}`
+        : "";
+    const key = `${property}|${keepsPresent}|${site}|${built}`;
+    let byKey = writtenFields.get(source);
+    if (!byKey) writtenFields.set(source, (byKey = new Map<string, boolean>()));
+    let written = byKey.get(key);
+    if (written === undefined) {
+        written = fieldWriteFound(
+            context,
+            source,
+            property,
+            keepsPresent,
+            origin,
+            built,
+        );
+        byKey.set(key, written);
+    }
+    return written;
+}
+
+/**
+ * Whether `write` goes through a function's own `const` holding a fresh
+ * literal's object, in that function's own body: it builds that
+ * invocation's object, before the function hands it out.
+ */
+function buildsFreshObject(write: ObservedWrite): boolean {
+    const literal = write.freshObject;
+    if (!literal) return false;
+    const owner = ts.findAncestor(literal.parent, ts.isFunctionLike);
+    return (
+        owner !== undefined &&
+        !isGeneratorFunction(owner) &&
+        ts.findAncestor(write.node.parent, ts.isFunctionLike) === owner
+    );
+}
+
+/**
+ * @unjournaled {@link recordFieldIsWritten}'s answers by record type and
+ * question: pure functions of the checked program, kept across replays.
+ */
+const writtenFields = new WeakMap<ts.Type, Map<string, boolean>>();
+
+/** {@link cachedFieldWrite}, computed. */
+function fieldWriteFound(
+    context: RecordObservationContext,
+    source: ts.Type,
+    property: string,
+    keepsPresent: boolean,
+    origin: ts.Node | undefined,
+    built: boolean,
+): boolean {
     const { checker } = context;
     const observations = programObservations(context.program);
     const holds = holderTest(checker);
+    const records = [source];
     const mentionsTypeParameter = (
         type: ts.Type,
         seen = new Set<ts.Type>(),
@@ -228,11 +320,12 @@ export function recordFieldIsWritten(
         (!keepsPresent || mayRemove(write)) &&
         (origin === undefined ||
             write.freshObject === undefined ||
-            write.freshObject === origin);
+            write.freshObject === origin) &&
+        !(built && buildsFreshObject(write));
     return (
         writesWhere(
             observations,
-            (type) => holds(type, [source]) || viewedAsSource(type),
+            (type) => holds(type, records) || viewedAsSource(type),
             (write) =>
                 (write.property === undefined || write.property === property) &&
                 relevant(write),
@@ -498,61 +591,109 @@ function identityUses(
     const array = checker.isArrayLikeType(
         checker.getTypeAtLocation(declaration.name),
     );
+    // The expressions that read the object: references of the names that
+    // hold it, and reads of a member a callee was handed it as.
     const followed: ts.Symbol[] = [];
+    const reads: ts.Expression[] = [];
     const follow = (name: ts.BindingName): void => {
         const symbol = ts.isIdentifier(name)
             ? declaredSymbol(checker, name)
             : undefined;
-        if (symbol && !followed.includes(symbol)) followed.push(symbol);
+        if (symbol && !followed.includes(symbol)) {
+            followed.push(symbol);
+            reads.push(
+                ...bindingReferences(context.program, context.checker, symbol),
+            );
+        }
     };
     follow(declaration.name);
     let reason: string | undefined;
-    for (let index = 0; index < followed.length && !reason; index++)
-        for (const reference of bindingReferences(
-            context.program,
-            context.checker,
-            followed[index]!,
-        )) {
-            const use = flowingUse(reference);
-            const parent = use.parent;
-            if (isIdentityComparison(parent)) {
-                const other = parent.left === use ? parent.right : parent.left;
-                const partner = token
-                    ? emptyTokenRoot(checker, other)
-                    : undefined;
-                if (partner) tokens.push(partner);
-                else if (nullishLiteral(checker, other) === undefined)
-                    reason = "the program compares it by identity";
-            } else if (
-                (ts.isVariableDeclaration(parent) || ts.isParameter(parent)) &&
-                parent.initializer === use &&
-                ts.isIdentifier(parent.name)
+    for (let index = 0; index < reads.length && !reason; index++) {
+        const use = flowingUse(reads[index]!);
+        const parent = use.parent;
+        if (isIdentityComparison(parent)) {
+            const other = parent.left === use ? parent.right : parent.left;
+            const partner = token ? emptyTokenRoot(checker, other) : undefined;
+            if (partner) tokens.push(partner);
+            else if (nullishLiteral(checker, other) === undefined)
+                reason = "the program compares it by identity";
+        } else if (
+            (ts.isVariableDeclaration(parent) || ts.isParameter(parent)) &&
+            parent.initializer === use &&
+            ts.isIdentifier(parent.name)
+        )
+            follow(parent.name);
+        else if (
+            (ts.isCallExpression(parent) || ts.isNewExpression(parent)) &&
+            parent.expression !== use
+        ) {
+            const position = parent.arguments?.indexOf(use) ?? -1;
+            const callee = calledDeclaration(checker, parent);
+            // The engine takes what it is handed in its own storage:
+            // a record or array converts at the call.
+            if (
+                (callee && declarationOrigin(callee) === "babylon") ||
+                (ts.isCallExpression(parent) &&
+                    callOnlyReadsArgument(checker, parent, position))
             )
-                follow(parent.name);
-            else if (
-                (ts.isCallExpression(parent) || ts.isNewExpression(parent)) &&
-                parent.expression !== use
-            ) {
-                const position = parent.arguments?.indexOf(use) ?? -1;
-                const callee = calledDeclaration(checker, parent);
-                // The engine takes what it is handed in its own storage:
-                // a record or array converts at the call.
-                if (
-                    (callee && declarationOrigin(callee) === "babylon") ||
-                    (ts.isCallExpression(parent) &&
-                        callOnlyReadsArgument(checker, parent, position))
-                )
-                    continue;
-                const parameter = programParameter(callee, parent, position);
-                if (parameter) follow(parameter.name);
-                else if (array) reason = storedIdentity(context, use);
-            } else if (array && !onlyReads(use, parent))
-                reason = storedIdentity(context, use);
-            if (reason) break;
+                continue;
+            const parameter = programParameter(callee, parent, position);
+            if (parameter) follow(parameter.name);
+            else if (array) reason = storedIdentity(context, use);
+        } else if (array && !onlyReads(use, parent)) {
+            const member = handedMemberReads(context, use);
+            if (member)
+                reads.push(...member.filter((read) => !reads.includes(read)));
+            else reason = storedIdentity(context, use);
         }
+    }
     const uses = { ...(reason ? { reason } : {}), tokens };
     identityUseAnswers.set(declaration, uses);
     return uses;
+}
+
+/**
+ * The reads of the member an object literal hands `use` as to a function
+ * the program holds (`f({ dir: use })`, `f({ dir })`): every
+ * `parameter.dir` in its body. Undefined where the callee uses the
+ * parameter otherwise (keeps, hands on or spreads the object), so the
+ * member may be read where no reference names it.
+ */
+function handedMemberReads(
+    context: RecordObservationContext,
+    use: ts.Expression,
+): readonly ts.Expression[] | undefined {
+    const { checker } = context;
+    const property = valueConsumer(use);
+    if (property.kind !== "property") return undefined;
+    const key = propertyKey(property.name);
+    const handed = valueConsumer(flowingUse(property.literal));
+    if (key === undefined || handed.kind !== "argument") return undefined;
+    const parameter = programParameter(
+        calledDeclaration(checker, handed.call),
+        handed.call,
+        handed.index,
+    );
+    const symbol =
+        parameter &&
+        ts.isIdentifier(parameter.name) &&
+        declaredSymbol(checker, parameter.name);
+    if (!symbol) return undefined;
+    const memberReads: ts.Expression[] = [];
+    for (const reference of bindingReferences(
+        context.program,
+        checker,
+        symbol,
+    )) {
+        const read = valueConsumer(flowingUse(reference));
+        if (
+            read.kind !== "member" ||
+            !ts.isPropertyAccessExpression(read.access)
+        )
+            return undefined;
+        if (read.access.name.text === key) memberReads.push(read.access);
+    }
+    return memberReads;
 }
 
 /**

@@ -6,6 +6,7 @@ import test from "node:test";
 import ts from "typescript";
 import { LoweringContext } from "../src/lowering/context.js";
 import { LightLowerer } from "../src/lowering/light-lowerer.js";
+import { csmCoverageKernel } from "../src/lowering/csm-static-cache.js";
 import { pinnedCsmFunctions } from "../src/lowering/pinned-csm.js";
 import {
     csmShadowHeader,
@@ -191,6 +192,7 @@ interface PinCsm {
         config: PinConfig,
         casters: readonly PinCaster[],
         scratch: PinScratch,
+        radiusScale?: number,
     ) => PinCascades;
     _castersWorldAabbInto: (
         casters: readonly PinCaster[],
@@ -760,6 +762,14 @@ ${matrices
     const auto expected = ${cppArray(expected, "float")};
     for (std::size_t i = 0; i < expected.size(); ++i)
         assert(std::bit_cast<std::uint32_t>(actual[i]) == std::bit_cast<std::uint32_t>(expected[i]));
+    // The fit's configuration is the record's: both cascade controls too.
+    assert(!bbl::upstream::csm_config(generator)._stabilizeCascades);
+    assert(!bbl::upstream::csm_config(generator)._worldSpaceBias.has_value());
+    generator.csm_stabilize_cascades = true;
+    generator.csm_world_space_bias = 0.25;
+    generator.bias = 0.5;
+    const auto config = bbl::upstream::csm_config(generator);
+    assert(config._stabilizeCascades && config._worldSpaceBias == 0.25 && config._bias == 0.5);
     std::cout << "pinned-csm-header-check: ok\\n";
 }
 `,
@@ -807,5 +817,204 @@ int main() {
             fixture,
         ]);
         execFileSync(executable, { stdio: "pipe" });
+    },
+);
+
+test(
+    "the cached CSM coverage test matches the executed pin",
+    {
+        skip: !nativeTools,
+    },
+    async () => {
+        const pin = await importPinnedModuleWithExports<PinCsm>(
+            "shadow/csm-shadow-task-hooks.js",
+            ["_castersWorldAabbInto", "transformCoordInto"],
+        );
+        const cache = await importPinnedModuleWithExports<{
+            createCoverageState: (padding: number) => {
+                _radiusScale: number;
+            };
+            cascadesLeavingCoverage: (
+                state: {
+                    _uboData: Float32Array;
+                    _cameras: { length: number };
+                    _publishedViews: Float32Array[];
+                },
+                camera: PinCamera,
+                aspect: number,
+                coverage: object,
+            ) => number[] | null;
+        }>("shadow/csm-shadow-cache.js", [
+            "createCoverageState",
+            "cascadesLeavingCoverage",
+        ]);
+        const { createFreeCamera } = await importPinnedModule<{
+            createFreeCamera: (position: Vector, target: Vector) => PinCamera;
+        }>("camera/free-camera.js");
+        const { getViewProjectionMatrix } = await importPinnedModule<{
+            getViewProjectionMatrix: (
+                camera: PinCamera,
+                aspect: number,
+            ) => ArrayLike<number>;
+        }>("camera/camera.js");
+        const aspect = 1280 / 720;
+        const config: PinConfig = {
+            _numCascades: 4,
+            _lambda: 0.5,
+            _cascadeBlendPercentage: 0.1,
+            _stabilizeCascades: true,
+            _shadowMaxZ: null,
+            _bias: 0.00005,
+            _worldSpaceBias: null,
+            _darkness: 0.125,
+            _frustumEdgeFalloff: 0.03125,
+            _mapSize: 1024,
+            _forceRefreshEveryFrame: false,
+        };
+        const at = (dx: number, dy: number, turn: number): PinCamera => {
+            const camera = createFreeCamera(
+                { x: 1000002.125 + dx, y: 3.375 + dy, z: -8.25 },
+                { x: 1000000.125 + dx + turn, y: 0.25 + dy, z: 0.125 },
+            );
+            camera.nearPlane = 1;
+            camera.farPlane = 100;
+            return camera;
+        };
+        // The published maps: a stabilized fit of the first pose, padded.
+        const coverage = cache.createCoverageState(0.25);
+        const fitted = pin._computeCsmCascades(
+            { surface: { scRT: { _width: 1280, _height: 720 } } },
+            at(0, 0, 0),
+            {
+                direction: { x: -1, y: -2, z: -2 },
+                worldMatrix: Float32Array.of(
+                    ...[1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1],
+                ),
+            },
+            config,
+            casters(),
+            pin._createCascadeScratch(config._numCascades),
+            coverage._radiusScale,
+        );
+        const ubo = new Float32Array(80);
+        pin._writeCsmUbo(ubo, fitted, config);
+        const state = {
+            _uboData: ubo,
+            _cameras: { length: config._numCascades },
+            _publishedViews: fitted._views.map(
+                (view) => new Float32Array(view),
+            ),
+        };
+        const missed: number[][] = [];
+        const cases = [
+            [0, 0, 0],
+            [0.25, 0, 0],
+            [1, 0.5, 0],
+            [4, 0, 0],
+            [16, 2, 0],
+            [64, 0, 0],
+            [0, 0, 3],
+            [0, 0, 40],
+        ].map(([dx, dy, turn]) => {
+            const camera = at(dx!, dy!, turn!);
+            const expected =
+                cache.cascadesLeavingCoverage(
+                    state,
+                    camera,
+                    aspect,
+                    coverage,
+                ) ?? [];
+            missed.push([...expected]);
+            return `{
+    const auto projection = ${cppArray(getViewProjectionMatrix(camera, aspect), "float")};
+    const auto actual = csm_cascades_leaving_coverage(generator, camera, ${cppNumber(aspect)},
+        [&](const Camera&, double fitted_aspect) { assert(fitted_aspect == ${cppNumber(aspect)}); return projection; });
+    assert(actual == (std::vector<std::uint32_t>{${expected.join(", ")}}));
+}`;
+        });
+        // Every outcome is exercised: a pose every map still covers, poses
+        // some cascades left, and one every cascade left.
+        assert.ok(missed.some((cascades) => cascades.length === 0));
+        assert.ok(
+            missed.some(
+                (cascades) =>
+                    cascades.length > 0 &&
+                    cascades.length < config._numCascades,
+            ),
+        );
+        assert.ok(
+            missed.some((cascades) => cascades.length === config._numCascades),
+        );
+        const output = resolve("artifacts\\pinned-csm-coverage-check");
+        const rendererIncludes = join(output, "bblite", "upstream");
+        mkdirSync(rendererIncludes, { recursive: true });
+        writeFileSync(
+            join(rendererIncludes, "light_matrix.hpp"),
+            new LightLowerer(context).lowerMatrix().header,
+        );
+        writeFileSync(
+            join(rendererIncludes, "pinned_shadow.hpp"),
+            pinnedShadowHeader(context, ["shadow:csm"]),
+        );
+        writeFileSync(
+            join(rendererIncludes, "csm_shadow.hpp"),
+            csmShadowHeader(context),
+        );
+        writeFileSync(
+            join(rendererIncludes, "pinned_world_transform.hpp"),
+            pinnedWorldTransformHeader(context),
+        );
+        writeFileSync(
+            join(rendererIncludes, "renderer_plan.hpp"),
+            `#pragma once
+namespace bbl::upstream {
+std::array<float, 16> build_view_projection(const CameraRecord&, double);
+}
+`,
+        );
+        const fixture = join(output, "check.cpp");
+        writeFileSync(
+            fixture,
+            `#include <bblite/upstream/pinned_shadow.hpp>
+#include <cassert>
+#include <iostream>
+namespace bbl::upstream {
+${csmCoverageKernel(context)}
+}
+struct Camera { double near_plane; double far_plane; };
+int main() {
+    using namespace bbl::upstream;
+    bbl::ShadowGeneratorRecord generator;
+    generator.csm_num_cascades = ${config._numCascades};
+    generator.csm_cascades.resize(${config._numCascades});
+${fitted._transforms
+    .map(
+        (
+            transform,
+            cascade,
+        ) => `    generator.csm_cascades[${cascade}].transform = ${cppArray(transform, "float")};
+    generator.csm_cascades[${cascade}].view = ${cppArray(fitted._views[cascade]!, "float")};
+    generator.csm_cascades[${cascade}].view_frustum_z = ${cppNumber(fitted._viewFrustumZ[cascade]!)};`,
+    )
+    .join("\n")}
+    const Camera camera{1, 100};
+${cases.join("\n")}
+    std::cout << "pinned-csm-coverage-check: ok" << std::endl;
+}
+`,
+        );
+        const executable = join(output, "check.exe");
+        runNativeFixtureCompiler(nativeTools!, [
+            "/DBBLITE_SHADOWS_CSM=1",
+            `/Fo:${output}\\`,
+            `/Fe:${executable}`,
+            "/I",
+            output,
+            fixture,
+        ]);
+        assert.match(
+            execFileSync(executable, { encoding: "utf8" }),
+            /pinned-csm-coverage-check: ok/,
+        );
     },
 );

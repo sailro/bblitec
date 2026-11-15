@@ -65,3 +65,15 @@ export function isKtx1(bytes: Uint8Array): boolean {
         magic.every((value, index) => bytes[index] === value)
     );
 }
+
+/** The KTX 2.0 file identifier (Khronos KTX File Format 2.0, section 3.1). */
+const ktx2Identifier = [
+    0xab, 0x4b, 0x54, 0x58, 0x20, 0x32, 0x30, 0xbb, 0x0d, 0x0a, 0x1a, 0x0a,
+] as const;
+
+export function isKtx2(bytes: Uint8Array): boolean {
+    return (
+        bytes.length >= ktx2Identifier.length &&
+        ktx2Identifier.every((value, index) => bytes[index] === value)
+    );
+}

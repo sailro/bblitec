@@ -854,10 +854,14 @@ export class CompressedTextureLowerer {
             .join("\n");
         return `
 // ${this.context.provenance(KTX2_MODULE, "loadKtx2Texture2D", "uploadCompressed; makeSampler; srgbFormat")}
-FileTexture load_ktx2_texture(Engine& engine, const std::string& path, bool srgb) {
-    FileTexture texture = load_compressed_texture(engine, path, true);
+FileTexture ktx2_texture(Engine& engine, std::vector<std::uint8_t> container, bool srgb) {
+    FileTexture texture = compressed_texture(engine, std::move(container), true);
 ${conversions}
     return texture;
+}
+
+FileTexture load_ktx2_texture(Engine& engine, const std::string& path, bool srgb) {
+    return ktx2_texture(engine, pal::read_binary_file(path), srgb);
 }
 `;
     }
@@ -1032,13 +1036,13 @@ namespace bbl {
 // linear. invert_y is the texture-OBJECT property, which this loader leaves
 // unset and basis-loader.ts sets — it is what decides the Standard UV
 // block's V flip, not an upload-time row swap.
-FileTexture load_compressed_texture(
+FileTexture compressed_texture(
     Engine& engine,
-    const std::string& path,
+    std::vector<std::uint8_t> container,
     bool invert_y) {
     FileTexture texture;
     texture.data.compressed =
-        upstream::read_compressed_texture(pal::read_binary_file(path));
+        upstream::read_compressed_texture(std::move(container));
     const bool chain = texture.data.compressed.mips.size() > 1;
     texture.data.sampler = ${textureSamplerStateCpp({
         minFilter: "TextureFilter::linear",
@@ -1055,6 +1059,13 @@ FileTexture load_compressed_texture(
     texture.height = texture.data.compressed.height;
     texture.identity = engine.next_file_texture_identity++;
     return texture;
+}
+
+FileTexture load_compressed_texture(
+    Engine& engine,
+    const std::string& path,
+    bool invert_y) {
+    return compressed_texture(engine, pal::read_binary_file(path), invert_y);
 }
 
 FileTexture load_compressed_texture_variants(

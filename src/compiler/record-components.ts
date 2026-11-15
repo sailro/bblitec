@@ -240,8 +240,9 @@ export function isRecordComponentKey(identity: unknown): boolean {
 
 /**
  * The record components of a program: union-find over the joins lowering
- * met. Joining two record types joins the record types their common fields
- * hold too, since one layout stores each field once.
+ * met. One layout stores each field once, so the record types the common
+ * fields of any two members hold are joined too -- of two records stored
+ * as one interface as of a record stored as another.
  */
 export function recordComponents(
     checker: ts.TypeChecker,
@@ -260,7 +261,41 @@ export function recordComponents(
         parent.set(identity, root);
         return root;
     };
-    const joined = new Map<RecordComponentKey, Set<RecordComponentKey>>();
+    // The members each root's component holds so far.
+    const membersOf = new Map<RecordComponentKey, RecordComponentKey[]>();
+    const held = new Map<RecordComponentKey, Set<RecordComponentKey>>();
+    // One layout stores each common field once: the records two members'
+    // fields hold are one object too. An instantiation's fields name its
+    // type parameters: the records they hold join where the instantiation
+    // is concrete.
+    const joinHeld = (a: RecordComponentKey, b: RecordComponentKey): void => {
+        const left = types.get(a)!;
+        const right = types.get(b)!;
+        let targets = held.get(a);
+        if (!targets) held.set(a, (targets = new Set()));
+        if (
+            targets.has(b) ||
+            "generic" in a ||
+            "generic" in b ||
+            !isRecordLike(checker, left) ||
+            !isRecordLike(checker, right)
+        )
+            return;
+        targets.add(b);
+        for (const property of recordProperties(checker, right))
+            for (const source of propertyTypes(checker, left, property.name))
+                for (const target of propertyTypes(
+                    checker,
+                    right,
+                    property.name,
+                ))
+                    for (const [from, to] of heldRecords(
+                        checker,
+                        source,
+                        target,
+                    ))
+                        join(from, to);
+    };
     const join = (
         left: ts.Type,
         right: ts.Type,
@@ -269,46 +304,34 @@ export function recordComponents(
     ): void => {
         const a = sourceInstantiation ?? recordIdentity(checker, left);
         const b = targetInstantiation ?? recordIdentity(checker, right);
-        if (!types.has(a)) {
-            types.set(a, left);
-            parent.set(a, a);
-        }
-        if (!types.has(b)) {
-            types.set(b, right);
-            parent.set(b, b);
-        }
+        for (const [identity, type] of [
+            [a, left],
+            [b, right],
+        ] as const)
+            if (!types.has(identity)) {
+                types.set(identity, type);
+                parent.set(identity, identity);
+                membersOf.set(identity, [identity]);
+            }
         const rootA = find(a);
         const rootB = find(b);
-        if (rootA !== rootB) parent.set(rootB, rootA);
-        // One layout stores each common field once: the records the two
-        // types' fields hold are one object too.
-        let targets = joined.get(a);
-        if (!targets) joined.set(a, (targets = new Set()));
-        // An instantiation's fields name its type parameters: the records
-        // they hold join where the instantiation is concrete.
-        if (
-            targets.has(b) ||
-            sourceInstantiation ||
-            targetInstantiation ||
-            !isRecordLike(checker, left) ||
-            !isRecordLike(checker, right)
-        )
-            return;
-        targets.add(b);
-        for (const property of recordProperties(checker, right))
-            for (const held of propertyTypes(checker, left, property.name))
-                for (const field of propertyTypes(
-                    checker,
-                    right,
-                    property.name,
-                )) {
-                    for (const [source, target] of heldRecords(
-                        checker,
-                        held,
-                        field,
-                    ))
-                        join(source, target);
-                }
+        if (rootA === rootB) return joinHeld(a, b);
+        // Every member of one component is one object with every member
+        // of the other.
+        const membersA = membersOf.get(rootA)!;
+        const membersB = membersOf.get(rootB)!;
+        const countA = membersA.length;
+        const countB = membersB.length;
+        // The smaller component joins the larger one's list, whose members
+        // the pairs below, counted before, do not grow.
+        const [kept, merged] =
+            countA >= countB ? [rootA, rootB] : [rootB, rootA];
+        parent.set(merged, kept);
+        membersOf.get(kept)!.push(...membersOf.get(merged)!);
+        membersOf.delete(merged);
+        for (let a = 0; a < countA; a++)
+            for (let b = 0; b < countB; b++)
+                joinHeld(membersA[a]!, membersB[b]!);
     };
     for (const {
         source,

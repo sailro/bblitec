@@ -141,7 +141,12 @@ Rules:
   registry scenes use the pinned `lab/public`. Runtime asset URLs require a finite inferred candidate set: local
   files, or absolute HTTP(S) URLs packaged as their literals are; unknown keys and percent-encoded bodies refuse.
   Inference follows closed local Map registries (`set` calls or constructor entries), member and `push` writes, array
-  callback parameters, awaited values, `Promise.all` and the methods of a record a call built.
+  callback parameters, awaited values, `Promise.all`, the methods of a record a call built and a dynamic import's
+  exports. The JSON of a packaged response reads as the document the package holds; a call handed that document
+  (a merge over defaults) is run at generation for the strings its result holds. A document member of a number or
+  boolean type that every run reads alike (the defaults a failing load returns included) reads as that constant,
+  where every source holds a value of that kind and no write in the program replaces a member on the way once its
+  record is built.
 - `fetch` (application realm): absolute HTTP(S), method, string headers, body, static cache mode, `keepalive`, `signal`; streamed
   `body` reader. Known asset fetches use packaged responses. A `typeof fetch` wrapper forwards its runtime `RequestInit`
   (signal, headers). Request objects, teeing and Headers iteration refuse.
@@ -162,6 +167,9 @@ cancel })` is a program source; `new Response(stream, { status, statusText, head
   device-supported BC/ASTC candidate.
   `loadKtx2Texture2D` packages the pinned decoder's compressed mip chain for a known URL; each load selects its
   linear/sRGB format. Unsupported native formats refuse.
+  An object URL (`URL.createObjectURL(blob)`) as the URL: `loadTexture2D` decodes the URL's bytes; `loadKtx2Texture2D`
+  selects, by the bytes' content, the chain packaged from the same KTX2 image in a file the program fetches as bytes
+  (the whole file or a member of a zip archive), and rejects other bytes. A realm settles both as promises.
 - `loadGaussianSplatStream` runs the lowered pinned streaming library on the WebGPU-subset device; options are the pin's
   numeric budgets and `signal`. `splatsData`/`updateData` admit equal-count replacement.
 - MeshLoD (`loadMeshLoD`, instances, scene, setters, diagnostics) runs the lowered pinned library on the WebGPU-subset
@@ -314,7 +322,8 @@ composition and source albedo reads with `KHR_texture_transform` refuse.
   `enableShaderUniformRangeUpdates`. Runtime resource replacements refresh shared GPU bindings;
   render-target colour and sampled depth textures rebind per draw. Template text and plugin `getCustomCode`
   functions run at generation with scalar or fresh literal-data arguments; reaching host/engine APIs, `this`, module
-  `let`, clock or random refuses. Retained objects stay native.
+  `let`, clock or random refuses. Retained objects stay native. `attributes` and `samplers` lists may be a local list
+  built by pushes generation settles, or a closed call (a module list mapped to names) run at generation.
   `depthBias`, `depthBiasSlopeScale` and `depthOnlyFragment` control pipeline depth behaviour. WGSL `@interpolate`
   and static `blend` overrides are supported (`add`; `zero`, `one`, `src-alpha`, `one-minus-src-alpha`, `dst`, `dst-alpha`).
   Conditional option spreads select up to 64 static variants; effectful predicates or conflicts with earlier evaluations refuse.
@@ -413,8 +422,10 @@ InvalidStateError), moving its playback into the graph. Other members and attrib
 - PCF spot/directional, ESM directional, CSM. Thin-instance contracts refuse.
 - Shadow generators and caster lists can be prepared without scene scheduling; `registerSceneWithShadowSupport`
   activates shadow passes. Registered empty caster lists clear the shadow map.
+- `generator._config._forceRefreshEveryFrame` reads and writes the flag the render gate tests each frame.
 - `enableCsmStaticCache` (awaited, before registration): static casters render into a cache texture, copied per layer
-  into the map before dynamic casters draw; refit gate and per-frame cascade budget as pinned. `cascadeCoveragePadding` refuses.
+  into the map before dynamic casters draw; refit gate, per-frame cascade budget and coverage refit
+  (`cascadeCoveragePadding`) as pinned.
 - Recast/Detour solo and obstacle tile-cache builds, crowds, obstacles. Tiled builds without obstacles and off-mesh
   connections in tile caches refuse.
 - Navcat runs as program code: the pin's `navcat*.ts` modules and the vendored navcat/mathcat TypeScript compile

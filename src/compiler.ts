@@ -27,7 +27,9 @@ import {
 } from "./compiler/data-types/handles.js";
 import {
     forEachAnalysisNode,
+    precedesForwardRead,
     someAnalysisNode,
+    sourceFileNodes,
     sourceFilesWalk,
 } from "./compiler/analysis-walk.js";
 import {
@@ -203,8 +205,11 @@ import {
 } from "./compiler/option-helpers.js";
 import {
     executeApplicationFunction,
+    runApplicationFunction,
+    type ExecutedFunctionContext,
     type ExecutedScalar,
     type ExecutedArgument,
+    type ExecutedResult,
     type ExecutedTarget,
 } from "./compiler/executed-application-function.js";
 import { liftWgslModuleConstant } from "./shader-ir.js";
@@ -290,6 +295,7 @@ import {
     undefinedOnly,
     callSignatures,
     inheritsFrom,
+    isVoid,
     unionMembers,
 } from "./compiler/type-facts.js";
 import {
@@ -344,6 +350,7 @@ import {
     keysMayMatch,
 } from "./compiler/syntax.js";
 import { CompileError, unlessRefused } from "./compiler/compile-error.js";
+import { packagedValueDomain } from "./compiler/asset-url-domain.js";
 import { isEffectTaskMethodName } from "./compiler/effect-task-methods.js";
 import {
     ClosureCaptures,
@@ -369,6 +376,8 @@ import {
 import { StaticExpansionBudget } from "./compiler/static-expansion.js";
 import type {
     CollectionCardinality,
+    CollectionSite,
+    StaticListItem,
     CompileAsset,
     CompileOptions,
     CompileResult,
@@ -955,6 +964,12 @@ class Compiler implements LoweringServices {
      */
     public readonly valueOverrides = new Map<ts.Node, Value>();
     /**
+     * Whether a packaged-value query is running: reads it lowers answer as
+     * the documents they read, not by asking again. @unjournaled Set and
+     * cleared around one query.
+     */
+    private packagedQuery = false;
+    /**
      * `stableLocalInitializer` answers, by declaration (`false`: none).
      * @unjournaled A function of the program's syntax.
      */
@@ -1353,8 +1368,13 @@ class Compiler implements LoweringServices {
         this.moduleNamespaces.defineInitializers();
         this.emitEntryBody(entry);
         const survey = activeSurvey();
-        if (survey && !this.options.workers?.namespace)
-            survey.rollingBack(() => emitSurveyRoots(this, survey));
+        survey?.phaseEnded("entry");
+        if (survey && !this.options.workers?.namespace) {
+            const lowerRoots = (): void =>
+                survey.rollingBack(() => emitSurveyRoots(this, survey));
+            lowerRoots();
+            survey.rounds(lowerRoots);
+        }
         survey?.settle();
         if (!this.options.pageStartup?.length) this.emitNativeHostUi();
         this.finalizeSceneRegistration();
@@ -1393,6 +1413,8 @@ class Compiler implements LoweringServices {
             this.reachFeature("data:locale");
         if (this.dataTypes.usesFileStorage())
             this.reachFeature("browser:file", this.sourceFile);
+        // After every packaged file is known.
+        this.assetRegistry.registerContentImages();
 
         const features = featureOrder.filter((feature) =>
             this.features.has(feature),
@@ -2168,18 +2190,109 @@ class Compiler implements LoweringServices {
         this.emissionSource =
             statement.getSourceFile()?.fileName ?? previousSource;
         this.statementDependencies.push(new EmissionSet());
-        this.loweringStatements.push({
-            statement,
-            scopeDepth: this.bindings.variableScopes.length,
-            emissionScope: this.activeEmissionScope,
-            indentLevel: this.indentLevel,
-        });
         try {
-            this.statements.emit(this, statement);
+            this.standingAt(statement, false, () =>
+                this.statements.emit(this, statement),
+            );
         } finally {
-            this.loweringStatements.pop();
             this.popDependencies(this.statementDependencies);
             this.emissionSource = previousSource;
+        }
+    }
+
+    /**
+     * Lowers a statement of a block nested in a statement (`lower`), which
+     * stands as the one that block is lowering; one `emitStatement` stands
+     * at already lowers as it is.
+     */
+    public lowerNestedStatement(
+        statement: ts.Statement,
+        lower: () => void,
+    ): void {
+        if (this.loweringStatements.at(-1)?.statement === statement) lower();
+        else this.standingAt(statement, true, lower);
+    }
+
+    /**
+     * Runs `lower` with `statement` standing as the one its block is
+     * lowering, then places the lines declared ahead of it.
+     */
+    private standingAt(
+        statement: ts.Statement,
+        nested: boolean,
+        lower: () => void,
+    ): void {
+        const hoistsForward = precedesForwardRead(statement);
+        const entry: LoweringStatement = {
+            statement,
+            nested,
+            scopeDepth: this.bindings.variableScopes.length,
+            scope: this.bindings.variableScopes.at(-1)!,
+            emissionScope: this.activeEmissionScope,
+            indentLevel: this.indentLevel,
+            block: this.emissionBlocks.at(-1)!,
+            blockDepth: this.emissionBlocks.length,
+            bodyStart: this.body.length,
+            aheadSequence: hoistsForward ? ++this.nextNativeBindingSequence : 0,
+            continuationSequence: this.engineLifecycle.continuationSequence,
+            hoistsForward,
+        };
+        this.loweringStatements.push(entry);
+        try {
+            lower();
+            const ahead = this.aheadLines.get(entry);
+            if (ahead) {
+                this.aheadLines.delete(entry);
+                this.body.splice(entry.bodyStart, 0, ...ahead);
+            }
+        } finally {
+            this.loweringStatements.pop();
+        }
+    }
+
+    /**
+     * Lowers a statement (`lower`). Under a statement that precedes a later
+     * binding of its block, each time it refuses a read of such a binding
+     * no scope holds (a closure built in a nested block, a function it
+     * reaches), its lines are withdrawn, the binding takes
+     * temporal-dead-zone storage ahead of the statement its block stands
+     * at, and it lowers again. From scopes that are not under that
+     * statement (a body with scopes of its own) the refusal is an enclosing
+     * statement's to start over on, so they lower it directly.
+     */
+    public hoistingForward(lower: () => void): void {
+        if (
+            !this.loweringStatements.some(
+                (entry) => entry.hoistsForward && this.standsUnder(entry),
+            )
+        )
+            return lower();
+        const survey = activeSurvey();
+        for (;;) {
+            const begun = survey?.bodiesBegun() ?? 0;
+            const refusal = this.emissionTransaction(
+                () => {
+                    try {
+                        lower();
+                        return undefined;
+                    } catch (error) {
+                        if (
+                            !(error instanceof CompileError) ||
+                            !this.callbacks.forwardBindingMissed(error)
+                        )
+                            throw error;
+                        return error;
+                    }
+                },
+                (met) => met === undefined,
+            );
+            if (!refusal) return;
+            if (
+                !this.callbacks.retryForwardMiss(refusal, () =>
+                    survey?.withdrawBodies(begun),
+                )
+            )
+                throw refusal;
         }
     }
 
@@ -2202,6 +2315,63 @@ class Compiler implements LoweringServices {
             this.activeEmissionScope === statement.emissionScope &&
             this.indentLevel === statement.indentLevel
         );
+    }
+
+    public standsUnder(statement: LoweringStatement): boolean {
+        return (
+            this.bindings.variableScopes[statement.scopeDepth - 1] ===
+                statement.scope &&
+            this.emissionBlocks[statement.blockDepth - 1] === statement.block
+        );
+    }
+
+    /** Lines declared ahead of statements being lowered, until each ends. */
+    private readonly aheadLines = new EmissionMap<
+        LoweringStatement,
+        readonly NativeEmission[]
+    >();
+    /** The sequence native bindings take while declared ahead of a statement. */
+    @journaled private accessor aheadBindingSequence: number | undefined =
+        undefined;
+
+    public emitAheadOf(statement: LoweringStatement, work: () => void): void {
+        // At the statement's start, emission is ahead of it already.
+        if (
+            this.body.length === statement.bodyStart &&
+            this.emitsAtLevelOf(statement) &&
+            this.bindings.variableScopes.length === statement.scopeDepth
+        ) {
+            work();
+            return;
+        }
+        const start = this.body.length;
+        const indentLevel = this.indentLevel;
+        const emissionScope = this.activeEmissionScope;
+        const sequence = this.aheadBindingSequence;
+        const blocks = this.emissionBlocks.splice(statement.blockDepth);
+        this.indentLevel = statement.indentLevel;
+        this.activeEmissionScope = statement.emissionScope;
+        this.aheadBindingSequence = statement.aheadSequence;
+        const continuation = this.engineLifecycle.continuationSequence;
+        this.engineLifecycle.continuationSequence =
+            statement.continuationSequence;
+        this.statementDependencies.push(new EmissionSet());
+        try {
+            this.bindings.withScopeDepth(statement.scopeDepth, work);
+        } finally {
+            this.statementDependencies.pop();
+            this.engineLifecycle.continuationSequence = continuation;
+            this.aheadBindingSequence = sequence;
+            this.activeEmissionScope = emissionScope;
+            this.indentLevel = indentLevel;
+            this.emissionBlocks.push(...blocks);
+            const lines = this.body.splice(start);
+            if (lines.length > 0)
+                this.aheadLines.set(statement, [
+                    ...(this.aheadLines.get(statement) ?? []),
+                    ...lines,
+                ]);
+        }
     }
 
     public statementTerminatesAfterLowering(statement: ts.Statement): boolean {
@@ -3175,9 +3345,22 @@ class Compiler implements LoweringServices {
             this.constArrayLiteral(expression);
         if (!literal) {
             const unwrapped = this.unwrap(expression);
-            return ts.isIdentifier(unwrapped)
-                ? this.bindings.lookupOptional(unwrapped)?.staticStrings
+            const binding = ts.isIdentifier(unwrapped)
+                ? this.bindings.lookupOptional(unwrapped)
                 : undefined;
+            // A list generation holds by its elements (a local array its
+            // pushes kept) has no literal to read.
+            const elements =
+                binding?.staticElementsOwner?.staticElements ??
+                binding?.staticElements;
+            if (binding?.staticStrings || !elements)
+                return binding?.staticStrings;
+            const held: string[] = [];
+            for (const element of elements) {
+                if (element.staticString === undefined) return undefined;
+                held.push(element.staticString);
+            }
+            return held;
         }
         const strings: string[] = [];
         for (const element of literal.elements) {
@@ -3759,6 +3942,54 @@ class Compiler implements LoweringServices {
     }
 
     /**
+     * The items of a generation-known list, as `expectStaticArrayElements`
+     * spells them, or as the strings a part it cannot spell holds: a local
+     * list its pushes kept (`staticStringElements`), or a closed call run
+     * at generation (`ITEMS.map((item) => nameOf(item))`).
+     */
+    public staticListItems(expression: ts.Expression): StaticListItem[] {
+        const projected = this.projectedStaticElements(expression);
+        if (projected) return projected.map((node) => ({ node }));
+        const literal = unlessRefused(() =>
+            this.expectStaticArrayLiteral(expression),
+        );
+        if (literal)
+            return literal.elements.flatMap((element) =>
+                ts.isSpreadElement(element)
+                    ? this.staticListItems(element.expression)
+                    : [{ node: element }],
+            );
+        const held = this.heldStrings(expression);
+        if (held) return held.map((text) => ({ node: expression, text }));
+        return this.expectStaticArrayElements(expression).map((node) => ({
+            node,
+        }));
+    }
+
+    /** The strings a list generation cannot spell holds (`staticListItems`). */
+    private heldStrings(
+        expression: ts.Expression,
+    ): readonly string[] | undefined {
+        const kept = this.staticStringElements(expression);
+        if (kept) return kept;
+        const selected = this.unwrap(
+            this.evaluator.staticArrayExpression(expression),
+        );
+        if (!ts.isCallExpression(selected)) return undefined;
+        const value = unlessRefused(() =>
+            this.runGenerationFunction(
+                selected,
+                [],
+                `List '${selected.expression.getText()}'`,
+            ),
+        );
+        return Array.isArray(value) &&
+            value.every((item): item is string => typeof item === "string")
+            ? value
+            : undefined;
+    }
+
+    /**
      * `xs.map(([, name]) => name)` (or `(x) => x.name`, `(x) => x`) over a
      * static array literal: each result is the source element's own node
      * the callback only selects, so the list stays static syntax.
@@ -4000,19 +4231,47 @@ class Compiler implements LoweringServices {
     ): ts.ObjectLiteralExpression {
         const resolved = this.evaluator.resolveStaticLiteral(expression);
         if (ts.isObjectLiteralExpression(resolved)) return resolved;
+        return (
+            this.boundRecordLiteral(expression) ??
+            this.fail(resolved, "Expected an object literal.")
+        );
+    }
+
+    /**
+     * A name bound to a record whose properties are current, as the literal
+     * of its own fields: each one reads the bound owner, whose initializer
+     * has already run, and dynamic fields remain ordinary native reads.
+     * Undefined for anything else.
+     */
+    private boundRecordLiteral(
+        expression: ts.Expression,
+    ): ts.ObjectLiteralExpression | undefined {
         const node = this.unwrap(expression);
         const bound = ts.isIdentifier(node)
             ? this.bindings.lookupOptional(node)
             : undefined;
-        const properties = bound?.recordProperties;
+        if (!bound || !ts.isIdentifier(node)) return undefined;
+        // A struct whose every field is always an own key: its fields.
+        if (bound.kind === "data" && bound.dataType?.kind === "struct") {
+            const struct = bound.dataType.name;
+            return bound.recordOwnKeys ||
+                this.dataTypes.ownKeysDecided(struct, node)
+                ? this.memberLiteral(
+                      node,
+                      bound.recordOwnKeys ??
+                          this.dataTypes
+                              .structFields(struct, node, "accessors")
+                              .map((field) => field.sourceName),
+                  )
+                : undefined;
+        }
+        const properties = bound.recordProperties;
         const keys =
-            bound?.recordOwnKeys ??
-            (bound?.kind === "record" && properties
+            bound.recordOwnKeys ??
+            (bound.kind === "record" && properties
                 ? Object.keys(properties)
                 : undefined);
-        if (
-            bound &&
-            properties &&
+        return properties &&
             keys &&
             this.bindings.recordPropertiesAreCurrent(bound) &&
             !Object.keys(bound.recordGetters ?? {}).length &&
@@ -4024,38 +4283,42 @@ class Compiler implements LoweringServices {
                     properties[key] !== undefined &&
                     !properties[key].conditionalOwnKey,
             )
-        ) {
-            // Project current fields from the bound owner. Its initializer has
-            // already run, and dynamic fields remain ordinary native reads.
-            const object = ts.factory.createObjectLiteralExpression(
-                keys.map((key) => {
-                    const access = ts.factory.createPropertyAccessExpression(
-                        node,
-                        key,
-                    );
-                    ts.setOriginalNode(access, node);
-                    ts.setTextRange(access, node);
-                    writable(access).parent = node.parent;
-                    writable(access.name).parent = access;
-                    const keyLiteral = ts.factory.createStringLiteral(key);
-                    ts.setOriginalNode(keyLiteral, node);
-                    ts.setTextRange(keyLiteral, node);
-                    const assignment = ts.factory.createPropertyAssignment(
-                        keyLiteral,
-                        access,
-                    );
-                    ts.setOriginalNode(assignment, node);
-                    ts.setTextRange(assignment, node);
-                    writable(keyLiteral).parent = assignment;
-                    return assignment;
-                }),
-            );
-            ts.setOriginalNode(object, node);
-            ts.setTextRange(object, node);
-            writable(object).parent = node.parent;
-            return object;
-        }
-        return this.fail(resolved, "Expected an object literal.");
+            ? this.memberLiteral(node, keys)
+            : undefined;
+    }
+
+    /** The literal `{ key: owner.key, ... }` of `keys`, placed where `owner` stands. */
+    private memberLiteral(
+        owner: ts.Identifier,
+        keys: readonly string[],
+    ): ts.ObjectLiteralExpression {
+        const object = ts.factory.createObjectLiteralExpression(
+            keys.map((key) => {
+                const access = ts.factory.createPropertyAccessExpression(
+                    owner,
+                    key,
+                );
+                ts.setOriginalNode(access, owner);
+                ts.setTextRange(access, owner);
+                writable(access).parent = owner.parent;
+                writable(access.name).parent = access;
+                const keyLiteral = ts.factory.createStringLiteral(key);
+                ts.setOriginalNode(keyLiteral, owner);
+                ts.setTextRange(keyLiteral, owner);
+                const assignment = ts.factory.createPropertyAssignment(
+                    keyLiteral,
+                    access,
+                );
+                ts.setOriginalNode(assignment, owner);
+                ts.setTextRange(assignment, owner);
+                writable(keyLiteral).parent = assignment;
+                return assignment;
+            }),
+        );
+        ts.setOriginalNode(object, owner);
+        ts.setTextRange(object, owner);
+        writable(object).parent = owner.parent;
+        return object;
     }
 
     /**
@@ -4105,9 +4368,10 @@ class Compiler implements LoweringServices {
                 this.literalSelection(),
                 spread.expression,
             );
-            return selected && ts.isObjectLiteralExpression(selected)
+            if (!selected) return undefined;
+            return ts.isObjectLiteralExpression(selected)
                 ? selected
-                : undefined;
+                : this.boundRecordLiteral(selected);
         });
     }
 
@@ -4229,29 +4493,23 @@ class Compiler implements LoweringServices {
             return this.staticAssetUrlCandidateCache;
         }
         const candidates = new EmissionSet<string>();
-        const visit = (root: ts.Node): void =>
-            forEachAnalysisNode(root, (node) => {
-                if (
-                    ts.isCallExpression(node) &&
-                    ts.isIdentifier(node.expression) &&
-                    this.symbols.isPhysicsEngineModule(node.expression)
-                ) {
-                    // Native physics substitutes the browser module; its
-                    // loader callbacks are never invoked or packaged.
-                    return "skip";
-                }
+        // Native physics substitutes the browser module; its loader
+        // callbacks are never invoked or packaged.
+        const physicsModuleCall = (node: ts.Node): boolean =>
+            ts.isCallExpression(node) &&
+            ts.isIdentifier(node.expression) &&
+            this.symbols.isPhysicsEngineModule(node.expression);
+        for (const source of this.sourceFiles())
+            for (const node of sourceFileNodes(source))
                 if (
                     ts.isCallExpression(node) &&
                     node.arguments.length === 2 &&
-                    ts.isStringLiteralLike(argumentAt(node, 0))
+                    ts.isStringLiteralLike(argumentAt(node, 0)) &&
+                    !ts.findAncestor(node, physicsModuleCall)
                 ) {
                     const url = this.moduleRelativeAssetUrl(node);
                     if (url !== undefined) candidates.add(url);
                 }
-            });
-        for (const source of this.sourceFiles()) {
-            visit(source);
-        }
         this.staticAssetUrlCandidateCache = [...candidates].sort();
         return this.staticAssetUrlCandidateCache;
     }
@@ -5505,36 +5763,67 @@ class Compiler implements LoweringServices {
         // specialization it was reached in, so only a closed one is kept.
         let closed = true;
         const result = executeApplicationFunction(
-            {
-                checker: this.checker,
-                sourceFiles: this.program.getSourceFiles(),
-                fail: (node, message) => this.fail(node, message),
-                foldEnclosing: (identifier) => {
+            this.generationRunContext(
+                (identifier) => {
                     closed = false;
                     return this.staticScalar(identifier);
                 },
-                deploymentValue: (expression) =>
-                    browserDeploymentValue(this, expression),
-                ...(pinnedStandIn ? { pinnedStandIn } : {}),
-                ...(ts.isVariableDeclaration(declaration) ||
-                ts.isCallExpression(declaration)
-                    ? {
-                          writtenThrough: (name: ts.Identifier) =>
-                              this.moduleConstantIsWritten(name) &&
-                              (!ts.isVariableDeclaration(declaration) ||
-                                  !this.moduleRecordUnchangedBeforeSnapshot(
-                                      name,
-                                      declaration,
-                                  )),
-                      }
-                    : {}),
-            },
+                {
+                    ...(pinnedStandIn ? { pinnedStandIn } : {}),
+                    ...(ts.isVariableDeclaration(declaration) ||
+                    ts.isCallExpression(declaration)
+                        ? {
+                              writtenThrough: (name: ts.Identifier) =>
+                                  this.moduleConstantIsWritten(name) &&
+                                  (!ts.isVariableDeclaration(declaration) ||
+                                      !this.moduleRecordUnchangedBeforeSnapshot(
+                                          name,
+                                          declaration,
+                                      )),
+                          }
+                        : {}),
+                },
+            ),
             declaration,
             args,
             label,
         );
         if (closed) runs.set(key, result);
         return result;
+    }
+
+    public runCallOverHeldData(
+        call: ts.CallExpression,
+        held: (identifier: ts.Identifier) => ExecutedArgument | undefined,
+        written: (name: ts.Identifier) => boolean,
+        label: string,
+    ): ExecutedResult {
+        return runApplicationFunction(
+            this.generationRunContext(held, { writtenThrough: written }),
+            call,
+            [],
+            label,
+        );
+    }
+
+    /**
+     * What a generation run reads of the program: its checker and files,
+     * the deployment's constants, the enclosing bindings `foldEnclosing`
+     * folds, and `more`.
+     */
+    private generationRunContext(
+        foldEnclosing: ExecutedFunctionContext["foldEnclosing"],
+        more: Pick<ExecutedFunctionContext, "writtenThrough" | "pinnedStandIn">,
+    ): ExecutedFunctionContext {
+        return {
+            checker: this.checker,
+            sourceFiles: this.program.getSourceFiles(),
+            fail: (node, message) => this.fail(node, message),
+            foldEnclosing,
+            deploymentValue: (expression) =>
+                browserDeploymentValue(this, expression),
+            ...more,
+        };
     }
 
     /** The generation-known scalar an expression folds to, if any. */
@@ -5657,6 +5946,19 @@ class Compiler implements LoweringServices {
                   ),
               )
             : undefined;
+    }
+
+    public packagedValueDomain(
+        expression: ts.Expression,
+        scalar: "number" | "boolean",
+    ): readonly string[] | undefined {
+        if (this.packagedQuery) return undefined;
+        this.packagedQuery = true;
+        try {
+            return packagedValueDomain(this, expression, scalar);
+        } finally {
+            this.packagedQuery = false;
+        }
     }
 
     /**
@@ -7244,11 +7546,25 @@ class Compiler implements LoweringServices {
         answered: (result: T) => boolean = (result) => result !== undefined,
     ): T {
         this.probeDepth++;
+        // A survey times its outermost probes, kept or dropped.
+        const survey = this.probeDepth === 1 ? activeSurvey() : undefined;
+        const started = survey ? performance.now() : 0;
+        let kept = false;
         try {
-            return this.emissionTransaction(probe, answered);
+            const result = this.emissionTransaction(probe, answered);
+            kept = answered(result);
+            return result;
         } finally {
             this.probeDepth--;
+            survey?.probed(kept, performance.now() - started);
         }
+    }
+
+    public keptEmission<T>(
+        work: () => T,
+        answered: (result: T) => boolean = (result) => result !== undefined,
+    ): T {
+        return this.emissionTransaction(work, answered);
     }
 
     public transaction(work: () => void): void {
@@ -7482,7 +7798,8 @@ class Compiler implements LoweringServices {
             name,
             borrowed,
             allowReference,
-            sequence: ++this.nextNativeBindingSequence,
+            sequence:
+                this.aheadBindingSequence ?? ++this.nextNativeBindingSequence,
             entryLifetime:
                 this.bindings.variableScopes.length === 1 &&
                 this.activeEmissionScope === 0 &&
@@ -8209,7 +8526,16 @@ class Compiler implements LoweringServices {
         }
         if (returnType === "void") {
             if (statement.expression) {
-                if (frame?.kind !== "native" || !frame.contextualVoid) {
+                if (
+                    (frame?.kind !== "native" || !frame.contextualVoid) &&
+                    !isVoid(
+                        this.dataTypes.resolveTypeParameter(
+                            this.checker.getTypeAtLocation(
+                                statement.expression,
+                            ),
+                        ),
+                    )
+                ) {
                     this.fail(
                         statement.expression,
                         "Void functions cannot return a value.",
@@ -8219,6 +8545,9 @@ class Compiler implements LoweringServices {
                 // expression's value but not its side effects. Preserve the
                 // same boundary for `return stopEngine(engine)` and for
                 // value-returning expressions accepted by a void callback.
+                // A `void` expression has no value to discard: `return
+                // work()` in a body whose result type is `void` here, a type
+                // parameter's argument included.
                 this.asyncActivations.emitDiscardedReturn(statement.expression);
             }
             if (coroutine)
@@ -10116,6 +10445,53 @@ class Compiler implements LoweringServices {
             : undefined;
     }
 
+    /** Where the source walk is, by the run-time regions around it. */
+    private collectionSite(): CollectionSite {
+        return {
+            control: this.runtimeControlFlowDepth,
+            iteration: this.runtimeIterationDepth,
+            callback: this.frameCallbackDepth,
+            frame: [...this.returnFrames]
+                .reverse()
+                .find((frame) => frame.kind === "native"),
+        };
+    }
+
+    /**
+     * Gives a list a block-scoped declaration creates a cardinality of its
+     * own, created here.
+     */
+    public declaredCollection(value: Value): void {
+        const state: CollectionCardinality = {
+            kind: "array",
+            count: undefined,
+            createdIn: [...this.parameterizedResourceIterations],
+            varyingIn: new EmissionSet(),
+            createdAt: this.collectionSite(),
+        };
+        this.collectionCardinalities.add(state);
+        writable(value).collectionCardinality = state;
+    }
+
+    /** Whether a mutation here runs whenever `value`'s collection was created. */
+    public mutatesWhereCreated(value: Value): boolean {
+        const state =
+            (value.staticElementsOwner ?? value).collectionCardinality ??
+            value.collectionCardinality;
+        const created = state?.createdAt;
+        if (!created || state.untrackedAliases) return false;
+        const here = this.collectionSite();
+        return (
+            created.control === here.control &&
+            created.iteration === here.iteration &&
+            created.callback === here.callback &&
+            created.frame === here.frame &&
+            !this.returnFrames.some((current) =>
+                this.resourceLoopReturns.has(current),
+            )
+        );
+    }
+
     public definiteCollectionMutation(): boolean {
         const frame = this.parameterizedResourceIterations.at(-1);
         const definite = frame
@@ -10144,7 +10520,10 @@ class Compiler implements LoweringServices {
         if (state) writable(value).collectionCardinality = state;
         if (
             added === undefined ||
-            !this.definiteCollectionMutation() ||
+            !(
+                this.definiteCollectionMutation() ||
+                this.mutatesWhereCreated(value)
+            ) ||
             state?.untrackedAliases
         ) {
             if (state) {

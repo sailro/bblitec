@@ -364,7 +364,7 @@ test(
             void mark_mesh_dirty(Engine&, MeshHandle) {}
             MaterialHandle create_standard_material(Engine& engine) { engine.materials.emplace_back(); return {static_cast<std::uint32_t>(engine.materials.size() - 1)}; }
             std::string asset_path(const std::string& path) { return path; }
-            FileTexture load_file_texture(Engine&, const std::string&, TextureSamplerState, bool, bool, bool) { return {}; }
+            FileTexture load_file_texture(Engine&, const TextureImageSource&, TextureSamplerState, bool, bool, bool) { return {}; }
             void mark_material_ubo_dirty(Engine& engine, MaterialHandle material) {
                 if (std::abs(engine.materials[material.value].emissive_factor.r - 0.75f) > 0.000001f)
                     throw std::runtime_error("retained material array upload");

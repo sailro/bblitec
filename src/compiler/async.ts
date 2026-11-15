@@ -1,3 +1,7 @@
+import {
+    compileWithRuntimeCaseSplit,
+    type CaseSplitContext,
+} from "./runtime-case-split.js";
 import { journaled } from "./emission-transaction.js";
 import { staticScalarValue } from "./number-intrinsics.js";
 import type {
@@ -8,6 +12,7 @@ import ts from "typescript";
 import {
     absenceOf,
     knownCondition,
+    objectTruthinessCpp,
     undefinedValue,
     valueDataType,
 } from "./values/model.js";
@@ -95,43 +100,46 @@ import {
     propertyNeverObserved,
 } from "./unread-properties.js";
 
-interface AsyncContext extends Pick<
-    LoweringServices,
-    | "program"
-    | "probeEmission"
-    | "checker"
-    | "cppString"
-    | "dataLowerer"
-    | "dataTypes"
-    | "compileValue"
-    | "compileBrowserTextureFunctionCall"
-    | "compileExecutedGltfFunctionCall"
-    | "compileCallbackWithValues"
-    | "withCallbackScopes"
-    | "captureManagedClosureLines"
-    | "withOwnedCallbackBody"
-    | "asyncActivations"
-    | "allocateTemporaryCppName"
-    | "registerNativeBinding"
-    | "registerNativeBindingType"
-    | "registerNativeTemporary"
-    | "registerNativeConstBinding"
-    | "thrownValueKinds"
-    | "reachJsData"
-    | "reachJson"
-    | "nativeEmission"
-    | "emit"
-    | "emitDiscardedValue"
-    | "evaluationOrder"
-    | "unwrap"
-    | "bindings"
-    | "libraryGlobal"
-    | "browserErasure"
-    | "options"
-    | "sharedClosures"
-    | "useNativeValue"
-    | "fail"
-> {}
+interface AsyncContext
+    extends
+        CaseSplitContext,
+        Pick<
+            LoweringServices,
+            | "program"
+            | "probeEmission"
+            | "checker"
+            | "cppString"
+            | "dataLowerer"
+            | "dataTypes"
+            | "compileValue"
+            | "compileBrowserTextureFunctionCall"
+            | "compileExecutedGltfFunctionCall"
+            | "compileCallbackWithValues"
+            | "withCallbackScopes"
+            | "captureManagedClosureLines"
+            | "withOwnedCallbackBody"
+            | "asyncActivations"
+            | "allocateTemporaryCppName"
+            | "registerNativeBinding"
+            | "registerNativeBindingType"
+            | "registerNativeTemporary"
+            | "registerNativeConstBinding"
+            | "thrownValueKinds"
+            | "reachJsData"
+            | "reachJson"
+            | "nativeEmission"
+            | "emit"
+            | "emitDiscardedValue"
+            | "evaluationOrder"
+            | "unwrap"
+            | "bindings"
+            | "libraryGlobal"
+            | "browserErasure"
+            | "options"
+            | "sharedClosures"
+            | "useNativeValue"
+            | "fail"
+        > {}
 
 /**
  * A reached constructed promise can leave a synchronous activation pending.
@@ -282,6 +290,9 @@ export class AsyncLowerer {
         return temporary;
     }
 
+    /** @unjournaled The present promise an optional reaction's receiver holds, while that reaction lowers on it. */
+    private readonly presentReceivers = new Map<ts.Expression, Value>();
+
     compile(expression: ts.Expression): Value | undefined {
         const context = this.context;
         // unwrap intentionally removes awaits for the existing immediate path;
@@ -417,16 +428,46 @@ export class AsyncLowerer {
             ? undefined
             : optionalPromiseReactionOf(callee, context.checker);
         const present = optional
-            ? context.probeEmission(
+            ? (this.presentReceivers.get(optional.expression) ??
+              context.probeEmission(
                   () => context.compileValue(optional.expression),
                   (value) => value.kind === "promise",
-              )
+              ))
             : undefined;
-        if (present && present.kind !== "promise")
+        if (optional && present && present.kind !== "promise") {
+            // A receiver that may be absent at run time: the reaction runs
+            // on the present promise, its callbacks unevaluated otherwise.
+            // A discarded chain is then all there is.
+            if (
+                present.kind === "data" &&
+                present.dataType?.kind === "optional" &&
+                present.dataType.inner.kind === "promise" &&
+                !isPromiseResultUsed(node)
+            ) {
+                const settled = context.dataLowerer.optionalAccess(
+                    context.compileValue(optional.expression),
+                    node,
+                    (owner) => {
+                        this.presentReceivers.set(
+                            optional.expression,
+                            this.asPromise(owner, node),
+                        );
+                        try {
+                            const reaction = this.compile(expression);
+                            if (reaction) context.emitDiscardedValue(reaction);
+                            return { kind: "void", cpp: "" };
+                        } finally {
+                            this.presentReceivers.delete(optional.expression);
+                        }
+                    },
+                );
+                if (settled) return settled;
+            }
             return context.fail(
                 callee,
                 "An optional promise reaction requires a receiver generation proves present.",
             );
+        }
         const reaction = direct ?? optional;
         if (reaction) {
             // A reaction the checker types undefined, null or void
@@ -647,20 +688,24 @@ export class AsyncLowerer {
             );
             if (document) return this.asPromise(document, node);
         }
-        const values = node.arguments.map((argument, index) =>
-            this.pinArgument(
-                context.compileValue(argument),
-                "async_argument",
-                argument,
-                positionalParameter(node, declaration, index),
-            ),
-        );
-        return this.activate(
-            ts.isIdentifier(callee) ? callee : declaration,
-            declaration,
-            values,
-            node,
-        );
+        // A call whose arguments select its body at run time compiles once
+        // per outcome, as a synchronous call does.
+        return compileWithRuntimeCaseSplit(context, node, () => {
+            const values = node.arguments.map((argument, index) =>
+                this.pinArgument(
+                    context.compileValue(argument),
+                    "async_argument",
+                    argument,
+                    positionalParameter(node, declaration, index),
+                ),
+            );
+            return this.activate(
+                ts.isIdentifier(callee) ? callee : declaration,
+                declaration,
+                values,
+                node,
+            );
+        });
     }
 
     compileCall(
@@ -2125,7 +2170,8 @@ export class AsyncLowerer {
         if (
             value.kind === "void" ||
             value.kind === "physics-engine-module" ||
-            value.kind === "browser"
+            value.kind === "browser" ||
+            absenceOf(value) === "undefined"
         )
             return "bbl::js::PromiseVoid";
         if (value.kind === "tuple")
@@ -2155,10 +2201,7 @@ export class AsyncLowerer {
     ): Value {
         // An erased browser value has no run-time state: it settles to
         // itself, as an aggregate's `undefined` lane does.
-        if (
-            source.kind === "browser" ||
-            (source.kind === "json-null" && absenceOf(source) === "undefined")
-        )
+        if (source.kind === "browser" || absenceOf(source) === "undefined")
             return source;
         const { ownedCpp, ...value } = source;
         if (value.dataType?.kind === "handle" && value.dataType.ownedEngine) {
@@ -2216,9 +2259,16 @@ export class AsyncLowerer {
                 cpp,
                 value.dataType,
             );
+            // A copy of an object generation knows present is present.
+            const present =
+                knownCondition(objectTruthinessCpp(value)) === true &&
+                presenceFlagCpp(leaf) !== undefined;
             return valueForKind(leaf.kind, {
                 ...this.withoutProducerStorage(value),
                 ...leaf,
+                ...(present
+                    ? { optionalFoundCpp: "true", truthinessCpp: "true" }
+                    : {}),
                 nativeCaptures: [binding],
             });
         }
@@ -2960,7 +3010,11 @@ export class AsyncLowerer {
     }
     private resultCpp(value: Value, node: ts.Node): string {
         this.context.dataLowerer.markEscaped(value);
-        if (value.kind === "physics-engine-module" || value.kind === "browser")
+        if (
+            value.kind === "physics-engine-module" ||
+            value.kind === "browser" ||
+            absenceOf(value) === "undefined"
+        )
             return "bbl::js::PromiseVoid{}";
         if (
             value.kind === "string" &&

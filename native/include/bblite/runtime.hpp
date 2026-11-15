@@ -30,6 +30,7 @@
 #include <new>
 #include <optional>
 #include <stdexcept>
+#include <span>
 #include <string>
 #include <string_view>
 #include <type_traits>
@@ -2441,6 +2442,47 @@ struct ParallaxOcclusionProps {
     std::optional<double> max_steps;
     std::optional<double> refinement_steps;
 };
+
+/**
+ * Where a `loadTexture2D` call's image comes from: the packaged file at
+ * `name`, or `bytes` a program holds, under the URL `name` the pin's cache
+ * keys them by.
+ */
+struct TextureImageSource {
+    std::string name;
+    std::shared_ptr<const std::vector<std::uint8_t>> bytes;
+};
+
+/** The hash 64-bit FNV-1a starts from. */
+inline constexpr std::uint64_t fnv1a_64_basis = 0xcbf29ce484222325ull;
+
+/** 64-bit FNV-1a over `bytes`, continuing from `hash`. */
+inline std::uint64_t fnv1a_64(std::span<const std::uint8_t> bytes,
+                              std::uint64_t hash = fnv1a_64_basis) {
+    for (const std::uint8_t byte : bytes) {
+        hash ^= byte;
+        hash *= 0x100000001b3ull;
+    }
+    return hash;
+}
+
+/** A 64-bit value as sixteen lowercase hexadecimal digits. */
+inline std::string hex_digits_64(std::uint64_t value) {
+    static constexpr char digits[] = "0123456789abcdef";
+    std::string text(16, '0');
+    for (std::size_t index = 0; index < text.size(); ++index)
+        text[index] = digits[(value >> (60u - 4u * index)) & 0xfu];
+    return text;
+}
+
+/**
+ * The name bytes package under where a program selects them by content at
+ * run time: their 64-bit FNV-1a hash as sixteen hexadecimal digits, then
+ * their length. `contentKey` (src/content-key.ts) computes the same text.
+ */
+inline std::string content_key(const std::vector<std::uint8_t>& bytes) {
+    return hex_digits_64(fnv1a_64(bytes)) + "-" + std::to_string(bytes.size());
+}
 
 /** Texture2D's per-device URL/options cache, projected onto native samplers. */
 inline std::string file_texture_cache_key(const std::string& path,
@@ -5160,6 +5202,8 @@ struct Engine {
     void (*ui_link_navigation)(const std::string& url) = nullptr;
     /** A realm host can synchronously publish pending edits before a source layout read. */
     UiClientRect (*ui_measure_element)(Engine&, UiElementHandle) = nullptr;
+    /** A realm host asks its display what lies at a viewport point (`DomInput::element_at`). */
+    std::optional<DomEventTarget> (*ui_element_at)(Engine&, double, double) = nullptr;
     /** A realm host adopts its display's latest `pointer_states` before a selector reads them. */
     void (*ui_adopt_pointer_states)(Engine&) = nullptr;
     /** Any tree/text/style/listener mutation invalidates the PAL projection. */
@@ -7626,6 +7670,14 @@ double scene_callback_delta(const Scene& scene, double engine_delta_ms);
 Scene create_scene_context(Surface& surface);
 FrameGraphContext create_frame_graph_context(Engine& engine);
 std::string asset_path(const std::string& relative_path);
+/**
+ * The packaged file generation derived from bytes a program holds at run
+ * time, selected by their content (`content_key`).
+ */
+inline std::string packaged_content_path(const std::vector<std::uint8_t>& bytes,
+                                         std::string_view extension) {
+    return asset_path("content/" + content_key(bytes) + std::string(extension));
+}
 MeshHandle create_box(Engine& engine, BoxOptions options);
 MeshHandle create_ground(Engine& engine, GroundOptions options);
 /**
@@ -8062,15 +8114,26 @@ void set_pbr_subsurface(Engine& engine, MaterialHandle material, float intensity
                         FileTexture thickness_texture);
 SolidTexture create_solid_texture(Engine& engine, float r, float g, float b, float a = 1.0f);
 FileTexture solid_texture_file(const SolidTexture& texture);
-FileTexture load_file_texture(Engine& engine, const std::string& path, TextureSamplerState sampler,
-                              bool invert_y, bool srgb, bool premultiply_alpha = false);
+FileTexture load_file_texture(Engine& engine, const TextureImageSource& source,
+                              TextureSamplerState sampler, bool invert_y, bool srgb,
+                              bool premultiply_alpha = false);
+inline FileTexture load_file_texture(Engine& engine, const std::string& path,
+                                     TextureSamplerState sampler, bool invert_y, bool srgb,
+                                     bool premultiply_alpha = false) {
+    return load_file_texture(engine, TextureImageSource{path, nullptr}, sampler, invert_y, srgb,
+                             premultiply_alpha);
+}
 // `ktx-loader.ts` loadKtxTexture2D, past the suffix selection generation
 // resolved: the container is parsed and its blocks are uploaded as they
 // are. `invert_y` is the texture-object property the pin's own loader
 // leaves unset here and sets in `basis-loader.ts`, which is what decides
 // the Standard UV block's V flip.
 FileTexture load_compressed_texture(Engine& engine, const std::string& path, bool invert_y);
+/** `load_compressed_texture` of a container already read. */
+FileTexture compressed_texture(Engine& engine, std::vector<std::uint8_t> container, bool invert_y);
 FileTexture load_ktx2_texture(Engine& engine, const std::string& path, bool srgb);
+/** `load_ktx2_texture` of a container already read. */
+FileTexture ktx2_texture(Engine& engine, std::vector<std::uint8_t> container, bool srgb);
 FileTexture load_compressed_texture_variants(Engine& engine, const std::vector<std::string>& paths,
                                              bool invert_y);
 // A PBR texture prop (`createPbrMaterial`'s or an assignment), whatever the
@@ -8477,8 +8540,7 @@ struct PcfDirectionalShadowOptions {
  *
  * `map_size` and the cascade count size the layered map; the rest ride into
  * the record, where the per-cascade fit and the receiver's own 320-byte
- * block read them. `stabilizeCascades` and `worldSpaceBias` are the two
- * arms this port does not build and refuse by name at generation.
+ * block read them.
  */
 struct CsmDirectionalShadowOptions {
     // No factory defaults, for the reason above: every field is written
@@ -8487,9 +8549,13 @@ struct CsmDirectionalShadowOptions {
     std::uint32_t csm_num_cascades{};
     double csm_lambda{};
     double csm_cascade_blend_percentage{};
+    /** `cfg.stabilizeCascades ?? false`: the bounding-sphere fit. */
+    bool csm_stabilize_cascades{};
     /** `cfg.shadowMaxZ ?? null`, resolved against the camera's far plane. */
     std::optional<double> csm_shadow_max_z;
     double bias{};
+    /** `cfg.worldSpaceBias`: an omitted one leaves `bias` in force. */
+    std::optional<double> csm_world_space_bias;
     double darkness{};
     double frustum_edge_falloff{};
     /** `cfg.forceRefreshEveryFrame ?? false`: disables the render gate. */
@@ -8521,7 +8587,8 @@ ShadowGeneratorHandle create_csm_directional_shadow_generator(Engine& engine, Li
 std::optional<js::Error> enable_csm_static_cache(Engine& engine, ShadowGeneratorHandle generator,
                                                  double refit_angle,
                                                  std::optional<double> refit_max_interval_ms,
-                                                 std::optional<double> static_cascades_per_frame);
+                                                 std::optional<double> static_cascades_per_frame,
+                                                 std::optional<double> cascade_coverage_padding);
 /** `getCsmReceiverTexture`: the generator's receiver texture, which it keeps (`sg._csmReceiverTexture`). */
 inline ShadowGeneratorHandle get_csm_receiver_texture(Engine& engine,
                                                       ShadowGeneratorHandle generator) {
@@ -8794,8 +8861,9 @@ void write_camera_scalar(CameraRecord& camera, double CameraRecord::* field, dou
 void write_camera_vector_component(CameraRecord& camera, Vec3d CameraRecord::* vector,
                                    double Vec3d::* component, double value);
 void set_camera_vector(CameraRecord& camera, Vec3d CameraRecord::* vector, Vec3d value);
-void set_camera_limits(Engine& engine, CameraHandle camera, std::uint32_t present_mask,
-                       const std::array<double, 6>& limits);
+/** `setCameraLimits`: each limit `present_mask` names is written, an absent one removing its wall. */
+void write_camera_limits(Engine& engine, CameraHandle camera, std::uint32_t present_mask,
+                         const std::array<std::optional<double>, 6>& limits);
 js::Callback<void()> attach_free_control(Engine& engine, CameraHandle camera, const Scene& scene);
 struct ConfigurableFreeControlOptions {
     std::optional<std::vector<std::string>> upKeys;

@@ -133,6 +133,11 @@ export class ReplayStorage {
         NativeRecordStorageDemand["identity"] | InstantiatedRecord,
         CompileError
     >();
+    /**
+     * @unjournaled The record components the joins of {@link records} form,
+     * until a record demand changes them (`joinsAlreadyHeld`).
+     */
+    private plannedComponents: ReturnType<typeof recordComponents> | undefined;
     readonly genericFunctions = new GenericFunctionStorage();
     /** @unjournaled Demands outlive the attempts that met them. Source storages that keep `null` and `undefined` apart (`DataType<"tagged">`). */
     readonly absenceTags = new Set<ts.Declaration>();
@@ -207,6 +212,7 @@ export class ReplayStorage {
                 const key = this.recordKey(request.demand);
                 if (this.refusedRecords.has(key)) return false;
                 this.records.delete(key);
+                this.plannedComponents = undefined;
                 this.refusedRecords.set(key, request.refusal);
                 return true;
             }
@@ -219,6 +225,7 @@ export class ReplayStorage {
                 );
                 if (!merged) return false;
                 this.records.set(key, merged);
+                this.plannedComponents = undefined;
                 return true;
             }
             case "generic":
@@ -292,10 +299,10 @@ export class ReplayStorage {
     public joinsAlreadyHeld(request: StorageRequest): boolean {
         if (request.kind !== "record" || !request.demand.joins?.length)
             return false;
-        const components = recordComponents(
+        const components = (this.plannedComponents ??= recordComponents(
             this.checker,
             [...this.records.values()].flatMap((demand) => demand.joins ?? []),
-        );
+        ));
         const component = (type: ts.Type, instantiation?: InstantiatedRecord) =>
             components.get(instantiation ?? recordIdentity(this.checker, type));
         return request.demand.joins.every(

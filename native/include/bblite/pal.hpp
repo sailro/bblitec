@@ -41,6 +41,8 @@ const char* bblite_build_stamp();
 /** Write the build stamp where a measured run asked (`BBLITE_BUILD_STAMP_OUT`). */
 void report_build_stamp();
 std::vector<std::uint8_t> read_binary_file(const std::string& path);
+/** Whether `path` names a file `read_binary_file` reads. */
+bool is_file(const std::string& path);
 std::string join_path(const std::string& root, const std::string& relative_path);
 std::string parent_path(const std::string& path);
 std::string executable_directory();

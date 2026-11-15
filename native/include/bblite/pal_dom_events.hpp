@@ -270,6 +270,12 @@ struct DomInput {
     std::function<void(const PlatformMouseEvent&)> pointer_sink;
     std::function<void(std::shared_ptr<DomEventBatch>)> batch_sink;
     std::function<std::vector<DomEventTarget>(double, double)> hit_path;
+    /**
+     * `document.elementFromPoint`: the topmost represented element at a viewport point in CSS
+     * pixels, the canvas where the page lays nothing over it, the Document where the page lays
+     * nothing represented there (its root element answers), and nothing outside the viewport.
+     */
+    std::function<std::optional<DomEventTarget>(double, double)> element_at;
     std::function<std::vector<DomEventTarget>()> focus_path;
     std::function<bool(DomEventTarget)> can_activate;
     std::function<void()> end_withheld_press;

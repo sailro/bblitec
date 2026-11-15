@@ -23,6 +23,7 @@ import type {
     ResolvedCompileOptions,
     Value,
     ValueKind,
+    StaticListItem,
 } from "./types.js";
 import type {
     CapturedClosure,
@@ -55,7 +56,10 @@ import type { NativeEmissionRegistry } from "./native-emission-registry.js";
 import type { AssetRegistry } from "./asset-registry.js";
 import type { AdmissionRecorder } from "./admissions.js";
 import type { IntrinsicOptions } from "./intrinsic-options.js";
-import type { ExecutedArgument } from "./executed-application-function.js";
+import type {
+    ExecutedArgument,
+    ExecutedResult,
+} from "./executed-application-function.js";
 
 /** Convert an already evaluated return value, including adopted promise results. */
 export type NativeReturnValueCompiler = (
@@ -73,10 +77,40 @@ export type EmissionMark = Pick<
 /** A statement being lowered, with where its lowering began. */
 export interface LoweringStatement {
     readonly statement: ts.Statement;
-    /** The binding scope depth its declarations bind at. */
+    /** A statement of a block nested in a statement, not of a function's or module's body. */
+    readonly nested: boolean;
+    /** The binding scope depth its declarations bind at, and that scope. */
     readonly scopeDepth: number;
+    readonly scope: object;
     readonly emissionScope: number;
     readonly indentLevel: number;
+    /** Its emission block, and how many blocks were open. */
+    readonly block: number;
+    readonly blockDepth: number;
+    /** How many entry-body lines preceded it. */
+    readonly bodyStart: number;
+    /**
+     * The sequence of native bindings declared ahead of it: after those of
+     * every closure open at its start, before those of the closures it
+     * builds. Reserved where it `hoistsForward`.
+     */
+    readonly aheadSequence: number;
+    /** The engine continuation its lines began in. */
+    readonly continuationSequence: number;
+    /**
+     * Whether its lowering starts over when it refuses a read of a binding
+     * its block declares later (`ForwardBindingMissed`).
+     */
+    readonly hoistsForward: boolean;
+}
+
+/** A later binding of `owner`'s block that a refusal under `owner` read. */
+export interface ForwardBindingMissed {
+    readonly owner: LoweringStatement;
+    readonly symbol: ts.Symbol;
+    /** The declaration, or the name a later pattern declares. */
+    readonly declared:
+        import("./declarations.js").ForwardDeclaration | ts.Identifier;
 }
 
 /** Execution facts for one native function body. */
@@ -174,6 +208,18 @@ export interface LoweringServices {
     loweringStatementIn(container: ts.Node): LoweringStatement | undefined;
     /** Whether emission is at the top level of the block `statement` is lowering in. */
     emitsAtLevelOf(statement: LoweringStatement): boolean;
+    /** Whether emission stands in `statement`'s scopes and blocks, at its level or nested in it. */
+    standsUnder(statement: LoweringStatement): boolean;
+    /**
+     * Runs `work` as where `statement`'s lowering began: what it emits goes
+     * ahead of the statement's lines, what it binds is bound in the
+     * statement's scope and precedes every closure the statement builds.
+     */
+    emitAheadOf(statement: LoweringStatement, work: () => void): void;
+    /** Lowers a statement, starting it over on a refused read of a later binding (`Compiler.hoistingForward`). */
+    hoistingForward(lower: () => void): void;
+    /** Lowers a statement of a block nested in a statement (`Compiler.lowerNestedStatement`). */
+    lowerNestedStatement(statement: ts.Statement, lower: () => void): void;
     statementTerminatesAfterLowering(statement: ts.Statement): boolean;
     emitExpressionAsStatement(expression: ts.Expression): void;
     compileTextMutation(expression: ts.Expression): Value | undefined;
@@ -265,6 +311,8 @@ export interface LoweringServices {
      * (`...decls()`, `...(flag ? [a] : [])`) contributing its own.
      */
     expectStaticArrayElements(expression: ts.Expression): ts.Expression[];
+    /** A list's items, spelled or held (`staticListItems` in compiler.ts). */
+    staticListItems(expression: ts.Expression): StaticListItem[];
     referenceSearch(): string;
     /** The default-library global an expression names (symbols.ts `libraryGlobal`). */
     libraryGlobal(expression: ts.Expression): string | undefined;
@@ -340,6 +388,18 @@ export interface LoweringServices {
         label: string,
         pinnedStandIn?: (name: string) => unknown,
     ): unknown;
+    /**
+     * A call run at generation over the data `held` gives the enclosing
+     * bindings it reads (`runApplicationFunction`): what it settles with,
+     * as the run's realm holds it. The run reads no module constant the
+     * program writes through (`written`).
+     */
+    runCallOverHeldData(
+        call: ts.CallExpression,
+        held: (identifier: ts.Identifier) => ExecutedArgument | undefined,
+        written: (name: ts.Identifier) => boolean,
+        label: string,
+    ): ExecutedResult;
     compileShaderSource(expression: ts.Expression): {
         source: string;
         dynamicUniforms: Array<{
@@ -398,6 +458,14 @@ export interface LoweringServices {
     executedInitializerElements(
         identifier: ts.Identifier,
     ): readonly Value[] | undefined;
+    /**
+     * The numbers or booleans (`scalar`) an expression reads when the
+     * documents the package serves are the ones generation holds, spelled.
+     */
+    packagedValueDomain(
+        expression: ts.Expression,
+        scalar: "number" | "boolean",
+    ): readonly string[] | undefined;
     executedModuleConstantMapEntry(
         expression: ts.Expression,
         key: string | number,
@@ -476,6 +544,12 @@ export interface LoweringServices {
         escapesEmittingScope: boolean,
     ): Value<"callback">;
     probeEmission<T>(probe: () => T, answered?: (result: T) => boolean): T;
+    /**
+     * `probeEmission` without speculation: `work`'s emission is kept where
+     * it answers and rolled back otherwise, and a statement it lowers
+     * recovers on its own as outside it.
+     */
+    keptEmission<T>(work: () => T, answered?: (result: T) => boolean): T;
     /** True while a speculative probe is open: a refusal inside is the probe's to decide. */
     readonly speculating: boolean;
     /** Runs `work` in an emission transaction: committed on return, rolled back on a throw. */
@@ -708,6 +782,13 @@ export interface LoweringServices {
     knownCollectionCardinality(expression: ts.Expression): number | undefined;
     runtimeCollectionCardinality(expression: ts.Expression): number | undefined;
     recordArrayPush(value: Value, added: number | undefined): boolean;
+    /**
+     * Gives a list a block-scoped declaration creates a cardinality of its
+     * own, created where the walk is.
+     */
+    declaredCollection(value: Value): void;
+    /** Whether a mutation here runs whenever `value`'s collection was created. */
+    mutatesWhereCreated(value: Value): boolean;
     recordCollectionKey(value: Value, key: Value, removed?: boolean): void;
     recordCollectionClear(value: Value): void;
     expectKind(value: Value, kind: ValueKind, node: ts.Node): void;

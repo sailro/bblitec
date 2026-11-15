@@ -1,6 +1,6 @@
 import ts from "typescript";
 import { isRecord } from "../json-fields.js";
-import { readAssetBytesSync } from "./asset-bytes-sync.js";
+import { readAssetTextSync } from "./asset-bytes-sync.js";
 import { resolveBundledAsset } from "./assets.js";
 import { someAnalysisNode } from "./analysis-walk.js";
 import type { LoweringServices } from "./lowering-services.js";
@@ -210,9 +210,7 @@ export function staticDocumentText(
                     context.options.fileName,
                     context.options,
                 );
-                return new TextDecoder().decode(
-                    readAssetBytesSync(asset, context.options.fileName),
-                );
+                return readAssetTextSync(asset, context.options.fileName);
             }
             return decline;
         } finally {

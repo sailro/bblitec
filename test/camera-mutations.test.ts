@@ -120,6 +120,18 @@ test("camera transform versions observe pinned setters, reentrant limits and inp
     observe();
     scene._beforeRender[0]!(0);
     observe();
+    // A limit written undefined removes that wall; the others stand.
+    setCameraLimits(camera, {
+        upperRadiusLimit: undefined,
+        lowerAlphaLimit: undefined,
+    });
+    observe();
+    camera.radius = 9;
+    camera.alpha = -4;
+    observe();
+    camera.radius = 1;
+    camera.alpha = 4;
+    observe();
     const nonFinite = createArcRotateCamera(0, 1, 5, { x: 0, y: 0, z: 0 });
     const nonFiniteScene = await createPinnedScene();
     attachControl(
@@ -172,12 +184,15 @@ int main() {
     scalar(&bbl::CameraRecord::alpha, 2); scalar(&bbl::CameraRecord::alpha, 0); observe();
     x(0); observe(); bbl::set_camera_vector(camera, &bbl::CameraRecord::target, {}); observe();
     x(3); x(0); observe();
-    bbl::set_camera_limits(engine, handle, 51u, {-0.1, 0.1, 0, 0, 2, 5}); observe();
+    bbl::write_camera_limits(engine, handle, 51u, {-0.1, 0.1, std::nullopt, std::nullopt, 2.0, 5.0}); observe();
     scalar(&bbl::CameraRecord::radius, 9); observe(); scalar(&bbl::CameraRecord::alpha, 4); observe();
     camera.inertial_alpha_offset = 0.3; camera.inertial_beta_offset = -1.5; camera.inertial_radius_offset = 4;
     camera.inertial_panning_x = 10; camera.inertial_panning_y = -8;
     bbl::upstream::apply_arc_rotate_inertia(camera); observe();
     bbl::upstream::apply_arc_rotate_inertia(camera); observe();
+    bbl::write_camera_limits(engine, handle, 33u, {}); observe();
+    scalar(&bbl::CameraRecord::radius, 9); scalar(&bbl::CameraRecord::alpha, -4); observe();
+    scalar(&bbl::CameraRecord::radius, 1); scalar(&bbl::CameraRecord::alpha, 4); observe();
     const std::vector<std::array<double, 12>> expected{${expected.map((row) => `{${row.join(",")}}`).join(",")}};
     assert(actual.size() == expected.size());
     for (std::size_t i = 0; i < actual.size(); ++i) for (std::size_t j = 0; j < 12; ++j)

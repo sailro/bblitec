@@ -112,10 +112,19 @@ test("a survey reports its progress and the statement it lowers", () => {
         { fileName: resolve("survey-progress.ts") },
         { progress: { report: (line) => lines.push(line), intervalMs: 0 } },
     );
-    assert.equal(lines.length, report.statements.attempted);
-    // The last line counts every refusal recorded before that statement.
+    // A pass ends with the time and lowerings of each of its phases, and
+    // the time of its outermost probes.
     assert.match(
         lines.at(-1)!,
+        /^Survey phases, pass 1: entry \d+ s \/ \d+, module roots \d+ s \/ \d+, function roots \d+ s \/ \d+, statement roots \d+ s \/ \d+; probes kept \d+ s, rolled back \d+ s$/,
+    );
+    const progress = lines.filter((line) =>
+        line.startsWith("Survey progress: "),
+    );
+    assert.equal(progress.length, report.statements.attempted);
+    // The last line counts every refusal recorded before that statement.
+    assert.match(
+        progress.at(-1)!,
         /^Survey progress: attempt 1, \d+ statement lowerings, [0-3] refused; lowering .*survey-progress\.ts:\d+ \(.+\)$/,
     );
     assert.ok(
@@ -143,7 +152,10 @@ test("a survey pass rolls back a storage demand's statement and the next pass re
         lines.filter((line) => line.startsWith("Survey pass")),
         ["Survey pass 1: 1 demand added for the next pass"],
     );
-    assert.match(lines.at(-1)!, /^Survey progress: attempt 2, /);
+    assert.match(
+        lines.filter((line) => line.startsWith("Survey progress: ")).at(-1)!,
+        /^Survey progress: attempt 2, /,
+    );
     // The last pass lowered every statement with the demand held.
     assert.equal(report.complete, true);
     assert.deepEqual(report.demands, []);
@@ -251,11 +263,53 @@ test("a member call through a refused binding is a cascade of its declaration", 
     assert.equal(module.refusals[0]!.statements, 3);
 });
 
+test("roots a pass's demand leaves stale lower again in that pass, unless a limit ends the survey there", () => {
+    // `chain` is the only root: its statements meet the demands of two
+    // assignments, and it lowers once more in the pass that took them.
+    const source = `
+        interface T { a: number }
+        interface U { b: number; t: T }
+        function parsedT(text: string): T { return JSON.parse(text); }
+        function parsedU(text: string): U { return JSON.parse(text); }
+        function chain(): number {
+            let t: T = { a: 1 };
+            t = parsedT('{"a":2}');
+            let u: U = { b: 1, t };
+            u = parsedU('{"b":2,"t":{"a":3}}');
+            return t.a + u.b;
+        }
+        console.log(1);
+    `;
+    const rounds = (settings: { passLimit?: number }): string[] => {
+        const lines: string[] = [];
+        surveySource(
+            source,
+            { fileName: resolve("survey-rounds.ts") },
+            {
+                ...settings,
+                progress: {
+                    report: (line) => lines.push(line),
+                    intervalMs: 1e9,
+                },
+            },
+        );
+        return lines.filter((line) => / round \d+: /.test(line));
+    };
+    const [round, ...others] = rounds({});
+    assert.match(
+        round ?? "",
+        /^Survey pass 1 round 1: \d+ demands? taken lowering 1 root again \(\d+ s \/ \d+\)$/,
+    );
+    assert.deepEqual(others, []);
+    assert.deepEqual(rounds({ passLimit: 1 }), []);
+});
+
 test("a refused value return is the calling statement's refusal", () => {
     // `pick` refuses inside its return; the survey must not hand `chosen` a
-    // hole, so its declaration refuses at the one site inside `pick`. The
-    // survey lowers `pick`'s body once: the later call takes empty storage
-    // of its result.
+    // hole, so its declaration refuses at the one site inside `pick`. Its
+    // shared body refuses at the return (a statement begun), then the call
+    // lowers it inline (`raw` attempted again); the later call takes empty
+    // storage of its result.
     const { report } = surveySource(
         `
         function pick(name: string): number {
@@ -280,13 +334,45 @@ test("a refused value return is the calling statement's refusal", () => {
     assert.equal(declaration.statements, 1);
     assert.equal(declaration.cascade, undefined);
     assert.deepEqual(report.statements, {
-        attempted: 5,
-        distinct: 5,
+        attempted: 6,
+        distinct: 6,
         rooted: 0,
         refused: 1,
         distinctRefused: 1,
         demanded: 0,
     });
+});
+
+test("a later binding a nested block's closure reads is no refusal of a survey", () => {
+    // The closures read `casters` and `limit` ahead of their declarations:
+    // the `if` statement starts over with their storage ahead of it, and
+    // the one refusal left is the constructor's.
+    const { report } = surveySource(
+        `
+        interface Follow { settled(): void; count(): number }
+        function createFollow(step: number): Follow { let n = 0; return { settled: () => { n += step; }, count: () => n }; }
+        function build(active: boolean): number {
+            const handlers: (() => void)[] = [];
+            let total = 0;
+            if (active) {
+                handlers.push(() => { casters.settled(); total += limit; });
+                handlers.push(() => { total += new FinalizationRegistry(() => {}) ? 1 : 0; });
+            }
+            const casters = createFollow(2);
+            const limit = 3;
+            for (const handler of handlers) handler();
+            return casters.count() + total;
+        }
+        localStorage.setItem("total", String(build(true)));
+    `,
+        { fileName: resolve("survey-forward.ts") },
+    );
+    assert.equal(report.complete, true);
+    assert.deepEqual(
+        report.refusals.map((refusal) => refusal.site.line),
+        [9],
+        listed(report),
+    );
 });
 
 test("a refused declaration keeps its binding, so later statements lower against it", () => {

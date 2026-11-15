@@ -8,8 +8,11 @@ import type { IntrinsicCallContext } from "./context.js";
 import {
     compilePositiveInteger,
     discardOption,
+    booleanCondition,
+    resolveConditionalOptions,
     staticNumberValue,
     validateObjectProperties,
+    type ConditionalOptionsContext,
     type DiscardOptionContext,
     type ObjectValidationContext,
     type PositiveIntegerContext,
@@ -19,11 +22,13 @@ export interface ShadowIntrinsicContext
     extends
         IntrinsicCallContext,
         ObjectValidationContext,
+        ConditionalOptionsContext,
         PositiveIntegerContext,
         DiscardOptionContext,
         Pick<
             LoweringServices,
             | "admissions"
+            | "checker"
             | "compileNumber"
             | "compileBoolean"
             | "callbacks"
@@ -86,21 +91,23 @@ const pcfDirectionalOptions = [
 /**
  * The CSM factory's public configuration, as far as this port builds it.
  *
- * `mapSize` and `numCascades` size the layered map, so they resolve at
- * generation; the rest ride into the record, where the cascade fit and the
- * receiver's 320-byte block read them. `stabilizeCascades` (the
- * bounding-sphere fit and its light-axis anchor grid) and `worldSpaceBias`
- * (the far-plane reserve and its per-cascade clip offset) are the two arms
- * this port does not build, so they refuse by name rather than compiling to
- * a value the pin would have used differently.
+ * `mapSize` and `numCascades` size the layered map the native factory's
+ * record creates at run time, so a run-time value (a quality tier) is
+ * admitted as the texture extent it is; the rest ride into the record,
+ * where the cascade fit and the receiver's 320-byte block read them:
+ * `stabilizeCascades` selects the
+ * bounding-sphere fit and its light-axis anchor grid, `worldSpaceBias` the
+ * far-plane reserve and its per-cascade clip offset.
  */
 const csmDirectionalOptions = [
     "mapSize",
     "numCascades",
     "lambda",
     "cascadeBlendPercentage",
+    "stabilizeCascades",
     "shadowMaxZ",
     "bias",
+    "worldSpaceBias",
     "darkness",
     "frustumEdgeFalloff",
     "forceRefreshEveryFrame",
@@ -146,6 +153,14 @@ const esmDirectionalEmitted = [
     "esmIndex",
 ] as const;
 
+/** The options `enableCsmStaticCache` takes, in the native call's order. */
+const csmStaticCacheOptions = [
+    "refitAngle",
+    "refitMaxIntervalMs",
+    "staticCascadesPerFrame",
+    "cascadeCoveragePadding",
+] as const;
+
 /**
  * What separates one pinned generator factory from another.
  *
@@ -181,6 +196,8 @@ interface ShadowGeneratorFactory {
      * the GPU texture size and the pinned `1 / mapSize` lane agree on.
      */
     runtimeExtents?: readonly string[];
+    /** Options the record keeps as a boolean read at run time. */
+    booleans?: readonly string[];
     factory: string;
     optionsStruct: string;
     features: readonly Feature[];
@@ -252,11 +269,14 @@ const shadowGeneratorFactories: Readonly<
             lambda: "bbl::upstream::csm_default_lambda",
             cascadeBlendPercentage:
                 "bbl::upstream::csm_default_cascade_blend_percentage",
+            stabilizeCascades: "bbl::upstream::csm_default_stabilize_cascades",
             // `cfg._shadowMaxZ ?? null`, which `_computeCsmCascades` then
             // resolves against the CAMERA's far plane -- a value generation
             // cannot see, so the absence itself is what is carried.
             shadowMaxZ: "std::optional<double>{}",
             bias: "bbl::upstream::csm_default_bias",
+            // An omitted bias is the pin's `null`: `bias` then applies.
+            worldSpaceBias: "std::optional<double>{}",
             darkness: "bbl::upstream::csm_default_darkness",
             frustumEdgeFalloff:
                 "bbl::upstream::csm_default_frustum_edge_falloff",
@@ -264,8 +284,10 @@ const shadowGeneratorFactories: Readonly<
             // the shadow lowerer asserts against the factory.
             forceRefreshEveryFrame: "false",
         },
+        generationResolved: [],
         // The two that size the layered map: its extent and its layer count.
-        generationResolved: ["mapSize", "numCascades"],
+        runtimeExtents: ["mapSize", "numCascades"],
+        booleans: ["stabilizeCascades"],
         factory: "bbl::create_csm_directional_shadow_generator",
         optionsStruct: "bbl::CsmDirectionalShadowOptions",
         features: ["shadow:pcf", "shadow:csm"],
@@ -318,17 +340,60 @@ function compileShadowGeneratorFactory(
                 `${light.lightKind ?? "unknown"} light.`,
         );
     }
-    // Each option's pinned default, in the order the emitted options struct
-    // takes them. An option the scene omits keeps the folded constant, which
-    // is the factory's own `??` value read out of the pin.
-    const resolved: Record<string, string> = { ...spec.defaults };
     // What the ESM family's own resources are sized by. Filled only for the
     // options that resolve here, so an option the scene omits stays omitted
     // and the pinned factory applies its own default when generation runs
     // it -- restating one here would be a second copy of a pinned default.
     const sizes: Record<string, number> = {};
-    if (call.arguments[2]) {
-        const options = context.expectObjectLiteral(call.arguments[2]);
+    const compileOption = (name: string, expression: ts.Expression): string => {
+        if (name === "forceRefreshEveryFrame") {
+            const value = context.compileValue(expression);
+            context.expectKind(value, "boolean", expression);
+            const fixed = staticBooleanOf(value);
+            if (fixed === undefined) {
+                context.fail(
+                    expression,
+                    "forceRefreshEveryFrame must be generation-known.",
+                );
+            }
+            // Into the record: the flag disables the pinned render
+            // gate, so the map re-renders every frame the way
+            // `renderEsmShadowMap` / `renderCsmShadowMap` would.
+            return fixed ? "true" : "false";
+        }
+        // Into the record, read where the cascades are fitted: a run-time
+        // boolean is its condition.
+        if (spec.booleans?.includes(name))
+            return booleanCondition(context, expression);
+        if (spec.runtimeExtents?.includes(name)) {
+            // A run-time extent takes WebGPU's own size conversion.
+            return staticNumberValue(context, expression) === undefined
+                ? `bbl::gpu_u32(bbl::gpu_size(${context.compileNumber(expression, "double")}))`
+                : compilePositiveInteger(context, expression);
+        }
+        if (spec.generationResolved.includes(name)) {
+            const literal = compilePositiveInteger(context, expression);
+            sizes[name] = Number.parseInt(literal, 10);
+            return literal;
+        }
+        const number = context.compileNumber(expression, "double");
+        // A row whose pinned DEFAULT is an optional carries an absence,
+        // so a value the scene does pass is wrapped to match it rather
+        // than named here: `shadowMaxZ`'s default is `null`, and the
+        // split formula resolves an absent one against the camera's
+        // own far plane rather than a sentinel generation would pick.
+        return spec.defaults[name]?.startsWith("std::optional<") === true
+            ? `std::optional<double>{${number}}`
+            : number;
+    };
+    // Each option's pinned default, in the order the emitted options struct
+    // takes them. An option the scene omits keeps the folded constant, which
+    // is the factory's own `??` value read out of the pin.
+    const resolveOptions = (
+        options: ts.ObjectLiteralExpression,
+        once: (member: ts.Expression, compile: () => string) => string,
+    ): Record<string, string> => {
+        const resolved: Record<string, string> = { ...spec.defaults };
         validateObjectProperties(
             context,
             options,
@@ -337,53 +402,29 @@ function compileShadowGeneratorFactory(
         );
         for (const name of spec.unread ?? []) {
             const expression = context.objectProperty(options, name);
-            if (expression) discardOption(context, options, expression);
+            if (!expression) continue;
+            once(expression, () => {
+                discardOption(context, options, expression);
+                return "";
+            });
         }
         for (const name of spec.options) {
             const expression = context.objectProperty(options, name);
             if (!expression) continue;
-            if (name === "forceRefreshEveryFrame") {
-                const value = context.compileValue(expression);
-                context.expectKind(value, "boolean", expression);
-                const fixed = staticBooleanOf(value);
-                if (fixed === undefined) {
-                    context.fail(
-                        expression,
-                        "forceRefreshEveryFrame must be generation-known.",
-                    );
-                }
-                // Into the record: the flag disables the pinned render
-                // gate, so the map re-renders every frame the way
-                // `renderEsmShadowMap` / `renderCsmShadowMap` would.
-                resolved[name] = fixed ? "true" : "false";
-                continue;
-            }
-            if (spec.runtimeExtents?.includes(name)) {
-                // A run-time extent takes WebGPU's own size conversion.
-                resolved[name] =
-                    staticNumberValue(context, expression) === undefined
-                        ? `bbl::gpu_u32(bbl::gpu_size(${context.compileNumber(expression, "double")}))`
-                        : compilePositiveInteger(context, expression);
-                continue;
-            }
-            if (spec.generationResolved.includes(name)) {
-                const literal = compilePositiveInteger(context, expression);
-                resolved[name] = literal;
-                sizes[name] = Number.parseInt(literal, 10);
-                continue;
-            }
-            const number = context.compileNumber(expression, "double");
-            // A row whose pinned DEFAULT is an optional carries an absence,
-            // so a value the scene does pass is wrapped to match it rather
-            // than named here: `shadowMaxZ`'s default is `null`, and the
-            // split formula resolves an absent one against the camera's
-            // own far plane rather than a sentinel generation would pick.
-            resolved[name] =
-                spec.defaults[name]?.startsWith("std::optional<") === true
-                    ? `std::optional<double>{${number}}`
-                    : number;
+            resolved[name] = once(expression, () =>
+                compileOption(name, expression),
+            );
         }
-    }
+        return resolved;
+    };
+    const resolved = call.arguments[2]
+        ? resolveConditionalOptions(
+              context,
+              context.expectObjectLiteral(call.arguments[2]),
+              resolveOptions,
+              [...spec.generationResolved, "forceRefreshEveryFrame"],
+          )
+        : { ...spec.defaults };
     if (spec.kind === "esm-directional") {
         // The row this generator's recorded resources sit at, which is
         // generation's answer rather than an option the scene passes.
@@ -477,25 +518,38 @@ export function compileShadowIntrinsic(
                 argumentAt(call, 1),
             );
             context.expectSameEngine(engine, generator, call);
-            const options = context.expectObjectLiteral(argumentAt(call, 2));
-            validateObjectProperties(
+            const resolved = resolveConditionalOptions(
                 context,
-                options,
-                ["refitAngle", "refitMaxIntervalMs", "staticCascadesPerFrame"],
-                "Reached enableCsmStaticCache options are refitAngle, refitMaxIntervalMs and staticCascadesPerFrame.",
+                context.expectObjectLiteral(argumentAt(call, 2)),
+                (options, once) => {
+                    validateObjectProperties(
+                        context,
+                        options,
+                        csmStaticCacheOptions,
+                        "enableCsmStaticCache options are refitAngle, refitMaxIntervalMs, staticCascadesPerFrame and cascadeCoveragePadding.",
+                    );
+                    if (!context.objectProperty(options, "refitAngle"))
+                        context.fail(
+                            options,
+                            "enableCsmStaticCache requires refitAngle.",
+                        );
+                    return Object.fromEntries(
+                        csmStaticCacheOptions.map((name) => {
+                            const value = context.objectProperty(options, name);
+                            if (!value) return [name, "std::nullopt"];
+                            const cpp = once(value, () =>
+                                context.compileNumber(value, "double"),
+                            );
+                            return [
+                                name,
+                                name === "refitAngle"
+                                    ? cpp
+                                    : `std::optional<double>{${cpp}}`,
+                            ];
+                        }),
+                    );
+                },
             );
-            const refitAngle = context.objectProperty(options, "refitAngle");
-            if (!refitAngle)
-                context.fail(
-                    options,
-                    "enableCsmStaticCache requires refitAngle.",
-                );
-            const optional = (name: string): string => {
-                const value = context.objectProperty(options, name);
-                return value
-                    ? `std::optional<double>{${context.compileNumber(value, "double")}}`
-                    : "std::nullopt";
-            };
             context.reachFeature("shadow:csm-static-cache", call);
             const rejection = context.allocateTemporaryCppName(
                 "csm_cache_rejection",
@@ -504,7 +558,7 @@ export function compileShadowIntrinsic(
                 kind: "declaration",
                 type: "const auto",
                 name: rejection,
-                initializer: `bbl::enable_csm_static_cache(${engine.cpp}, ${generator.cpp}, ${context.compileNumber(refitAngle, "double")}, ${optional("refitMaxIntervalMs")}, ${optional("staticCascadesPerFrame")})`,
+                initializer: `bbl::enable_csm_static_cache(${engine.cpp}, ${generator.cpp}, ${csmStaticCacheOptions.map((name) => resolved[name]).join(", ")})`,
             });
             if (context.options.workers)
                 return {

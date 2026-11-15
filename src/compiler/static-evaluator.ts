@@ -153,7 +153,7 @@ import {
     mathConstantAccess,
     mathMemberCall,
 } from "./math-intrinsics.js";
-import { knownCondition } from "./values/model.js";
+import { knownAbsent, knownCondition } from "./values/model.js";
 
 /** Whether a symbol names a module-scope `const` declared in the program. */
 function isModuleConstant(symbol: ts.Symbol): boolean {
@@ -1446,7 +1446,8 @@ export class StaticEvaluator {
         return ts.isArrayLiteralExpression(resolved) ? resolved : undefined;
     }
 
-    private staticArrayExpression(expression: ts.Expression): ts.Expression {
+    /** The expression a static list reads, through selections generation settles. */
+    public staticArrayExpression(expression: ts.Expression): ts.Expression {
         // Same selection the array probe makes, through the same helper:
         // a list a scene chooses with a generation-known condition is
         // still a static list. Scene 140 writes `sg ? [sg] : undefined`
@@ -1668,7 +1669,7 @@ export class StaticEvaluator {
                     return undefined;
                 }
                 const resolvedField = this.resolveProperty(left);
-                if (knownCondition(resolvedField?.optionalFoundCpp) === false) {
+                if (knownAbsent(resolvedField)) {
                     return expression.right;
                 }
                 if (

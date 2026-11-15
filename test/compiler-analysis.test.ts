@@ -15,6 +15,7 @@ import {
     forEachReturn,
 } from "../src/compiler/loop-control.js";
 import { createCompilerProgram } from "../src/compiler/program.js";
+import { oneObjectObservation } from "../src/compiler/record-observations.js";
 import {
     parameterIsMutated,
     parameterIsReadOnly,
@@ -172,6 +173,35 @@ test("mutation analysis follows aliases and callees without confusing shadowed p
     ]);
 });
 
+test("a listing of a parameter's members and a promise's reactions do not write the parameter", () => {
+    const { checker, sourceFile } = createCompilerProgram(
+        `
+        interface Texture { url: string }
+        function sortedEntries(map: Record<string, Texture>) {
+            return Object.entries(map).sort(([a], [b]) => (a < b ? -1 : 1));
+        }
+        function sortedKeys(map: Record<string, Texture>) { return Object.keys(map).sort(); }
+        function listedValues(map: Record<string, Texture>) { const list = Object.values(map); list.push({ url: "x" }); return list.length; }
+        function entryWrite(map: Record<string, Texture>) { for (const [, texture] of Object.entries(map)) texture.url = "changed"; }
+        function valueWrite(map: Record<string, Texture>) { Object.values(map)[0]!.url = "changed"; }
+        async function load(map: Record<string, Texture>): Promise<Record<string, Texture>> { return map; }
+        function reacted(map: Record<string, Texture>) { const loading = load(map); loading.catch(() => undefined); return loading; }
+        `,
+        "test/analysis-listed-members.ts",
+    );
+    const mutated = sourceFile.statements
+        .filter(ts.isFunctionDeclaration)
+        .filter((fn) => fn.name?.text !== "load")
+        .map((fn) => {
+            const parameter = fn.parameters[0]?.name;
+            assert.ok(parameter && ts.isIdentifier(parameter));
+            return parameterIsMutated(checker, fn, parameter);
+        });
+    // Sorting or growing the new list writes nothing of the record; a write
+    // to an entry's or a listed value's object writes the record's member.
+    assert.deepEqual(mutated, [false, false, false, true, true, false]);
+});
+
 test("an unused catch binding stays erased when a nested function shadows its name", () => {
     assert.doesNotThrow(() =>
         compileSource(`
@@ -240,4 +270,43 @@ test("a Math call folds only where every engine agrees", () => {
     assert.equal(foldMathCall("pow", [2, 3]), undefined);
     assert.equal(foldMathCall("sin", [0], true), 0);
     assert.equal(foldMathCall("floor", [1, 2]), undefined);
+});
+
+test("a tuple an options literal hands to a callee that only reads its elements keeps no identity", () => {
+    // The program compares number arrays by identity elsewhere; the callee
+    // that keeps the options object whole may let its member reach that.
+    const { program, checker, sourceFile } = createCompilerProgram(
+        `
+        type Vec3 = [number, number, number];
+        const kept: number[][] = [[1], [2]];
+        export function same(a: number[], b: number[]): boolean { return a === b; }
+        function shade(opts: { dir: Vec3; k: number }): number { return opts.dir[0] * opts.k; }
+        function keep(opts: { dir: Vec3; k: number }): { dir: Vec3; k: number } { return opts; }
+        export const read = (): number => { const d: Vec3 = [0, 1, 0]; return shade({ dir: d, k: 2 }); };
+        export const held = (): Vec3 => { const e: Vec3 = [0, 1, 0]; return keep({ dir: e, k: 2 }).dir; };
+        console.log(kept.length, same(kept[0]!, kept[1]!), read(), held());
+    `,
+        "test/analysis-one-object-member.ts",
+    );
+    const identities: Record<string, string> = {};
+    forEachAnalysisNode(sourceFile, (node) => {
+        if (
+            ts.isVariableDeclaration(node) &&
+            ts.isIdentifier(node.name) &&
+            (node.name.text === "d" || node.name.text === "e")
+        )
+            identities[node.name.text] =
+                oneObjectObservation(
+                    {
+                        program,
+                        checker,
+                        evaluationOrder: undefined as never,
+                    },
+                    node,
+                ).identity ?? "none";
+    });
+    assert.deepEqual(identities, {
+        d: "none",
+        e: "the program compares such arrays by identity",
+    });
 });

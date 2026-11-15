@@ -1393,6 +1393,22 @@ export const propertyRules: readonly PropertyRule[] = [
         record: ["lights", "shadow_generator"],
         carriesShadowGenerator: true,
     },
+    {
+        // The pin's `_config` is the generator's configuration, which the
+        // native record keeps beside the generator's other fields.
+        owner: "shadow-generator",
+        property: "_config",
+        value: "shadow-generator-config",
+        retag: true,
+    },
+    {
+        // Every family's render gate reads it each frame: a scene that sets
+        // it forces the refresh for the frames it holds it.
+        owner: "shadow-generator-config",
+        property: "_forceRefreshEveryFrame",
+        value: "boolean",
+        record: ["shadow_generators", "force_refresh_every_frame"],
+    },
     // The pin's public `ShadowGenerator` declares no member. These two are
     // internals the native generator has no value for.
     {

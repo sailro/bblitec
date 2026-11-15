@@ -66,6 +66,7 @@ import { reachedImageCodecs } from "./image-codecs.js";
 // import makes every compile pay for asset kinds it never packages.
 import { compressedTextureLowerer } from "./compiler/compressed-texture.js";
 import { isKtx1, packageKtx1 } from "./compressed-texture-package.js";
+import { zipMember } from "./zip-archive.js";
 import { isDataUrl } from "./data-url.js";
 import { localAssetPath } from "./asset-source.js";
 import { generateIblBrdfLutRgba16f } from "./ibl-brdf-lut.js";
@@ -352,11 +353,16 @@ async function materializeAsset(
         const { transcodeBasisTexture, transcodeKtx2Texture, writeKtx1 } =
             await import("./basis-transcode.js");
         const lowerer = compressedTextureLowerer();
-        const bytes = await assetBytes(source, inputPath);
+        const file = await assetBytes(source, inputPath);
+        // An image generation derived from a packaged archive is one of its
+        // members.
+        const member = asset.archiveMember;
+        const bytes =
+            member === undefined ? file : zipMember(file, source, member);
         const transcoded =
             asset.kind === "ktx2"
                 ? await transcodeKtx2Texture(
-                      source,
+                      member === undefined ? source : `${source}#${member}`,
                       bytes,
                       await decoders.ktx2?.(),
                   )

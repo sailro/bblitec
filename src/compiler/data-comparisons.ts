@@ -7,6 +7,7 @@ import {
     dataTypesEqual,
     unrecordedFact,
     isTypedArrayType,
+    isTypedArrayUnion,
     type DataType,
 } from "./data-types.js";
 import {
@@ -325,11 +326,7 @@ export function dataUnionEquality(
                 () => lowerer.context.compileValue(node).dataType,
                 () => false,
             );
-            if (
-                stored?.kind === "union" &&
-                stored.members.every(isTypedArrayType)
-            )
-                return stored;
+            if (isTypedArrayUnion(stored)) return stored;
         }
         return type;
     };

@@ -350,12 +350,14 @@ Repository fixtures against pinned Babylon Lite.
 | engine-calls | <img src="images/scenes/regression-engine-calls.png" alt="Engine calls rendering" width="160"> | pixel‑perfect | pixel‑perfect | Engine Calls |
 | no-camera-floating-origin | <img src="images/scenes/regression-no-camera-floating-origin.png" alt="No camera floating origin rendering" width="160"> | pixel‑perfect | pixel‑perfect | No Camera Floating Origin |
 | texture-region-writes | <img src="images/scenes/regression-texture-region-writes.png" alt="Texture region writes rendering" width="160"> | pixel‑perfect | pixel‑perfect | Texture Region Writes |
+| archive-textures | <img src="images/scenes/regression-archive-textures.png" alt="Archive textures rendering" width="160"> | pixel‑perfect | pixel‑perfect | Archive Textures |
 | vat-time | <img src="images/scenes/regression-vat-time.png" alt="VAT time rendering" width="160"> | pixel‑perfect | pixel‑perfect | VAT Time |
 | render-target-sampler | <img src="images/scenes/regression-render-target-sampler.png" alt="Render target sampler rendering" width="160"> | pixel‑perfect | pixel‑perfect | Render Target Sampler |
 | vat-bone-texture | <img src="images/scenes/regression-vat-bone-texture.png" alt="VAT bone texture rendering" width="160"> | pixel‑perfect | pixel‑perfect | VAT Bone Texture |
 | case-split-options | <img src="images/scenes/regression-case-split-options.png" alt="Case split options rendering" width="160"> | pixel‑perfect | pixel‑perfect | Case Split Options |
 | member-selected-material | <img src="images/scenes/regression-member-selected-material.png" alt="Member selected material rendering" width="160"> | pixel‑perfect | pixel‑perfect | Member Selected Material |
 | csm-static-cache | <img src="images/scenes/regression-csm-static-cache.png" alt="CSM static cache rendering" width="160"> | 0.000/0.000 | 0.000/0.000 | CSM Static Cache |
+| csm-coverage | <img src="images/scenes/regression-csm-coverage.png" alt="CSM coverage refit rendering" width="160"> | 0.000/0.000 | 0.000/0.000 | CSM Coverage Refit |
 | render-task-transmission | <img src="images/scenes/regression-render-task-transmission.png" alt="Render task transmission rendering" width="160"> | pixel‑perfect | pixel‑perfect | Render Task Transmission |
 | mesh-opacity-runtime | <img src="images/scenes/regression-mesh-opacity-runtime.png" alt="Mesh opacity at run time rendering" width="160"> | pixel‑perfect | pixel‑perfect | Mesh Opacity at Run Time |
 | mesh-opacity-geometry | <img src="images/scenes/regression-mesh-opacity-geometry.png" alt="Mesh opacity in a geometry task rendering" width="160"> | pixel‑perfect | pixel‑perfect | Mesh Opacity in a Geometry Task |

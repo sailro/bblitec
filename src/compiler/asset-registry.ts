@@ -8,9 +8,17 @@ import {
 import ts from "typescript";
 import {
     registerAsset,
+    registerContentAsset,
     resolveBundledAsset,
     type AssetRegistryContext,
 } from "./assets.js";
+import { readAssetBytesSync } from "./asset-bytes-sync.js";
+import { isKtx2 } from "../compressed-texture-package.js";
+import { contentKey } from "../content-key.js";
+import { isZip, packagedFiles, ZIP_MINIMUM_BYTES } from "../zip-archive.js";
+import { localAssetPath, readFilePrefix } from "../asset-source.js";
+import { statSync } from "node:fs";
+import { resolve } from "node:path";
 import type { AssetDecoderConfiguration } from "../asset-decoders.js";
 import type { CompileAsset, Feature, Value } from "./types.js";
 import type { LoweringServices } from "./lowering-services.js";
@@ -39,6 +47,62 @@ interface AssetRegistryOwnerContext
  * glTF container order and camera activation, the selected material variant, the unlit arm, and
  * imported roots whose hierarchy setParent moved.
  */
+/** A KTX2 image packaged bytes hold, under its content key (`contentKey`). */
+interface ContentImage {
+    /** Its path in the zip archive holding it; none for a whole file. */
+    readonly member?: string;
+    readonly key: string;
+}
+
+/**
+ * @unjournaled The KTX2 images each packaged source holds, with the local
+ * file's modification time and size they were read at: pure functions of
+ * those bytes, kept across compiles.
+ */
+const contentImagesBySource = new Map<
+    string,
+    { readonly stamp: string; readonly images: readonly ContentImage[] }
+>();
+
+/**
+ * The KTX2 images a packaged source holds, whole or as members of a zip
+ * archive. A local file whose first bytes are neither is not read further.
+ */
+function contentImages(
+    source: string,
+    entryFileName: string,
+): readonly ContentImage[] {
+    const local = localAssetPath(source, resolve(entryFileName));
+    const status = local ? statSync(local) : undefined;
+    const stamp = status ? `${status.mtimeMs}:${status.size}` : "";
+    const key = local ?? source;
+    const known = contentImagesBySource.get(key);
+    if (known?.stamp === stamp) return known.images;
+    const prefix = local ? readFilePrefix(local, ZIP_MINIMUM_BYTES) : undefined;
+    const images =
+        prefix && !isKtx2(prefix) && !isZip(prefix)
+            ? []
+            : [
+                  ...packagedFiles(
+                      readAssetBytesSync(source, entryFileName),
+                      source,
+                  ),
+              ].flatMap((file) =>
+                  isKtx2(file.bytes)
+                      ? [
+                            {
+                                ...(file.member === undefined
+                                    ? {}
+                                    : { member: file.member }),
+                                key: contentKey(file.bytes),
+                            },
+                        ]
+                      : [],
+              );
+    contentImagesBySource.set(key, { stamp, images });
+    return images;
+}
+
 export class AssetRegistry {
     constructor(private readonly context: AssetRegistryOwnerContext) {}
 
@@ -96,6 +160,43 @@ export class AssetRegistry {
         if ((kind === "gltf" || kind === "ktx2") && decoders)
             writable(asset).assetDecoders = decoders;
         return asset;
+    }
+
+    /** A loader selects a packaged image by the bytes behind an object URL. */
+    @journaled private accessor contentImages = false;
+
+    /**
+     * `loadKtx2Texture2D` of an object URL: the bytes the program holds
+     * select, by content, a chain generation transcoded
+     * (`registerContentImages`).
+     */
+    public demandContentImages(): void {
+        this.contentImages = true;
+    }
+
+    /**
+     * Once a loader selects an image by content: packages, under its
+     * content's name, each KTX2 image the program's packaged bytes hold, as
+     * a whole file or as a member of a zip archive.
+     */
+    public registerContentImages(): void {
+        if (!this.contentImages) return;
+        const decoders = this.assetDecoders.get("configuration");
+        for (const asset of [...this.context.assets.values()]) {
+            if (asset.kind !== "binary") continue;
+            for (const image of contentImages(
+                asset.source,
+                this.context.options.fileName,
+            )) {
+                const registered = registerContentAsset(
+                    this.context,
+                    asset.source,
+                    image.member,
+                    image.key,
+                );
+                if (decoders) writable(registered).assetDecoders = decoders;
+            }
+        }
     }
 
     /**

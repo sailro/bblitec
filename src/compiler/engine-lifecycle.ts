@@ -17,7 +17,8 @@ import {
 } from "./user-functions.js";
 import { argumentAt, isDeclaredInside } from "./syntax.js";
 import { soleReturnedExpression } from "./syntax.js";
-import type { Value } from "./types.js";
+import { staticStringValue, type Value } from "./types.js";
+import { stringLiteral } from "../cpp-literals.js";
 import type { NativeCaptureBinding } from "./closure-captures.js";
 import type { NativeDeclaration } from "./native-declarations.js";
 import type { UiProjection } from "./ui-projection.js";
@@ -27,6 +28,21 @@ import {
     verbatimEmission,
     type NativeEmission,
 } from "./native-statements.js";
+
+/**
+ * The `GPUDeviceLostInfo` a recovery's `onLost` receives: a loss the PAL
+ * delivers is always the `destroy()` a forced loss asked for
+ * (`device-recovery-lowerer`), which gives no message.
+ */
+const LOST_BY_DESTROY: Value = {
+    kind: "record",
+    cpp: "",
+    truthinessCpp: "true",
+    recordProperties: {
+        reason: staticStringValue("destroyed", stringLiteral),
+        message: staticStringValue("", stringLiteral),
+    },
+};
 
 /** What the engine lifecycle reads of the compiler. */
 interface EngineLifecycleContext extends Pick<
@@ -618,7 +634,7 @@ export class EngineLifecycle {
                 if (
                     !declaration ||
                     declaration.parameters.length >
-                        (target === "on_failed" ? 1 : 0)
+                        (target === "on_recovered" ? 0 : 1)
                 )
                     this.context.fail(
                         callback,
@@ -645,7 +661,10 @@ export class EngineLifecycle {
                                   },
                               },
                           } satisfies Value)
-                        : undefined;
+                        : target === "on_lost" &&
+                            declaration.parameters.length === 1
+                          ? LOST_BY_DESTROY
+                          : undefined;
                 const callbackOwner =
                     options.recordProperties?.[source]?.callbackRecordOwner ??
                     options;

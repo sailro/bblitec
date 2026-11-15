@@ -140,7 +140,9 @@ export class WindowProperties {
         )
             return undefined;
         const field =
-            this.fields.get(node.name.text) ?? this.declaredField(node);
+            this.fields.get(node.name.text) ??
+            this.declaredField(node) ??
+            this.unknownField(node);
         if (!field) return undefined;
         return this.context.dataLowerer.leafValue(
             this.fieldCpp(field, { owner, node }),
@@ -188,6 +190,15 @@ export class WindowProperties {
         );
         if (!type) return undefined;
         return this.createField(target.name.text, type);
+    }
+
+    /** A property declared `unknown` and never written reads as a document. */
+    private unknownField(target: ts.PropertyAccessExpression) {
+        return (this.context.checker.getTypeAtLocation(target).flags &
+            ts.TypeFlags.Unknown) !==
+            0
+            ? this.createField(target.name.text, { kind: "json" })
+            : undefined;
     }
 
     private createField(name: string, valueType: DataType) {
@@ -258,10 +269,18 @@ export class WindowProperties {
             this.fields.get(target.node.name.text) ??
             this.declaredField(target.node);
         if (!field) {
-            const valueType = context.dataTypes.fromStoredTsType(
-                context.checker.getTypeAtLocation(expression.right),
-                expression.right,
-            );
+            // A value with no storage of its own type is held as the slot
+            // declares it, where that is `unknown`.
+            const valueType =
+                context.dataTypes.fromStoredTsType(
+                    context.checker.getTypeAtLocation(expression.right),
+                    expression.right,
+                ) ??
+                ((context.checker.getTypeAtLocation(expression.left).flags &
+                    ts.TypeFlags.Unknown) !==
+                0
+                    ? ({ kind: "json" } as const)
+                    : undefined);
             if (!valueType)
                 return context.fail(
                     expression.right,

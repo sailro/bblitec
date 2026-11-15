@@ -193,6 +193,27 @@ test("carries forceRefreshEveryFrame into the ESM and CSM records", () => {
     );
 });
 
+test("carries the cascade stabilization and the world-space bias into the CSM record", () => {
+    const csm = shadowFactorySource(new LoweringContext(), [
+        "shadow:csm",
+    ]).source;
+    assert.match(
+        csm,
+        /create_csm_directional_shadow_generator\([\s\S]{0,1200}generator\.csm_stabilize_cascades = options\.csm_stabilize_cascades;/,
+    );
+    // The factory's own normalization of a bias the scene passes; an
+    // omitted one stays the pin's `null`.
+    assert.match(
+        csm,
+        /if \(options\.csm_world_space_bias\)\s*generator\.csm_world_space_bias = \(\(\(std::isfinite\(static_cast<double>\(\(\*options\.csm_world_space_bias\)\)\)\) && \(\(\*options\.csm_world_space_bias\) > 0\.0\)\) \? \(\*options\.csm_world_space_bias\) : 0\.0\);/,
+    );
+    // The fit and the caster bias read both off the record.
+    assert.match(
+        csmShadowHeader(new LoweringContext()),
+        /inline CsmConfig csm_config\(const ShadowGeneratorRecord& generator\) \{[\s\S]{0,260}generator\.csm_stabilize_cascades,\s*generator\.csm_shadow_max_z,\s*generator\.bias,\s*generator\.csm_world_space_bias,/,
+    );
+});
+
 test("bumps the caster-list identity on every re-registration", () => {
     // The pin rebuilds its task state when handed a new caster array, and
     // the fresh state's -1 sentinels force the next render; the counter is

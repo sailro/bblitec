@@ -82,3 +82,46 @@ test("async IIFEs aggregate owned ordered values before applying assignments", (
         expectedOutput: "",
     });
 });
+
+test("an aggregate of void completions settles as a lane of an outer aggregate", (t) => {
+    const directory = resolve("artifacts/async-loading-void-lanes");
+    mkdirSync(directory, { recursive: true });
+    writeFileSync(join(directory, "worker.ts"), "self.close();");
+    const result = compileSource(
+        `
+        const worker=new Worker(new URL("./worker.ts",import.meta.url),{type:"module"});
+        worker.terminate();
+        async function size(name:string):Promise<number>{await Promise.resolve();return name.length;}
+        async function label(name:string):Promise<string>{await Promise.resolve();return name+"!";}
+        async function load(models:string[]):Promise<string>{
+            const sizes=new Map<string,number>();
+            const [,text]=await Promise.all([
+                Promise.all(models.map(async(model)=>{sizes.set(model,await size(model));})),
+                label("leaves"),
+            ]);
+            return text+sizes.size;
+        }
+        void(async()=>{
+            if(await load(["a","bb"])!=="leaves!2") throw new Error("void aggregate lane");
+            const names="x,yz,w".split(",");
+            names.push("more");
+            if(await load(names)!=="leaves!4") throw new Error("void aggregate lane over a run-time array");
+            const stored=Promise.all(names.map(async(model)=>{await size(model);}));
+            const [done,count]=await Promise.all([stored,size("abc")]);
+            if(done.length!==4||count!==3) throw new Error("stored void aggregate");
+            globalThis.close();
+        })();
+    `,
+        { fileName: join(directory, "entry.ts") },
+    );
+    const tools = optionalNativeFixtureTools(false);
+    if (!tools) {
+        t.skip("Native fixture compiler unavailable.");
+        return;
+    }
+    runGeneratedProgram(tools, "async-loading-void-lanes", result.cpp, {
+        flags: ["/DBBLITE_WORKERS=1"],
+        timeoutMs: 10000,
+        expectedOutput: "",
+    });
+});

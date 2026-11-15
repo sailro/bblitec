@@ -142,6 +142,13 @@ export function isTypedArrayType(
     );
 }
 
+/** A union every member of which is a typed array. */
+export function isTypedArrayUnion(
+    type: DataType | undefined,
+): type is DataType<"union"> {
+    return type?.kind === "union" && type.members.every(isTypedArrayType);
+}
+
 /**
  * A sequence of numbers a typed array is built or filled from, read
  * element by element: a typed array, a number array or a numeric tuple.

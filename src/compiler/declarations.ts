@@ -60,6 +60,7 @@ import { isNativeOwnerRecord } from "./native-owner-carrier.js";
 import { NativeRecordStorageRequired } from "./native-record-storage.js";
 import {
     nullability,
+    unionMembers,
     presentLiteralKeys,
     typeCanCarryReference,
     isVoid,
@@ -170,6 +171,7 @@ interface DeclarationContext
         PositiveIntegerContext,
         Pick<
             LoweringServices,
+            | "declaredCollection"
             | "absenceTags"
             | "propertyName"
             | "impureReadCount"
@@ -320,8 +322,44 @@ export function initializerNamesBinding(
     return found;
 }
 
+/**
+ * The only nodes an object's mutation clauses accept
+ * (`inferredObjectIsMutated`): a declaration, a write, a call or a
+ * construction.
+ */
+function objectMutationCandidate(node: ts.Node): boolean {
+    return (
+        ts.isVariableDeclaration(node) ||
+        ts.isCallExpression(node) ||
+        ts.isNewExpression(node) ||
+        writeSites(node).length > 0
+    );
+}
+
 export class DeclarationLowerer {
     constructor(private readonly context: DeclarationContext) {}
+
+    /**
+     * Whether a read of `expression` may be `null` or `undefined`: its
+     * type holds one, or is open (`any`, `unknown`, or a type an
+     * instantiation binds).
+     */
+    private mayReadAbsent(expression: ts.Expression): boolean {
+        const type = this.context.checker.getTypeAtLocation(expression);
+        const absent = nullability(type);
+        return (
+            absent.null ||
+            absent.undefined ||
+            unionMembers(type).some(
+                (member) =>
+                    (member.flags &
+                        (ts.TypeFlags.Any |
+                            ts.TypeFlags.Unknown |
+                            ts.TypeFlags.Instantiable)) !==
+                    0,
+            )
+        );
+    }
 
     /**
      * A module `let` only never-run functions assign keeps its initializer
@@ -380,6 +418,8 @@ export class DeclarationLowerer {
         shared: boolean,
         value?: Value,
         initializer = "",
+        /** No write replaces the absent initializer it holds. */
+        staysAbsent = false,
     ): void {
         const type = `std::optional<${resource.cppType}>`;
         const cell = shared
@@ -403,6 +443,10 @@ export class DeclarationLowerer {
         );
         if (cell) writable(stored).sharedStorageCpp = cell.sharedStorageCpp;
         else delete writable(stored).sharedStorageCpp;
+        if (staysAbsent) {
+            writable(stored).optionalFoundCpp = "false";
+            writable(stored).truthinessCpp = "false";
+        }
         this.context.bindings.defineVariable(name, stored);
     }
 
@@ -1529,6 +1573,9 @@ export class DeclarationLowerer {
                 cppName,
                 nullableResource,
                 sharedClosureStorage,
+                undefined,
+                "",
+                initializerFactsStable(),
             );
             return;
         }
@@ -3620,6 +3667,36 @@ export class DeclarationLowerer {
                     resourceArraySnapshot?.staticElements;
                 if (resourceElements)
                     writable(bound).staticElements = resourceElements;
+                // A fresh list of strings generation settles keeps them:
+                // a push or a write updates or withdraws them, as it does
+                // a list of handles.
+                const settledStrings =
+                    type.kind === "vector" &&
+                    type.element.kind === "string" &&
+                    !sharedClosureStorage &&
+                    !rebound &&
+                    valueOperands(
+                        declaration.initializer,
+                        this.context.unwrap,
+                    ).every(ts.isArrayLiteralExpression)
+                        ? this.context.probeEmission(
+                              () =>
+                                  this.context.compileValue(
+                                      declaration.initializer!,
+                                  ).tupleElements,
+                              () => false,
+                          )
+                        : undefined;
+                if (
+                    settledStrings?.every(
+                        (element) => element.staticString !== undefined,
+                    )
+                ) {
+                    writable(bound).staticElements = settledStrings;
+                    // A hoisted `var` outlives the block that creates it.
+                    if (!this.context.varBindings.hoists(declaration))
+                        this.context.declaredCollection(bound);
+                }
                 this.context.bindings.defineVariable(name, bound);
                 if (arraySnapshot)
                     this.context.dataLowerer.retainArrayLiteralFacts(
@@ -3775,6 +3852,25 @@ export class DeclarationLowerer {
         ) {
             annotated = this.evolvedArrayType(name);
         }
+        // A selection generation knows yields no value declares that
+        // absence: no storage holds it, and a test of the name folds. The
+        // probe only asks; the value path lowers the selection, once.
+        if (
+            ts.isIdentifier(name) &&
+            isOperandSelection(initializer) &&
+            !this.context.sharedClosures.identifierIsRebound(name) &&
+            this.mayReadAbsent(unwrappedInitializer) &&
+            // A selection the probe refuses is declared on its own path.
+            unlessRefused(() =>
+                this.context.probeEmission(
+                    () =>
+                        this.context.compileValue(unwrappedInitializer).kind ===
+                        "json-null",
+                    () => false,
+                ),
+            )
+        )
+            return false;
         if (
             ts.isObjectLiteralExpression(initializer) &&
             hasDynamicObjectSpread(this.context, initializer)
@@ -5114,6 +5210,7 @@ export class DeclarationLowerer {
             identifier,
             (name) => this.context.symbols.valueSymbol(name),
             {
+                candidates: objectMutationCandidate,
                 aliasingInitializer: (initializer, scan) =>
                     isAlias(scan, initializer) ||
                     literalHeldValues(initializer).some((value) =>
@@ -6129,6 +6226,9 @@ export class DeclarationLowerer {
                     cppName,
                     field.type,
                 );
+                // The slot's own declarations, as a member read of it carries.
+                if (field.declarations && !field.accessor)
+                    writable(fieldValue).slotDeclarations = field.declarations;
                 const staticField = field.accessor
                     ? undefined
                     : value.recordProperties?.[property];

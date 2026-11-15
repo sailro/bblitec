@@ -1231,6 +1231,11 @@ export interface CompileAsset {
     /** At least one definite load follows enableGltfCameras. */
     readonly gltfCameras?: boolean;
     readonly source: string;
+    /**
+     * The member of the zip archive at `source` that holds this asset's
+     * bytes, for an asset generation derives from a packaged archive.
+     */
+    readonly archiveMember?: string;
     readonly output: string;
     readonly kind:
         | "babylon"
@@ -1984,6 +1989,9 @@ export type ValueKind =
     // and meshes it joins is generation's to resolve, since the composed
     // receiver fragment is keyed by the scene's shadow-light slots.
     | "shadow-generator"
+    // `ShadowGenerator._config`: the generator again, read as the record of
+    // its configuration.
+    | "shadow-generator-config"
     // The opt-in bone-control pair: a `Skeleton` the loader built per glTF
     // skin instance, and one `Bone` of it. Both are native handles because
     // the bones and their overrides live on records the loader fills, and
@@ -2224,6 +2232,29 @@ export interface CollectionCardinality {
     readonly varyingIn: Set<object>;
     /** An untracked alias can mutate this collection without visiting its cell. */
     readonly untrackedAliases?: true;
+    /**
+     * Where a block-scoped declaration created it: a mutation at the same
+     * site runs whenever the creation did.
+     */
+    readonly createdAt?: CollectionSite;
+}
+
+/**
+ * One item of a generation-known list: an element as spelled, or a string
+ * generation holds for a part not spelled (`node` is that part).
+ */
+export interface StaticListItem {
+    readonly node: ts.Expression;
+    readonly text?: string;
+}
+
+/** A point of the source walk by the run-time regions around it. */
+export interface CollectionSite {
+    readonly control: number;
+    readonly iteration: number;
+    readonly callback: number;
+    /** The innermost native function body. */
+    readonly frame: object | undefined;
 }
 
 export interface DefaultRenderTaskEmission {
@@ -3347,6 +3378,7 @@ export type Feature =
     | "platform:idle-callbacks"
     | "platform:media-stream"
     | "image:runtime-decode"
+    | "image:packaged-bytes"
     | "text:data"
     | "text:layout"
     | "text:weight"

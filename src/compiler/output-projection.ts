@@ -49,6 +49,7 @@ export const featureSources: Record<Feature, string[]> = {
     "platform:idle-callbacks": [],
     "platform:media-stream": [],
     "image:runtime-decode": [],
+    "image:packaged-bytes": [],
     "platform:window": ["src/pal_window_realm.cpp", "src/pal_media_query.cpp"],
     "backend:sdl": ["src/pal_sdl.cpp", "src/pal_image.cpp"],
     "engine:device-recovery": [],

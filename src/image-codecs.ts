@@ -1,15 +1,11 @@
-import {
-    closeSync,
-    existsSync,
-    openSync,
-    readFileSync,
-    readSync,
-} from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import type { CompileAsset } from "./compiler/types.js";
 import { glbJsonText } from "./gltf-document.js";
 import { asObject, asRecords } from "./json-fields.js";
 import { imageCodecForFileName, imageCodecs } from "./image-codec-manifest.js";
+import { isZip, packagedFiles, ZIP_MINIMUM_BYTES } from "./zip-archive.js";
+import { readFilePrefix } from "./asset-source.js";
 
 function* strings(value: unknown): Generator<string> {
     if (typeof value === "string") yield value;
@@ -29,17 +25,6 @@ const signatureBytes = Math.max(
     ),
 );
 
-/** A file's first `length` bytes, or all of a shorter file. */
-function readPrefix(path: string, length: number): Buffer {
-    const prefix = Buffer.alloc(length);
-    const file = openSync(path, "r");
-    try {
-        return prefix.subarray(0, readSync(file, prefix, 0, length, 0));
-    } finally {
-        closeSync(file);
-    }
-}
-
 function encodedImageCodec(bytes: Buffer | undefined): string | undefined {
     if (!bytes) return undefined;
     return imageCodecs.find(({ signatures }) =>
@@ -55,9 +40,11 @@ function encodedImageCodec(bytes: Buffer | undefined): string | undefined {
 }
 
 /**
- * The image codecs a program links: those its packaged assets reach, and
- * WebP for a run-time `createImageBitmap` decode (`image:runtime-decode`),
- * whose bytes generation cannot see.
+ * The image codecs a program links: those its packaged assets reach, WebP
+ * for a run-time `createImageBitmap` decode (`image:runtime-decode`), whose
+ * bytes generation cannot see, and those of the images a packaged zip
+ * archive holds where a loader decodes bytes the program holds
+ * (`image:packaged-bytes`).
  */
 export function reachedImageCodecs(
     outputPath: string,
@@ -73,11 +60,26 @@ export function reachedImageCodecs(
             ? undefined
             : asset.kind === "gltf" || asset.kind === "babylon"
               ? readFileSync(materialized)
-              : readPrefix(materialized, signatureBytes);
+              : readFilePrefix(
+                    materialized,
+                    Math.max(signatureBytes, ZIP_MINIMUM_BYTES),
+                );
         // .env containers hold RGBD PNG faces; raw rgba16f LUTs need no codec.
         if (asset.kind === "environment") reached.add("png");
         const encoded = encodedImageCodec(bytes);
         if (encoded) reached.add(encoded);
+        if (
+            bytes &&
+            asset.kind === "binary" &&
+            features.includes("image:packaged-bytes") &&
+            isZip(bytes)
+        ) {
+            const file = readFileSync(materialized);
+            for (const member of packagedFiles(file, asset.source)) {
+                const held = encodedImageCodec(Buffer.from(member.bytes));
+                if (held) reached.add(held);
+            }
+        }
         const references = [asset.output];
         if (bytes && asset.kind === "gltf") {
             const document = asObject(

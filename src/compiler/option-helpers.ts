@@ -39,7 +39,7 @@ import {
     foldNumericBinary,
     foldNumericUnary,
 } from "../lowering/pinned-operators.js";
-import { presentMembers, undefinedOnly } from "./type-facts.js";
+import { holdsOnly, presentMembers, undefinedOnly } from "./type-facts.js";
 import { namedMember } from "./symbols.js";
 
 export interface ObjectValidationContext extends Pick<
@@ -130,6 +130,91 @@ export function conditionalOptionObjects(
         };
     }
     return undefined;
+}
+
+export interface ConditionalOptionsContext extends Pick<
+    LoweringServices,
+    | "objectProperties"
+    | "unwrap"
+    | "expectObjectLiteral"
+    | "evaluationOrder"
+    | "fail"
+    | "conditions"
+    | "captureEmittedLines"
+> {}
+
+/**
+ * The options an options literal resolves to under its conditional spreads
+ * (`conditionalOptionObjects`): `resolve` reads one plain literal into
+ * every option's C++, and an option the two arms of a spread resolve apart
+ * is selected by the spread's condition where the option is read. Both
+ * arms' values are spelled, so they are plain expressions: one that needs
+ * statements of its own refuses. `fixed` options decide generated
+ * artifacts and resolve alike in both arms. `resolve` compiles a member
+ * through `once`, so a member both arms keep is compiled once.
+ */
+export function resolveConditionalOptions(
+    context: ConditionalOptionsContext,
+    options: ts.ObjectLiteralExpression,
+    resolve: (
+        options: ts.ObjectLiteralExpression,
+        once: (member: ts.Expression, compile: () => string) => string,
+    ) => Record<string, string>,
+    fixed: readonly string[] = [],
+    compiled = new Map<ts.Expression, string>(),
+): Record<string, string> {
+    const once = (member: ts.Expression, compile: () => string): string => {
+        let cpp = compiled.get(member);
+        if (cpp === undefined) compiled.set(member, (cpp = compile()));
+        return cpp;
+    };
+    const selection = conditionalOptionObjects(context, options);
+    if (!selection) return resolve(options, once);
+    let resolved!: Record<string, string>;
+    const lines = context.captureEmittedLines(() => {
+        const condition = context.conditions.compileCondition(
+            selection.condition,
+        );
+        const arm = (
+            literal: ts.ObjectLiteralExpression,
+        ): Record<string, string> =>
+            resolveConditionalOptions(
+                context,
+                literal,
+                resolve,
+                fixed,
+                compiled,
+            );
+        const known = knownCondition(condition);
+        if (known !== undefined) {
+            resolved = arm(known ? selection.whenTrue : selection.whenFalse);
+            return;
+        }
+        const whenTrue = arm(selection.whenTrue);
+        const whenFalse = arm(selection.whenFalse);
+        resolved = Object.fromEntries(
+            Object.entries(whenTrue).map(([name, selected]) => {
+                const other = whenFalse[name]!;
+                if (selected !== other && fixed.includes(name))
+                    context.fail(
+                        options,
+                        `Option '${name}' decides generated resources: a run-time condition cannot select it.`,
+                    );
+                return [
+                    name,
+                    selected === other
+                        ? selected
+                        : `(${condition} ? ${selected} : ${other})`,
+                ];
+            }),
+        );
+    });
+    if (lines.length > 0)
+        context.fail(
+            options,
+            "Options under a conditional spread take plain values.",
+        );
+    return resolved;
 }
 
 export interface BooleanOptionsContext extends Pick<
@@ -888,4 +973,14 @@ export function staticVec3Value(
     return x === undefined || y === undefined || z === undefined
         ? undefined
         : [x, y, z];
+}
+
+/** A boolean expression's native condition; any other type refuses. */
+export function booleanCondition(
+    context: Pick<LoweringServices, "checker" | "fail" | "conditions">,
+    expression: ts.Expression,
+): string {
+    if (!holdsOnly(context.checker.getTypeAtLocation(expression), ["boolean"]))
+        context.fail(expression, "Expected a boolean.");
+    return context.conditions.compileCondition(expression);
 }

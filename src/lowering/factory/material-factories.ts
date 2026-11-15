@@ -1063,16 +1063,16 @@ ${solidTextureDataFunction}
 // false; mip sampling clamps to the base level when mipMaps is false).
 FileTexture load_file_texture(
     Engine& engine,
-    const std::string& path,
+    const TextureImageSource& source,
     TextureSamplerState sampler,
     bool invert_y,
     bool srgb,
     bool premultiply_alpha) {
-    const auto key = file_texture_cache_key(path, sampler, invert_y, srgb, premultiply_alpha);
+    const auto key = file_texture_cache_key(source.name, sampler, invert_y, srgb, premultiply_alpha);
     if (const auto found = engine.file_texture_cache.find(key); found != engine.file_texture_cache.end()) {
         return found->second;
     }
-    std::vector<std::uint8_t> bytes = pal::read_binary_file(path);
+    std::vector<std::uint8_t> bytes = pal::texture_image_bytes(source);
     return pal::cache_file_texture(engine, key, pal::decode_file_texture(
         file_texture_record(engine, sampler, invert_y, srgb, premultiply_alpha), std::move(bytes)));
 }

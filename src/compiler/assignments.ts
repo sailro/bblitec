@@ -38,11 +38,11 @@ type RecordFieldAssignment = (
           materialFamily: "standard" | "pbr" | "standard-or-pbr";
       }
     | {
-          kind: "camera-ortho" | "mesh";
+          kind: "camera-ortho" | "mesh" | "shadow-generator-config";
       }
 ) & {
     property: string;
-    collection: "materials" | "cameras" | "meshes";
+    collection: "materials" | "cameras" | "meshes" | "shadow_generators";
     /** The record field, or the pair a two-element source writes. */
     field: string | readonly [string, string];
     /** `color4` is written whole through its array setter ({@link MATERIAL_COLOR_ARRAYS}). */
@@ -51,6 +51,8 @@ type RecordFieldAssignment = (
         | "color4"
         | "number"
         | "boolean"
+        /** A boolean any expression of that type computes where it is assigned. */
+        | "condition"
         | "optional-boolean"
         | "number2";
     scalarPrecision?: "float" | "double";
@@ -352,6 +354,16 @@ const recordFieldAssignments: readonly RecordFieldAssignment[] = [
         collection: "cameras",
         field: "ortho_half_height",
         value: "number",
+    },
+    {
+        // The flag every family's render gate reads each frame
+        // (`cfg._forceRefreshEveryFrame`).
+        kind: "shadow-generator-config",
+        property: "_forceRefreshEveryFrame",
+        collection: "shadow_generators",
+        field: "force_refresh_every_frame",
+        value: "condition",
+        simpleOnly: true,
     },
 ];
 
@@ -2789,6 +2801,10 @@ function emitCameraViewportAssignment(
     });
 }
 
+/**
+ * A boolean expression's value where it is assigned: a condition is its
+ * operand's truthiness, which for a boolean is the value itself.
+ */
 function requireSimpleAssignment(
     context: AssignmentContext,
     expression: ts.BinaryExpression,
@@ -2826,7 +2842,7 @@ import {
     requireParticleBakeWritable,
 } from "./particle-buffer.js";
 import { emitFrozenParticleSheetAssignment } from "./particle-sheet.js";
-import { staticNumberValue } from "./option-helpers.js";
+import { booleanCondition, staticNumberValue } from "./option-helpers.js";
 import { staticTableEntry, type TableOption } from "./table-options.js";
 import { propertyNeverRead } from "./unread-properties.js";
 import { unlessRefused } from "./compile-error.js";
@@ -3525,16 +3541,18 @@ function emitTargetPropertyAssignment(
                 ? context.compileColor3(expression.right)
                 : recordField.value === "boolean"
                   ? context.compileBoolean(expression.right)
-                  : recordField.value === "optional-boolean"
-                    ? context.compileForDataSink(expression.right, {
-                          kind: "optional",
-                          inner: { kind: "boolean" },
-                          undefinedOnly: true,
-                      })
-                    : context.compileNumber(
-                          expression.right,
-                          fieldOperandWidth(fieldOperator, fieldWidth),
-                      ),
+                  : recordField.value === "condition"
+                    ? booleanCondition(context, expression.right)
+                    : recordField.value === "optional-boolean"
+                      ? context.compileForDataSink(expression.right, {
+                            kind: "optional",
+                            inner: { kind: "boolean" },
+                            undefinedOnly: true,
+                        })
+                      : context.compileNumber(
+                            expression.right,
+                            fieldOperandWidth(fieldOperator, fieldWidth),
+                        ),
         );
         const value = compiled.cpp;
         if (

@@ -362,39 +362,24 @@ private:
 };
 
 /**
- * FNV-1a over a texture payload.
+ * Every level of a compressed payload, folded into one comparable FNV-1a
+ * digest.
  *
  * Texture bytes are far too large to dump, but "is it the same asset in
  * the same slot?" is answerable from a digest, and an unexpectedly equal
  * digest across two slots is itself a finding (the same texture bound
  * twice is a real defect shape here).
  */
-inline std::uint64_t fold_payload(std::span<const std::uint8_t> bytes,
-                                  std::uint64_t hash = 0xcbf29ce484222325ull) {
-    for (const std::uint8_t byte : bytes) {
-        hash ^= byte;
-        hash *= 0x100000001b3ull;
-    }
-    return hash;
-}
-
-inline std::string digest_text(std::uint64_t hash) {
-    std::ostringstream text;
-    text << std::hex << std::setw(16) << std::setfill('0') << hash;
-    return text.str();
-}
-
-/** Every level of a compressed payload, folded into one comparable digest. */
 inline std::string payload_digest(const CompressedTexture& texture) {
-    std::uint64_t hash = 0xcbf29ce484222325ull;
+    std::uint64_t hash = fnv1a_64_basis;
     for (const CompressedMipLevel& mip : texture.mips) {
-        hash = fold_payload(mip.bytes, hash);
+        hash = fnv1a_64(mip.bytes, hash);
     }
-    return digest_text(hash);
+    return hex_digits_64(hash);
 }
 
 inline std::string payload_digest(const std::vector<std::uint8_t>& bytes) {
-    return digest_text(fold_payload(bytes));
+    return hex_digits_64(fnv1a_64(bytes));
 }
 
 /**

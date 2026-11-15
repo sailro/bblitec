@@ -37,9 +37,11 @@ import {
 } from "./emission-transaction.js";
 import type { LoweringServices } from "./lowering-services.js";
 import ts from "typescript";
+import { eventTargetCpp } from "./dom-targets.js";
 import {
     absenceOf,
     absenceOfNull,
+    knownAbsent,
     knownCondition,
     staticKeyOf,
     undefinedValue,
@@ -171,6 +173,7 @@ import { representedResultType } from "./represented-result.js";
 import {
     arrayWriteObservation,
     recordFieldIsWritten,
+    builtRecordFieldIsWritten,
 } from "./record-observations.js";
 import { sceneRelativeSourceLabel } from "../source-location.js";
 import { staticJsonValue, staticNumberValue } from "./option-helpers.js";
@@ -292,9 +295,12 @@ import {
     objectLiteralMembers,
     type MemberAccess,
     isMemberAccess,
+    literalKey,
     localCallback,
     type LocalCallback,
     notJson,
+    plainDataMembers,
+    type DataMember,
 } from "./syntax.js";
 import {
     namespaceMemberName,
@@ -671,6 +677,7 @@ interface DataLoweringContext extends Pick<
     | "cppString"
     | "propertyName"
     | "recordDataAssignmentMetadata"
+    | "mutatesWhereCreated"
     | "sceneManifest"
     | "propertyAccess"
     | "resolveStaticExpression"
@@ -678,6 +685,7 @@ interface DataLoweringContext extends Pick<
     | "executedModuleConstantElements"
     | "executedModuleConstantMapEntry"
     | "executedInitializerElements"
+    | "packagedValueDomain"
     | "unwrap"
     | "unwrapValue"
     | "emit"
@@ -873,6 +881,12 @@ function soleRecordMember(
 function storesDocumentScalars(element: DataType): boolean {
     const stored = element.kind === "optional" ? element.inner : element;
     return ["number", "string", "boolean", "enum"].includes(stored.kind);
+}
+
+/** A `const` table's object literal and the named data members it stores. */
+interface ConstTable {
+    readonly literal: ts.ObjectLiteralExpression;
+    readonly members: readonly DataMember[];
 }
 
 export class DataLowerer {
@@ -3310,14 +3324,14 @@ export class DataLowerer {
         // inside it carries neither the flag nor the optional storage.
         const { optionalFoundCpp, optionalStorageCpp, ...plainOwner } = owner;
         // An owner that cannot be absent is read as it is. Stored objects
-        // encode absence as an empty shared pointer instead (below).
+        // encode absence as an empty shared pointer instead (below), unless
+        // generation knows the pointer set.
+        const storedObject =
+            owner.dataType?.kind === "struct" &&
+            this.context.dataTypes.isReferenceStruct(owner.dataType.name);
         if (
-            isPresentValue(owner) &&
-            !isJsonValue(owner) &&
-            !(
-                owner.dataType?.kind === "struct" &&
-                this.context.dataTypes.isReferenceStruct(owner.dataType.name)
-            )
+            (isPresentValue(owner) && !isJsonValue(owner) && !storedObject) ||
+            (storedObject && knownCondition(presenceFlagCpp(owner)) === true)
         )
             return read(plainOwner);
         const ownerFound = presenceFlagCpp(owner);
@@ -4480,13 +4494,22 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 narrowed,
                 expression,
             );
-            return index < 0
+            if (index >= 0)
+                return this.projectedNativeValue(
+                    value,
+                    `std::get<${index}>(${value.cpp})`,
+                    value.dataType.members[index]!,
+                );
+            if (!this.sharesSomeMembers(value.dataType, narrowed)) return value;
+            const members = compileDataValueSink(
+                narrowed,
+                this,
+                value,
+                expression,
+            );
+            return members === undefined
                 ? value
-                : this.projectedNativeValue(
-                      value,
-                      `std::get<${index}>(${value.cpp})`,
-                      value.dataType.members[index]!,
-                  );
+                : this.leafValue(members, narrowed);
         }
         if (value.kind !== "data" || value.dataType?.kind !== "optional") {
             return value;
@@ -4514,11 +4537,12 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                         (["string", "enum"].includes(inner.kind) &&
                             ["string", "enum"].includes(narrowed.kind)))) ||
                     (inner.kind === "union" &&
-                        this.narrowedUnionMemberIndex(
+                        (this.narrowedUnionMemberIndex(
                             inner,
                             narrowed,
                             expression,
-                        ) >= 0) ||
+                        ) >= 0 ||
+                            this.sharesSomeMembers(inner, narrowed))) ||
                     // Array.isArray widens a readonly array to any[]: the
                     // optional array it guarded is present.
                     (expectedType === undefined &&
@@ -4549,6 +4573,30 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             );
         }
         return value;
+    }
+
+    /**
+     * Whether `narrowed` is the union of some of `type`'s members, each one
+     * storage a copy shares (or a scalar): a union slot the checker types as
+     * those members alone (one lane of a tuple array, stored as every lane's
+     * union) reads as their union, the same objects the slot holds.
+     */
+    private sharesSomeMembers(
+        type: DataType<"union">,
+        narrowed: DataType | undefined,
+    ): narrowed is DataType<"union"> {
+        return (
+            narrowed?.kind === "union" &&
+            narrowed.members.length < type.members.length &&
+            narrowed.members.every(
+                (member) =>
+                    (this.sharesObjectStorage(member) ||
+                        isScalarDataType(member)) &&
+                    type.members.some((stored) =>
+                        dataTypesEqual(stored, member),
+                    ),
+            )
+        );
     }
 
     private narrowedUnionMemberIndex(
@@ -5911,6 +5959,8 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             if (element) return element;
         }
         if (dataType.kind === "json") {
+            const packaged = this.packagedPrimitive(access);
+            if (packaged) return packaged;
             // A parsed document answers every property, because that is
             // what a document does: a key it does not carry reads as
             // `undefined` rather than failing here.
@@ -6048,6 +6098,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             if (
                 unwrittenRecordField &&
                 (sourceField?.kind === "json-null" ||
+                    knownAbsent(sourceField) ||
                     (sourceField === undefined &&
                         owner.recordOwnKeys !== undefined &&
                         !owner.recordOwnKeys.includes(property))) &&
@@ -6331,10 +6382,14 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 access,
             );
             this.context.reachJsData();
-            return this.leafValue(
+            const table = this.constTable(access);
+            const read = this.leafValue(
                 `bbl::js::enum_map_at(${owner.cpp}, ${tag})`,
                 dataType.element,
             );
+            return table
+                ? this.tableMember(access, table, property, read)
+                : read;
         }
         // Error views expose their message and dynamic constructor name.
         const carried = owner.nativeError
@@ -6878,10 +6933,20 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 dataType.enumName,
             );
             this.context.reachJsData();
-            return this.leafValue(
+            const table = this.constTable(access);
+            const key =
+                table &&
+                this.context.probeEmission(
+                    () => this.context.compileValue(access.argumentExpression),
+                    () => false,
+                ).staticString;
+            const read = this.leafValue(
                 `bbl::js::enum_map_at(${owner.cpp}, ${tag})`,
                 dataType.element,
             );
+            return table && key !== undefined
+                ? this.tableMember(access, table, key, read)
+                : read;
         }
         if (dataType.kind === "struct") {
             // A write through a view of fixed fields names its field by a
@@ -14505,10 +14570,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                     source.kind === "data"
                         ? this.narrowOptional(source, property.expression)
                         : source;
-                if (
-                    spread.kind === "json-null" ||
-                    knownCondition(spread.optionalFoundCpp) === false
-                ) {
+                if (spread.kind === "json-null" || knownAbsent(spread)) {
                     declareDefault();
                     continue;
                 }
@@ -18921,6 +18983,157 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
     }
 
     /**
+     * A document member of a number or boolean type that reads one value
+     * wherever the documents the package serves are the ones generation
+     * holds (`packagedValueDomain`, whose leaves are values of that kind):
+     * that value, where no write in the program replaces a member on the
+     * way once its record is built (`membersStayAsBuilt`). Undefined for
+     * any other.
+     */
+    public packagedPrimitive(access: ts.Expression): Value | undefined {
+        const kind = valueKindOf(
+            this.context.checker.getTypeAtLocation(access),
+        );
+        if (
+            (kind !== "number" && kind !== "boolean") ||
+            !this.membersStayAsBuilt(access)
+        )
+            return undefined;
+        const domain = this.context.packagedValueDomain(access, kind);
+        if (domain?.length !== 1) return undefined;
+        const [text] = domain as [string];
+        if (kind === "boolean") {
+            const known = knownCondition(text);
+            return known === undefined
+                ? undefined
+                : { kind: "boolean", cpp: text, staticBoolean: known };
+        }
+        const number = Number(text);
+        return text === (Object.is(number, -0) ? "-0" : String(number))
+            ? numberConstantValue(number)
+            : undefined;
+    }
+
+    /**
+     * Whether no write in the program replaces any member a chain of named
+     * member reads goes through, once the record holding it is built
+     * (`builtRecordFieldIsWritten`): a read through a run-time key may be
+     * any member.
+     */
+    private membersStayAsBuilt(access: ts.Expression): boolean {
+        for (
+            let node = this.context.unwrap(access);
+            isMemberAccess(node);
+            node = this.context.unwrap(node.expression)
+        ) {
+            const name = ts.isPropertyAccessExpression(node)
+                ? node.name.text
+                : literalKey(node.argumentExpression);
+            if (
+                name === undefined ||
+                builtRecordFieldIsWritten(
+                    this.context,
+                    this.context.checker.getNonNullableType(
+                        this.context.checker.getTypeAtLocation(node.expression),
+                    ),
+                    name,
+                )
+            )
+                return false;
+        }
+        return true;
+    }
+
+    /**
+     * The object literal a `const` holding a table initializes
+     * (`constObjectLiteral`), with its members, when it only stores named
+     * data; undefined for any other owner.
+     */
+    private constTable(
+        access: ts.PropertyAccessExpression | ts.ElementAccessExpression,
+    ): ConstTable | undefined {
+        const created = constObjectLiteral(
+            this.context.checker,
+            access.expression,
+        )?.literal;
+        const members =
+            created &&
+            ts.isObjectLiteralExpression(created) &&
+            plainDataMembers(created);
+        return members ? { literal: created, members } : undefined;
+    }
+
+    /**
+     * A member a known key reads of a `const` an object literal initializes:
+     * the native read, holding what generation knows of the literal's
+     * member where no write in the program replaces it (`recordFieldIsWritten`):
+     * the entry itself, each scalar member kept, and for its own keys every
+     * other property its type declares.
+     */
+    private tableMember(
+        access: ts.PropertyAccessExpression | ts.ElementAccessExpression,
+        table: ConstTable,
+        key: string,
+        read: Value,
+    ): Value {
+        const entry = table.members
+            .filter((member) => member.key === key)
+            .at(-1);
+        const literal = entry && unwrapExpression(entry.value);
+        const checker = this.context.checker;
+        if (
+            !literal ||
+            !ts.isObjectLiteralExpression(literal) ||
+            recordFieldIsWritten(
+                this.context,
+                checker.getTypeAtLocation(access.expression),
+                key,
+                false,
+                table.literal,
+            )
+        )
+            return read;
+        const known = this.context.probeEmission(
+            () => this.context.compileValue(literal),
+            () => false,
+        );
+        if (known.kind !== "record" || !known.recordProperties) return read;
+        const entryType = checker.getTypeAtLocation(access);
+        const unwritten = (name: string): boolean =>
+            !recordFieldIsWritten(
+                this.context,
+                entryType,
+                name,
+                false,
+                literal,
+            );
+        const properties: Record<string, Value> = {};
+        for (const [name, member] of Object.entries(known.recordProperties))
+            if (
+                hasScalarFacts(member) &&
+                !member.parameterBinding &&
+                unwritten(name)
+            ) {
+                const kept: Value = { ...member };
+                writable(kept).readOnly = true;
+                properties[name] = kept;
+            }
+        const ownKeys =
+            known.recordOwnKeys ?? Object.keys(known.recordProperties);
+        const keysKept = checker
+            .getPropertiesOfType(entryType)
+            .every(
+                (property) =>
+                    ownKeys.includes(property.name) || unwritten(property.name),
+            );
+        if (Object.keys(properties).length === 0 && !keysKept) return read;
+        const member: Value = { ...read };
+        writable(member).recordProperties = properties;
+        if (keysKept) writable(member).recordOwnKeys = ownKeys;
+        return member;
+    }
+
+    /**
      * The one JavaScript truthiness of a value the caller already compiled,
      * as a native condition. Presence alone -- whether a nullable is there,
      * whatever it holds -- is `presenceCpp`'s.
@@ -19058,7 +19271,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             return `static_cast<bool>(${value.cpp})`;
         }
         if (value.kind === "data" && value.dataType?.kind === "optional") {
-            if (knownCondition(value.optionalFoundCpp) === false) {
+            if (knownAbsent(value)) {
                 return "false";
             }
             if (
@@ -19355,7 +19568,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             return equal !== negated ? "true" : "false";
         }
         if (value?.kind === "data" && value.dataType?.kind === "optional") {
-            if (knownCondition(value.optionalFoundCpp) === false) {
+            if (knownAbsent(value)) {
                 return absentTest("false", "true");
             }
             if (
@@ -19883,6 +20096,13 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         // value and that value compares equal; strict inequality is the
         // exact negation. Bind each optional once so a call or indexed owner
         // keeps JavaScript's single-evaluation semantics.
+        // A UI element that may be absent.
+        const optionalUiElement = (
+            dataType: DataType | undefined,
+        ): dataType is Extract<DataType, { kind: "optional" }> =>
+            dataType?.kind === "optional" &&
+            dataType.inner.kind === "handle" &&
+            dataType.inner.handle === "ui-element";
         const optionalComparable = (
             dataType: DataType | undefined,
         ): dataType is Extract<DataType, { kind: "optional" }> =>
@@ -20072,6 +20292,17 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         const rightOptional = hasOptional
             ? compileOperand(right, "comparison_right")
             : undefined;
+        // A member generation knows absent equals no present scalar.
+        const absentBeside = (absent?: Value, present?: Value): boolean =>
+            absent !== undefined &&
+            present !== undefined &&
+            knownAbsent(absent) &&
+            hasScalarFacts(present);
+        if (
+            absentBeside(leftOptional, rightOptional) ||
+            absentBeside(rightOptional, leftOptional)
+        )
+            return negated ? "true" : "false";
         if (
             !loose &&
             leftOptional &&
@@ -20166,6 +20397,33 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 snapshot && lowered === undefined
                     ? "const auto"
                     : "const auto&";
+            // An element that may be absent, as the DOM target it is.
+            if (
+                expected.inner.kind === "event-target" &&
+                optionalUiElement(value.dataType)
+            ) {
+                const temporary =
+                    this.context.allocateTemporaryCppName("optional_compare");
+                const cppType = this.context.dataTypes.cppType(expected);
+                const present = this.leafValue(
+                    optionalValueCpp(value.cpp),
+                    value.dataType.inner,
+                );
+                const target = eventTargetCpp(
+                    this.context,
+                    value.engineCpp !== undefined
+                        ? { ...present, engineCpp: value.engineCpp }
+                        : present,
+                    operand,
+                );
+                this.context.emit({
+                    kind: "declaration",
+                    type: `const ${cppType}`,
+                    name: temporary,
+                    initializer: `${optionalPresentCpp(value.cpp)} ? ${cppType}{${target}} : ${cppType}{std::nullopt}`,
+                });
+                return temporary;
+            }
             if (
                 expected.inner.kind === "handle" &&
                 value.kind === expected.inner.handle &&
@@ -20264,32 +20522,46 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             type.kind === "handle" && type.ownedEngine
                 ? `bbl::js::detail::same_value_zero(${left}, ${right})`
                 : `${left} == ${right}`;
+        // An element that may be absent compares with a DOM target that
+        // may be (`event.target === overlay`) as the target it is.
+        const targetOf = (
+            target: DataType | undefined,
+            element: DataType | undefined,
+        ): DataType | undefined =>
+            optionalComparable(target) &&
+            target.inner.kind === "event-target" &&
+            optionalComparable(element) &&
+            optionalUiElement(element)
+                ? target
+                : element;
+        const leftPair = targetOf(rightType, leftType);
+        const rightPair = targetOf(leftType, rightType);
         if (
-            optionalComparable(leftType) &&
-            optionalComparable(rightType) &&
-            (dataTypesEqual(leftType.inner, rightType.inner) ||
-                (textual(leftType.inner) && textual(rightType.inner)))
+            optionalComparable(leftPair) &&
+            optionalComparable(rightPair) &&
+            (dataTypesEqual(leftPair.inner, rightPair.inner) ||
+                (textual(leftPair.inner) && textual(rightPair.inner)))
         ) {
             const leftCpp = bindOptional(
                 left,
-                leftType,
+                leftPair,
                 leftOptional,
                 expressionMayRunCode(right),
             );
             const rightCpp = bindOptional(
                 right,
-                rightType,
+                rightPair,
                 rightOptional,
                 false,
             );
-            const presentEqual = dataTypesEqual(leftType.inner, rightType.inner)
+            const presentEqual = dataTypesEqual(leftPair.inner, rightPair.inner)
                 ? presentEquality(
-                      leftType.inner,
+                      leftPair.inner,
                       `(*${leftCpp})`,
                       `(*${rightCpp})`,
                   )
-                : `std::string(${widenTag({ cpp: `(*${leftCpp})`, dataType: leftType.inner }, left).cpp}) == ` +
-                  `std::string(${widenTag({ cpp: `(*${rightCpp})`, dataType: rightType.inner }, right).cpp})`;
+                : `std::string(${widenTag({ cpp: `(*${leftCpp})`, dataType: leftPair.inner }, left).cpp}) == ` +
+                  `std::string(${widenTag({ cpp: `(*${rightCpp})`, dataType: rightPair.inner }, right).cpp})`;
             const equal = absentAwareEquality(
                 sameAbsenceCpp(
                     this,

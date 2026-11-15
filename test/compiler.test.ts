@@ -4035,9 +4035,53 @@ test("lowers a Record keyed by a string union into tag-ordered slots", () => {
         result.cpp,
         /bbl::js::EnumMap<bblscene::RenderSet, 3>\{v_bblite_slot_1, v_bblite_slot_0, v_bblite_slot_2\}/,
     );
-    // Both a runtime tag and a literal key index the same way.
+    // A runtime tag indexes the slots; a literal key reads the entry
+    // generation knows, which nothing replaces.
     assert.match(result.cpp, /enum_map_at\(v_sets, v_mode\)/);
-    assert.match(result.cpp, /enum_map_at\(v_sets, bblscene::Mode::arcade\)/);
+    assert.match(result.cpp, /v_picked = \(v_active->scale \+ 2\.0\);/);
+});
+
+test("a literal key reads the entry it names beside writes into another literal's record", () => {
+    const result = compileSource(`
+        type Mode = "pets" | "arcade" | "smooth";
+        interface RenderSet { scale: number; }
+        const sets: Record<Mode, RenderSet> = {
+            pets: { scale: 1 },
+            arcade: { scale: 2 },
+            smooth: { scale: 3 },
+        };
+        function unify(objects: readonly Record<string, unknown>[]): Record<string, unknown> {
+            const merged: Record<string, unknown> = {};
+            for (const object of objects)
+                for (const key of Object.keys(object)) merged[key] = object[key];
+            return merged;
+        }
+        let mode: Mode = "smooth";
+        const active = sets[mode];
+        const picked = active.scale + sets["arcade"].scale;
+        console.log(Object.keys(unify([{ picked }, { mode }])).length);
+    `);
+    // \`merged[key]\` writes only the object its own literal creates.
+    assert.match(result.cpp, /v_picked = \(v_active->scale \+ 2\.0\);/);
+});
+
+test("a member a literal key's entry never sets compares unequal to a present value", () => {
+    const result = compileSource(`
+        type Mode = "pets" | "arcade" | "smooth";
+        interface RenderSet { scale: number; fade?: boolean; }
+        const sets: Record<Mode, RenderSet> = {
+            pets: { scale: 1 },
+            arcade: { scale: 2, fade: true },
+            smooth: { scale: 3 },
+        };
+        let mode: Mode = "smooth";
+        const active = sets[mode];
+        const fading = sets["pets"].fade === true ? 1 : 0;
+        const still = sets["pets"].fade !== true;
+        console.log(active.scale, fading, still);
+    `);
+    assert.match(result.cpp, /v_fading = 0\.0;/);
+    assert.match(result.cpp, /v_still = true;/);
 });
 
 test("narrows an optional string-union key before Record lookup", () => {
@@ -5659,17 +5703,26 @@ test("keeps a generation-known optional const at its selected scalar", () => {
 });
 
 test("compares a missing optional scalar as absent", () => {
-    const result = compileSource(`
+    // A write may give the field a value: the comparison reads it.
+    const written = compileSource(`
+        interface Entry { shape?: number }
+        const entry: Entry = {};
+        if (Math.random() > 2) entry.shape = 3;
+        const wedge = entry.shape === 1;
+        console.log(wedge);
+    `);
+    assert.match(
+        written.cpp,
+        /auto (\w+) = bbl::js::snapshot_value\(v_entry->shape\);\s*const auto& \w+_optional_compare_\d+ = \1;/,
+    );
+    assert.match(written.cpp, /\.has_value\(\)/);
+    // Where none does, the field is absent and equals no present value.
+    const unwritten = compileSource(`
         interface Entry { shape?: number }
         const entry: Entry = {};
         const wedge = entry.shape === 1;
     `);
-
-    assert.match(
-        result.cpp,
-        /auto (\w+) = bbl::js::snapshot_value\(v_entry\.shape\);\s*const auto& \w+_optional_compare_\d+ = \1;/,
-    );
-    assert.match(result.cpp, /\.has_value\(\)/);
+    assert.match(unwritten.cpp, /bool v_wedge = false;/);
 });
 
 test("a loop that starts async activations and registers async listeners stays one native loop", () => {
@@ -5994,6 +6047,469 @@ test("carries file-texture address modes into the sampler", () => {
         result.cpp,
         /TextureAddressMode::clamp, bbl::TextureAddressMode::mirror/,
     );
+});
+
+test("file-texture options spread from a constant read the constant's own fields", () => {
+    const result = compileSource(
+        `
+        import { createEngine, loadTexture2D, type EngineContext, type Texture2D } from "@babylonjs/lite";
+
+        const REPEAT = { addressModeU: "mirror-repeat" as const, addressModeV: "clamp-to-edge" as const, invertY: false, mipMaps: false };
+        function load(engine: EngineContext, srgb: boolean): Promise<Texture2D> {
+            return loadTexture2D(engine, "/textures/nme/ebf71b300f43563f.png", { srgb, ...REPEAT });
+        }
+        async function main() {
+            const engine = await createEngine({});
+            await Promise.all([load(engine, true), load(engine, false)]);
+        }
+    `,
+        labDeployment,
+    );
+
+    // Each call keeps the spread's sampler and upload flags beside its own.
+    const loads = [
+        ...result.cpp.matchAll(
+            /bbl::TextureMipmapMode::nearest, bbl::TextureAddressMode::mirror, bbl::TextureAddressMode::clamp, [^}]*\}, false, (true|false), false\)/g,
+        ),
+    ].map((match) => match[1]);
+    assert.deepEqual(loads, ["true", "false"]);
+});
+
+test("a selection of members a call omits is absent where that call is lowered", () => {
+    const result = compileSource(`
+        interface Cell { u: number; v: number; w: number; h: number }
+        interface Options {
+            name: string;
+            cells?: { cells: readonly Cell[]; vFlip: boolean };
+            map?: { cells: readonly Cell[]; vFlip: boolean; capacity: number; keySource: "a" | "b" };
+        }
+        function build(opts: Options): string {
+            const cells = opts.cells;
+            const map = opts.map;
+            const mode = cells ?? map;
+            const setup = mode ? \`cells \${cells ? "direct" : map ? map.keySource : ""}\` : "";
+            let total = 0;
+            if (mode) {
+                const count = Math.max(1, mode.cells.length);
+                const data = new Float32Array((count + 1) * 4);
+                data[0] = count;
+                data[1] = mode.vFlip ? -1 : 1;
+                const source = mode.cells.length ? mode.cells : [{ u: 0, v: 0, w: 1, h: 1 }];
+                for (let i = 0; i < count; i++) {
+                    const cell = source[i]!;
+                    data.set([cell.u, cell.v, cell.w, cell.h], (i + 1) * 4);
+                }
+                total += data.length;
+            }
+            return opts.name + "[" + setup + "]" + total;
+        }
+        const options = { name: "body" };
+        console.log(build(options));
+        const withCells = { name: "cells", cells: { cells: [{ u: 0, v: 0, w: 1, h: 1 }], vFlip: true } };
+        console.log(build(withCells));
+    `);
+    // The call that omits both reads no storage: the test of the name folds.
+    assert.match(result.cpp, /std::string v_fn\d+_setup = "";/);
+});
+
+test("a builder handed options a table's entry gives, directly or spread into a literal, reads that entry's facts in each key's arm", () => {
+    // The species table, the options builder and the iteration share one
+    // module; the builder awaits and caches before composing its shader. A
+    // spread hands the entry's fields on by name.
+    for (const [form, handed] of [
+        ["direct", "optionsFor(type, capacity)"],
+        ["spread", "{ ...optionsFor(type, capacity), tone: 1 }"],
+    ]) {
+        const directory = resolve(
+            `artifacts/compiler-keyed-table-options-${form}`,
+        );
+        mkdirSync(directory, { recursive: true });
+        writeFileSync(join(directory, "noop-worker.ts"), "self.close();\n");
+        writeFileSync(
+            join(directory, "species.ts"),
+            `import type { EngineContext, ShaderMaterial } from "@babylonjs/lite";
+import { herd, type HerdOptions } from "./herd";
+export type Species = "deer" | "fox" | "hen";
+interface SpeciesDef { file: string; height: number; glow?: boolean; base: { speed: number } }
+const SPECIES: Record<Species, SpeciesDef> = {
+    deer: { file: "Deer.glb", height: 2.9, base: { speed: 1 } },
+    fox: { file: "Fox.glb", height: 0.8, glow: true, base: { speed: 2 } },
+    hen: { file: "Hen.glb", height: 0.4, base: { speed: 0.5 } },
+};
+export function speciesSpeed(type: Species): number { return SPECIES[type].base.speed; }
+export function isSpecies(value: string): value is Species { return Object.prototype.hasOwnProperty.call(SPECIES, value); }
+function optionsFor(type: Species, capacity: number): HerdOptions {
+    const def = SPECIES[type];
+    return { file: def.file, height: def.height, glow: def.glow, capacity };
+}
+export async function buildHerds(engine: EngineContext, capacity: number): Promise<ShaderMaterial[]> {
+    const types = Object.keys(SPECIES) as Species[];
+    return Promise.all(types.map((type) => herd(engine, ${handed})));
+}
+`,
+        );
+        writeFileSync(
+            join(directory, "herd.ts"),
+            `import { createShaderMaterial, wgsl, type EngineContext, type ShaderMaterial } from "@babylonjs/lite";
+export interface HerdOptions { file: string; height: number; glow?: boolean; capacity: number; tone?: number }
+const VERTEX = \`struct VertexOutput { @builtin(position) position: vec4<f32>, };
+@vertex fn mainVertex(input: VertexInput) -> VertexOutput {
+  var out: VertexOutput;
+  out.position = shaderSystem.worldViewProjection * vec4<f32>(input.position * /*HEIGHT*/, 1.0);
+  return out;
+}\`;
+const FRAGMENT = wgsl\`@fragment fn mainFragment() -> @location(0) vec4<f32> { return vec4<f32>(1.0, 0.5, 0.2, 1.0); }\`;
+const cache = new Map<string, Promise<number>>();
+async function prepare(opts: HerdOptions): Promise<number> {
+    await Promise.resolve();
+    return opts.capacity;
+}
+function prepared(opts: HerdOptions): Promise<number> {
+    let prep = cache.get(opts.file);
+    if (!prep) {
+        prep = prepare(opts);
+        prep.catch(() => cache.delete(opts.file));
+        cache.set(opts.file, prep);
+    }
+    return prep;
+}
+export async function herd(engine: EngineContext, opts: HerdOptions): Promise<ShaderMaterial> {
+    const capacity = await prepared(opts);
+    let vertex = VERTEX.replace("/*HEIGHT*/", String(opts.height));
+    if (opts.glow) vertex = vertex.replace("input.position", "(input.position * 1.1)");
+    await Promise.resolve();
+    return createShaderMaterial({ name: opts.file + capacity, vertexSource: wgsl\`\${vertex}\`, fragmentSource: FRAGMENT, attributes: ["position"], uniforms: ["worldViewProjection"] });
+}
+`,
+        );
+        const result = compileSource(
+            `import { addToScene, createArcRotateCamera, createEngine, createPlane, createSceneContext, registerScene, startEngine } from "@babylonjs/lite";
+import { buildHerds, isSpecies, speciesSpeed } from "./species";
+const worker = new Worker(new URL("./noop-worker.ts", import.meta.url), { type: "module" });
+worker.terminate();
+async function main(): Promise<void> {
+    const engine = await createEngine(document.getElementById("renderCanvas") as HTMLCanvasElement);
+    const scene = createSceneContext(engine);
+    scene.camera = createArcRotateCamera(-Math.PI / 2, Math.PI / 2, 8, { x: 0, y: 0, z: 0 });
+    const materials = await buildHerds(engine, 8);
+    const plane = createPlane(engine, { width: 2, height: 2 });
+    plane.material = materials[0]!;
+    addToScene(scene, plane);
+    console.log(speciesSpeed(isSpecies(String(Math.random())) ? "fox" : "deer"));
+    await registerScene(scene);
+    await startEngine(engine);
+}
+void main();
+`,
+            {
+                fileName: join(directory, "entry.ts"),
+            },
+        );
+        assert.deepEqual(
+            result.manifest.customShaderPrograms.map((program) => [
+                /\* ([0-9.]+), 1\.0\)/.exec(program.vertexSource)?.[1],
+                program.vertexSource.includes("(input.position * 1.1)"),
+            ]),
+            [
+                ["2.9", false],
+                ["0.8", true],
+                ["0.4", false],
+            ],
+        );
+    }
+});
+
+test("a builder holding options a native table's entry fills as one object reads the members neither sets as absent in each key's arm", () => {
+    // The table's entries hold a run-time value, so it is native; the
+    // builder observes its options' identity, so it holds them as one
+    // native object. `fade`, which neither sets, alone would create the
+    // buffer.
+    const directory = resolve("artifacts/compiler-stored-table-options");
+    mkdirSync(directory, { recursive: true });
+    writeFileSync(join(directory, "noop-worker.ts"), "self.close();\n");
+    writeFileSync(
+        join(directory, "species.ts"),
+        `import type { EngineContext } from "@babylonjs/lite";
+import { herd, type Herd, type HerdOptions } from "./herd";
+export type Species = "deer" | "fox" | "hen";
+interface SpeciesDef { file: string; height: number; glow?: boolean; base: { speed: number }; seed: number }
+const SPECIES: Record<Species, SpeciesDef> = {
+    deer: { file: "Deer.glb", height: 2.9, base: { speed: 1 }, seed: Math.random() },
+    fox: { file: "Fox.glb", height: 0.8, glow: true, base: { speed: 2 }, seed: Math.random() },
+    hen: { file: "Hen.glb", height: 0.4, base: { speed: 0.5 }, seed: Math.random() },
+};
+export function speciesSpeed(type: Species): number { return SPECIES[type].base.speed; }
+export function isSpecies(value: string): value is Species { return Object.prototype.hasOwnProperty.call(SPECIES, value); }
+function optionsFor(type: Species, capacity: number): HerdOptions {
+    const def = SPECIES[type];
+    return { file: def.file, height: def.height, glow: def.glow, capacity };
+}
+export async function buildHerds(engine: EngineContext, capacity: number): Promise<Herd[]> {
+    const types = Object.keys(SPECIES) as Species[];
+    return Promise.all(types.map((type) => herd(engine, optionsFor(type, capacity))));
+}
+`,
+    );
+    writeFileSync(
+        join(directory, "herd.ts"),
+        `import { createShaderMaterial, createStorageBuffer, updateStorageBuffer, wgsl, type EngineContext, type ShaderMaterial } from "@babylonjs/lite";
+export interface HerdOptions { file: string; height: number; glow?: boolean; capacity: number; fade?: boolean; dither?: boolean }
+const VERTEX = \`struct VertexOutput { @builtin(position) position: vec4<f32>, };
+@vertex fn mainVertex(input: VertexInput) -> VertexOutput {
+  var out: VertexOutput;
+  out.position = shaderSystem.worldViewProjection * vec4<f32>(input.position * /*HEIGHT*/, 1.0);
+  return out;
+}\`;
+const FRAGMENT = wgsl\`@fragment fn mainFragment() -> @location(0) vec4<f32> { return vec4<f32>(1.0, 0.5, 0.2, 1.0); }\`;
+export interface Herd { material: ShaderMaterial; label(): string }
+const seen = new WeakSet<HerdOptions>();
+async function prepare(opts: HerdOptions): Promise<number> {
+    await Promise.resolve();
+    return opts.capacity;
+}
+interface SurfaceOptions { height: number; glow?: boolean; fade?: boolean; dither?: boolean }
+function surface(engine: EngineContext, name: string, opts: SurfaceOptions): ShaderMaterial {
+    let vertex = VERTEX.replace("/*HEIGHT*/", String(opts.height));
+    if (opts.glow) vertex = vertex.replace("input.position", "(input.position * 1.1)");
+    if (opts.fade) vertex = vertex.replace("1.0);", "0.5);");
+    if (opts.dither) vertex = vertex.replace("out.position", "out.position * 0.5");
+    return createShaderMaterial({ name, vertexSource: wgsl\`\${vertex}\`, fragmentSource: FRAGMENT, attributes: ["position"], uniforms: ["worldViewProjection"] });
+}
+function build(engine: EngineContext, opts: HerdOptions, capacity: number): Herd {
+    seen.add(opts);
+    const fade = opts.fade === true;
+    const fadeBuffer = fade ? createStorageBuffer(engine, 16, "fade") : null;
+    if (fadeBuffer) updateStorageBuffer(engine, fadeBuffer, new Float32Array(4));
+    const material = surface(engine, opts.file + capacity, {
+        height: opts.height,
+        glow: opts.glow,
+        fade: opts.fade === true,
+        dither: opts.dither,
+    });
+    return {
+        material,
+        label(): string {
+            return "herd " + opts.file;
+        },
+    };
+}
+export async function herd(engine: EngineContext, opts: HerdOptions): Promise<Herd> {
+    const capacity = await prepare(opts);
+    return build(engine, opts, capacity);
+}
+`,
+    );
+    const result = compileSource(
+        `import { addToScene, createArcRotateCamera, createEngine, createPlane, createSceneContext, registerScene, startEngine } from "@babylonjs/lite";
+import { buildHerds, isSpecies, speciesSpeed } from "./species";
+const worker = new Worker(new URL("./noop-worker.ts", import.meta.url), { type: "module" });
+worker.terminate();
+async function main(): Promise<void> {
+    const engine = await createEngine(document.getElementById("renderCanvas") as HTMLCanvasElement);
+    const scene = createSceneContext(engine);
+    scene.camera = createArcRotateCamera(-Math.PI / 2, Math.PI / 2, 8, { x: 0, y: 0, z: 0 });
+    const herds = await buildHerds(engine, 8);
+    const plane = createPlane(engine, { width: 2, height: 2 });
+    plane.material = herds[0]!.material;
+    console.log(herds[1]!.label());
+    addToScene(scene, plane);
+    console.log(speciesSpeed(isSpecies(String(Math.random())) ? "fox" : "deer"));
+    await registerScene(scene);
+    await startEngine(engine);
+}
+void main();
+`,
+        {
+            fileName: join(directory, "entry.ts"),
+        },
+    );
+    assert.deepEqual(
+        result.manifest.customShaderPrograms.map((program) => [
+            /\* ([0-9.]+), ([0-9.]+)\)/.exec(program.vertexSource)?.slice(1),
+            program.vertexSource.includes("(input.position * 1.1)"),
+        ]),
+        [
+            [["2.9", "1.0"], false],
+            [["0.8", "1.0"], true],
+            [["0.4", "1.0"], false],
+        ],
+    );
+    // The buffer only a present `fade` creates is never made or written.
+    assert.doesNotMatch(result.cpp, /bbl::update_storage_buffer\(/);
+});
+
+test("an async callee's optional record parameter it was handed reads its members without a presence test", () => {
+    // The argument is a record, so the parameter's object is present.
+    const result = compileSource(`
+        interface Lit { glow?: boolean; tint: number }
+        const seen = new WeakSet<Lit>();
+        async function shade(lit?: Lit): Promise<number> {
+            await Promise.resolve();
+            if (lit) seen.add(lit);
+            return (lit?.glow ? 1 : 0) + (lit?.tint ?? 0);
+        }
+        async function main(): Promise<void> {
+            const lighting: Lit = { glow: true, tint: 2 };
+            console.log(await shade(lighting));
+        }
+        void main();
+    `);
+    assert.doesNotMatch(result.cpp, /optional_chain/);
+});
+
+test("a material builder iterated over a constant table's keys composes one program per key", () => {
+    const source = (iteration: string): string =>
+        `import { addToScene, createArcRotateCamera, createEngine, createPlane, createSceneContext, createShaderMaterial, registerScene, startEngine, wgsl, type EngineContext, type ShaderMaterial } from "@babylonjs/lite";
+const VERTEX = \`struct VertexOutput { @builtin(position) position: vec4<f32>, };
+@vertex fn mainVertex(input: VertexInput) -> VertexOutput {
+  var out: VertexOutput;
+  out.position = shaderSystem.worldViewProjection * vec4<f32>(input.position * /*SCALE*/, 1.0);
+  return out;
+}\`;
+const FRAGMENT = wgsl\`@fragment fn mainFragment() -> @location(0) vec4<f32> { return vec4<f32>(1.0, 0.5, 0.2, 1.0); }\`;
+const KINDS = { small: { scale: "0.5", wide: false }, large: { scale: "2.0", wide: true } } as const;
+type Kind = keyof typeof KINDS;
+function material(engine: EngineContext, kind: Kind): ShaderMaterial {
+    const def = KINDS[kind];
+    let vertex = VERTEX.replace("/*SCALE*/", def.scale);
+    if (def.wide) vertex = vertex.replace("input.position *", "vec3<f32>(2.0, 1.0, 1.0) * input.position *");
+    return createShaderMaterial({ name: kind, vertexSource: wgsl\`\${vertex}\`, fragmentSource: FRAGMENT, attributes: ["position"], uniforms: ["worldViewProjection"] });
+}
+async function main(): Promise<void> {
+    const engine = await createEngine(document.getElementById("renderCanvas") as HTMLCanvasElement);
+    const scene = createSceneContext(engine);
+    scene.camera = createArcRotateCamera(-Math.PI / 2, Math.PI / 2, 8, { x: 0, y: 0, z: 0 });
+    const kinds = Object.keys(KINDS) as Kind[];
+    ${iteration}
+    const byKind = new Map(kinds.map((kind, i) => [kind, materials[i]!]));
+    const plane = createPlane(engine, { width: 2, height: 2 });
+    plane.material = byKind.get("large")!;
+    addToScene(scene, plane);
+    await registerScene(scene);
+    await startEngine(engine);
+}
+void main();
+`;
+    const programs = (iteration: string): readonly string[] =>
+        compileSource(source(iteration)).manifest.customShaderPrograms.map(
+            (program) =>
+                program.name +
+                (/input.position \* 0.5/.test(program.vertexSource)
+                    ? ":small"
+                    : "") +
+                (/vec3<f32>\(2.0, 1.0, 1.0\) \* input.position \* 2.0/.test(
+                    program.vertexSource,
+                )
+                    ? ":wide"
+                    : ""),
+        );
+    for (const iteration of [
+        "const materials = kinds.map((kind) => material(engine, kind));",
+        "const materials: ShaderMaterial[] = []; for (const kind of kinds) materials.push(material(engine, kind));",
+    ])
+        assert.deepEqual(programs(iteration), ["small:small", "large:wide"]);
+    // An asynchronous builder in a realm, awaited together.
+    const directory = resolve("artifacts/compiler-keyed-async-builder");
+    mkdirSync(directory, { recursive: true });
+    writeFileSync(join(directory, "noop-worker.ts"), "self.close();\n");
+    const realm = source(
+        "const materials = await Promise.all(kinds.map((kind) => built(engine, kind)));",
+    )
+        .replace(
+            "async function main(): Promise<void> {",
+            "async function built(engine: EngineContext, kind: Kind): Promise<ShaderMaterial> { await Promise.resolve(); return material(engine, kind); }\nasync function main(): Promise<void> {",
+        )
+        .replace(
+            "void main();",
+            'const worker = new Worker(new URL("./noop-worker.ts", import.meta.url), { type: "module" });\nworker.terminate();\nvoid main();',
+        );
+    assert.deepEqual(
+        compileSource(realm, {
+            fileName: join(directory, "entry.ts"),
+        }).manifest.customShaderPrograms.map((program) => program.name),
+        ["small", "large"],
+    );
+});
+
+test("a shader material's attribute list a function pushes onto is the list it holds", () => {
+    const program = (pushes: string): string => `
+        import { addToScene, createArcRotateCamera, createEngine, createPlane, createSceneContext, createShaderMaterial, registerScene, startEngine, wgsl } from "@babylonjs/lite";
+        const VERTEX = wgsl\`struct VertexOutput { @builtin(position) position: vec4<f32>, };
+        @vertex fn mainVertex(input: VertexInput) -> VertexOutput {
+          var out: VertexOutput;
+          out.position = shaderSystem.worldViewProjection * vec4<f32>(input.position + input.normal * 0.0, 1.0);
+          return out;
+        }\`;
+        const FRAGMENT = wgsl\`@fragment fn mainFragment() -> @location(0) vec4<f32> { return vec4<f32>(1.0, 0.5, 0.2, 1.0); }\`;
+        function material(normals: boolean, uvs: boolean) {
+            const attributes = normals ? ["position", "normal"] : ["position"];
+            ${pushes}
+            return createShaderMaterial({ name: "m", vertexSource: VERTEX, fragmentSource: FRAGMENT, attributes: attributes as ("position" | "normal" | "uv")[], uniforms: ["worldViewProjection"] });
+        }
+        async function main(): Promise<void> {
+            const engine = await createEngine(document.getElementById("renderCanvas") as HTMLCanvasElement);
+            const scene = createSceneContext(engine);
+            scene.camera = createArcRotateCamera(-Math.PI / 2, Math.PI / 2, 8, { x: 0, y: 0, z: 0 });
+            const plane = createPlane(engine, { width: 2, height: 2 });
+            plane.material = material(true, true);
+            addToScene(scene, plane);
+            await registerScene(scene);
+            await startEngine(engine);
+        }
+        void main();
+    `;
+    const [shader] = compileSource(program(`if (uvs) attributes.push("uv");`))
+        .manifest.customShaderPrograms;
+    assert.deepEqual(shader?.attributes, ["position", "normal", "uv"]);
+    // A push a run-time test guards, or an element write, leaves no list
+    // generation knows.
+    for (const pushes of [
+        `if (Math.random() > 2) attributes.push("uv");`,
+        `if (uvs) attributes.push("uv"); attributes[0] = Math.random() > 2 ? "uv" : "position";`,
+    ])
+        assert.throws(
+            () => compileSource(program(pushes)),
+            /Expected a static array literal/,
+        );
+});
+
+test("a record's own scalars stay generation-known beside handles its callee hands on", () => {
+    const program = (write: string, helper = ""): string => `
+        import { createEngine, createSceneContext, type EngineContext, type SceneContext } from "@babylonjs/lite";
+        interface Options { engine: EngineContext; scene: SceneContext; tint?: boolean; name?: string }
+        function paint(scene: SceneContext): void { scene.clearColor = { r: 0.1, g: 0.1, b: 0.1, a: 1 }; }
+        ${helper}
+        function describe(opts: Options): string {
+            // The scene is written through; it is no way back to the options.
+            paint(opts.scene);
+            ${write}
+            const label = opts.tint ? "tinted" : "plain";
+            return label + (opts.name ?? "");
+        }
+        async function main() {
+            const engine = await createEngine({});
+            const scene = createSceneContext(engine);
+            const options = { engine, scene, tint: true, name: "body" };
+            console.log(describe(options));
+        }
+        main().catch(console.error);
+    `;
+    assert.match(
+        compileSource(program("")).cpp,
+        /std::string v_fn\d+_label = "tinted";/,
+    );
+    // A write of the scalar itself, or by a helper handed the record, is read where it is stored.
+    for (const [write, helper] of [
+        ["if (Date.now() > 0) opts.tint = false;", ""],
+        [
+            "retint(opts);",
+            "function retint(o: Options): void { if (Date.now() > 0) o.tint = false; }",
+        ],
+    ] as const)
+        assert.match(
+            compileSource(program(write, helper)).cpp,
+            /std::string v_fn\d+_label = \(v_fn\d+_opts->tint \? "tinted" : "plain"\);/,
+        );
 });
 
 test("uses a boolean fallback for an explicitly undefined record property", () => {
@@ -8029,8 +8545,8 @@ test("compiles the cascaded shadow generator's own factory and options", () => {
     );
 });
 
-test("refuses the two cascaded controls this port does not build", () => {
-    const source = (option: string) => `
+test("carries the cascade stabilization and the world-space bias into the generator", () => {
+    const source = (options: string) => `
         import {
             addToScene,
             createCsmDirectionalShadowGenerator,
@@ -8044,31 +8560,88 @@ test("refuses the two cascaded controls this port does not build", () => {
             const scene = createSceneContext(engine);
             const light = createDirectionalLight([-1, -2, -1], 1);
             addToScene(scene, light);
+            const stable = (localStorage.getItem("stable") ?? "1") === "1";
+            const worldBias = Number(localStorage.getItem("bias") ?? "0.05");
+            const tier = JSON.parse(localStorage.getItem("tier") ?? '{"shadow":{"stable":true,"far":80}}') as { shadow: { stable: boolean; far: number } };
             createCsmDirectionalShadowGenerator(engine, light, {
-                ${option},
+                ${options}
             });
         }
 
         void main();
     `;
+    const options = (cpp: string): string =>
+        /bbl::CsmDirectionalShadowOptions\{(.*)\}\)\);/.exec(cpp)?.[1] ?? "";
     // The bounding-sphere fit with its light-axis anchor grid, and the
-    // world-space bias's far-plane reserve plus per-cascade clip offset.
-    // `validateObjectProperties` locates the refusal at the property, so
-    // the column is what names which one.
-    for (const option of ["stabilizeCascades: true", "worldSpaceBias: 0.5"]) {
-        assert.throws(
-            () => compileSource(source(option)),
-            /A CSM directional shadow generator options/,
-            option,
-        );
-    }
-    // Everything the cascade array does build still compiles.
-    assert.doesNotThrow(() =>
-        compileSource(
-            source(
-                "cascadeBlendPercentage: 0.25, shadowMaxZ: 500, frustumEdgeFalloff: 0.1",
-            ),
+    // world-space bias's far-plane reserve plus per-cascade clip offset:
+    // the record keeps both, in the pin's own configuration order.
+    assert.equal(
+        options(
+            compileSource(
+                source(
+                    "stabilizeCascades: true, worldSpaceBias: 0.5, bias: 0.25,",
+                ),
+            ).cpp,
         ),
+        "bbl::upstream::csm_default_map_size, bbl::upstream::csm_default_num_cascades, " +
+            "bbl::upstream::csm_default_lambda, bbl::upstream::csm_default_cascade_blend_percentage, " +
+            "true, std::optional<double>{}, 0.25, std::optional<double>{0.5}, " +
+            "bbl::upstream::csm_default_darkness, bbl::upstream::csm_default_frustum_edge_falloff, false",
+    );
+    // An option a conditional spread adds is selected where it is read, and
+    // one the scene omits there keeps the pin's default.
+    assert.equal(
+        options(
+            compileSource(
+                source(
+                    "stabilizeCascades: stable, ...(worldBias > 0 ? { worldSpaceBias: worldBias, darkness: 0.5 } : {}), bias: 0.25,",
+                ),
+            ).cpp,
+        ),
+        "bbl::upstream::csm_default_map_size, bbl::upstream::csm_default_num_cascades, " +
+            "bbl::upstream::csm_default_lambda, bbl::upstream::csm_default_cascade_blend_percentage, " +
+            "v_stable, std::optional<double>{}, 0.25, " +
+            "(v_worldBias > 0.0 ? std::optional<double>{v_worldBias} : std::optional<double>{}), " +
+            "(v_worldBias > 0.0 ? 0.5 : bbl::upstream::csm_default_darkness), " +
+            "bbl::upstream::csm_default_frustum_edge_falloff, false",
+    );
+    // A run-time boolean read off a parsed document is its condition.
+    assert.match(
+        options(
+            compileSource(
+                source(
+                    "stabilizeCascades: tier.shadow.stable, shadowMaxZ: tier.shadow.far,",
+                ),
+            ).cpp,
+        ),
+        /bbl::upstream::csm_default_cascade_blend_percentage, v_tier\.read_property\("shadow"\)\.read_property\("stable"\)\.truthy\(\), std::optional<double>\{/,
+    );
+    // The layered map is created from the record at run time: a quality
+    // tier sizes it and counts its cascades as the texture extents they are.
+    assert.match(
+        options(
+            compileSource(
+                source(
+                    "mapSize: worldBias > 1 ? 2048 : 1024, numCascades: stable ? 4 : 2,",
+                ),
+            ).cpp,
+        ),
+        /^bbl::gpu_u32\(bbl::gpu_size\(\(v_worldBias > 1\.0 \? 2048\.0 : 1024\.0\)\)\), bbl::gpu_u32\(bbl::gpu_size\(\(v_stable \? 4\.0 : 2\.0\)\)\), /,
+    );
+    // An ESM map sizes generated resources: no condition selects it.
+    assert.throws(
+        () =>
+            compileSource(
+                source("...(stable ? { mapSize: 2048 } : {}),").replaceAll(
+                    "createCsmDirectionalShadowGenerator",
+                    "createEsmDirectionalShadowGenerator",
+                ),
+            ),
+        /Option 'mapSize' decides generated resources/,
+    );
+    assert.throws(
+        () => compileSource(source("normalBias: 0.5,")),
+        /A CSM directional shadow generator options/,
     );
 });
 
@@ -14379,8 +14952,54 @@ test("lowers setCameraLimits with the fields present in the pinned options recor
 
     assert.match(
         result.cpp,
-        /bbl::set_camera_limits\([^,]+, [^,]+, 56u, std::array<double, 6>\{0\.0, 0\.0, 0\.0, 1\.7, 2\.0, 20\.0\}\)/,
+        /bbl::write_camera_limits\([^,]+, [^,]+, 56u, std::array<std::optional<double>, 6>\{std::nullopt, std::nullopt, std::nullopt, 1\.7, 2\.0, 20\.0\}\)/,
     );
+});
+
+test("setCameraLimits writes limits that may be undefined, from a literal, a spread record and a held record", () => {
+    const result = compileSource(`
+        import { createArcRotateCamera, createEngine, createSceneContext, setCameraLimits, type ArcRotateCamera, type SceneContext } from "@babylonjs/lite";
+        interface Walls { lowerBetaLimit: number | undefined; upperBetaLimit: number | undefined; lowerRadiusLimit: number | undefined; upperRadiusLimit: number | undefined }
+        const POLE = { lowerBetaLimit: 0.02, upperBetaLimit: 3 } as const;
+        function controls(camera: ArcRotateCamera, scene: SceneContext, classicLower: number | undefined, classicUpper: number | undefined) {
+            let saved: Walls | null = null;
+            function write(walls: Partial<Walls>): void { setCameraLimits(camera, walls, scene); }
+            function read(): Walls {
+                return { lowerBetaLimit: camera.lowerBetaLimit, upperBetaLimit: camera.upperBetaLimit, lowerRadiusLimit: camera.lowerRadiusLimit, upperRadiusLimit: camera.upperRadiusLimit };
+            }
+            return {
+                sync(): void { write({ lowerBetaLimit: classicLower, upperBetaLimit: classicUpper }); },
+                script(on: boolean): void {
+                    if (on) { saved ??= read(); write({ ...POLE, lowerRadiusLimit: undefined, upperRadiusLimit: undefined }); }
+                    else if (saved) { const restored = saved; saved = null; write(restored); }
+                },
+                dispose(): void { const base = saved ?? read(); saved = null; write({ ...base, lowerBetaLimit: classicLower, upperBetaLimit: classicUpper }); },
+            };
+        }
+        const engine = await createEngine(document.getElementById("renderCanvas") as HTMLCanvasElement);
+        const scene = createSceneContext(engine);
+        const camera = createArcRotateCamera(0, 1, 8, { x: 0, y: 0, z: 0 });
+        scene.camera = camera;
+        setCameraLimits(camera, { lowerRadiusLimit: 2, upperRadiusLimit: 20 }, scene);
+        const held = controls(camera, scene, Date.now() < 0 ? undefined : 0.3, 1.2);
+        held.sync();
+        held.script(true);
+        held.script(false);
+        held.dispose();
+    `);
+    // Limits that are all numbers write each as present.
+    assert.match(
+        result.cpp,
+        /bbl::write_camera_limits\([^,]+, [^,]+, 48u, std::array<std::optional<double>, 6>\{std::nullopt, std::nullopt, std::nullopt, std::nullopt, 2\.0, 20\.0\}\)/,
+    );
+    // The keys each record holds are its present mask; a value that may be
+    // undefined is written as it is.
+    const writes = [
+        ...result.cpp.matchAll(
+            /bbl::write_camera_limits\([^,]+, [^,]+, (\d+)u, std::array<std::optional<double>, 6>\{std::nullopt, std::nullopt, /g,
+        ),
+    ].map((match) => match[1]);
+    assert.deepEqual(writes, ["48", "12", "60", "60", "60"]);
 });
 
 test("lowers Scene 12's imported recursive mesh walk and animated root clones", () => {
@@ -17946,6 +18565,28 @@ const SHADER_SAMPLER_SOURCE = (
         await startEngine(engine);
     }
 `;
+
+test("a shader material's sampler list mapped by a call is the names that call computes", () => {
+    // The mapped part has no element to spell: the call runs at
+    // generation over the module's own list.
+    const source = SHADER_SAMPLER_SOURCE(
+        `samplers: [...BINDINGS.map(([, name]) => name), ...(Date.now() < 0 ? [] : BINDINGS.map(([, name]) => suffixed(name, "secondary")))],`,
+        "return textureSample(albedo,albedoSampler,input.uv)+textureSample(albedoSecondary,albedoSecondarySampler,input.uv)*0.0;",
+    ).replace(
+        "async function main() {",
+        `const BINDINGS = [["color", "albedo"]] as const;
+    function suffixed(name: string, role: string): string { return name + role[0]!.toUpperCase() + role.slice(1); }
+    async function main() {`,
+    );
+    assert.throws(
+        () => compileSource(source, labDeployment),
+        /Expected a static array literal/,
+    );
+    const settled = source.replace("Date.now() < 0", "false");
+    const [program] = compileSource(settled, labDeployment).manifest
+        .customShaderPrograms;
+    assert.deepEqual(program?.samplers, ["albedo", "albedoSecondary"]);
+});
 
 test("reaches a shader material's samplers and defines", () => {
     const result = compileSource(

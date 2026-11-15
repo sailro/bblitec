@@ -186,6 +186,10 @@ const PLATFORM_METHOD_EFFECTS: ReadonlyMap<
             ),
         ]),
     ],
+    [
+        "DocumentOrShadowRoot",
+        new Map(methodEffects("reads", "elementFromPoint")),
+    ],
     ["DocumentFragment", new Map(methodEffects("reads", "getElementById"))],
     ["NonElementParentNode", new Map(methodEffects("reads", "getElementById"))],
     [

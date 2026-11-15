@@ -319,6 +319,109 @@ test("runtime img src reads requests a class queue holds in private fields", () 
     assert.ok(!outputs.includes("assets/ui/blue.png"));
 });
 
+test("runtime img src reads the request a class getter returns", () => {
+    const result = compileEntry(`
+        interface Card { name: string; picture: string }
+        class Deck<T> {
+            #shown: T | null = null;
+            get shown(): T | null {
+                return this.#shown;
+            }
+            deal(card: T): void {
+                this.#shown = card;
+            }
+        }
+        const deck = new Deck<Card>();
+        const face = { get picture(): string { return deck.shown ? deck.shown.picture : "/assets/ui/red.png"; } };
+        function reveal(card: Card): void {
+            const img = document.createElement("img");
+            img.id = card.name;
+            img.src = appUrl(card.picture);
+            document.body.append(img);
+        }
+        deck.deal({ name: "a", picture: "/assets/ui/green.png" });
+        if (deck.shown) reveal(deck.shown);
+        const back = document.createElement("img");
+        back.src = appUrl(face.picture);
+        document.body.append(back);
+    `);
+    const outputs = result.manifest.assets.map((asset) => asset.output);
+    for (const name of ["red", "green"])
+        assert.ok(outputs.includes(`assets/ui/${name}.png`), name);
+    assert.ok(!outputs.includes("assets/ui/blue.png"));
+});
+
+test("runtime img src reads one instantiation of a generic class apart from another", () => {
+    // The notes' pictures are whatever the page stores: they are no part of
+    // what a deck of cards holds.
+    const result = compileEntry(`
+        interface Card { name: string; picture: string }
+        class Deck<T> {
+            #shown: T | null = null;
+            get shown(): T | null {
+                return this.#shown;
+            }
+            deal(card: T): T | null {
+                const first = this.#shown === null;
+                this.#shown = card;
+                return first ? card : null;
+            }
+        }
+        function reveal(card: Card): void {
+            const img = document.createElement("img");
+            img.id = card.name;
+            img.src = appUrl(card.picture);
+            document.body.append(img);
+        }
+        const cards = new Deck<Card>();
+        const dealt = cards.deal({ name: "a", picture: "/assets/ui/green.png" });
+        if (dealt) reveal(dealt);
+        cards.deal({ name: "b", picture: "/assets/ui/red.png" });
+        if (cards.shown) reveal(cards.shown);
+        interface Note { text: string; picture?: string }
+        const notes = new Deck<Note>();
+        notes.deal({ text: "n", picture: localStorage.getItem("picture") ?? undefined });
+        console.log(notes.shown?.text ?? "");
+    `);
+    const outputs = result.manifest.assets.map((asset) => asset.output);
+    for (const name of ["red", "green"])
+        assert.ok(outputs.includes(`assets/ui/${name}.png`), name);
+    assert.ok(!outputs.includes("assets/ui/blue.png"));
+    // Two decks of one instantiation may be one deck: their cards are read together.
+    assert.throws(
+        () =>
+            compileEntry(`
+        interface Card { name: string; picture: string }
+        class Deck<T> {
+            #shown: T | null = null;
+            get shown(): T | null {
+                return this.#shown;
+            }
+            deal(card: T): T | null {
+                const first = this.#shown === null;
+                this.#shown = card;
+                return first ? card : null;
+            }
+        }
+        function reveal(card: Card): void {
+            const img = document.createElement("img");
+            img.id = card.name;
+            img.src = appUrl(card.picture);
+            document.body.append(img);
+        }
+        const cards = new Deck<Card>();
+        const dealt = cards.deal({ name: "a", picture: "/assets/ui/green.png" });
+        if (dealt) reveal(dealt);
+        cards.deal({ name: "b", picture: "/assets/ui/red.png" });
+        if (cards.shown) reveal(cards.shown);
+        const more = new Deck<Card>();
+        more.deal({ name: "c", picture: localStorage.getItem("picture") ?? "" });
+        console.log(more.shown?.name ?? "");
+    `),
+        /An img src write requires sources generation can package/,
+    );
+});
+
 test("runtime img src reads the parameters a spread tuple fills", () => {
     const result = compileEntry(`
         type Shade = "red" | "green";
@@ -364,6 +467,12 @@ test("runtime img src reads the calls a function stored in a typed slot receives
         // A const its function type annotates.
         `const stored: (icon: string) => void = show;
         stored("/assets/ui/blue.png");`,
+        // A member a named function type types, called through a parameter.
+        `type Sink = (icon: string) => void;
+        interface Api { show: Sink; name: string }
+        const api: Api = { show, name: "ui" };
+        function build(options: { ui: Api }): void { options.ui.show("/assets/ui/blue.png"); }
+        build({ ui: api });`,
     ]) {
         const outputs = compileEntry(`${show}${body}`).manifest.assets.map(
             (asset) => asset.output,

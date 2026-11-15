@@ -1300,6 +1300,25 @@ const authoredInputs: readonly SceneInput[] = [
         },
     },
     {
+        // Textures loaded from bytes the scene holds, through object URLs:
+        // a KTX2 and a PNG member of a fetched zip archive the scene
+        // inflates, and a whole fetched KTX2 file.
+        id: "regression-archive-textures",
+        name: "Regression - Archive Textures",
+        source: "examples/regression-archive-textures.ts",
+        sourceOrigin: "bblitec-regression",
+        title: "Babylon Lite Native - Archive Textures",
+        parity: {
+            maxFullMad: 0.001,
+            maxForegroundMad: 0.001,
+            backgroundColor: [13, 15, 23],
+            backgroundThreshold: 30,
+            // The fetches make the scene a Window realm: the capture
+            // counts engine frames.
+            nativeEnvironment: adHocCaptureEnvironment(),
+        },
+    },
+    {
         // Scene 218's VAT shark posed by one setVatTime write after
         // attachVat, with no handle update.
         id: "regression-vat-time",
@@ -1399,6 +1418,27 @@ const authoredInputs: readonly SceneInput[] = [
         parity: {
             // Past the refit that demotes casters quiet for 120 frames; the
             // mover's position is a function of the frame.
+            referenceFrame: 240,
+            maxFullMad: 0.001,
+            maxForegroundMad: 0.001,
+            backgroundColor: [127, 153, 191],
+            backgroundThreshold: 30,
+            nativeEnvironment: fixedCaptureEnvironment(),
+        },
+    },
+    {
+        // The static cache's coverage refit over a stabilized generator
+        // with a world-space bias: the camera and the light move every
+        // frame, so cascades leaving coverage re-render beside a drift
+        // refit spread over frames.
+        id: "regression-csm-coverage",
+        name: "Regression - CSM Coverage Refit",
+        source: "examples/regression-csm-coverage.ts",
+        sourceOrigin: "bblitec-regression",
+        title: "Babylon Lite Native - CSM Coverage Refit",
+        parity: {
+            // Past the first demotion; the camera, the light and the mover
+            // are functions of the frame.
             referenceFrame: 240,
             maxFullMad: 0.001,
             maxForegroundMad: 0.001,

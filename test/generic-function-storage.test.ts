@@ -311,6 +311,43 @@ check(
 `,
 );
 
+// A value held as `unknown` stays that erased value where a test narrowed it:
+// TypeScript types it `{}` past a test for `null`, `undefined` or truthiness.
+check(
+    "erased-adapter-narrowed-state",
+    `
+    interface Adapter<S> { current(): S; cloneState(state: S): S; statesEqual(a: S, b: S): boolean }
+    interface Active<S> { readonly adapter: Adapter<S>; readonly initial: S; rejected: S | null; accepted?: S }
+    let active: Active<unknown> | null = null;
+    function begin<S>(adapter: Adapter<S>): void { active = { adapter, initial: adapter.current(), rejected: null }; }
+    function reject(): void {
+        const gesture = active!;
+        gesture.rejected = gesture.adapter.cloneState(gesture.initial);
+    }
+    function audit(): { rejected: unknown; accepted: unknown; same: boolean } | null {
+        const gesture = active;
+        if (!gesture) return null;
+        return {
+            rejected: gesture.rejected === null ? null : gesture.adapter.cloneState(gesture.rejected),
+            accepted: gesture.accepted !== undefined ? gesture.adapter.cloneState(gesture.accepted) : null,
+            same: gesture.rejected ? gesture.adapter.statesEqual(gesture.rejected, gesture.initial) : false,
+        };
+    }
+    interface House { x: number }
+    interface Tower { h: number; name: string }
+    begin<House>({ current: () => ({ x: 1 }), cloneState: (s) => ({ ...s }), statesEqual: (a, b) => a.x === b.x });
+    const before = audit()!;
+    if (before.rejected !== null || before.accepted !== null || before.same) throw new Error("nothing rejected yet");
+    reject();
+    const house = audit()!;
+    if ((house.rejected as House).x !== 1 || !house.same) throw new Error("house rejection");
+    begin<Tower>({ current: () => ({ h: 2, name: "t" }), cloneState: (s) => ({ ...s }), statesEqual: (a, b) => a.h === b.h && a.name === b.name });
+    active!.accepted = active!.adapter.cloneState(active!.initial);
+    const tower = audit()!;
+    if (tower.rejected !== null || (tower.accepted as Tower).name !== "t" || tower.same) throw new Error("tower acceptance");
+`,
+);
+
 test("Arguments object unsupported mutations and unconstrained storage refuse explicitly", () => {
     for (const mutation of [
         "arguments[0]=3;",

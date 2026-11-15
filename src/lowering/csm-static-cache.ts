@@ -219,6 +219,10 @@ inline void csm_refit_start(const Engine& engine, CsmStaticCacheState& cache,
     runtime->on_move = js::Callback<void(CsmRefitCasterView)>(
         [moved = &runtime->moved](CsmRefitCasterView) { *moved = true; });
     cache.refit = std::move(runtime);
+    // createCoverageState, for a padding the cache keeps.
+    cache.coverage.reset();
+    if (cache.options.cascade_coverage_padding != 0.0)
+        cache.coverage = CsmCoverageState{.radius_scale = 1.0 + cache.options.cascade_coverage_padding};
 }
 
 /** \`isDynamic\`: a caster no gate has adopted is dynamic. */
@@ -266,8 +270,53 @@ function assertCsmStaticCacheContracts(context: LoweringContext): void {
         "scheduler.arm(cached._gate._lastRefitDriftOnly() && !scheduler.pending())",
         "scheduler.pending() ? scheduler.take() : null",
         "cached._gate._lastDynamicChanged() || cascades?.length === cfg._numCascades",
+        "!!coverage && !camera._useFloatingOrigin",
+        "coverageRefit ? swapped || (camera._projRev ?? 0) !== coverage._projRev || camAspect !== cached._lastCamAspect : cameraChanged",
+        "coverageRefit && camera.worldMatrixVersion !== coverage._poseVersion",
+        "coverageRefit && camVersion !== coverage._notifiedCamVersion",
+        "decision.refit || missed",
+        "coverage?._radiusScale ?? 1",
+        "!merged.includes(cascade)",
+        "scheduler.claim(cascade)",
+        "cascades && coverageRefit && (coverage._fitCamera !== camera || coverage._fitPose !== camera.worldMatrixVersion)",
     ])
         context.expectShapeCount(render, shape, "CSM cached render");
+    // The frame notifies the receivers of a camera change it published no
+    // cascade for, on both of its exits.
+    context.expectShapeCount(
+        render,
+        "notifyReceivers(sg, cached._uboData)",
+        "CSM cached camera notification",
+        2,
+    );
+    const coverage = context.functionDeclaration(
+        cacheModule,
+        "createCoverageState",
+    ).declaration;
+    const state = coverage.body?.statements[0];
+    const literal =
+        state && ts.isReturnStatement(state) && state.expression
+            ? unwrapLiteral(state.expression)
+            : undefined;
+    if (!literal)
+        context.contractError(coverage, "Expected the coverage state literal.");
+    context.assertExpressionShape(
+        context.propertyInitializer(literal, "_radiusScale"),
+        "1 + padding",
+        "Coverage radius scale",
+    );
+    // What CsmCoverageState starts its revisions at.
+    for (const name of [
+        "_projRev",
+        "_poseVersion",
+        "_fitPose",
+        "_notifiedCamVersion",
+    ])
+        context.assertExpressionShape(
+            context.propertyInitializer(literal, name),
+            "-1",
+            "Coverage revision",
+        );
     // A dynamic pass runs only when it lists a caster, in both copy arms.
     context.expectShapeCount(
         render,
@@ -288,6 +337,67 @@ function assertCsmStaticCacheContracts(context: LoweringContext): void {
         "_biasViewProjection(transform, clipBias)",
     ])
         context.expectShapeCount(publish, shape, "CSM cascade publication");
+}
+
+/**
+ * `cascadesLeavingCoverage`, restated under its pinned shapes: the cached
+ * frame's coverage test, on the cascades the generator published. `project`
+ * is the camera's view-projection, as the cascade fit takes it.
+ */
+export function csmCoverageKernel(context: LoweringContext): string {
+    const leaving = context.functionDeclaration(
+        cacheModule,
+        "cascadesLeavingCoverage",
+    ).declaration;
+    for (const shape of [
+        "invertMat4ToRefOrIdentity(getViewProjectionMatrix(camera, aspect), invViewProj)",
+        "(ubo[64 + cascade]! - near) / range",
+        "_csmSliceCornersInto(corners, invViewProj, prevSplit, split)",
+        "2 / Math.hypot(ubo[t]!, ubo[t + 4]!, ubo[t + 8]!)",
+        "ubo[t]! * px + ubo[t + 4]! * py + ubo[t + 8]! * pz + ubo[t + 12]!",
+        "ubo[t + 1]! * px + ubo[t + 5]! * py + ubo[t + 9]! * pz + ubo[t + 13]!",
+        "view[2]! * px + view[6]! * py + view[10]! * pz + view[14]!",
+        "x * x + y * y > 1 || z < 0 || z > depth",
+    ])
+        context.expectShapeCount(leaving, shape, "CSM coverage test");
+    return `/**
+ * cascadesLeavingCoverage: the cascades whose published map no longer
+ * covers the camera's current slice. The published block holds each
+ * transform and split as the float the receiver reads.
+ */
+template <typename Camera, typename Project>
+inline std::vector<std::uint32_t> csm_cascades_leaving_coverage(const ShadowGeneratorRecord& generator,
+                                                                 const Camera& camera, double aspect,
+                                                                 const Project project) {
+    std::vector<std::uint32_t> out;
+    const double near_plane = camera.near_plane;
+    const double range = camera.far_plane - near_plane;
+    std::array<float, 16> inverse{};
+    mat4_invert_to_ref_or_identity(project(camera, aspect), inverse);
+    std::array<std::array<double, 3>, 8> corners{};
+    double previous_split = 0.0;
+    for (std::uint32_t cascade = 0; cascade < generator.csm_num_cascades; ++cascade) {
+        const ShadowCascade& published = generator.csm_cascades[cascade];
+        const std::array<float, 16>& ubo = published.transform;
+        const std::array<float, 16>& view = published.view;
+        const double split = (static_cast<double>(static_cast<float>(published.view_frustum_z)) - near_plane) / range;
+        csm_slice_corners_into(corners, inverse, previous_split, split);
+        previous_split = split;
+        const double depth = 2.0 / bbl::js::hypot_js({static_cast<double>(ubo[0]), static_cast<double>(ubo[4]),
+                                                      static_cast<double>(ubo[8])});
+        for (const std::array<double, 3>& corner : corners) {
+            const double px = corner[0], py = corner[1], pz = corner[2];
+            const double x = ubo[0] * px + ubo[4] * py + ubo[8] * pz + ubo[12];
+            const double y = ubo[1] * px + ubo[5] * py + ubo[9] * pz + ubo[13];
+            const double z = view[2] * px + view[6] * py + view[10] * pz + view[14];
+            if (x * x + y * y > 1.0 || z < 0.0 || z > depth) {
+                out.push_back(cascade);
+                break;
+            }
+        }
+    }
+    return out;
+}`;
 }
 
 /**
@@ -314,6 +424,7 @@ export function csmStaticCacheHeader(context: LoweringContext): string {
 #include <bblite/runtime.hpp>
 #include <bblite/upstream/pinned_shadow.hpp>
 #include <bblite/upstream/csm_shadow.hpp>
+#include <bblite/upstream/render_capabilities.hpp>
 ${library.includes.map((header) => `#include <${header}>`).join("\n")}
 
 #include <algorithm>
@@ -352,9 +463,12 @@ inline void csm_publish_cascades(ShadowGeneratorRecord& generator, const std::ve
     }
 }
 
+${csmCoverageKernel(context)}
+
 /**
  * One frame of \`renderCsmShadowMapCached\`, before its GPU work: returns
- * whether cascades were published (the receiver block moved), and leaves the
+ * whether the receivers are notified (cascades were published, or the
+ * coverage refit saw a camera change it published none for), and leaves the
  * plan on the cache state. \`fit\` fills the casters the cascade fit reads.
  */
 template <typename Fit>
@@ -369,8 +483,19 @@ inline bool csm_static_cache_frame(Engine& engine, const Scene& scene, ShadowGen
     cache.copy_layers.clear();
     CsmRefitRuntime* refit = csm_refit_runtime(cache);
     if (!camera || !refit) return false;
+    const bool swapped = camera != cache.last_camera;
     const bool camera_changed =
-        camera != cache.last_camera || camera_version != cache.last_camera_version || camera_aspect != cache.last_camera_aspect;
+        swapped || camera_version != cache.last_camera_version || camera_aspect != cache.last_camera_aspect;
+    // With the coverage refit only a camera swap or a projection or aspect
+    // change refits every cascade; a pose change is answered per cascade.
+    CsmCoverageState* const coverage = cache.coverage ? &*cache.coverage : nullptr;
+    // Not under a floating origin, the engine's mode: the camera's
+    // view-projection is eye-relative there, and every camera change refits.
+    const bool coverage_refit = coverage != nullptr && BBLITE_FLOATING_ORIGIN == 0;
+    const bool refit_for_camera =
+        coverage_refit ? swapped || camera->projection_revision != coverage->projection_revision ||
+                             camera_aspect != cache.last_camera_aspect
+                       : camera_changed;
     const double content_version = static_cast<double>(scene.state->renderable_version);
     const bool content_changed = content_version != cache.cached_content_version;
     csm_refit_sync(engine, *refit, generator);
@@ -379,7 +504,7 @@ inline bool csm_static_cache_frame(Engine& engine, const Scene& scene, ShadowGen
     refit->moved = false;
     const CsmRefitDecision decision = refit->gate->update(
         world[0] * dx + world[4] * dy + world[8] * dz, world[1] * dx + world[5] * dy + world[9] * dz,
-        world[2] * dx + world[6] * dy + world[10] * dz, now_ms, camera_changed,
+        world[2] * dx + world[6] * dy + world[10] * dz, now_ms, refit_for_camera,
         generator.force_refresh_every_frame || content_changed, refit->on_move, refit->on_move);
     if (refit->moved || cache.membership_dirty) {
         // The refill re-partitions the same casters between this generator's
@@ -393,16 +518,29 @@ inline bool csm_static_cache_frame(Engine& engine, const Scene& scene, ShadowGen
         cache.refilled = true;
     }
     const bool had_pending = refit->scheduler->pending();
-    if (!decision.render_dynamic && !had_pending) return false;
-    if (decision.refit) {
+    const auto project = [](const CameraRecord& fitted_camera, double fitted_aspect) {
+        return build_view_projection(fitted_camera, fitted_aspect);
+    };
+    // Tested against the maps published so far, before this frame
+    // publishes anything.
+    std::vector<std::uint32_t> missed;
+    if (coverage_refit && camera->world_matrix_version != coverage->pose_version) {
+        coverage->pose_version = camera->world_matrix_version;
+        generator.csm_cascades.resize(count);
+        missed = csm_cascades_leaving_coverage(generator, *camera, camera_aspect, project);
+    }
+    const bool notify_camera = coverage_refit && camera_version != coverage->notified_camera_version;
+    if (coverage) coverage->notified_camera_version = camera_version;
+    if (!decision.render_dynamic && !had_pending && missed.empty()) return notify_camera;
+    // The fit the published cascades are taken from: a coverage miss, and a
+    // spread cascade shown with a later pose than its fit, need a fresh one.
+    const auto fit_cascades = [&] {
         const std::vector<ShadowCaster>& casters = fit();
         CsmCascadeScratch scratch(count);
         const CsmConfig cfg = csm_config(generator);
         const CsmCascades& cascades = csm_compute_cascades(
-            camera_aspect, *camera, light, cfg, casters, scratch,
-            [](const CameraRecord& fitted_camera, double fitted_aspect) {
-                return build_view_projection(fitted_camera, fitted_aspect);
-            });
+            camera_aspect, *camera, light, cfg, casters, scratch, project,
+            coverage ? coverage->radius_scale : 1.0);
         cache.pending.resize(count);
         for (std::size_t index = 0; index < count; ++index) {
             ShadowCascade& fitted = cache.pending[index];
@@ -413,15 +551,34 @@ inline bool csm_static_cache_frame(Engine& engine, const Scene& scene, ShadowGen
             fitted.caster_view_projection = fitted.transform;
             csm_bias_view_projection(fitted.caster_view_projection, csm_caster_clip_bias(cfg, cascades, index));
         }
+        if (coverage) {
+            coverage->fit_camera = camera;
+            coverage->fit_pose = camera->world_matrix_version;
+        }
+    };
+    if (decision.refit || !missed.empty()) fit_cascades();
+    if (decision.refit) {
         cache.last_camera_version = camera_version;
         cache.last_camera = camera;
         cache.last_camera_aspect = camera_aspect;
         cache.cached_content_version = content_version;
         refit->scheduler->arm(refit->gate->last_refit_drift_only() && !refit->scheduler->pending());
+        if (coverage) coverage->projection_revision = camera->projection_revision;
     }
     std::vector<std::uint32_t> cascades;
     if (refit->scheduler->pending())
         for (const double cascade : refit->scheduler->take()) cascades.push_back(static_cast<std::uint32_t>(cascade));
+    if (!missed.empty()) {
+        // The missed cascades are re-rendered now, outside the spread budget.
+        for (const std::uint32_t cascade : missed) {
+            if (std::find(cascades.begin(), cascades.end(), cascade) != cascades.end()) continue;
+            refit->scheduler->claim(static_cast<double>(cascade));
+            cascades.push_back(cascade);
+        }
+    } else if (!cascades.empty() && coverage_refit &&
+               (coverage->fit_camera != camera || coverage->fit_pose != camera->world_matrix_version)) {
+        fit_cascades();
+    }
     for (const std::uint32_t cascade : cascades) cache.static_due[cascade] = true;
     if (!cascades.empty()) csm_publish_cascades(generator, cascades);
     const auto dynamic_drawn = [&](std::uint32_t cascade) {
@@ -439,7 +596,7 @@ inline bool csm_static_cache_frame(Engine& engine, const Scene& scene, ShadowGen
             cache.dynamic_due[cascade] = dynamic_drawn(cascade);
         }
     }
-    return !cascades.empty();
+    return !cascades.empty() || notify_camera;
 }
 
 } // namespace bbl::upstream
@@ -474,7 +631,6 @@ export function lowerCsmStaticCacheEnable(context: LoweringContext): string {
     const bindings = new Map<string, PinnedBinding>([
         ["options.refitAngle", { cpp: "refit_angle", type: "scalar" }],
         ["options.refitMaxIntervalMs", optional("refit_max_interval_ms")],
-        // The compiler refuses the new coverage option; omission retains the pin's default.
         [
             "options.cascadeCoveragePadding",
             optional("cascade_coverage_padding"),
@@ -630,18 +786,13 @@ export function lowerCsmStaticCacheEnable(context: LoweringContext): string {
                         expression,
                         "Expected the cache's four options.",
                     );
-                context.assertExpressionShape(
-                    members[3]![1],
-                    "cascadeCoveragePadding",
-                    "Omitted coverage option",
-                );
-                const [angle, interval, perFrame] = members.map((member) =>
-                    lowerer.expression(member![1]),
+                const [angle, interval, perFrame, padding] = members.map(
+                    (member) => lowerer.expression(member![1]),
                 );
                 reached.add(assigned);
                 return [
                     `${indent}auto cache = std::make_shared<CsmStaticCacheState>();`,
-                    `${indent}cache->options = {${angle}, ${interval}, static_cast<std::uint32_t>(${perFrame})};`,
+                    `${indent}cache->options = {${angle}, ${interval}, static_cast<std::uint32_t>(${perFrame}), ${padding}};`,
                     `${indent}generator.csm_cache = std::move(cache);`,
                 ];
             }
@@ -706,9 +857,9 @@ export function lowerCsmStaticCacheEnable(context: LoweringContext): string {
 std::optional<js::Error> enable_csm_static_cache(
     Engine& engine, ShadowGeneratorHandle handle, double refit_angle,
     std::optional<double> refit_max_interval_ms,
-    std::optional<double> static_cascades_per_frame) {
+    std::optional<double> static_cascades_per_frame,
+    std::optional<double> cascade_coverage_padding) {
     ShadowGeneratorRecord& generator = ${recordAt("engine.shadow_generators", "handle")};
-    const std::optional<double> cascade_coverage_padding;
 ${body}
 }
 `;

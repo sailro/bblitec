@@ -331,37 +331,43 @@ int main() {
             assert(window_document_engine().document_hidden == hidden);
             visibility_changes.push_back(hidden);
         });
-        on_dom_pointer(engine, DomEventTarget::node(button.value), "pointerdown", 1,
-                       [button, canvas, frame](const PlatformMouseEvent& pointer) {
-                           // A repeated hidden state dispatches no second change.
-                           assert((visibility_changes == std::vector<bool>{true, false}));
-                           animation_at_down = animation_count;
-                           input_phase.store(1);
-                           if (prevent_down)
-                               pointer.prevent_default();
-                           // Repeated synchronous layout reads must complete without
-                           // presenting or advancing RAF during the input transaction.
-                           for (int update = 0; update < 5; ++update) {
-                               ui_set_text(window_document_engine(), button,
-                                           std::to_string(update));
-                               const auto bounds = window_element_size(button);
-                               assert(bounds.width == 80);
-                           }
-                           // A first computed style read publishes its request and
-                           // adopts the display's serialization.
-                           auto& owner = window_document_engine();
-                           assert(ui_computed_style(owner, button, "visibility") == "visible");
-                           assert(ui_computed_style(owner, button, "z-index") == "auto");
-                           assert(ui_computed_style(owner, button, "opacity") == "1");
-                           check_host_metrics(canvas);
-                           // The following packets must see a newly added listener even
-                           // before another document snapshot is published.
-                           on_dom_pointer(window_document_engine(), DomEventTarget::window(),
-                                          "pointermove", 3, [](const PlatformMouseEvent& event) {
-                                              assert(event.client_x == 30 + moved % 2);
-                                              ++moved;
-                                          });
-                       });
+        on_dom_pointer(
+            engine, DomEventTarget::node(button.value), "pointerdown", 1,
+            [button, canvas, frame](const PlatformMouseEvent& pointer) {
+                // A repeated hidden state dispatches no second change.
+                assert((visibility_changes == std::vector<bool>{true, false}));
+                animation_at_down = animation_count;
+                input_phase.store(1);
+                if (prevent_down)
+                    pointer.prevent_default();
+                // Repeated synchronous layout reads must complete without
+                // presenting or advancing RAF during the input transaction.
+                for (int update = 0; update < 5; ++update) {
+                    ui_set_text(window_document_engine(), button, std::to_string(update));
+                    const auto bounds = window_element_size(button);
+                    assert(bounds.width == 80);
+                }
+                // A hit test asks the display about the document as published now.
+                const auto box = window_element_size(button);
+                assert(ui_element_from_point(window_document_engine(), box.left + box.width / 2,
+                                             box.top + box.height / 2) ==
+                       DomEventTarget::node(button.value));
+                assert(!ui_element_from_point(window_document_engine(), -1, -1));
+                // A first computed style read publishes its request and
+                // adopts the display's serialization.
+                auto& owner = window_document_engine();
+                assert(ui_computed_style(owner, button, "visibility") == "visible");
+                assert(ui_computed_style(owner, button, "z-index") == "auto");
+                assert(ui_computed_style(owner, button, "opacity") == "1");
+                check_host_metrics(canvas);
+                // The following packets must see a newly added listener even
+                // before another document snapshot is published.
+                on_dom_pointer(window_document_engine(), DomEventTarget::window(), "pointermove", 3,
+                               [](const PlatformMouseEvent& event) {
+                                   assert(event.client_x == 30 + moved % 2);
+                                   ++moved;
+                               });
+            });
         const auto finish = [&realm] {
             input_phase.store(2);
             clicked = true;

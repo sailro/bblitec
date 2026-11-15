@@ -2,6 +2,7 @@ import {
     someAnalysisNode,
     findAnalysisNodeWithState,
 } from "./analysis-walk.js";
+import { fixedByCaseSplit } from "./runtime-case-split.js";
 import { EmissionSet, EmissionMap } from "./emission-transaction.js";
 import type { LoweringServices } from "./lowering-services.js";
 import ts from "typescript";
@@ -79,6 +80,8 @@ import {
 
 export interface NativeFunctionContext extends Pick<
     LoweringServices,
+    | "valueOverrides"
+    | "conditionOverrides"
     | "allocateTemporaryCppName"
     | "canReplaySharedCallEffects"
     | "checker"
@@ -429,6 +432,7 @@ export class NativeFunctionLowerer {
             )
         )
             return undefined;
+        if (fixedByCaseSplit(this.context, call)) return undefined;
         const signature = this.resolveSignature(declaration, callee);
         if (!signature) {
             return undefined;

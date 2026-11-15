@@ -2031,6 +2031,12 @@ export function patternSlots(
         | ts.BindingPattern
         | ts.ObjectLiteralExpression
         | ts.ArrayLiteralExpression,
+): PatternSlot[];
+export function patternSlots(
+    pattern:
+        | ts.BindingPattern
+        | ts.ObjectLiteralExpression
+        | ts.ArrayLiteralExpression,
 ): PatternSlot[] {
     const slots: PatternSlot[] = [];
     // `x = fallback` in an assignment pattern.

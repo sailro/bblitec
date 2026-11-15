@@ -57,6 +57,7 @@ export {
     isBinaryDataType,
     isNumericSequenceType,
     isTypedArrayType,
+    isTypedArrayUnion,
     typedArrayBytesPerElement,
     typedArrayConstructorName,
     typedArrayStem,
@@ -168,6 +169,8 @@ import {
     fixedTupleElements,
     signatureParameterTypes,
     declaredRecordName,
+    holdsAnyPresentValue,
+    isEmptyObjectType,
     holdsObjectKeyword,
     valueKindOf,
 } from "./type-facts.js";
@@ -2396,7 +2399,10 @@ export class DataTypeRegistry {
                     (actual.kind === "handle" &&
                         (mapped.kind === "struct" ||
                             (mapped.kind === "handle" &&
-                                mapped.handle === actual.handle))))
+                                mapped.handle === actual.handle))) ||
+                    // A platform object (a GPU adapter, its info) is the
+                    // object a record type of its members views.
+                    (isOpaqueReference(actual) && mapped.kind === "struct"))
             )
                 return part;
             const element =
@@ -2452,6 +2458,25 @@ export class DataTypeRegistry {
     ): void {
         const demand = this.nativeRecordViewDemand(name, actual, node);
         if (demand) throw new NativeRecordStorageRequired(demand);
+    }
+
+    /**
+     * A record stored where a DOM event target is held is that target, which
+     * the program asserted its record type views: demands the view for the
+     * record type struct `name` maps. Returns where the struct maps none.
+     */
+    public requireEventTargetView(name: string, node: ts.Node): void {
+        const source = this.nativeRecordSources.get(name);
+        if (!source || this.isClassStruct(name) || !ts.isExpression(node))
+            return;
+        throw new NativeRecordStorageRequired({
+            ...source,
+            native: {
+                type: this.checker.getTypeAtLocation(node),
+                node: unwrapExpression(node),
+                storage: { kind: "event-target" },
+            },
+        });
     }
 
     /**
@@ -2938,34 +2963,39 @@ export class DataTypeRegistry {
     }
 
     /**
-     * A property the shapes of one layout declare as functions of different
-     * signatures (`bind(from, variant, count)` beside `bind(from, count)`):
-     * one slot holding the function of whichever shape the record is, which
-     * a read selects by the signature its own type gives the property
-     * (`DataLowerer` struct reads). Undefined for any other disagreement.
+     * A property the shapes of one layout store different ways: functions
+     * of different signatures (`bind(from, variant, count)` beside
+     * `bind(from, count)`), a method beside a plain value, or lists of
+     * different elements (`items: number[]` beside `items: string[]`). One
+     * slot holds the value of whichever shape the record is, which a read
+     * selects by the type its own receiver gives the property
+     * (`DataLowerer` struct reads). Each arm is a scalar, a function or
+     * storage a copy shares, so a read arm is the value the slot holds.
+     * Undefined for any other disagreement.
      */
-    private signatureUnionField(
+    private shapeUnionField(
         values: readonly { mapped: DataType | undefined }[],
         storage: (mapped: DataType) => DataType,
     ): DataType<"union"> | undefined {
         const members: DataType[] = [];
         for (const value of values) {
             const stored = value.mapped && storage(value.mapped);
-            // A shape may declare it a plain value (`count: number` beside
-            // a `count(): number` method): its own arm of the slot.
             if (
                 !stored ||
-                (stored.kind === "function" && stored.generic) ||
-                (stored.kind !== "function" && !isScalarDataType(stored))
+                (stored.kind === "function"
+                    ? stored.generic
+                    : !isScalarDataType(stored) &&
+                      !sharesStorageKind(stored) &&
+                      !(
+                          stored.kind === "struct" &&
+                          this.isReferenceStruct(stored.name)
+                      ))
             )
                 return undefined;
             if (!members.some((member) => this.joinedStorage(member, stored)))
                 members.push(stored);
         }
-        return members.length > 1 &&
-            members.some((member) => member.kind === "function")
-            ? { kind: "union", members }
-            : undefined;
+        return members.length > 1 ? { kind: "union", members } : undefined;
     }
 
     /** Synthetic own-presence slots alone do not change a method's receiver. */
@@ -4742,7 +4772,11 @@ export class DataTypeRegistry {
         const substituted = this.substituteTypeParameter(type);
         if (substituted) return this.dynamicJsonType(substituted);
         if ((type.flags & ts.TypeFlags.Unknown) !== 0) return { kind: "json" };
-        if (this.holdsObjectValue(type)) return { kind: "json" };
+        if (
+            this.holdsObjectValue(type) ||
+            holdsAnyPresentValue(this.checker, type)
+        )
+            return { kind: "json" };
         const element = this.checker.isArrayType(type)
             ? this.checker.getIndexTypeOfType(type, ts.IndexKind.Number)
             : this.checker.getIndexTypeOfType(type, ts.IndexKind.String);
@@ -4831,15 +4865,9 @@ export class DataTypeRegistry {
 
     /** `{}` or `object`: the checker's spelling of a non-null constraint, which adds no members of its own. */
     private isNonNullConstraint(type: ts.Type): boolean {
-        if ((type.flags & ts.TypeFlags.NonPrimitive) !== 0) return true;
         return (
-            (type.flags & ts.TypeFlags.Object) !== 0 &&
-            ((type as ts.ObjectType).objectFlags & ts.ObjectFlags.Anonymous) !==
-                0 &&
-            this.checker.getPropertiesOfType(type).length === 0 &&
-            callSignatures(this.checker, type, "exact").length === 0 &&
-            type.getConstructSignatures().length === 0 &&
-            this.checker.getIndexInfosOfType(type).length === 0
+            (type.flags & ts.TypeFlags.NonPrimitive) !== 0 ||
+            isEmptyObjectType(this.checker, type)
         );
     }
 
@@ -8512,7 +8540,7 @@ export class DataTypeRegistry {
                         name,
                         storedValues,
                         node,
-                    ) ?? this.signatureUnionField(storedValues, storage);
+                    ) ?? this.shapeUnionField(storedValues, storage);
                 if (!unionField)
                     this.fail(
                         node,

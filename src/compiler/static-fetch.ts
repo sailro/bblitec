@@ -10,7 +10,7 @@ import { readdirSync, statSync } from "node:fs";
 import { dirname, relative, resolve, sep } from "node:path";
 
 import { floatLiteral } from "../cpp-literals.js";
-import { readAssetBytesSync } from "./asset-bytes-sync.js";
+import { readAssetBytesSync, readAssetTextSync } from "./asset-bytes-sync.js";
 import { canonicalLocalAssetSource, resolveBundledAsset } from "./assets.js";
 import {
     deploymentAssetSource,
@@ -43,6 +43,7 @@ export interface StaticFetchContext extends Pick<
     | "checker"
     | "sourceFiles"
     | "inlinedCallArgument"
+    | "runCallOverHeldData"
 > {}
 
 export function compileStaticFetch(
@@ -620,22 +621,26 @@ export function compileStaticFetchMethod(
             );
         }
     }
-    if (method === "text") {
-        let source: string;
+    // The packaged file read at generation, as `read` takes its text.
+    const generationRead = <T>(read: (text: string) => T): T => {
         try {
-            const bytes = readAssetBytesSync(
-                owner.staticString!,
-                context.options.fileName,
+            return read(
+                readAssetTextSync(
+                    owner.staticString!,
+                    context.options.fileName,
+                ),
             );
-            source = new TextDecoder().decode(bytes);
         } catch (error: unknown) {
-            context.fail(
+            return context.fail(
                 call,
                 `Generation-time fetch of '${owner.staticString}' failed: ${
                     error instanceof Error ? error.message : String(error)
                 }`,
             );
         }
+    };
+    if (method === "text") {
+        const source = generationRead((text) => text);
         return {
             kind: "string",
             cpp: context.cppString(source),
@@ -648,21 +653,7 @@ export function compileStaticFetchMethod(
             `Generation-time fetch responses support json(), text(), and arrayBuffer(), not '${method}()'.`,
         );
     }
-    let parsed: unknown;
-    try {
-        const bytes = readAssetBytesSync(
-            owner.staticString!,
-            context.options.fileName,
-        );
-        parsed = JSON.parse(new TextDecoder().decode(bytes));
-    } catch (error: unknown) {
-        context.fail(
-            call,
-            `Generation-time fetch of '${owner.staticString}' failed: ${
-                error instanceof Error ? error.message : String(error)
-            }`,
-        );
-    }
+    const parsed = generationRead((text): unknown => JSON.parse(text));
     return jsonValue(context, parsed, call);
 }
 

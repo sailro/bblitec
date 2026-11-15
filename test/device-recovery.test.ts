@@ -70,7 +70,7 @@ test("recovery declines unrepresented callbacks, listeners and options", () => {
     for (const [from, to, expected] of [
         [
             "onLost() {",
-            "onLost(info) {",
+            "onLost(info, more) {",
             /callback parameters are not represented/,
         ],
         [
@@ -89,6 +89,34 @@ test("recovery declines unrepresented callbacks, listeners and options", () => {
             expected,
         );
     }
+});
+
+test("a recovery's onLost receives the lost device's info", () => {
+    // A loss the native device delivers is the forced `destroy()`: its
+    // reason is "destroyed", read or handed on as a value.
+    const result = compileSource(`
+        import { createEngine, createSceneContext, enableDeviceLostSceneRecovery, forceWebGpuDeviceLossForTesting, registerScene, startEngine } from "@babylonjs/lite";
+        async function main(): Promise<void> {
+            const canvas = document.createElement("canvas");
+            const engine = await createEngine(canvas);
+            await new Promise<void>((resolve) => setTimeout(resolve, 0));
+            const losses: unknown[] = [];
+            const note = (info: unknown): void => { losses.push(info); };
+            enableDeviceLostSceneRecovery(engine, {
+                onLost: (info) => {
+                    canvas.dataset.lost = info.reason + ":" + info.message.length;
+                    note(info);
+                },
+                onRecovered: () => { canvas.dataset.recovered = String(losses.length); },
+            });
+            await registerScene(createSceneContext(engine));
+            await startEngine(engine);
+            forceWebGpuDeviceLossForTesting(engine);
+        }
+        void main();
+    `);
+    assert.match(result.cpp, /->on_lost = bbl::js::make_closure\(/);
+    assert.match(result.cpp, /"destroyed:0"|"destroyed"/);
 });
 
 test("Window application realms register recovery anywhere with shared callbacks", () => {

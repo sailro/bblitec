@@ -62,6 +62,7 @@ export type SurveyRootContext = UserFunctionContext &
         | "options"
         | "checker"
         | "bindings"
+        | "callbacks"
         | "allocateUserFunctionPrefix"
         | "registerNativeBindingType"
         | "classLowerer"
@@ -118,12 +119,18 @@ export function emitSurveyRoots(
         first: ts.Statement,
         declaration: ts.SignatureDeclaration,
         lower: () => void,
+        source: Pick<ts.Node, "pos" | "end"> = declaration,
     ): void =>
-        survey.attemptRoot(context, first, () => {
-            context.captureEmittedStatements(() =>
-                withCalledTypeArguments(context, files, declaration, lower),
-            );
-        });
+        survey.attemptRoot(
+            context,
+            first,
+            () => {
+                context.captureEmittedStatements(() =>
+                    withCalledTypeArguments(context, files, declaration, lower),
+                );
+            },
+            source,
+        );
     const bodied = (
         node: ts.Node,
     ): node is SupportedFunction & {
@@ -132,7 +139,9 @@ export function emitSurveyRoots(
     context.bindings.pushScope(context.allocateUserFunctionPrefix());
     try {
         for (const file of files) emitModuleRoot(context, survey, file);
-        for (const file of files) {
+        survey.phaseEnded("module roots");
+        const sources = files.filter((file) => survey.lowersRootsOf(file));
+        for (const file of sources) {
             const visit = (node: ts.Node): void => {
                 if (
                     bodied(node) &&
@@ -154,12 +163,13 @@ export function emitSurveyRoots(
             };
             visit(file);
         }
+        survey.phaseEnded("function roots");
         // The statements no root began lower as statement roots: a dead arm
         // of a reached function, or the body of one whose own root refused
         // before its body began (a signature with no native storage). An
         // accessor's or a constructor's body has no function root: its own
         // returns are statements a statement root lowers.
-        for (const file of files)
+        for (const file of sources)
             for (const node of sourceFileNodes(file)) {
                 const member = memberBody(node);
                 const body =
@@ -173,10 +183,14 @@ export function emitSurveyRoots(
                         body,
                         member !== undefined,
                     ))
-                        root(run[0]!, node as ts.SignatureDeclaration, () =>
-                            emitStatementRoot(context, survey, run),
+                        root(
+                            run[0]!,
+                            node as ts.SignatureDeclaration,
+                            () => emitStatementRoot(context, survey, run),
+                            { pos: run[0]!.pos, end: run.at(-1)!.end },
                         );
             }
+        survey.phaseEnded("statement roots");
     } finally {
         context.bindings.popScope();
         context.defaultEngineCpp = enclosingEngine;

@@ -170,6 +170,10 @@ interface StatementContext {
     transaction(work: () => void): void;
     refusedDemand(error: unknown): CompileError | undefined;
     bindEmptyStorage(name: ts.Identifier): void;
+    readonly callbacks: Pick<
+        import("./callbacks.js").CallbackLowerer,
+        "retryForwardMiss"
+    >;
 }
 
 /** A refusal while it is being counted: the statements it rolled back, by node. */
@@ -235,6 +239,8 @@ interface Attempt {
     >;
     /** The functions whose bodies this attempt lowered outside a probe. */
     lowered: Set<ts.Node>;
+    /** Those of `lowered` whose lowering did not end: the next call lowers the body again. */
+    unfinished: Set<ts.Node>;
     /** The statement lowerings inside survey roots. */
     rooted: number;
     /** Whether the attempt lowered every statement: what follows settles the program. */
@@ -257,7 +263,73 @@ interface Attempt {
     probed: EmissionSet<ts.Statement>;
     /** Those the roots' committed probes began, which the roots' rollback takes from `probed`. */
     rootProbes: Set<ts.Statement>;
+    /**
+     * The demands of `taken` this lowering of the roots took itself: the
+     * pass's own, or a round's. Storage it built before one is what a
+     * statement left to that demand can stand on.
+     */
+    fresh: Set<string>;
+    /** Each phase the attempt ended, in order, with the statement lowerings it made. */
+    phases: { name: string; seconds: number; lowerings: number }[];
+    /** The time its outermost probes took: those kept, and those rolled back. */
+    probes: { kept: number; dropped: number };
+    /** When the phase under way began, and the lowerings made before it. */
+    phase: { started: number; lowerings: number };
+    /** The roots it lowered, in order, and the one under way. */
+    roots: SurveyRoot[];
+    root: SurveyRoot | undefined;
+    /**
+     * Where the module roots began and ended in what `distinct` and
+     * `lowered` hold, in insertion order: a round lowers them again.
+     */
+    moduleRoots: { from: RootMark; to: RootMark };
+    /** A round's sources: the files holding what it lowers again. */
+    sources?: ReadonlySet<ts.SourceFile>;
+    /**
+     * What probes refused since the last demand taken: the functions whose
+     * shared body a probe could not keep, and each call a probe lowered
+     * inline with the refusal that ended it. A probe lowers neither again:
+     * a body a probe cannot lower is lowered where its statements recover.
+     */
+    speculative: SpeculativeRefusals;
 }
+
+interface SpeculativeRefusals {
+    readonly shared: Set<ts.Node>;
+    readonly inline: Map<ts.Node, Map<ts.Node, CompileError>>;
+}
+
+function noSpeculativeRefusals(): SpeculativeRefusals {
+    return { shared: new Set(), inline: new Map() };
+}
+
+/** How many statements an attempt's `distinct` and functions its `lowered` hold. */
+type RootMark = readonly [begun: number, lowered: number];
+
+/** One root an attempt lowered. */
+interface SurveyRoot {
+    /** The source it lowers as its own: a function, or a run of statements. */
+    readonly file: ts.SourceFile;
+    readonly pos: number;
+    readonly end: number;
+    /** What it added to the attempt's `distinct` and `lowered`, as their insertion order holds it. */
+    readonly from: RootMark;
+    to: RootMark;
+    /**
+     * It took a storage demand, or left a statement to one this lowering
+     * of the roots had taken: what was lowered before can stand on storage
+     * the demand changed, so a round lowers it again. A statement left to
+     * a demand taken before stands on what the entry built, which only the
+     * next pass builds again.
+     */
+    stale: boolean;
+}
+
+/** The rounds a pass runs at most. */
+const roundLimit = 12;
+
+/** The demands a round takes per statement it lowers, at least, for another to follow. */
+const roundYield = 0.001;
 
 /**
  * A statement the census counts: any but a block, which only groups the
@@ -438,6 +510,89 @@ function describeStop(cause: unknown): string {
     );
 }
 
+/**
+ * The attempt a round lowers in: `previous` (the pass's full lowering, or
+ * its last round) without what its module roots and its `stale` roots began
+ * and lowered, so the roots take them again; the demands taken are the
+ * pass's own.
+ */
+function roundAttempt(
+    pass: Attempt,
+    previous: Attempt,
+    stale: readonly SurveyRoot[],
+): Attempt {
+    const begun = [...previous.distinct];
+    const lowered = [...previous.lowered];
+    const forgotten = new Set<ts.Node>();
+    const forget = (from: RootMark, to: RootMark): void => {
+        for (let index = from[0]; index < to[0]; index++)
+            forgotten.add(begun[index]!);
+        for (let index = from[1]; index < to[1]; index++)
+            forgotten.add(lowered[index]!);
+    };
+    const ranges = new Map<ts.SourceFile, SurveyRoot[]>();
+    for (const root of stale) {
+        forget(root.from, root.to);
+        const held = ranges.get(root.file);
+        if (held) held.push(root);
+        else ranges.set(root.file, [root]);
+    }
+    // A statement a committed probe began stays begun outside the stale
+    // roots' own source.
+    const probedElsewhere = (statement: ts.Statement): boolean =>
+        !ranges
+            .get(statement.getSourceFile())
+            ?.some(
+                (root) =>
+                    statement.pos >= root.pos && statement.end <= root.end,
+            );
+    // The function and statement roots lower again in the files holding
+    // what the stale roots began; every module root does.
+    const sources = new Set([...forgotten].map((node) => node.getSourceFile()));
+    forget(previous.moduleRoots.from, previous.moduleRoots.to);
+    const distinct = new Set(begun.filter((node) => !forgotten.has(node)));
+    const kept = new Set(lowered.filter((node) => !forgotten.has(node)));
+    const mark: RootMark = [distinct.size, kept.size];
+    return newAttempt({
+        lowered: kept,
+        distinct,
+        probed: new EmissionSet(previous.probed),
+        rootProbes: new Set([...previous.rootProbes].filter(probedElsewhere)),
+        taken: pass.taken,
+        moduleRoots: { from: mark, to: mark },
+        sources,
+    });
+}
+
+/** An attempt nothing has lowered, refused or demanded in yet, but what it `carries` on. */
+function newAttempt(carries: Partial<Attempt> = {}): Attempt {
+    return {
+        attempted: 0,
+        refusals: new Map(),
+        declarations: new Map(),
+        replays: [],
+        demands: new Map(),
+        lowered: new Set(),
+        unfinished: new Set(),
+        rooted: 0,
+        settling: false,
+        slowest: [],
+        distinct: new Set(),
+        probed: new EmissionSet(),
+        rootProbes: new Set(),
+        taken: new Set(),
+        fresh: new Set(),
+        phases: [],
+        probes: { kept: 0, dropped: 0 },
+        phase: { started: performance.now(), lowerings: 0 },
+        roots: [],
+        root: undefined,
+        moduleRoots: { from: [0, 0], to: [0, 0] },
+        speculative: noSpeculativeRefusals(),
+        ...carries,
+    };
+}
+
 /** How a survey runs: what it reports as it goes, and the most passes it runs. */
 export interface SurveySettings {
     readonly progress?: SurveyProgress;
@@ -461,6 +616,8 @@ export class SurveyCollector {
     private readonly realms = new Map<string, Attempt>();
     /** @unjournaled The census counts refusals a rollback discards too. */
     private current: Attempt | undefined;
+    /** @unjournaled The attempt begun last, whose phases its pass reports. */
+    private last: Attempt | undefined;
     /** @unjournaled When the last progress line was reported. */
     private reportedAt = Date.now();
     /** @unjournaled Compile attempts so far: each restart replays the program. */
@@ -545,11 +702,36 @@ export class SurveyCollector {
      * probe; a lowering outside a probe that answers false lowers it now.
      */
     public loweredBefore(declaration: ts.Node, speculating: boolean): boolean {
-        const lowered = this.current?.lowered;
-        if (!lowered) return false;
-        if (lowered.has(declaration)) return true;
-        if (!speculating) lowered.add(declaration);
+        const attempt = this.current;
+        if (!attempt) return false;
+        if (attempt.lowered.has(declaration)) {
+            if (!attempt.unfinished.has(declaration)) return true;
+            if (!speculating) attempt.unfinished.delete(declaration);
+            return false;
+        }
+        if (!speculating) attempt.lowered.add(declaration);
         return false;
+    }
+
+    /**
+     * Notes that the lowering of `declaration`'s body this attempt began
+     * did not end (its shared form refused, a storage demand left it): the
+     * next call outside a probe lowers the body again.
+     */
+    public leftUnfinished(declaration: ts.Node): void {
+        const attempt = this.current;
+        if (attempt?.lowered.has(declaration))
+            attempt.unfinished.add(declaration);
+    }
+
+    /** Whether a lowering of this attempt lowered `declaration`'s body to its end, or is lowering it. */
+    public lowers(declaration: ts.Node): boolean {
+        const attempt = this.current;
+        return (
+            attempt !== undefined &&
+            attempt.lowered.has(declaration) &&
+            !attempt.unfinished.has(declaration)
+        );
     }
 
     /**
@@ -560,8 +742,75 @@ export class SurveyCollector {
         context: StatementContext,
         first: ts.Statement,
         lower: () => void,
+        source: Pick<ts.Node, "pos" | "end"> = first,
     ): void {
-        this.inRoots(() => this.attemptStatement(context, first, lower));
+        const attempt = this.current;
+        const mark = (): RootMark =>
+            attempt ? [attempt.distinct.size, attempt.lowered.size] : [0, 0];
+        const root: SurveyRoot = {
+            file: first.getSourceFile(),
+            pos: source.pos,
+            end: source.end,
+            from: mark(),
+            to: mark(),
+            stale: false,
+        };
+        const enclosing = attempt?.root;
+        if (attempt) attempt.root = root;
+        try {
+            this.inRoots(() => this.attemptStatement(context, first, lower));
+        } finally {
+            root.to = mark();
+            if (attempt) {
+                attempt.roots.push(root);
+                attempt.root = enclosing;
+            }
+        }
+    }
+
+    /**
+     * Lowers the roots again (`lower`) while a round takes a storage demand:
+     * each round lowers the module roots and the roots the last one left
+     * stale, with what the others began and lowered standing as it is, on
+     * the storage the pass holds by then. A demand a round takes is the
+     * pass's; what a round lowers is not its census, which stays the full
+     * lowering's until a pass takes no demand. The pass a limit ends the
+     * survey at runs none: no pass lowers with what they would take.
+     */
+    public rounds(lower: () => void): void {
+        const pass = this.current;
+        if (
+            !pass ||
+            (this.passLimit !== undefined && this.passes + 1 >= this.passLimit)
+        )
+            return;
+        let previous = pass;
+        for (let round = 1; round <= roundLimit; round++) {
+            const stale = previous.roots.filter((root) => root.stale);
+            if (stale.length === 0) return;
+            const taken = pass.taken.size;
+            const started = performance.now();
+            const next = roundAttempt(pass, previous, stale);
+            this.current = next;
+            try {
+                lower();
+            } finally {
+                this.current = pass;
+            }
+            for (const replay of next.replays)
+                if (!(replay instanceof StorageDemand))
+                    pass.replays.push(replay);
+            const added = pass.taken.size - taken;
+            const seconds = (performance.now() - started) / 1000;
+            this.progress?.report(
+                `Survey pass ${this.passes + 1} round ${round}: ${added} demand${added === 1 ? "" : "s"} taken lowering ${stale.length} root${stale.length === 1 ? "" : "s"} again ` +
+                    `(${seconds.toFixed(0)} s / ${next.attempted})`,
+            );
+            // A round that takes few demands for what it lowers is the
+            // last: the next pass takes what is left.
+            if (added < next.attempted * roundYield) return;
+            previous = next;
+        }
     }
 
     /**
@@ -584,6 +833,44 @@ export class SurveyCollector {
         );
     }
 
+    /**
+     * Whether a probe of this attempt could not keep `declaration`'s shared
+     * body (`refused` notes one that could not): the next call lowers it
+     * inline instead of probing it again.
+     */
+    public sharedBodyRefused(declaration: ts.Node, refused = false): boolean {
+        const shared = this.current?.speculative.shared;
+        if (!shared) return false;
+        if (refused) shared.add(declaration);
+        return shared.has(declaration);
+    }
+
+    /**
+     * The refusal that ended a probe's inline lowering of `declaration` at
+     * `call` in this attempt (`refusal` notes it): a probe reaching the
+     * call again refuses at once.
+     */
+    public inlineBodyRefusal(
+        call: ts.Node,
+        declaration: ts.Node,
+        refusal?: CompileError,
+    ): CompileError | undefined {
+        const inline = this.current?.speculative.inline;
+        if (!inline) return undefined;
+        let calls = inline.get(call);
+        if (refusal) {
+            if (!calls)
+                inline.set(call, (calls = new Map<ts.Node, CompileError>()));
+            calls.set(declaration, refusal);
+        }
+        return calls?.get(declaration);
+    }
+
+    /** Whether the roots lower `file`'s functions and statements now: all files, or a round's sources. */
+    public lowersRootsOf(file: ts.SourceFile): boolean {
+        return this.current?.sources?.has(file) ?? true;
+    }
+
     /** Runs `work` counted as a root's: its context is the one the survey built. */
     public inRoots(work: () => void): void {
         const enclosing = this.inRoot;
@@ -604,7 +891,8 @@ export class SurveyCollector {
         return (
             attempt !== undefined &&
             !attempt.distinct.has(statement) &&
-            !attempt.probed.has(statement)
+            !attempt.probed.has(statement) &&
+            !attempt.rootProbes.has(statement)
         );
     }
 
@@ -692,6 +980,28 @@ export class SurveyCollector {
         if (this.current) this.current.settling = true;
     }
 
+    /** Notes that an outermost probe of the current attempt took `milliseconds`, kept or rolled back. */
+    public probed(kept: boolean, milliseconds: number): void {
+        const probes = this.current?.probes;
+        if (probes) probes[kept ? "kept" : "dropped"] += milliseconds;
+    }
+
+    /** Notes that the current attempt ended its phase `name` (the entry, a kind of root). */
+    public phaseEnded(name: string): void {
+        const attempt = this.current;
+        if (!attempt) return;
+        const now = performance.now();
+        attempt.phases.push({
+            name,
+            seconds: (now - attempt.phase.started) / 1000,
+            lowerings: attempt.attempted - attempt.phase.lowerings,
+        });
+        attempt.phase = { started: now, lowerings: attempt.attempted };
+        const mark: RootMark = [attempt.distinct.size, attempt.lowered.size];
+        if (name === "entry") attempt.moduleRoots = { from: mark, to: mark };
+        else if (name === "module roots") attempt.moduleRoots.to = mark;
+    }
+
     /** Whether the realm's last attempt lowered every statement before it ended. */
     public settling(realm: string): boolean {
         return this.realms.get(realm)?.settling ?? false;
@@ -729,22 +1039,9 @@ export class SurveyCollector {
         this.attempts++;
         const previous = this.current;
         const enclosingApply = this.apply;
-        const attempt: Attempt = {
-            attempted: 0,
-            refusals: new Map(),
-            declarations: new Map(),
-            replays: [],
-            demands: new Map(),
-            lowered: new Set(),
-            rooted: 0,
-            settling: false,
-            slowest: [],
-            distinct: new Set(),
-            probed: new EmissionSet(),
-            rootProbes: new Set(),
-            taken: new Set(),
-        };
+        const attempt: Attempt = newAttempt();
         this.realms.set(realm, attempt);
+        this.last = attempt;
         this.current = attempt;
         this.apply = apply;
         try {
@@ -778,12 +1075,24 @@ export class SurveyCollector {
         try {
             for (;;) {
                 let met: unknown;
+                const begun = this.bodiesBegun();
                 try {
                     context.transaction(lower);
                     return;
                 } catch (error) {
                     met = error;
                 }
+                // A read of a binding its block declares later: the binding
+                // takes storage ahead of the statement that block stands
+                // at, and this statement lowers again, with the bodies its
+                // withdrawn lowering began. From scopes of its own (a
+                // function's body) an enclosing statement does.
+                if (
+                    context.callbacks.retryForwardMiss(met, () =>
+                        this.withdrawBodies(begun),
+                    )
+                )
+                    continue;
                 // A demand its replay refused is the statement's refusal; a
                 // storage demand applies at once and the statement lowers
                 // again with it; any other replay rolls its statement back
@@ -796,6 +1105,7 @@ export class SurveyCollector {
                 const applied = refusal ? false : this.applied(attempt, met);
                 if (applied === true) {
                     taken = met as Error;
+                    if (attempt.root) attempt.root.stale = true;
                     continue;
                 }
                 const refused =
@@ -806,13 +1116,21 @@ export class SurveyCollector {
                 // its application refused is refused all the same.
                 if (refused && (!taken || applied instanceof CompileError))
                     this.record(attempt, context.checker, statement, refused);
-                else
+                else {
                     this.demanded(
                         attempt,
                         statement,
                         refused ? taken! : (met as Error),
                         applied === "held",
                     );
+                    if (
+                        attempt.root &&
+                        applied === false &&
+                        met instanceof StorageDemand &&
+                        attempt.fresh.has(replayText(met))
+                    )
+                        attempt.root.stale = true;
+                }
                 break;
             }
         } finally {
@@ -839,6 +1157,31 @@ export class SurveyCollector {
             this.lowerHeld(context, attempt, statement, lowerNested);
     }
 
+    /** Storage lowering reads changed: what a probe refused before may lower now. */
+    public storageChanged(): void {
+        if (this.current) this.current.speculative = noSpeculativeRefusals();
+    }
+
+    /** How many bodies this attempt began lowering: a mark for `withdrawBodies`. */
+    public bodiesBegun(): number {
+        return this.current?.lowered.size ?? 0;
+    }
+
+    /**
+     * Forgets the bodies begun since `mark`: the statement that reached
+     * them was withdrawn and lowers again, their bodies with it.
+     */
+    public withdrawBodies(mark: number): void {
+        const attempt = this.current;
+        if (!attempt) return;
+        let index = 0;
+        for (const body of attempt.lowered)
+            if (index++ >= mark) {
+                attempt.lowered.delete(body);
+                attempt.unfinished.delete(body);
+            }
+    }
+
     /**
      * What applying `met` did: true when the storage took a new demand,
      * "held" when it already held one this attempt never took, the refusal
@@ -859,6 +1202,8 @@ export class SurveyCollector {
             throw error;
         }
         attempt.taken.add(key);
+        attempt.fresh.add(key);
+        this.storageChanged();
         return true;
     }
 
@@ -958,6 +1303,20 @@ export class SurveyCollector {
         this.passes++;
         const census = this.report();
         this.furthest = census;
+        const phases = (this.last?.phases ?? [])
+            .map(
+                ({ name, seconds, lowerings }) =>
+                    `${name} ${seconds.toFixed(0)} s / ${lowerings}`,
+            )
+            .join(", ");
+        const probes = this.last?.probes;
+        if (phases)
+            this.progress?.report(
+                `Survey phases, pass ${this.passes}: ${phases}` +
+                    (probes
+                        ? `; probes kept ${(probes.kept / 1000).toFixed(0)} s, rolled back ${(probes.dropped / 1000).toFixed(0)} s`
+                        : ""),
+            );
         if (added === 0) return false;
         const demands = `${added} demand${added === 1 ? "" : "s"}`;
         if (this.passLimit !== undefined && this.passes >= this.passLimit) {

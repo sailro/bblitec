@@ -9,6 +9,7 @@ import {
     valueDataType,
 } from "../values/model.js";
 import { isHandleKind } from "../data-types/handles.js";
+import { presentDataType } from "../data-types/operations.js";
 import { absenceKind, declaredContextualType } from "../type-facts.js";
 import { hasNonNullAssertion } from "../syntax.js";
 import { ownEntries } from "../object-statics.js";
@@ -330,18 +331,26 @@ function valueJson(
         );
     // A function a document holds is the callback its declared type stores,
     // boxed: a member call reads it back with that signature (`json_call`).
+    // A slot declared `unknown` stores it as its own type, whose `unknown`
+    // positions are documents as the slot is.
     if (value.kind === "callback") {
         const expression = lowerer.convertedExpression(node);
         const checker = lowerer.context.checker;
-        const declared =
-            expression &&
-            (declaredContextualType(checker, expression) ??
-                checker.getTypeAtLocation(expression));
-        const stored =
-            declared &&
-            lowerer.context.dataTypes.fromStoredTsType(declared, node);
-        if (stored?.kind === "function")
-            return `bbl::js::JsonValue::from_native(${lowerer.compileKnownValueForSink(value, stored, node)})`;
+        const types = lowerer.context.dataTypes;
+        for (const declared of expression
+            ? [
+                  declaredContextualType(checker, expression),
+                  checker.getTypeAtLocation(expression),
+              ]
+            : []) {
+            const stored =
+                declared &&
+                types.withDynamicJsonTypes(true, () =>
+                    types.fromStoredTsType(declared, node),
+                );
+            if (stored?.kind === "function")
+                return `bbl::js::JsonValue::from_native(${lowerer.compileKnownValueForSink(value, stored, node)})`;
+        }
     }
     const type = valueDataType(value);
     const cpp =
@@ -763,8 +772,15 @@ export const scalarsSinks: DataSinkOperations<
     },
     "event-target": {
         expression: expressionKnownValue,
-        value: (_type, lowerer, value, node) =>
-            eventTargetCpp(lowerer.context, value, node),
+        value: (_type, lowerer, value, node) => {
+            const record = presentDataType(value.dataType);
+            if (record?.kind === "struct")
+                lowerer.context.dataTypes.requireEventTargetView(
+                    record.name,
+                    node,
+                );
+            return eventTargetCpp(lowerer.context, value, node);
+        },
     },
     "http-response": {
         expression: unwrappedKnownValue,

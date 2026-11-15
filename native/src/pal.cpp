@@ -334,6 +334,11 @@ std::vector<std::uint8_t> read_binary_file(const std::string& path) {
                                             "file '" + path + "'", detail::FileLinks::follow);
 }
 
+bool is_file(const std::string& path) {
+    std::error_code error;
+    return std::filesystem::is_regular_file(detail::utf8_file_path(path), error);
+}
+
 std::string join_path(const std::string& root, const std::string& relative_path) {
     return (std::filesystem::path(root) / relative_path).lexically_normal().string();
 }

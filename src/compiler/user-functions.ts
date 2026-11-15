@@ -8,6 +8,7 @@ import {
     valueForKind,
     withNativeMetadata,
 } from "./types.js";
+import { fixedByCaseSplit } from "./runtime-case-split.js";
 import { metadataFieldsForKind } from "./values/metadata.js";
 import { isJsonValue } from "./json-bridge.js";
 import { activeSurvey } from "./survey.js";
@@ -103,6 +104,7 @@ import { nativeReturnTsType } from "./native-return-type.js";
 import { programObservations } from "./program-observations.js";
 import { sourceTypeHasObservedIdentity } from "./storage-demand-index.js";
 import { parameterProjectionIsReadOnly } from "./parameter-projection-effects.js";
+import { recordFieldIsWritten } from "./record-observations.js";
 import {
     hasProvenUndefinedCompletion,
     hasNonThenableCompletion,
@@ -894,6 +896,12 @@ export function aliasedMutationScan(
         ) => ReadonlyMap<ts.Symbol, readonly ts.Node[]>;
         /** Names aliasing clauses that read only the program (`reached` walks). */
         readonly programAliases?: string;
+        /**
+         * The only nodes `mutates` can accept, by their syntax alone (one
+         * function for every walk of a kind): a whole-file walk tests those
+         * and the alias sites, not every node.
+         */
+        readonly candidates?: (node: ts.Node) => boolean;
     },
 ): boolean {
     const initial = valueSymbol(identifier);
@@ -1026,7 +1034,9 @@ export function aliasedMutationScan(
     while (pending.size > 0) {
         for (const file of pending) {
             const { byNode } = aliasSitesOf(file);
-            for (const node of sourceFileNodes(file)) {
+            for (const node of walk.candidates
+                ? candidateNodes(file, walk.candidates)
+                : sourceFileNodes(file)) {
                 if (walk.mutates(node, scan)) return true;
                 const sites = byNode.get(node);
                 if (sites) extend(sites);
@@ -1036,6 +1046,30 @@ export function aliasedMutationScan(
         next = new Set();
     }
     return false;
+}
+
+/** @unjournaled Parsed syntax is immutable: each file's candidate nodes and alias sites per candidate rule, kept. */
+const fileCandidates = new WeakMap<
+    (node: ts.Node) => boolean,
+    WeakMap<ts.SourceFile, readonly ts.Node[]>
+>();
+
+/** A file's nodes `candidates` accepts or an alias site sits at, in source order. */
+function candidateNodes(
+    file: ts.SourceFile,
+    candidates: (node: ts.Node) => boolean,
+): readonly ts.Node[] {
+    let byFile = fileCandidates.get(candidates);
+    if (!byFile) fileCandidates.set(candidates, (byFile = new WeakMap()));
+    let nodes = byFile.get(file);
+    if (!nodes) {
+        const { byNode } = aliasSitesOf(file);
+        nodes = sourceFileNodes(file).filter(
+            (node) => candidates(node) || byNode.has(node),
+        );
+        byFile.set(file, nodes);
+    }
+    return nodes;
 }
 
 /**
@@ -1314,6 +1348,16 @@ function runsOnlyInPlace(
 }
 
 /**
+ * @unjournaled Whether a function's recursive group lets storage escape
+ * (`recursiveStorageEscapes`): a function of the checked program, kept
+ * across replays and rollbacks.
+ */
+const groupEscapes = new WeakMap<
+    ts.Program,
+    WeakMap<SupportedFunction, boolean>
+>();
+
+/**
  * Whether a recursive callback's heap `std::function` object can be
  * referenced after the scope that emitted its storage returns.
  *
@@ -1562,6 +1606,8 @@ export interface UserFunctionContext
         PositiveIntegerContext,
         Pick<
             LoweringServices,
+            | "valueOverrides"
+            | "conditionOverrides"
             | "absenceTags"
             | "requireDefaultEngine"
             | "sourceFile"
@@ -1592,6 +1638,7 @@ export interface UserFunctionContext
             | "reachesOnlyClosedEffects"
             | "requiresStaticDataIteration"
             | "probeEmission"
+            | "keptEmission"
             | "transaction"
             | "runGenerationFunction"
             | "conditions"
@@ -1800,10 +1847,6 @@ export class UserFunctionLowerer {
     private readonly recursiveGroupCache = new EmissionMap<
         SupportedFunction,
         readonly SupportedFunction[] | null
-    >();
-    private readonly groupEscapeCache = new EmissionMap<
-        SupportedFunction,
-        boolean
     >();
     private readonly emittedRecursiveGroups = new FunctionSpecializations<{
         value: Value;
@@ -2046,20 +2089,7 @@ export class UserFunctionLowerer {
             body
         )
             return undefined;
-        const signature = this.checker.getSignatureFromDeclaration(
-            ir.declaration,
-        );
-        const returned =
-            signature && this.checker.getReturnTypeOfSignature(signature);
-        if (discardReturn || !returned || isVoid(returned))
-            return { kind: "void", cpp: "" };
-        // A returned array keeps its storage, a readonly one too.
-        const result = context.dataTypes.fromTsType(returned, ir.declaration);
-        return emptyStorage(
-            context,
-            result && context.dataTypes.ownReturnedArray(result),
-            "result",
-        );
+        return this.emptyCallResult(context, ir, discardReturn);
     }
 
     /**
@@ -2308,6 +2338,11 @@ export class UserFunctionLowerer {
             }
             return inBodyScope(
                 () =>
+                    this.deferredSurveyCall(
+                        context,
+                        ir,
+                        ts.isExpressionStatement(call.parent),
+                    ) ??
                     this.trySharedCall(context, ir, call, argumentValues) ??
                     this.lower(
                         context,
@@ -2340,24 +2375,81 @@ export class UserFunctionLowerer {
             !context.reachesOnlyClosedEffects(ir.declaration.body)
         )
             return undefined;
-        try {
-            return context.probeEmission(() =>
-                this.compileSharedCall(
-                    context,
-                    ir,
-                    call,
-                    argumentValues,
-                    pinArguments,
-                ),
+        // A survey tries a body's shared form once: a body it could not
+        // keep lowers inline.
+        const survey = activeSurvey();
+        if (survey?.sharedBodyRefused(ir.declaration)) return undefined;
+        const shared = (): Value | undefined =>
+            this.compileSharedCall(
+                context,
+                ir,
+                call,
+                argumentValues,
+                pinArguments,
             );
+        // Outside a probe a survey lowers the shared body where its
+        // statements recover: a refusal or a storage demand one meets is
+        // that statement's, not the whole call's.
+        const recovering = survey !== undefined && !context.speculating;
+        let ended = false;
+        try {
+            const result = recovering
+                ? context.keptEmission(shared)
+                : context.probeEmission(shared);
+            ended = true;
+            return result;
         } catch (error) {
             if (
                 !(error instanceof SharedCallRequiresInline) &&
                 !(error instanceof CompileError)
             )
                 throw error;
+            survey?.sharedBodyRefused(ir.declaration, true);
             return undefined;
+        } finally {
+            // A body whose shared lowering did not end lowers again.
+            if (recovering && !ended) survey.leftUnfinished(ir.declaration);
         }
+    }
+
+    /**
+     * A plain call a survey's probe reaches before the function's body
+     * lowered: the probe does not lower the body, which lowers where its
+     * statements recover (a call outside a probe, or a root); the call
+     * returns empty storage of the declared result as a later call does.
+     * Undefined outside a survey's probe, for a body already lowered (the
+     * call's own lowering answers), and for a result with no storage.
+     */
+    private deferredSurveyCall(
+        context: UserFunctionContext,
+        ir: UserFunctionIr,
+        discardReturn: boolean,
+    ): Value | undefined {
+        const survey = context.speculating ? activeSurvey() : undefined;
+        if (!survey || survey.lowers(ir.declaration)) return undefined;
+        return this.emptyCallResult(context, ir, discardReturn);
+    }
+
+    /** Empty storage of `ir`'s declared result; nothing for a discarded or void one. */
+    private emptyCallResult(
+        context: UserFunctionContext,
+        ir: UserFunctionIr,
+        discardReturn: boolean,
+    ): Value | undefined {
+        const signature = this.checker.getSignatureFromDeclaration(
+            ir.declaration,
+        );
+        const returned =
+            signature && this.checker.getReturnTypeOfSignature(signature);
+        if (discardReturn || !returned || isVoid(returned))
+            return { kind: "void", cpp: "" };
+        // A returned array keeps its storage, a readonly one too.
+        const result = context.dataTypes.fromTsType(returned, ir.declaration);
+        return emptyStorage(
+            context,
+            result && context.dataTypes.ownReturnedArray(result),
+            "result",
+        );
     }
 
     private sharedReturnType(
@@ -2408,6 +2500,8 @@ export class UserFunctionLowerer {
             ts.isCallExpression(call) &&
             requiresDefaultParameterBinding(this.checker, ir.declaration, call)
         )
+            return undefined;
+        if (ts.isCallExpression(call) && fixedByCaseSplit(context, call))
             return undefined;
         if (
             ir.parameters.some((parameter, index) => {
@@ -2923,6 +3017,11 @@ export class UserFunctionLowerer {
                         ir.declaration,
                         argumentValues,
                         call,
+                    ) ??
+                    this.deferredSurveyCall(
+                        context,
+                        ir,
+                        ts.isExpressionStatement(call.parent),
                     ) ??
                     this.trySharedCall(context, ir, call, argumentValues) ??
                     this.lower(
@@ -3743,7 +3842,9 @@ export class UserFunctionLowerer {
         declarations: readonly SupportedFunction[],
     ): boolean {
         const root = declarations[0]!;
-        const cached = this.groupEscapeCache.get(root);
+        let known = groupEscapes.get(program);
+        if (!known) groupEscapes.set(program, (known = new WeakMap()));
+        const cached = known.get(root);
         if (cached !== undefined) return cached;
         // This source-only cache must not depend on which siblings already
         // have storage at one call site.
@@ -3756,7 +3857,7 @@ export class UserFunctionLowerer {
                 declaration.body ? [declaration.body] : [],
             ),
         );
-        this.groupEscapeCache.set(root, escapes);
+        known.set(root, escapes);
         return escapes;
     }
 
@@ -4428,8 +4529,11 @@ export class UserFunctionLowerer {
                   continuation: -1,
               }
             : context.functionEmissionScope();
+        // A survey lowers a shared body once per attempt (`repeatedSurveyCall`):
+        // it keys no specialization to find again.
         const specialization =
-            callSiteEffects && !reuseCallSite
+            (callSiteEffects && !reuseCallSite) ||
+            (sharedBody && activeSurvey() !== undefined)
                 ? undefined
                 : this.emittedRecursiveGroups.key(scope, [
                       context.dataTypes.captureTypeArguments(),
@@ -5617,11 +5721,13 @@ export class UserFunctionLowerer {
             !hasProvenUndefinedCompletion(context, declaration, {
                 requireFieldProofs: true,
             })
-        )
+        ) {
+            context.dataTypes.withdrawCompletion(dataType);
             context.fail(
                 expression,
                 "A stored callback requires a proven undefined completion.",
             );
+        }
         if (
             dataType.awaitedUndefinedCompletion &&
             !hasProvenUndefinedCompletion(context, declaration, {
@@ -6603,6 +6709,10 @@ export class UserFunctionLowerer {
         return [...prefix, context.dataLowerer.leafValue(restArray, restType)];
     }
 
+    /**
+     * `lowerInline`; a survey's probe lowers a call inline once, and
+     * refuses at once where it reaches a call it could not lower.
+     */
     private lower(
         context: UserFunctionContext,
         ir: UserFunctionIr,
@@ -6611,6 +6721,35 @@ export class UserFunctionLowerer {
         discardReturn = false,
         body?: CallbackInvocationOptions,
         captureReturn?: (value: Value) => void,
+    ): Value {
+        const survey = context.speculating ? activeSurvey() : undefined;
+        const refused = survey?.inlineBodyRefusal(callNode, ir.declaration);
+        if (refused) throw refused;
+        try {
+            return this.lowerInline(
+                context,
+                ir,
+                arguments_,
+                callNode,
+                discardReturn,
+                body,
+                captureReturn,
+            );
+        } catch (error) {
+            if (error instanceof CompileError)
+                survey?.inlineBodyRefusal(callNode, ir.declaration, error);
+            throw error;
+        }
+    }
+
+    private lowerInline(
+        context: UserFunctionContext,
+        ir: UserFunctionIr,
+        arguments_: readonly Value[],
+        callNode: ts.Node,
+        discardReturn: boolean,
+        body: CallbackInvocationOptions | undefined,
+        captureReturn: ((value: Value) => void) | undefined,
     ): Value {
         if (!body?.generator && isGeneratorFunction(ir.declaration))
             return this.lowerGenerator(context, ir, arguments_, callNode);
@@ -7284,15 +7423,23 @@ export class UserFunctionLowerer {
             return undefined;
         const invocation = this.invocations.get(ir.declaration)?.call;
         if (!invocation) return undefined;
-        const argument = outermostWrapper(invocation);
+        let argument = outermostWrapper(invocation);
         if (!ts.isExpression(argument)) return undefined;
+        // A record spread into a literal hands its fields, by name, to the
+        // literal's consumer (`f({ ...build(), extra })`).
+        if (
+            ts.isSpreadAssignment(argument.parent) &&
+            ts.isObjectLiteralExpression(argument.parent.parent)
+        )
+            argument = outermostWrapper(argument.parent.parent);
         const consumer = argument.parent;
         if (!ts.isCallExpression(consumer)) return undefined;
         const index = consumer.arguments.indexOf(argument);
         const declaration = calledDeclaration(context.checker, consumer);
         if (index < 0 || !isSupportedFunction(declaration)) return undefined;
-        if (positionalParameter(consumer, declaration, index) === undefined)
-            return undefined;
+        const parameter = positionalParameter(consumer, declaration, index);
+        if (parameter === undefined) return undefined;
+        const parameterType = context.checker.getTypeAtLocation(parameter.name);
         const fields = new Set(
             Object.entries(value.recordProperties ?? {})
                 .filter(
@@ -7300,13 +7447,27 @@ export class UserFunctionLowerer {
                         (field.staticString !== undefined ||
                             field.staticNumber !== undefined ||
                             field.staticBoolean !== undefined) &&
-                        parameterProjectionIsReadOnly(
+                        // A field the parameter's type declares, which no
+                        // write in the program replaces, keeps its value
+                        // wherever the record goes.
+                        (parameterProjectionIsReadOnly(
                             context.checker,
                             declaration,
                             index,
                             [name],
                             true,
-                        ),
+                        ) ||
+                            (context.checker.getPropertyOfType(
+                                context.checker.getNonNullableType(
+                                    parameterType,
+                                ),
+                                name,
+                            ) !== undefined &&
+                                !recordFieldIsWritten(
+                                    context,
+                                    parameterType,
+                                    name,
+                                ))),
                 )
                 .map(([name]) => name),
         );

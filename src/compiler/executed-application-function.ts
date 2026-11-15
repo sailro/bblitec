@@ -65,7 +65,7 @@ export type ExecutedArgument =
     | readonly ExecutedArgument[]
     | { readonly [name: string]: ExecutedArgument };
 
-interface ExecutedFunctionContext {
+export interface ExecutedFunctionContext {
     readonly checker: ts.TypeChecker;
     readonly sourceFiles?: readonly ts.SourceFile[];
     fail(node: ts.Node, message: string): never;
@@ -73,7 +73,7 @@ interface ExecutedFunctionContext {
      * The generation-known value of a binding the function closes over from
      * an enclosing function, or undefined when the compiler cannot fold it.
      */
-    foldEnclosing(identifier: ts.Identifier): ExecutedScalar | undefined;
+    foldEnclosing(identifier: ts.Identifier): ExecutedArgument | undefined;
     /**
      * Whether the program writes through a module constant the run reads,
      * for a run that must describe the constant as its module builds it (a
@@ -133,17 +133,28 @@ interface FilePart {
 export type ExecutedTarget =
     ts.FunctionLikeDeclaration | ts.VariableDeclaration | ts.CallExpression;
 
+/** What a run settled with, as its realm holds it. */
+export interface ExecutedResult {
+    readonly value: unknown;
+    /**
+     * Whether `value` is an array or a record with no class behind it: an
+     * object of the run's realm whose members a reader may walk.
+     */
+    isPlain(value: unknown): boolean;
+}
+
 /**
- * Execute `target` with `args` and return its plain-data result: a
- * function's return value (an async one's settled value), or a constant or
- * call's value (no arguments). `label` names the target in refusals.
+ * Execute `target` with `args` and return what it settles with, unchecked:
+ * a function's return value (an async one's settled value), or a constant
+ * or call's value (no arguments), with the realm's own JSON parser.
+ * `label` names the target in refusals.
  */
-export function executeApplicationFunction(
+export function runApplicationFunction(
     context: ExecutedFunctionContext,
     target: ExecutedTarget,
     args: readonly (ExecutedArgument | undefined)[],
     label: string,
-): unknown {
+): ExecutedResult & { readonly parse: (text: string) => unknown } {
     const closure = new ExecutedClosure(context, target, label);
     const program = closure.program();
     const realm = vm.createContext(
@@ -154,9 +165,18 @@ export function executeApplicationFunction(
         },
     );
     const parse: unknown = vm.runInContext("JSON.parse", realm);
-    if (typeof parse !== "function") {
+    const plain: unknown = vm.runInContext(
+        "(value) => Array.isArray(value) || (typeof value === 'object' && value !== null && [Object.prototype, null].includes(Object.getPrototypeOf(value)))",
+        realm,
+    );
+    if (typeof parse !== "function" || typeof plain !== "function") {
         throw new Error("A generation function realm has no JSON.parse.");
     }
+    // Data crosses into the realm as objects of the realm.
+    const inRealm = (value: ExecutedArgument | undefined): unknown =>
+        value !== null && typeof value === "object"
+            ? Reflect.apply(parse, undefined, [JSON.stringify(value)])
+            : value;
     let result: unknown;
     try {
         const build: unknown = vm.runInContext(program.javascript, realm, {
@@ -168,7 +188,14 @@ export function executeApplicationFunction(
             );
         }
         const executed: unknown = Reflect.apply(build, undefined, [
-            program.bindings,
+            {
+                pinned: program.bindings.pinned,
+                enclosing: Object.fromEntries(
+                    Object.entries(program.bindings.enclosing).map(
+                        ([name, value]) => [name, inRealm(value)],
+                    ),
+                ),
+            },
         ]);
         if (ts.isVariableDeclaration(target) || ts.isCallExpression(target)) {
             if (args.length > 0) {
@@ -179,12 +206,7 @@ export function executeApplicationFunction(
             if (typeof executed !== "function") {
                 throw new Error(`${label} is not a function once executed.`);
             }
-            const realmArgs = args.map((value): unknown =>
-                value !== null && typeof value === "object"
-                    ? Reflect.apply(parse, undefined, [JSON.stringify(value)])
-                    : value,
-            );
-            result = Reflect.apply(executed, undefined, realmArgs);
+            result = Reflect.apply(executed, undefined, args.map(inRealm));
         }
         result = settledResult(realm, result);
     } catch (error: unknown) {
@@ -193,6 +215,29 @@ export function executeApplicationFunction(
             `${label} threw at generation: ${errorMessage(error)}`,
         );
     }
+    return {
+        value: result,
+        isPlain: (value) => Reflect.apply(plain, undefined, [value]) === true,
+        parse: (text): unknown => Reflect.apply(parse, undefined, [text]),
+    };
+}
+
+/**
+ * `runApplicationFunction`'s result as plain data, which it must be: the
+ * value generation carries.
+ */
+export function executeApplicationFunction(
+    context: ExecutedFunctionContext,
+    target: ExecutedTarget,
+    args: readonly (ExecutedArgument | undefined)[],
+    label: string,
+): unknown {
+    const { value: result, parse } = runApplicationFunction(
+        context,
+        target,
+        args,
+        label,
+    );
     let text: string | undefined;
     try {
         text = JSON.stringify(result);
@@ -202,10 +247,7 @@ export function executeApplicationFunction(
             `${label} returned a value with no JSON form: ${errorMessage(error)}`,
         );
     }
-    if (
-        text === undefined ||
-        !isDeepStrictEqual(Reflect.apply(parse, undefined, [text]), result)
-    ) {
+    if (text === undefined || !isDeepStrictEqual(parse(text), result)) {
         return context.fail(
             target,
             `${label} returned a value that is not plain data, which ` +
@@ -308,7 +350,7 @@ class ExecutedClosure {
     /** @unjournaled Scratch of one execution's analysis, discarded with it. */
     private readonly enclosing = new Map<
         string,
-        { declaration: ts.Declaration; value: ExecutedScalar }
+        { declaration: ts.Declaration; value: ExecutedArgument }
     >();
     /** @unjournaled Scratch of one execution's analysis, discarded with it. */
     private readonly queue: Array<{ root: ts.Node; file: ts.SourceFile }> = [];
@@ -326,7 +368,13 @@ class ExecutedClosure {
         this.symbols = new CompilerSymbols(context.checker);
     }
 
-    public program(): { javascript: string; bindings: object } {
+    public program(): {
+        javascript: string;
+        bindings: {
+            pinned: Record<string, unknown>;
+            enclosing: Record<string, ExecutedArgument>;
+        };
+    } {
         const targetFile = this.target.getSourceFile();
         const targetStatement = this.targetStatement();
         this.part(targetFile);
@@ -339,7 +387,7 @@ class ExecutedClosure {
             this.walk(next.root, next.file);
         }
         const pinned: Record<string, unknown> = {};
-        const enclosing: Record<string, ExecutedScalar> = {};
+        const enclosing: Record<string, ExecutedArgument> = {};
         for (const [name, { value }] of this.enclosing) enclosing[name] = value;
         const files: string[] = [];
         for (const [file, part] of this.parts) {

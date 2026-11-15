@@ -148,11 +148,11 @@ function readParameter(
  * `active` holds the declarations being read: one reached again adds
  * nothing its other sources do not.
  */
-function instantiatedTypes(
+export function instantiatedTypes(
     program: ts.Program,
     checker: ts.TypeChecker,
     type: ts.Type,
-    active: Set<ts.Node>,
+    active: Set<ts.Node> = new Set(),
 ): readonly ts.Type[] {
     return unionMembers(type).flatMap((member) => {
         if ((member.flags & ts.TypeFlags.TypeParameter) === 0) return [member];

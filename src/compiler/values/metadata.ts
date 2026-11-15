@@ -130,6 +130,7 @@ const resourceMetadataFields = {
     ],
     light: ["lightIdentity", "lightKind"],
     "shadow-generator": ["shadowGeneratorIndex"],
+    "shadow-generator-config": ["shadowGeneratorIndex"],
     asset: ["asset", "assetKind", "assetRootState", "assetRootClone"],
     "asset-root": ["asset", "assetKind", "assetRootState", "assetRootClone"],
     "asset-entity": ["asset", "assetKind", "assetRootState", "assetRootClone"],

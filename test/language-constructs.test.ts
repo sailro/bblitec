@@ -6295,6 +6295,210 @@ check(
 );
 
 check(
+    "typed-array-union-writes",
+    `
+    const positions = new Float32Array([1, 2, 3, 4, 5, 6]);
+    const colors = new Uint8Array([10, 20, 30, 40, 50, 60, 70, 80]);
+    const streams: (Float32Array | Uint8Array)[] = [positions, colors];
+    for (const stream of streams) { stream.copyWithin(0, 2, 4); stream.fill(300.5, 4); }
+    if (positions.join() !== "3,4,3,4,300.5,300.5" || colors.join() !== "30,40,30,40,44,44,44,44") throw new Error("fill and copyWithin through an array of typed arrays");
+    const picked: Float32Array | Uint8Array = positions.length > 2 ? positions : colors;
+    picked.fill(7, -1);
+    picked.copyWithin(1, -1);
+    if (positions.join() !== "3,7,3,4,300.5,7") throw new Error("a union binding writes the array it names");
+    const lanes: ReadonlyArray<readonly [Float32Array | Uint8Array, number]> = [[positions, 3], [colors, 4]];
+    let order = "";
+    function index(at: number): number { order += at; return at; }
+    for (const [stream, stride] of lanes) stream.copyWithin(index(0), stride, 2 * stride);
+    if (positions.join() !== "4,300.5,7,4,300.5,7" || colors.join() !== "44,44,44,44,44,44,44,44" || order !== "00") throw new Error("copyWithin through a lane of a pair array");
+    const extra = lanes.length > 1 ? new Float32Array([9, 8]) : null;
+    const all: ReadonlyArray<readonly [Float32Array | Uint8Array, number]> = [
+        [positions, 3], [colors, 4],
+        ...(extra ? [[extra, 1] as const] : []),
+    ];
+    let total = 0;
+    for (const [stream, stride] of all) { stream.set([1, 2], stride - 1); total += stream.length / stride; }
+    if (total !== 6 || positions.join() !== "4,300.5,1,2,300.5,7" || colors[4] !== 2 || extra![0] !== 1) throw new Error("set and length through a lane");
+    function head(stream: Float32Array | Uint8Array): number { return stream[0]!; }
+    let heads = 0;
+    for (const [stream] of lanes) heads += head(stream);
+    for (const pair of lanes) pair[0].fill(pair[1], 0, 1);
+    if (heads !== 48 || positions[0] !== 3 || colors[0] !== 4) throw new Error("a lane passed on and filled through its pair");
+`,
+);
+
+check(
+    "records-of-several-shapes-held-as-one-interface",
+    `
+    // Records of different types held as one interface, called and found by identity.
+    interface Bounds { minX: number; maxX: number }
+    interface Follower { followGround(dirty?: Bounds | null): boolean }
+    interface Ferns { items: number[]; wind: string; followGround(dirty?: Bounds | null): boolean; scale: number }
+    interface Bushes { items: string[]; winter: number; followGround(dirty?: Bounds | null): boolean }
+    function registry() {
+        const followers: Follower[] = [];
+        return {
+            add(follower: Follower): () => void {
+                followers.push(follower);
+                return () => { const i = followers.indexOf(follower); if (i >= 0) followers.splice(i, 1); };
+            },
+            follow(bounds: Bounds | null): boolean {
+                let changed = false;
+                for (const follower of followers) changed = follower.followGround(bounds) || changed;
+                return changed;
+            },
+        };
+    }
+    function makeFerns(): Ferns {
+        let moved = 0;
+        return { items: [1, 2], wind: "w", scale: 2, followGround: (dirty) => { moved += 1; return !!dirty && moved > 0; } };
+    }
+    function makeBushes(): Bushes {
+        const items = ["a"];
+        return { items, winter: 0, followGround: (dirty) => items.length > 0 && !dirty };
+    }
+    const followers = registry();
+    const ferns = makeFerns();
+    const removeFerns = followers.add(ferns);
+    followers.add(makeBushes());
+    followers.add({ followGround: (dirty) => dirty === null });
+    const a = followers.follow(null);
+    removeFerns();
+    const b = followers.follow({ minX: 0, maxX: 1 });
+    if (a !== true || b !== false || ferns.items.length !== 2) throw new Error(\`\${a} \${b}\`);
+`,
+);
+
+checkInRealm(
+    "keys-of-a-table-select-their-builder",
+    `
+    // A builder iterated over a constant table's keys compiles once per key.
+    const KINDS = { small: { scale: 0.5, wide: false }, large: { scale: 2, wide: true } } as const;
+    type Kind = keyof typeof KINDS;
+    function describe(kind: Kind): string {
+        const def = KINDS[kind];
+        let text = "x*" + def.scale;
+        if (def.wide) text = text.replace("x", "(2,1,1)*x");
+        return text;
+    }
+    async function load(kind: Kind): Promise<string> {
+        await Promise.resolve();
+        return describe(kind) + "!";
+    }
+    async function run(): Promise<void> {
+        const kinds = Object.keys(KINDS) as Kind[];
+        const texts = kinds.map((kind) => describe(kind));
+        const loaded = await Promise.all(kinds.map((kind) => load(kind)));
+        let joined = "";
+        for (const kind of kinds) joined += describe(kind) + ";";
+        const all = texts.join() + "|" + loaded.join() + "|" + joined;
+        if (all !== "x*0.5,(2,1,1)*x*2|x*0.5!,(2,1,1)*x*2!|x*0.5;(2,1,1)*x*2;") throw new Error(all);
+        globalThis.close();
+    }
+    void run();
+`,
+);
+
+check(
+    "record-scalars-beside-written-members",
+    `
+    // A callee writing through one member of a record it is handed: the
+    // record's own scalars hold, unless a member's code can name the record.
+    interface Options { seen: Map<string, number>; tint?: boolean; name: string; nested: { count: number }; reset: () => void }
+    function grow(seen: Map<string, number>): void { seen.set("k", seen.size + 1); }
+    function describe(opts: Options): string {
+        grow(opts.seen);
+        opts.reset();
+        return (opts.tint ? "tinted" : "plain") + opts.name + opts.nested.count + opts.seen.size;
+    }
+    const resetting: Options = { seen: new Map(), tint: true, name: "-a", nested: { count: 1 }, reset: () => {} };
+    resetting.reset = () => { resetting.tint = false; };
+    const first = describe(resetting);
+    const kept: Options = { seen: new Map<string, number>(), tint: true, name: "-b", nested: { count: 2 }, reset: () => {} };
+    const second = describe(kept);
+    if (first !== "plain-a11" || second !== "tinted-b21" || resetting.tint !== false) throw new Error(first + " " + second);
+`,
+);
+
+check(
+    "pushed-string-lists",
+    `
+    // Lists of strings a function pushes onto, read and iterated as they hold.
+    function attributes(normals: boolean, uvs: boolean): string[] {
+        const list = normals ? ["position", "normal"] : ["position"];
+        if (uvs) list.push("uv");
+        let joined = "";
+        for (const name of list) joined += name[0];
+        list.push(joined);
+        return list;
+    }
+    const a = attributes(true, true);
+    const b = attributes(false, Math.random() < 2);
+    const c = attributes(Math.random() > 2, false);
+    if (a.join() !== "position,normal,uv,pnu" || b.join() !== "position,uv,pu" || c.join() !== "position,p") throw new Error(a.join() + " " + b.join() + " " + c.join());
+    const written = ["x", "y"];
+    written.push("z");
+    written[1] = Math.random() > 2 ? "q" : "w";
+    let spelled = "";
+    for (const name of written) spelled += name;
+    if (spelled !== "xwz" || written.length !== 3) throw new Error(spelled);
+    // A push through an alias, a callee or a callback is the list's too.
+    function aliased(extra: boolean): string {
+        const list = extra ? ["a", "b"] : ["a"];
+        const alias = list;
+        alias.push("c");
+        const add = (name: string): void => { list.push(name); };
+        add("d");
+        grow(list);
+        let joined = "";
+        for (const name of list) joined += name;
+        return joined + list.length;
+    }
+    function grow(list: string[]): void { list.push("e"); }
+    const viaAlias = aliased(true) + aliased(Math.random() > 2);
+    if (viaAlias !== "abcde5acde4") throw new Error(viaAlias);
+`,
+);
+
+check(
+    "selection-of-absent-members",
+    `
+    // A selection of two members a call omits is absent in that call; the
+    // same body holds a value in the call that passes one.
+    interface Cell { u: number; v: number; w: number; h: number }
+    interface Options {
+        name: string;
+        cells?: { cells: readonly Cell[]; vFlip: boolean };
+        map?: { cells: readonly Cell[]; vFlip: boolean; capacity: number; keySource: "a" | "b" };
+    }
+    function build(opts: Options): string {
+        const cells = opts.cells;
+        const map = opts.map;
+        const mode = cells ?? map;
+        const setup = mode ? "cells " + (cells ? "direct" : map ? map.keySource : "") : "";
+        let total = 0;
+        if (mode) {
+            const count = Math.max(1, mode.cells.length);
+            const data = new Float32Array((count + 1) * 4);
+            data[0] = count;
+            data[1] = mode.vFlip ? -1 : 1;
+            const source = mode.cells.length ? mode.cells : [{ u: 0, v: 0, w: 1, h: 1 }];
+            for (let i = 0; i < count; i++) {
+                const cell = source[i]!;
+                data.set([cell.u, cell.v, cell.w, cell.h], (i + 1) * 4);
+            }
+            total += data.length + data[1]!;
+        }
+        return opts.name + "[" + setup + "]" + total;
+    }
+    const plain = build({ name: "body" });
+    const direct = build({ name: "cells", cells: { cells: [{ u: 0, v: 0, w: 1, h: 1 }], vFlip: true } });
+    const keyed = build({ name: "map", map: { cells: [], vFlip: false, capacity: 4, keySource: "b" } });
+    if (plain !== "body[]0" || direct !== "cells[cells direct]7" || keyed !== "map[cells b]9") throw new Error(plain + " " + direct + " " + keyed);
+`,
+);
+
+check(
     "typed-array-spreads-and-reverse",
     `
     const floats = new Float32Array([1.5, -2, 3]);
@@ -11117,15 +11321,18 @@ check(
 `,
 );
 
-test("stored unknown parameters refuse a non-literal value typed {}", () => {
-    assert.throws(
-        () =>
-            compileSource(
-                'function f(x: unknown): number { return x === null ? 1 : 0; } const fs: Array<(x: unknown) => number> = [f]; function pick(flag: boolean): {} { return flag ? 1 : "a"; } const unused = fs[0]!(pick(true));',
-            ),
-        /Stored generic function instantiation requires a fully represented native signature/,
-    );
-});
+// A value typed `{}` is any value but null and undefined: a stored function
+// taking `unknown` receives it as the dynamic value it is.
+check(
+    "stored-unknown-parameters-take-a-value-typed-empty-object",
+    `
+    function describe(x: unknown): string { return x === null ? "null" : typeof x; }
+    const describers: Array<(x: unknown) => string> = [describe];
+    function pick(flag: boolean): {} { return flag ? 1 : "a"; }
+    const kinds = describers[0]!(pick(true)) + "," + describers[0]!(pick(false));
+    if (kinds !== "number,string") throw new Error(kinds);
+`,
+);
 
 check(
     "readonly-records-are-their-records",
@@ -11377,6 +11584,30 @@ checkInRealm(
         globalThis.close();
     }
     void main();
+`,
+);
+
+check(
+    "optional-chained-number-methods",
+    `
+    // value?.toFixed(n) and value?.toString() run on a present number and
+    // are undefined otherwise; their arguments run only when it is present.
+    interface Row { y?: number }
+    let precisions = 0;
+    function precision(): number { precisions++; return 3; }
+    function sig(key: string, crown: number | undefined, reserve: number | null, row: Row): string {
+        return key + "|cy" + (crown?.toFixed(precision()) ?? "") + "|r" + (reserve?.toFixed(2) ?? "none") +
+            "|y" + (row.y?.toFixed() ?? "-") + "|s" + (crown?.toString() ?? "?") + "|x" + (reserve?.toString(16) ?? "?");
+    }
+    const crowns: (number | undefined)[] = [1.23456, undefined];
+    const reserves: (number | null)[] = [255.5, null];
+    const rows: Row[] = [{ y: 7.6 }, {}];
+    const out: string[] = [];
+    for (let i = 0; i < 2; i++) out.push(sig("k" + i, crowns[i], reserves[i]!, rows[i]!));
+    if (out.join(";") !== "k0|cy1.235|r255.50|y8|s1.23456|xff.8;k1|cy|rnone|y-|s?|x?") throw new Error(out.join(";"));
+    if (precisions !== 1) throw new Error("precision evaluated " + precisions);
+    const formatted = crowns.map((crown) => crown?.toFixed(1));
+    if (formatted[0] !== "1.2" || formatted[1] !== undefined) throw new Error("chain value");
 `,
 );
 
@@ -15104,6 +15335,515 @@ check(
     if (counts.join(",") !== "11,28,0") throw new Error("array or resolver " + counts.join(","));
     const view = (requests[0]!.outline as readonly Entry[])[0]!.view;
     if (typeof view !== "string" || view !== "a") throw new Error("unknown field");
+`,
+);
+
+check(
+    "later-bindings-read-from-nested-levels",
+    `
+    interface Follow { settled(): void; count(): number }
+    function createFollow(step: number): Follow { let n = 0; return { settled: () => { n += step; }, count: () => n }; }
+    // A closure built in a nested block reads a binding the enclosing block
+    // declares later: the binding's storage exists ahead of the block.
+    function nestedBlock(active: boolean): number {
+        const handlers: (() => void)[] = [];
+        if (active) {
+            const finish = (): void => { casters.settled(); };
+            handlers.push(finish);
+        }
+        const casters = createFollow(2);
+        for (const handler of handlers) handler();
+        return casters.count();
+    }
+    if (nestedBlock(true) !== 2 || nestedBlock(false) !== 0) throw new Error("nested block");
+    function nestedNumber(active: boolean): number {
+        const handlers: (() => void)[] = [];
+        let total = 0;
+        if (active) {
+            const finish = (): void => { total += limit; };
+            handlers.push(finish);
+        }
+        const limit = handlers.length + 4;
+        for (const handler of handlers) handler();
+        return total;
+    }
+    if (nestedNumber(true) !== 5 || nestedNumber(false) !== 0) throw new Error("nested number");
+    function twoLevels(active: boolean): number {
+        const handlers: (() => void)[] = [];
+        if (active) {
+            for (let i = 0; i < 2; i++) {
+                const finish = (): void => { casters.settled(); };
+                handlers.push(finish);
+            }
+        }
+        const casters = createFollow(2);
+        for (const handler of handlers) handler();
+        return casters.count();
+    }
+    if (twoLevels(true) !== 4) throw new Error("two levels");
+    function reassigned(active: boolean): number {
+        let finish = (): void => {};
+        if (active) {
+            finish = (): void => { casters.settled(); };
+        }
+        const casters = createFollow(3);
+        finish();
+        return casters.count();
+    }
+    if (reassigned(true) !== 3 || reassigned(false) !== 0) throw new Error("reassigned");
+    // Two later bindings, one a pattern's name, read by one nested closure.
+    function several(active: boolean): string {
+        const handlers: (() => string)[] = [];
+        if (active) {
+            handlers.push(() => label + ":" + radius + ":" + casters.count());
+        }
+        const casters = createFollow(1);
+        const { radius } = { radius: 7 };
+        const label = "ring" + handlers.length;
+        casters.settled();
+        return handlers.map((handler) => handler()).join();
+    }
+    if (several(true) !== "ring1:7:1") throw new Error("several " + several(true));
+    // Its temporal dead zone holds: a read before the declaration throws.
+    function early(): string {
+        const handlers: (() => number)[] = [];
+        {
+            handlers.push(() => limit + 1);
+        }
+        let outcome = "";
+        try {
+            handlers[0]!();
+            outcome = "read";
+        } catch {
+            outcome = "threw";
+        }
+        const limit = 4;
+        return outcome + ":" + handlers[0]!();
+    }
+    if (early() !== "threw:5") throw new Error("temporal dead zone " + early());
+    // A closure handed to a function reads bindings its caller's block
+    // declares later, from that function's own nested block.
+    interface World { night(): number; drop(): void }
+    interface Options { onDrop: () => void; label: string }
+    const registry: (() => void)[] = [];
+    function makeCounter(): { bump(): void; read(): number } { let n = 0; return { bump: () => { n++; }, read: () => n }; }
+    function buildWorld(options: Options): World {
+        const counter = makeCounter();
+        registry.push(() => options.onDrop());
+        if (options.label.length > 0) {
+            const drop = (): void => { options.onDrop(); counter.bump(); };
+            registry.push(drop);
+        }
+        return { night: () => counter.read(), drop: () => { for (const entry of registry) entry(); } };
+    }
+    function main(): string {
+        const world = buildWorld({ onDrop: () => { dropped.push(tag); }, label: "w" });
+        const follow = (): number => world.night() + dropped.length;
+        const dropped: string[] = [];
+        const tag = "t" + registry.length;
+        world.drop();
+        return follow() + ":" + dropped.join();
+    }
+    if (main() !== "3:t2,t2") throw new Error("handed closure " + main());
+    // Each lowering of the function's block declares its own storage.
+    function twice(apply: (v: number) => number): number {
+        const handlers: (() => number)[] = [];
+        {
+            handlers.push(() => apply(base));
+        }
+        const base = handlers.length + 1;
+        return handlers[0]!();
+    }
+    if (twice((v) => v * 2) !== 4 || twice((v) => v + 5) !== 7) throw new Error("two lowerings");
+    // A closure built by a closure of a nested block, and a function of the
+    // block called from one, read the later binding all the same.
+    function layered(active: boolean): number {
+        const handlers: (() => () => number)[] = [];
+        const register = (): void => {
+            if (active) handlers.push(() => () => scale * 2);
+        };
+        if (active) {
+            handlers.push(() => () => scale + 1);
+            register();
+        }
+        const scale = handlers.length * 10;
+        let total = 0;
+        for (const handler of handlers) total += handler()();
+        return total;
+    }
+    if (layered(true) !== 61 || layered(false) !== 0) throw new Error("layered " + layered(true));
+    // Each iteration of a loop body declares its own storage.
+    function perIteration(): string {
+        const reads: (() => number)[] = [];
+        for (let i = 0; i < 3; i++) {
+            if (i !== 1) {
+                reads.push(() => squared + i);
+            }
+            const squared = i * i;
+        }
+        return reads.map((read) => read()).join();
+    }
+    if (perIteration() !== "0,6") throw new Error("per iteration " + perIteration());
+    // The block that declares it later is a loop's body or a plain block,
+    // the closure at its level or nested in it.
+    function loops(count: number): string {
+        const reads: (() => number)[] = [];
+        for (let i = 0; i < count; i++) {
+            reads.push(() => squared + i);
+            const squared = i * i;
+        }
+        for (const i of [5, 6]) {
+            if (i !== 5) {
+                reads.push(() => doubled - i);
+            }
+            const doubled = i * 2;
+        }
+        let k = 0;
+        while (k < 2) {
+            const step = k;
+            {
+                reads.push(() => cubed + step);
+            }
+            const cubed = step * step * step;
+            k++;
+        }
+        {
+            reads.push(() => last * 10);
+            const last = reads.length;
+        }
+        return reads.map((read) => read()).join();
+    }
+    if (loops(Number("3")) !== "0,2,6,6,0,2,70") throw new Error("loops " + loops(Number("3")));
+`,
+);
+
+check(
+    "functions-stored-in-unknown-slots-of-a-document",
+    `
+    // A function stored where the slot is declared unknown is held as its
+    // own type: a member of a record's parameter, a method, an arrow, an
+    // async arrow, one with a default.
+    interface Deps { pick(x: number, y: number): number; snapshot(): string[] }
+    function install(target: Record<string, unknown>, deps: Deps): void {
+        target.ccPick = deps.pick;
+        target.ccSnapshot = deps.snapshot;
+        target.ccTrace = async (x: number): Promise<number> => deps.pick(x, x);
+        target.ccGround = (x: number, z: number, radius = 0) => ({ x, z, radius });
+    }
+    const bag: Record<string, unknown> = JSON.parse('{"kept":1}');
+    install(bag, { pick: (x, y) => x + y, snapshot: () => ["a"] });
+    const kinds = Object.keys(bag).map((key) => key + ":" + typeof bag[key]).join();
+    if (kinds !== "kept:number,ccPick:function,ccSnapshot:function,ccTrace:function,ccGround:function") throw new Error(kinds);
+    if (JSON.stringify(bag) !== '{"kept":1}') throw new Error("serialized " + JSON.stringify(bag));
+`,
+);
+
+check(
+    "fresh-records-stored-as-dictionaries",
+    `
+    // The records a map or flatMap callback builds, held by nothing else,
+    // are stored as the dictionaries a stored function's type declares.
+    interface Rec { id: number; w: number; name: string }
+    const recs: Rec[] = [{ id: 1, w: 2, name: "a" }, { id: 2, w: 0, name: "b" }, { id: 3, w: 1, name: "c" }];
+    const fns: (() => Array<Record<string, unknown>>)[] = [];
+    fns.push(() => recs.map((rec) => ({ id: rec.id, label: rec.name })));
+    fns.push(() => recs.flatMap((rec) => rec.w > 0 ? [{ id: rec.id, wide: rec.w > 1 }] : []));
+    fns.push(() => recs.flatMap((rec) => {
+        if (rec.w === 0) return [];
+        const wide = rec.w > 1;
+        return [{ id: rec.id, wide }, { id: -rec.id, wide: false }];
+    }));
+    const seen = fns.map((fn) => JSON.stringify(fn())).join("|");
+    if (seen !== '[{"id":1,"label":"a"},{"id":2,"label":"b"},{"id":3,"label":"c"}]|[{"id":1,"wide":true},{"id":3,"wide":false}]|[{"id":1,"wide":true},{"id":-1,"wide":false},{"id":3,"wide":false},{"id":-3,"wide":false}]')
+        throw new Error(seen);
+    // Each is a dictionary of its own: it takes a key the record never had.
+    const rows = fns[0]!();
+    rows[0]!.extra = true;
+    if (Object.keys(rows[0]!).join() !== "id,label,extra" || Object.keys(rows[1]!).join() !== "id,label") throw new Error("own dictionary");
+`,
+);
+
+check(
+    "methods-reading-this-beside-copies-of-enumerated-values",
+    `
+    // An untyped value a loop takes out of a typed object is one of that
+    // object's property values: spreading it reads no method of a record
+    // those properties cannot hold.
+    interface Row { id: number; name: string; glass: { r: number; g: number } }
+    function copyRow<T extends object>(row: T): T {
+        const out: Record<string, unknown> = {};
+        for (const [key, value] of Object.entries(row)) {
+            out[key] = value !== null && typeof value === "object" ? { ...value } : value;
+        }
+        return out as T;
+    }
+    interface Ledger { get(): number; grant(amount: number): void; grantMorning(shares: number): number }
+    function createLedger(start: number): Ledger {
+        let balance = start;
+        return {
+            get: () => balance,
+            grant(amount) { if (amount > 0) balance += amount; },
+            grantMorning(shares) { const amount = shares * 2; this.grant(amount); return amount; },
+        };
+    }
+    let ledger: Ledger = createLedger(1);
+    function configure(start: number): void { ledger = createLedger(start); }
+    const row: Row = { id: 1, name: "a", glass: { r: 1, g: 2 } };
+    const copy = copyRow(row);
+    copy.glass.r = 7;
+    const first = ledger.grantMorning(3) + ":" + ledger.get();
+    configure(10);
+    const seen = [first, String(ledger.grantMorning(1)), String(ledger.get()), String(row.glass.r), String(copy.glass.r), String(copy.id), copy.name].join("|");
+    if (seen !== "6:7|2|12|1|7|1|a") throw new Error(seen);
+`,
+);
+
+test("a method reading this refuses beside a copy of an enumerated value that can hold it", () => {
+    // The enumerated object holds the ledger: its copy's method would run
+    // with the copy as receiver.
+    assert.throws(
+        () =>
+            compileSource(`
+    function copyRow<T extends object>(row: T): T {
+        const out: Record<string, unknown> = {};
+        for (const [key, value] of Object.entries(row)) {
+            out[key] = value !== null && typeof value === "object" ? { ...value } : value;
+        }
+        return out as T;
+    }
+    interface Ledger { get(): number; grant(amount: number): void; grantMorning(shares: number): number }
+    function createLedger(start: number): Ledger {
+        let balance = start;
+        return {
+            get: () => balance,
+            grant(amount) { if (amount > 0) balance += amount; },
+            grantMorning(shares) { const amount = shares * 2; this.grant(amount); return amount; },
+        };
+    }
+    let ledger: Ledger = createLedger(1);
+    function configure(start: number): void { ledger = createLedger(start); }
+    interface Bag { id: number; ledger: Ledger }
+    const bag: Bag = { id: 1, ledger };
+    const copy = copyRow(bag);
+    configure(10);
+    console.log(copy.id, ledger.grantMorning(1));
+`),
+        /Method 'grantMorning' reads `this`, and .*:\d+ reads its function value, which could call it with another receiver/,
+    );
+});
+
+check(
+    "function-slots-over-records-holding-unknown-values",
+    `
+    // A declared slot starting null takes a function whose parameter
+    // record holds an unknown value: the slot's unknown positions are
+    // stored as the values they are.
+    interface CrashInput { kind: "boot" | "frame"; error: unknown; context?: string }
+    let gate: ((input: CrashInput) => boolean) | null = null;
+    function setGate(next: ((input: CrashInput) => boolean) | null): void { gate = next; }
+    function report(input: CrashInput): string {
+        let withheld = false;
+        if (gate) {
+            try { withheld = gate(input) === true; } catch { /* a broken gate hides nothing */ }
+        }
+        return withheld ? "withheld" : "shown:" + String(input.error);
+    }
+    const first = report({ kind: "boot", error: "a" });
+    const absorbed: unknown[] = [];
+    setGate((input) => { absorbed.push(input.error); return input.kind === "frame"; });
+    const second = report({ kind: "frame", error: "b" });
+    const third = report({ kind: "boot", error: 3 });
+    setGate((input) => { if (input.error === null) throw new Error("broken"); return typeof input.error === "number"; });
+    const fourth = report({ kind: "boot", error: null });
+    const fifth = report({ kind: "boot", error: 5, context: "late" });
+    setGate(null);
+    const seen = [first, second, third, fourth, fifth, report({ kind: "frame", error: true }), absorbed.length, typeof absorbed[1]].join("|");
+    if (seen !== "shown:a|withheld|shown:3|shown:null|withheld|shown:true|2|number") throw new Error(seen);
+`,
+);
+
+check(
+    "destructured-tuples-stored-as-number-arrays",
+    `
+    // A tuple a parameter pattern reads from a record, stored where a
+    // union's layout keeps a number array, is the record's own array: its
+    // property takes growable storage, as for a member read of it.
+    type Hit = { kind: "bridge"; span: number; point: [number, number] } | { kind: "tower"; index: number; point: [number, number, number] };
+    interface MeshHit { id: number; point: [number, number, number] }
+    const resolvers: ((hit: MeshHit) => Hit | null)[] = [];
+    resolvers.push(({ id, point }) => id > 0 ? { kind: "tower", index: id, point } : null);
+    resolvers.push(({ id, point: [x, y] }) => id === 0 ? { kind: "bridge", span: x + y, point: [x, y] } : null);
+    const hits: MeshHit[] = [{ id: 1, point: [1, 2, 3] }, { id: 0, point: [4, 5, 6] }];
+    const seen: string[] = [];
+    for (const hit of hits) for (const resolve of resolvers) {
+        const found = resolve(hit);
+        if (!found) { seen.push("none"); continue; }
+        // A write through the stored array is read through the hit's.
+        found.point[0] = 9;
+        seen.push(found.kind + ":" + found.point.join(",") + ":" + hit.point.join(",") + ":" + (found.kind === "tower" && found.point === hit.point));
+    }
+    if (seen.join("|") !== "tower:9,2,3:9,2,3:true|none|none|bridge:9,5:4,5,6:false") throw new Error(seen.join("|"));
+`,
+);
+
+check(
+    "function-slots-declared-with-a-stub-returning-undefined",
+    `
+    // A slot whose first function always returns undefined takes functions
+    // that return values later: a call reads what the stored one returns.
+    interface Footprint { w: number; d: number }
+    const cache = new Map<number, { fp: Footprint; floorY: number }>();
+    let fpOf = (_seq: number): Footprint | undefined => undefined;
+    let floorOf = (_seq: number): number | undefined => undefined;
+    let bottomOf = (_seq: number): number | null | undefined => undefined;
+    function bottom(entry: { fp: Footprint; floorY: number } | undefined): number | null | undefined { return entry ? entry.floorY - 1 : null; }
+    function describe(seq: number): string {
+        const fp = fpOf(seq);
+        return (fp ? fp.w + "x" + fp.d : "none") + "@" + floorOf(seq) + "/" + bottomOf(seq);
+    }
+    const before = describe(1);
+    if (cache.size === 0) {
+        cache.set(1, { fp: { w: 2, d: 3 }, floorY: 4 });
+        fpOf = (seq: number): Footprint | undefined => cache.get(seq)?.fp;
+        floorOf = (seq: number): number | undefined => cache.get(seq)?.floorY;
+        bottomOf = seq => bottom(cache.get(seq));
+    }
+    const seen = [before, describe(1), describe(2)].join("|");
+    if (seen !== "none@undefined/undefined|2x3@4/3|none@undefined/null") throw new Error(seen);
+`,
+);
+
+check(
+    "void-results-returned-from-void-bodies",
+    `
+    // \`return work()\` in a body whose result is void runs the call and
+    // returns: the declared void, and a type parameter's void argument.
+    const rows = new Map<string, number>();
+    const record = (label: string): void => { rows.set(label, (rows.get(label) ?? 0) + 1); };
+    const track = <T>(label: string, work: () => T): T => {
+        if (label === "skip") return work();
+        try {
+            return work();
+        } finally {
+            record(label);
+        }
+    };
+    const measure = <Args extends unknown[], Result>(label: string, work: (...args: Args) => Result): ((...args: Args) => Result) => {
+        if (label === "plain") return work;
+        return (...args: Args): Result => {
+            try {
+                return work(...args);
+            } finally {
+                record(label);
+            }
+        };
+    };
+    let total = 0;
+    function bump(): void { total += 1; }
+    function run(skip: boolean): void { if (skip) return; return bump(); }
+    run(false);
+    run(true);
+    track("a", () => { total += 10; });
+    track("skip", () => { total += 100; });
+    const three = track("b", () => 3);
+    const add = measure("add", (amount: number): void => { total += amount; });
+    add(1000);
+    add(1000);
+    const twice = measure("twice", (amount: number): number => amount * 2);
+    const plain = measure("plain", (amount: number): void => { total += amount; });
+    plain(10000);
+    const seen = [total, three, twice(4), [...rows].map(([label, calls]) => label + "," + calls).join(";")].join("|");
+    if (seen !== "12111|3|8|a,1;b,1;add,2;twice,1") throw new Error(seen);
+`,
+);
+
+check(
+    "arrays-stored-as-a-union's-array-member",
+    `
+    // An array of records of another type (a map's or flatMap's results, a
+    // function's) is stored as the union's one array member, its elements
+    // as that member's.
+    interface Ignore { readonly name: string; readonly instance?: number; readonly range?: { readonly start: number; readonly count: number } }
+    type Resolver = (key: string) => Ignore | Ignore[] | null;
+    const resolvers: Resolver[] = [];
+    const names = ["a", "b", "c"];
+    function describe(result: Ignore | Ignore[] | null): string {
+        if (result === null) return "null";
+        if (Array.isArray(result))
+            return "[" + result.map((entry) => entry.name + ":" + (entry.instance ?? "-") + ":" + (entry.range ? entry.range.start + "+" + entry.range.count : "-")).join() + "]";
+        return result.name + ":" + (result.instance ?? "-");
+    }
+    resolvers.push((key) => {
+        if (key === "none") return null;
+        return names.flatMap((name) => name >= key ? [{ name, range: { start: 1, count: 2 } }] : []);
+    });
+    resolvers.push((key) => names.map((name) => ({ name, instance: key.length })));
+    const lookup = (key: string): { name: string }[] | undefined => key === "b" ? [{ name: key }] : undefined;
+    resolvers.push((key) => lookup(key) ?? []);
+    resolvers.push((key) => key === "x" ? null : { name: key, instance: 2 });
+    function pick(key: string): Ignore | Ignore[] | null {
+        const found = names.map((name) => ({ name, instance: key.length }));
+        return found;
+    }
+    const seen = resolvers.map((resolve) => describe(resolve("b"))).join(";") + ";" + describe(resolvers[0]!("none")) + ";" + describe(pick("zz"));
+    if (seen !== "[b:-:1+2,c:-:1+2];[a:1:-,b:1:-,c:1:-];[b:-:-];b:2;null;[a:2:-,b:2:-,c:2:-]") throw new Error(seen);
+`,
+);
+
+checkInRealm(
+    "optional-promise-reactions",
+    `
+    // A reaction on a promise that may be absent runs on the present one;
+    // an absent receiver evaluates none of its arguments.
+    let seen = "";
+    let evaluated = 0;
+    setTimeout(() => {
+        if (seen.split("").sort().join("") !== "1cf") throw new Error("seen " + seen);
+        if (evaluated !== 1) throw new Error("arguments evaluated " + evaluated);
+        globalThis.close();
+    }, 5);
+    async function load(n: number): Promise<number> { if (n > 1) throw new Error("big"); return n; }
+    function kick(n: number): Promise<number> | undefined { return n > 0 ? load(n) : undefined; }
+    function maybe(n: number): Promise<number> | null { return n > 0 ? load(n) : null; }
+    const recovery = (): (() => void) => { evaluated++; return () => { seen += "c"; }; };
+    for (const n of [2, 0]) { const p = kick(n); void p?.catch(recovery()); }
+    for (const n of [1, 0]) { const p = maybe(n); p?.then((value) => { seen += String(value); }); }
+    let pending: Promise<number> | undefined;
+    pending?.finally(() => { seen += "never"; });
+    pending = load(1);
+    void pending?.finally(() => { seen += "f"; });
+`,
+);
+
+checkInRealm(
+    "later-bindings-read-from-nested-levels-across-awaits",
+    `
+    // The storage declared ahead of an awaiting statement lives across the
+    // await: closures built before it read the binding declared after it.
+    const reads: (() => string)[] = [];
+    async function loaded(text: string): Promise<string> {
+        await Promise.resolve();
+        return text + "!";
+    }
+    async function start(active: boolean): Promise<string> {
+        if (active) {
+            reads.push(() => label + ":" + sizes.length);
+        }
+        const first = await loaded("a");
+        for (const part of ["x", "y"]) {
+            if (part !== "x") {
+                reads.push(() => suffix + part);
+            }
+            const suffix = await loaded(part);
+        }
+        const label = first + (await loaded("b"));
+        const sizes = [label.length];
+        return reads.map((read) => read()).join();
+    }
+    void start(true).then((seen) => {
+        if (seen !== "a!b!:1,y!y") throw new Error("across awaits " + seen);
+        globalThis.close();
+    });
 `,
 );
 
