@@ -172,6 +172,35 @@ test("mutation analysis follows aliases and callees without confusing shadowed p
     ]);
 });
 
+test("a listing of a parameter's members and a promise's reactions do not write the parameter", () => {
+    const { checker, sourceFile } = createCompilerProgram(
+        `
+        interface Texture { url: string }
+        function sortedEntries(map: Record<string, Texture>) {
+            return Object.entries(map).sort(([a], [b]) => (a < b ? -1 : 1));
+        }
+        function sortedKeys(map: Record<string, Texture>) { return Object.keys(map).sort(); }
+        function listedValues(map: Record<string, Texture>) { const list = Object.values(map); list.push({ url: "x" }); return list.length; }
+        function entryWrite(map: Record<string, Texture>) { for (const [, texture] of Object.entries(map)) texture.url = "changed"; }
+        function valueWrite(map: Record<string, Texture>) { Object.values(map)[0]!.url = "changed"; }
+        async function load(map: Record<string, Texture>): Promise<Record<string, Texture>> { return map; }
+        function reacted(map: Record<string, Texture>) { const loading = load(map); loading.catch(() => undefined); return loading; }
+        `,
+        "test/analysis-listed-members.ts",
+    );
+    const mutated = sourceFile.statements
+        .filter(ts.isFunctionDeclaration)
+        .filter((fn) => fn.name?.text !== "load")
+        .map((fn) => {
+            const parameter = fn.parameters[0]?.name;
+            assert.ok(parameter && ts.isIdentifier(parameter));
+            return parameterIsMutated(checker, fn, parameter);
+        });
+    // Sorting or growing the new list writes nothing of the record; a write
+    // to an entry's or a listed value's object writes the record's member.
+    assert.deepEqual(mutated, [false, false, false, true, true, false]);
+});
+
 test("an unused catch binding stays erased when a nested function shadows its name", () => {
     assert.doesNotThrow(() =>
         compileSource(`

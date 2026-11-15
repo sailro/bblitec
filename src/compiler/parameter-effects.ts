@@ -967,9 +967,47 @@ class EffectWalker {
                 derived: value.derived,
                 ...scope,
             });
-        if (spread || mayReturnArgument(this.checker, call, index))
+        const listed = spread
+            ? undefined
+            : listedMembers(this.checker, call, index, values);
+        if (listed) {
+            if (
+                listed.length > 0 &&
+                canHoldObjects(
+                    this.checker,
+                    this.checker.getTypeAtLocation(call),
+                )
+            )
+                this.consume(call, listed, scope);
+        } else if (spread || mayReturnArgument(this.checker, call, index))
             this.result(call, values, scope);
     }
+}
+
+/**
+ * What `Object.values(x)`, `Object.entries(x)` and `Object.keys(x)` hold of
+ * the object handed them: each is a new array, whose elements (or whose
+ * entry pairs' values) are `x`'s member values, and whose keys are strings.
+ * Undefined for any other call.
+ */
+function listedMembers(
+    checker: ts.TypeChecker,
+    call: ts.CallExpression | ts.NewExpression,
+    index: number,
+    values: readonly Projection[],
+): Projection[] | undefined {
+    if (index !== 0 || !ts.isCallExpression(call)) return undefined;
+    const callee = namedMember(checker, unwrapExpression(call.expression));
+    if (!callee || libraryGlobal(checker, callee.expression) !== "Object")
+        return undefined;
+    const members = projectMember(values, ANY_KEY);
+    return callee.name === "values"
+        ? nest(members, ANY_KEY)
+        : callee.name === "entries"
+          ? nest(nest(members, "1"), ANY_KEY)
+          : callee.name === "keys"
+            ? []
+            : undefined;
 }
 
 /** Functions whose summary is being computed, which a cycle cannot read. */
@@ -1483,8 +1521,21 @@ function visibleWrites(
             case "write":
             case "rebind":
                 return true;
-            case "method":
-                return !readOnlyDataMethods.has(use.method);
+            case "method": {
+                if (readOnlyDataMethods.has(use.method)) return false;
+                // A library class's own reading methods read it too (a
+                // promise's `then` and `catch`).
+                const receiver = namedMember(checker, use.call.expression);
+                return (
+                    !receiver ||
+                    callTarget(checker, use.call).kind !== "library" ||
+                    libraryMethodWritesReceiver(
+                        checker,
+                        receiver.expression,
+                        use.method,
+                    )
+                );
+            }
             // What a callee does with a value an earlier call computed
             // from the parameter is that earlier callee's question.
             case "stored":
