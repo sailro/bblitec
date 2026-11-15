@@ -3,6 +3,7 @@ import ts from "typescript";
 import { staticBooleanOf } from "../values/model.js";
 import { argumentAt, outermostWrapper } from "../syntax.js";
 import { rejectedWhenRefused } from "../promises.js";
+import { holdsOnly } from "../type-facts.js";
 import type { Feature, ShadowCasterMeshManifest, Value } from "../types.js";
 import type { IntrinsicCallContext } from "./context.js";
 import {
@@ -27,6 +28,7 @@ export interface ShadowIntrinsicContext
         Pick<
             LoweringServices,
             | "admissions"
+            | "checker"
             | "compileNumber"
             | "compileBoolean"
             | "callbacks"
@@ -359,8 +361,17 @@ function compileShadowGeneratorFactory(
             // `renderEsmShadowMap` / `renderCsmShadowMap` would.
             return fixed ? "true" : "false";
         }
-        if (spec.booleans?.includes(name))
-            return context.compileBoolean(expression);
+        // Into the record, read where the cascades are fitted: a run-time
+        // boolean is its condition.
+        if (spec.booleans?.includes(name)) {
+            if (
+                !holdsOnly(context.checker.getTypeAtLocation(expression), [
+                    "boolean",
+                ])
+            )
+                context.fail(expression, "Expected a boolean.");
+            return context.conditions.compileCondition(expression);
+        }
         if (spec.runtimeExtents?.includes(name)) {
             // A run-time extent takes WebGPU's own size conversion.
             return staticNumberValue(context, expression) === undefined

@@ -8072,6 +8072,7 @@ test("carries the cascade stabilization and the world-space bias into the genera
             addToScene(scene, light);
             const stable = (localStorage.getItem("stable") ?? "1") === "1";
             const worldBias = Number(localStorage.getItem("bias") ?? "0.05");
+            const tier = JSON.parse(localStorage.getItem("tier") ?? '{"shadow":{"stable":true,"far":80}}') as { shadow: { stable: boolean; far: number } };
             createCsmDirectionalShadowGenerator(engine, light, {
                 ${options}
             });
@@ -8113,6 +8114,17 @@ test("carries the cascade stabilization and the world-space bias into the genera
             "(v_worldBias > 0.0 ? std::optional<double>{v_worldBias} : std::optional<double>{}), " +
             "(v_worldBias > 0.0 ? 0.5 : bbl::upstream::csm_default_darkness), " +
             "bbl::upstream::csm_default_frustum_edge_falloff, false",
+    );
+    // A run-time boolean read off a parsed document is its condition.
+    assert.match(
+        options(
+            compileSource(
+                source(
+                    "stabilizeCascades: tier.shadow.stable, shadowMaxZ: tier.shadow.far,",
+                ),
+            ).cpp,
+        ),
+        /bbl::upstream::csm_default_cascade_blend_percentage, v_tier\.read_property\("shadow"\)\.read_property\("stable"\)\.truthy\(\), std::optional<double>\{/,
     );
     // The layered map is created from the record at run time: a quality
     // tier sizes it and counts its cascades as the texture extents they are.
