@@ -603,7 +603,7 @@ export class SurveyCollector {
     private readonly realms = new Map<string, Attempt>();
     /** @unjournaled The census counts refusals a rollback discards too. */
     private current: Attempt | undefined;
-    /** The attempt begun last, whose phases its pass reports. */
+    /** @unjournaled The attempt begun last, whose phases its pass reports. */
     private last: Attempt | undefined;
     /** @unjournaled When the last progress line was reported. */
     private reportedAt = Date.now();

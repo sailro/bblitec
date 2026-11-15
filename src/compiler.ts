@@ -2241,7 +2241,7 @@ class Compiler implements LoweringServices {
     }
 
     /** How many statements being lowered precede a later binding of their block (`hoistsForward`). */
-    private forwardOwners = 0;
+    @journaled private accessor forwardOwners = 0;
 
     /**
      * Lowers a statement (`lower`). Under a statement that precedes a later
