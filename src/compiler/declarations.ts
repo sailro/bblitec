@@ -3795,11 +3795,14 @@ export class DeclarationLowerer {
             ts.isIdentifier(name) &&
             isOperandSelection(initializer) &&
             !this.context.sharedClosures.identifierIsRebound(name) &&
-            this.context.probeEmission(
-                () =>
-                    this.context.compileValue(unwrappedInitializer).kind ===
-                    "json-null",
-                (absent) => absent,
+            // A selection the probe refuses is declared on its own path.
+            unlessRefused(() =>
+                this.context.probeEmission(
+                    () =>
+                        this.context.compileValue(unwrappedInitializer)
+                            .kind === "json-null",
+                    (absent) => absent,
+                ),
             )
         )
             return false;
