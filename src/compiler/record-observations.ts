@@ -41,6 +41,7 @@ import {
     hasExportModifier,
     propertyKey,
     valueConsumer,
+    isGeneratorFunction,
 } from "./syntax.js";
 
 /** What a record-observation question reads: the program and the code its calls run. */
@@ -185,10 +186,46 @@ export function recordFieldIsWritten(
     keepsPresent = false,
     origin?: ts.Node,
 ): boolean {
+    return cachedFieldWrite(
+        context,
+        source,
+        property,
+        keepsPresent,
+        origin,
+        false,
+    );
+}
+
+/**
+ * Whether a write in the program can replace `property` on a record of
+ * `source` type once that record is built: as
+ * {@link recordFieldIsWritten}, but a write through a function's own
+ * `const` holding a fresh literal's object, in that function's own body
+ * (no nested function, no generator), builds the object before the
+ * function returns it, and is not counted. What such a write stores is
+ * the reader's to know.
+ */
+export function builtRecordFieldIsWritten(
+    context: RecordObservationContext,
+    source: ts.Type,
+    property: string,
+): boolean {
+    return cachedFieldWrite(context, source, property, false, undefined, true);
+}
+
+/** {@link recordFieldIsWritten} or {@link builtRecordFieldIsWritten}, kept per type and question. */
+function cachedFieldWrite(
+    context: RecordObservationContext,
+    source: ts.Type,
+    property: string,
+    keepsPresent: boolean,
+    origin: ts.Node | undefined,
+    built: boolean,
+): boolean {
     const site = origin
         ? `${origin.getSourceFile().fileName}:${origin.pos}:${origin.end}:${origin.kind}`
         : "";
-    const key = `${property}|${keepsPresent}|${site}`;
+    const key = `${property}|${keepsPresent}|${site}|${built}`;
     let byKey = writtenFields.get(source);
     if (!byKey) writtenFields.set(source, (byKey = new Map<string, boolean>()));
     let written = byKey.get(key);
@@ -199,10 +236,27 @@ export function recordFieldIsWritten(
             property,
             keepsPresent,
             origin,
+            built,
         );
         byKey.set(key, written);
     }
     return written;
+}
+
+/**
+ * Whether `write` goes through a function's own `const` holding a fresh
+ * literal's object, in that function's own body: it builds that
+ * invocation's object, before the function hands it out.
+ */
+function buildsFreshObject(write: ObservedWrite): boolean {
+    const literal = write.freshObject;
+    if (!literal) return false;
+    const owner = ts.findAncestor(literal.parent, ts.isFunctionLike);
+    return (
+        owner !== undefined &&
+        !isGeneratorFunction(owner) &&
+        ts.findAncestor(write.node.parent, ts.isFunctionLike) === owner
+    );
 }
 
 /**
@@ -211,13 +265,14 @@ export function recordFieldIsWritten(
  */
 const writtenFields = new WeakMap<ts.Type, Map<string, boolean>>();
 
-/** {@link recordFieldIsWritten}, computed. */
+/** {@link cachedFieldWrite}, computed. */
 function fieldWriteFound(
     context: RecordObservationContext,
     source: ts.Type,
     property: string,
     keepsPresent: boolean,
     origin: ts.Node | undefined,
+    built: boolean,
 ): boolean {
     const { checker } = context;
     const observations = programObservations(context.program);
@@ -265,7 +320,8 @@ function fieldWriteFound(
         (!keepsPresent || mayRemove(write)) &&
         (origin === undefined ||
             write.freshObject === undefined ||
-            write.freshObject === origin);
+            write.freshObject === origin) &&
+        !(built && buildsFreshObject(write));
     return (
         writesWhere(
             observations,

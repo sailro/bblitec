@@ -504,10 +504,12 @@ test("a packaged URL read from a config merged over its defaults keeps the packa
 
 test("a number the packaged document and its defaults read alike composes a shader from the merged config", () => {
     // The loader can return the defaults (a failed fetch, a throw), so a
-    // number folds only where the document gives the default's value.
-    const compile = (scale: string): CompileResult => {
+    // number folds only where the document gives the default's value; a
+    // document value of another kind, or a write replacing the member once
+    // the config is built, leaves it a run-time read.
+    const compile = (scale: string, after = ""): CompileResult => {
         const directory = resolve(
-            `artifacts/packaged-fetch-config-shader-${scale}`,
+            `artifacts/packaged-fetch-config-shader-${scale.replaceAll('"', "q")}${after ? "-written" : ""}`,
         );
         mkdirSync(join(directory, "public"), { recursive: true });
         writeFileSync(
@@ -547,6 +549,7 @@ async function main(): Promise<void> {
     const engine = await createEngine(document.getElementById("renderCanvas") as HTMLCanvasElement);
     createSceneContext(engine);
     const config = await loadConfig("");
+    ${after}
     const vertex = VERTEX.replace("/*S*/", config.look.scale.toFixed(2)).replace("/*T*/", config.look.tone.toFixed(2));
     createShaderMaterial({ name: "m", vertexSource: wgsl\`\${vertex}\`, fragmentSource: FRAGMENT, attributes: ["position"], uniforms: ["worldViewProjection"] });
 }
@@ -566,10 +569,19 @@ void main();
         ),
         [["2.50", "0.25"]],
     );
-    assert.throws(
-        () => compile("3"),
-        /'vertex' is bound as data without a static string/,
-    );
+    for (const [scale, after] of [
+        ["3", ""],
+        ['"2.5"', ""],
+        [
+            "2.5",
+            "const bump = (record: Record<string, unknown>): void => { for (const key of Object.keys(record)) record[key] = 3; }; if (Date.now() < 0) bump(config.look as unknown as Record<string, unknown>);",
+        ],
+    ])
+        assert.throws(
+            () => compile(scale!, after),
+            /'vertex' is bound as data without a static string/,
+            `${scale} ${after}`,
+        );
 });
 
 test("a packaged URL read from a packaged response's JSON keeps the document's values", (t) => {

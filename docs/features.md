@@ -143,8 +143,10 @@ Rules:
   Inference follows closed local Map registries (`set` calls or constructor entries), member and `push` writes, array
   callback parameters, awaited values, `Promise.all`, the methods of a record a call built and a dynamic import's
   exports. The JSON of a packaged response reads as the document the package holds; a call handed that document
-  (a merge over defaults) is run at generation for the strings its result holds. A document member of a primitive
-  type that every run reads alike (the defaults a failing load returns included) reads as that constant.
+  (a merge over defaults) is run at generation for the strings its result holds. A document member of a number or
+  boolean type that every run reads alike (the defaults a failing load returns included) reads as that constant,
+  where every source holds a value of that kind and no write in the program replaces a member on the way once its
+  record is built.
 - `fetch` (application realm): absolute HTTP(S), method, string headers, body, static cache mode, `keepalive`, `signal`; streamed
   `body` reader. Known asset fetches use packaged responses. A `typeof fetch` wrapper forwards its runtime `RequestInit`
   (signal, headers). Request objects, teeing and Headers iteration refuse.

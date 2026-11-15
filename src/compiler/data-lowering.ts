@@ -173,6 +173,7 @@ import { representedResultType } from "./represented-result.js";
 import {
     arrayWriteObservation,
     recordFieldIsWritten,
+    builtRecordFieldIsWritten,
 } from "./record-observations.js";
 import { sceneRelativeSourceLabel } from "../source-location.js";
 import { staticJsonValue, staticNumberValue } from "./option-helpers.js";
@@ -294,6 +295,7 @@ import {
     objectLiteralMembers,
     type MemberAccess,
     isMemberAccess,
+    literalKey,
     localCallback,
     type LocalCallback,
     notJson,
@@ -18981,25 +18983,25 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
     }
 
     /**
-     * A document member that reads one primitive wherever the documents
-     * the package serves are the ones generation holds
-     * (`packagedValueDomain`): that primitive. Undefined for any other.
+     * A document member of a number or boolean type that reads one value
+     * wherever the documents the package serves are the ones generation
+     * holds (`packagedValueDomain`, whose leaves are values of that kind):
+     * that value, where no write in the program replaces a member on the
+     * way once its record is built (`membersStayAsBuilt`). Undefined for
+     * any other.
      */
     public packagedPrimitive(access: ts.Expression): Value | undefined {
         const kind = valueKindOf(
             this.context.checker.getTypeAtLocation(access),
         );
-        if (kind !== "number" && kind !== "string" && kind !== "boolean")
+        if (
+            (kind !== "number" && kind !== "boolean") ||
+            !this.membersStayAsBuilt(access)
+        )
             return undefined;
-        const domain = this.context.packagedValueDomain(access);
+        const domain = this.context.packagedValueDomain(access, kind);
         if (domain?.length !== 1) return undefined;
         const [text] = domain as [string];
-        if (kind === "string")
-            return {
-                kind: "string",
-                cpp: this.context.cppString(text),
-                staticString: text,
-            };
         if (kind === "boolean") {
             const known = knownCondition(text);
             return known === undefined
@@ -19007,9 +19009,39 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 : { kind: "boolean", cpp: text, staticBoolean: known };
         }
         const number = Number(text);
-        return String(number) === text
+        return text === (Object.is(number, -0) ? "-0" : String(number))
             ? numberConstantValue(number)
             : undefined;
+    }
+
+    /**
+     * Whether no write in the program replaces any member a chain of named
+     * member reads goes through, once the record holding it is built
+     * (`builtRecordFieldIsWritten`): a read through a run-time key may be
+     * any member.
+     */
+    private membersStayAsBuilt(access: ts.Expression): boolean {
+        for (
+            let node = this.context.unwrap(access);
+            isMemberAccess(node);
+            node = this.context.unwrap(node.expression)
+        ) {
+            const name = ts.isPropertyAccessExpression(node)
+                ? node.name.text
+                : literalKey(node.argumentExpression);
+            if (
+                name === undefined ||
+                builtRecordFieldIsWritten(
+                    this.context,
+                    this.context.checker.getNonNullableType(
+                        this.context.checker.getTypeAtLocation(node.expression),
+                    ),
+                    name,
+                )
+            )
+                return false;
+        }
+        return true;
     }
 
     /**

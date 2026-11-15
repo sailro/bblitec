@@ -70,6 +70,7 @@ import { browserDeploymentValue } from "./browser-erasure.js";
 export type StringDomainContext = Pick<
     LoweringServices,
     | "checker"
+    | "compileValue"
     | "sourceFiles"
     | "compileStringLiteral"
     | "probeEmission"
@@ -91,6 +92,12 @@ export interface StringDomainUse {
     ) => readonly string[] | undefined;
     /** The text of the document the consumer packages at a URL, if it holds one. */
     readonly document?: (url: string) => string | undefined;
+    /**
+     * The kind of value the read is (a value read, `packagedValueDomain`):
+     * a leaf of another kind, a string or a document's member a cast
+     * retyped among them, leaves the domain unknown.
+     */
+    readonly scalar?: "number" | "boolean";
 }
 
 interface Origin {
@@ -248,6 +255,11 @@ interface HeldData {
     readonly key: string;
     /** A packaged document, not a literal. */
     readonly document: boolean;
+}
+
+/** A value read's number or boolean, spelled: `-0` apart from `0`. */
+function spelledScalar(value: number | boolean): string {
+    return Object.is(value, -0) ? "-0" : String(value);
 }
 
 /** A parsed JSON document: every object of it is plain data. */
@@ -1426,11 +1438,19 @@ class StringDomain {
     /** @unjournaled Bindings the enclosing conditional tests truthy: never "". */
     private readonly truthy = new Set<ts.Symbol>();
 
+    /**
+     * @unjournaled The kind of value the read in progress is
+     * (`StringDomainUse.scalar`): none inside an operand that builds a
+     * string, a key or a URL.
+     */
+    private scalar: "number" | "boolean" | undefined;
+
     constructor(
         private readonly context: StringDomainContext,
         private readonly use: StringDomainUse,
     ) {
         this.graph = sourceGraph(context.checker, context.sourceFiles());
+        this.scalar = use.scalar;
     }
 
     /** Whether an object literal's type declares a member it always has. */
@@ -1615,12 +1635,15 @@ class StringDomain {
         environment: Environment,
     ): Domain {
         const nullishDepths = this.nullishDepths;
+        const scalar = this.scalar;
         this.nullishDepths = [];
+        this.scalar = undefined;
         this.operations++;
         try {
             return this.read(expression, projection, environment);
         } finally {
             this.nullishDepths = nullishDepths;
+            this.scalar = scalar;
             this.operations--;
         }
     }
@@ -2355,6 +2378,8 @@ class StringDomain {
         if (ts.isCallExpression(node))
             return this.call(node, projection, environment);
         if (projection.length) return undefined;
+        if (this.scalar !== undefined)
+            return this.scalarLeaf(node, this.scalar);
         if (ts.isStringLiteralLike(node)) return [node.text];
         if (ts.isTemplateExpression(node)) {
             const parts: Operand[] = [[node.head.text]];
@@ -2400,6 +2425,28 @@ class StringDomain {
                 () => [this.context.compileStringLiteral(node)],
                 () => false,
             );
+        } catch (error) {
+            if (!(error instanceof CompileError)) throw error;
+            return undefined;
+        }
+    }
+
+    /**
+     * A value read's leaf: the number or boolean generation knows
+     * `node`'s own value is, spelled; undefined for any other.
+     */
+    private scalarLeaf(
+        node: ts.Expression,
+        scalar: "number" | "boolean",
+    ): Domain {
+        try {
+            const value = this.context.probeEmission(
+                () => this.context.compileValue(node),
+                () => false,
+            );
+            const known =
+                scalar === "number" ? value.staticNumber : value.staticBoolean;
+            return known === undefined ? undefined : [spelledScalar(known)];
         } catch (error) {
             if (!(error instanceof CompileError)) throw error;
             return undefined;
@@ -2733,6 +2780,8 @@ class StringDomain {
                 nested,
             );
         }
+        // What follows builds strings, which no number or boolean is.
+        if (this.scalar !== undefined) return undefined;
         // `[a, b].join(separator)` spells its elements in order, a nullish
         // literal as "".
         const joined = unwrapExpression(callee.expression);
@@ -2991,11 +3040,15 @@ class StringDomain {
                 : undefined;
         const key = projection[0];
         if (key === undefined)
-            return typeof value === "string"
-                ? [value]
-                : typeof value === "number" || typeof value === "boolean"
-                  ? [String(value)]
-                  : undefined;
+            return this.scalar !== undefined
+                ? typeof value === this.scalar
+                    ? [spelledScalar(value as number | boolean)]
+                    : undefined
+                : typeof value === "string"
+                  ? [value]
+                  : typeof value === "number" || typeof value === "boolean"
+                    ? [String(value)]
+                    : undefined;
         if (typeof value !== "object" || !data.isPlain(value)) return undefined;
         const rest = projection.slice(1);
         if (key === ANY_KEY) {

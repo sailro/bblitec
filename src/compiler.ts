@@ -5950,11 +5950,12 @@ class Compiler implements LoweringServices {
 
     public packagedValueDomain(
         expression: ts.Expression,
+        scalar: "number" | "boolean",
     ): readonly string[] | undefined {
         if (this.packagedQuery) return undefined;
         this.packagedQuery = true;
         try {
-            return packagedValueDomain(this, expression);
+            return packagedValueDomain(this, expression, scalar);
         } finally {
             this.packagedQuery = false;
         }

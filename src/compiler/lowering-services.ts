@@ -459,11 +459,12 @@ export interface LoweringServices {
         identifier: ts.Identifier,
     ): readonly Value[] | undefined;
     /**
-     * The primitives an expression reads when the documents the package
-     * serves are the ones generation holds, spelled as strings.
+     * The numbers or booleans (`scalar`) an expression reads when the
+     * documents the package serves are the ones generation holds, spelled.
      */
     packagedValueDomain(
         expression: ts.Expression,
+        scalar: "number" | "boolean",
     ): readonly string[] | undefined;
     executedModuleConstantMapEntry(
         expression: ts.Expression,

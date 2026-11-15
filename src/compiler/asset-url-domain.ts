@@ -84,11 +84,13 @@ export function assetUrlDomain(
 export function packagedValueDomain(
     context: Context,
     expression: ts.Expression,
+    scalar: "number" | "boolean",
 ): readonly string[] | undefined {
     return unlessRefused(() =>
         stringDomain(context, expression, {
             label: "Packaged value",
             document: (url) => packagedText(context, url),
+            scalar,
         }),
     );
 }
