@@ -1231,6 +1231,11 @@ export interface CompileAsset {
     /** At least one definite load follows enableGltfCameras. */
     readonly gltfCameras?: boolean;
     readonly source: string;
+    /**
+     * The member of the zip archive at `source` that holds this asset's
+     * bytes, for an asset generation derives from a packaged archive.
+     */
+    readonly archiveMember?: string;
     readonly output: string;
     readonly kind:
         | "babylon"
@@ -3350,6 +3355,7 @@ export type Feature =
     | "platform:idle-callbacks"
     | "platform:media-stream"
     | "image:runtime-decode"
+    | "image:packaged-bytes"
     | "text:data"
     | "text:layout"
     | "text:weight"

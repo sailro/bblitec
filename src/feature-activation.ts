@@ -1848,6 +1848,11 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
         consumers: CMAKE,
         applicationRealm: true,
     },
+    "image:packaged-bytes": {
+        provenance:
+            "texture-2d.ts loadTexture2D of an object URL, whose bytes the program holds; generation links the codecs of the images its packaged files and their archive members hold (image-codecs.ts)",
+        consumers: CMAKE,
+    },
     "platform:window": {
         provenance:
             "the Window document, layout observers and native presentation host, independent of application and worker execution",

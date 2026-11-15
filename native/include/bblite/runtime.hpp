@@ -2442,6 +2442,36 @@ struct ParallaxOcclusionProps {
     std::optional<double> refinement_steps;
 };
 
+/**
+ * Where a `loadTexture2D` call's image comes from: the packaged file at
+ * `name`, or `bytes` a program holds, under the URL `name` the pin's cache
+ * keys them by.
+ */
+struct TextureImageSource {
+    std::string name;
+    std::shared_ptr<const std::vector<std::uint8_t>> bytes;
+};
+
+/**
+ * The name bytes package under where a program selects them by content at
+ * run time: their 64-bit FNV-1a hash as sixteen hexadecimal digits, then
+ * their length. `contentKey` (src/content-key.ts) computes the same text.
+ */
+inline std::string content_key(const std::vector<std::uint8_t>& bytes) {
+    std::uint64_t hash = 0xcbf29ce484222325ull;
+    for (const std::uint8_t byte : bytes) {
+        hash ^= byte;
+        hash *= 0x100000001b3ull;
+    }
+    static constexpr char digits[] = "0123456789abcdef";
+    std::string key(16, '0');
+    for (std::size_t index = 0; index < key.size(); ++index)
+        key[index] = digits[(hash >> (60u - 4u * index)) & 0xfu];
+    key.push_back('-');
+    key += std::to_string(bytes.size());
+    return key;
+}
+
 /** Texture2D's per-device URL/options cache, projected onto native samplers. */
 inline std::string file_texture_cache_key(const std::string& path,
                                           const TextureSamplerState& sampler, bool invert_y,
@@ -7628,6 +7658,14 @@ double scene_callback_delta(const Scene& scene, double engine_delta_ms);
 Scene create_scene_context(Surface& surface);
 FrameGraphContext create_frame_graph_context(Engine& engine);
 std::string asset_path(const std::string& relative_path);
+/**
+ * The packaged file generation derived from bytes a program holds at run
+ * time, selected by their content (`content_key`).
+ */
+inline std::string packaged_content_path(const std::vector<std::uint8_t>& bytes,
+                                         std::string_view extension) {
+    return asset_path("content/" + content_key(bytes) + std::string(extension));
+}
 MeshHandle create_box(Engine& engine, BoxOptions options);
 MeshHandle create_ground(Engine& engine, GroundOptions options);
 /**
@@ -8064,15 +8102,26 @@ void set_pbr_subsurface(Engine& engine, MaterialHandle material, float intensity
                         FileTexture thickness_texture);
 SolidTexture create_solid_texture(Engine& engine, float r, float g, float b, float a = 1.0f);
 FileTexture solid_texture_file(const SolidTexture& texture);
-FileTexture load_file_texture(Engine& engine, const std::string& path, TextureSamplerState sampler,
-                              bool invert_y, bool srgb, bool premultiply_alpha = false);
+FileTexture load_file_texture(Engine& engine, const TextureImageSource& source,
+                              TextureSamplerState sampler, bool invert_y, bool srgb,
+                              bool premultiply_alpha = false);
+inline FileTexture load_file_texture(Engine& engine, const std::string& path,
+                                     TextureSamplerState sampler, bool invert_y, bool srgb,
+                                     bool premultiply_alpha = false) {
+    return load_file_texture(engine, TextureImageSource{path, nullptr}, sampler, invert_y, srgb,
+                             premultiply_alpha);
+}
 // `ktx-loader.ts` loadKtxTexture2D, past the suffix selection generation
 // resolved: the container is parsed and its blocks are uploaded as they
 // are. `invert_y` is the texture-object property the pin's own loader
 // leaves unset here and sets in `basis-loader.ts`, which is what decides
 // the Standard UV block's V flip.
 FileTexture load_compressed_texture(Engine& engine, const std::string& path, bool invert_y);
+/** `load_compressed_texture` of a container already read. */
+FileTexture compressed_texture(Engine& engine, std::vector<std::uint8_t> container, bool invert_y);
 FileTexture load_ktx2_texture(Engine& engine, const std::string& path, bool srgb);
+/** `load_ktx2_texture` of a container already read. */
+FileTexture ktx2_texture(Engine& engine, std::vector<std::uint8_t> container, bool srgb);
 FileTexture load_compressed_texture_variants(Engine& engine, const std::vector<std::string>& paths,
                                              bool invert_y);
 // A PBR texture prop (`createPbrMaterial`'s or an assignment), whatever the

@@ -8,9 +8,14 @@ import {
 import ts from "typescript";
 import {
     registerAsset,
+    registerContentAsset,
     resolveBundledAsset,
     type AssetRegistryContext,
 } from "./assets.js";
+import { readAssetBytesSync } from "./asset-bytes-sync.js";
+import { isKtx2 } from "../compressed-texture-package.js";
+import { contentKey } from "../content-key.js";
+import { isZip, zipMembers } from "../zip-archive.js";
 import type { AssetDecoderConfiguration } from "../asset-decoders.js";
 import type { CompileAsset, Feature, Value } from "./types.js";
 import type { LoweringServices } from "./lowering-services.js";
@@ -96,6 +101,57 @@ export class AssetRegistry {
         if ((kind === "gltf" || kind === "ktx2") && decoders)
             writable(asset).assetDecoders = decoders;
         return asset;
+    }
+
+    /** A loader selects a packaged image by the bytes behind an object URL. */
+    @journaled private accessor contentImages = false;
+
+    /**
+     * `loadKtx2Texture2D` of an object URL: the bytes the program holds
+     * select, by content, a chain generation transcoded
+     * (`registerContentImages`).
+     */
+    public demandContentImages(): void {
+        this.contentImages = true;
+    }
+
+    /**
+     * Once a loader selects an image by content: packages, under its
+     * content's name, each KTX2 image the program's packaged bytes hold, as
+     * a whole file or as a member of a zip archive.
+     */
+    public registerContentImages(): void {
+        if (!this.contentImages) return;
+        const decoders = this.assetDecoders.get("configuration");
+        for (const asset of [...this.context.assets.values()]) {
+            if (asset.kind !== "binary") continue;
+            const bytes = readAssetBytesSync(
+                asset.source,
+                this.context.options.fileName,
+            );
+            const images: { bytes: Uint8Array; member?: string }[] = isKtx2(
+                bytes,
+            )
+                ? [{ bytes }]
+                : isZip(bytes)
+                  ? zipMembers(bytes, asset.source)
+                        .filter((member) => isKtx2(member.bytes))
+                        .map((member) => ({
+                            bytes: member.bytes,
+                            member: member.path,
+                        }))
+                  : [];
+            for (const image of images) {
+                const registered = registerContentAsset(
+                    this.context,
+                    asset.source,
+                    image.member,
+                    "ktx2",
+                    contentKey(image.bytes),
+                );
+                if (decoders) writable(registered).assetDecoders = decoders;
+            }
+        }
     }
 
     /**

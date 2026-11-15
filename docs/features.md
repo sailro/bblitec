@@ -162,6 +162,9 @@ cancel })` is a program source; `new Response(stream, { status, statusText, head
   device-supported BC/ASTC candidate.
   `loadKtx2Texture2D` packages the pinned decoder's compressed mip chain for a known URL; each load selects its
   linear/sRGB format. Unsupported native formats refuse.
+  An object URL (`URL.createObjectURL(blob)`) as the URL: `loadTexture2D` decodes the URL's bytes; `loadKtx2Texture2D`
+  selects, by the bytes' content, the chain packaged from the same KTX2 image in a file the program fetches as bytes
+  (the whole file or a member of a zip archive), and rejects other bytes. A realm settles both as promises.
 - `loadGaussianSplatStream` runs the lowered pinned streaming library on the WebGPU-subset device; options are the pin's
   numeric budgets and `signal`. `splatsData`/`updateData` admit equal-count replacement.
 - MeshLoD (`loadMeshLoD`, instances, scene, setters, diagnostics) runs the lowered pinned library on the WebGPU-subset

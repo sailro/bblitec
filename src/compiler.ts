@@ -1401,6 +1401,8 @@ class Compiler implements LoweringServices {
             this.reachFeature("data:locale");
         if (this.dataTypes.usesFileStorage())
             this.reachFeature("browser:file", this.sourceFile);
+        // After every packaged file is known.
+        this.assetRegistry.registerContentImages();
 
         const features = featureOrder.filter((feature) =>
             this.features.has(feature),

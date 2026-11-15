@@ -350,6 +350,7 @@ Repository fixtures against pinned Babylon Lite.
 | engine-calls | <img src="images/scenes/regression-engine-calls.png" alt="Engine calls rendering" width="160"> | pixel‑perfect | pixel‑perfect | Engine Calls |
 | no-camera-floating-origin | <img src="images/scenes/regression-no-camera-floating-origin.png" alt="No camera floating origin rendering" width="160"> | pixel‑perfect | pixel‑perfect | No Camera Floating Origin |
 | texture-region-writes | <img src="images/scenes/regression-texture-region-writes.png" alt="Texture region writes rendering" width="160"> | pixel‑perfect | pixel‑perfect | Texture Region Writes |
+| archive-textures | <img src="images/scenes/regression-archive-textures.png" alt="Archive textures rendering" width="160"> | pixel‑perfect | pixel‑perfect | Archive Textures |
 | vat-time | <img src="images/scenes/regression-vat-time.png" alt="VAT time rendering" width="160"> | pixel‑perfect | pixel‑perfect | VAT Time |
 | render-target-sampler | <img src="images/scenes/regression-render-target-sampler.png" alt="Render target sampler rendering" width="160"> | pixel‑perfect | pixel‑perfect | Render Target Sampler |
 | vat-bone-texture | <img src="images/scenes/regression-vat-bone-texture.png" alt="VAT bone texture rendering" width="160"> | pixel‑perfect | pixel‑perfect | VAT Bone Texture |

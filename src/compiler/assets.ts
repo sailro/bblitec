@@ -210,6 +210,33 @@ export function registerAsset(
 }
 
 /**
+ * Packages an image generation derives from the packaged bytes at `source`
+ * (`archiveMember`: one member of that zip, else the whole file) under the
+ * name its content selects at run time (`contentKey`). An image several
+ * files hold packages once.
+ */
+export function registerContentAsset(
+    context: Pick<AssetRegistryContext, "assets" | "assetOutputs">,
+    source: string,
+    archiveMember: string | undefined,
+    kind: "ktx2",
+    key: string,
+): CompileAsset {
+    const registryKey = `content:${kind}:${key}`;
+    const existing = context.assets.get(registryKey);
+    if (existing) return existing;
+    const asset: CompileAsset = {
+        source,
+        ...(archiveMember === undefined ? {} : { archiveMember }),
+        output: `content/${key}.ktx`,
+        kind,
+    };
+    requireUniqueOutput(context.assetOutputs, asset);
+    context.assets.set(registryKey, asset);
+    return asset;
+}
+
+/**
  * Package one root-relative browser UI image at the same logical path.
  *
  * A retained style can choose its image at runtime, so unlike an ordinary

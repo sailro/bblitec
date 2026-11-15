@@ -206,6 +206,37 @@ template <> struct CloneCodec<Blob> {
     return ObjectUrlHandle{slot, record.generation};
 }
 
+/** An object URL's payload, which a revoked or payload-less URL does not have. */
+[[nodiscard]] inline std::shared_ptr<const std::vector<std::uint8_t>>
+object_url_bytes(Engine& engine, ObjectUrlHandle url) {
+    const ObjectUrlRecord& record = object_url_record(engine, url);
+    if (!record.bytes)
+        throw std::runtime_error("Native object URL has no payload.");
+    return record.bytes;
+}
+
+/**
+ * `loadTexture2D` of an object URL: the image is the URL's payload, and the
+ * pin's cache keys it by the URL, which each `createObjectURL` mints anew.
+ */
+[[nodiscard]] inline TextureImageSource object_url_image(Engine& engine, ObjectUrlHandle url) {
+    return {"blob:" + std::to_string(url.slot) + ":" + std::to_string(url.generation),
+            object_url_bytes(engine, url)};
+}
+
+/**
+ * `loadKtx2Texture2D` of an object URL. The pin transcodes the bytes it
+ * fetches; generation transcoded every KTX2 image the program's packaged
+ * bytes hold, and the URL's payload selects its chain by content.
+ */
+[[nodiscard]] inline std::string object_url_ktx2_path(Engine& engine, ObjectUrlHandle url) {
+    std::string path = packaged_content_path(*object_url_bytes(engine, url), ".ktx");
+    if (!pal::is_file(path))
+        throw std::runtime_error(
+            "KTX2: an object URL's bytes are no KTX2 image packaged with this program.");
+    return path;
+}
+
 /**
  * Browser revocation is idempotent. A stale generation is ignored, while a
  * later use of that token is rejected by object_url_record.

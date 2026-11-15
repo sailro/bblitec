@@ -1300,6 +1300,25 @@ const authoredInputs: readonly SceneInput[] = [
         },
     },
     {
+        // Textures loaded from bytes the scene holds, through object URLs:
+        // a KTX2 and a PNG member of a fetched zip archive the scene
+        // inflates, and a whole fetched KTX2 file.
+        id: "regression-archive-textures",
+        name: "Regression - Archive Textures",
+        source: "examples/regression-archive-textures.ts",
+        sourceOrigin: "bblitec-regression",
+        title: "Babylon Lite Native - Archive Textures",
+        parity: {
+            maxFullMad: 0.001,
+            maxForegroundMad: 0.001,
+            backgroundColor: [13, 15, 23],
+            backgroundThreshold: 30,
+            // The fetches make the scene a Window realm: the capture
+            // counts engine frames.
+            nativeEnvironment: adHocCaptureEnvironment(),
+        },
+    },
+    {
         // Scene 218's VAT shark posed by one setVatTime write after
         // attachVat, with no handle update.
         id: "regression-vat-time",

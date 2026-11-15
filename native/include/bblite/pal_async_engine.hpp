@@ -117,14 +117,15 @@ js::Promise<AssetHandle> load_realm_gltf(Engine& engine, std::string path) {
  * and options, a finished or pending load of the same key returns its
  * texture or promise, and a failed one is forgotten.
  */
-inline js::Promise<StoredTexture> load_realm_file_texture(Engine& engine, std::string path,
+inline js::Promise<StoredTexture> load_realm_file_texture(Engine& engine, TextureImageSource source,
                                                           TextureSamplerState sampler,
                                                           bool invert_y, bool srgb,
                                                           bool premultiply_alpha) {
     const auto owner = engine.realm_owner.lock();
     if (!owner)
         throw std::logic_error("An asynchronous asset load requires an owned engine.");
-    std::string key = file_texture_cache_key(path, sampler, invert_y, srgb, premultiply_alpha);
+    std::string key =
+        file_texture_cache_key(source.name, sampler, invert_y, srgb, premultiply_alpha);
     if (const auto found = engine.file_texture_cache.find(key);
         found != engine.file_texture_cache.end())
         return js::Promise<StoredTexture>::resolved(StoredTexture{found->second});
@@ -141,8 +142,8 @@ inline js::Promise<StoredTexture> load_realm_file_texture(Engine& engine, std::s
     load->key = key;
     FileTexture texture = file_texture_record(engine, sampler, invert_y, srgb, premultiply_alpha);
     load->result = run_native_job<StoredTexture>(
-        [path = std::move(path), texture = std::move(texture)]() mutable {
-            return decode_file_texture(std::move(texture), read_binary_file(path));
+        [source = std::move(source), texture = std::move(texture)]() mutable {
+            return decode_file_texture(std::move(texture), texture_image_bytes(source));
         },
         [owner, key = std::move(key)](FileTexture texture) {
             return StoredTexture{cache_file_texture(*owner, key, std::move(texture))};
@@ -152,6 +153,45 @@ inline js::Promise<StoredTexture> load_realm_file_texture(Engine& engine, std::s
                          [forget](std::exception_ptr) { forget(); });
     engine.file_texture_loads.push_back(load);
     return load->result;
+}
+
+inline js::Promise<StoredTexture> load_realm_file_texture(Engine& engine, std::string path,
+                                                          TextureSamplerState sampler,
+                                                          bool invert_y, bool srgb,
+                                                          bool premultiply_alpha) {
+    return load_realm_file_texture(engine, TextureImageSource{std::move(path), nullptr}, sampler,
+                                   invert_y, srgb, premultiply_alpha);
+}
+
+/**
+ * The promise `load` returns; a failure it throws before returning one
+ * rejects the promise, as the pin's loaders report every failure.
+ */
+template <typename Load> auto rejecting_load(Load&& load) -> decltype(load()) {
+    try {
+        return load();
+    } catch (const WorkerTerminated&) {
+        throw;
+    } catch (...) {
+        return decltype(load())::rejected(std::current_exception());
+    }
+}
+
+/**
+ * `loadKtx2Texture2D` in a realm. The pin fetches and transcodes before it
+ * settles; generation transcoded, so a native job reads the packaged chain
+ * while the realm services its tasks, and a failure rejects the load.
+ */
+inline js::Promise<StoredTexture> load_realm_ktx2_texture(Engine& engine, std::string path,
+                                                          bool srgb) {
+    const auto owner = engine.realm_owner.lock();
+    if (!owner)
+        throw std::logic_error("An asynchronous asset load requires an owned engine.");
+    return run_native_job<StoredTexture>(
+        [path = std::move(path)] { return read_binary_file(path); },
+        [owner, srgb](std::vector<std::uint8_t> container) {
+            return StoredTexture{ktx2_texture(*owner, std::move(container), srgb)};
+        });
 }
 
 inline void resize_realm_surface(Engine& engine, std::uint32_t width, std::uint32_t height) {

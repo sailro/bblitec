@@ -4,6 +4,7 @@
 // readers, and its release. The codec itself is pal_image.hpp's.
 
 #include <bblite/features/has_image_decoder.hpp>
+#include <bblite/pal.hpp>
 #include <bblite/pal_image.hpp>
 #include <bblite/runtime.hpp>
 
@@ -129,6 +130,11 @@ inline SharedImage shared_texture_texels(const TextureData& data) {
     // below reads only members that were never moved from.
     auto texels = share_texels(std::move(image.rgba));
     return {image.width, image.height, std::move(texels)};
+}
+
+/** The encoded image a `loadTexture2D` source names: its own bytes, or its packaged file's. */
+inline std::vector<std::uint8_t> texture_image_bytes(const TextureImageSource& source) {
+    return source.bytes ? *source.bytes : read_binary_file(source.name);
 }
 
 /**
