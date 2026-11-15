@@ -1,3 +1,7 @@
+import {
+    compileWithRuntimeCaseSplit,
+    type CaseSplitContext,
+} from "./runtime-case-split.js";
 import { journaled } from "./emission-transaction.js";
 import { staticScalarValue } from "./number-intrinsics.js";
 import type {
@@ -95,7 +99,8 @@ import {
     propertyNeverObserved,
 } from "./unread-properties.js";
 
-interface AsyncContext extends Pick<
+interface AsyncContext
+    extends CaseSplitContext, Pick<
     LoweringServices,
     | "program"
     | "probeEmission"
@@ -680,20 +685,24 @@ export class AsyncLowerer {
             );
             if (document) return this.asPromise(document, node);
         }
-        const values = node.arguments.map((argument, index) =>
-            this.pinArgument(
-                context.compileValue(argument),
-                "async_argument",
-                argument,
-                positionalParameter(node, declaration, index),
-            ),
-        );
-        return this.activate(
-            ts.isIdentifier(callee) ? callee : declaration,
-            declaration,
-            values,
-            node,
-        );
+        // A call whose arguments select its body at run time compiles once
+        // per outcome, as a synchronous call does.
+        return compileWithRuntimeCaseSplit(context, node, () => {
+            const values = node.arguments.map((argument, index) =>
+                this.pinArgument(
+                    context.compileValue(argument),
+                    "async_argument",
+                    argument,
+                    positionalParameter(node, declaration, index),
+                ),
+            );
+            return this.activate(
+                ts.isIdentifier(callee) ? callee : declaration,
+                declaration,
+                values,
+                node,
+            );
+        });
     }
 
     compileCall(

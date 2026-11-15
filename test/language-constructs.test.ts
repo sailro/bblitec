@@ -6369,6 +6369,36 @@ check(
 `,
 );
 
+checkInRealm(
+    "keys-of-a-table-select-their-builder",
+    `
+    // A builder iterated over a constant table's keys compiles once per key.
+    const KINDS = { small: { scale: 0.5, wide: false }, large: { scale: 2, wide: true } } as const;
+    type Kind = keyof typeof KINDS;
+    function describe(kind: Kind): string {
+        const def = KINDS[kind];
+        let text = "x*" + def.scale;
+        if (def.wide) text = text.replace("x", "(2,1,1)*x");
+        return text;
+    }
+    async function load(kind: Kind): Promise<string> {
+        await Promise.resolve();
+        return describe(kind) + "!";
+    }
+    async function run(): Promise<void> {
+        const kinds = Object.keys(KINDS) as Kind[];
+        const texts = kinds.map((kind) => describe(kind));
+        const loaded = await Promise.all(kinds.map((kind) => load(kind)));
+        let joined = "";
+        for (const kind of kinds) joined += describe(kind) + ";";
+        const all = texts.join() + "|" + loaded.join() + "|" + joined;
+        if (all !== "x*0.5,(2,1,1)*x*2|x*0.5!,(2,1,1)*x*2!|x*0.5;(2,1,1)*x*2;") throw new Error(all);
+        globalThis.close();
+    }
+    void run();
+`,
+);
+
 check(
     "record-scalars-beside-written-members",
     `

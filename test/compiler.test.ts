@@ -6059,6 +6059,73 @@ test("a selection of members a call omits is absent where that call is lowered",
     assert.match(result.cpp, /std::string v_fn\d+_setup = "";/);
 });
 
+test("a material builder iterated over a constant table's keys composes one program per key", () => {
+    const source = (iteration: string): string =>
+        `import { addToScene, createArcRotateCamera, createEngine, createPlane, createSceneContext, createShaderMaterial, registerScene, startEngine, wgsl, type EngineContext, type ShaderMaterial } from "@babylonjs/lite";
+const VERTEX = \`struct VertexOutput { @builtin(position) position: vec4<f32>, };
+@vertex fn mainVertex(input: VertexInput) -> VertexOutput {
+  var out: VertexOutput;
+  out.position = shaderSystem.worldViewProjection * vec4<f32>(input.position * /*SCALE*/, 1.0);
+  return out;
+}\`;
+const FRAGMENT = wgsl\`@fragment fn mainFragment() -> @location(0) vec4<f32> { return vec4<f32>(1.0, 0.5, 0.2, 1.0); }\`;
+const KINDS = { small: { scale: "0.5", wide: false }, large: { scale: "2.0", wide: true } } as const;
+type Kind = keyof typeof KINDS;
+function material(engine: EngineContext, kind: Kind): ShaderMaterial {
+    const def = KINDS[kind];
+    let vertex = VERTEX.replace("/*SCALE*/", def.scale);
+    if (def.wide) vertex = vertex.replace("input.position *", "vec3<f32>(2.0, 1.0, 1.0) * input.position *");
+    return createShaderMaterial({ name: kind, vertexSource: wgsl\`\${vertex}\`, fragmentSource: FRAGMENT, attributes: ["position"], uniforms: ["worldViewProjection"] });
+}
+async function main(): Promise<void> {
+    const engine = await createEngine(document.getElementById("renderCanvas") as HTMLCanvasElement);
+    const scene = createSceneContext(engine);
+    scene.camera = createArcRotateCamera(-Math.PI / 2, Math.PI / 2, 8, { x: 0, y: 0, z: 0 });
+    const kinds = Object.keys(KINDS) as Kind[];
+    ${iteration}
+    const byKind = new Map(kinds.map((kind, i) => [kind, materials[i]!]));
+    const plane = createPlane(engine, { width: 2, height: 2 });
+    plane.material = byKind.get("large")!;
+    addToScene(scene, plane);
+    await registerScene(scene);
+    await startEngine(engine);
+}
+void main();
+`;
+    const programs = (iteration: string): readonly string[] =>
+        compileSource(source(iteration)).manifest.customShaderPrograms.map(
+            (program) =>
+                program.name +
+                (/input.position \* 0.5/.test(program.vertexSource) ? ":small" : "") +
+                (/vec3<f32>\(2.0, 1.0, 1.0\) \* input.position \* 2.0/.test(program.vertexSource) ? ":wide" : ""),
+        );
+    for (const iteration of [
+        "const materials = kinds.map((kind) => material(engine, kind));",
+        "const materials: ShaderMaterial[] = []; for (const kind of kinds) materials.push(material(engine, kind));",
+    ])
+        assert.deepEqual(programs(iteration), ["small:small", "large:wide"]);
+    // An asynchronous builder in a realm, awaited together.
+    const directory = resolve("artifacts/compiler-keyed-async-builder");
+    mkdirSync(directory, { recursive: true });
+    writeFileSync(join(directory, "noop-worker.ts"), "self.close();\n");
+    const realm = source(
+        "const materials = await Promise.all(kinds.map((kind) => built(engine, kind)));",
+    )
+        .replace(
+            "async function main(): Promise<void> {",
+            "async function built(engine: EngineContext, kind: Kind): Promise<ShaderMaterial> { await Promise.resolve(); return material(engine, kind); }\nasync function main(): Promise<void> {",
+        )
+        .replace(
+            "void main();",
+            'const worker = new Worker(new URL("./noop-worker.ts", import.meta.url), { type: "module" });\nworker.terminate();\nvoid main();',
+        );
+    assert.deepEqual(
+        compileSource(realm, { fileName: join(directory, "entry.ts") })
+            .manifest.customShaderPrograms.map((program) => program.name),
+        ["small", "large"],
+    );
+});
+
 test("a shader material's attribute list a function pushes onto is the list it holds", () => {
     const program = (pushes: string): string => `
         import { addToScene, createArcRotateCamera, createEngine, createPlane, createSceneContext, createShaderMaterial, registerScene, startEngine, wgsl } from "@babylonjs/lite";

@@ -13,9 +13,10 @@ import {
     holdsOnly,
     objectLikeType,
     presentMembers,
+    stringLiteralValues,
 } from "./type-facts.js";
 import { ApplicationRealmRequired } from "./worker-modules.js";
-import type { Value } from "./types.js";
+import { isStringValue, type Value } from "./types.js";
 import {
     functionOfDeclaration,
     isModuleScopeFunction,
@@ -32,11 +33,12 @@ import {
     undefinedValue,
 } from "./values/model.js";
 
-type CaseSplitContext = Pick<
+export type CaseSplitContext = Pick<
     LoweringServices,
     | "allocateTemporaryCppName"
     | "bindings"
     | "checker"
+    | "cppString"
     | "conditionOverrides"
     | "valueOverrides"
     | "compileValue"
@@ -59,6 +61,8 @@ const MAX_SELECTORS = 4;
 const MAX_CANDIDATE_SELECTORS = 8;
 /** A member this deep below a record an argument names still selects. */
 const MAX_MEMBER_DEPTH = 2;
+/** A value typed as a union of at most this many string literals selects. */
+const MAX_LITERAL_OUTCOMES = 16;
 
 /**
  * Compiles a local function call whose arguments pick between values with a
@@ -166,20 +170,24 @@ function refusesPerOutcome(error: unknown): boolean {
     );
 }
 
-/** What a test reads as in one arm: true (a present object), false, or absent. */
-type Outcome = "truthy" | "falsy" | "absent";
+/**
+ * What a test reads as in one arm: true (a present object), false, absent,
+ * or one string of a literal union.
+ */
+type Outcome = "truthy" | "falsy" | "absent" | { readonly literal: string };
 
 /**
  * One runtime test: the node read once, and every node spelling it. A
  * `condition` is a selection's test; a `boolean` an argument value that is a
  * boolean; a `presence` an argument value that is an object or one absence
- * (`undefined` or `null`); an `optional-boolean` a boolean or one absence.
- * `outcomes` are the ones the value can take. With `member`, the value is
+ * (`undefined` or `null`); an `optional-boolean` a boolean or one absence;
+ * a `literal` a value typed as a union of string literals (a key of a
+ * constant table). `outcomes` are the ones the value can take. With `member`, the value is
  * the member at that key path of the record `test` names, of that type;
  * `present` is the storage of an object member where an arm found it.
  */
 interface Selector {
-    kind: "condition" | "boolean" | "presence" | "optional-boolean";
+    kind: "condition" | "boolean" | "presence" | "optional-boolean" | "literal";
     test: ts.Expression;
     nodes: readonly ts.Expression[];
     outcomes: readonly Outcome[];
@@ -214,12 +222,26 @@ interface SelectorTests {
 }
 
 /** Every outcome a test of `kind` can take. */
-const KIND_OUTCOMES: Readonly<Record<Selector["kind"], readonly Outcome[]>> = {
+const KIND_OUTCOMES: Readonly<
+    Record<Exclude<Selector["kind"], "literal">, readonly Outcome[]>
+> = {
     condition: ["truthy", "falsy"],
     boolean: ["truthy", "falsy"],
     presence: ["truthy", "absent"],
     "optional-boolean": ["truthy", "falsy", "absent"],
 };
+
+/** Every outcome a value of `type`, a selector of `kind`, can take. */
+function kindOutcomes(
+    kind: Selector["kind"],
+    type: ts.Type,
+): readonly Outcome[] {
+    return kind === "literal"
+        ? [...(stringLiteralValues(type) ?? [])].map((literal) => ({
+              literal,
+          }))
+        : KIND_OUTCOMES[kind];
+}
 
 /**
  * The selectors a split forces: `fixed` take their one outcome in every
@@ -317,6 +339,12 @@ function forcedValue(
 ): Value {
     const absent = (): Value =>
         nullability(type).null ? nullValue() : undefinedValue();
+    if (typeof outcome === "object")
+        return {
+            kind: "string",
+            cpp: context.cppString(outcome.literal),
+            staticString: outcome.literal,
+        };
     // A present object is truthy and present wherever the arm reads it.
     if (selector.kind === "presence")
         return outcome === "truthy"
@@ -399,13 +427,19 @@ function selectorValue(
 }
 
 /**
- * Whether a value of `type` is one a split can force: a boolean, or an
- * object or a boolean with one of `undefined` and `null`.
+ * Whether a value of `type` is one a split can force: a boolean, a union
+ * of a few string literals, or an object or a boolean with one of
+ * `undefined` and `null`.
  */
 function selectorKind(
     type: ts.Type,
 ): Exclude<Selector["kind"], "condition"> | undefined {
     if (holdsOnly(type, ["boolean"])) return "boolean";
+    const literals = stringLiteralValues(type);
+    if (literals)
+        return literals.size > 1 && literals.size <= MAX_LITERAL_OUTCOMES
+            ? "literal"
+            : undefined;
     const absent = nullability(type);
     if (absent.null === absent.undefined || absent.void) return undefined;
     const present = presentMembers(type);
@@ -511,7 +545,10 @@ function selectorTests(
                 kind,
                 test,
                 nodes: [test],
-                outcomes: KIND_OUTCOMES[kind],
+                outcomes: kindOutcomes(
+                    kind,
+                    context.checker.getTypeAtLocation(test),
+                ),
             });
     };
     const records: RecordArgument[] = [];
@@ -540,6 +577,19 @@ function selectorTests(
         if (ts.isFunctionLike(node)) return;
         if (ts.isConditionalExpression(node))
             addGroup("condition", node.condition);
+        // A value of a few outcomes a module's function is handed
+        // (`build(optionsFor(kind))`) selects the call it builds for.
+        if (ts.isCallExpression(node) && calls.includes(node))
+            for (const argument of node.arguments) {
+                const kind = selectorKind(
+                    context.checker.getTypeAtLocation(argument),
+                );
+                if (
+                    (kind === "literal" || kind === "boolean") &&
+                    !containsSelection(argument)
+                )
+                    addGroup(kind, argument);
+            }
         if (ts.isPropertyAssignment(node)) valuePosition(node.initializer);
         if (ts.isShorthandPropertyAssignment(node)) valuePosition(node.name);
         if (ts.isSpreadAssignment(node)) valuePosition(node.expression);
@@ -568,9 +618,12 @@ function selectorTests(
         if (context.evaluationOrder.writesStorage(test)) return undefined;
         collect(test);
     }
+    // A binding handed by value (a string, a boolean) is no way to change
+    // what it holds.
     const receivesRoot = (node: ts.Node): boolean =>
         (binding(node) &&
             roots.has(declaredSymbol(context.checker, node)!) &&
+            typeCanCarryReference(context.checker.getTypeAtLocation(node)) &&
             // A member read hands over its value, not the binding.
             !(
                 ts.isPropertyAccessExpression(node.parent) &&
@@ -629,7 +682,7 @@ function recordMemberSelectors(
                     kind,
                     test: node,
                     nodes,
-                    outcomes: KIND_OUTCOMES[kind],
+                    outcomes: kindOutcomes(kind, memberType),
                     member: {
                         path: below,
                         type: memberType,
@@ -695,6 +748,11 @@ function runtimeSelectors(
     };
     for (const group of groups) {
         const value = group.kind === "condition" ? undefined : valueOf(group);
+        if (group.kind === "literal") {
+            if (value && !staticArgument(value) && literalStorage(value))
+                variable.push(group);
+            continue;
+        }
         const truth = knownCondition(
             group.member
                 ? value && context.dataLowerer.truthinessCondition(value)
@@ -722,10 +780,20 @@ function runtimeSelectors(
         : undefined;
 }
 
-/** Whether an argument value already reads as a constant: a known boolean, an absence, a record. */
+/** A literal test's storage, which its arms compare: a string or a native enum. */
+function literalStorage(value: Value): boolean {
+    return (
+        isStringValue(value) ||
+        value.dataType?.kind === "string" ||
+        value.dataType?.kind === "enum"
+    );
+}
+
+/** Whether an argument value already reads as a constant: a known boolean or string, an absence, a record. */
 function staticArgument(value: Value): boolean {
     return (
         value.staticBoolean !== undefined ||
+        value.staticString !== undefined ||
         isAbsentValue(value) ||
         (value.kind === "record" && presenceCpp(value) === undefined)
     );
@@ -751,7 +819,39 @@ function splitCall(
         return name;
     };
     const tests = selectors.map(
-        (selector): { truth?: string; presence?: string } | undefined => {
+        (
+            selector,
+        ):
+            | {
+                  truth?: string;
+                  presence?: string;
+                  literal?: (text: string) => string;
+              }
+            | undefined => {
+            if (selector.kind === "literal") {
+                const value = selectorValue(context, selector);
+                if (!value || !literalStorage(value)) return undefined;
+                const name = context.allocateTemporaryCppName("case_value");
+                context.emit({
+                    kind: "declaration",
+                    type: "const auto",
+                    name,
+                    initializer: value.cpp,
+                });
+                const storage = value.dataType;
+                return {
+                    literal: (text) =>
+                        `${name} == ${
+                            storage?.kind === "enum"
+                                ? context.dataTypes.enumMemberCpp(
+                                      storage,
+                                      text,
+                                      selector.test,
+                                  )
+                                : context.cppString(text)
+                        }`,
+                };
+            }
             if (selector.kind !== "optional-boolean" && !selector.member)
                 return {
                     truth: pin(
@@ -832,7 +932,11 @@ function splitCall(
         // Truth is the truth test; an optional boolean's falsy one its
         // presence (after truth, false); the last outcome is the rest.
         const guard = (outcome: Outcome): string =>
-            outcome === "truthy" ? test.truth! : test.presence!;
+            typeof outcome === "object"
+                ? test.literal!(outcome.literal)
+                : outcome === "truthy"
+                  ? test.truth!
+                  : test.presence!;
         selector.outcomes.forEach((outcome, index) => {
             const last = index === selector.outcomes.length - 1;
             context.emit(

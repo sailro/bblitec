@@ -1604,6 +1604,8 @@ export interface UserFunctionContext
         PositiveIntegerContext,
         Pick<
             LoweringServices,
+            | "valueOverrides"
+            | "conditionOverrides"
             | "absenceTags"
             | "requireDefaultEngine"
             | "sourceFile"
@@ -2495,6 +2497,21 @@ export class UserFunctionLowerer {
         if (
             ts.isCallExpression(call) &&
             requiresDefaultParameterBinding(this.checker, ir.declaration, call)
+        )
+            return undefined;
+        // An argument a run-time case split fixed is the outcome its arm
+        // compiles for: the body specializes on it inline.
+        if (
+            ts.isCallExpression(call) &&
+            call.arguments.some((argument) =>
+                someAnalysisNode(
+                    argument,
+                    (node) =>
+                        context.valueOverrides.has(node) ||
+                        context.conditionOverrides.has(node),
+                    { functions: "skip" },
+                ),
+            )
         )
             return undefined;
         if (
