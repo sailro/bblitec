@@ -323,7 +323,6 @@ export function recordComponents(
         parent.set(rootB, rootA);
         membersOf.set(rootA, [...membersA, ...membersB]);
         membersOf.delete(rootB);
-        joinHeld(a, b);
         for (const memberA of membersA)
             for (const memberB of membersB) joinHeld(memberA, memberB);
     };

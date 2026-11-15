@@ -2309,7 +2309,6 @@ export class ExpressionLowerer {
         );
     }
 
-    /** A template's text: each substitution's string between the literal parts. */
     /**
      * The text a piece of a string (a concatenation's operand, a template's
      * substitution) is known to be at generation. One whose evaluation
@@ -2321,6 +2320,7 @@ export class ExpressionLowerer {
         );
     }
 
+    /** A template's text: each substitution's string between the literal parts. */
     private compileTemplateText(
         head: string,
         spans: readonly { expression: ts.Expression; text: string }[],

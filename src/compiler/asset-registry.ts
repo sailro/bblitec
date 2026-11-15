@@ -146,7 +146,6 @@ export class AssetRegistry {
                     this.context,
                     asset.source,
                     image.member,
-                    "ktx2",
                     contentKey(image.bytes),
                 );
                 if (decoders) writable(registered).assetDecoders = decoders;

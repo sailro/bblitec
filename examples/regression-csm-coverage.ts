@@ -2,7 +2,7 @@
 //
 // Scene 214's torus-knot field under a stabilized four-cascade generator with
 // a world-space bias, and enableCsmStaticCache with a cascadeCoveragePadding:
-// a camera pose change no longer refits, each cascade keeps its published map
+// a camera pose change does not refit, each cascade keeps its published map
 // until the camera's slice leaves it. The camera orbits and the light drifts
 // a little every frame, so a drift refit spreads over frames while cascades
 // leaving coverage re-render outside that budget. The capture lands well

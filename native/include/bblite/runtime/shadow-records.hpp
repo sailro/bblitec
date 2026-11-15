@@ -50,7 +50,7 @@ struct CsmStaticCacheOptions {
 
 /**
  * `createCoverageState`: the camera-coverage refit a cache with a
- * `cascadeCoveragePadding` runs. A camera pose change no longer refits:
+ * `cascadeCoveragePadding` runs. A camera pose change does not refit:
  * each cascade keeps its published map until the camera's slice leaves it.
  */
 struct CsmCoverageState {

@@ -510,7 +510,6 @@ function describeStop(cause: unknown): string {
     );
 }
 
-/** How a survey runs: what it reports as it goes, and the most passes it runs. */
 /**
  * The attempt a round lowers in: `previous` (the pass's full lowering, or
  * its last round) without what its module roots and its `stale` roots began
@@ -581,6 +580,7 @@ function roundAttempt(
     };
 }
 
+/** How a survey runs: what it reports as it goes, and the most passes it runs. */
 export interface SurveySettings {
     readonly progress?: SurveyProgress;
     readonly passLimit?: number;
@@ -691,11 +691,11 @@ export class SurveyCollector {
     public loweredBefore(declaration: ts.Node, speculating: boolean): boolean {
         const attempt = this.current;
         if (!attempt) return false;
-        if (attempt.lowered.has(declaration))
-            return (
-                !attempt.unfinished.has(declaration) ||
-                (!speculating && !attempt.unfinished.delete(declaration))
-            );
+        if (attempt.lowered.has(declaration)) {
+            if (!attempt.unfinished.has(declaration)) return true;
+            if (!speculating) attempt.unfinished.delete(declaration);
+            return false;
+        }
         if (!speculating) attempt.lowered.add(declaration);
         return false;
     }

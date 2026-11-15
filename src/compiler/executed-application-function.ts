@@ -146,19 +146,10 @@ export interface ExecutedResult {
 /**
  * Execute `target` with `args` and return what it settles with, unchecked:
  * a function's return value (an async one's settled value), or a constant
- * or call's value (no arguments). `label` names the target in refusals.
+ * or call's value (no arguments), with the realm's own JSON parser.
+ * `label` names the target in refusals.
  */
 export function runApplicationFunction(
-    context: ExecutedFunctionContext,
-    target: ExecutedTarget,
-    args: readonly (ExecutedArgument | undefined)[],
-    label: string,
-): ExecutedResult {
-    return run(context, target, args, label);
-}
-
-/** One run: its result, with the realm's own JSON parser. */
-function run(
     context: ExecutedFunctionContext,
     target: ExecutedTarget,
     args: readonly (ExecutedArgument | undefined)[],
@@ -241,7 +232,12 @@ export function executeApplicationFunction(
     args: readonly (ExecutedArgument | undefined)[],
     label: string,
 ): unknown {
-    const { value: result, parse } = run(context, target, args, label);
+    const { value: result, parse } = runApplicationFunction(
+        context,
+        target,
+        args,
+        label,
+    );
     let text: string | undefined;
     try {
         text = JSON.stringify(result);

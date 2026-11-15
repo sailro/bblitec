@@ -76,7 +76,6 @@ export function assetUrlDomain(
     return domain;
 }
 
-/** The text of the local file a URL packages, if the deployment holds it. */
 /**
  * The primitives `expression` can read when the documents the package
  * serves are the ones generation holds (`StringDomainUse.document`),
@@ -94,6 +93,7 @@ export function packagedValueDomain(
     );
 }
 
+/** The text of the local file a URL packages, if the deployment holds it. */
 function packagedText(context: Context, url: string): string | undefined {
     try {
         const source = resolveBundledAsset(

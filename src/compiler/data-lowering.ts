@@ -18972,11 +18972,6 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
     }
 
     /**
-     * The one JavaScript truthiness of a value the caller already compiled,
-     * as a native condition. Presence alone -- whether a nullable is there,
-     * whatever it holds -- is `presenceCpp`'s.
-     */
-    /**
      * A document member that reads one primitive wherever the documents
      * the package serves are the ones generation holds
      * (`packagedValueDomain`): that primitive. Undefined for any other.
@@ -19102,6 +19097,11 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         return member;
     }
 
+    /**
+     * The one JavaScript truthiness of a value the caller already compiled,
+     * as a native condition. Presence alone -- whether a nullable is there,
+     * whatever it holds -- is `presenceCpp`'s.
+     */
     public truthinessCondition(value: Value): string | undefined {
         if (isUndefinedDataType(value.dataType))
             return `(static_cast<void>(${value.cpp}), false)`;
@@ -20060,6 +20060,13 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         // value and that value compares equal; strict inequality is the
         // exact negation. Bind each optional once so a call or indexed owner
         // keeps JavaScript's single-evaluation semantics.
+        // A UI element that may be absent.
+        const optionalUiElement = (
+            dataType: DataType | undefined,
+        ): dataType is Extract<DataType, { kind: "optional" }> =>
+            dataType?.kind === "optional" &&
+            dataType.inner.kind === "handle" &&
+            dataType.inner.handle === "ui-element";
         const optionalComparable = (
             dataType: DataType | undefined,
         ): dataType is Extract<DataType, { kind: "optional" }> =>
@@ -20357,9 +20364,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             // An element that may be absent, as the DOM target it is.
             if (
                 expected.inner.kind === "event-target" &&
-                value.dataType?.kind === "optional" &&
-                value.dataType.inner.kind === "handle" &&
-                value.dataType.inner.handle === "ui-element"
+                optionalUiElement(value.dataType)
             ) {
                 const temporary =
                     this.context.allocateTemporaryCppName("optional_compare");
@@ -20490,8 +20495,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             optionalComparable(target) &&
             target.inner.kind === "event-target" &&
             optionalComparable(element) &&
-            element.inner.kind === "handle" &&
-            element.inner.handle === "ui-element"
+            optionalUiElement(element)
                 ? target
                 : element;
         const leftPair = targetOf(rightType, leftType);
@@ -20502,28 +20506,26 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             (dataTypesEqual(leftPair.inner, rightPair.inner) ||
                 (textual(leftPair.inner) && textual(rightPair.inner)))
         ) {
-            const leftType = leftPair;
-            const rightType = rightPair;
             const leftCpp = bindOptional(
                 left,
-                leftType,
+                leftPair,
                 leftOptional,
                 expressionMayRunCode(right),
             );
             const rightCpp = bindOptional(
                 right,
-                rightType,
+                rightPair,
                 rightOptional,
                 false,
             );
-            const presentEqual = dataTypesEqual(leftType.inner, rightType.inner)
+            const presentEqual = dataTypesEqual(leftPair.inner, rightPair.inner)
                 ? presentEquality(
-                      leftType.inner,
+                      leftPair.inner,
                       `(*${leftCpp})`,
                       `(*${rightCpp})`,
                   )
-                : `std::string(${widenTag({ cpp: `(*${leftCpp})`, dataType: leftType.inner }, left).cpp}) == ` +
-                  `std::string(${widenTag({ cpp: `(*${rightCpp})`, dataType: rightType.inner }, right).cpp})`;
+                : `std::string(${widenTag({ cpp: `(*${leftCpp})`, dataType: leftPair.inner }, left).cpp}) == ` +
+                  `std::string(${widenTag({ cpp: `(*${rightCpp})`, dataType: rightPair.inner }, right).cpp})`;
             const equal = absentAwareEquality(
                 sameAbsenceCpp(
                     this,

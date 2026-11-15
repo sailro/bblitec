@@ -1369,10 +1369,10 @@ class Compiler implements LoweringServices {
         const survey = activeSurvey();
         survey?.phaseEnded("entry");
         if (survey && !this.options.workers?.namespace) {
-            survey.rollingBack(() => emitSurveyRoots(this, survey));
-            survey.rounds(() =>
-                survey.rollingBack(() => emitSurveyRoots(this, survey)),
-            );
+            const lowerRoots = (): void =>
+                survey.rollingBack(() => emitSurveyRoots(this, survey));
+            lowerRoots();
+            survey.rounds(lowerRoots);
         }
         survey?.settle();
         if (!this.options.pageStartup?.length) this.emitNativeHostUi();
@@ -3980,10 +3980,9 @@ class Compiler implements LoweringServices {
                 `List '${selected.expression.getText()}'`,
             ),
         );
-        const strings: unknown[] = Array.isArray(value) ? value : [];
         return Array.isArray(value) &&
-            strings.every((item): item is string => typeof item === "string")
-            ? strings
+            value.every((item): item is string => typeof item === "string")
+            ? value
             : undefined;
     }
 
