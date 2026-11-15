@@ -11150,15 +11150,18 @@ check(
 `,
 );
 
-test("stored unknown parameters refuse a non-literal value typed {}", () => {
-    assert.throws(
-        () =>
-            compileSource(
-                'function f(x: unknown): number { return x === null ? 1 : 0; } const fs: Array<(x: unknown) => number> = [f]; function pick(flag: boolean): {} { return flag ? 1 : "a"; } const unused = fs[0]!(pick(true));',
-            ),
-        /Stored generic function instantiation requires a fully represented native signature/,
-    );
-});
+// A value typed `{}` is any value but null and undefined: a stored function
+// taking `unknown` receives it as the dynamic value it is.
+check(
+    "stored-unknown-parameters-take-a-value-typed-empty-object",
+    `
+    function describe(x: unknown): string { return x === null ? "null" : typeof x; }
+    const describers: Array<(x: unknown) => string> = [describe];
+    function pick(flag: boolean): {} { return flag ? 1 : "a"; }
+    const kinds = describers[0]!(pick(true)) + "," + describers[0]!(pick(false));
+    if (kinds !== "number,string") throw new Error(kinds);
+`,
+);
 
 check(
     "readonly-records-are-their-records",
