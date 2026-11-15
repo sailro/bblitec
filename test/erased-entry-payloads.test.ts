@@ -1,4 +1,3 @@
-import assert from "node:assert/strict";
 import test from "node:test";
 import { runInNewContext } from "node:vm";
 import ts from "typescript";
@@ -118,6 +117,15 @@ const controls = {
         if(!Object.hasOwn(missing,'value')||missing.value!==undefined||
            empty.value!==null||full.value!==item)throw new Error('required own field');
     `,
+    // A function in an erased lane is held as the function it is.
+    callbacks: `
+        type Pair=readonly[string,unknown];
+        function pairs(){return new Set<Pair>([['callback',()=>1],['number',2]]);}
+        const map=new Map(pairs()),object=Object.fromEntries(pairs());
+        if(typeof object.callback!=='function'||typeof map.get('callback')!=='function'||
+           object.number!==2||map.get('number')!==2||
+           Object.keys(object).join()!=='callback,number')throw new Error('erased callback entries');
+    `,
 };
 
 for (const [name, source] of Object.entries(controls)) {
@@ -137,12 +145,3 @@ for (const [name, source] of Object.entries(controls)) {
         );
     });
 }
-
-test("erased entry lanes refuse callbacks without JSON storage", () => {
-    assert.throws(() =>
-        compileSource(`
-            const entries=new Set<readonly[string,unknown]>([['callback',()=>1]]);
-            Object.fromEntries(entries);
-        `),
-    );
-});
