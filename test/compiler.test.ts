@@ -7028,6 +7028,65 @@ void main();
     assert.deepEqual(programs, ["1.0 * 0.9 * 1.1 * 1.3 * 1.8"]);
 });
 
+test("a case split reads a value generation knows absent as no test", () => {
+    // Three run-time tests split the call; the options' unset flags, passed
+    // on as values, are known absent and add none.
+    const programs =
+        compileSource(`import { createEngine, createSceneContext, createShaderMaterial, wgsl, type EngineContext, type ShaderMaterial } from "@babylonjs/lite";
+const VERTEX = \`struct VertexOutput { @builtin(position) position: vec4<f32>, };
+@vertex fn mainVertex(input: VertexInput) -> VertexOutput { var out: VertexOutput; out.position = shaderSystem.worldViewProjection * vec4<f32>(input.position * /*S*/, 1.0); return out; }\`;
+const FRAGMENT = wgsl\`@fragment fn mainFragment() -> @location(0) vec4<f32> { return vec4<f32>(1.0); }\`;
+interface Coat { tint: number }
+const COAT: Coat = { tint: 0.5 };
+interface Opts { name: string; count?: number; coat?: Coat; f1?: boolean; f2?: boolean; f3?: boolean; f4?: boolean; f5?: boolean; f6?: boolean; f7?: boolean; f8?: boolean; f9?: boolean }
+const live = new Map<string, Opts>();
+interface Surface { name: string; coat?: Coat; f1?: boolean; f2?: boolean; f3?: boolean; f4?: boolean; f5?: boolean; f6?: boolean; f7?: boolean; f8?: boolean; f9?: boolean; x: boolean; y: boolean; z: boolean }
+function surface(engine: EngineContext, o: Surface): ShaderMaterial {
+    let scale = o.x ? "1.0" : "2.0";
+    if (o.y) scale += " * 0.7";
+    if (o.z) scale += " * 0.6";
+    if (o.coat) scale += " * 0.9";
+    if (o.f1 === true) scale += " * 1.1";
+    if (o.f2 === true) scale += " * 1.2";
+    if (o.f3 === true) scale += " * 1.3";
+    if (o.f4 === true) scale += " * 1.4";
+    if (o.f5 === true) scale += " * 1.5";
+    if (o.f6 === true) scale += " * 1.6";
+    if (o.f7 === true) scale += " * 1.7";
+    if (o.f8 === true) scale += " * 1.8";
+    if (o.f9 === true) scale += " * 1.9";
+    const vertex = VERTEX.replace("/*S*/", scale);
+    return createShaderMaterial({ name: o.name, vertexSource: wgsl\`\${vertex}\`, fragmentSource: FRAGMENT, attributes: ["position"], uniforms: ["worldViewProjection"] });
+}
+function build(engine: EngineContext, opts: Opts, part: { x: boolean; y: boolean; z: boolean }): ShaderMaterial {
+    return surface(engine, { name: opts.name, coat: opts.coat, f1: opts.f1, f2: opts.f2, f3: opts.f3, f4: opts.f4, f5: opts.f5, f6: opts.f6, f7: opts.f7, f8: opts.f8, f9: opts.f9, x: part.x, y: part.y, z: part.z });
+}
+async function create(engine: EngineContext, opts: Opts): Promise<ShaderMaterial> {
+    live.set(opts.name, opts);
+    await Promise.resolve();
+    const part = { x: Math.random() < 0.5, y: Math.random() < 0.5, z: Math.random() < 0.5 };
+    return build(engine, opts, part);
+}
+function touch(): void { for (const o of live.values()) o.count = (o.count ?? 0) + 1; }
+async function main(): Promise<void> {
+    const engine = await createEngine(document.getElementById("renderCanvas") as HTMLCanvasElement);
+    createSceneContext(engine);
+    const names = ["a", "b", "c"].filter(() => Math.random() < 2);
+    await Promise.all(names.map((name) => create(engine, { name, coat: COAT, f1: true, f3: true, f8: true })));
+    touch();
+}
+void main();
+`).manifest.customShaderPrograms.map(
+            (program) =>
+                /position \* ([^,]+), 1\.0/.exec(program.vertexSource)?.[1] ??
+                "",
+        );
+    assert.equal(programs.length, 8);
+    assert.ok(
+        programs.every((scale) => scale.endsWith(" * 0.9 * 1.1 * 1.3 * 1.8")),
+    );
+});
+
 test("a material builder iterated over a constant table's keys composes one program per key", () => {
     const source = (iteration: string): string =>
         `import { addToScene, createArcRotateCamera, createEngine, createPlane, createSceneContext, createShaderMaterial, registerScene, startEngine, wgsl, type EngineContext, type ShaderMaterial } from "@babylonjs/lite";

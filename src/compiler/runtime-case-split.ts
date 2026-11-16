@@ -27,6 +27,7 @@ import {
 } from "./syntax.js";
 import {
     isAbsentValue,
+    knownAbsent,
     knownCondition,
     knownPlainData,
     nullValue,
@@ -808,8 +809,10 @@ function runtimeSelectors(
         if (!read.has(group.test))
             read.set(
                 group.test,
+                // The discarded probe undoes what lowering wrote on the
+                // value; a copy keeps what generation knew of it.
                 context.probeEmission(
-                    () => context.compileValue(group.test),
+                    () => ({ ...context.compileValue(group.test) }),
                     () => false,
                 ),
             );
@@ -867,6 +870,7 @@ function staticArgument(value: Value): boolean {
         value.staticBoolean !== undefined ||
         value.staticString !== undefined ||
         isAbsentValue(value) ||
+        knownAbsent(value) ||
         (value.kind === "record" && presenceCpp(value) === undefined)
     );
 }
