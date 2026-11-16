@@ -309,7 +309,11 @@ export function foldStringComparison(
     });
 }
 
-/** What generation holds for an operand read without evaluating code: a binding, or a property of one. */
+/**
+ * What generation holds for an operand read without evaluating code: a
+ * binding, or a property of one as the program's own read lowers it (a
+ * field of an object other references may write reads at run time).
+ */
 function settledRead(
     context: ComparisonContext,
     resolved: ts.Expression,
@@ -317,7 +321,7 @@ function settledRead(
     return ts.isIdentifier(resolved)
         ? context.bindings.lookupOptional(resolved)
         : ts.isPropertyAccessExpression(resolved)
-          ? context.propertyAccess.compilePropertyAccess(resolved)
+          ? context.compileValue(resolved)
           : undefined;
 }
 
