@@ -291,11 +291,13 @@ function keyNames(
 
 /**
  * Where a write through `object` lands, when the parameters and type
- * parameters it is read through narrow its open static type (or a `key`
- * the write does not name): the static types of the objects it can write,
- * each with every property the key can name. Undefined where neither
- * narrows. Values reach a parameter only through the calls of its
- * function, so a function no call reaches writes nothing.
+ * parameters it is read through narrow its open static type, an assertion
+ * retypes its operand (`(save as unknown as Mutable)[key] = v` writes the
+ * operand's object), or a `key` the write does not name narrows the
+ * properties: the static types of the objects it can write, each with
+ * every property the key can name. Undefined where none narrows. Values
+ * reach a parameter only through the calls of its function, so a function
+ * no call reaches writes nothing.
  */
 export function writtenHolders(
     program: ts.Program,
@@ -305,9 +307,11 @@ export function writtenHolders(
 ): readonly WrittenHolder[] | undefined {
     const type = checker.getTypeAtLocation(object);
     const own = unionMembers(type);
-    const held = openHolder(type)
-        ? heldTypes(program, checker, object, new Set())
-        : undefined;
+    const operand = unwrapExpression(object);
+    const held =
+        operand !== object || openHolder(type)
+            ? heldTypes(program, checker, operand, new Set())
+            : undefined;
     const types =
         held &&
         (held.length !== own.length ||

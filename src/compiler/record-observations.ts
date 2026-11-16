@@ -1,4 +1,5 @@
 import ts from "typescript";
+import { writeGuardRejects } from "./value-guards.js";
 import { forEachAnalysisNode } from "./analysis-walk.js";
 import { isOpaqueEngineObject, pinnedSourceHandleKind } from "./data-types.js";
 import type { EvaluationOrder } from "./evaluation-order.js";
@@ -204,14 +205,25 @@ export function recordFieldIsWritten(
  * `const` holding a fresh literal's object, in that function's own body
  * (no nested function, no generator), builds the object before the
  * function returns it, and is not counted. What such a write stores is
- * the reader's to know.
+ * the reader's to know. With `holding`, the value the member is known to
+ * hold, a write that runs only when its slot holds another value
+ * (`writeGuardRejects`) is not counted either.
  */
 export function builtRecordFieldIsWritten(
     context: RecordObservationContext,
     source: ts.Type,
     property: string,
+    holding?: { readonly value: unknown },
 ): boolean {
-    return cachedFieldWrite(context, source, property, false, undefined, true);
+    return cachedFieldWrite(
+        context,
+        source,
+        property,
+        false,
+        undefined,
+        true,
+        holding,
+    );
 }
 
 /** {@link recordFieldIsWritten} or {@link builtRecordFieldIsWritten}, kept per type and question. */
@@ -222,11 +234,15 @@ function cachedFieldWrite(
     keepsPresent: boolean,
     origin: ts.Node | undefined,
     built: boolean,
+    holding?: { readonly value: unknown },
 ): boolean {
     const site = origin
         ? `${origin.getSourceFile().fileName}:${origin.pos}:${origin.end}:${origin.kind}`
         : "";
-    const key = `${property}|${keepsPresent}|${site}|${built}`;
+    const held = holding
+        ? `${typeof holding.value}:${String(holding.value)}`
+        : "";
+    const key = `${property}|${keepsPresent}|${site}|${built}|${held}`;
     let byKey = writtenFields.get(source);
     if (!byKey) writtenFields.set(source, (byKey = new Map<string, boolean>()));
     let written = byKey.get(key);
@@ -238,6 +254,7 @@ function cachedFieldWrite(
             keepsPresent,
             origin,
             built,
+            holding,
         );
         byKey.set(key, written);
     }
@@ -274,6 +291,7 @@ function fieldWriteFound(
     keepsPresent: boolean,
     origin: ts.Node | undefined,
     built: boolean,
+    holding: { readonly value: unknown } | undefined,
 ): boolean {
     const { checker } = context;
     const observations = programObservations(context.program);
@@ -333,7 +351,16 @@ function fieldWriteFound(
         (origin === undefined ||
             write.freshObject === undefined ||
             write.freshObject === origin) &&
-        !(built && buildsFreshObject(write));
+        !(built && buildsFreshObject(write)) &&
+        !(
+            holding &&
+            writeGuardRejects(
+                checker,
+                context.program.getSourceFiles(),
+                write.node,
+                holding.value,
+            )
+        );
     return (
         writesWhere(
             observations,

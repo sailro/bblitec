@@ -561,20 +561,32 @@ void main();
             },
         );
     };
-    assert.deepEqual(
-        compile("2.5").manifest.customShaderPrograms.map((program) =>
-            /position \* ([0-9.]+) \* ([0-9.]+), 1\.0\)/
-                .exec(program.vertexSource)
-                ?.slice(1),
-        ),
-        [["2.50", "0.25"]],
-    );
+    // A write that runs only while the member holds another value, and one
+    // through an assertion on another record, leave the member as built.
+    for (const after of [
+        "",
+        "const repair = (value: unknown): void => { const record = value as Record<string, unknown>; for (const key of Object.keys(record)) { const child = record[key]; if (typeof child === 'number') { if (!Number.isFinite(child)) record[key] = 0; continue; } } }; repair(config.look);",
+        "const keep = (save: { rows: number[] }, key: string, kept: number[]): void => { (save as unknown as Record<string, unknown>)[key] = kept; }; keep({ rows: [] }, String(Math.random()), [1]);",
+    ])
+        assert.deepEqual(
+            compile("2.5", after).manifest.customShaderPrograms.map((program) =>
+                /position \* ([0-9.]+) \* ([0-9.]+), 1\.0\)/
+                    .exec(program.vertexSource)
+                    ?.slice(1),
+            ),
+            [["2.50", "0.25"]],
+            after,
+        );
     for (const [scale, after] of [
         ["3", ""],
         ['"2.5"', ""],
         [
             "2.5",
             "const bump = (record: Record<string, unknown>): void => { for (const key of Object.keys(record)) record[key] = 3; }; if (Date.now() < 0) bump(config.look as unknown as Record<string, unknown>);",
+        ],
+        [
+            "2.5",
+            "const clamp = (value: unknown): void => { const record = value as Record<string, unknown>; for (const key of Object.keys(record)) { const child = record[key]; if (typeof child === 'number' && Number.isFinite(child)) record[key] = 3; } }; clamp(config.look);",
         ],
     ])
         assert.throws(

@@ -19074,23 +19074,35 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         const kind = valueKindOf(
             this.context.checker.getTypeAtLocation(access),
         );
-        if (
-            (kind !== "number" && kind !== "boolean") ||
-            !this.membersStayAsBuilt(access)
-        )
+        if (kind !== "number" && kind !== "boolean") return undefined;
+        const stays = this.membersStayAsBuilt(access);
+        if (!stays && !this.membersStayAsBuilt(access, "outer"))
             return undefined;
         const domain = this.context.packagedValueDomain(access, kind);
         if (domain?.length !== 1) return undefined;
         const [text] = domain as [string];
+        let value: Value | undefined;
         if (kind === "boolean") {
             const known = knownCondition(text);
-            return known === undefined
-                ? undefined
-                : { kind: "boolean", cpp: text, staticBoolean: known };
+            value =
+                known === undefined
+                    ? undefined
+                    : { kind: "boolean", cpp: text, staticBoolean: known };
+        } else {
+            const number = Number(text);
+            value =
+                text === (Object.is(number, -0) ? "-0" : String(number))
+                    ? numberConstantValue(number)
+                    : undefined;
         }
-        const number = Number(text);
-        return text === (Object.is(number, -0) ? "-0" : String(number))
-            ? numberConstantValue(number)
+        // A write that runs only while the member holds another value
+        // leaves it holding this one.
+        return value &&
+            (stays ||
+                this.membersStayAsBuilt(access, {
+                    value: value.staticNumber ?? value.staticBoolean,
+                }))
+            ? value
             : undefined;
     }
 
@@ -19098,9 +19110,14 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
      * Whether no write in the program replaces any member a chain of named
      * member reads goes through, once the record holding it is built
      * (`builtRecordFieldIsWritten`): a read through a run-time key may be
-     * any member.
+     * any member. `leaf` "outer" asks of the members the read goes through
+     * only; a known value asks of the read member too, a write that runs
+     * only while it holds another value not counted.
      */
-    private membersStayAsBuilt(access: ts.Expression): boolean {
+    private membersStayAsBuilt(
+        access: ts.Expression,
+        leaf?: "outer" | { readonly value: unknown },
+    ): boolean {
         for (
             let node = this.context.unwrap(access);
             isMemberAccess(node);
@@ -19109,14 +19126,19 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             const name = ts.isPropertyAccessExpression(node)
                 ? node.name.text
                 : literalKey(node.argumentExpression);
+            if (name === undefined) return false;
+            const read = node === this.context.unwrap(access);
+            if (read && leaf === "outer") continue;
             if (
-                name === undefined ||
                 builtRecordFieldIsWritten(
                     this.context,
                     this.context.checker.getNonNullableType(
                         this.context.checker.getTypeAtLocation(node.expression),
                     ),
                     name,
+                    read && leaf !== undefined && leaf !== "outer"
+                        ? leaf
+                        : undefined,
                 )
             )
                 return false;
