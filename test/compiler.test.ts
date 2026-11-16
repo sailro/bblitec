@@ -4065,6 +4065,59 @@ test("a literal key reads the entry it names beside writes into another literal'
     assert.match(result.cpp, /v_picked = \(v_active->scale \+ 2\.0\);/);
 });
 
+test("a record read by a literal-union key holds only the properties the key names", (t) => {
+    // `input[side]` over "left" | "right" never reads `reach`, a record of
+    // another shape, nor the scalar gaps beside it.
+    const result = compileSource(`type RingWindowSide = "left" | "right";
+interface RingWindowPlacement { id: string; side: RingWindowSide; left: number; top: number; width: number }
+interface RingWindowReach { left: number; right: number; top: number; bottom: number }
+interface RingWindowStack { placements: readonly RingWindowPlacement[]; reach: RingWindowReach }
+interface RingWindowStackInput {
+  left: { width: number; items: readonly { id: string; height: number }[] };
+  right: { width: number; items: readonly { id: string; height: number }[] };
+  reach: RingWindowReach;
+  sideGap: number;
+  stackGap: number;
+}
+function stackRingWindowColumns(input: Readonly<RingWindowStackInput>): RingWindowStack {
+  const placements: RingWindowPlacement[] = [];
+  const reach: RingWindowReach = { ...input.reach };
+  for (const side of ["left", "right"] as const) {
+    const column = input[side];
+    if (column.items.length === 0) continue;
+    const total = column.items.reduce((sum, item) => sum + item.height, 0) + input.stackGap * (column.items.length - 1);
+    const left = side === "left" ? -(input.reach.left + input.sideGap) - column.width : input.reach.right + input.sideGap;
+    let top = -total / 2;
+    for (const item of column.items) {
+      placements.push({ id: item.id, side, left, top, width: column.width });
+      top += item.height + input.stackGap;
+    }
+    if (side === "left") reach.left = Math.max(reach.left, -left);
+    else reach.right = Math.max(reach.right, left + column.width);
+    reach.top = Math.min(reach.top, -total / 2);
+    reach.bottom = Math.max(reach.bottom, total / 2);
+  }
+  return { placements, reach };
+}
+const items = [{ id: "a", height: Math.random() * 10 }];
+const out = stackRingWindowColumns({ left: { width: 10, items }, right: { width: 12, items: [] }, reach: { left: 1, right: 2, top: -3, bottom: 3 }, sideGap: 4, stackGap: 2 });
+if (out.placements.length !== 1 || out.placements[0]!.width !== 10 || out.reach.left !== 15 || out.reach.right !== 2) throw new Error("stack");
+`);
+    const tools = optionalNativeFixtureTools();
+    if (!tools)
+        return t.skip(
+            "Native fixture compiler unavailable; generation assertions passed.",
+        );
+    runGeneratedProgram(
+        tools,
+        "compiler-literal-union-key-subset",
+        result.cpp,
+        {
+            expectedOutput: "",
+        },
+    );
+});
+
 test("a member a literal key's entry never sets compares unequal to a present value", () => {
     const result = compileSource(`
         type Mode = "pets" | "arcade" | "smooth";

@@ -254,6 +254,7 @@ import {
     callSignatures,
     stringPlusOperands,
     isAnyTyped,
+    unionMembers,
 } from "./type-facts.js";
 import type { NullableResourceType, Value } from "./types.js";
 import type { UserFunctionContext } from "./user-functions.js";
@@ -5626,13 +5627,26 @@ export class ExpressionLowerer {
                     indexedType.kind !== "optional" &&
                     !ownerHasOptionalProperties;
                 const valueCpp = this.context.dataTypes.cppType(valueType);
+                // A literal-union key reads only the properties it names.
+                const keyLiterals = unionMembers(keyType);
+                const keyNames = keyLiterals.every((member) =>
+                    member.isStringLiteral(),
+                )
+                    ? new Set(
+                          keyLiterals.map(
+                              (member) =>
+                                  (member as ts.StringLiteralType).value,
+                          ),
+                      )
+                    : undefined;
+                const selectable = Object.entries(
+                    owner.recordProperties ?? {},
+                ).filter(([name]) => !keyNames || keyNames.has(name));
                 let entries: string[] = [];
                 const { value: entryLines, nativeCaptures } =
                     this.context.captureNativeDependencies(() =>
                         this.context.captureEmittedLines(() => {
-                            entries = Object.entries(
-                                owner.recordProperties ?? {},
-                            ).map(([name, value]) => {
+                            entries = selectable.map(([name, value]) => {
                                 // The key's narrowed union need not contain every
                                 // property on its owner. Object property names stay
                                 // strings even when the index uses a finite union.
@@ -5696,9 +5710,7 @@ export class ExpressionLowerer {
                         keyExpression,
                         valueType,
                     );
-                const recordValues = Object.values(
-                    owner.recordProperties ?? {},
-                );
+                const recordValues = selectable.map(([, value]) => value);
                 const animationGroupSource =
                     recordValues.length > 0 &&
                     recordValues[0]!.animationGroupSource !== undefined &&
