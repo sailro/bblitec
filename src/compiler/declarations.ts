@@ -5796,7 +5796,8 @@ export class DeclarationLowerer {
         }
         // A parsed document destructures through iteration: its array
         // elements (or string code points), each another document, with
-        // undefined past the end.
+        // undefined past the end; a rest element collects the rest of them
+        // into a new array.
         if (isJsonValue(value)) {
             this.context.reachJsData();
             const temporary = this.context.allocateTemporaryCppName(
@@ -5806,14 +5807,24 @@ export class DeclarationLowerer {
                 kind: "declaration",
                 type: "const auto",
                 name: temporary,
-                initializer: `bbl::js::json_iterated(${value.cpp}, ${bindings.length})`,
+                initializer: `bbl::js::json_iterated(${value.cpp}${restName ? "" : `, ${bindings.length}`})`,
             });
             bindings.forEach((element, index) => {
                 if (ts.isOmittedExpression(element)) return;
-                if (element.dotDotDotToken || element.initializer)
+                if (index === restIndex && restName) {
+                    this.context.bindings.bindLocalValue(
+                        restName,
+                        this.context.dataLowerer.leafValue(
+                            `bbl::js::json_iterated_rest(${temporary}, ${index})`,
+                            { kind: "json" },
+                        ),
+                    );
+                    return;
+                }
+                if (element.initializer)
                     this.context.fail(
                         element,
-                        "Destructuring a parsed document binds plain elements, without rest or defaults.",
+                        "Destructuring a parsed document binds elements without defaults.",
                     );
                 bindElement(
                     element,

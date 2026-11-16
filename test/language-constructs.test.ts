@@ -10530,6 +10530,21 @@ check(
 `,
 );
 
+// A rest element collects the values the document iterates past it into a
+// new array: an array's elements, a string's code points, none past the end.
+check(
+    "parsed-document-array-rest-destructuring",
+    `
+    const doc = JSON.parse('{"stories":[{"no":1},{"no":2},{"no":3}]}') as { stories: { no: number }[] };
+    const [lead, ...rest] = doc.stories;
+    if (lead!.no !== 1 || rest.length !== 2 || rest[0]!.no !== 2 || rest[1]!.no !== 3) throw new Error("document rest");
+    const [first, ...others] = JSON.parse('"a😀b"') as unknown as string[];
+    if (first !== "a" || others.length !== 2 || others.join("") !== "😀b") throw new Error("document string rest");
+    const [, , ...tail] = JSON.parse("[1]") as number[];
+    if (tail.length !== 0) throw new Error("document rest past the end");
+`,
+);
+
 check(
     "numeric-tuples-in-array-sinks",
     `
