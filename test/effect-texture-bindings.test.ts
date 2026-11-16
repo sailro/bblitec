@@ -116,3 +116,34 @@ main();`;
         /bbl::set_shader_render_texture\(v_engine, v_material, 0u, .*depth/,
     );
 });
+
+test("an effect wrapper's blend state records its factors and refuses another equation", () => {
+    const wrapper = (blend: string): string => `
+import {createEngine,createEffectWrapper} from "@babylonjs/lite";
+async function main(){
+    const engine=await createEngine({});
+    createEffectWrapper(engine,{name:"halo",fragmentWGSL:"@fragment fn effectFragment(input:EffectVertexOutput)->@location(0) vec4<f32>{return vec4<f32>(1.0);}",bindings:[],blend:${blend}});
+}
+main();`;
+    // A component's omitted operation is add; the alpha factors are its own.
+    const compiled = compileSource(
+        wrapper(
+            `{color:{srcFactor:"src-alpha",dstFactor:"one-minus-src-alpha",operation:"add"},alpha:{srcFactor:"one",dstFactor:"one-minus-src-alpha"}}`,
+        ),
+    );
+    assert.deepEqual(compiled.manifest.effects[0]?.blend, [
+        "src-alpha",
+        "one-minus-src-alpha",
+        "one",
+        "one-minus-src-alpha",
+    ]);
+    assert.throws(
+        () =>
+            compileSource(
+                wrapper(
+                    `{color:{srcFactor:"one",dstFactor:"one",operation:"max"},alpha:{}}`,
+                ),
+            ),
+        /A blend state supports the add operation only/,
+    );
+});

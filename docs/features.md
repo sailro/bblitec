@@ -464,7 +464,8 @@ InvalidStateError), moving its playback into the graph. Other members and attrib
   before transmissive transparent draws (`copyCount`) to grab colour, and with `grabDepth` depth (set before recording);
   `grab.texture`/`depthTexture` read live for `setShaderTexture`. The linear arm and multisampled targets refuse.
 - Contact shadows, one-bounce GI, screen-space ambient occlusion
-  (`createScreenSpaceAmbientOcclusionPostProcessTask`), EffectWrapper/EffectRenderer with bounded layouts; custom
+  (`createScreenSpaceAmbientOcclusionPostProcessTask`), EffectWrapper/EffectRenderer with bounded layouts and an
+  add-equation blend state over `zero`, `one`, `src-alpha`, `one-minus-src-alpha`, `dst` and `dst-alpha`; custom
   vertices refuse.
   Effect textures come from solid/pixel factories or render targets, with 2D float or depth layouts;
   scene frame graphs sample depth through `textureLoad`. Effect samplers use the `filtering` binding type.

@@ -13,20 +13,6 @@ import type { LoweringServices } from "../lowering-services.js";
 // the module text and the bind-group layout are settled by the descriptor, so
 // generation composes and deploys them, and what stays at run time is the
 // uniform bytes, the bound textures, and the pass.
-// The fullscreen-effect family: `EffectWrapper`, its two draws, and the two
-// setters that fill it.
-//
-// Upstream's `src/effect/effect-renderer.ts` is one shader module (the pin's
-// own fullscreen-triangle vertex stage concatenated with the caller's
-// fragment), one explicitly declared bind group, and two ways to draw it: an
-// `EffectRenderer` that registers on the engine as its own `RenderingContext`
-// and owns a swapchain target, and an `EffectRenderTask` scheduled in a
-// scene's frame graph against a `RenderTarget` the caller made.
-//
-// Both halves are compile-time here for the same reason the sprite path is:
-// the module text and the bind-group layout are settled by the descriptor, so
-// generation composes and deploys them, and what stays at run time is the
-// uniform bytes, the bound textures, and the pass.
 import ts from "typescript";
 import { argumentAt } from "../syntax.js";
 import {
@@ -35,6 +21,7 @@ import {
     type Value,
 } from "../types.js";
 import type { IntrinsicCallContext } from "./context.js";
+import { compileBlendState, type BlendStateContext } from "../blend-state.js";
 import {
     compileStaticNumber,
     validateObjectProperties,
@@ -45,6 +32,7 @@ import {
 export interface EffectIntrinsicContext
     extends
         IntrinsicCallContext,
+        BlendStateContext,
         ObjectValidationContext,
         PositiveIntegerContext,
         Pick<
@@ -409,10 +397,10 @@ export function compileEffectIntrinsic(
             validateObjectProperties(
                 context,
                 object,
-                ["name", "fragmentWGSL", "bindings"],
-                "Reached effect wrappers take a name, a fragmentWGSL body " +
-                    "and bindings; a custom vertexWGSL and a blend state are " +
-                    "not lowered.",
+                ["name", "fragmentWGSL", "bindings", "blend"],
+                "Reached effect wrappers take a name, a fragmentWGSL body, " +
+                    "bindings and a blend state; a custom vertexWGSL is not " +
+                    "lowered.",
             );
             const fragmentExpression = context.objectProperty(
                 object,
@@ -433,6 +421,7 @@ export function compileEffectIntrinsic(
                 );
             }
             const nameExpression = context.objectProperty(object, "name");
+            const blendExpression = context.objectProperty(object, "blend");
             const index = context.sceneManifest.recordEffect({
                 family: "effect",
                 // The pin's own default when the descriptor names none.
@@ -441,6 +430,9 @@ export function compileEffectIntrinsic(
                     : "effect-wrapper",
                 fragment,
                 bindings: compileBindings(context, object),
+                ...(blendExpression
+                    ? { blend: compileBlendState(context, blendExpression) }
+                    : {}),
             });
             context.reachFeature("effect:wrapper", call);
             return {

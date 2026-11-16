@@ -11,6 +11,7 @@ import { CppDefinitions, type CppModule } from "./cpp-definitions.js";
 import { stringLiteral } from "./cpp-literals.js";
 import type { EffectManifest } from "./compiler/types.js";
 import { effectStageStems } from "./lowering/effect-lowerer.js";
+import { nativeBlendFactor } from "./lowering/pinned-blend-table.js";
 
 export function pinnedEffectVariantsHeader(
     provenance: string,
@@ -34,16 +35,22 @@ export function pinnedEffectVariantsHeader(
                     `${binding.textureSampleType === "depth"}},`,
             );
         }
+        const blend = effect.blend
+            ? `{${effect.blend.map((factor) => `BlendFactor::${nativeBlendFactor(factor)}`).join(", ")}}`
+            : "{}";
         entries.push(
             `    {${stringLiteral(stems.vertexStem)}, ` +
                 `${stringLiteral(stems.fragmentStem)}, ` +
                 `${stringLiteral(effect.name)}, ` +
-                `${first}, ${effect.bindings.length}},`,
+                `${first}, ${effect.bindings.length}, ` +
+                `${effect.blend !== undefined}, ${blend}},`,
         );
     }
     return cpp.finish(`#pragma once
 
 // ${provenance}
+
+#include <bblite/runtime.hpp>
 
 #include <array>
 #include <cstddef>
@@ -93,6 +100,9 @@ struct EffectVariantEntry {
     /** Half-open range into the binding table above. */
     std::size_t first_binding;
     std::size_t binding_count;
+    /** The descriptor's \`blend\` (an add equation of these factors); without one the pass writes its output. */
+    bool blend_enabled;
+    BlendFactors blend;
 };
 
 ${cpp.table("EffectVariantEntry", "effect_variants", effects.length, `${entries.join("\n")}`)}

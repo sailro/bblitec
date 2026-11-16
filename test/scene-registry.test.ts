@@ -90,6 +90,7 @@ test("registers unique generated scene targets", () => {
             "regression-material-falloff",
             "regression-opacity-alpha-write",
             "regression-blend-alpha-write",
+            "regression-effect-blend",
             "regression-runtime-options",
             "regression-engine-calls",
             "regression-no-camera-floating-origin",

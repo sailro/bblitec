@@ -514,6 +514,8 @@ export interface EffectManifest {
     name: string;
     fragment: string;
     bindings: EffectBindingManifest[];
+    /** The descriptor's blend over the target; absent, the pass writes its output. */
+    blend?: CompiledBlendState;
 }
 
 export interface SpriteCustomShaderManifest {
@@ -963,7 +965,7 @@ export interface CompiledShaderProgram {
     /** The pin's fixed-function blend equation when alpha blending is enabled. */
     readonly blendMode: "alpha" | "additive";
     /** Explicit add-equation factors, in color then alpha source/destination order. */
-    readonly blend?: CompiledShaderBlend;
+    readonly blend?: CompiledBlendState;
     readonly needAlphaTesting: boolean;
     readonly backFaceCulling: boolean;
     readonly depthWrite: boolean;
@@ -999,7 +1001,8 @@ export interface CompiledShaderProgram {
     readonly thinInstanceColorOption?: boolean;
 }
 
-export type CompiledShaderBlend = readonly [
+/** A `GPUBlendState`'s add-equation factors, as the pin spells them. */
+export type CompiledBlendState = readonly [
     srcColor: string,
     dstColor: string,
     srcAlpha: string,

@@ -6,9 +6,9 @@ import type { LoweringServices } from "./lowering-services.js";
 import ts from "typescript";
 import { cppIdentifierPattern } from "../cpp-literals.js";
 import { sharedPinnedContext } from "../lowering/context.js";
-import { blendFactorByPin } from "../lowering/pinned-blend-table.js";
 import { depthCompareByPin } from "../lowering/pinned-depth-state.js";
 import { staticTableOption, type TableOption } from "./table-options.js";
+import { compileBlendState } from "./blend-state.js";
 import {
     pinnedErrorCode,
     pinnedErrorMessageCpp,
@@ -31,7 +31,6 @@ import {
     type ObjectValidationContext,
 } from "./option-helpers.js";
 import type {
-    CompiledShaderBlend,
     CompiledShaderDefine,
     CompiledShaderProgram,
     CompiledShaderSampler,
@@ -55,21 +54,6 @@ const shaderDepthCompare: TableOption = {
     refusal: (compare) => `Unsupported shader depthCompare '${compare}'.`,
     name: "shader depthCompare",
     label: "depth_compare",
-};
-
-const shaderBlendFactor: TableOption = {
-    table: blendFactorByPin,
-    refusal: (factor) =>
-        `Pinned blend uses factor '${factor}', which this runtime has no enumerator for.`,
-    name: "shader blend factor",
-    label: "blend_factor",
-};
-
-const shaderBlendOperation: TableOption = {
-    table: { add: "add" },
-    refusal: "Shader blend supports the add operation only.",
-    name: "shader blend operation",
-    label: "blend_operation",
 };
 
 /**
@@ -313,7 +297,7 @@ export function compileShaderMaterialOptions(
     );
     const blendExpression = context.objectProperty(object, "blend");
     const blend = blendExpression
-        ? compileShaderBlend(context, blendExpression)
+        ? compileBlendState(context, blendExpression)
         : undefined;
     const needAlphaBlending = compileOptionalStaticBoolean(
         context,
@@ -509,44 +493,6 @@ export function compileShaderMaterialOptions(
               }
             : {}),
     };
-}
-
-/** The explicit GPUBlendState replaces both default blend components. */
-function compileShaderBlend(
-    context: ShaderMaterialContext,
-    expression: ts.Expression,
-): CompiledShaderBlend {
-    const object = context.expectObjectLiteral(expression);
-    validateObjectProperties(
-        context,
-        object,
-        ["color", "alpha"],
-        "Shader blend requires color and alpha components.",
-    );
-    const component = (side: "color" | "alpha"): [string, string] => {
-        const value = context.objectProperty(object, side);
-        if (!value) context.fail(object, `Shader blend requires ${side}.`);
-        const literal = context.expectObjectLiteral(value);
-        validateObjectProperties(
-            context,
-            literal,
-            ["operation", "srcFactor", "dstFactor"],
-            "Shader blend components accept operation, srcFactor and dstFactor.",
-        );
-        const operation = context.objectProperty(literal, "operation");
-        if (operation)
-            staticTableOption(context, shaderBlendOperation, operation);
-        const factor = (name: "srcFactor" | "dstFactor"): string => {
-            const field = context.objectProperty(literal, name);
-            return field
-                ? staticTableOption(context, shaderBlendFactor, field)
-                : name === "srcFactor"
-                  ? "one"
-                  : "zero";
-        };
-        return [factor("srcFactor"), factor("dstFactor")];
-    };
-    return [...component("color"), ...component("alpha")];
 }
 
 /**

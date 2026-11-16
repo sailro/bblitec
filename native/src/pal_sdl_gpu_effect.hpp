@@ -129,8 +129,9 @@ inline EffectPass create_effect_pass(SDL_GPUDevice* device, const Engine& engine
 
     SDL_GPUColorTargetDescription color{};
     color.format = format;
-    // `blend: options.blend` — the reached slice declares none, and a
-    // descriptor that does refuses at generation.
+    // `blend: options.blend`.
+    if (entry.blend_enabled)
+        color.blend_state = blend_state_from(entry.blend);
     SDL_GPUGraphicsPipelineCreateInfo info{};
     info.vertex_shader = vertex.shader.get();
     info.fragment_shader = fragment.shader.get();

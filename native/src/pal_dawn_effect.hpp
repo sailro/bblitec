@@ -199,6 +199,9 @@ inline DawnEffectPass create_dawn_effect_pass(DawnDevice& device_state, const En
         load_wgsl_module(device_state.device, std::string(entry.fragment_stem))};
     WGPUColorTargetState color_target = WGPU_COLOR_TARGET_STATE_INIT;
     color_target.format = format;
+    // `blend: options.blend`.
+    const WGPUBlendState blend = blend_state_from(entry.blend);
+    color_target.blend = entry.blend_enabled ? &blend : nullptr;
     WGPUFragmentState fragment = WGPU_FRAGMENT_STATE_INIT;
     fragment.module = module;
     fragment.entryPoint = string_view("effectFragment");

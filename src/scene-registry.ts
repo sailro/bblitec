@@ -1214,6 +1214,27 @@ const authoredInputs: readonly SceneInput[] = [
         },
     },
     {
+        // An effect pass blended over its render target with the blend state
+        // a selection halo writes.
+        id: "regression-effect-blend",
+        name: "Regression - Effect Blend",
+        source: "examples/regression-effect-blend.ts",
+        sourceOrigin: "bblitec-regression",
+        title: "Babylon Lite Native - Effect Blend",
+        buildDirectory: "native/build-regression-effect-blend-release",
+        parity: {
+            reference: {
+                kind: "source",
+                path: "reference/regression-effect-blend/babylon-lite-golden.png",
+            },
+            outputDirectory: "artifacts/parity/regression-effect-blend",
+            maxFullMad: 0.001,
+            maxForegroundMad: 0.001,
+            backgroundColor: [51, 51, 76],
+            backgroundThreshold: 30,
+        },
+    },
+    {
         // Run-time option values and the native paths they reach: created
         // PBR normal maps on tangent and cotangent meshes, a PCF directional
         // map sized at run time with the unread normalBias, a typed-array
