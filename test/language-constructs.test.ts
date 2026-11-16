@@ -19264,6 +19264,81 @@ test("a promise reaction refuses a dispatched method override that completes wit
         /Promise reaction with a void result requires a proven undefined completion/,
     );
 });
+// A program that declares no `then` member holds only native promises
+// where it types a PromiseLike: a shared closure awaits one as a promise.
+checkInRealm(
+    "a PromiseLike only promises implement awaits as a promise",
+    `
+    interface Readiness {
+        readonly worldReady: PromiseLike<void>;
+        readonly postReady?: PromiseLike<void> | null;
+        readonly renderReady?: PromiseLike<void> | null;
+        readonly waitForGpuIdle: () => PromiseLike<void>;
+        readonly onMilestone?: (milestone: string) => void;
+    }
+    async function waitFor(options: Readiness): Promise<void> {
+        const observe = async (milestone: string, promise: PromiseLike<void> | null | undefined): Promise<void> => {
+            if (promise) await promise;
+            options.onMilestone?.(milestone);
+        };
+        await Promise.all([observe("world", options.worldReady), observe("post", options.postReady), observe("render", options.renderReady)]);
+        await options.waitForGpuIdle();
+        options.onMilestone?.("gpu");
+    }
+    const delay = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
+    let order = "";
+    void waitFor({
+        worldReady: delay(4),
+        postReady: Math.random() < 2 ? delay(1) : null,
+        waitForGpuIdle: () => delay(1),
+        onMilestone: (milestone) => {
+            order += milestone + " ";
+        },
+    }).then(() => {
+        if (order !== "render post world gpu ") throw new Error("order " + order);
+        globalThis.close();
+    });
+    `,
+);
+test("a PromiseLike a declared thenable may implement refuses its assimilation", () => {
+    assert.throws(
+        () =>
+            compileSource(`
+            interface Readiness {
+                readonly worldReady: PromiseLike<void>;
+                readonly postReady?: PromiseLike<void> | null;
+                readonly renderReady?: PromiseLike<void> | null;
+                readonly waitForGpuIdle: () => PromiseLike<void>;
+                readonly onMilestone?: (milestone: string) => void;
+            }
+            async function waitFor(options: Readiness): Promise<void> {
+                const observe = async (milestone: string, promise: PromiseLike<void> | null | undefined): Promise<void> => {
+                    if (promise) await promise;
+                    options.onMilestone?.(milestone);
+                };
+                await Promise.all([observe("world", options.worldReady), observe("post", options.postReady), observe("render", options.renderReady)]);
+                await options.waitForGpuIdle();
+                options.onMilestone?.("gpu");
+            }
+            const delay = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
+            let order = "";
+            void waitFor({
+                worldReady: delay(4),
+                postReady: Math.random() < 2 ? delay(1) : null,
+                waitForGpuIdle: () => delay(1),
+                onMilestone: (milestone) => {
+                    order += milestone + " ";
+                },
+            }).then(() => {
+                if (order !== "render post world gpu ") throw new Error("order " + order);
+                globalThis.close();
+            });
+            const custom = { then(resolve: (value: void) => void): void { resolve(); } };
+            void waitFor({ worldReady: custom, waitForGpuIdle: () => custom });
+        `),
+        /Custom thenable assimilation requires an owned promise resolution protocol/,
+    );
+});
 // A result that may be absent, a boolean or a promise is a promise only
 // while present and holding its promise member.
 checkInRealm(

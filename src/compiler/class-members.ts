@@ -794,7 +794,7 @@ export class ClassHierarchy {
 
     public constructor(
         private readonly checker: ts.TypeChecker,
-        private readonly program: ts.Program,
+        public readonly program: ts.Program,
     ) {}
 
     public table(declaration: ts.ClassLikeDeclaration): ClassMemberTable {

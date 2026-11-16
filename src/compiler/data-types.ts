@@ -1,4 +1,5 @@
 import type { DataType, HandleKind } from "./data-types/model.js";
+import { declaresThenMember } from "./thenables.js";
 import {
     isEngineScopedHandleKind,
     isWindowHandleKind,
@@ -5231,7 +5232,14 @@ export class DataTypeRegistry {
         if ((objectType.objectFlags & ts.ObjectFlags.Reference) !== 0) {
             const reference = type as ts.TypeReference;
             const target = reference.target;
-            if (library && libraryName(type) === "Promise") {
+            // A PromiseLike is a native promise where no source of the
+            // program names a `then` member another object could implement.
+            if (
+                library &&
+                (libraryName(type) === "Promise" ||
+                    (libraryName(type) === "PromiseLike" &&
+                        !declaresThenMember(this.classHierarchy.program)))
+            ) {
                 const [argument] = this.checker.getTypeArguments(reference);
                 if (!argument) return undefined;
                 const resolvedType = this.resolveTypeParameter(argument);
