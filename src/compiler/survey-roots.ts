@@ -301,8 +301,9 @@ function emptyValueOf(
     // pass. Its array is one its caller owns, which a borrowed view only
     // lends a callee; the `unknown` values a type reaches are stored as
     // documents, as a parsed value of it is.
-    // A value typed `object` is dynamic, as such a binding is; an iterable
-    // is an empty array of its element (`iterableArray`).
+    // A value typed `object` or `any` is dynamic, as such a binding is (an
+    // untyped module's parameter); an iterable is an empty array of its
+    // element (`iterableArray`).
     const mapped =
         context.dataTypes.orDynamicJsonTypes(() => {
             const stored = context.dataTypes.fromStoredTsType(type, node);
@@ -312,7 +313,9 @@ function emptyValueOf(
         }) ??
         (context.dataTypes.holdsObjectValue(type)
             ? context.dataTypes.dynamicJsonType(type)
-            : undefined) ??
+            : (type.flags & ts.TypeFlags.Any) !== 0
+              ? ({ kind: "json" } as const)
+              : undefined) ??
         iterableArray(context, type, node);
     const checker = context.checker;
     const record = checker.getNonNullableType(type);

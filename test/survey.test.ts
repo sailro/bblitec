@@ -1119,6 +1119,22 @@ test("a root's capture holding a function or nothing binds what its initializer 
     assert.deepEqual(report.refusals, [], listed(report));
 });
 
+test("a survey root's value typed any is a document, as an untyped module's parameter is", () => {
+    const { report } = surveySource(
+        `
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        export function projectClips(raw: any): number {
+            if (!raw || typeof raw !== "object") return 0;
+            const clips = raw.clips;
+            return Array.isArray(clips) ? clips.length : 0;
+        }
+        localStorage.setItem("ready", "1");
+    `,
+        { fileName: resolve("survey-root-any.ts") },
+    );
+    assert.deepEqual(report.refusals, [], listed(report));
+});
+
 test("a root's engine object no storage holds stands as its pinned base's handle", () => {
     // An ArcRotateCamera has no storage of its own; a Camera is a handle.
     const { report } = surveySource(
