@@ -1368,8 +1368,11 @@ export class UiProjection {
             ts.isPropertyAccessExpression(owner) &&
             isUiTreeRead(owner.name.text) &&
             elementReceiver(owner.expression);
+        // The focused element is a retained element (the fullscreen one is
+        // an optional handle, read by its own owner).
         if (
             !treeRead &&
+            this.documentStateElement(owner) !== "activeElement" &&
             (!(ts.isCallExpression(owner) || isOperandSelection(owner)) ||
                 !holdsElement(expression))
         )
@@ -1579,18 +1582,24 @@ export class UiProjection {
             : undefined;
     }
 
+    /** Which element the document's state names (`document.activeElement`, `document.fullscreenElement`), if `value` reads one. */
+    private documentStateElement(
+        value: ts.Expression,
+    ): "activeElement" | "fullscreenElement" | undefined {
+        return ts.isPropertyAccessExpression(value) &&
+            (value.name.text === "activeElement" ||
+                value.name.text === "fullscreenElement") &&
+            this.context.libraryGlobal(value.expression) === "document"
+            ? value.name.text
+            : undefined;
+    }
+
     /** Whether an expression is already known to produce retained UI state. */
     public isNativeUiValueExpression(expression: ts.Expression): boolean {
         if (this.documentRootTag(expression)) return true;
         if (this.primaryCanvasDataset(expression)) return true;
         const value = this.context.unwrap(expression);
-        if (
-            ts.isPropertyAccessExpression(value) &&
-            (value.name.text === "activeElement" ||
-                value.name.text === "fullscreenElement") &&
-            this.context.libraryGlobal(value.expression) === "document"
-        )
-            return true;
+        if (this.documentStateElement(value) !== undefined) return true;
         if (ts.isElementAccessExpression(value)) {
             const dataType = this.context.dataLowerer.dataTypeAt(value);
             return (

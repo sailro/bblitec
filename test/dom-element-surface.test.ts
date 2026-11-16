@@ -344,6 +344,37 @@ test("scroll extents report the content an element's box overflows", (t) => {
     });
 });
 
+test("the focused element answers its class list", (t) => {
+    const output = resolve("artifacts/dom-active-classes");
+    mkdirSync(output, { recursive: true });
+    writeFileSync(join(output, "worker.ts"), "self.close();");
+    const { cpp } = compileSource(
+        `${realm}
+        const log = document.createElement("div");
+        log.id = "log";
+        document.body.appendChild(log);
+        const pill = document.createElement("button");
+        pill.className = "pill";
+        const plain = document.createElement("button");
+        document.body.append(pill, plain);
+        const focused = (): string =>
+            document.activeElement instanceof HTMLElement && document.activeElement.classList.contains("pill")
+                ? "pill"
+                : "other";
+        pill.focus();
+        const first = focused();
+        plain.focus();
+        log.textContent = first + " " + focused();
+        globalThis.close();
+    `,
+        { fileName: join(output, "entry.ts") },
+    );
+    writeFileSync(join(output, "program.hpp"), cpp);
+    runRmlUiFixture(t, "dom-active-classes", {
+        macros: { BBLITE_WORKERS: 1, BBLITE_OFFSCREEN_SURFACES: 1 },
+    });
+});
+
 test("focus options retain absent dictionaries, stored flags and evaluation order", (t) => {
     const output = resolve("artifacts/dom-focus-options");
     mkdirSync(output, { recursive: true });
