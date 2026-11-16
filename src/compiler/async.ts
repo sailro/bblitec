@@ -12,7 +12,7 @@ import ts from "typescript";
 import {
     absenceOf,
     knownCondition,
-    objectTruthinessCpp,
+    presentCopy,
     undefinedValue,
     valueDataType,
 } from "./values/model.js";
@@ -2259,18 +2259,14 @@ export class AsyncLowerer {
                 cpp,
                 value.dataType,
             );
-            // A copy of an object generation knows present is present.
-            const present =
-                knownCondition(objectTruthinessCpp(value)) === true &&
-                presenceFlagCpp(leaf) !== undefined;
-            return valueForKind(leaf.kind, {
-                ...this.withoutProducerStorage(value),
-                ...leaf,
-                ...(present
-                    ? { optionalFoundCpp: "true", truthinessCpp: "true" }
-                    : {}),
-                nativeCaptures: [binding],
-            });
+            return presentCopy(
+                valueForKind(leaf.kind, {
+                    ...this.withoutProducerStorage(value),
+                    ...leaf,
+                    nativeCaptures: [binding],
+                }),
+                value,
+            );
         }
         if (
             value.kind === "number" ||

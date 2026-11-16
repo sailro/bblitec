@@ -402,6 +402,22 @@ export function objectTruthinessCpp(value: Value): string | undefined {
     return statedTruthinessCpp(value) ?? presenceFlagCpp(value);
 }
 
+/**
+ * A copy of an object generation knows present is present: one whose
+ * truthiness states "true", or one with no presence to test that is not
+ * null. The copy's own presence flag and truthiness then say so.
+ */
+export function presentCopy(copy: Value, source: Value): Value {
+    const truthy = objectTruthinessCpp(source);
+    const present =
+        truthy === undefined
+            ? isPresentValue(source)
+            : knownCondition(truthy) === true;
+    return present && presenceFlagCpp(copy) !== undefined
+        ? { ...copy, optionalFoundCpp: "true", truthinessCpp: "true" }
+        : copy;
+}
+
 /** Native data views retain shared metadata, without generation-only payloads. */
 export function nativeDataMetadata(value: Value | undefined): ValueFields {
     if (!value) return { cpp: "" };

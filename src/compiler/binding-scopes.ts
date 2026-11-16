@@ -81,6 +81,7 @@ import { calledFunction } from "./symbols.js";
 import {
     handleFoundCpp,
     knownCondition,
+    presentCopy,
     rebaseSpelling,
 } from "./values/model.js";
 
@@ -1428,17 +1429,20 @@ export class BindingScopes {
                     ? narrowed.recordProperties
                     : undefined;
                 const ownKeys = narrowed.recordOwnKeys;
-                narrowed = this.pinValueToTemporary(
-                    this.context.dataLowerer.leafValue(
-                        this.context.dataLowerer.compileKnownValueForSink(
-                            narrowed,
+                narrowed = presentCopy(
+                    this.pinValueToTemporary(
+                        this.context.dataLowerer.leafValue(
+                            this.context.dataLowerer.compileKnownValueForSink(
+                                narrowed,
+                                represented,
+                                argument ?? identifier,
+                            ),
                             represented,
-                            argument ?? identifier,
                         ),
-                        represented,
+                        "parameter_object",
+                        identifier,
                     ),
-                    "parameter_object",
-                    identifier,
+                    narrowed,
                 );
                 if (properties) {
                     writable(narrowed).recordProperties = Object.fromEntries(
