@@ -7002,7 +7002,12 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                     );
                 if (mode === "write" && owner.recordProperties)
                     delete writable(owner.recordProperties)[name];
-                return withNativeMetadata(
+                const known =
+                    mode === "read" &&
+                    (field.readOnly || owner.recordOwnKeys || arrow === ".")
+                        ? owner.recordProperties?.[name]
+                        : undefined;
+                const read = withNativeMetadata(
                     {
                         ...this.leafValue(
                             `${owner.cpp}${arrow}${field.name}`,
@@ -7010,11 +7015,13 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                         ),
                         nativeLvalue: true,
                     },
-                    mode === "read" &&
-                        (field.readOnly || owner.recordOwnKeys || arrow === ".")
-                        ? owner.recordProperties?.[name]
-                        : undefined,
+                    known,
                 );
+                // The field's own presence flag defers to a member its record
+                // knows present.
+                return knownCondition(known?.optionalFoundCpp) === true
+                    ? { ...read, optionalFoundCpp: "true" }
+                    : read;
             });
             if (staticMember) return staticMember;
             const keyType = this.dataTypeAt(access.argumentExpression);

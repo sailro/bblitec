@@ -6622,6 +6622,99 @@ void main();
     );
 });
 
+test("a table entry a shared helper builds from a module constant keeps its known fields", () => {
+    // The helper spreads a module constant, reads its fields, and computes
+    // one through a local: its shared call keeps the fields the body knows,
+    // and the table read by an arm's key keeps the entry present.
+    const programs = (source: string): readonly string[] =>
+        compileSource(source).manifest.customShaderPrograms.map(
+            (program) =>
+                /position \* ([0-9.]+)/.exec(program.vertexSource)?.[1] ?? "",
+        );
+    for (const source of [
+        `import { createEngine, createSceneContext, createShaderMaterial, wgsl, type EngineContext, type ShaderMaterial } from "@babylonjs/lite";
+type Kind = "a" | "b";
+interface Bounds { minY: number; maxY: number }
+interface Profile { file: string; height: number; bounds: Bounds; shared?: boolean; tint: "body" | false }
+const BASE: Profile = { file: "base.glb", height: 4.4, bounds: { minY: 0, maxY: 1.7 }, tint: "body" };
+const DEMO = typeof location === "undefined" ? false : location.search.includes("demo");
+function allows(kind: Kind): boolean { return kind !== "b"; }
+function matched(file: string, bounds: Readonly<Bounds>): Profile {
+    const height = (bounds.maxY - bounds.minY) * BASE.height / (BASE.bounds.maxY - BASE.bounds.minY);
+    return { ...BASE, file, height, bounds, shared: true };
+}
+const MODELS: Readonly<{ a: Profile } & Partial<Record<Kind, Profile>>> = {
+    a: BASE,
+    b: matched("b.glb", { minY: 0, maxY: 1.6 }),
+};
+function profile(kind: Kind): Profile {
+    const p = MODELS[kind] ?? BASE;
+    if (!p) throw new Error(\`no \${kind}\`);
+    return p;
+}
+function options(kind: Kind) {
+    const p = profile(kind);
+    return { file: p.file, shared: p.shared === true, tinted: p.tint !== false } as const;
+}
+const VERTEX = \`struct VertexOutput { @builtin(position) position: vec4<f32>, };
+@vertex fn mainVertex(input: VertexInput) -> VertexOutput { var out: VertexOutput; out.position = shaderSystem.worldViewProjection * vec4<f32>(input.position * /*S*/, 1.0); return out; }\`;
+const FRAGMENT = wgsl\`@fragment fn mainFragment() -> @location(0) vec4<f32> { return vec4<f32>(1.0); }\`;
+function surface(engine: EngineContext, o: { file: string; shared: boolean; tinted: boolean }): ShaderMaterial {
+    const vertex = VERTEX.replace("/*S*/", o.shared ? (o.tinted ? "0.5" : "0.6") : "1.0");
+    return createShaderMaterial({ name: o.file, vertexSource: wgsl\`\${vertex}\`, fragmentSource: FRAGMENT, attributes: ["position"], uniforms: ["worldViewProjection"] });
+}
+async function main(): Promise<void> {
+    const engine = await createEngine(document.getElementById("renderCanvas") as HTMLCanvasElement);
+    createSceneContext(engine);
+    const kinds = (["a", "b"] as const).filter(() => Math.random() < 2);
+    const build = (kind: Kind): ShaderMaterial => surface(engine, options(kind));
+    kinds.map(build);
+}
+void main();
+`,
+        `import { createEngine, createSceneContext, createShaderMaterial, wgsl, type EngineContext, type ShaderMaterial } from "@babylonjs/lite";
+type Kind = "a" | "b";
+interface Bounds { minY: number; maxY: number }
+interface Profile { file: string; height: number; bounds: Bounds; shared?: boolean; tint: "body" | false }
+const BASE: Profile = { file: "base.glb", height: 4.4, bounds: { minY: 0, maxY: 1.7 }, tint: "body" };
+const DEMO = typeof location === "undefined" ? false : location.search.includes("demo");
+function allows(kind: Kind): boolean { return kind !== "b"; }
+function matched(file: string, bounds: Readonly<Bounds>): Profile {
+    return { ...BASE, file, height: BASE.height, bounds, shared: true };
+}
+const MODELS: Readonly<{ a: Profile } & Partial<Record<Kind, Profile>>> = {
+    a: BASE,
+    b: matched("b.glb", { minY: 0, maxY: 1.6 }),
+};
+function profile(kind: Kind): Profile {
+    const p = MODELS[kind] ?? BASE;
+    if (!p) throw new Error(\`no \${kind}\`);
+    return p;
+}
+function options(kind: Kind) {
+    const p = profile(kind);
+    return { file: p.file, shared: p.shared === true, tinted: p.tint !== false } as const;
+}
+const VERTEX = \`struct VertexOutput { @builtin(position) position: vec4<f32>, };
+@vertex fn mainVertex(input: VertexInput) -> VertexOutput { var out: VertexOutput; out.position = shaderSystem.worldViewProjection * vec4<f32>(input.position * /*S*/, 1.0); return out; }\`;
+const FRAGMENT = wgsl\`@fragment fn mainFragment() -> @location(0) vec4<f32> { return vec4<f32>(1.0); }\`;
+function surface(engine: EngineContext, o: { file: string; shared: boolean; tinted: boolean }): ShaderMaterial {
+    const vertex = VERTEX.replace("/*S*/", o.shared ? (o.tinted ? "0.5" : "0.6") : "1.0");
+    return createShaderMaterial({ name: o.file, vertexSource: wgsl\`\${vertex}\`, fragmentSource: FRAGMENT, attributes: ["position"], uniforms: ["worldViewProjection"] });
+}
+async function main(): Promise<void> {
+    const engine = await createEngine(document.getElementById("renderCanvas") as HTMLCanvasElement);
+    createSceneContext(engine);
+    const kinds = (["a", "b"] as const).filter(() => Math.random() < 2);
+    const build = (kind: Kind): ShaderMaterial => surface(engine, options(kind));
+    kinds.map(build);
+}
+void main();
+`,
+    ])
+        assert.deepEqual(programs(source), ["1.0", "0.5"]);
+});
+
 test("a material builder iterated over a constant table's keys composes one program per key", () => {
     const source = (iteration: string): string =>
         `import { addToScene, createArcRotateCamera, createEngine, createPlane, createSceneContext, createShaderMaterial, registerScene, startEngine, wgsl, type EngineContext, type ShaderMaterial } from "@babylonjs/lite";

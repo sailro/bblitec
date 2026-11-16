@@ -2598,9 +2598,10 @@ export class UserFunctionLowerer {
                 returnType?.kind === "struct" &&
                 recordReturn &&
                 ts.isObjectLiteralExpression(recordReturn) &&
-                plainDataMembers(recordReturn) !== undefined &&
-                ir.statements.length === 0 &&
-                !context.evaluationOrder.writesStorage(recordReturn) &&
+                !firstReturn(ir.statements) &&
+                ![...ir.statements, recordReturn].some((node) =>
+                    context.evaluationOrder.writesStorage(node),
+                ) &&
                 argumentValues.every(generationKnownStringArgument)
             ) {
                 const fields = context.dataTypes.structFields(
@@ -2608,15 +2609,7 @@ export class UserFunctionLowerer {
                     call,
                     "accessors",
                 );
-                if (
-                    fields.every(
-                        (field) =>
-                            !field.accessor &&
-                            ["number", "boolean", "string"].includes(
-                                field.type.kind,
-                            ),
-                    )
-                ) {
+                if (fields.every((field) => !field.accessor)) {
                     let facts:
                         | Record<
                               string,
@@ -2675,6 +2668,7 @@ export class UserFunctionLowerer {
                         // Capture at the return expression's evaluation, before
                         // mutable storage erases the facts. Only primitives are
                         // copied; every read still uses the real call's owner.
+                        // A field holding a known primitive is present.
                         const access = context.dataTypes.memberAccess(
                             returnType.name,
                         );
@@ -2683,16 +2677,23 @@ export class UserFunctionLowerer {
                                 .filter((field) =>
                                     present.has(field.sourceName),
                                 )
-                                .map((field) => [
-                                    field.sourceName,
-                                    {
-                                        ...context.dataLowerer.leafValue(
-                                            `${result.cpp}${access}${field.name}`,
-                                            field.type,
-                                        ),
-                                        ...captured[field.sourceName],
-                                    },
-                                ]),
+                                .map((field) => {
+                                    const known = captured[field.sourceName];
+                                    return [
+                                        field.sourceName,
+                                        {
+                                            ...context.dataLowerer.leafValue(
+                                                `${result.cpp}${access}${field.name}`,
+                                                field.type,
+                                            ),
+                                            ...known,
+                                            ...(known &&
+                                            Object.keys(known).length > 0
+                                                ? { optionalFoundCpp: "true" }
+                                                : {}),
+                                        },
+                                    ];
+                                }),
                         );
                         writable(result).recordOwnKeys = ownKeys;
                     }
