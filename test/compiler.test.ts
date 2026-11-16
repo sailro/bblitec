@@ -6601,7 +6601,8 @@ void main();
         // `options` always sets `fade`: the unfaded program is unreachable.
         ["0.5 * 0.9"],
     );
-    assert.ok(
+    // The record a spread copies keeps the coat its helper always sets.
+    assert.deepEqual(
         scales(`import { createEngine, createSceneContext, createShaderMaterial, wgsl, type EngineContext, type ShaderMaterial } from "@babylonjs/lite";
 type Kind = "a" | "b";
 interface Coat { tint: number }
@@ -6649,7 +6650,8 @@ async function main(): Promise<void> {
     await Promise.all(kinds.map(build));
 }
 void main();
-`).includes("0.5 * 0.9 * 1.1"),
+`),
+        ["0.5 * 0.9 * 1.1", "0.5 * 0.9"],
     );
     // A known string is no boolean: comparing one with `false` folds.
     assert.deepEqual(

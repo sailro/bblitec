@@ -1,4 +1,5 @@
 import { writable } from "./emission-transaction.js";
+import { knownCondition, presentCopy } from "./values/model.js";
 import ts from "typescript";
 import { cppIdentifierPattern } from "../cpp-literals.js";
 import { argumentAt, propertyKey, isSupportedFunction } from "./syntax.js";
@@ -273,25 +274,32 @@ export function structOwnEntries(
             (original &&
                 original.kind !== "json-null" &&
                 original.dataType?.kind !== "optional");
+        const read: Value = {
+            ...(!field.accessorReceiver &&
+            definitelyPresent &&
+            field.type.kind === "optional"
+                ? context.dataLowerer.leafValue(
+                      `(*${value.cpp})`,
+                      field.type.inner,
+                  )
+                : value),
+            ...(original && !original.parameterBinding && !field.accessor
+                ? scalarFacts(original)
+                : {}),
+            ...(field.declarations
+                ? { slotDeclarations: field.declarations }
+                : {}),
+            nativeCaptures: owner.nativeCaptures ?? [],
+        };
         return {
             key,
-            value: {
-                ...(!field.accessorReceiver &&
-                definitelyPresent &&
-                field.type.kind === "optional"
-                    ? context.dataLowerer.leafValue(
-                          `(*${value.cpp})`,
-                          field.type.inner,
-                      )
-                    : value),
-                ...(original && !original.parameterBinding && !field.accessor
-                    ? scalarFacts(original)
-                    : {}),
-                ...(field.declarations
-                    ? { slotDeclarations: field.declarations }
-                    : {}),
-                nativeCaptures: owner.nativeCaptures ?? [],
-            },
+            // A member the record knows present is present in the copy.
+            value:
+                original &&
+                !field.accessor &&
+                knownCondition(original.optionalFoundCpp) === true
+                    ? presentCopy(read, original)
+                    : read,
             ...(presence ? { presence } : {}),
             ...(presence?.emptySlot === "absent"
                 ? {
