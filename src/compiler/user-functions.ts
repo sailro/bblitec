@@ -8,7 +8,7 @@ import {
     valueForKind,
     withNativeMetadata,
 } from "./types.js";
-import { fixedByCaseSplit } from "./runtime-case-split.js";
+import { armSpecializesCall, fixedByCaseSplit } from "./runtime-case-split.js";
 import { metadataFieldsForKind } from "./values/metadata.js";
 import { isJsonValue } from "./json-bridge.js";
 import { activeSurvey } from "./survey.js";
@@ -2506,15 +2506,23 @@ export class UserFunctionLowerer {
         if (
             ir.parameters.some((parameter, index) => {
                 const value = argumentValues[index];
-                return (
+                const kind =
                     value &&
                     (value.staticString !== undefined ||
                         value.staticNumber !== undefined ||
-                        value.staticBoolean !== undefined) &&
-                    context.dataTypes.fromTsType(
-                        this.checker.getTypeAtLocation(parameter.name),
-                        parameter.name,
-                    )?.kind === "union"
+                        value.staticBoolean !== undefined)
+                        ? context.dataTypes.fromTsType(
+                              this.checker.getTypeAtLocation(parameter.name),
+                              parameter.name,
+                          )?.kind
+                        : undefined;
+                // In a run-time case split's arm, a key a string union's
+                // enum takes specializes the body too.
+                return (
+                    kind === "union" ||
+                    (kind === "enum" &&
+                        (context.valueOverrides.size > 0 ||
+                            context.conditionOverrides.size > 0))
                 );
             })
         )
@@ -2546,6 +2554,15 @@ export class UserFunctionLowerer {
             returned &&
             this.sharedReturnType(context, returned, ir.declaration);
         if (returnType && context.dataTypes.carriesOpaqueIterator(returnType))
+            return undefined;
+        if (
+            armSpecializesCall(
+                context,
+                returnType,
+                ir.declaration,
+                argumentValues,
+            )
+        )
             return undefined;
         if (
             !returned ||

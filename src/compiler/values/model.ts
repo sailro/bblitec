@@ -107,6 +107,24 @@ export function hasScalarFacts(value: Value): boolean {
 }
 
 /**
+ * Whether generation knows all of a value: a scalar it knows, an absence,
+ * or a compile-time record of such members.
+ */
+export function knownPlainData(value: Value, depth = 0): boolean {
+    if (hasScalarFacts(value) || value.kind === "json-null") return true;
+    return (
+        depth < 4 &&
+        value.kind === "record" &&
+        value.recordProperties !== undefined &&
+        Object.keys(value.recordMethods ?? {}).length === 0 &&
+        Object.keys(value.recordGetters ?? {}).length === 0 &&
+        Object.values(value.recordProperties).every((member) =>
+            knownPlainData(member, depth + 1),
+        )
+    );
+}
+
+/**
  * `undefined` as a value: the json-null kind spelling the empty native
  * optional. {@link absenceOf} reads which absence a json-null value is.
  */

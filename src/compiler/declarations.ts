@@ -3568,11 +3568,25 @@ export class DeclarationLowerer {
                             literal.properties.some(ts.isSpreadAssignment)
                           ? this.spreadRecordSnapshot(literal)
                           : undefined;
+                // A record another binding or a call holds keeps what
+                // generation knows of its members on this one.
+                const heldRecordSnapshot =
+                    type.kind === "struct" &&
+                    !arraySnapshot &&
+                    !resourceRecordSnapshot &&
+                    !resourceArraySnapshot &&
+                    !plainRecordSnapshot &&
+                    !sharedClosureStorage &&
+                    !this.context.sharedClosures.identifierIsRebound(name) &&
+                    !ts.isObjectLiteralExpression(literal)
+                        ? this.context.compileValue(declaration.initializer)
+                        : undefined;
                 const snapshot =
                     arraySnapshot ??
                     resourceRecordSnapshot ??
                     resourceArraySnapshot ??
-                    plainRecordSnapshot;
+                    plainRecordSnapshot ??
+                    heldRecordSnapshot;
                 if (snapshot)
                     type = this.context.dataLowerer.retainedResultType(
                         snapshot,
@@ -3629,6 +3643,22 @@ export class DeclarationLowerer {
                     );
                     if (properties)
                         writable(bound).recordProperties = properties;
+                }
+                if (
+                    !rebound &&
+                    heldRecordSnapshot?.recordProperties &&
+                    this.context.bindings.recordPropertiesAreCurrent(
+                        heldRecordSnapshot,
+                    )
+                ) {
+                    writable(bound).recordProperties = Object.fromEntries(
+                        Object.entries(
+                            heldRecordSnapshot.recordProperties,
+                        ).filter(([, value]) => keepsStaticMember(value)),
+                    );
+                    if (heldRecordSnapshot.recordOwnKeys)
+                        writable(bound).recordOwnKeys =
+                            heldRecordSnapshot.recordOwnKeys;
                 }
                 if (
                     !rebound &&

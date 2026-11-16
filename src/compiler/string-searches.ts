@@ -22,7 +22,12 @@ export const STRING_POSITION_SEARCHES: ReadonlyMap<
     ],
     [
         "includes",
-        { helper: "string_includes", result: "boolean", absent: "start" },
+        {
+            helper: "string_includes",
+            result: "boolean",
+            absent: "start",
+            fold: (receiver, search) => receiver.includes(search),
+        },
     ],
     [
         "lastIndexOf",
@@ -39,6 +44,11 @@ export const STRING_POSITION_SEARCHES: ReadonlyMap<
     ],
     [
         "endsWith",
-        { helper: "string_ends_with", result: "boolean", absent: "end" },
+        {
+            helper: "string_ends_with",
+            result: "boolean",
+            absent: "end",
+            fold: (receiver, search) => receiver.endsWith(search),
+        },
     ],
 ]);

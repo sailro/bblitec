@@ -10337,6 +10337,38 @@ export class DataTypeRegistry {
     }
 
     /**
+     * Whether a value of `type` is plain data: strings, numbers, booleans
+     * and enums, optionals, unions and lists of them, and structs of those.
+     */
+    public holdsPlainData(type: DataType, node: ts.Node, depth = 0): boolean {
+        if (depth > 4) return false;
+        switch (type.kind) {
+            case "string":
+            case "number":
+            case "boolean":
+            case "enum":
+                return true;
+            case "optional":
+            case "tagged":
+                return this.holdsPlainData(type.inner, node, depth + 1);
+            case "vector":
+                return this.holdsPlainData(type.element, node, depth + 1);
+            case "union":
+                return type.members.every((member) =>
+                    this.holdsPlainData(member, node, depth + 1),
+                );
+            case "struct":
+                return this.structFields(type.name, node, "accessors").every(
+                    (field) =>
+                        !field.accessor &&
+                        this.holdsPlainData(field.type, node, depth + 1),
+                );
+            default:
+                return false;
+        }
+    }
+
+    /**
      * A struct's fields. A use that reads or writes every field as stored
      * data refuses an accessor-backed one; the uses that run accessors pass
      * `"accessors"`.

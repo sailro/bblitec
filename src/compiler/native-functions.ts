@@ -2,7 +2,7 @@ import {
     someAnalysisNode,
     findAnalysisNodeWithState,
 } from "./analysis-walk.js";
-import { fixedByCaseSplit } from "./runtime-case-split.js";
+import { armSpecializesCall, fixedByCaseSplit } from "./runtime-case-split.js";
 import { EmissionSet, EmissionMap } from "./emission-transaction.js";
 import type { LoweringServices } from "./lowering-services.js";
 import ts from "typescript";
@@ -437,6 +437,23 @@ export class NativeFunctionLowerer {
         if (!signature) {
             return undefined;
         }
+        if (
+            (this.context.valueOverrides.size > 0 ||
+                this.context.conditionOverrides.size > 0) &&
+            armSpecializesCall(
+                this.context,
+                signature.returnType,
+                call,
+                this.context.probeEmission(
+                    () =>
+                        call.arguments.map((argument) =>
+                            this.context.compileValue(argument),
+                        ),
+                    () => false,
+                ),
+            )
+        )
+            return undefined;
         if (
             signature.parameters.some(
                 (parameter, index) =>

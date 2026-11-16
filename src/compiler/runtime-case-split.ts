@@ -28,6 +28,7 @@ import {
 import {
     isAbsentValue,
     knownCondition,
+    knownPlainData,
     nullValue,
     presenceCpp,
     undefinedValue,
@@ -87,6 +88,31 @@ export function fixedByCaseSplit(
                 { functions: "skip" },
             ),
         )
+    );
+}
+
+/**
+ * Whether a call compiled in an arm of a run-time case split specializes
+ * inline: one whose arguments are plain data generation knows, building a
+ * record of plain data (`returned`), keeps what the arm fixed in what it
+ * returns.
+ */
+export function armSpecializesCall(
+    context: Pick<
+        LoweringServices,
+        "valueOverrides" | "conditionOverrides" | "dataTypes"
+    >,
+    returned: DataType | undefined,
+    node: ts.Node,
+    argumentValues: readonly Value[],
+): boolean {
+    return (
+        (context.valueOverrides.size > 0 ||
+            context.conditionOverrides.size > 0) &&
+        returned?.kind === "struct" &&
+        argumentValues.length > 0 &&
+        argumentValues.every((value) => knownPlainData(value)) &&
+        context.dataTypes.holdsPlainData(returned, node)
     );
 }
 
