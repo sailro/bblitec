@@ -12446,6 +12446,10 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         node: ts.Node,
     ): string {
         this.requireDocumentDictionaryConversion(value, dataType, node);
+        // An object URL is a string naming its handle, which a revocation
+        // by that string resolves.
+        if (value.kind === "object-url" && dataType.kind === "string")
+            return `bbl::js::object_url_string(${value.cpp})`;
         if (dataType.kind === "json")
             this.requireNativeHandleBinding(value, node);
         if (value.dataType && this.context.dataTypes.carriesFunction(dataType))

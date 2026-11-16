@@ -105,6 +105,29 @@ test("refuses unsupported Blob parts and options by name", () => {
     );
 });
 
+test("an object URL kept as a string revokes by that string", () => {
+    // A list of strings holds each URL's string form, and revoking a kept
+    // string revokes the URL it names.
+    const result = compileFileBody(`
+        let kept: string[] = [];
+        const keep = (url: string): void => { kept.push(url); };
+        keep(URL.createObjectURL(new Blob(["a"])));
+        keep(URL.createObjectURL(new Blob(["b"])));
+        const urls = kept;
+        kept = [];
+        for (const url of urls) URL.revokeObjectURL(url);
+        engine.canvas.height = urls.length;
+    `);
+    assert.equal(
+        (result.cpp.match(/bbl::js::object_url_string\(/g) ?? []).length,
+        2,
+    );
+    assert.match(
+        result.cpp,
+        /bbl::js::revoke_object_url\([^;]+, std::string_view\(/,
+    );
+});
+
 test("lowers object URLs and retained anchor downloads without navigation", () => {
     const result = compileFileBody(`
         const blob = new Blob(["{}"], { type: "application/json" });

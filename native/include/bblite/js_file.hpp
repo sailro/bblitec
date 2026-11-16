@@ -17,6 +17,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <charconv>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
@@ -215,13 +216,17 @@ object_url_bytes(Engine& engine, ObjectUrlHandle url) {
     return record.bytes;
 }
 
+/** An object URL as a string: the `blob:` key naming its handle, which each `createObjectURL` mints anew. */
+[[nodiscard]] inline std::string object_url_string(ObjectUrlHandle url) {
+    return "blob:" + std::to_string(url.slot) + ":" + std::to_string(url.generation);
+}
+
 /**
  * `loadTexture2D` of an object URL: the image is the URL's payload, and the
- * pin's cache keys it by the URL, which each `createObjectURL` mints anew.
+ * pin's cache keys it by the URL.
  */
 [[nodiscard]] inline TextureImageSource object_url_image(Engine& engine, ObjectUrlHandle url) {
-    return {"blob:" + std::to_string(url.slot) + ":" + std::to_string(url.generation),
-            object_url_bytes(engine, url)};
+    return {object_url_string(url), object_url_bytes(engine, url)};
 }
 
 /**
@@ -254,6 +259,33 @@ inline void revoke_object_url(Engine& engine, ObjectUrlHandle handle) {
         ++record.generation;
         engine.free_object_url_slots.push_back(handle.slot);
     }
+}
+
+/**
+ * `revokeObjectURL` of a URL string: one `object_url_string` wrote names
+ * the URL it revokes; the browser ignores any other string, and so does this.
+ */
+inline void revoke_object_url(Engine& engine, std::string_view url) {
+    constexpr std::string_view scheme = "blob:";
+    if (!url.starts_with(scheme))
+        return;
+    const std::string_view rest = url.substr(scheme.size());
+    const std::size_t colon = rest.find(':');
+    if (colon == std::string_view::npos)
+        return;
+    std::uint32_t slot = 0;
+    std::uint32_t generation = 0;
+    const std::string_view slot_text = rest.substr(0, colon);
+    const std::string_view generation_text = rest.substr(colon + 1);
+    const auto parsed_slot =
+        std::from_chars(slot_text.data(), slot_text.data() + slot_text.size(), slot);
+    const auto parsed_generation = std::from_chars(
+        generation_text.data(), generation_text.data() + generation_text.size(), generation);
+    if (parsed_slot.ec != std::errc{} || parsed_slot.ptr != slot_text.data() + slot_text.size() ||
+        parsed_generation.ec != std::errc{} ||
+        parsed_generation.ptr != generation_text.data() + generation_text.size())
+        return;
+    revoke_object_url(engine, ObjectUrlHandle{slot, generation});
 }
 
 /** One immutable snapshot of selected or dropped files; a program reads the first. */
