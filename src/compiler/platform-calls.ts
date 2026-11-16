@@ -2431,7 +2431,13 @@ export class PlatformCalls {
                 cpp: `bbl::ui_insert_child(${engine}, ${receiver.cpp}, ${child.cpp}, ${reference.kind === "json-null" ? "bbl::UiElementHandle{}" : optional ? `${reference.cpp}.value_or(bbl::UiElementHandle{})` : reference.cpp})`,
             };
         }
-        if (element && callee.name === "replaceWith") {
+        if (
+            element &&
+            (callee.name === "replaceWith" ||
+                callee.name === "before" ||
+                callee.name === "after")
+        ) {
+            const method = callee.name;
             const node = pinDetached(
                 this.context,
                 element,
@@ -2442,13 +2448,13 @@ export class PlatformCalls {
                 if (ts.isSpreadElement(argument))
                     return this.context.fail(
                         argument,
-                        "replaceWith requires individual element arguments; spread lists are not represented.",
+                        `${method} requires individual element arguments; spread lists are not represented.`,
                     );
                 const value = this.context.compileValue(argument);
                 if (isStringValue(value))
                     this.context.fail(
                         argument,
-                        "replaceWith text arguments are not represented; pass elements.",
+                        `${method} text arguments are not represented; pass elements.`,
                     );
                 this.context.expectKind(value, "ui-element", argument);
                 return pinDetached(
@@ -2463,11 +2469,17 @@ export class PlatformCalls {
                 this.context.expectSameEngine(node, value, call);
                 this.ui.recordUiStaticSiblingInsertion(node, value);
             }
+            const list = `{${nodes.map((value) => value.cpp).join(", ")}}`;
+            if (method !== "replaceWith")
+                return {
+                    kind: "void",
+                    cpp: `bbl::ui_insert_siblings(${engine}, ${node.cpp}, ${list}, ${method === "after"})`,
+                };
             if (!nodes.some((value) => value.uiStaticId === node.uiStaticId))
                 this.ui.recordUiStaticRemoval(node);
             return {
                 kind: "void",
-                cpp: `bbl::ui_replace_with(${engine}, ${node.cpp}, {${nodes.map((value) => value.cpp).join(", ")}})`,
+                cpp: `bbl::ui_replace_with(${engine}, ${node.cpp}, ${list})`,
             };
         }
         if (element && callee.name === "insertAdjacentElement") {

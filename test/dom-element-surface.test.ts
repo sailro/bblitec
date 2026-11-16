@@ -485,6 +485,10 @@ test("tab order, sibling insertion, replacement, scroll requests and event paths
         record(a.insertAdjacentElement("afterend", e) === e ? "A" : "a");
         list.insertAdjacentElement("afterBegin", item("f"));
         list.insertAdjacentElement("beforeend", item("g"));
+        a.before(item("p"), item("q"));
+        kept.after(item("y"), x);
+        const loose = item("loose");
+        loose.after(item("z"));
         const orphan = item("orphan");
         record(orphan.insertAdjacentElement("afterend", item("h")) === null ? "N" : "n");
         try { a.insertAdjacentElement("middle", item("i")); } catch { record("S"); }
@@ -546,6 +550,7 @@ test("tab order, sibling insertion, replacement, scroll requests and event paths
     assert.ok(result.manifest.features.includes("input:dom"));
     for (const call of [
         "ui_replace_with",
+        "ui_insert_siblings",
         "ui_insert_adjacent_element",
         "ui_scroll_into_view",
         "ui_set_tab_index",

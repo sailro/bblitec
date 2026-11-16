@@ -2496,6 +2496,44 @@ void ui_replace_with(Engine& engine, UiElementHandle node,
         static_cast<void>(ui_insert_child(engine, parent, inserted, next));
 }
 
+void ui_insert_siblings(Engine& engine, UiElementHandle node,
+                        std::initializer_list<UiElementHandle> nodes, bool after) {
+    const auto parent = ui_sibling_parent(engine, node);
+    if (parent.value == invalid_handle)
+        return;
+    for (const auto inserted : nodes)
+        require_insertable(engine, parent, inserted);
+    const auto listed = [&](UiElementHandle candidate) {
+        return std::find(nodes.begin(), nodes.end(), candidate) != nodes.end();
+    };
+    // The DOM's viable sibling: the nodes go before the first following sibling none
+    // of them is (after), or before the first such sibling after the last preceding
+    // one (before), the parent's first such child where none precedes.
+    const auto& siblings = ui_element(engine, parent).children;
+    const auto at = std::find(siblings.begin(), siblings.end(), node);
+    UiElementHandle reference{};
+    if (after) {
+        for (auto cursor = std::next(at); cursor != siblings.end(); ++cursor)
+            if (!listed(*cursor)) {
+                reference = *cursor;
+                break;
+            }
+    } else {
+        auto viable = siblings.end();
+        for (auto cursor = siblings.begin(); cursor != at; ++cursor)
+            if (!listed(*cursor))
+                viable = cursor;
+        for (auto cursor = viable == siblings.end() ? siblings.begin() : std::next(viable);
+             cursor != siblings.end(); ++cursor)
+            if (!listed(*cursor)) {
+                reference = *cursor;
+                break;
+            }
+    }
+    for (const auto inserted : nodes)
+        static_cast<void>(ui_insert_child(engine, parent, inserted, reference));
+}
+
 js::Nullable<UiElementHandle> ui_insert_adjacent_element(Engine& engine, UiElementHandle target,
                                                          std::string_view where,
                                                          UiElementHandle element) {

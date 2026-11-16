@@ -223,6 +223,9 @@ UiElementHandle ui_remove_child(Engine& engine, UiElementHandle parent, UiElemen
 /** ChildNode.replaceWith(nodes...): a parentless node is left unchanged. */
 void ui_replace_with(Engine& engine, UiElementHandle node,
                      std::initializer_list<UiElementHandle> nodes);
+/** ChildNode.after(nodes...) (`after`) or before(nodes...): a parentless node inserts nothing. */
+void ui_insert_siblings(Engine& engine, UiElementHandle node,
+                        std::initializer_list<UiElementHandle> nodes, bool after);
 /** Element.insertAdjacentElement: null when beforebegin/afterend find no parent. */
 js::Nullable<UiElementHandle> ui_insert_adjacent_element(Engine& engine, UiElementHandle target,
                                                          std::string_view where,
