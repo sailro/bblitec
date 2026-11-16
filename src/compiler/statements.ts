@@ -4001,11 +4001,13 @@ export class StatementLowerer {
             () => {
                 if (
                     headIsArrayPattern(head) &&
+                    this.preferNativeDataIteration(context, statement) &&
                     context.dataIterationTarget(statement.expression)
                 ) {
                     // A homogeneous static table already has an exact native
                     // row representation. Keep its established range-for
-                    // lowering; tuple unrolling is needed only for
+                    // lowering unless the body needs each row's lanes known;
+                    // tuple unrolling is otherwise needed only for
                     // heterogeneous/optional rows.
                     return undefined;
                 }

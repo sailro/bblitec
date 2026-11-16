@@ -9,6 +9,7 @@ import {
     knownCondition,
     ownKeysKnown,
     rebaseSpelling,
+    scalarFacts,
     undefinedValue,
 } from "./values/model.js";
 import { writtenOnlyInDeadFunctions } from "./string-domain.js";
@@ -50,6 +51,7 @@ import {
 import { EmissionMap, EmissionSet, writable } from "./emission-transaction.js";
 import { hasDynamicObjectSpread, isJsonValue } from "./json-bridge.js";
 import { emitReachableStatements, finalReturn } from "./loop-control.js";
+import { moduleConstantIsWritten } from "./module-container-writes.js";
 import type { LoweringServices } from "./lowering-services.js";
 import {
     captureDataFunctionBody,
@@ -4245,6 +4247,17 @@ export class DeclarationLowerer {
             !sharedClosureStorage &&
             !this.context.sharedClosures.identifierIsRebound(name) &&
             freshArrayBranches(initializer);
+        // A table of row literals the program never writes keeps each
+        // row's lane facts, as a list of scalars keeps its elements'.
+        const rowArrayLiteral =
+            annotated.kind === "vector" &&
+            annotated.element.kind === "vector" &&
+            !sharedClosureStorage &&
+            !this.context.sharedClosures.identifierIsRebound(name) &&
+            ts.isArrayLiteralExpression(initializer) &&
+            initializer.elements.every(ts.isArrayLiteralExpression) &&
+            !moduleConstantIsWritten(this.context, name) &&
+            !objectIsMutated();
         const conditionalArray =
             annotated.kind === "vector" &&
             ts.isConditionalExpression(initializer) &&
@@ -4281,6 +4294,7 @@ export class DeclarationLowerer {
             readonlyResourceCall ||
             recordArrayLiteral ||
             scalarArrayLiteral ||
+            rowArrayLiteral ||
             conditionalArray ||
             inferredSpreadArray ||
             (annotated.kind === "vector" &&
@@ -4703,6 +4717,12 @@ export class DeclarationLowerer {
             initializerSnapshot
         )
             this.context.dataLowerer.retainArrayLiteralFacts(
+                represented,
+                initializerSnapshot,
+                declaration.initializer,
+            );
+        if (rowArrayLiteral && initializerSnapshot)
+            this.context.dataLowerer.retainTableRowFacts(
                 represented,
                 initializerSnapshot,
                 declaration.initializer,
@@ -5721,6 +5741,14 @@ export class DeclarationLowerer {
                 cpp: temporary,
             };
             const elementType = value.dataType.element;
+            // The elements generation knows of this list (an element of
+            // another list names that list's): their facts bind with each
+            // lane, and a lane past their end is `undefined`.
+            const known =
+                value.staticElementIndex === undefined
+                    ? (value.staticElementsOwner?.staticElements ??
+                      value.staticElements)
+                    : value.staticElements;
             let defaultType: DataType | undefined;
             let defaultsWhenEmpty = false;
             bindings.forEach((element, index) => {
@@ -5788,15 +5816,22 @@ export class DeclarationLowerer {
                     );
                     return;
                 }
-                bindElement(
-                    element,
-                    this.context.dataLowerer.readVectorBindingElement(
+                if (known && index >= known.length) {
+                    bindElement(element, undefined);
+                    return;
+                }
+                const lane = known?.[index];
+                bindElement(element, {
+                    ...this.context.dataLowerer.readVectorBindingElement(
                         storedVector,
                         index,
                         source,
                         element,
                     ),
-                );
+                    ...(lane && !lane.parameterBinding
+                        ? scalarFacts(lane)
+                        : {}),
+                });
             });
             return;
         }

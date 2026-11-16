@@ -10261,6 +10261,55 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         }
     }
 
+    /** Views of an array's native elements, each with its literal element's scalar facts. */
+    private indexedElementViews(
+        owner: Value,
+        elements: readonly Value[],
+        elementType: DataType,
+        node: ts.Node,
+    ): Value[] {
+        const captures = this.context.captureNativeDependencies(() =>
+            this.context.useNativeValue(owner),
+        );
+        return elements.map((element, index) => ({
+            ...this.leafValue(
+                `bbl::js::array_index_checked(${owner.cpp}, ${index}.0, ${this.context.cppString(sceneRelativeSourceLabel(node))})`,
+                elementType,
+            ),
+            nativeCaptures: captures.nativeCaptures,
+            ...(!element.parameterBinding ? scalarFacts(element) : {}),
+        }));
+    }
+
+    /**
+     * A table of row literals nothing writes: each row is an array of its
+     * own, whose view keeps the literal row's lanes the way a list of
+     * scalars keeps its elements.
+     */
+    public retainTableRowFacts(
+        owner: Value,
+        initializer: Value,
+        node: ts.Node,
+    ): void {
+        const type = owner.dataType;
+        const rows = initializer.tupleElements;
+        if (type?.kind !== "vector" || type.element.kind !== "vector" || !rows)
+            return;
+        const rowType = type.element;
+        const views = this.indexedElementViews(owner, rows, rowType, node);
+        views.forEach((view, index) => {
+            const lanes = rows[index]!.tupleElements;
+            if (lanes)
+                writable(view).staticElements = this.indexedElementViews(
+                    view,
+                    lanes,
+                    rowType.element,
+                    node,
+                );
+        });
+        writable(owner).staticElements = views;
+    }
+
     /** Keep scalar facts on views of the native elements, never on copied records. */
     public retainArrayLiteralFacts(
         owner: Value,
@@ -10370,17 +10419,12 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         if (
             ["number", "boolean", "string", "enum"].includes(type.element.kind)
         ) {
-            const captures = this.context.captureNativeDependencies(() =>
-                this.context.useNativeValue(owner),
+            writable(owner).staticElements = this.indexedElementViews(
+                owner,
+                elements,
+                type.element,
+                node,
             );
-            writable(owner).staticElements = elements.map((element, index) => ({
-                ...this.leafValue(
-                    `bbl::js::array_index_checked(${owner.cpp}, ${index}.0, ${this.context.cppString(sceneRelativeSourceLabel(node))})`,
-                    type.element,
-                ),
-                nativeCaptures: captures.nativeCaptures,
-                ...(!element.parameterBinding ? scalarFacts(element) : {}),
-            }));
             return;
         }
         if (type.element.kind !== "struct") return;
