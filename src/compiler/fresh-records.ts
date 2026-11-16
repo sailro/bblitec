@@ -12,6 +12,7 @@ import {
     valueSymbolOf,
 } from "./symbols.js";
 import {
+    hasExportModifier,
     isOperandSelection,
     unwrapExpression,
     valueOperands,
@@ -97,7 +98,8 @@ export function yieldsFreshObject(
  * Whether `name` reads a `const` whose initializer yields a fresh object
  * ({@link yieldsFreshObject}) that only reads of its properties reference:
  * no other reference holds that object, so no write in the program reaches
- * its fields.
+ * its fields. Its module must not export it: other modules reach an
+ * exported one through imports and namespace members.
  */
 export function readOnlyFreshConst(
     checker: ts.TypeChecker,
@@ -111,6 +113,7 @@ export function readOnlyFreshConst(
         !ts.isVariableDeclaration(declaration) ||
         !ts.isIdentifier(declaration.name) ||
         variableKind(declaration) !== "const" ||
+        hasExportModifier(declaration.parent.parent) ||
         !declaration.initializer ||
         !yieldsFreshObject(checker, declaration.initializer)
     )
