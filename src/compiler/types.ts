@@ -3234,6 +3234,11 @@ export interface ValueFields {
     runtimeIteration?: true;
     staticString?: string;
     /**
+     * A URLSearchParams object no deployment fold reads: one the program
+     * constructs, or a URL's own. A mutation of it changes it alone.
+     */
+    ownedQuery?: true;
+    /**
      * Strings generation knows a run-time string never is (an event's
      * `type` is no name of a listener family that receives another kind of
      * event): a comparison with one of them is settled.

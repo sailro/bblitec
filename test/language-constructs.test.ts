@@ -8447,6 +8447,25 @@ check(
 `,
 );
 
+test("a query bag the program owns changes alone: the deployment query still folds", () => {
+    // A URL's own `searchParams` and a constructed URLSearchParams are not
+    // the deployment query's, so mutating them leaves `?debug` folded.
+    for (const mutation of [
+        'const url = new URL(href); url.searchParams.delete("quality"); return url.href;',
+        'const query = new URLSearchParams(href.split("?")[1] ?? ""); query.set("quality", "normal"); return query.toString();',
+    ]) {
+        const cpp = compileSource(
+            `const params = new URLSearchParams(location.search);
+            function reload(href: string): string { ${mutation} }
+            const button = document.createElement("button");
+            document.body.appendChild(button);
+            button.addEventListener("click", () => { button.textContent = reload(location.href); });
+            if (params.has("debug")) throw new Error("debug only");`,
+        ).cpp;
+        assert.doesNotMatch(cpp, /debug only/, mutation);
+    }
+});
+
 check(
     "query-record-initializer-appends-own-properties-in-order",
     `

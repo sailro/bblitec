@@ -2113,6 +2113,11 @@ export class DeclarationLowerer {
                         ...(sharedDataBinding
                             ? { sharedStorageCpp: cppName }
                             : {}),
+                        // A const names the bag it was bound to for good.
+                        ...(narrowed.ownedQuery &&
+                        variableKind(declaration) === "const"
+                            ? { ownedQuery: true as const }
+                            : {}),
                         ...(orderedText
                             ? {
                                   orderedTextDeclaration: declaration,
