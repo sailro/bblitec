@@ -7143,6 +7143,11 @@ private:
 static_assert(std::is_nothrow_copy_constructible_v<Scene>);
 static_assert(std::is_nothrow_move_constructible_v<Scene>);
 
+/** The pin's `scene._renderableVersion`, a JavaScript number ({@link SceneState::renderable_version}). */
+[[nodiscard]] inline double scene_renderable_version(const Scene& scene) {
+    return static_cast<double>(scene.state->renderable_version);
+}
+
 /**
  * scene-core.ts `addDeferredSceneRenderables` over the native scene: the
  * builder runs when the scene builds (`register_scene` drains the queue and

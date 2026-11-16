@@ -24119,3 +24119,18 @@ test("animation lists and cross-fades require every selected group to share its 
         );
     }
 });
+
+test("a scene's _renderableVersion reads the native count of its builds", () => {
+    const result = compileSource(`
+        import { addToScene, createBox, createEngine, createSceneContext } from "@babylonjs/lite";
+        async function main(): Promise<void> {
+            const engine = await createEngine(document.getElementById("renderCanvas") as HTMLCanvasElement);
+            const scene = createSceneContext(engine);
+            addToScene(scene, createBox(engine));
+            const version = (scene as unknown as { _renderableVersion: number })._renderableVersion;
+            document.title = String(version);
+        }
+        void main();
+    `);
+    assert.match(result.cpp, /bbl::scene_renderable_version\(/);
+});

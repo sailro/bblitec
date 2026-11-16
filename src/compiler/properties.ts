@@ -3777,6 +3777,14 @@ export class PropertyAccessLowerer {
                 },
             };
         }
+        // How many times the scene has built and published its renderables.
+        if (owner.kind === "scene" && property === "_renderableVersion")
+            return {
+                kind: "number",
+                cpp: `bbl::scene_renderable_version(${owner.cpp})`,
+                dataType: { kind: "number" },
+                impure: true,
+            };
         if (owner.kind === "engine" && property === "gpuFrameTimeMs") {
             if (!owner.ownedEngineCpp) throw new ApplicationRealmRequired();
             this.context.reachFeature("engine:gpu-task-timing", expression);
