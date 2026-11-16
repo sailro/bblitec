@@ -269,6 +269,46 @@ test("replaceChildren and append insert nodes, text and spread element lists in 
     });
 });
 
+test("a selected receiver evaluates once and appends to the element it selects", (t) => {
+    const output = resolve("artifacts/dom-selected-receiver");
+    mkdirSync(output, { recursive: true });
+    writeFileSync(join(output, "worker.ts"), "self.close();");
+    // The selection is lowered before the method is known; its test runs
+    // once per call however the call lowers.
+    const { cpp } = compileSource(
+        `${realm}
+        const log = document.createElement("div");
+        log.id = "log";
+        document.body.appendChild(log);
+        let picks = 0;
+        const pick = (): boolean => { picks++; return picks === 1; };
+        const a = document.createElement("div");
+        a.id = "a";
+        const b = document.createElement("div");
+        b.id = "b";
+        document.body.append(a, b);
+        const c = document.createElement("span");
+        c.id = "c";
+        (pick() ? a : b).appendChild(c);
+        const d = document.createElement("span");
+        d.id = "d";
+        (pick() ? a : b).appendChild(d);
+        let head: HTMLElement | null = null;
+        if (picks > 2) head = a;
+        const e = document.createElement("span");
+        e.id = "e";
+        (head ?? b).appendChild(e);
+        log.textContent = String(picks);
+        globalThis.close();
+    `,
+        { fileName: join(output, "entry.ts") },
+    );
+    writeFileSync(join(output, "program.hpp"), cpp);
+    runRmlUiFixture(t, "dom-selected-receiver", {
+        macros: { BBLITE_WORKERS: 1, BBLITE_OFFSCREEN_SURFACES: 1 },
+    });
+});
+
 test("focus options retain absent dictionaries, stored flags and evaluation order", (t) => {
     const output = resolve("artifacts/dom-focus-options");
     mkdirSync(output, { recursive: true });

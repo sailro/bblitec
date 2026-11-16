@@ -583,7 +583,16 @@ export class PlatformCalls {
                 compileCustomEventDispatch(this.context, call) ??
                 compilePointerCapture(this.context, this.ui, call);
             if (dispatched) return dispatched;
-            const value = this.compileUiCall(call, callee);
+            // A selected receiver (`(head ?? box).appendChild(i)`) lowers
+            // before the method is known: a method this lowering leaves to
+            // another drops it, so its effects never repeat.
+            const value = isOperandSelection(
+                this.context.unwrap(callee.expression),
+            )
+                ? this.context.probeEmission(() =>
+                      this.compileUiCall(call, callee),
+                  )
+                : this.compileUiCall(call, callee);
             if (value) return value;
         }
         // Bare or through the global object (`window.clearTimeout`): the
@@ -1691,7 +1700,7 @@ export class PlatformCalls {
                           "closest",
                           "removeChild",
                       ].includes(callee.name) ||
-                      this.selectsPureReceiver(callee.expression)
+                      isOperandSelection(this.context.unwrap(callee.expression))
                     ? this.ui.compileUiElementReceiver(callee.expression)
                     : this.ui.uiElementValue(callee.expression));
         if (element?.uiTag === "image-bitmap" && callee.name === "close") {
@@ -2866,18 +2875,6 @@ export class PlatformCalls {
             }
         }
         return undefined;
-    }
-
-    /**
-     * A receiver selecting among operands (`(head ?? box).appendChild(i)`)
-     * lowers before the method is known; pure, it has no effect a method
-     * this lowering leaves to another would repeat.
-     */
-    private selectsPureReceiver(receiver: ts.Expression): boolean {
-        return (
-            isOperandSelection(this.context.unwrap(receiver)) &&
-            this.context.evaluationOrder.isPureExpression(receiver)
-        );
     }
 
     /** A boolean element result; through `?.`, an absent element yields undefined. */
