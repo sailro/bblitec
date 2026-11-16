@@ -214,6 +214,33 @@ export function callSignatures(
 }
 
 /**
+ * The properties of a record type all of whose properties are optional
+ * (TypeScript's weak type, no call, construct or index signature), which
+ * takes only a value sharing one of them; undefined for another type.
+ */
+export function weakTypeProperties(
+    checker: ts.TypeChecker,
+    type: ts.Type,
+): readonly ts.Symbol[] | undefined {
+    const objects = unionMembers(type).filter(
+        (member) => (member.flags & ts.TypeFlags.Object) !== 0,
+    );
+    const properties = objects.flatMap((member) => member.getProperties());
+    return properties.length > 0 &&
+        properties.every(
+            (property) => (property.flags & ts.SymbolFlags.Optional) !== 0,
+        ) &&
+        objects.every(
+            (member) =>
+                member.getCallSignatures().length === 0 &&
+                member.getConstructSignatures().length === 0 &&
+                checker.getIndexInfosOfType(member).length === 0,
+        )
+        ? properties
+        : undefined;
+}
+
+/**
  * Whether a slot of this type -- a Map value, an array element, an object
  * field -- can hold `null` but never `undefined`: its absent content is
  * then `null`, so a missing slot is the only `undefined` a read yields.

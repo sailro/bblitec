@@ -8,6 +8,7 @@ import {
     arrayElementType,
     arrayShape,
     unionMembers,
+    weakTypeProperties,
 } from "./type-facts.js";
 import {
     programObservations,
@@ -301,9 +302,20 @@ function fieldWriteFound(
     // A holder instantiated over a type parameter may be any concrete
     // instantiation, which assignability cannot relate to `source`; only a
     // write that names the property is attributed to it.
+    // A record type whose properties are all optional takes only a value
+    // that shares one of them, as the checker's weak-type rule requires of
+    // every assignment; its assignability test alone admits any object.
+    const weakProperties = weakTypeProperties(checker, source);
     const viewedAsSource = (holder: ts.Type): boolean =>
-        unionMembers(holder).some((member) =>
-            checker.isTypeAssignableTo(member, source),
+        unionMembers(holder).some(
+            (member) =>
+                checker.isTypeAssignableTo(member, source) &&
+                (!weakProperties ||
+                    weakProperties.some(
+                        (property) =>
+                            checker.getPropertyOfType(member, property.name) !==
+                            undefined,
+                    )),
         );
     const mayRemove = (write: ObservedWrite): boolean => {
         const assignment = write.node.parent;

@@ -7087,6 +7087,64 @@ void main();
     );
 });
 
+test("a config record's object field and a weak record type's member stay present", () => {
+    // The lighting record's highlight is a config field its type declares
+    // an object; the lighting type's properties are all optional, so only a
+    // value sharing one of them can be viewed as it, and the engine call that
+    // may write the shadow generator writes no lighting record.
+    const programs =
+        compileSource(`import { createEngine, createSceneContext, createShaderMaterial, createDirectionalLight, addToScene, createCsmDirectionalShadowGenerator, setShadowGeneratorEnabled, wgsl, type EngineContext, type ShaderMaterial, type ShadowGenerator } from "@babylonjs/lite";
+const VERTEX = \`struct VertexOutput { @builtin(position) position: vec4<f32>, };
+@vertex fn mainVertex(input: VertexInput) -> VertexOutput { var out: VertexOutput; out.position = shaderSystem.worldViewProjection * vec4<f32>(input.position * /*S*/, 1.0); return out; }\`;
+const FRAGMENT = wgsl\`@fragment fn mainFragment() -> @location(0) vec4<f32> { return vec4<f32>(1.0); }\`;
+interface Highlight { color: [number, number, number]; strength: number }
+interface Config { interaction: { light: Highlight; radius: number } }
+function loadConfig(radius: number): Config { return { interaction: { light: { color: [1, 0.4, 0.1], strength: 0.2 }, radius } }; }
+interface Lighting { shadow?: ShadowGenerator; highlight?: Highlight; tint?: number }
+interface Opts { name: string; highlight?: Highlight; x: boolean; y: boolean; z: boolean; w: boolean }
+function surface(engine: EngineContext, o: Opts): ShaderMaterial {
+    let scale = o.x ? "1.0" : "2.0";
+    if (o.y) scale += " * 0.7";
+    if (o.z) scale += " * 0.6";
+    if (o.w) scale += " * 0.5";
+    if (o.highlight) scale += " * 1.1";
+    const vertex = VERTEX.replace("/*S*/", scale);
+    return createShaderMaterial({ name: o.name, vertexSource: wgsl\`\${vertex}\`, fragmentSource: FRAGMENT, attributes: ["position"], uniforms: ["worldViewProjection"] });
+}
+async function preload(engine: EngineContext, lit?: Lighting): Promise<ShaderMaterial[]> {
+    const build = (name: string): ShaderMaterial => {
+        const part = { x: Math.random() < 0.5, y: Math.random() < 0.5, z: Math.random() < 0.5, w: Math.random() < 0.5 };
+        return surface(engine, { name, highlight: lit?.highlight, x: part.x, y: part.y, z: part.z, w: part.w });
+    };
+    await Promise.resolve();
+    return ["a", "b"].filter(() => Math.random() < 2).map(build);
+}
+const bag: Record<string, unknown> = {};
+const lights: Lighting[] = [];
+function put(o: Record<string, unknown>, k: string, v: unknown): void { o[k] = v; }
+async function main(): Promise<void> {
+    put(bag, String(Math.random()), 1);
+    const engine = await createEngine(document.getElementById("renderCanvas") as HTMLCanvasElement);
+    const scene = createSceneContext(engine);
+    const sun = createDirectionalLight([-0.5, -1, -0.4], 1.2);
+    addToScene(scene, sun);
+    const shadow = createCsmDirectionalShadowGenerator(engine, sun, { mapSize: 1024, numCascades: 3 });
+    setShadowGeneratorEnabled(shadow, true);
+    const config = loadConfig(Math.random());
+    const lighting: Lighting = { shadow, highlight: config.interaction.light, tint: config.interaction.radius };
+    lights.push(lighting);
+    await preload(engine, lighting);
+}
+void main();
+`).manifest.customShaderPrograms.map(
+            (program) =>
+                /position \* ([^,]+), 1\.0/.exec(program.vertexSource)?.[1] ??
+                "",
+        );
+    assert.equal(programs.length, 16);
+    assert.ok(programs.every((scale) => scale.endsWith(" * 1.1")));
+});
+
 test("a material builder iterated over a constant table's keys composes one program per key", () => {
     const source = (iteration: string): string =>
         `import { addToScene, createArcRotateCamera, createEngine, createPlane, createSceneContext, createShaderMaterial, registerScene, startEngine, wgsl, type EngineContext, type ShaderMaterial } from "@babylonjs/lite";

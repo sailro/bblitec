@@ -6117,6 +6117,17 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             ) {
                 writable(value).optionalFoundCpp = "true";
             }
+            // A shared object's field its type declares an object, which no
+            // write in the program can leave absent, holds one.
+            if (
+                presenceTested &&
+                field.type.kind !== "optional" &&
+                !field.optionalProperty &&
+                provenPresent(this.context.checker.getTypeAtLocation(access)) &&
+                !recordFieldIsWritten(this.context, sourceType, property, true)
+            ) {
+                writable(value).optionalFoundCpp = "true";
+            }
             const staticField =
                 stableResourceField ||
                 !this.context.dataTypes.isReferenceStruct(dataType.name) ||
