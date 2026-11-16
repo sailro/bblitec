@@ -6069,6 +6069,29 @@ test("a global-object member only a host page could install reads absent", () =>
     assert.doesNotMatch(result.cpp, /bbl::dom_window_property</);
 });
 
+test("a global-object member nothing declares reads absent through an index signature", () => {
+    const result = compileSource(
+        `const params = new URLSearchParams(location.search);
+        const rows = params.has("debug") ? new Map<string, number>() : null;
+        if (rows) (window as unknown as Record<string, unknown>).hook = { calls: rows.size };
+        const hook = (window as unknown as Record<string, unknown>).hook as { calls: number } | undefined;
+        if (hook) throw new Error("installed hook");`,
+    );
+    assert.doesNotMatch(result.cpp, /installed hook|bbl::dom_window_property</);
+});
+
+test("a global-object member a library declares never reads absent through an index signature", () => {
+    for (const name of ["document", "Promise"])
+        assert.throws(
+            () =>
+                compileSource(
+                    `const member = (window as unknown as Record<string, unknown>).${name};
+                    if (member === undefined) throw new Error("absent member");`,
+                ),
+            /Browser-dependent condition cannot be determined/,
+        );
+});
+
 test("Object.create, defineProperty and getPrototypeOf refuse unrepresented forms", () => {
     for (const [source, message] of [
         [

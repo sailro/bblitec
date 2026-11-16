@@ -2460,7 +2460,19 @@ export class BrowserErasure {
             !this.isGlobalObject(unwrapped.expression)
         )
             return false;
-        const name = unwrapped.name.text;
+        const { member, global } = this.globalNamed(unwrapped.name.text);
+        return (
+            !declaredInDomLibrary(member) &&
+            !declaredInDomLibrary(global) &&
+            !declaredIn(global, "default-lib")
+        );
+    }
+
+    /** What the libraries and the program declare as `name` on the global object: a `Window` member and a global value. */
+    private globalNamed(name: string): {
+        member: ts.Symbol | undefined;
+        global: ts.Symbol | undefined;
+    } {
         const checker = this.context.checker;
         const window = checker.resolveName(
             "Window",
@@ -2468,23 +2480,20 @@ export class BrowserErasure {
             ts.SymbolFlags.Type,
             false,
         );
-        const member =
-            window &&
-            checker.getPropertyOfType(
-                checker.getDeclaredTypeOfSymbol(window),
+        return {
+            member:
+                window &&
+                checker.getPropertyOfType(
+                    checker.getDeclaredTypeOfSymbol(window),
+                    name,
+                ),
+            global: checker.resolveName(
                 name,
-            );
-        const global = checker.resolveName(
-            name,
-            undefined,
-            ts.SymbolFlags.Value,
-            false,
-        );
-        return (
-            !declaredInDomLibrary(member) &&
-            !declaredInDomLibrary(global) &&
-            !declaredIn(global, "default-lib")
-        );
+                undefined,
+                ts.SymbolFlags.Value,
+                false,
+            ),
+        };
     }
 
     /** A read of an {@link ABSENT_GLOBAL_MEMBERS} member off the global object. */
@@ -2499,21 +2508,27 @@ export class BrowserErasure {
     }
 
     /**
-     * A member of the global object only the program's own types declare
-     * (`(globalThis as { bridge?: Bridge }).bridge`): a host page or shell
-     * installs it, and none does natively, so it is absent unless the
-     * program writes it onto the global object itself.
+     * A member of the global object no library declares: only the program's
+     * own types name it (`(globalThis as { bridge?: Bridge }).bridge`), or
+     * nothing does and an index signature reads it
+     * (`(window as unknown as Record<string, unknown>).hook`). A host page
+     * or shell installs it, and none does natively, so it is absent unless
+     * the program writes it onto the global object itself.
      */
     private isUninstalledProgramGlobal(
         access: ts.PropertyAccessExpression,
     ): boolean {
-        const declarations =
-            accessedPropertySymbol(this.context.checker, access)
-                ?.declarations ?? [];
+        const { member, global } = this.globalNamed(access.name.text);
         if (
-            declarations.length === 0 ||
-            !declarations.every(
-                (declaration) => declarationOrigin(declaration) === "program",
+            ![
+                accessedPropertySymbol(this.context.checker, access),
+                member,
+                global,
+            ].every((symbol) =>
+                (symbol?.declarations ?? []).every(
+                    (declaration) =>
+                        declarationOrigin(declaration) === "program",
+                ),
             )
         )
             return false;
