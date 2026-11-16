@@ -6080,6 +6080,27 @@ test("a global-object member nothing declares reads absent through an index sign
     assert.doesNotMatch(result.cpp, /installed hook|bbl::dom_window_property</);
 });
 
+test("a global-object member another function writes under a ?debug flag reads absent", () => {
+    // The flag is the builder's own const, which deciding the write reads
+    // outside the builder's scope.
+    const result = compileSource(
+        `async function build(): Promise<number> {
+            const params = new URLSearchParams(location.search);
+            const rows = params.has("debug") ? new Map<string, number>() : null;
+            if (rows) (window as unknown as Record<string, unknown>).hook = { calls: rows.size };
+            return 1;
+        }
+        async function main(): Promise<void> {
+            const built = await build();
+            const hook = (window as unknown as Record<string, unknown>).hook as { calls: number } | undefined;
+            if (hook) throw new Error("installed hook");
+            console.log(built);
+        }
+        void main();`,
+    );
+    assert.doesNotMatch(result.cpp, /installed hook|bbl::dom_window_property</);
+});
+
 test("a global-object member a library declares never reads absent through an index signature", () => {
     for (const name of ["document", "Promise"])
         assert.throws(

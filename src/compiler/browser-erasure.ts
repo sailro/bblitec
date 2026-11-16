@@ -2014,15 +2014,22 @@ export class BrowserErasure {
             // `Math.round(seconds * PHYSICS_FPS)`, where the seconds come
             // from the query the reference fixes and the rate is one of
             // these, so refusing the constant refuses a product the query
-            // has already answered.
+            // has already answered. So does another function's `const`
+            // (a `?debug` flag a scene builder reads, deciding a write the
+            // entry asks about): what this evaluator folds is the
+            // deployment's, the same on every call, and the answer is kept
+            // per node for every scope.
             //
-            // Only a `const`. A mutable top-level binding has an initializer
-            // too, and folding a read of it to that initializer would answer
-            // with a value the program has already reassigned. Resolution
-            // itself is the compiler's own, and only what THIS evaluator
-            // folds comes back -- a constant naming a handle or a factory
-            // call still answers nothing.
-            const resolved = this.context.constantInitializer(unwrapped);
+            // Only a `const`. A mutable binding has an initializer too, and
+            // folding a read of it to that initializer would answer with a
+            // value the program has already reassigned. Only what THIS
+            // evaluator folds comes back -- a constant naming a handle or a
+            // factory call still answers nothing.
+            const module = this.context.constantInitializer(unwrapped);
+            const resolved =
+                module === undefined || module === unwrapped
+                    ? constInitializer(this.context, unwrapped)
+                    : module;
             return resolved === undefined || resolved === unwrapped
                 ? undefined
                 : this.browserValueOf(resolved);
