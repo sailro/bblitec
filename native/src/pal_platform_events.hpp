@@ -1510,6 +1510,7 @@ inline std::shared_ptr<DomEventBatch> prepare_dom_platform_input(Engine& engine,
             .movement_x = move ? static_cast<double>(event.motion.xrel) : 0,
             .movement_y = move ? static_cast<double>(event.motion.yrel) : 0,
             .delta_y = wheel ? dom_wheel_delta_y(event.wheel) : 0,
+            .detail = move || wheel ? 0.0 : static_cast<double>(event.button.clicks),
             .pressure = tracked_mouse_buttons() == 0 ? 0.0 : 0.5,
         };
         if (move && engine.pointer_lock_canvas)

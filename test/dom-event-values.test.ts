@@ -284,3 +284,13 @@ test("synthetic event options reject fields without native ownership", () => {
         /option accessors are not represented/,
     );
 });
+
+test("a mouse event's detail reads its click count", () => {
+    // 0 for a keyboard or programmatic click, which opens nothing twice.
+    const cpp = compileSource(
+        `const button = document.createElement("button");
+        document.body.appendChild(button);
+        button.addEventListener("click", (event) => { if (event.detail === 0) button.focus(); });`,
+    ).cpp;
+    assert.match(cpp, /mouse_payload\(\)\.detail/);
+});

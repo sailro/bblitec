@@ -1134,6 +1134,9 @@ inline std::shared_ptr<DomEventBatch> dom_pointer_input(Engine& engine, DomPoint
                                                         std::vector<DomEventTarget> path) {
     auto batch = std::make_shared<DomEventBatch>();
     auto& input = dom_input(engine);
+    // The click count `payload.detail` carries is mousedown's, mouseup's and
+    // click's alone; pointer, capture and boundary events read 0.
+    const double clicks = std::exchange(payload.detail, 0.0);
     if (action == DomPointerAction::Leave)
         path.clear();
     auto target = path;
@@ -1149,8 +1152,15 @@ inline std::shared_ptr<DomEventBatch> dom_pointer_input(Engine& engine, DomPoint
     }
     if (target.empty())
         return batch;
+    const auto counted = [&] {
+        auto event = payload;
+        event.detail = clicks;
+        return event;
+    };
     const auto add = [&](std::string type, bool controls_default = false) {
-        batch->add(dom_event(payload, std::move(type), target), controls_default);
+        const bool mouse = type == "mousedown" || type == "mouseup";
+        batch->add(dom_event(mouse ? counted() : payload, std::move(type), target),
+                   controls_default);
     };
     switch (action) {
     case DomPointerAction::Move:
@@ -1182,7 +1192,7 @@ inline std::shared_ptr<DomEventBatch> dom_pointer_input(Engine& engine, DomPoint
                               target[index]) == input.pressed_path.end())
                     continue;
                 if (dom_activates(input, target[index]))
-                    batch->add(dom_event(payload, "click",
+                    batch->add(dom_event(counted(), "click",
                                          std::vector<DomEventTarget>(
                                              target.begin() + static_cast<std::ptrdiff_t>(index),
                                              target.end())),
@@ -1354,13 +1364,16 @@ inline void append_dom_touch_tap(Engine& engine, DomEventBatch& batch,
     append_dom_pointer_boundary(batch, payload, input.hover_path, path, DomBoundaryEvents::Mouse);
     input.hover_path = path;
     batch.add(dom_event(payload, "mousemove", path));
-    auto pressed = payload;
+    // A tap is one click: its mousedown, mouseup and click count 1.
+    auto released = payload;
+    released.detail = 1;
+    auto pressed = released;
     pressed.buttons = 1;
     // The press and release reached native input already; only click activates.
     batch.add(dom_event(pressed, "mousedown", path));
-    batch.add(dom_event(payload, "mouseup", path));
+    batch.add(dom_event(released, "mouseup", path));
     if (dom_activates(input, path.front()))
-        batch.add(dom_event(payload, "click", path), true);
+        batch.add(dom_event(released, "click", path), true);
     for (auto entry = batch.events.begin() + static_cast<std::ptrdiff_t>(first);
          entry != batch.events.end(); ++entry)
         entry->tap = dom_touch_identifier(payload.pointer_id);

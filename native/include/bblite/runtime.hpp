@@ -230,6 +230,8 @@ struct PlatformMouseEvent : PlatformEventFlags, PlatformModifierKeys {
     double movement_x = 0.0;
     double movement_y = 0.0;
     double delta_y = 0.0;
+    /** UIEvent.detail: the click count on mousedown, mouseup, click and dblclick, else 0. */
+    double detail = 0.0;
     std::string pointer_type = "mouse";
     double pointer_id = 1;
     bool is_primary = true;

@@ -2400,6 +2400,7 @@ const MOUSE_EVENT_NUMBERS: ReadonlyMap<string, string> = new Map([
     ["movementX", "movement_x"],
     ["movementY", "movement_y"],
     ["deltaY", "delta_y"],
+    ["detail", "detail"],
     ["screenX", "screen_x"],
     ["screenY", "screen_y"],
 ]);

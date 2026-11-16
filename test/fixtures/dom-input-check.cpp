@@ -64,6 +64,10 @@ int main() {
         down.button.down = true;
         down.button.x = 40;
         down.button.y = 40;
+        down.button.clicks = 1;
+        double click_detail = -1;
+        on_dom_pointer(engine, DomEventTarget::node(button.value), "click", 899,
+                       [&](const PlatformMouseEvent& event) { click_detail = event.detail; });
         assert(send(down));
         assert(ui_element(engine, log).text == "DPW");
         assert(runtime.context->GetFocusElement() !=
@@ -73,6 +77,7 @@ int main() {
         up.button.down = false;
         assert(!send(up));
         assert(ui_element(engine, log).text == "DPWC");
+        assert(click_detail == 1);
         assert(ui_get_attribute(engine, button, "data-target") == "yes");
         assert(ui_get_attribute(engine, button, "data-up") == "yes");
         assert(!send(down));
