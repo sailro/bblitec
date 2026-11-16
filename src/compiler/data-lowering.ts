@@ -262,6 +262,7 @@ import {
 import { isTrsVectorName } from "./assignments.js";
 import {
     constObjectLiteral,
+    literalFieldObject,
     mappedElement,
     readOnlyFreshConst,
     yieldsFreshObject,
@@ -6069,7 +6070,11 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             // The whole-program write proof includes structural and asserted aliases.
             // A frozen record's fields are never replaced, and a write through a
             // `const` holding another literal's object never reaches this one.
-            const created = constObjectLiteral(this.context.checker, readNode);
+            const created =
+                constObjectLiteral(this.context.checker, readNode) ??
+                (owner.recordLiteral
+                    ? { literal: owner.recordLiteral, frozen: false }
+                    : undefined);
             const provenWith = (keepsPresent: boolean): boolean =>
                 this.context.bindings.recordPropertiesAreCurrent(owner) &&
                 (sourceField !== undefined ||
@@ -6177,6 +6182,16 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 if (staticField.recordOwnKeys) {
                     writable(value).recordOwnKeys = staticField.recordOwnKeys;
                 }
+                // The field's object is the one its creating literal stores there.
+                const literal =
+                    created && ts.isObjectLiteralExpression(created.literal)
+                        ? literalFieldObject(
+                              this.context.checker,
+                              created.literal,
+                              property,
+                          )
+                        : undefined;
+                if (literal) writable(value).recordLiteral = literal;
                 if (field.type.kind === "optional") {
                     writable(value).optionalFoundCpp = "true";
                 }

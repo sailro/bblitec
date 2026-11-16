@@ -3267,6 +3267,11 @@ export interface ValueFields {
     recordPropertyOrder?: readonly string[];
     /** Complete own-key order proven for a native record whose key set cannot change. */
     recordOwnKeys?: readonly string[];
+    /**
+     * The object literal whose object this record is: the literal at a field
+     * of a `const`'s literal, read where no write replaces that field.
+     */
+    recordLiteral?: ts.ObjectLiteralExpression;
     /** Module namespace exports are live bindings and cannot be written through this record. */
     moduleNamespace?: true;
     /** Fields alias an already-retained native object; escaping must preserve those field references. */

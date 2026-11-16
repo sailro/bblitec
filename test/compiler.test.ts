@@ -7215,6 +7215,53 @@ void main();
     assert.deepEqual(programs, ["0.5"]);
 });
 
+test("a field a const's literal stores keeps its nested record's fields", () => {
+    // The defaults' `drops` object is the one their literal creates there,
+    // so a write through a function's own fresh dictionary reaches none of
+    // its fields; writing it through another reference or replacing it
+    // leaves the field a run-time read.
+    const source = `import { createEngine, createSceneContext, createShaderMaterial, wgsl } from "@babylonjs/lite";
+interface Config { drops: { saturationDrift: number }; level: string }
+const DEFAULT_CONFIG: Config = { drops: { saturationDrift: 0.5 }, level: "high" };
+const configs: Config[] = [DEFAULT_CONFIG, { drops: { saturationDrift: 0.1 }, level: "low" }];
+function tally(names: readonly string[]): Record<string, number> {
+    const counts: Record<string, number> = {};
+    for (const name of names) counts[name] = (counts[name] ?? 0) + 1;
+    return counts;
+}
+async function main(): Promise<void> {
+    const engine = await createEngine(document.getElementById("renderCanvas") as HTMLCanvasElement);
+    createSceneContext(engine);
+    const picked = configs[Math.floor(Math.random() * configs.length)]!;
+    console.log(picked.level, picked.drops === DEFAULT_CONFIG.drops, Object.keys(tally([picked.level, "x"])).length);
+    const tone = DEFAULT_CONFIG.drops.saturationDrift;
+    const vertex = \`struct VertexOutput { @builtin(position) position: vec4<f32>, };
+@vertex fn mainVertex(input: VertexInput) -> VertexOutput { var out: VertexOutput; out.position = shaderSystem.worldViewProjection * vec4<f32>(input.position * \${tone.toFixed(1)}, 1.0); return out; }\`;
+    createShaderMaterial({ name: "m", vertexSource: wgsl\`\${vertex}\`, fragmentSource: wgsl\`@fragment fn mainFragment() -> @location(0) vec4<f32> { return vec4<f32>(1.0); }\`, attributes: ["position"], uniforms: ["worldViewProjection"] });
+}
+void main();
+`;
+    const programs = compileSource(source).manifest.customShaderPrograms.map(
+        (program) =>
+            /position \* ([0-9.]+)/.exec(program.vertexSource)?.[1] ?? "",
+    );
+    assert.deepEqual(programs, ["0.5"]);
+    for (const write of [
+        "picked.drops.saturationDrift = 2;",
+        "picked.drops = { saturationDrift: 3 };",
+    ])
+        assert.throws(
+            () =>
+                compileSource(
+                    source.replace(
+                        "const tone = DEFAULT_CONFIG",
+                        `${write} const tone = DEFAULT_CONFIG`,
+                    ),
+                ),
+            /'vertex' is bound as data without a static string/,
+        );
+});
+
 test("a material builder iterated over a constant table's keys composes one program per key", () => {
     const source = (iteration: string): string =>
         `import { addToScene, createArcRotateCamera, createEngine, createPlane, createSceneContext, createShaderMaterial, registerScene, startEngine, wgsl, type EngineContext, type ShaderMaterial } from "@babylonjs/lite";

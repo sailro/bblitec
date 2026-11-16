@@ -14,6 +14,7 @@ import {
 import {
     hasExportModifier,
     isOperandSelection,
+    objectLiteralMembers,
     unwrapExpression,
     valueOperands,
     variableKind,
@@ -92,6 +93,36 @@ export function yieldsFreshObject(
     node: ts.Node,
 ): boolean {
     return fresh(checker, node, new Set());
+}
+
+/**
+ * The object literal `literal` stores at `key` (through `const` aliases):
+ * its last member naming the key, where no later spread, prototype or
+ * computed member may replace it.
+ */
+export function literalFieldObject(
+    checker: ts.TypeChecker,
+    literal: ts.ObjectLiteralExpression,
+    key: string,
+): ts.ObjectLiteralExpression | undefined {
+    let stored: ts.Expression | undefined;
+    for (const member of objectLiteralMembers(literal)) {
+        if (
+            member.kind === "spread" ||
+            member.kind === "proto" ||
+            member.key === undefined
+        )
+            stored = undefined;
+        else if (member.key === key)
+            stored =
+                member.kind === "property" || member.kind === "shorthand"
+                    ? member.value
+                    : undefined;
+    }
+    const created = stored && constObjectLiteral(checker, stored);
+    return created && ts.isObjectLiteralExpression(created.literal)
+        ? created.literal
+        : undefined;
 }
 
 /**
