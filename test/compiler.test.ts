@@ -6978,6 +6978,56 @@ void main();
     assert.deepEqual(programs, ["1.0 * 1.1 * 1.3 * 1.5 * 1.8"]);
 });
 
+test("a shared options record keeps what it knows of its members' presence", () => {
+    // The options a map holds and the program writes are one shared object:
+    // its coat, a constant the call sets, is present, and the flags it
+    // leaves unset are absent, through a stored copy and a field read.
+    const programs =
+        compileSource(`import { createEngine, createSceneContext, createShaderMaterial, wgsl, type EngineContext, type ShaderMaterial } from "@babylonjs/lite";
+const VERTEX = \`struct VertexOutput { @builtin(position) position: vec4<f32>, };
+@vertex fn mainVertex(input: VertexInput) -> VertexOutput { var out: VertexOutput; out.position = shaderSystem.worldViewProjection * vec4<f32>(input.position * /*S*/, 1.0); return out; }\`;
+const FRAGMENT = wgsl\`@fragment fn mainFragment() -> @location(0) vec4<f32> { return vec4<f32>(1.0); }\`;
+interface Coat { tint: number }
+const COAT: Coat = { tint: 0.5 };
+interface Opts { name: string; count?: number; coat?: Coat; f1?: boolean; f2?: boolean; f3?: boolean; f4?: boolean; f5?: boolean; f6?: boolean; f7?: boolean; f8?: boolean; f9?: boolean }
+const live = new Map<string, Opts>();
+function build(engine: EngineContext, opts: Opts): ShaderMaterial {
+    let scale = "1.0";
+    if (opts.coat) scale += " * 0.9";
+    if (opts.f1 === true) scale += " * 1.1";
+    if (opts.f2 === true) scale += " * 1.2";
+    if (opts.f3 === true) scale += " * 1.3";
+    if (opts.f4 === true) scale += " * 1.4";
+    if (opts.f5 === true) scale += " * 1.5";
+    if (opts.f6 === true) scale += " * 1.6";
+    if (opts.f7 === true) scale += " * 1.7";
+    if (opts.f8 === true) scale += " * 1.8";
+    if (opts.f9 === true) scale += " * 1.9";
+    const vertex = VERTEX.replace("/*S*/", scale);
+    return createShaderMaterial({ name: opts.name, vertexSource: wgsl\`\${vertex}\`, fragmentSource: FRAGMENT, attributes: ["position"], uniforms: ["worldViewProjection"] });
+}
+async function create(engine: EngineContext, opts: Opts): Promise<ShaderMaterial> {
+    live.set(opts.name, opts);
+    await Promise.resolve();
+    return build(engine, opts);
+}
+function touch(): void { for (const o of live.values()) o.count = (o.count ?? 0) + 1; }
+async function main(): Promise<void> {
+    const engine = await createEngine(document.getElementById("renderCanvas") as HTMLCanvasElement);
+    createSceneContext(engine);
+    const names = ["a", "b", "c"].filter(() => Math.random() < 2);
+    await Promise.all(names.map((name) => create(engine, { name, coat: COAT, f1: true, f3: true, f8: true })));
+    touch();
+}
+void main();
+`).manifest.customShaderPrograms.map(
+            (program) =>
+                /position \* ([^,]+), 1\.0/.exec(program.vertexSource)?.[1] ??
+                "",
+        );
+    assert.deepEqual(programs, ["1.0 * 0.9 * 1.1 * 1.3 * 1.8"]);
+});
+
 test("a material builder iterated over a constant table's keys composes one program per key", () => {
     const source = (iteration: string): string =>
         `import { addToScene, createArcRotateCamera, createEngine, createPlane, createSceneContext, createShaderMaterial, registerScene, startEngine, wgsl, type EngineContext, type ShaderMaterial } from "@babylonjs/lite";

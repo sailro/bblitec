@@ -6083,6 +6083,11 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                         created?.literal,
                     ));
             const unwrittenRecordField = provenWith(false);
+            // A slot read with a presence test (an optional, or a shared
+            // object's reference) is what the record knows of its presence.
+            const presenceTested =
+                field.type.kind === "optional" ||
+                presenceFlagCpp(value) !== undefined;
             // What a field's presence or resource says survives another closure
             // replacing a shared cell's whole record; the values it holds do not.
             const unreplacedCell = owner.sharedStorageCpp === undefined;
@@ -6101,13 +6106,13 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                     (sourceField === undefined &&
                         owner.recordOwnKeys !== undefined &&
                         !owner.recordOwnKeys.includes(property))) &&
-                field.type.kind === "optional"
+                presenceTested
             ) {
                 writable(value).optionalFoundCpp = "false";
             }
             if (
                 knownCondition(sourceField?.optionalFoundCpp) === true &&
-                field.type.kind === "optional" &&
+                presenceTested &&
                 provenWith(true)
             ) {
                 writable(value).optionalFoundCpp = "true";

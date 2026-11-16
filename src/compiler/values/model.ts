@@ -233,6 +233,7 @@ export function keepsStaticMember(value: Value): boolean {
         !value.parameterBinding &&
         (value.kind === "json-null" ||
             knownAbsent(value) ||
+            knownCondition(value.optionalFoundCpp) === true ||
             value.kind === "record" ||
             isHandleKind(value.kind) ||
             hasScalarFacts(value) ||
