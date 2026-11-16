@@ -140,6 +140,7 @@ import {
     sourceFunctionName,
     unwrapExpression,
     yieldedOperands,
+    valueOperands,
     argumentAt,
     writeSites,
     referenceSite,
@@ -7433,7 +7434,11 @@ export class UserFunctionLowerer {
         if (
             ir.returnNeedsSnapshot ||
             value.kind !== "record" ||
-            !ts.isObjectLiteralExpression(context.unwrap(expression)) ||
+            // Every object it can yield is a literal: a selection of
+            // literals returns a fresh one too.
+            !valueOperands(expression, (node) => context.unwrap(node)).every(
+                ts.isObjectLiteralExpression,
+            ) ||
             Object.keys(value.recordMethods ?? {}).length > 0 ||
             Object.keys(value.recordGetters ?? {}).length > 0 ||
             Object.keys(value.recordSetters ?? {}).length > 0

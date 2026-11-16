@@ -6715,6 +6715,65 @@ void main();
         assert.deepEqual(programs(source), ["1.0", "0.5"]);
 });
 
+test("an options record a known key selects between literals keeps its fields through an async call", () => {
+    // Nine flags exceed one call's run-time tests, so the call splits on
+    // the kind; each arm's options helper selects one literal, and its
+    // fields reach the material through an async function's parameter.
+    const programs =
+        compileSource(`import { createEngine, createSceneContext, createShaderMaterial, wgsl, type EngineContext, type SceneContext, type ShaderMaterial } from "@babylonjs/lite";
+type Kind = "a" | "b";
+interface Opts { file: string; f1?: boolean; f2?: boolean; f3?: boolean; f4?: boolean; f5?: boolean; f6?: boolean; f7?: boolean; f8?: boolean; f9?: boolean; capacity: number }
+interface Prepared { claimed: Set<SceneContext>; count: number }
+const VERTEX = \`struct VertexOutput { @builtin(position) position: vec4<f32>, };
+@vertex fn mainVertex(input: VertexInput) -> VertexOutput { var out: VertexOutput; out.position = shaderSystem.worldViewProjection * vec4<f32>(input.position * /*S*/, 1.0); return out; }\`;
+const FRAGMENT = wgsl\`@fragment fn mainFragment() -> @location(0) vec4<f32> { return vec4<f32>(1.0); }\`;
+const cache = new Map<string, Prepared>();
+async function prepare(opts: Opts): Promise<Prepared> {
+    const known = cache.get(opts.file);
+    if (known) return known;
+    const fresh: Prepared = { claimed: new Set(), count: opts.capacity };
+    await Promise.resolve();
+    cache.set(opts.file, fresh);
+    return fresh;
+}
+function build(engine: EngineContext, opts: Opts, prepared: Prepared): ShaderMaterial {
+    let scale = "1.0";
+    if (opts.f1 === true) scale += " * 1.1";
+    if (opts.f2 === true) scale += " * 1.2";
+    if (opts.f3 === true) scale += " * 1.3";
+    if (opts.f4 === true) scale += " * 1.4";
+    if (opts.f5 === true) scale += " * 1.5";
+    if (opts.f6 === true) scale += " * 1.6";
+    if (opts.f7 === true) scale += " * 1.7";
+    if (opts.f8 === true) scale += " * 1.8";
+    if (opts.f9 === true) scale += " * 1.9";
+    const vertex = VERTEX.replace("/*S*/", scale);
+    return createShaderMaterial({ name: \`creature-\${opts.file}-\${prepared.count}\`, vertexSource: wgsl\`\${vertex}\`, fragmentSource: FRAGMENT, attributes: ["position"], uniforms: ["worldViewProjection"] });
+}
+async function create(engine: EngineContext, scene: SceneContext, opts: Opts): Promise<ShaderMaterial> {
+    let prepared = await prepare(opts);
+    if (prepared.claimed.has(scene)) prepared = { claimed: new Set(), count: opts.capacity };
+    prepared.claimed.add(scene);
+    return build(engine, opts, prepared);
+}
+function options(kind: Kind): Opts {
+    return kind === "a" ? { file: "a.glb", f1: true, f3: true, capacity: 4 } : { file: "b.glb", f2: true, f9: true, capacity: 8 };
+}
+async function main(): Promise<void> {
+    const engine = await createEngine(document.getElementById("renderCanvas") as HTMLCanvasElement);
+    const scene = createSceneContext(engine);
+    const kinds = (["a", "b"] as const).filter(() => Math.random() < 2);
+    await Promise.all(kinds.map((kind) => create(engine, scene, options(kind))));
+}
+void main();
+`).manifest.customShaderPrograms.map(
+            (program) =>
+                /position \* ([^,]+), 1\.0/.exec(program.vertexSource)?.[1] ??
+                "",
+        );
+    assert.deepEqual(programs, ["1.0 * 1.1 * 1.3", "1.0 * 1.2 * 1.9"]);
+});
+
 test("a material builder iterated over a constant table's keys composes one program per key", () => {
     const source = (iteration: string): string =>
         `import { addToScene, createArcRotateCamera, createEngine, createPlane, createSceneContext, createShaderMaterial, registerScene, startEngine, wgsl, type EngineContext, type ShaderMaterial } from "@babylonjs/lite";
