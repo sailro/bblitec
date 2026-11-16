@@ -1527,6 +1527,8 @@ UiClientRect window_element_size(UiElementHandle element) {
     box.offset_height /= layout->pixel_ratio;
     box.scroll_left /= layout->pixel_ratio;
     box.scroll_top /= layout->pixel_ratio;
+    box.scroll_width /= layout->pixel_ratio;
+    box.scroll_height /= layout->pixel_ratio;
     return box;
 }
 std::shared_ptr<CanvasElement> window_canvas(UiElementHandle element) {

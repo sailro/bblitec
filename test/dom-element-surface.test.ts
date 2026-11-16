@@ -309,6 +309,41 @@ test("a selected receiver evaluates once and appends to the element it selects",
     });
 });
 
+test("scroll extents report the content an element's box overflows", (t) => {
+    const output = resolve("artifacts/dom-scroll-extent");
+    mkdirSync(output, { recursive: true });
+    writeFileSync(join(output, "worker.ts"), "self.close();");
+    const { cpp } = compileSource(
+        `${realm}
+        const box = document.createElement("div");
+        box.style.cssText = "position:absolute;left:0;top:0;width:40px;height:20px;overflow:hidden";
+        const inner = document.createElement("div");
+        inner.style.cssText = "width:10px;height:50px";
+        box.appendChild(inner);
+        const fit = document.createElement("div");
+        fit.style.cssText = "position:absolute;left:100px;top:0;width:40px;height:30px";
+        document.body.append(box, fit);
+        box.id = "box";
+        fit.id = "fit";
+        void [box.scrollWidth, box.scrollHeight, fit.scrollHeight];
+        globalThis.close();
+    `,
+        { fileName: join(output, "entry.ts") },
+    );
+    // The reads request the boxes' extents the display then retains.
+    for (const field of ["scroll_width", "scroll_height"])
+        assert.match(
+            cpp,
+            new RegExp(
+                `ui_get_client_rect\\([^;]+\\)\\.unzoomed\\(\\)\\.${field}\\)`,
+            ),
+        );
+    writeFileSync(join(output, "program.hpp"), cpp);
+    runRmlUiFixture(t, "dom-scroll-extent", {
+        macros: { BBLITE_WORKERS: 1, BBLITE_OFFSCREEN_SURFACES: 1 },
+    });
+});
+
 test("focus options retain absent dictionaries, stored flags and evaluation order", (t) => {
     const output = resolve("artifacts/dom-focus-options");
     mkdirSync(output, { recursive: true });

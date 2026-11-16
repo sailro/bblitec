@@ -2409,6 +2409,8 @@ const UI_LAYOUT_EXTENTS: ReadonlyMap<string, string> = new Map([
     ["offsetHeight", "offset_height"],
     ["clientWidth", "width"],
     ["clientHeight", "height"],
+    ["scrollWidth", "scroll_width"],
+    ["scrollHeight", "scroll_height"],
 ]);
 /** Computed style reads and the CSS properties they name. */
 const UI_COMPUTED_STYLES: ReadonlyMap<string, string> = new Map([

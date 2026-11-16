@@ -29,7 +29,8 @@ int main() {
     assert(generated_main() == 0);
     const auto children = [&](std::string_view id) {
         std::string order;
-        for (const auto child : ui_element(engine, ui_get_element_by_id(engine, std::string{id})).children)
+        for (const auto child :
+             ui_element(engine, ui_get_element_by_id(engine, std::string{id})).children)
             order += ui_get_attribute(engine, child, "id") + ";";
         return order;
     };

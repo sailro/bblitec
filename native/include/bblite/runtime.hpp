@@ -337,6 +337,9 @@ struct UiClientRect {
     double scroll_top = 0.0;
     /** The element's effective CSS zoom, which client rectangles include. */
     double zoom = 1.0;
+    /** Width and height of the element's content including its overflow (scrollWidth/scrollHeight). */
+    double scroll_width = 0.0;
+    double scroll_height = 0.0;
     [[nodiscard]] bool operator==(const UiClientRect&) const = default;
     /** Extents as offset, client and scroll reads report them: without the zoom. */
     [[nodiscard]] UiClientRect unzoomed() const {
@@ -348,7 +351,9 @@ struct UiClientRect {
                 offset_height / zoom,
                 scroll_left / zoom,
                 scroll_top / zoom,
-                1.0};
+                1.0,
+                scroll_width / zoom,
+                scroll_height / zoom};
     }
 };
 

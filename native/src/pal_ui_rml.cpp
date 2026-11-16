@@ -1032,9 +1032,10 @@ UiClientRect ui_get_client_rect(Engine& engine, UiElementHandle element) {
         engine.canvas_client_width /
         page_canvas(engine.ui_page_viewport, engine.options.width, engine.options.height).width();
     const auto& rect = record.client_rect;
-    return {rect.left * scale,        rect.top * scale,          rect.width * scale,
-            rect.height * scale,      rect.offset_width * scale, rect.offset_height * scale,
-            rect.scroll_left * scale, rect.scroll_top * scale,   rect.zoom};
+    return {rect.left * scale,         rect.top * scale,          rect.width * scale,
+            rect.height * scale,       rect.offset_width * scale, rect.offset_height * scale,
+            rect.scroll_left * scale,  rect.scroll_top * scale,   rect.zoom,
+            rect.scroll_width * scale, rect.scroll_height * scale};
 }
 
 std::optional<DomEventTarget> ui_element_from_point(Engine& engine, double x, double y) {
@@ -8916,7 +8917,9 @@ struct UiRmlRuntime {
                                   static_cast<double>(element->GetOffsetHeight()),
                                   static_cast<double>(element->GetScrollLeft()),
                                   static_cast<double>(element->GetScrollTop()),
-                                  static_cast<double>(element->GetComputedValues().zoom())};
+                                  static_cast<double>(element->GetComputedValues().zoom()),
+                                  static_cast<double>(element->GetScrollWidth()),
+                                  static_cast<double>(element->GetScrollHeight())};
             const Rml::Vector2f content = element->GetAbsoluteOffset(Rml::BoxArea::Content);
             const Rml::Vector2f content_size = element->GetBox().GetSize(Rml::BoxArea::Content);
             record.content_box = {static_cast<double>(content.x), static_cast<double>(content.y),
