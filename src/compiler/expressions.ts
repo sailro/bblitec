@@ -8381,12 +8381,17 @@ export class ExpressionLowerer {
                     functionType,
                 );
             }
-            if (recordCallback?.kind === "data" && !optionalCall) {
-                const callableRecord =
-                    this.context.dataLowerer.compileCallableRecordCall(
-                        call,
-                        recordCallback,
-                    );
+            if (recordCallback?.kind === "data") {
+                const callableRecord = optionalCall
+                    ? this.context.dataLowerer.compileOptionalCallableRecordCall(
+                          call,
+                          recordCallback,
+                          callee.questionDotToken ? instance?.cpp : undefined,
+                      )
+                    : this.context.dataLowerer.compileCallableRecordCall(
+                          call,
+                          recordCallback,
+                      );
                 if (callableRecord) return callableRecord;
             }
             if (instance && declaration) {

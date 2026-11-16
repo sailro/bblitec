@@ -19264,6 +19264,41 @@ test("a promise reaction refuses a dispatched method override that completes wit
         /Promise reaction with a void result requires a proven undefined completion/,
     );
 });
+// An optional member holding a function with properties is called only
+// while present, through an optional owner too.
+checkInRealm(
+    "an optional callable record member calls only when present",
+    `
+    type Source = (() => number) & { onResize?: (callback: () => void) => () => void };
+    const listeners: (() => void)[] = [];
+    function makeSource(value: number): Source {
+        return Object.assign(() => value, {
+            onResize: (callback: () => void): (() => void) => {
+                listeners.push(callback);
+                return () => listeners.splice(listeners.indexOf(callback), 1);
+            },
+        });
+    }
+    function bind(sources: readonly (readonly [number, Source])[]): number {
+        let total = 0;
+        for (const [slot, source] of sources) {
+            total += slot * source();
+            source.onResize?.(() => {});
+        }
+        return total;
+    }
+    function outline(opts?: { sceneDepth?: Source }): number {
+        return bind([
+            [1, makeSource(2)],
+            [2, Object.assign(() => opts?.sceneDepth?.() ?? 7, { onResize: opts?.sceneDepth?.onResize })],
+        ]);
+    }
+    const withDepth = outline({ sceneDepth: makeSource(Math.random() < 2 ? 0.25 : 1) });
+    const without = outline();
+    if (withDepth !== 2.5 || without !== 16 || listeners.length !== 3) throw new Error("sources " + withDepth + " " + without + " " + listeners.length);
+    globalThis.close();
+    `,
+);
 // A program that declares no `then` member holds only native promises
 // where it types a PromiseLike: a shared closure awaits one as a promise.
 checkInRealm(

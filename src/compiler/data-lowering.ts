@@ -4413,6 +4413,43 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         );
     }
 
+    /**
+     * `owner.member?.(...)` calling a callable record (a function with
+     * properties) the member may not hold: an absent record, or an absent
+     * owner (`receiver`), skips the call; a present one runs its call.
+     */
+    public compileOptionalCallableRecordCall(
+        call: ts.CallExpression,
+        value: Value,
+        receiver?: string,
+    ): Value | undefined {
+        const type = value.dataType;
+        const inner = type?.kind === "optional" ? type.inner : type;
+        const callType =
+            value.kind === "data" && inner?.kind === "struct"
+                ? this.context.dataTypes.structCall(inner.name)
+                : undefined;
+        if (!inner || !callType) return undefined;
+        this.context.useNativeValue(value);
+        const record = this.context.allocateTemporaryCppName("callable_record");
+        this.context.emit({
+            kind: "declaration",
+            type: "const auto",
+            name: record,
+            initializer: snapshotReadCpp(value),
+        });
+        const present =
+            type?.kind === "optional" ? optionalPresentCpp(record) : record;
+        const held =
+            type?.kind === "optional" ? optionalValueCpp(record) : record;
+        return this.compileOptionalStoredCall(
+            call,
+            `${held}->${callMember}`,
+            callType,
+            receiver ? `(${receiver}) && ${present}` : present,
+        );
+    }
+
     /** A narrowed payload owns a snapshot of that payload, not its carrier. */
     private projectedNativeValue(
         value: Value,
