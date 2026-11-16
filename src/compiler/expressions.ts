@@ -4541,7 +4541,20 @@ export class ExpressionLowerer {
             callee,
         );
         if (nativeFunction) {
-            return nativeFunction;
+            const declaration = tryResolveFunctionDeclaration(
+                this.context.checker,
+                callee,
+            );
+            return declaration
+                ? this.context.userFunctions.withReturnedRecordFacts(
+                      this.context,
+                      declaration,
+                      call,
+                      undefined,
+                      nativeFunction.dataType,
+                      nativeFunction,
+                  )
+                : nativeFunction;
         }
         const thinInstanceUpload = this.context.compileThinInstanceUploadHelper(
             call,

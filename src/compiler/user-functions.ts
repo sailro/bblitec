@@ -1922,6 +1922,133 @@ export class UserFunctionLowerer {
 
     public constructor(private readonly checker: ts.TypeChecker) {}
 
+    /**
+     * A call's native result with the fields generation knows of the record
+     * literal the body returns: a probe of the body's inline lowering with
+     * the call's arguments, captured at the return expression's evaluation,
+     * before mutable storage erases them. Only primitives are copied, and a
+     * field holding one is present; every read still uses the call's own
+     * result, held once. Unchanged where the body can return early or
+     * writes storage, its record has accessors, or the probe knows nothing.
+     */
+    public withReturnedRecordFacts(
+        context: UserFunctionContext,
+        ir: UserFunctionIr | SupportedFunction,
+        call: ts.Node,
+        argumentValues: readonly Value[] | undefined,
+        returnType: DataType | undefined,
+        result: Value,
+    ): Value {
+        if (!("statements" in ir)) {
+            const name =
+                ir.name && ts.isIdentifier(ir.name) ? ir.name.text : "";
+            ir = this.irFor(ir, name, (node, message) =>
+                context.fail(node, message),
+            );
+        }
+        const recordReturn =
+            ir.returnExpression && context.unwrap(ir.returnExpression);
+        if (
+            returnType?.kind !== "struct" ||
+            !recordReturn ||
+            !ts.isObjectLiteralExpression(recordReturn) ||
+            firstReturn(ir.statements) ||
+            [...ir.statements, recordReturn].some((node) =>
+                context.evaluationOrder.writesStorage(node),
+            )
+        )
+            return result;
+        const fields = context.dataTypes.structFields(
+            returnType.name,
+            call,
+            "accessors",
+        );
+        if (fields.some((field) => field.accessor)) return result;
+        const declared = ir;
+        let facts:
+            | Record<
+                  string,
+                  Pick<Value, "staticNumber" | "staticBoolean" | "staticString">
+              >
+            | undefined;
+        let ownKeys: readonly string[] | undefined;
+        try {
+            context.probeEmission(() => {
+                const values =
+                    argumentValues ??
+                    (ts.isCallExpression(call)
+                        ? call.arguments.map((argument) =>
+                              context.compileValue(argument),
+                          )
+                        : []);
+                this.lower(
+                    context,
+                    declared,
+                    values,
+                    call,
+                    false,
+                    undefined,
+                    (value) => {
+                        if (!context.bindings.recordPropertiesAreCurrent(value))
+                            return;
+                        ownKeys = Object.keys(value.recordProperties ?? {});
+                        facts = Object.fromEntries(
+                            Object.entries(value.recordProperties ?? {})
+                                .filter(([, field]) => !field.parameterBinding)
+                                .map(([name, field]) => [
+                                    name,
+                                    scalarFacts(field),
+                                ]),
+                        );
+                    },
+                );
+                return undefined;
+            });
+        } catch (error) {
+            if (!(error instanceof CompileError)) throw error;
+            return result;
+        }
+        const captured = facts;
+        // A key the literal states with a value that cannot be absent is
+        // present, as is a field holding a known primitive.
+        const stated = new Set(presentLiteralKeys(this.checker, recordReturn));
+        const knownPresent = (name: string): boolean =>
+            stated.has(name) || Object.keys(captured?.[name] ?? {}).length > 0;
+        if (!captured || !ownKeys || !ownKeys.some(knownPresent)) return result;
+        const present = new Set(ownKeys);
+        // The result is read once per field: a call expression is held.
+        const held = cppIdentifierPattern.test(result.cpp)
+            ? result
+            : context.bindings.pinValueToTemporary(
+                  result,
+                  "function_result",
+                  ts.isExpression(call) ? call : undefined,
+              );
+        const access = context.dataTypes.memberAccess(returnType.name);
+        writable(held).recordProperties = Object.fromEntries(
+            fields
+                .filter((field) => present.has(field.sourceName))
+                .map((field) => {
+                    const known = captured[field.sourceName];
+                    return [
+                        field.sourceName,
+                        {
+                            ...context.dataLowerer.leafValue(
+                                `${held.cpp}${access}${field.name}`,
+                                field.type,
+                            ),
+                            ...known,
+                            ...(knownPresent(field.sourceName)
+                                ? { optionalFoundCpp: "true" }
+                                : {}),
+                        },
+                    ];
+                }),
+        );
+        writable(held).recordOwnKeys = ownKeys;
+        return held;
+    }
+
     /** Preserve closed scalar results before hoisting would discard their value. */
     public tryCompileStaticResult(
         context: UserFunctionContext,
@@ -2594,112 +2721,15 @@ export class UserFunctionLowerer {
                     : undefined;
             const recordReturn =
                 ir.returnExpression && context.unwrap(ir.returnExpression);
-            if (
-                !group &&
-                returnType?.kind === "struct" &&
-                recordReturn &&
-                ts.isObjectLiteralExpression(recordReturn) &&
-                !firstReturn(ir.statements) &&
-                ![...ir.statements, recordReturn].some((node) =>
-                    context.evaluationOrder.writesStorage(node),
-                ) &&
-                argumentValues.every(generationKnownStringArgument)
-            ) {
-                const fields = context.dataTypes.structFields(
-                    returnType.name,
+            if (!group)
+                result = this.withReturnedRecordFacts(
+                    context,
+                    ir,
                     call,
-                    "accessors",
+                    argumentValues,
+                    returnType,
+                    result,
                 );
-                if (fields.every((field) => !field.accessor)) {
-                    let facts:
-                        | Record<
-                              string,
-                              Pick<
-                                  Value,
-                                  | "staticNumber"
-                                  | "staticBoolean"
-                                  | "staticString"
-                              >
-                          >
-                        | undefined;
-                    let ownKeys: readonly string[] | undefined;
-                    try {
-                        context.probeEmission(() => {
-                            this.lower(
-                                context,
-                                ir,
-                                argumentValues,
-                                call,
-                                false,
-                                undefined,
-                                (value) => {
-                                    if (
-                                        !context.bindings.recordPropertiesAreCurrent(
-                                            value,
-                                        )
-                                    )
-                                        return;
-                                    ownKeys = Object.keys(
-                                        value.recordProperties ?? {},
-                                    );
-                                    facts = Object.fromEntries(
-                                        Object.entries(
-                                            value.recordProperties ?? {},
-                                        )
-                                            .filter(
-                                                ([, field]) =>
-                                                    !field.parameterBinding,
-                                            )
-                                            .map(([name, field]) => [
-                                                name,
-                                                scalarFacts(field),
-                                            ]),
-                                    );
-                                },
-                            );
-                            return undefined;
-                        });
-                    } catch (error) {
-                        if (!(error instanceof CompileError)) throw error;
-                        facts = undefined;
-                    }
-                    if (facts && ownKeys) {
-                        const captured = facts;
-                        const present = new Set(ownKeys);
-                        // Capture at the return expression's evaluation, before
-                        // mutable storage erases the facts. Only primitives are
-                        // copied; every read still uses the real call's owner.
-                        // A field holding a known primitive is present.
-                        const access = context.dataTypes.memberAccess(
-                            returnType.name,
-                        );
-                        writable(result).recordProperties = Object.fromEntries(
-                            fields
-                                .filter((field) =>
-                                    present.has(field.sourceName),
-                                )
-                                .map((field) => {
-                                    const known = captured[field.sourceName];
-                                    return [
-                                        field.sourceName,
-                                        {
-                                            ...context.dataLowerer.leafValue(
-                                                `${result.cpp}${access}${field.name}`,
-                                                field.type,
-                                            ),
-                                            ...known,
-                                            ...(known &&
-                                            Object.keys(known).length > 0
-                                                ? { optionalFoundCpp: "true" }
-                                                : {}),
-                                        },
-                                    ];
-                                }),
-                        );
-                        writable(result).recordOwnKeys = ownKeys;
-                    }
-                }
-            }
             if (
                 !group &&
                 returnType?.kind === "struct" &&

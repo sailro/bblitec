@@ -19,6 +19,7 @@ import {
     conditionComparison,
     foldBooleanComparison,
     foldExcludedString,
+    foldStringComparison,
     foldSettledComparison,
     type ComparisonContext,
 } from "./comparisons.js";
@@ -923,6 +924,8 @@ export class ConditionLowerer {
             if (foldedBoolean) {
                 return foldedBoolean;
             }
+            const strings = foldStringComparison(this.context, unwrapped);
+            if (strings) return strings;
             const excluded = foldExcludedString(this.context, unwrapped);
             if (excluded) return excluded;
             // The data equality path has to inspect both operands before it

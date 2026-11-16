@@ -1318,9 +1318,10 @@ test("keeps pure imported data builders on the static path", () => {
     );
 
     assert.doesNotMatch(result.cpp, /v_module\d+_row/);
+    // The field reads the call's held result.
     assert.match(
         result.cpp,
-        /double v_selected = bblscene::buildRow\(\)\.value;/,
+        /auto (v_bblite_function_result_\d+) = bblscene::buildRow\(\);\s+\[\[maybe_unused\]\] double v_selected = \1\.value;/,
     );
 });
 
@@ -6597,7 +6598,8 @@ async function main(): Promise<void> {
 }
 void main();
 `),
-        ["0.5 * 0.9", "1.0"],
+        // `options` always sets `fade`: the unfaded program is unreachable.
+        ["0.5 * 0.9"],
     );
     assert.ok(
         scales(`import { createEngine, createSceneContext, createShaderMaterial, wgsl, type EngineContext, type ShaderMaterial } from "@babylonjs/lite";
@@ -6868,6 +6870,63 @@ void main();
                 "",
         );
     assert.deepEqual(programs, ["1.0 * 1.1 * 1.3 * 1.5 * 1.8"]);
+});
+
+test("a native helper's returned record keeps the fields its body knows, and two known strings compare at generation", () => {
+    // `options(24)` compiles to a native function; its result still says
+    // `dir` is "humans" and `fade` is true, directly, through a spread into
+    // an options literal, and through an async call's parameter.
+    const programs = (source: string): readonly string[] =>
+        compileSource(source).manifest.customShaderPrograms.map(
+            (program) =>
+                /position \* ([0-9.]+)/.exec(program.vertexSource)?.[1] ?? "",
+        );
+    assert.deepEqual(
+        programs(`import { createEngine, createSceneContext, createShaderMaterial, wgsl, type EngineContext, type ShaderMaterial } from "@babylonjs/lite";
+const VERTEX = \`struct VertexOutput { @builtin(position) position: vec4<f32>, };
+@vertex fn mainVertex(input: VertexInput) -> VertexOutput { var out: VertexOutput; out.position = shaderSystem.worldViewProjection * vec4<f32>(input.position * /*S*/, 1.0); return out; }\`;
+const FRAGMENT = wgsl\`@fragment fn mainFragment() -> @location(0) vec4<f32> { return vec4<f32>(1.0); }\`;
+interface Opts { dir?: string; fade?: boolean; extra?: boolean; capacity: number }
+function options(capacity: number) {
+    return { dir: "humans", fade: true, capacity } as const;
+}
+async function create(engine: EngineContext, opts: Opts): Promise<ShaderMaterial> {
+    await Promise.resolve();
+    const vertex = VERTEX.replace("/*S*/", opts.fade === true ? (opts.dir === "humans" ? "0.5" : "0.6") : "1.0");
+    return createShaderMaterial({ name: \`m\${opts.capacity}\`, vertexSource: wgsl\`\${vertex}\`, fragmentSource: FRAGMENT, attributes: ["position"], uniforms: ["worldViewProjection"] });
+}
+async function main(): Promise<void> {
+    const engine = await createEngine(document.getElementById("renderCanvas") as HTMLCanvasElement);
+    createSceneContext(engine);
+    await create(engine, { ...options(24), extra: false });
+}
+void main();
+`),
+        ["0.5"],
+    );
+    assert.deepEqual(
+        programs(`import { createEngine, createSceneContext, createShaderMaterial, wgsl } from "@babylonjs/lite";
+const VERTEX = \`struct VertexOutput { @builtin(position) position: vec4<f32>, };
+@vertex fn mainVertex(input: VertexInput) -> VertexOutput { var out: VertexOutput; out.position = shaderSystem.worldViewProjection * vec4<f32>(input.position * /*S*/, 1.0); return out; }\`;
+const FRAGMENT = wgsl\`@fragment fn mainFragment() -> @location(0) vec4<f32> { return vec4<f32>(1.0); }\`;
+interface Opts { dir?: string; fade?: boolean; extra?: boolean; capacity: number }
+function options(capacity: number) {
+    return { dir: "humans", fade: true, capacity } as const;
+}
+async function main(): Promise<void> {
+    const engine = await createEngine(document.getElementById("renderCanvas") as HTMLCanvasElement);
+    createSceneContext(engine);
+    const direct = options(24);
+    const a = VERTEX.replace("/*S*/", direct.dir === "humans" ? "0.5" : "0.6");
+    createShaderMaterial({ name: "a", vertexSource: wgsl\`\${a}\`, fragmentSource: FRAGMENT, attributes: ["position"], uniforms: ["worldViewProjection"] });
+    const spread: Opts = { ...options(24), extra: false };
+    const b = VERTEX.replace("/*S*/", spread.dir === "humans" ? "0.7" : "0.8");
+    createShaderMaterial({ name: "b", vertexSource: wgsl\`\${b}\`, fragmentSource: FRAGMENT, attributes: ["position"], uniforms: ["worldViewProjection"] });
+}
+void main();
+`),
+        ["0.5", "0.7"],
+    );
 });
 
 test("a material builder iterated over a constant table's keys composes one program per key", () => {

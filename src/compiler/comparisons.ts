@@ -246,11 +246,7 @@ export function foldBooleanComparison(
         const resolved = context.evaluator.resolveStaticExpression(side);
         if (resolved.kind === ts.SyntaxKind.TrueKeyword) return true;
         if (resolved.kind === ts.SyntaxKind.FalseKeyword) return false;
-        const value = ts.isIdentifier(resolved)
-            ? context.bindings.lookupOptional(resolved)
-            : ts.isPropertyAccessExpression(resolved)
-              ? context.propertyAccess.compilePropertyAccess(resolved)
-              : undefined;
+        const value = settledRead(context, resolved);
         if (value?.kind === "json-null") return "nullish";
         if (value?.kind === "record" && !value.cpp) return "object";
         // A string or a number generation knows is no boolean.
@@ -275,6 +271,54 @@ export function foldBooleanComparison(
             return undefined;
         return String((left === right) === equals);
     });
+}
+
+/**
+ * `a === b` and `a !== b` over two strings generation knows, read without
+ * evaluating code (a literal, a binding, a property of one), folded ahead
+ * of the data equality that would compare their storage at run time.
+ */
+export function foldStringComparison(
+    context: ComparisonContext,
+    expression: ts.BinaryExpression,
+): string | undefined {
+    const equals =
+        expression.operatorToken.kind === ts.SyntaxKind.EqualsEqualsEqualsToken;
+    if (
+        !equals &&
+        expression.operatorToken.kind !==
+            ts.SyntaxKind.ExclamationEqualsEqualsToken
+    )
+        return undefined;
+    const stringTyped = (side: ts.Expression): boolean =>
+        valueKinds(context.checker.getTypeAtLocation(side)).has("string");
+    if (!stringTyped(expression.left) || !stringTyped(expression.right))
+        return undefined;
+    const text = (side: ts.Expression): string | undefined => {
+        const resolved = context.evaluator.resolveStaticExpression(side);
+        if (ts.isStringLiteralLike(resolved)) return resolved.text;
+        const value = unlessRefused(() => settledRead(context, resolved));
+        return value?.parameterBinding ? undefined : value?.staticString;
+    };
+    return context.probeEmission(() => {
+        const left = text(expression.left);
+        const right = text(expression.right);
+        return left === undefined || right === undefined
+            ? undefined
+            : String((left === right) === equals);
+    });
+}
+
+/** What generation holds for an operand read without evaluating code: a binding, or a property of one. */
+function settledRead(
+    context: ComparisonContext,
+    resolved: ts.Expression,
+): Value | undefined {
+    return ts.isIdentifier(resolved)
+        ? context.bindings.lookupOptional(resolved)
+        : ts.isPropertyAccessExpression(resolved)
+          ? context.propertyAccess.compilePropertyAccess(resolved)
+          : undefined;
 }
 
 /**
