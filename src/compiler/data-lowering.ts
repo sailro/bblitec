@@ -740,6 +740,7 @@ interface DataLoweringContext extends Pick<
     | "fail"
     | "dynamicBindings"
     | "parameterObjects"
+    | "storageTakenDuringAttempt"
 > {
     /** Source storages that keep `null` and `undefined` apart. */
     readonly absenceTags: ReadonlySet<ts.Declaration>;
@@ -3948,6 +3949,8 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             node,
             "accessors",
         );
+        // The fields whose resources need their engine, demanded in one replay.
+        const owned: DataStructField[] = [];
         const represented = fields.map((field) => {
             const actualField = actualFields?.get(field.sourceName);
             const value =
@@ -3998,11 +4001,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 sourceHandle.handle === targetHandle.handle &&
                 field.declarations?.length
             )
-                this.context.dataTypes.requireEngineFieldStorage(
-                    field,
-                    node,
-                    true,
-                );
+                owned.push(field);
             return {
                 ...field,
                 type: retained,
@@ -4014,6 +4013,11 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                     : {}),
             };
         });
+        this.context.dataTypes.requireEngineFieldsStorage(
+            owned,
+            () => node,
+            true,
+        );
         return represented.some(
             (field, index) => !dataTypesEqual(field.type, fields[index]!.type),
         )

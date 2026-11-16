@@ -169,7 +169,29 @@ export class ReplayStorage {
     /** @unjournaled Classes shared from their first construction. */
     readonly sharedClasses = new Set<ts.ClassLikeDeclaration>();
 
+    /**
+     * @unjournaled What this storage took since the running attempt began
+     * (`beginAttempt`): the declarations its demands retype and the literal
+     * unions it gave string element storage. A survey pass takes demands as
+     * it lowers, so what it bound or laid out before one predates that
+     * storage.
+     */
+    private readonly takenSinceAttempt = new Set<ts.Declaration | string>();
+
     public constructor(private readonly checker: ts.TypeChecker) {}
+
+    /** An attempt begins lowering with the storage this holds now. */
+    public beginAttempt(): void {
+        this.takenSinceAttempt.clear();
+    }
+
+    /**
+     * Whether this storage took `taken`, a declaration's demand or a literal
+     * union's string element storage, while the running attempt lowered.
+     */
+    public takenDuringAttempt(taken: ts.Declaration | string): boolean {
+        return this.takenSinceAttempt.has(taken);
+    }
 
     /** A record component's members demand apart: their shared key is renumbered as joins grow. */
     private recordKey(
@@ -192,6 +214,20 @@ export class ReplayStorage {
 
     /** Adds what `request` demands; false when this storage already holds it. */
     public add(request: StorageRequest): boolean {
+        const unions =
+            request.kind === "enum-array"
+                ? request.unions.filter(
+                      (union) => !this.stringElementUnions.has(union),
+                  )
+                : [];
+        const added = this.addRequest(request);
+        if (added && "declaration" in request)
+            this.takenSinceAttempt.add(request.declaration);
+        for (const union of unions) this.takenSinceAttempt.add(union);
+        return added;
+    }
+
+    private addRequest(request: StorageRequest): boolean {
         switch (request.kind) {
             case "dynamic": {
                 const known = this.dynamicBindings.get(request.declaration);

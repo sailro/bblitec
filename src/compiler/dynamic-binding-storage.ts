@@ -509,6 +509,7 @@ export interface HeldRecordContext extends RecordObservationContext {
         DynamicBindingStorage | undefined
     >;
     readonly parameterObjects: ReadonlySet<ts.ParameterDeclaration>;
+    storageTakenDuringAttempt(declaration: ts.Declaration): boolean;
     fail(node: ts.Node, message: string): never;
 }
 
@@ -544,9 +545,14 @@ export function requireHeldRecordStorage(
             demandOrPlan(new ParameterObjectStorageRequired(declaration));
         return;
     }
-    // A binding already given its own storage is still a record only when
-    // lowering its initializer into that storage refused.
-    if (context.dynamicBindings.get(declaration) !== undefined)
+    // A binding already given its own storage is still a record when
+    // lowering its initializer into that storage refused, or when the
+    // storage took the demand after the binding was made (a survey pass
+    // takes demands as it lowers): that demand is raised again.
+    if (
+        context.dynamicBindings.get(declaration) !== undefined &&
+        !context.storageTakenDuringAttempt(declaration)
+    )
         context.fail(
             node,
             `Record '${declaration.name.getText()}' has no native object: its initializer could not be stored natively.`,

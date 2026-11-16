@@ -88,6 +88,7 @@ type ObjectStaticContext = Pick<
     | "bindings"
     | "dynamicBindings"
     | "parameterObjects"
+    | "storageTakenDuringAttempt"
     | "program"
     | "evaluationOrder"
     | "refuseBorrowedPlatformEventEscape"

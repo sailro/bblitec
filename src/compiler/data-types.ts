@@ -1657,14 +1657,6 @@ export class DataTypeRegistry {
             });
     }
 
-    /**
-     * The literal unions whose arrays stored strings when this compile
-     * began. A survey takes a demand while the compile lowers
-     * (`SurveyCollector.attempt`): what was built before it stores that
-     * union's members as tags.
-     */
-    private readonly stringElementUnionsAtStart: ReadonlySet<string>;
-
     public constructor(
         private readonly checker: ts.TypeChecker,
         private readonly fail: Fail,
@@ -1673,9 +1665,7 @@ export class DataTypeRegistry {
         private readonly asynchronous = false,
         /** The storage demands this compile replays with; read, never added to. */
         private readonly storage = new ReplayStorage(checker),
-    ) {
-        this.stringElementUnionsAtStart = new Set(storage.stringElementUnions);
-    }
+    ) {}
 
     /** Demands a record join; a planning attempt goes on with a copy. */
     private requireJoin(demand: NativeRecordStorageDemand): void {
@@ -1732,8 +1722,7 @@ export class DataTypeRegistry {
             switch (type.kind) {
                 case "enum": {
                     const union = this.enumLiterals(type.name);
-                    return this.storage.stringElementUnions.has(union) &&
-                        !this.stringElementUnionsAtStart.has(union)
+                    return this.storage.takenDuringAttempt(union)
                         ? { kind: "string" }
                         : type;
                 }
@@ -3405,14 +3394,23 @@ export class DataTypeRegistry {
             )
         )
             return;
-        for (const declaration of field.declarations ?? [])
-            if (
-                isEngineOwnerStorageDeclaration(declaration) &&
-                !this.storage.engineOwners.has(declaration)
-            ) {
-                this.requireEngineOwner(declaration);
-                return;
-            }
+        const owners = (field.declarations ?? []).filter(
+            isEngineOwnerStorageDeclaration,
+        );
+        // A field whose owner the storage took after this attempt laid it
+        // out (a survey pass takes demands as it lowers) raises that demand
+        // again, for a layout built with it.
+        const owner =
+            owners.find(
+                (declaration) => !this.storage.engineOwners.has(declaration),
+            ) ??
+            owners.find((declaration) =>
+                this.storage.takenDuringAttempt(declaration),
+            );
+        if (owner) {
+            this.requireEngineOwner(owner);
+            return;
+        }
         this.fail(
             node,
             `Resource field '${field.sourceName}' requires represented engine owner storage.`,
@@ -3424,16 +3422,17 @@ export class DataTypeRegistry {
      * node writing it (`nodeOf`), in order. A field's storage depends on its own
      * declarations alone, so the store demands every field that needs its
      * engine in one replay; a field that refuses ends the scan, as the
-     * store would.
+     * store would. `elements` as `requireEngineFieldStorage` takes it.
      */
     public requireEngineFieldsStorage(
         fields: readonly DataStructField[],
         nodeOf: (field: DataStructField) => ts.Node,
+        elements = false,
     ): void {
         const demands: EngineOwnerStorageRequired[] = [];
         for (const field of fields) {
             try {
-                this.requireEngineFieldStorage(field, nodeOf(field));
+                this.requireEngineFieldStorage(field, nodeOf(field), elements);
             } catch (error) {
                 if (!(error instanceof EngineOwnerStorageRequired)) {
                     if (demands.length === 0) throw error;

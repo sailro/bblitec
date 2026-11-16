@@ -337,6 +337,91 @@ test("arrays a pass built before it gave a literal union string storage read as 
     assert.deepEqual(settled.refusals, [], listed(settled));
 });
 
+test("a store into a layout built before the pass took its field's engine owner is that demand's", () => {
+    // `first` takes the engine owner of `panel`; `second` stores into the
+    // layout the pass built before it, which the pass a limit ends at rolls
+    // back for the demand: the next pass lowers both with it.
+    const source = `
+        interface Layer { readonly panel: HTMLElement; readonly count: number }
+        const layers: Layer[] = [];
+        export function first(panel: HTMLElement): void { layers.push({ panel, count: 1 }); }
+        export function second(panel: HTMLElement): void { layers.push({ panel, count: 2 }); }
+        console.log(layers.length);
+    `;
+    const fileName = resolve("survey-stale-owner.ts");
+    const limited = surveySource(source, { fileName }, { passLimit: 1 }).report;
+    assert.deepEqual(limited.refusals, [], listed(limited));
+    assert.deepEqual(
+        limited.demands.map((demand) => [
+            demand.demand,
+            demand.rolledBackAt.map((site) => site.split(":").at(-1)),
+        ]),
+        [["engine-owner", ["4", "5"]]],
+    );
+    const { report } = surveySource(source, { fileName });
+    assert.deepEqual(report.refusals, [], listed(report));
+    assert.deepEqual(report.demands, []);
+});
+
+test("a read of a record bound before the pass took its storage is that demand's", () => {
+    // The module binds `B` as a record; the third pass's `layout` root
+    // takes its storage, and `capacity`, lowered later in that pass, reads
+    // the record bound before it: the pass a limit ends at rolls it back
+    // for the demand, as the next pass lowers both with it.
+    const source = `
+        type Kind = "a" | "b";
+        const A = { capacity: 2, slots: [1, 2] } as const;
+        const B = { capacity: 3, slots: [1, 2, 3] } as const;
+        const LAYOUTS = { a: A, b: B };
+        export function layout(kind: Kind) { return LAYOUTS[kind]; }
+        export function capacity(kind: Kind): number { return layout(kind).capacity; }
+        console.log(LAYOUTS.a.capacity);
+    `;
+    const fileName = resolve("survey-stale-record.ts");
+    const limited = surveySource(source, { fileName }, { passLimit: 3 }).report;
+    assert.deepEqual(limited.refusals, [], listed(limited));
+    assert.deepEqual(
+        limited.demands.map((demand) => [
+            demand.demand,
+            demand.rolledBackAt.map((site) => site.split(":").at(-1)),
+        ]),
+        [["dynamic", ["7"]]],
+    );
+    const { report } = surveySource(source, { fileName });
+    assert.deepEqual(report.refusals, [], listed(report));
+    assert.deepEqual(report.demands, []);
+});
+
+test("a retained record result demands every field's engine owner in one replay", (t) => {
+    // `measure` lays out `Parts` before `build` returns one: once the
+    // first pass shares the record, the next meets its three meshes'
+    // owners as one demand, not one pass each.
+    const directory = mkdtempSync(join(tmpdir(), "bblite-retained-owners-"));
+    t.after(() => rmSync(directory, { recursive: true, force: true }));
+    writeFileSync(join(directory, "worker.ts"), "self.close();");
+    const source = `
+        const worker = new Worker(new URL("./worker.ts", import.meta.url), { type: "module" }); worker.terminate();
+        import { createBox, type EngineContext, type Mesh } from "@babylonjs/lite";
+        interface Parts { readonly a: Mesh; readonly b: Mesh; readonly c: Mesh; readonly size: number }
+        let total = 0;
+        export function measure(parts: Parts): void { total += parts.size; }
+        export async function build(engine: EngineContext): Promise<Parts> {
+            await Promise.resolve(engine);
+            return { a: createBox(engine), b: createBox(engine), c: createBox(engine), size: 1 };
+        }
+        localStorage.setItem("total", String(total));
+    `;
+    const fileName = join(directory, "entry.ts");
+    const limited = surveySource(source, { fileName }, { passLimit: 2 }).report;
+    assert.deepEqual(
+        limited.demands.map((demand) => demand.demand),
+        ["engine-owner x3"],
+    );
+    const { report } = surveySource(source, { fileName });
+    assert.deepEqual(report.refusals, [], listed(report));
+    assert.deepEqual(report.demands, []);
+});
+
 test("a refused value return is the calling statement's refusal", () => {
     // `pick` refuses inside its return; the survey must not hand `chosen` a
     // hole, so its declaration refuses at the one site inside `pick`. Its

@@ -158,6 +158,8 @@ export interface LoweringServices {
     >;
     /** Record parameters a storage demand gave their own object. */
     readonly parameterObjects: ReadonlySet<ts.ParameterDeclaration>;
+    /** Whether the storage took a demand for `declaration` while this attempt lowered (`ReplayStorage.takenDuringAttempt`). */
+    storageTakenDuringAttempt(declaration: ts.Declaration): boolean;
     readonly conditions: ConditionLowerer;
     readonly browserErasure: BrowserErasure;
     readonly declarations: DeclarationLowerer;

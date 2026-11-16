@@ -314,6 +314,7 @@ export interface ExpressionContext
             | "probeStaticArrayLiteral"
             | "dynamicBindings"
             | "parameterObjects"
+            | "storageTakenDuringAttempt"
             | "conditionOverrides"
             | "valueOverrides"
             | "impureReadCount"

@@ -770,6 +770,7 @@ function lowerSourceApplication(
         const lazyModules = new Set<ts.SourceFile>();
         const newCompiler = (planner?: StorageDemandPlanner): Compiler => {
             recordStorageCompileAttempt(planner !== undefined);
+            storage.beginAttempt();
             return new Compiler(
                 input.program,
                 input.sourceFile,
@@ -7569,6 +7570,10 @@ class Compiler implements LoweringServices {
 
     public transaction(work: () => void): void {
         this.emissionTransaction(work, commitAlways);
+    }
+
+    public storageTakenDuringAttempt(declaration: ts.Declaration): boolean {
+        return this.replayStorage.takenDuringAttempt(declaration);
     }
 
     public refusedDemand(error: unknown): CompileError | undefined {

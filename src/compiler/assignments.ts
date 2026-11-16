@@ -662,6 +662,7 @@ export interface AssignmentContext
             | "evaluationOrder"
             | "dynamicBindings"
             | "parameterObjects"
+            | "storageTakenDuringAttempt"
             | "libraryGlobal"
             | "admissions"
             | "isRuntimeResourceConstruction"
