@@ -1045,14 +1045,15 @@ test("a root of a generic function no call binds lowers at its constraints", () 
 });
 
 test("a root's capture with no storage of its type stays unbound", () => {
-    // `track` is a generic function or nothing, which no storage holds: the
-    // inner root lowers its other statements, the one reading `track`
-    // cascades from it, and the reason rolls back no statement.
+    // `track` is a generic function or nothing, which no storage holds, and
+    // a `let` the root does not bind by its initializer: the inner root
+    // lowers its other statements, the one reading `track` cascades from
+    // it, and the reason rolls back no statement.
     const { report } = surveySource(
         `
         interface Options { track?: <T>(label: string, work: () => T) => T }
         export function outer(opts: Options): () => number {
-            const track = opts.track ? <T>(label: string, work: () => T): T => opts.track!(label, work) : undefined;
+            let track = opts.track ? <T>(label: string, work: () => T): T => opts.track!(label, work) : undefined;
             let total = 0;
             return () => {
                 total += 1;
@@ -1075,6 +1076,47 @@ test("a root's capture with no storage of its type stays unbound", () => {
     assert.equal(reason.statements, 0);
     assert.equal(read.statement.line, 8);
     assert.deepEqual(read.cascade, reason.site);
+});
+
+test("a root's capture holding a function or nothing binds what its initializer makes", () => {
+    // `perfTrack` reads a debug hook the program writes only under `?debug`,
+    // so it holds nothing natively: the roots capturing `trackAppWork` bind
+    // `perfTrack` to that and `trackAppWork` to the arrow it selects.
+    const { report } = surveySource(
+        `
+        interface World { captureUndoState(): number }
+        async function buildScene(): Promise<World> {
+            const params = new URLSearchParams(location.search);
+            const rows = params.has("debug") ? new Map<string, number>() : null;
+            const trackWork = <T>(_label: string, work: () => T): T => work();
+            if (rows) {
+                (window as unknown as Record<string, unknown>).ccPerf = { track: trackWork };
+            }
+            let undo = 0;
+            const report = (): number => (rows ? rows.size : 0) + (params.has("verbose") ? 1 : 0);
+            (window as unknown as Record<string, unknown>).ccReport = report;
+            return { captureUndoState: () => ++undo };
+        }
+        async function main(): Promise<void> {
+            let world = await buildScene();
+            const perfTrack = ((window as unknown as Record<string, unknown>).ccPerf as {
+                track?: <T>(label: string, work: () => T) => T;
+            } | undefined)?.track;
+            const trackAppWork = perfTrack
+                ? <T>(label: string, work: () => T): T => perfTrack(label, work)
+                : <T>(_label: string, work: () => T): T => work();
+            const captureUndo = (): number => {
+                return trackAppWork("undo", () => world.captureUndoState());
+            };
+            const unused = (): void => { console.log(captureUndo()); };
+            void unused;
+            world = await buildScene();
+        }
+        void main();
+    `,
+        { fileName: resolve("survey-optional-function-capture.ts") },
+    );
+    assert.deepEqual(report.refusals, [], listed(report));
 });
 
 test("a root's engine object no storage holds stands as its pinned base's handle", () => {

@@ -916,9 +916,10 @@ interface CapturedLocal {
 const capturedLocals = new WeakMap<ts.Node, CapturedLocal[]>();
 
 /**
- * The initializer of a `const` declared `local` that holds a function --
- * a literal, a choice of literals (`traced ? <T>(...) => ... : ...`), a
- * factory's result -- if any.
+ * The initializer of a `const` declared `local` that holds a function, or
+ * a function or nothing -- a literal, a choice of literals
+ * (`traced ? <T>(...) => ... : ...`), a factory's result, an optional hook
+ * (`host?.track`) -- if any.
  */
 function constFunctionInitializer(
     checker: ts.TypeChecker,
@@ -935,7 +936,7 @@ function constFunctionInitializer(
     return callSignatures(
         checker,
         checker.getTypeAtLocation(local.name),
-        "exact",
+        "present",
     ).length > 0
         ? local.initializer
         : undefined;
