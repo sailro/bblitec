@@ -304,6 +304,39 @@ test("roots a pass's demand leaves stale lower again in that pass, unless a limi
     assert.deepEqual(rounds({ passLimit: 1 }), []);
 });
 
+test("arrays a pass built before it gave a literal union string storage read as the strings it stores", () => {
+    // The record (line 5) stores both unions' members as tags before either
+    // demand. The first read meets A's demand, then the record's A array
+    // reads as strings and the read goes on to B's demand: one pass takes
+    // both, and the second read converts nothing a compile with both
+    // demands would not.
+    const source = `
+        type A = "a1" | "a2";
+        type B = "b1" | "b2";
+        interface Plate { a: A[]; b: B[] }
+        const plate: Plate = { a: ["a1"], b: ["b1"] };
+        plate.a.push("a2");
+        plate.b.push("b2");
+        const pick = Math.random() < 0.5;
+        const first: readonly string[] = pick ? plate.a : plate.b;
+        const second: readonly string[] = pick ? plate.a : plate.b;
+        console.log(first.length + second.length);
+    `;
+    const survey = (passLimit?: number): SurveyReport =>
+        surveySource(
+            source,
+            { fileName: resolve("survey-late-union-storage.ts") },
+            passLimit === undefined ? {} : { passLimit },
+        ).report;
+    const first = survey(1);
+    assert.deepEqual(first.refusals, [], listed(first));
+    assert.equal(first.statements.demanded, 0);
+    const settled = survey();
+    assert.equal(settled.complete, true);
+    assert.equal(settled.passes, 2);
+    assert.deepEqual(settled.refusals, [], listed(settled));
+});
+
 test("a refused value return is the calling statement's refusal", () => {
     // `pick` refuses inside its return; the survey must not hand `chosen` a
     // hole, so its declaration refuses at the one site inside `pick`. Its

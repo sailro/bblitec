@@ -491,6 +491,9 @@ export function plainLane(type: DataType): boolean {
  * reads it and nothing the call runs changes it, a destructuring reads it
  * where it is produced, or its lanes are plain values and no change or
  * identity use in the program reaches an array that may be either one.
+ * Elements stored alike but for literal unions whose string storage the
+ * compile took while it lowered (`storedAlikeSinceStart`) are one array in
+ * the storage it now holds: the copy stands only for what it built before.
  */
 function convertedElementsCopy(
     dataType: DataType<"vector">,
@@ -516,7 +519,14 @@ function convertedElementsCopy(
         array !== undefined &&
         (arrayLentForCall(lowerer.context, array) ||
             arrayDestructuredAtOnce(array));
-    if (!unaliased && !lent) {
+    if (
+        !unaliased &&
+        !lent &&
+        !lowerer.context.dataTypes.storedAlikeSinceStart(
+            element,
+            dataType.element,
+        )
+    ) {
         const checker = lowerer.context.checker;
         const target = array && checker.getContextualType(array);
         const observed =

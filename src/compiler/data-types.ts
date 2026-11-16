@@ -1657,6 +1657,14 @@ export class DataTypeRegistry {
             });
     }
 
+    /**
+     * The literal unions whose arrays stored strings when this compile
+     * began. A survey takes a demand while the compile lowers
+     * (`SurveyCollector.attempt`): what was built before it stores that
+     * union's members as tags.
+     */
+    private readonly stringElementUnionsAtStart: ReadonlySet<string>;
+
     public constructor(
         private readonly checker: ts.TypeChecker,
         private readonly fail: Fail,
@@ -1665,7 +1673,9 @@ export class DataTypeRegistry {
         private readonly asynchronous = false,
         /** The storage demands this compile replays with; read, never added to. */
         private readonly storage = new ReplayStorage(checker),
-    ) {}
+    ) {
+        this.stringElementUnionsAtStart = new Set(storage.stringElementUnions);
+    }
 
     /** Demands a record join; a planning attempt goes on with a copy. */
     private requireJoin(demand: NativeRecordStorageDemand): void {
@@ -1708,6 +1718,45 @@ export class DataTypeRegistry {
     /** Whether arrays of the named literal union store its members as strings. */
     public storesEnumElementsAsStrings(name: string): boolean {
         return this.storage.stringElementUnions.has(this.enumLiterals(name));
+    }
+
+    /**
+     * Whether array elements of `source` and `target` types are stored
+     * alike but for literal unions whose string storage this compile took
+     * while it lowered (a survey takes a demand at once): an array built
+     * before that demand stores the union's members as tags, one built
+     * after as strings, through optional lanes and nested arrays.
+     */
+    public storedAlikeSinceStart(source: DataType, target: DataType): boolean {
+        const late = (type: DataType): DataType => {
+            switch (type.kind) {
+                case "enum": {
+                    const union = this.enumLiterals(type.name);
+                    return this.storage.stringElementUnions.has(union) &&
+                        !this.stringElementUnionsAtStart.has(union)
+                        ? { kind: "string" }
+                        : type;
+                }
+                case "optional": {
+                    const inner = late(type.inner);
+                    return inner === type.inner ? type : { ...type, inner };
+                }
+                case "vector":
+                case "span": {
+                    const element = late(type.element);
+                    return element === type.element
+                        ? type
+                        : { ...type, element };
+                }
+                default:
+                    return type;
+            }
+        };
+        const [lateSource, lateTarget] = [late(source), late(target)];
+        return (
+            (lateSource !== source || lateTarget !== target) &&
+            dataTypesEqual(lateSource, lateTarget)
+        );
     }
 
     /**
