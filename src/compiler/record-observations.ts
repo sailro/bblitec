@@ -179,7 +179,9 @@ export function recordCopyObservation(
  * Asking only whether the field stays present, a plain assignment of a value
  * that is neither null nor undefined cannot remove it. A record whose object
  * an `origin` literal creates is reached by no write through a `const` holding
- * another literal's object (`ObservedWrite.freshObject`).
+ * another literal's object (`ObservedWrite.freshObject`). With `holding`, the
+ * value the field is known to hold, a write that runs only when its slot
+ * holds another value (`writeGuardRejects`) is not counted.
  */
 export function recordFieldIsWritten(
     context: RecordObservationContext,
@@ -187,6 +189,7 @@ export function recordFieldIsWritten(
     property: string,
     keepsPresent = false,
     origin?: ts.Node,
+    holding?: { readonly value: unknown },
 ): boolean {
     return cachedFieldWrite(
         context,
@@ -195,6 +198,7 @@ export function recordFieldIsWritten(
         keepsPresent,
         origin,
         false,
+        holding,
     );
 }
 

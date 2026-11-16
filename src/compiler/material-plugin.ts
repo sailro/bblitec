@@ -689,15 +689,7 @@ function foldPluginObject(
             continue;
         }
         if (member === "priority") {
-            if (
-                !ts.isPropertyAssignment(property) ||
-                recordFieldIsWritten(
-                    context,
-                    context.checker.getTypeAtLocation(object),
-                    member,
-                    false,
-                )
-            )
+            if (!ts.isPropertyAssignment(property))
                 context.fail(
                     property,
                     "MaterialPlugin.priority must be constant.",
@@ -707,6 +699,22 @@ function foldPluginObject(
                 context.fail(
                     property,
                     "MaterialPlugin.priority must be a finite constant number.",
+                );
+            // The literal creates the plugin's record, which holds `priority`
+            // until a write replaces it.
+            if (
+                recordFieldIsWritten(
+                    context,
+                    context.checker.getTypeAtLocation(object),
+                    member,
+                    false,
+                    object,
+                    { value: priority },
+                )
+            )
+                context.fail(
+                    property,
+                    "MaterialPlugin.priority must be constant.",
                 );
             continue;
         }
