@@ -4284,22 +4284,42 @@ function compileStringPositionSearch(
     const searchNode = argumentAt(call, 0);
     const searchValue = context.compileValue(searchNode);
     const positionNode = call.arguments[1];
+    // A position generation knows, or none: the search folds over known text.
+    const knownPosition =
+        positionNode === undefined
+            ? null
+            : (staticNumberValue(context, positionNode) ??
+              context.probeEmission(
+                  () => {
+                      const value = context.compileValue(positionNode);
+                      return value.kind === "number" &&
+                          value.staticNumber !== undefined &&
+                          !value.parameterBinding
+                          ? value.staticNumber
+                          : undefined;
+                  },
+                  () => false,
+              ));
     if (
-        search.fold &&
-        !positionNode &&
+        knownPosition !== undefined &&
         narrowed.staticString !== undefined &&
         searchValue.staticString !== undefined
     ) {
+        if (positionNode)
+            context.emitDiscardedValue(context.compileValue(positionNode));
         const value = search.fold(
             narrowed.staticString,
             searchValue.staticString,
+            knownPosition ?? undefined,
         );
-        return {
-            kind: "boolean",
-            cpp: value ? "true" : "false",
-            staticBoolean: value,
-            dataType: { kind: "boolean" },
-        };
+        return typeof value === "boolean"
+            ? {
+                  kind: "boolean",
+                  cpp: value ? "true" : "false",
+                  staticBoolean: value,
+                  dataType: { kind: "boolean" },
+              }
+            : numberConstantValue(value);
     }
     const searchText = lowerer.compileKnownValueForSink(
         pins[1]

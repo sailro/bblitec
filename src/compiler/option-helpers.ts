@@ -884,6 +884,16 @@ export function staticNumberValue(
             ? foldMathCall(mathCall.name, values)
             : undefined;
     }
+    // A string generation knows has a known length.
+    if (
+        ts.isPropertyAccessExpression(node) &&
+        node.name.text === "length" &&
+        ts.isIdentifier(node.expression)
+    ) {
+        const text = context.bindings.lookupOptional(node.expression);
+        if (text?.staticString !== undefined && !text.parameterBinding)
+            return text.staticString.length;
+    }
     if (ts.isPropertyAccessExpression(node) && context.staticProperty) {
         return context.staticProperty(node);
     }

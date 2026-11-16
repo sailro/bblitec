@@ -1,5 +1,5 @@
 import ts from "typescript";
-import { forEachAnalysisNode } from "./analysis-walk.js";
+import { forEachAnalysisNode, identifiersByName } from "./analysis-walk.js";
 import { forEachReturn } from "./loop-control.js";
 import {
     declaredInDefaultLibrary,
@@ -9,12 +9,14 @@ import {
     namedMember,
     accessedPropertySymbol,
     resolvedSymbol,
+    valueSymbolOf,
 } from "./symbols.js";
 import {
     isOperandSelection,
     unwrapExpression,
     valueOperands,
     variableKind,
+    writeSiteOf,
 } from "./syntax.js";
 
 /**
@@ -89,6 +91,49 @@ export function yieldsFreshObject(
     node: ts.Node,
 ): boolean {
     return fresh(checker, node, new Set());
+}
+
+/**
+ * Whether `name` reads a `const` whose initializer yields a fresh object
+ * ({@link yieldsFreshObject}) that only reads of its properties reference:
+ * no other reference holds that object, so no write in the program reaches
+ * its fields.
+ */
+export function readOnlyFreshConst(
+    checker: ts.TypeChecker,
+    name: ts.Node,
+): boolean {
+    if (!ts.isIdentifier(name)) return false;
+    const symbol = valueSymbolOf(checker, name);
+    const declaration = symbol?.valueDeclaration;
+    if (
+        !declaration ||
+        !ts.isVariableDeclaration(declaration) ||
+        !ts.isIdentifier(declaration.name) ||
+        variableKind(declaration) !== "const" ||
+        !declaration.initializer ||
+        !yieldsFreshObject(checker, declaration.initializer)
+    )
+        return false;
+    const references =
+        identifiersByName(declaration.getSourceFile()).get(name.text) ?? [];
+    return references.every((reference) => {
+        if (
+            reference === declaration.name ||
+            valueSymbolOf(checker, reference) !== symbol
+        )
+            return true;
+        const read = reference.parent;
+        return (
+            ts.isPropertyAccessExpression(read) &&
+            read.expression === reference &&
+            writeSiteOf(read) === undefined &&
+            !(
+                ts.isCallExpression(read.parent) &&
+                read.parent.expression === read
+            )
+        );
+    });
 }
 
 /**

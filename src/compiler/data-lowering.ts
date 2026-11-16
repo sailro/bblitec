@@ -263,6 +263,7 @@ import { isTrsVectorName } from "./assignments.js";
 import {
     constObjectLiteral,
     mappedElement,
+    readOnlyFreshConst,
     yieldsFreshObject,
 } from "./fresh-records.js";
 import {
@@ -6075,6 +6076,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                     owner.recordOwnKeys !== undefined) &&
                 (readNode.pos < 0 ||
                     created?.frozen === true ||
+                    readOnlyFreshConst(this.context.checker, readNode) ||
                     !recordFieldIsWritten(
                         this.context,
                         sourceType,

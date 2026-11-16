@@ -7145,6 +7145,76 @@ void main();
     assert.ok(programs.every((scale) => scale.endsWith(" * 1.1")));
 });
 
+test("a string search over known text and position folds, and a known string has a known length", () => {
+    // A shader variant replaces a token it requires once: indexOf, indexOf
+    // from the position after it, and the slices around it are known.
+    const programs =
+        compileSource(`import { createEngine, createSceneContext, createShaderMaterial, wgsl } from "@babylonjs/lite";
+const HEAD = "// skinned";
+function vertexFor(bones: boolean, scale: number): string {
+    return \`\${HEAD}
+struct VertexOutput { @builtin(position) position: vec4<f32>, };
+@vertex fn mainVertex(input: VertexInput) -> VertexOutput { var out: VertexOutput; out.position = shaderSystem.worldViewProjection * vec4<f32>(input.position * \${bones ? scale : 1}, 1.0); return out; }\`;
+}
+function withPresence(vertex: string): { vertex: string } {
+    const output = "struct VertexOutput {";
+    const field = \`\${output} @location(9) vPresence: f32,\`;
+    const once = (source: string, token: string, replacement: string): string => {
+        const at = source.indexOf(token);
+        if (at < 0 || source.indexOf(token, at + token.length) >= 0) throw new Error(\`token not unique: \${token}\`);
+        return source.slice(0, at) + replacement + source.slice(at + token.length);
+    };
+    return { vertex: once(vertex, output, field) };
+}
+async function main(): Promise<void> {
+    const engine = await createEngine(document.getElementById("renderCanvas") as HTMLCanvasElement);
+    createSceneContext(engine);
+    let vertexSource = vertexFor(true, 0.5);
+    const present = withPresence(vertexSource);
+    vertexSource = present.vertex;
+    createShaderMaterial({ name: "m", vertexSource: wgsl\`\${vertexSource}\`, fragmentSource: wgsl\`@fragment fn mainFragment() -> @location(0) vec4<f32> { return vec4<f32>(1.0); }\`, attributes: ["position"], uniforms: ["worldViewProjection"] });
+}
+void main();
+`).manifest.customShaderPrograms.map(
+            (program) =>
+                /position \* ([0-9.]+)/.exec(program.vertexSource)?.[1] ?? "",
+        );
+    assert.deepEqual(programs, ["0.5"]);
+});
+
+test("a const holding a fresh record only read through its properties keeps the record's fields", () => {
+    // A dynamic-key write on a dictionary may reach any record of string
+    // fields, but not the helper's fresh result a const holds and only reads.
+    const programs =
+        compileSource(`import { createEngine, createSceneContext, createShaderMaterial, wgsl } from "@babylonjs/lite";
+const VERTEX = \`struct VertexOutput { @builtin(position) position: vec4<f32>, };
+@vertex fn mainVertex(input: VertexInput) -> VertexOutput { var out: VertexOutput; out.position = shaderSystem.worldViewProjection * vec4<f32>(input.position * 0.5, 1.0); return out; }\`;
+const FRAGMENT = "@fragment fn mainFragment() -> @location(0) vec4<f32> { return vec4<f32>(1.0); }";
+type Sources = { vertex: string; fragment: string };
+function withTag(vertex: string, fragment: string): Sources {
+    return { vertex: \`// tagged\\n\${vertex}\`, fragment };
+}
+const kept: Sources[] = [];
+const names: Record<string, string> = {};
+function put(record: Record<string, string>, key: string, value: string): void { record[key] = value; }
+async function main(): Promise<void> {
+    const engine = await createEngine(document.getElementById("renderCanvas") as HTMLCanvasElement);
+    createSceneContext(engine);
+    kept.push({ vertex: "a", fragment: "b" });
+    put(names, String(Math.random()), "x");
+    let vertexSource = VERTEX;
+    const present = withTag(vertexSource, FRAGMENT);
+    vertexSource = present.vertex;
+    createShaderMaterial({ name: "m", vertexSource: wgsl\`\${vertexSource}\`, fragmentSource: wgsl\`\${present.fragment}\`, attributes: ["position"], uniforms: ["worldViewProjection"] });
+}
+void main();
+`).manifest.customShaderPrograms.map(
+            (program) =>
+                /position \* ([0-9.]+)/.exec(program.vertexSource)?.[1] ?? "",
+        );
+    assert.deepEqual(programs, ["0.5"]);
+});
+
 test("a material builder iterated over a constant table's keys composes one program per key", () => {
     const source = (iteration: string): string =>
         `import { addToScene, createArcRotateCamera, createEngine, createPlane, createSceneContext, createShaderMaterial, registerScene, startEngine, wgsl, type EngineContext, type ShaderMaterial } from "@babylonjs/lite";
