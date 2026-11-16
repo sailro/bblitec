@@ -146,6 +146,7 @@ import {
     referenceSite,
     accessKey,
     bindingNameIdentifiers,
+    objectLiteralMembers,
     plainDataMembers,
     positionalParameter,
     isAsyncFunction,
@@ -2045,7 +2046,14 @@ export class UserFunctionLowerer {
                     ];
                 }),
         );
-        writable(held).recordOwnKeys = ownKeys;
+        // The literal's keys are the record's whole key set only where no
+        // spread or prototype member may add one or leave one out.
+        if (
+            objectLiteralMembers(recordReturn).every(
+                (member) => member.kind !== "spread" && member.kind !== "proto",
+            )
+        )
+            writable(held).recordOwnKeys = ownKeys;
         return held;
     }
 
