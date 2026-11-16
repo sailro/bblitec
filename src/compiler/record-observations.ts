@@ -17,6 +17,7 @@ import {
     type ProgramObservations,
 } from "./program-observations.js";
 import { yieldsNewArray } from "./fresh-records.js";
+import { enclosedReference } from "./array-length-growth.js";
 import { bindingReferences, soleBindingRead } from "./binding-references.js";
 import { OPEN_HOLDER_FLAGS } from "./written-holders.js";
 import {
@@ -78,6 +79,11 @@ const answers = new WeakMap<
 >();
 /** @unjournaled Pure functions of the checked program, kept across replays. */
 const arrayWriteAnswers = new WeakMap<
+    ts.Type,
+    WeakMap<ts.Type, string | null>
+>();
+/** @unjournaled Pure functions of the checked program, kept across replays. */
+const builtArrayWriteAnswers = new WeakMap<
     ts.Type,
     WeakMap<ts.Type, string | null>
 >();
@@ -406,26 +412,158 @@ export function arrayCopyObservation(
     );
 }
 
-/** Writes that may change an array's contents; identity observations do not change its size. */
+/**
+ * Writes that may change an array's contents; identity observations do not
+ * change its size. With `read`, the expression an array is read through, a
+ * write through a binding that builds its array before sharing it
+ * (`buildsUnsharedArray`) counts only when `read` names such a binding:
+ * any other expression reaches that array once it is built.
+ */
 export function arrayWriteObservation(
     context: RecordObservationContext,
     source: ts.Type,
     target: ts.Type,
+    read?: ts.Expression,
 ): string | undefined {
-    let byTarget = arrayWriteAnswers.get(source);
-    if (!byTarget) arrayWriteAnswers.set(source, (byTarget = new WeakMap()));
+    const built = read !== undefined && !buildsUnsharedArray(context, read);
+    const cached = built ? builtArrayWriteAnswers : arrayWriteAnswers;
+    let byTarget = cached.get(source);
+    if (!byTarget) cached.set(source, (byTarget = new WeakMap()));
     let answer = byTarget.get(target);
     if (answer === undefined) {
-        answer = observedArrayWrites(context, source, target) ?? null;
+        answer = observedArrayWrites(context, source, target, built) ?? null;
         byTarget.set(target, answer);
     }
     return answer ?? undefined;
 }
 
+/**
+ * Whether `array` names a binding that builds its array before any other
+ * reference can hold it: a function's `const` initialized with a new array,
+ * named in no nested function or class, where every statement writing
+ * through it ends before any reference sharing the array (one
+ * `enclosedReference` rejects) begins, and no loop holds both but one whose
+ * body declares the binding. Until then only the binding reaches that array.
+ */
+function buildsUnsharedArray(
+    context: RecordObservationContext,
+    array: ts.Expression,
+): boolean {
+    const name = unwrapExpression(array);
+    const symbol = ts.isIdentifier(name)
+        ? resolvedSymbol(context.checker, name)
+        : undefined;
+    if (!symbol) return false;
+    let unshared = unsharedArrayBindings.get(symbol);
+    if (unshared === undefined) {
+        unshared = arrayBuiltBeforeShared(context, symbol);
+        unsharedArrayBindings.set(symbol, unshared);
+    }
+    return unshared;
+}
+
+/** @unjournaled {@link buildsUnsharedArray}'s answers by binding: pure functions of the checked program. */
+const unsharedArrayBindings = new WeakMap<ts.Symbol, boolean>();
+
+/** {@link buildsUnsharedArray}, computed. */
+function arrayBuiltBeforeShared(
+    context: RecordObservationContext,
+    symbol: ts.Symbol,
+): boolean {
+    const { program, checker } = context;
+    const declaration = symbol.valueDeclaration;
+    if (
+        !declaration ||
+        !ts.isVariableDeclaration(declaration) ||
+        !declaration.initializer ||
+        variableKind(declaration) !== "const" ||
+        !newArrayExpression(checker, declaration.initializer)
+    )
+        return false;
+    const owner = activationOf(declaration.parent);
+    if (!owner || !ts.isFunctionLike(owner) || isGeneratorFunction(owner))
+        return false;
+    const written = observedWriteNodes(programObservations(program));
+    const writes: ts.Statement[] = [];
+    const shared: ts.Expression[] = [];
+    for (const site of bindingReferences(program, checker, symbol)) {
+        if (activationOf(site.parent) !== owner) return false;
+        const statement = writingStatement(site, written);
+        if (statement) writes.push(statement);
+        if (!enclosedReference(checker, site)) shared.push(site);
+    }
+    const contains = (outer: ts.Node, inner: ts.Node): boolean =>
+        outer.pos <= inner.pos && inner.end <= outer.end;
+    // A loop whose body declares the binding runs a new one each iteration.
+    const loopHolds = (statement: ts.Statement, use: ts.Expression): boolean =>
+        ts.findAncestor(statement, (node) =>
+            !ts.isIterationStatement(node, false)
+                ? false
+                : contains(node.statement, declaration)
+                  ? "quit"
+                  : contains(node, use),
+        ) !== undefined;
+    return writes.every((statement) =>
+        shared.every(
+            (use) =>
+                statement.end <= use.getStart() && !loopHolds(statement, use),
+        ),
+    );
+}
+
+/** The function or class whose activation evaluates `node`. */
+function activationOf(node: ts.Node): ts.Node | undefined {
+    return ts.findAncestor(
+        node,
+        (ancestor) => ts.isFunctionLike(ancestor) || ts.isClassLike(ancestor),
+    );
+}
+
+/**
+ * The statement holding the write a reference to an array binding makes as
+ * the receiver of an observed write (`ProgramObservations`): an element or
+ * `length` write, or a mutating method call.
+ */
+function writingStatement(
+    site: ts.Expression,
+    written: ReadonlySet<ts.Node>,
+): ts.Statement | undefined {
+    const consumer = valueConsumer(outermostWrapper(site));
+    if (consumer.kind !== "member") return undefined;
+    const call = outermostWrapper(consumer.access).parent;
+    return written.has(consumer.access) ||
+        (ts.isCallExpression(call) && written.has(call))
+        ? ts.findAncestor(consumer.access, ts.isStatement)
+        : undefined;
+}
+
+/** Every observed write's node. */
+function observedWriteNodes(
+    observations: ProgramObservations,
+): ReadonlySet<ts.Node> {
+    let nodes = writeNodes.get(observations);
+    if (!nodes) {
+        nodes = new Set(
+            [
+                ...observations.arrayWrites.values(),
+                ...observations.writes.values(),
+            ]
+                .flat()
+                .map((write) => write.node),
+        );
+        writeNodes.set(observations, nodes);
+    }
+    return nodes;
+}
+
+/** @unjournaled {@link observedWriteNodes} per program: a pure function of the checked program. */
+const writeNodes = new WeakMap<ProgramObservations, ReadonlySet<ts.Node>>();
+
 function observedArrayWrites(
     context: RecordObservationContext,
     source: ts.Type,
     target: ts.Type,
+    built: boolean,
 ): string | undefined {
     const observations = programObservations(context.program);
     const { checker } = context;
@@ -481,18 +619,26 @@ function observedArrayWrites(
                 assignable(targetElement, element)
             );
         });
+    const counted = (write: ObservedWrite): boolean => {
+        if (writesNewArray(checker, write)) return false;
+        if (!built) return true;
+        const place = ts.isCallExpression(write.node)
+            ? write.node.expression
+            : write.node;
+        return !(
+            (ts.isPropertyAccessExpression(place) ||
+                ts.isElementAccessExpression(place)) &&
+            buildsUnsharedArray(context, place.expression)
+        );
+    };
     if (
         writesWhere(
             observations,
             writtenHolder,
-            (write) => !writesNewArray(checker, write),
+            counted,
             observations.arrayWrites,
         ) ||
-        writesWhere(
-            observations,
-            writtenHolder,
-            (write) => !writesNewArray(checker, write),
-        )
+        writesWhere(observations, writtenHolder, counted)
     )
         return "the program changes the elements of such arrays";
     return undefined;

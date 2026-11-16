@@ -8963,6 +8963,76 @@ test("withdraws the length fold from a container handed to a call", () => {
     );
 });
 
+test("keeps a length fold past writes that build another function's own array", () => {
+    // `keep` pushes only into the array its `out` creates, before returning
+    // it: no other array, `NONE.rules` included, changes, so the stylesheet
+    // the length selects stays a known string.
+    const result = compileSource(`
+        import { createEngine } from "@babylonjs/lite";
+        interface Layer {
+            readonly rules: readonly string[];
+            readonly bind: (n: number) => void;
+        }
+        const NONE: Layer = { rules: [], bind: () => {} };
+        function layer(on: boolean): Layer {
+            if (!on) return NONE;
+            return { rules: [".a { width: 3px; }"], bind: (n: number) => { console.log(n); } };
+        }
+        function keep<T>(items: readonly T[], count: number): T[] {
+            const out: T[] = [];
+            for (let i = 0; i < count; i++) out.push(items[i]!);
+            return out;
+        }
+        async function main() {
+            await createEngine({});
+            const chosen = layer(false);
+            const sheet = document.createElement("style");
+            sheet.textContent = chosen.rules.length > 0 ? ".panel { width: 1px; }" : ".panel { width: 2px; }";
+            document.head.appendChild(sheet);
+        }
+        void main();
+    `);
+
+    assert.match(result.cpp, /ui_add_class_style[^\n]*"panel"[^\n]*width:2px/);
+    assert.doesNotMatch(result.cpp, /width:1px/);
+});
+
+test("withdraws the length fold past a write after another function shares its array", () => {
+    // `keep` hands its array to `sink` before pushing: once shared, the
+    // push may change any array of the type, `NONE.rules` included.
+    assert.throws(
+        () =>
+            compileSource(`
+        import { createEngine } from "@babylonjs/lite";
+        interface Layer {
+            readonly rules: readonly string[];
+            readonly bind: (n: number) => void;
+        }
+        const NONE: Layer = { rules: [], bind: () => {} };
+        function layer(on: boolean): Layer {
+            if (!on) return NONE;
+            return { rules: [".a { width: 3px; }"], bind: (n: number) => { console.log(n); } };
+        }
+        function sink(a: readonly unknown[]): void { console.log(a.length); }
+        function keep<T>(items: readonly T[], count: number): T[] {
+            const out: T[] = [];
+            sink(out);
+            for (let i = 0; i < count; i++) out.push(items[i]!);
+            return out;
+        }
+        async function main() {
+            await createEngine({});
+            const chosen = layer(false);
+            const sheet = document.createElement("style");
+            sheet.textContent = chosen.rules.length > 0 ? ".panel { width: 1px; }" : ".panel { width: 2px; }";
+            document.head.appendChild(sheet);
+        }
+        void main();
+    `),
+        /Expected a string literal/,
+    );
+});
+
 test("builds ribbon paths through native nested loops", () => {
     const result = compileSource(`
         import { createEngine, createRibbon } from "@babylonjs/lite";

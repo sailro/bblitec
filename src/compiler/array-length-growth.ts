@@ -21,7 +21,9 @@ import {
     jumpsTo,
     variableKind,
     valueConsumer,
+    valueUse,
 } from "./syntax.js";
+import { lengthPreservingArrayMethods } from "./receiver-methods.js";
 import { someAnalysisNode } from "./analysis-walk.js";
 import type { EvaluationOrder } from "./evaluation-order.js";
 
@@ -105,7 +107,10 @@ export function filledLengthGrowth(
     return start ? { start } : undefined;
 }
 
-/** Array methods whose receiver identity no callback or result exposes. */
+/**
+ * Array methods whose receiver identity no callback exposes, nor any
+ * result but `fill`'s.
+ */
 const enclosedArrayMethods = new Set([
     "at",
     "concat",
@@ -195,7 +200,7 @@ function walkIdentityEscapes(
 }
 
 /** A reference that reads or stores through the binding without sharing it. */
-function enclosedReference(
+export function enclosedReference(
     checker: ts.TypeChecker,
     site: ts.Expression,
 ): boolean {
@@ -209,7 +214,11 @@ function enclosedReference(
                 member === "length" ||
                 (enclosedArrayMethods.has(member) &&
                     ts.isCallExpression(access.parent) &&
-                    access.parent.expression === access)
+                    access.parent.expression === access &&
+                    // A length-preserving mutator (`fill`) returns its
+                    // receiver: a call whose value is used shares it.
+                    (!lengthPreservingArrayMethods.has(member) ||
+                        valueUse(access.parent).kind === "discarded"))
             );
         if (ts.isElementAccessExpression(access)) return true;
     }

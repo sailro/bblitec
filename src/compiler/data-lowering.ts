@@ -6301,8 +6301,12 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                     access.expression,
                 );
                 if (
-                    arrayWriteObservation(this.context, type, type) ===
-                    undefined
+                    arrayWriteObservation(
+                        this.context,
+                        type,
+                        type,
+                        access.expression,
+                    ) === undefined
                 )
                     fixed = elements.length;
             }
