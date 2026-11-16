@@ -3219,6 +3219,14 @@ export interface ValueFields {
     /** Static property paths carried from a property-animation clip. */
     animationPaths?: readonly string[];
     staticNumber?: number;
+    /**
+     * The number JavaScript's own `Math` computes for an approximated member
+     * over known arguments (`Math.tan(0.3)`): generation formats it into
+     * source text (`toFixed`) as JavaScript does, while a native expression
+     * still computes it, so it is no `staticNumber`. A binding assigned
+     * again forgets it, as it forgets `staticNumber`.
+     */
+    formattedNumber?: number;
     /** Generation-known boolean retained across readonly scalar bindings. */
     staticBoolean?: boolean;
     /** Materialized mutable parameter; static caller facts cannot fold branches. */

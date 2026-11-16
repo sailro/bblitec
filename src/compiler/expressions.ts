@@ -2207,7 +2207,9 @@ export class ExpressionLowerer {
     ): Value {
         this.context.expectArgumentCount(call, 0, 1);
         const number =
-            owner.staticNumber ?? this.generationTimeNumber(callee.expression);
+            owner.staticNumber ??
+            owner.formattedNumber ??
+            this.generationTimeNumber(callee.expression);
         const digits = call.arguments[0]
             ? staticNumberValue(this.context, call.arguments[0])
             : undefined;
@@ -4878,6 +4880,11 @@ export class ExpressionLowerer {
             this.context.reachJsData();
             return { kind: "number", cpp, dataType: { kind: "number" } };
         };
+        // A string generation knows converts as JavaScript parses it.
+        if (isStringValue(value) && value.staticString !== undefined) {
+            this.context.emitDiscardedValue(value);
+            return numberConstantValue(Number(value.staticString));
+        }
         if (isStringValue(value))
             return number(present(value.cpp, { kind: "string" })!);
         if (value.kind === "boolean")

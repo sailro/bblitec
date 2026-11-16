@@ -6207,8 +6207,12 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                     ? transported
                     : commonResourceValue(transported, [staticField]);
             }
+            // A record, or a struct leaf knowing some of its fields (a
+            // returned record's nested one).
             if (
-                staticField?.kind === "record" &&
+                (staticField?.kind === "record" ||
+                    (staticField?.dataType?.kind === "struct" &&
+                        staticField.recordProperties !== undefined)) &&
                 unwrittenRecordField &&
                 unreplacedCell
             ) {
@@ -9417,22 +9421,27 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
         }
         // An exact member folds over static arguments (foldMathCall says
         // which), so a scene that hands one to generation-time state (a
-        // particle column) gets the value rather than the expression.
-        // Folded from the SOURCE, never from a compiled value: this arm runs
-        // before the runtime path compiles the arguments, and compiling one
-        // speculatively would emit an inlined body twice when the fold
-        // misses.
-        if (member.fold && !call.arguments.some(ts.isSpreadElement)) {
-            const values = call.arguments.map((argument) =>
-                staticNumberValue(this.context, argument),
-            );
-            const folded = values.every(
-                (value): value is number => value !== undefined,
-            )
-                ? foldMathCall(method, values)
-                : undefined;
-            if (folded !== undefined) return numberConstantValue(folded);
-        }
+        // particle column) gets the value rather than the expression; an
+        // approximated one still runs, carrying the number JavaScript
+        // formats. Folded from the SOURCE, never from a compiled value: this
+        // arm runs before the runtime path compiles the arguments, and
+        // compiling one speculatively would emit an inlined body twice when
+        // the fold misses.
+        const known = call.arguments.map((argument) =>
+            ts.isSpreadElement(argument)
+                ? undefined
+                : staticNumberValue(this.context, argument),
+        );
+        const values = known.every(
+            (value): value is number => value !== undefined,
+        )
+            ? known
+            : undefined;
+        const folded = values && foldMathCall(method, values);
+        if (folded !== undefined) return numberConstantValue(folded);
+        const formattedNumber = values && foldMathCall(method, values, true);
+        const formatted =
+            formattedNumber === undefined ? {} : { formattedNumber };
         if (method === "pow") {
             const [base, exponent] = numbers();
             const power = exponentiationCall(
@@ -9445,6 +9454,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
                 kind: "number",
                 cpp: power.cpp,
                 dataType: { kind: "number" },
+                ...formatted,
             };
         }
         // A list evaluates left to right without a rest-array allocation;
@@ -9471,6 +9481,7 @@ ${selectedLines.map((line) => `    ${line}\n`).join("")}    return ${resultCpp};
             cpp,
             dataType: { kind: "number" },
             ...(member.impure ? { impure: true } : {}),
+            ...formatted,
         };
     }
 

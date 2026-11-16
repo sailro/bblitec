@@ -1729,6 +1729,14 @@ function nullFallbackTryShape(
     };
 }
 
+/** The primitives generation knows of a record's fields, by source name. */
+type KnownPrimitives = Readonly<
+    Record<
+        string,
+        Pick<Value, "staticNumber" | "staticBoolean" | "staticString">
+    >
+>;
+
 export class UserFunctionLowerer {
     /**
      * Whether a recursive node parameter takes the runtime SceneNode slot.
@@ -1927,8 +1935,9 @@ export class UserFunctionLowerer {
      * A call's native result with the fields generation knows of the record
      * literal the body returns: a probe of the body's inline lowering with
      * the call's arguments, captured at the return expression's evaluation,
-     * before mutable storage erases them. Only primitives are copied, and a
-     * field holding one is present; every read still uses the call's own
+     * before mutable storage erases them. Only primitives are copied, of the
+     * record and of a current record one of its fields holds, and a field
+     * holding one is present; every read still uses the call's own
      * result, held once. Unchanged where the body can return early or
      * writes storage, its record has accessors, or the probe knows nothing.
      */
@@ -1966,12 +1975,15 @@ export class UserFunctionLowerer {
         );
         if (fields.some((field) => field.accessor)) return result;
         const declared = ir;
-        let facts:
-            | Record<
-                  string,
-                  Pick<Value, "staticNumber" | "staticBoolean" | "staticString">
-              >
-            | undefined;
+        const primitivesOf = (record: Value): KnownPrimitives =>
+            Object.fromEntries(
+                Object.entries(record.recordProperties ?? {})
+                    .filter(([, field]) => !field.parameterBinding)
+                    .map(([name, field]) => [name, scalarFacts(field)]),
+            );
+        let facts: KnownPrimitives | undefined;
+        // The primitives of a current record a field holds, by field.
+        let nestedFacts: Readonly<Record<string, KnownPrimitives>> = {};
         let ownKeys: readonly string[] | undefined;
         try {
             context.probeEmission(() => {
@@ -1993,12 +2005,20 @@ export class UserFunctionLowerer {
                         if (!context.bindings.recordPropertiesAreCurrent(value))
                             return;
                         ownKeys = Object.keys(value.recordProperties ?? {});
-                        facts = Object.fromEntries(
+                        facts = primitivesOf(value);
+                        nestedFacts = Object.fromEntries(
                             Object.entries(value.recordProperties ?? {})
-                                .filter(([, field]) => !field.parameterBinding)
+                                .filter(
+                                    ([, field]) =>
+                                        field.recordProperties !== undefined &&
+                                        !field.parameterBinding &&
+                                        context.bindings.recordPropertiesAreCurrent(
+                                            field,
+                                        ),
+                                )
                                 .map(([name, field]) => [
                                     name,
-                                    scalarFacts(field),
+                                    primitivesOf(field),
                                 ]),
                         );
                     },
@@ -2025,25 +2045,57 @@ export class UserFunctionLowerer {
                   "function_result",
                   ts.isExpression(call) ? call : undefined,
               );
+        // A record a field holds knows the fields holding a primitive, each
+        // present.
+        const knownLeaves = (
+            cpp: string,
+            struct: string,
+            known: KnownPrimitives,
+        ): Record<string, Value> => {
+            const fieldAccess = context.dataTypes.memberAccess(struct);
+            return Object.fromEntries(
+                context.dataTypes
+                    .structFields(struct, call, "accessors")
+                    .filter(
+                        (field) =>
+                            !field.accessor &&
+                            Object.keys(known[field.sourceName] ?? {}).length >
+                                0,
+                    )
+                    .map((field) => [
+                        field.sourceName,
+                        {
+                            ...context.dataLowerer.leafValue(
+                                `${cpp}${fieldAccess}${field.name}`,
+                                field.type,
+                            ),
+                            ...known[field.sourceName],
+                            optionalFoundCpp: "true",
+                        },
+                    ]),
+            );
+        };
         const access = context.dataTypes.memberAccess(returnType.name);
         writable(held).recordProperties = Object.fromEntries(
             fields
                 .filter((field) => present.has(field.sourceName))
                 .map((field) => {
-                    const known = captured[field.sourceName];
-                    return [
-                        field.sourceName,
-                        {
-                            ...context.dataLowerer.leafValue(
-                                `${held.cpp}${access}${field.name}`,
-                                field.type,
-                            ),
-                            ...known,
-                            ...(knownPresent(field.sourceName)
-                                ? { optionalFoundCpp: "true" }
-                                : {}),
-                        },
-                    ];
+                    const cpp = `${held.cpp}${access}${field.name}`;
+                    const value: Value = {
+                        ...context.dataLowerer.leafValue(cpp, field.type),
+                        ...captured[field.sourceName],
+                        ...(knownPresent(field.sourceName)
+                            ? { optionalFoundCpp: "true" }
+                            : {}),
+                    };
+                    const nested = nestedFacts[field.sourceName];
+                    if (nested && field.type.kind === "struct")
+                        writable(value).recordProperties = knownLeaves(
+                            cpp,
+                            field.type.name,
+                            nested,
+                        );
+                    return [field.sourceName, value];
                 }),
         );
         // The literal's keys are the record's whole key set only where no
@@ -2815,10 +2867,15 @@ export class UserFunctionLowerer {
                     }
                 }
             }
+            // An argument JavaScript formats is known to a body formatting it.
             if (
                 returnType &&
                 ["number", "boolean", "string"].includes(returnType.kind) &&
-                argumentValues.every(generationKnownStringArgument)
+                argumentValues.every(
+                    (value) =>
+                        generationKnownStringArgument(value) ||
+                        value.formattedNumber !== undefined,
+                )
             ) {
                 const key = this.scalarResults.key(
                     context.functionEmissionScope(),

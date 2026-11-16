@@ -1900,6 +1900,7 @@ export class BindingScopes {
         };
         if ((parameter && !readOnlyParameter) || reboundLocal) {
             delete writable(stored).staticNumber;
+            delete writable(stored).formattedNumber;
             delete writable(stored).staticString;
             delete writable(stored).staticBoolean;
         }

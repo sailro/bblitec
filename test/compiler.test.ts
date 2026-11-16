@@ -6931,6 +6931,42 @@ void main();
     );
 });
 
+test("a native helper's returned record keeps the primitives of a record one of its fields holds", () => {
+    // `fadeOf()` returns `{ profile }`, the record `profileOf()` returns,
+    // plain or frozen: its result still knows `profile.a`. A write to `a`
+    // leaves it a run-time read.
+    const source = (profile: string, write = ""): string =>
+        `import { createEngine, createSceneContext, createShaderMaterial, wgsl } from "@babylonjs/lite";
+interface Profile { a: number }
+function profileOf(): Profile { return ${profile}; }
+function fadeOf(): { readonly profile: Profile } { const profile = profileOf(); return { profile }; }
+async function main(): Promise<void> {
+    const engine = await createEngine(document.getElementById("renderCanvas") as HTMLCanvasElement);
+    createSceneContext(engine);
+    const fade = fadeOf();
+    ${write}
+    const vertex = \`struct VertexOutput { @builtin(position) position: vec4<f32>, };
+@vertex fn mainVertex(input: VertexInput) -> VertexOutput { var out: VertexOutput; out.position = shaderSystem.worldViewProjection * vec4<f32>(input.position * \${fade.profile.a.toFixed(1)}, 1.0); return out; }\`;
+    createShaderMaterial({ name: "m", vertexSource: wgsl\`\${vertex}\`, fragmentSource: wgsl\`@fragment fn mainFragment() -> @location(0) vec4<f32> { return vec4<f32>(1.0); }\`, attributes: ["position"], uniforms: ["worldViewProjection"] });
+}
+void main();
+`;
+    for (const profile of ["{ a: 0.4 }", "Object.freeze({ a: 0.4 })"])
+        assert.deepEqual(
+            compileSource(source(profile)).manifest.customShaderPrograms.map(
+                (program) =>
+                    /position \* ([0-9.]+)/.exec(program.vertexSource)?.[1] ??
+                    "",
+            ),
+            ["0.4"],
+            profile,
+        );
+    assert.throws(
+        () => compileSource(source("{ a: 0.4 }", "fade.profile.a = 2;")),
+        /'vertex' is bound as data without a static string/,
+    );
+});
+
 test("a parameter's scalar no write in the program replaces keeps its value when another field is written", () => {
     // `opts.count` is written, so the parameter is mutated; the flags no write
     // in the program reaches keep their values, and the nine compose one program.
@@ -17599,9 +17635,11 @@ test("lowers global RegExp exec loops and lastIndex", () => {
 });
 
 test("converts runtime strings with Number", () => {
+    // The reached reassignment leaves the string a run-time value.
     const result = compileSource(`
         function main() {
             let value = "42";
+            if (Math.random() > 2) value = "7";
             const converted = Number(value);
         }
     `);

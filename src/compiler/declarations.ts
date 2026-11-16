@@ -2362,6 +2362,7 @@ export class DeclarationLowerer {
             // Rebound locals read their current native storage. Text keeps
             // its initialization fact only when no reached path replaces it.
             delete writable(stored).staticNumber;
+            delete writable(stored).formattedNumber;
             if (!keepsInitializerText) delete writable(stored).staticString;
             delete writable(stored).staticBoolean;
             delete writable(stored).packagedBodySource;
