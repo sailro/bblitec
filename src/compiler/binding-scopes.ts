@@ -1644,7 +1644,7 @@ export class BindingScopes {
                     (member.kind === "number" ||
                         member.kind === "boolean" ||
                         member.staticString !== undefined) &&
-                    parameterProjectionIsReadOnly(
+                    (parameterProjectionIsReadOnly(
                         this.context.checker,
                         parameterDeclaration.parent,
                         parameterDeclaration.parent.parameters.indexOf(
@@ -1657,7 +1657,19 @@ export class BindingScopes {
                         member.staticString !== undefined ||
                             member.staticNumber !== undefined ||
                             member.staticBoolean !== undefined,
-                    ),
+                    ) ||
+                        // An own scalar no write in the program replaces
+                        // keeps its value however the object's other
+                        // fields change.
+                        ((independentFields || separateScalars) &&
+                            path.length === 1 &&
+                            !recordFieldIsWritten(
+                                this.context,
+                                this.context.checker.getTypeAtLocation(
+                                    identifier,
+                                ),
+                                path[0]!,
+                            ))),
                 true,
             );
         }
