@@ -19249,6 +19249,64 @@ test("a promise reaction refuses a dispatched method override that completes wit
         /Promise reaction with a void result requires a proven undefined completion/,
     );
 });
+// A void reaction completes as the functions its completion calls do:
+// a callback parameter the caller fills, a chain of named arrows, a
+// record's method and member, a dispatched method and an arrow called
+// at once, each followed to a body that returns nothing.
+checkInRealm(
+    "a promise reaction follows the functions its completion calls",
+    `
+    let failures = 0;
+    const count = (error: unknown): void => {
+        failures += error instanceof Error ? 1 : 0;
+    };
+    const tally = (error: unknown): void => count(error);
+    const report = (error: unknown): void => tally(error);
+    type Hooks = { failed(error: unknown): void };
+    function mount(hooks: Hooks, task: Promise<void>): Promise<void> {
+        return task.catch(hooks.failed);
+    }
+    function ring(onError?: (error: unknown) => void): (task: Promise<void>) => Promise<void> {
+        return (task) => mount({ failed: (error) => onError?.(error) }, task);
+    }
+    const handlers = {
+        method(error: unknown): void {
+            return tally(error);
+        },
+        member: (error: unknown): void => tally(error),
+    };
+    class Voice {
+        fail(error: unknown): void {
+            return tally(error);
+        }
+        play(task: Promise<void>): Promise<void> {
+            return task.catch((error) => this.fail(error));
+        }
+    }
+    const rejected = (): Promise<void> => Promise.reject(new Error("x"));
+    void (async () => {
+        await ring((error) => tally(error))(rejected());
+        await rejected().catch(report);
+        await rejected().catch((error) => handlers.method(error));
+        await rejected().catch((error) => handlers.member(error));
+        await new Voice().play(rejected());
+        await rejected().catch((error) => ((inner: unknown) => tally(inner))(error));
+        if (failures !== 6) throw new Error("reactions " + failures);
+        globalThis.close();
+    })();
+    `,
+);
+test("a promise reaction refuses a chain that completes with a value", () => {
+    assert.throws(
+        () =>
+            compileSource(`
+            const measure: (error: unknown) => void = (error) => String(error).length;
+            const tally = (error: unknown): void => measure(error);
+            void Promise.reject(new Error("x")).catch((error) => tally(error)).finally(() => globalThis.close());
+        `),
+        /Promise reaction with a void result requires a proven undefined completion/,
+    );
+});
 checkInRealm(
     "Promise.all settles to a new array",
     `
