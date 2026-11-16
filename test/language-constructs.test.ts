@@ -19264,6 +19264,43 @@ test("a promise reaction refuses a dispatched method override that completes wit
         /Promise reaction with a void result requires a proven undefined completion/,
     );
 });
+// A result that may be absent, a boolean or a promise is a promise only
+// while present and holding its promise member.
+checkInRealm(
+    "an optional value-or-promise union is an instance of Promise in its promise member",
+    `
+    interface Action {
+        readonly id: string;
+        run: () => void | boolean | Promise<void | boolean>;
+    }
+    const actions: Action[] = [
+        { id: "wave", run: () => {} },
+        { id: "pick", run: () => true },
+        {
+            id: "save",
+            run: async () => {
+                await Promise.resolve();
+                throw new Error("disk");
+            },
+        },
+    ];
+    let caught = "";
+    let promises = 0;
+    for (const action of actions) {
+        const result = action.run();
+        if (result instanceof Promise) {
+            promises++;
+            void result.catch((error: unknown) => {
+                caught = action.id + ":" + (error as Error).message;
+            });
+        }
+    }
+    setTimeout(() => {
+        if (promises !== 1 || caught !== "save:disk") throw new Error("instances " + promises + " " + caught);
+        globalThis.close();
+    }, 0);
+    `,
+);
 // A void reaction completes as the functions its completion calls do:
 // a callback parameter the caller fills, a chain of named arrows, a
 // record's method and member, a dispatched method and an arrow called

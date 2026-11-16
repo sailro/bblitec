@@ -781,20 +781,26 @@ export class ConditionLowerer {
                             ).cpp,
                         );
                     // A value-or-promise union holds a promise in its
-                    // promise members.
+                    // promise members; an optional one only while present.
+                    const union = type?.kind === "optional" ? type.inner : type;
                     if (
-                        type?.kind === "union" &&
-                        type.members.some((member) => member.kind === "promise")
+                        union?.kind === "union" &&
+                        union.members.some(
+                            (member) => member.kind === "promise",
+                        )
                     ) {
                         const held = this.context.bindings.pinValueToTemporary(
                             value,
                             "instance_candidate",
                         ).cpp;
-                        return unionArmsTest(
-                            held,
-                            type,
+                        const arms = unionArmsTest(
+                            union === type ? held : optionalValueCpp(held),
+                            union,
                             (member) => member.kind === "promise",
                         );
+                        return union === type
+                            ? arms
+                            : `(${optionalPresentCpp(held)} && ${arms})`;
                     }
                     this.requirePromisesApart(unwrapped);
                 }
