@@ -1020,11 +1020,20 @@ inline void end_withheld_ui_press(Engine& engine, const SDL_Event& event) {
  * that pixel value directly, so forwarding SDL's raw increment makes native
  * wheel controls roughly one hundred times less sensitive.
  */
+inline constexpr double browser_pixels_per_scroll_increment = 100.0;
+
 inline double dom_wheel_delta_y(const SDL_MouseWheelEvent& event) {
-    constexpr double browser_pixels_per_scroll_increment = 100.0;
     const double increment = event.direction == SDL_MOUSEWHEEL_FLIPPED
                                  ? static_cast<double>(event.y)
                                  : -static_cast<double>(event.y);
+    return increment * browser_pixels_per_scroll_increment;
+}
+
+/** `WheelEvent.deltaX` in the same pixel mode: SDL's and the browser's horizontal axes both point right. */
+inline double dom_wheel_delta_x(const SDL_MouseWheelEvent& event) {
+    const double increment = event.direction == SDL_MOUSEWHEEL_FLIPPED
+                                 ? -static_cast<double>(event.x)
+                                 : static_cast<double>(event.x);
     return increment * browser_pixels_per_scroll_increment;
 }
 
@@ -1509,6 +1518,7 @@ inline std::shared_ptr<DomEventBatch> prepare_dom_platform_input(Engine& engine,
                         engine.canvas_window_to_client_scale,
             .movement_x = move ? static_cast<double>(event.motion.xrel) : 0,
             .movement_y = move ? static_cast<double>(event.motion.yrel) : 0,
+            .delta_x = wheel ? dom_wheel_delta_x(event.wheel) : 0,
             .delta_y = wheel ? dom_wheel_delta_y(event.wheel) : 0,
             .detail = move || wheel ? 0.0 : static_cast<double>(event.button.clicks),
             .pressure = tracked_mouse_buttons() == 0 ? 0.0 : 0.5,

@@ -229,6 +229,7 @@ struct PlatformMouseEvent : PlatformEventFlags, PlatformModifierKeys {
     double client_y = 0.0;
     double movement_x = 0.0;
     double movement_y = 0.0;
+    double delta_x = 0.0;
     double delta_y = 0.0;
     /** UIEvent.detail: the click count on mousedown, mouseup, click and dblclick, else 0. */
     double detail = 0.0;

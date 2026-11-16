@@ -2399,6 +2399,7 @@ const MOUSE_EVENT_NUMBERS: ReadonlyMap<string, string> = new Map([
     ["offsetY", "client_y"],
     ["movementX", "movement_x"],
     ["movementY", "movement_y"],
+    ["deltaX", "delta_x"],
     ["deltaY", "delta_y"],
     ["detail", "detail"],
     ["screenX", "screen_x"],

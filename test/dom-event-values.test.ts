@@ -294,3 +294,12 @@ test("a mouse event's detail reads its click count", () => {
     ).cpp;
     assert.match(cpp, /mouse_payload\(\)\.detail/);
 });
+
+test("a wheel event's deltaX reads its horizontal travel", () => {
+    const cpp = compileSource(
+        `const panel = document.createElement("div");
+        document.body.appendChild(panel);
+        panel.addEventListener("wheel", (event) => { panel.textContent = String(event.shiftKey && event.deltaY === 0 ? event.deltaX : event.deltaY); });`,
+    ).cpp;
+    assert.match(cpp, /mouse_payload\(\)\.delta_x/);
+});

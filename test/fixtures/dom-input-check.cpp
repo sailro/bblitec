@@ -78,6 +78,17 @@ int main() {
         assert(!send(up));
         assert(ui_element(engine, log).text == "DPWC");
         assert(click_detail == 1);
+        double wheel_x = 0;
+        on_dom_pointer(engine, DomEventTarget::node(button.value), "wheel", 898,
+                       [&](const PlatformMouseEvent& event) { wheel_x = event.delta_x; });
+        SDL_Event wheel{};
+        wheel.type = SDL_EVENT_MOUSE_WHEEL;
+        wheel.wheel.windowID = SDL_GetWindowID(window);
+        wheel.wheel.x = 1;
+        wheel.wheel.mouse_x = 40;
+        wheel.wheel.mouse_y = 40;
+        static_cast<void>(send(wheel));
+        assert(wheel_x == 100);
         assert(ui_get_attribute(engine, button, "data-target") == "yes");
         assert(ui_get_attribute(engine, button, "data-up") == "yes");
         assert(!send(down));
