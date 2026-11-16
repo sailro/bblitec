@@ -6357,6 +6357,141 @@ test("an async callee's optional record parameter it was handed reads its member
     assert.doesNotMatch(result.cpp, /optional_chain/);
 });
 
+test("a shader text appended under a known condition composes its program, and a known string compared with a boolean folds", () => {
+    // `scale += ...` under a condition generation knows keeps the text,
+    // as `scale = scale + ...` does; a herd builder awaits a cache, then
+    // composes each part from options a key's helper built.
+    const scales = (source: string): readonly (string | undefined)[] =>
+        compileSource(source).manifest.customShaderPrograms.map(
+            (program) =>
+                /position \* ([^,]+), 1\.0/.exec(program.vertexSource)?.[1],
+        );
+    assert.deepEqual(
+        scales(`import { createEngine, createSceneContext, createShaderMaterial, wgsl, type EngineContext, type ShaderMaterial } from "@babylonjs/lite";
+type Kind = "a" | "b";
+interface Coat { tint: number }
+interface Opts { file: string; fade?: boolean; coat?: Coat; albedo?: number; highlight?: { strength: number }; clips: readonly string[] }
+const COAT: Coat = { tint: 0.5 };
+const VERTEX = \`struct VertexOutput { @builtin(position) position: vec4<f32>, };
+@vertex fn mainVertex(input: VertexInput) -> VertexOutput { var out: VertexOutput; out.position = shaderSystem.worldViewProjection * vec4<f32>(input.position * /*S*/, 1.0); return out; }\`;
+const FRAGMENT = wgsl\`@fragment fn mainFragment() -> @location(0) vec4<f32> { return vec4<f32>(1.0); }\`;
+const cache = new Map<string, Promise<number[]>>();
+async function prepare(o: Opts): Promise<number[]> {
+    await Promise.resolve();
+    return o.clips.map((clip) => clip.length);
+}
+function prepared(o: Opts): Promise<number[]> {
+    let p = cache.get(o.file);
+    if (!p) { p = prepare(o); cache.set(o.file, p); }
+    return p;
+}
+function surface(engine: EngineContext, name: string, fade: boolean, coat: Coat | undefined, albedo: number | undefined): ShaderMaterial {
+    const s = { fade, coat, albedo };
+    let scale = s.fade ? "0.5" : "1.0";
+    if (s.fade) scale += " * 0.9";
+    const vertex = VERTEX.replace("/*S*/", scale);
+    return createShaderMaterial({ name, vertexSource: wgsl\`\${vertex}\`, fragmentSource: FRAGMENT, attributes: ["position"], uniforms: ["worldViewProjection"] });
+}
+function instance(engine: EngineContext, o: Opts, parts: number[]): ShaderMaterial[] {
+    const out: ShaderMaterial[] = [];
+    const part = parts.length; out.push(surface(engine, \`\${o.file}-\${part}\`, o.fade === true, o.coat, o.albedo));
+    return out;
+}
+function create(engine: EngineContext, o: Opts): Promise<ShaderMaterial[]> {
+    void prepared;
+    return Promise.resolve(instance(engine, o, [1]));
+}
+function options(kind: Kind) {
+    return { file: \`\${kind}.glb\`, clips: ["idle", "walk"], fade: true, coat: { tint: 0.5 } } as const;
+}
+async function main(): Promise<void> {
+    const engine = await createEngine(document.getElementById("renderCanvas") as HTMLCanvasElement);
+    createSceneContext(engine);
+    const lit = Math.random() < 2 ? { highlight: { strength: 2 } } : undefined;
+    const kinds = (["a", "b"] as const).filter(() => Math.random() < 2);
+    const build = (kind: Kind): Promise<ShaderMaterial[]> => create(engine, { ...options(kind)});
+    await Promise.all(kinds.map(build));
+}
+void main();
+`),
+        ["0.5 * 0.9", "1.0"],
+    );
+    assert.ok(
+        scales(`import { createEngine, createSceneContext, createShaderMaterial, wgsl, type EngineContext, type ShaderMaterial } from "@babylonjs/lite";
+type Kind = "a" | "b";
+interface Coat { tint: number }
+interface Opts { file: string; fade?: boolean; coat?: Coat; albedo?: number; highlight?: { strength: number }; clips: readonly string[] }
+const COAT: Coat = { tint: 0.5 };
+const VERTEX = \`struct VertexOutput { @builtin(position) position: vec4<f32>, };
+@vertex fn mainVertex(input: VertexInput) -> VertexOutput { var out: VertexOutput; out.position = shaderSystem.worldViewProjection * vec4<f32>(input.position * /*S*/, 1.0); return out; }\`;
+const FRAGMENT = wgsl\`@fragment fn mainFragment() -> @location(0) vec4<f32> { return vec4<f32>(1.0); }\`;
+const cache = new Map<string, Promise<number[]>>();
+async function prepare(o: Opts): Promise<number[]> {
+    await Promise.resolve();
+    return o.clips.map((clip) => clip.length);
+}
+function prepared(o: Opts): Promise<number[]> {
+    let p = cache.get(o.file);
+    if (!p) { p = prepare(o); cache.set(o.file, p); }
+    return p;
+}
+function surface(engine: EngineContext, name: string, s: { fade: boolean; coat?: Coat; albedo?: number; highlight?: { strength: number } }): ShaderMaterial {
+    let scale = s.fade ? "0.5" : "1.0";
+    if (s.coat) scale += " * 0.9";
+    if (s.albedo !== undefined) scale += " * 0.8";
+    if (s.highlight) scale += " * 1.1";
+    const vertex = VERTEX.replace("/*S*/", scale);
+    return createShaderMaterial({ name, vertexSource: wgsl\`\${vertex}\`, fragmentSource: FRAGMENT, attributes: ["position"], uniforms: ["worldViewProjection"] });
+}
+function instance(engine: EngineContext, o: Opts, parts: number[]): ShaderMaterial[] {
+    const out: ShaderMaterial[] = [];
+    for (const part of parts) out.push(surface(engine, \`\${o.file}-\${part}\`, { fade: o.fade === true, coat: o.coat, albedo: o.albedo, highlight: o.highlight }));
+    return out;
+}
+async function create(engine: EngineContext, o: Opts): Promise<ShaderMaterial[]> {
+    const parts = await prepared(o);
+    return instance(engine, o, parts);
+}
+function options(kind: Kind) {
+    return { file: \`\${kind}.glb\`, clips: ["idle", "walk"], fade: true, coat: COAT } as const;
+}
+async function main(): Promise<void> {
+    const engine = await createEngine(document.getElementById("renderCanvas") as HTMLCanvasElement);
+    createSceneContext(engine);
+    const lit = Math.random() < 2 ? { highlight: { strength: 2 } } : undefined;
+    const kinds = (["a", "b"] as const).filter(() => Math.random() < 2);
+    const build = (kind: Kind): Promise<ShaderMaterial[]> => create(engine, { ...options(kind), highlight: lit?.highlight });
+    await Promise.all(kinds.map(build));
+}
+void main();
+`).includes("0.5 * 0.9 * 1.1"),
+    );
+    // A known string is no boolean: comparing one with `false` folds.
+    assert.deepEqual(
+        scales(`import { createEngine, createSceneContext, createShaderMaterial, wgsl, type EngineContext } from "@babylonjs/lite";
+interface Profile { file: string; shared?: boolean; tint: "body" | false }
+const B: Profile = { file: "b.glb", shared: true, tint: "body" };
+const VERTEX = \`struct VertexOutput { @builtin(position) position: vec4<f32>, };
+@vertex fn mainVertex(input: VertexInput) -> VertexOutput { var out: VertexOutput; out.position = shaderSystem.worldViewProjection * vec4<f32>(input.position * /*S*/, 1.0); return out; }\`;
+const FRAGMENT = wgsl\`@fragment fn mainFragment() -> @location(0) vec4<f32> { return vec4<f32>(1.0); }\`;
+function surface(engine: EngineContext, p: Profile): void {
+    const a = MODE === 1 ? p.shared === true : MODE === 2 ? p.tint !== false : p.file === "b.glb";
+    const vertex = VERTEX.replace("/*S*/", a ? "0.5" : "1.0");
+    createShaderMaterial({ name: "m", vertexSource: wgsl\`\${vertex}\`, fragmentSource: FRAGMENT, attributes: ["position"], uniforms: ["worldViewProjection"] });
+}
+const MODE: number = 2;
+async function main(): Promise<void> {
+    const engine = await createEngine(document.getElementById("renderCanvas") as HTMLCanvasElement);
+    createSceneContext(engine);
+    const p = B;
+    surface(engine, p);
+}
+void main();
+`),
+        ["0.5"],
+    );
+});
+
 test("a material builder iterated over a constant table's keys composes one program per key", () => {
     const source = (iteration: string): string =>
         `import { addToScene, createArcRotateCamera, createEngine, createPlane, createSceneContext, createShaderMaterial, registerScene, startEngine, wgsl, type EngineContext, type ShaderMaterial } from "@babylonjs/lite";

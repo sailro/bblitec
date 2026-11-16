@@ -127,6 +127,7 @@ import { isNativeInertCall } from "./native-inert-calls.js";
 import { counterWrite } from "./counted-loops.js";
 
 import { knownCondition, ownKeysKnown } from "./values/model.js";
+import { staticStringCoercion } from "./expressions.js";
 
 interface StatementLoweringContext extends Pick<
     LoweringServices,
@@ -4814,9 +4815,30 @@ export class StatementLowerer {
                         code: `${target.cpp} = ${context.conditions.compileCondition(unwrapped.right)};`,
                     });
                 } else if (operator === "+=" && isStringValue(target)) {
-                    context.dataLowerer.emitStringCompound(
+                    const appended = context.dataLowerer.emitStringCompound(
                         unwrapped,
                         target.cpp,
+                    );
+                    // A local whose text is written in order appends what
+                    // generation knows of both sides.
+                    const known =
+                        target.staticString === undefined
+                            ? undefined
+                            : staticStringCoercion(appended);
+                    context.recordDataAssignmentMetadata(
+                        target,
+                        unwrapped,
+                        unwrapped.left,
+                        false,
+                        {
+                            kind: "string",
+                            cpp: target.cpp,
+                            ...(known === undefined
+                                ? {}
+                                : {
+                                      staticString: target.staticString + known,
+                                  }),
+                        },
                     );
                 } else if (target.kind === "string" && operator === "=") {
                     // A literal union or parsed value spells its string.

@@ -1230,7 +1230,8 @@ export class DataLowerer {
 
     /**
      * `target += right` into the string `place`: appended in place, or,
-     * when the right side may write the target, onto its old value. The
+     * when the right side may write the target, onto its old value; the
+     * value appended is returned. The
      * operand is spelled as a concatenation part (a chain of known parts is
      * one literal, a number its JavaScript spelling) and the runtime's
      * concatenation joins a surrogate pair split across the two strings,
@@ -1239,7 +1240,7 @@ export class DataLowerer {
     public emitStringCompound(
         expression: ts.BinaryExpression,
         place: string,
-    ): void {
+    ): Value {
         const target = this.compoundPlace(
             expression.left,
             expression.right,
@@ -1247,11 +1248,8 @@ export class DataLowerer {
             false,
             "string",
         );
-        const part = stringConcatPart(
-            this.context,
-            this.context.compileValue(expression.right),
-            expression.right,
-        );
+        const appended = this.context.compileValue(expression.right);
+        const part = stringConcatPart(this.context, appended, expression.right);
         this.context.reachJsData();
         this.emitCompoundStore(
             expression.left,
@@ -1262,6 +1260,7 @@ export class DataLowerer {
                 : undefined,
             "string",
         );
+        return appended;
     }
 
     /**

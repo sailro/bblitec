@@ -242,7 +242,7 @@ export function foldBooleanComparison(
         return undefined;
     const settled = (
         side: ts.Expression,
-    ): boolean | "nullish" | "object" | undefined => {
+    ): boolean | "nullish" | "object" | "primitive" | undefined => {
         const resolved = context.evaluator.resolveStaticExpression(side);
         if (resolved.kind === ts.SyntaxKind.TrueKeyword) return true;
         if (resolved.kind === ts.SyntaxKind.FalseKeyword) return false;
@@ -253,6 +253,14 @@ export function foldBooleanComparison(
               : undefined;
         if (value?.kind === "json-null") return "nullish";
         if (value?.kind === "record" && !value.cpp) return "object";
+        // A string or a number generation knows is no boolean.
+        if (
+            value?.staticString !== undefined ||
+            value?.staticNumber !== undefined
+        )
+            return "primitive";
+        // A boolean member generation knows, optional or not.
+        if (value?.staticBoolean !== undefined) return value.staticBoolean;
         if (value?.kind !== "boolean") return undefined;
         return staticBooleanOf(value);
     };
@@ -260,8 +268,9 @@ export function foldBooleanComparison(
         const left = settled(expression.left);
         const right = settled(expression.right);
         if (left === undefined || right === undefined) return undefined;
-        // Object identity and null versus undefined remain undecided;
-        // only their inequality with a concrete boolean is established.
+        // Object identity, null versus undefined and two other primitives
+        // remain undecided; only their inequality with a concrete boolean
+        // is established.
         if (typeof left !== "boolean" && typeof right !== "boolean")
             return undefined;
         return String((left === right) === equals);

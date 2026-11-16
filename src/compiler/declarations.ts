@@ -2480,7 +2480,9 @@ export class DeclarationLowerer {
             lastWrite = Math.max(lastWrite, node.end);
             if (
                 !isAssignmentExpression(node) ||
-                node.operatorToken.kind !== ts.SyntaxKind.EqualsToken ||
+                (node.operatorToken.kind !== ts.SyntaxKind.EqualsToken &&
+                    node.operatorToken.kind !==
+                        ts.SyntaxKind.PlusEqualsToken) ||
                 !ts.isIdentifier(node.left) ||
                 !ts.isExpressionStatement(node.parent)
             )
