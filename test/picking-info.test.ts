@@ -253,45 +253,157 @@ test("pinned result identity, nullable helpers and engine provenance satisfy the
 });
 
 const tools = optionalNativeFixtureTools(false);
+
+/**
+ * Builds a generated program with the lowered picking unit and a native
+ * `check` that stubs the engine, and returns what the executable prints.
+ */
+function runPickingCheck(name: string, cpp: string, check: string): string {
+    const output = resolve("artifacts", name);
+    const headers = join(output, "bblite/upstream");
+    mkdirSync(headers, { recursive: true });
+    const context = new LoweringContext();
+    writeFileSync(
+        join(headers, "pinned_normalize_vec3.hpp"),
+        pinnedNormalizeVec3Header(context),
+    );
+    writeFileSync(
+        join(headers, "renderer_plan.hpp"),
+        `#pragma once\n#include <bblite/runtime.hpp>\nnamespace bbl::upstream { std::array<float,16> mesh_world_matrix(const Engine&,const MeshRecord&); }\n`,
+    );
+    writeFileSync(
+        join(output, "picking.cpp"),
+        new PickingLowerer(context).lower(false, true).source,
+    );
+    const source = join(output, "check.cpp");
+    const executable = join(output, "check.exe");
+    writeFileSync(
+        source,
+        `#define main generated_scene_main\n${cpp}\n#undef main\n${check}`,
+    );
+    runNativeFixtureCompiler(tools!, [
+        "/O2",
+        "/DBBLITE_HAS_PICKING=1",
+        "/I",
+        output,
+        `/Fo:${output}\\`,
+        `/Fe:${executable}`,
+        source,
+        join(output, "picking.cpp"),
+    ]);
+    return execFileSync(executable, { encoding: "utf8" });
+}
+
 test(
     "native picking preserves identity, aliased callback engines, query order and checked lifetime",
     { skip: !tools },
     () => {
-        const output = resolve("artifacts/picking-info-check");
-        const headers = join(output, "bblite/upstream");
-        mkdirSync(headers, { recursive: true });
-        const context = new LoweringContext();
-        writeFileSync(
-            join(headers, "pinned_normalize_vec3.hpp"),
-            pinnedNormalizeVec3Header(context),
-        );
-        writeFileSync(
-            join(headers, "renderer_plan.hpp"),
-            `#pragma once\n#include <bblite/runtime.hpp>\nnamespace bbl::upstream { std::array<float,16> mesh_world_matrix(const Engine&,const MeshRecord&); }\n`,
-        );
-        writeFileSync(
-            join(output, "picking.cpp"),
-            new PickingLowerer(context).lower(false, true).source,
-        );
-        const source = join(output, "check.cpp");
-        const executable = join(output, "check.exe");
-        writeFileSync(
-            source,
-            `#define main generated_scene_main\n${compileSource(program()).cpp}\n#undef main\n${readFileSync("test/fixtures/picking-info-check.cpp", "utf8")}`,
-        );
-        runNativeFixtureCompiler(tools!, [
-            "/O2",
-            "/DBBLITE_HAS_PICKING=1",
-            "/I",
-            output,
-            `/Fo:${output}\\`,
-            `/Fe:${executable}`,
-            source,
-            join(output, "picking.cpp"),
-        ]);
         assert.match(
-            execFileSync(executable, { encoding: "utf8" }),
+            runPickingCheck(
+                "picking-info-check",
+                compileSource(program()).cpp,
+                readFileSync("test/fixtures/picking-info-check.cpp", "utf8"),
+            ),
             /picking-info-check: ok/,
         );
     },
 );
+
+test("a pick's filter option is the scene's predicate, asked per mesh after the options' coordinates", (t) => {
+    const result = compileSource(`
+        import {createEngine,createSceneContext,createGpuPicker,pickAsync,type Mesh} from "@babylonjs/lite";
+        async function main() {
+            const engine = await createEngine({});
+            const scene = createSceneContext(engine);
+            const picker = createGpuPicker(scene);
+            const plain = await pickAsync(picker, 1, 0);
+            const first = plain.pickedMesh as Mesh;
+            let asked = 0;
+            const order: string[] = [];
+            const coordinate = (value: number): number => { order.push("x"); return value; };
+            const info = await pickAsync(picker, coordinate(1), 0, {
+                filter: (mesh) => { asked++; return mesh !== first; },
+                debugLabel: (order.push("label"), "skip-first"),
+            });
+            const picked = info.pickedMesh as Mesh;
+            if (!info.hit || picked === first || asked !== 2 || order.join() !== "x,label")
+                throw new Error("filtered pick " + asked);
+        }
+        void main();
+    `);
+    assert.match(result.cpp, /bbl::gpu_pick\([^\n]*bbl::Engine::PickFilter\(/);
+    for (const [option, message] of [
+        ["{ discard: rule }", /pickAsync's `discard` rule is not lowered/],
+        ["{ ignore: { mesh } }", /pickAsync's `ignore` option is not lowered/],
+        [
+            "{ filter(m: Mesh) { return m === mesh; } }",
+            /pickAsync options are lowered from plain/,
+        ],
+        ["extra", /pickAsync options are lowered from an object literal/],
+    ] as const)
+        assert.throws(
+            () =>
+                compileSource(`
+                import {createEngine,createSceneContext,createGpuPicker,pickAsync,createSphere,type Mesh,type PickDiscardRule} from "@babylonjs/lite";
+                async function main(rule: PickDiscardRule, extra: { debugLabel?: string }) {
+                    const engine = await createEngine({});
+                    const scene = createSceneContext(engine);
+                    const mesh: Mesh = createSphere(engine, {});
+                    const info = await pickAsync(createGpuPicker(scene), 0, 0, ${option});
+                    if (info.hit && !mesh) throw new Error("never");
+                }
+                void main({ key: "k", wgsl: "" }, {});
+            `),
+            message,
+        );
+    if (!tools) return t.skip("Native fixture compiler unavailable.");
+    assert.match(
+        runPickingCheck(
+            "picking-filter-check",
+            result.cpp,
+            `#include <cassert>
+#include <iostream>
+namespace bbl {
+Engine create_engine(EngineOptions options) {
+    Engine engine;
+    engine.options = options;
+    engine.meshes.emplace_back();
+    engine.meshes.emplace_back();
+    engine.pick_hook = [](GpuPickerHandle, double, double, const Engine::PickFilter* filter) {
+        PickingInfo info;
+        for (std::uint32_t index = 0; index < 2; ++index) {
+            if (filter && !(*filter)(MeshHandle{index}))
+                continue;
+            info.hit = true;
+            info.picked_kind = PickedNodeKind::mesh;
+            info.picked_index = index;
+            break;
+        }
+        return info;
+    };
+    return engine;
+}
+Scene create_scene_context(Engine& engine) {
+    Scene scene;
+    scene.engine = &engine;
+    return scene;
+}
+std::vector<float> mesh_cpu_positions(const Engine&, MeshHandle) { return {}; }
+std::vector<float> mesh_cpu_normals(const Engine&, MeshHandle) { return {}; }
+std::vector<std::uint32_t> mesh_cpu_indices(const Engine&, MeshHandle) { return {}; }
+namespace upstream {
+std::array<float, 16> mesh_world_matrix(const Engine&, const MeshRecord&) {
+    return {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
+}
+} // namespace upstream
+} // namespace bbl
+int main() {
+    assert(generated_scene_main() == 0);
+    bbl::js::collect_cycles();
+    std::cout << "picking-filter-check: ok\\n";
+}
+`,
+        ),
+        /picking-filter-check: ok/,
+    );
+});
